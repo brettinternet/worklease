@@ -81,7 +81,7 @@ backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-Run an authoritative task command under the claim with `exec`:
+The CLI version of this an authoritative task command under the claim with `exec`:
 
 ```sh
 worklease exec \
@@ -115,7 +115,6 @@ Provider-side execution remains unavailable until a provider adapter supplies a 
 ## Guarantees
 
 The built-in store's only guarantee is same-host SQLite plus POSIX file-lock coordination for cooperating callers. It is not distributed locking, cross-host exclusion, or provider-side fencing.
-
 
 ## Agent workflow
 
