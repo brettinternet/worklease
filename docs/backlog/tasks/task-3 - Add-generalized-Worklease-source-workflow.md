@@ -1,11 +1,11 @@
 ---
 id: TASK-3
 title: Add generalized Worklease source workflow
-status: In Progress
+status: Done
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 22:29'
-updated_date: '2026-07-13 22:37'
+updated_date: '2026-07-13 22:45'
 labels:
   - architecture
   - documentation
@@ -27,12 +27,12 @@ Publish a reusable source/provider composition skill so users can connect Backlo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A worklease-source-workflow skill loads the worklease-workflow contract first and leaves dependency scheduling, ownership epochs, heartbeat/release sequencing, checkpoint ordering, and generic result semantics in that normative contract.
-- [ ] #2 The skill supplies a provider capability contract and authoring checklist for explicit source resolution, Source/WorkRef/WorkItem mapping, Worklease resource policy selection, authoritative reads and writes, durable receipts, review/archive boundaries, capability failures, and provider fencing evidence.
-- [ ] #3 Provider references cover Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and unknown providers without importing personal dotfiles commands, environment variables, or provider SDK/network behavior into the core.
-- [ ] #4 Examples show local Markdown replacement, remote-provider local coordination, and a provider conditional-write path while preserving providerMutationFenced false unless concrete provider fencing evidence exists.
-- [ ] #5 README links the source workflow skill and gives succinct instructions for implementing a custom source adapter.
-- [ ] #6 Focused checks verify skill metadata, links, provider coverage, and the boundary between generic scheduling, bundled key adapters, and provider workflow adapters.
+- [x] #1 A worklease-source-workflow skill loads the worklease-workflow contract first and leaves dependency scheduling, ownership epochs, heartbeat/release sequencing, checkpoint ordering, and generic result semantics in that normative contract.
+- [x] #2 The skill supplies a provider capability contract and authoring checklist for explicit source resolution, Source/WorkRef/WorkItem mapping, Worklease resource policy selection, authoritative reads and writes, durable receipts, review/archive boundaries, capability failures, and provider fencing evidence.
+- [x] #3 Provider references cover Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and unknown providers without importing personal dotfiles commands, environment variables, or provider SDK/network behavior into the core.
+- [x] #4 Examples show local Markdown replacement, remote-provider local coordination, and a provider conditional-write path while preserving providerMutationFenced false unless concrete provider fencing evidence exists.
+- [x] #5 README links the source workflow skill and gives succinct instructions for implementing a custom source adapter.
+- [x] #6 Focused checks verify skill metadata, links, provider coverage, and the boundary between generic scheduling, bundled key adapters, and provider workflow adapters.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,4 +47,12 @@ Publish a reusable source/provider composition skill so users can connect Backlo
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented the generalized worklease-source-workflow skill, provider contract/checklist, six provider references, and three guarantee-focused examples. README now links both skills and gives a six-step custom-source procedure. Focused documentation smoke passed for skill metadata, 14 Markdown documents, all relative links, provider coverage, guarantee vocabulary, and exclusion of legacy backlog-claim assumptions.
+
+Final verification: focused documentation smoke resolved all 24 local links across README and 14 skill documents, validated metadata/provider coverage/legacy-assumption exclusions, and confirmed the scheduler-neutral handoff. `mise run lint`, `mise run format-check`, `mise run test` (34 tests), and `mise run typecheck` all passed. Independent verifier PASS covered all six acceptance criteria; its focused adapter run passed 11/11 tests. Verifier finding about a duplicated composition sequence was fixed in c045e1c by making the provider contract a capability-only handoff.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added the generalized worklease-source-workflow companion, provider capability contract and authoring checklist, references for Backlog.md/Markdown/GitHub/Linear/Jira/unknown systems, and three guarantee-focused examples. README now links the skill and gives a six-step custom source-adapter procedure. Verified all links and boundaries, full repository lint/format/test/typecheck gates, and independent acceptance PASS.
+<!-- SECTION:FINAL_SUMMARY:END -->
