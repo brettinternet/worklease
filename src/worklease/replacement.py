@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+from typing import cast
 
 from .models import LeaseError, MutationRequest, require_text
 from .locking import resource_lock
@@ -73,11 +74,50 @@ class FileReplacer:
         expected_sha256: str,
         content_file: str | os.PathLike[str],
     ) -> dict[str, object]:
-        target = _regular_file(Path(path), field="target")
-        candidate = _regular_file(Path(content_file), field="content-file")
         expected = expected_sha256.lower()
         if not _SHA256.fullmatch(expected):
             raise LeaseError("invalid-expected-sha256", code=64)
+        raw_target = Path(path).expanduser()
+        raw_candidate = Path(content_file).expanduser()
+        if raw_target.is_symlink():
+            raise LeaseError("target-is-symlink", code=64, path=str(raw_target))
+        requested_target = raw_target.resolve(strict=False)
+        requested_candidate = raw_candidate.resolve(strict=False)
+        candidate_hash: str | None = None
+        if raw_candidate.is_file() and not raw_candidate.is_symlink():
+            candidate_hash = hashlib.sha256(raw_candidate.read_bytes()).hexdigest()
+
+        cached = self.store.read_operation(request, "replace-file")
+        if cached is not None:
+            recorded = cast(dict[str, object], cached["request"])
+            if (
+                recorded.get("path") != str(requested_target)
+                or recorded.get("previousSha256") != expected
+                or (
+                    recorded.get("contentFile") is not None
+                    and recorded.get("contentFile") != str(requested_candidate)
+                )
+                or (
+                    candidate_hash is not None
+                    and recorded.get("sha256") != candidate_hash
+                )
+            ):
+                raise LeaseError(
+                    "operation-id-request-mismatch",
+                    code=3,
+                    operationId=request.operation_id,
+                )
+            receipt = cast(dict[str, object], cached["receipt"])
+            if not bool(receipt.get("ok", False)):
+                raise LeaseError(
+                    str(receipt.get("error", "replace-file-failed")),
+                    code=3,
+                    operationId=request.operation_id,
+                )
+            return receipt
+
+        target = _regular_file(raw_target, field="target")
+        candidate = _regular_file(raw_candidate, field="content-file")
         content = candidate.read_bytes()
         candidate_hash = hashlib.sha256(content).hexdigest()
 
@@ -85,6 +125,7 @@ class FileReplacer:
             path=str(target),
             previousSha256=expected,
             sha256=candidate_hash,
+            contentFile=str(candidate),
         )
         with resource_lock(request.resource, self.store.home):
             cached = self.store.begin_operation(

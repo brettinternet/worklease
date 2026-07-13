@@ -32,28 +32,35 @@ class GuardedExecutor:
     def _terminate(process: subprocess.Popen[str]) -> None:
         # A completed parent can still have descendants holding our pipes open.
         # On POSIX the dedicated process group is the ownership boundary.
-        leader_exited = process.poll() is not None
-        if leader_exited and os.name != "posix":
-            return
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGTERM)
-                if leader_exited:
-                    # wait() cannot observe descendants after the group leader
-                    # exits, so force the group down before returning.
-                    os.killpg(process.pid, signal.SIGKILL)
-            elif process.poll() is None:
-                process.terminate()
-            process.wait(timeout=2)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+        if os.name == "posix":
             try:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGKILL)
-                elif process.poll() is None:
-                    process.kill()
-            except ProcessLookupError:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
                 return
-            process.wait()
+            try:
+                if process.poll() is None:
+                    process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                # wait() only observes the group leader. Escalate for any
+                # descendant that ignores SIGTERM or holds inherited pipes.
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                return
+            try:
+                process.wait()
+            except ChildProcessError:
+                pass
+            return
+
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
     def execute(
         self, request: MutationRequest, command: Sequence[str]
     ) -> tuple[dict[str, object], int]:

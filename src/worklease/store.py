@@ -114,6 +114,51 @@ class LeaseStore:
             )
         receipt["idempotent"] = True
         return receipt
+    def read_operation(
+        self, request: MutationRequest, kind: str
+    ) -> dict[str, Any] | None:
+        """Read one operation for safe idempotent replay before input loading."""
+
+        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+            with transaction(db):
+                self._require_owner(db, request)
+                row = self._operation_row(db, request)
+                if row is None:
+                    return None
+                expected_revision = int(row["expected_revision"])
+                if request.revision != expected_revision:
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=request.resource,
+                        expectedRevision=expected_revision,
+                        suppliedRevision=request.revision,
+                    )
+                if row["kind"] != kind:
+                    raise LeaseError(
+                        "operation-id-request-mismatch",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                state = str(row["state"]) if "state" in row.keys() else "completed"
+                if state == "started":
+                    raise LeaseError(
+                        "unknown-outcome",
+                        code=3,
+                        operationId=request.operation_id,
+                        operation=kind,
+                    )
+                if state != "completed":
+                    raise LeaseError(
+                        "invalid-operation-state",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                receipt = json.loads(str(row["receipt"]))
+                receipt["idempotent"] = True
+                return {
+                    "request": json.loads(str(row["request"])),
+                    "receipt": receipt,
+                }
 
     def _require_owner(
         self, connection: sqlite3.Connection, request: MutationRequest

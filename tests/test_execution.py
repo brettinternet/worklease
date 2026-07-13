@@ -155,7 +155,8 @@ class ExecutionTests(unittest.TestCase):
         )
         marker = self.home / "descendant-must-not-finish"
         child_code = (
-            "import time; from pathlib import Path; "
+            "import signal,time; from pathlib import Path; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
             "time.sleep(1); "
             f"Path({str(marker)!r}).write_text('finished')"
         )
@@ -204,6 +205,14 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(retry["idempotent"])
         self.assertEqual("new\n", target.read_text())
         self.assertEqual(0o640, target.stat().st_mode & 0o777)
+        candidate.write_text("changed\n")
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            replace_file(self.store, request, target, expected, candidate)
+        candidate.unlink()
+        replay_without_inputs = replace_file(
+            self.store, request, target, expected, candidate
+        )
+        self.assertTrue(replay_without_inputs["idempotent"])
 
     def test_replacement_rejects_wrong_hash_and_symlink(self) -> None:
         request = self.acquire("markdown-source")
@@ -214,11 +223,19 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(LeaseError, "file-version-conflict"):
             replace_file(self.store, request, target, "0" * 64, candidate)
         link = self.home / "link.md"
+        symlink_request = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id="symlink-operation",
+            ttl=request.ttl,
+        )
         link.symlink_to(target)
         with self.assertRaisesRegex(LeaseError, "target-is-symlink"):
             replace_file(
                 self.store,
-                request,
+                symlink_request,
                 link,
                 hashlib.sha256(target.read_bytes()).hexdigest(),
                 candidate,
