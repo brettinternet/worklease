@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 22:51'
+updated_date: '2026-07-13 23:28'
 labels:
   - architecture
   - packaging
@@ -183,6 +183,13 @@ T5 integration checkpoint:
 - Verified T5 commits 56d6573 and 958a042 merged locally into main as 91f783c (non-fast-forward merge required because main contains the source-workflow merge f9c4e52; no conflicts; only T5 files changed by the merge).
 - Merged-main verification: `mise run format-check` passed; `mise run lint` passed; `mise run typecheck` passed (0 errors); `mise run test` passed (41 tests).
 - Provider item remains In Progress for normal one-pass handoff. Next implementation task is [T6] CI and release validation.
+
+T6 implementation progress checkpoint:
+- CI/release validation complete in commits cce56c7, 1d955c4, 1b7ea21, and 52fd668; integrated into local main as ffa3482.
+- Added POSIX mise/uv CI matrices, wheel and sdist build/install/version smoke checks, PyInstaller one-file native builds with --copy-metadata worklease, explicit Linux/macOS x86_64/arm64 release assets, complete checksums generation/verification, and tagged release publishing.
+- Added exact-version checksum-verifying installer with native-first selection, 404 wheel fallback, supported UV_TOOL_BIN_DIR install-directory propagation, downloaded native/wheel --version smoke tests, strict tag validation, and local live-GitHub-independent tests.
+- Verification: mise exec uv -- uv sync --locked passed; mise run lint passed; mise run format-check passed; mise run typecheck passed (0 errors); mise run test passed (47 tests); mise run build passed; mise exec uv -- uv run python -m unittest tests.test_release -v passed (6/6); actual PyInstaller arm64 one-file --version smoke passed with JSON version 0.1.0; built sdist isolated --version smoke passed; Ruby Psych workflow parse and sh -n passed. Final independent verifier PASS at HEAD 52fd668; no findings.
+- T6 implementation task is complete. Next pass: REVIEW TASK-1 accumulated implementation at exact commits; item remains In Progress and acceptance markers remain review-pending.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
