@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 20:28'
+updated_date: '2026-07-13 20:42'
 labels:
   - architecture
   - packaging
@@ -114,4 +114,11 @@ Implementation progress:
 - Verification: mise exec uv -- uv lock (pass); mise exec uv -- uv sync --locked (pass, installed worklease 0.1.0); mise exec uv -- uv run worklease --version (pass, JSON {schemaVersion:1, operation:version, ok:true, version:0.1.0}); mise exec uv -- uv run worklease --format text --version (pass, 0.1.0); mise exec uv -- uv run python -m unittest tests.test_package_smoke -v (pass, 3 tests).
 - Next implementation task: [T2] Core lease lifecycle.
 - Remaining acceptance criteria: #2, #3, #4, #5, #6, #7.
+
+Implementation progress checkpoint:
+- [T2] Core lease lifecycle complete in commit 7358658 (integrated into local main).
+- Added opaque-resource models, SQLite WAL/FULL schema, migration metadata, monotonic revisions, random bearer tokens, exact claim/token/revision checks, idempotent heartbeat/release receipts, TTL validation/expiry reclaim, crash recovery, and non-blocking POSIX per-resource locks.
+- Verification: `mise exec uv -- uv run python -m unittest discover -s tests -v` passed (12 tests); `mise exec -- pyright src/worklease tests` passed (0 errors).
+- Next implementation task: [T3] Guarded local operations.
+- Remaining acceptance criteria: #2 (T3 portion), #3, #4, #5, #6, #7.
 <!-- SECTION:NOTES:END -->
