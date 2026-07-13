@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
-import sqlite3
 import os
-from pathlib import Path
+import sqlite3
 import subprocess
 import sys
-import time
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from worklease.locking import resource_lock_path
 from worklease.models import AcquireRequest, LeaseError, MutationRequest
@@ -53,7 +53,11 @@ class StoreTests(unittest.TestCase):
 
     @staticmethod
     def mutation(
-        acquired: dict[str, object], resource: str, operation_id: str, *, ttl: float = 10.0
+        acquired: dict[str, object],
+        resource: str,
+        operation_id: str,
+        *,
+        ttl: float = 10.0,
     ) -> MutationRequest:
         claim = acquired["claim"]
         assert isinstance(claim, dict)
@@ -73,20 +77,30 @@ class StoreTests(unittest.TestCase):
         expected = hashlib.sha256(resource.encode("utf-8")).hexdigest()
         self.assertEqual(expected, resource_lock_path(resource, self.home).stem)
 
-    def test_concurrent_acquire_has_one_winner_and_independent_resources_proceed(self) -> None:
+    def test_concurrent_acquire_has_one_winner_and_independent_resources_proceed(
+        self,
+    ) -> None:
         barrier = threading.Barrier(2)
 
         def contender(claim_id: str) -> tuple[str, object]:
             barrier.wait()
             try:
-                return "ok", self.store.acquire(self.acquire_request("shared", claim_id))
+                return "ok", self.store.acquire(
+                    self.acquire_request("shared", claim_id)
+                )
             except LeaseError as error:
                 return error.reason, error
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(contender, ("first", "second")))
         self.assertEqual(1, sum(result[0] == "ok" for result in results))
-        self.assertEqual(1, sum(result[0] in {"already-claimed", "resource-guarded"} for result in results))
+        self.assertEqual(
+            1,
+            sum(
+                result[0] in {"already-claimed", "resource-guarded"}
+                for result in results
+            ),
+        )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             independent = list(
@@ -95,7 +109,10 @@ class StoreTests(unittest.TestCase):
                     ("resource-a", "resource-b"),
                 )
             )
-        self.assertEqual({"resource-a", "resource-b"}, {entry["claim"]["resource"] for entry in independent})
+        self.assertEqual(
+            {"resource-a", "resource-b"},
+            {entry["claim"]["resource"] for entry in independent},
+        )
 
     def test_expiry_reclaim_replaces_token_and_increases_revision(self) -> None:
         first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))

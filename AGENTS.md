@@ -39,6 +39,14 @@ backlog instructions task-finalization
 
 Verify every acceptance criterion with objective evidence, record the evidence in the task, and move the task to its terminal status only after verification. A claim, assignee, branch, worktree, or lock is not a substitute for durable task state.
 
+## Quality gates
+
+Before handing off or committing changes:
+
+- Run `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck`; fix every reported failure instead of bypassing or weakening a check.
+- For Python changes, stage the intended files and run `mise run hooks`; fix Ruff and test failures before committing.
+- Install the Git hook once with `mise run hooks-install`, and do not disable Lefthook or skip failing jobs to force a commit.
+
 ## Worklease workflow
 
 For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define a provider-neutral contract only: work sources and item IDs are opaque, and the caller supplies discovery, mutation, and authority capabilities. Do not add provider assumptions to the contract or treat local coordination as provider-side fencing.

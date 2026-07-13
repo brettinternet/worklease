@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  commands:
+    ruff-check:
+      glob: "*.py"
+      run: mise exec uv -- uv run ruff check --force-exclude {staged_files}
+    ruff-format:
+      glob: "*.py"
+      run: mise exec uv -- uv run ruff format --check {staged_files}
+    tests:
+      run: mise run test

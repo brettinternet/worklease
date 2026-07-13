@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import datetime as dt
 import math
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any
 
 DEFAULT_TTL = 900.0
 MAX_TTL = 3600.0
@@ -31,9 +31,7 @@ def iso8601(value: float) -> str:
     """Render persisted epoch seconds as a UTC timestamp."""
 
     return (
-        dt.datetime.fromtimestamp(value, tz=dt.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
+        dt.datetime.fromtimestamp(value, tz=dt.UTC).isoformat().replace("+00:00", "Z")
     )
 
 

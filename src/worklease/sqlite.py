@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import fcntl
 import os
-from pathlib import Path
 import sqlite3
-from typing import Iterator
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 
 def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
@@ -103,8 +103,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
             """
         )
         columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(claims)")
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(claims)")
         }
         if "coordination_only" not in columns:
             connection.execute(
@@ -113,8 +112,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
             )
         if "acquire_ttl" not in columns:
             connection.execute(
-                "ALTER TABLE claims ADD COLUMN acquire_ttl "
-                "REAL NOT NULL DEFAULT 900.0"
+                "ALTER TABLE claims ADD COLUMN acquire_ttl REAL NOT NULL DEFAULT 900.0"
             )
         else:
             connection.execute(
