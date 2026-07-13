@@ -79,6 +79,26 @@ backlog task edit TASK-42 --status "In Progress" --plain
 
 Run work under the claim, save a durable checkpoint, then release the exact claim. Backlog.md is at https://github.com/MrLesk/Backlog.md.
 
+## Adapter boundary
+
+The bundled adapters are lazy, deterministic identity policies. GitHub and Backlog.md can derive helper-fenced item keys; Markdown derives one helper-fenced source key for every item; Linear and unknown providers derive `local-coordination` keys. None of these adapters performs provider writes or claims remote/provider-side fencing. Generic `exec` always reports and provides only local coordination.
+
+Markdown source updates use the core atomic `replace-file` operation with an expected SHA-256, symlink rejection, mode preservation, and an atomic fsync/rename. A Markdown adapter rejects coordination-only claims before delegating to that operation.
+
+```python
+from worklease.adapters import key_result
+
+key_result("markdown", "docs/backlog.md", "ITEM-42")
+# {"capability": "source-claim", "scope": "source", ...}
+```
+
+Provider-side execution remains unavailable until a provider adapter supplies a real conditional-write check. A same-host helper claim is never upgraded into that stronger guarantee.
+
+## Guarantees
+
+The built-in store's only guarantee is same-host SQLite plus POSIX file-lock coordination for cooperating callers. It is not distributed locking, cross-host exclusion, or provider-side fencing.
+
+
 ## Agent workflow
 
 Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.md) before selecting work. It nudges them to:
@@ -93,7 +113,7 @@ The skill does not choose providers or perform source-side claims. The caller's 
 
 ## Limitations
 
-The built-in store uses SQLite and POSIX locks for cooperating callers on one host. It does not provide distributed locking, cross-host exclusion, or provider-side fencing. For distributed work, use a caller-provided authority that supplies those guarantees.
+The built-in store does not provide distributed locking, cross-host exclusion, or provider-side fencing. For stronger guarantees, the caller must use its provider's conditional mutation authority. The provider remains authoritative for discovery, status, progress, review, and completion.
 
 ## Development
 
