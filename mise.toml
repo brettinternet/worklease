@@ -10,3 +10,10 @@ uv = "latest"
 [settings]
 disable_backends = ["pipx"]
 pipx.uvx = true
+
+[tasks]
+sync = "uv sync --locked"
+test = "uv run python -m unittest discover -s tests -v"
+typecheck = "mise exec -- pyright"
+build = "uv build"
+install-release = "scripts/install-release.sh"
