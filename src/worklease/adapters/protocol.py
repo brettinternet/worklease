@@ -64,6 +64,9 @@ class ProviderAdapter(Protocol):
         self, source: str, item: str, *, coordination_only: bool = False
     ) -> ResourceKey: ...
 
+    @property
+    def generic_execution_guarantee(self) -> str: ...
+
     def require_provider_fence(
         self, conditional_check: object | None = None
     ) -> None: ...
@@ -126,7 +129,7 @@ def local_resource(provider: str, source_path: Path, item: str) -> str:
         top = Path(top_value).resolve()
         common = Path(common_value)
         if not common.is_absolute():
-            common = (top / common).resolve()
+            common = (probe / common).resolve()
         try:
             locator = source_path.relative_to(top).as_posix()
         except ValueError:
@@ -200,6 +203,7 @@ class BaseAdapter:
             guarantee="local-coordination",
         )
 
+    @property
     def generic_execution_guarantee(self) -> str:
         return "local-coordination"
 
