@@ -17,6 +17,39 @@ uv tool install .
 worklease --version
 ```
 
+### Tagged releases
+
+Tagged releases publish these exact asset names:
+
+```text
+worklease-X.Y.Z-py3-none-any.whl
+worklease-X.Y.Z.tar.gz
+worklease-vX.Y.Z-linux-x86_64
+worklease-vX.Y.Z-linux-arm64
+worklease-vX.Y.Z-macos-x86_64
+worklease-vX.Y.Z-macos-arm64
+checksums.txt
+```
+
+The native executables are one-file PyInstaller builds. They retain the
+`worklease` package metadata, so `worklease --version` reports the tagged
+version. `checksums.txt` covers every wheel, sdist, and native executable.
+
+Install an exact release with the reproducible mise task:
+
+```sh
+WORKLEASE_REPOSITORY=owner/name mise run install-release VERSION=vX.Y.Z
+```
+
+The installer requires an exact `vX.Y.Z` tag, verifies the selected asset
+against that release's SHA-256 manifest, runs its `--version` smoke test, and
+installs it into `~/.local/bin` (override with `WORKLEASE_INSTALL_DIR`). It
+selects the matching Linux/macOS native asset when available and otherwise
+downloads and verifies the exact `py3-none-any` wheel through `uv`. Local
+release tests use `WORKLEASE_RELEASE_BASE_URL`; no live GitHub access is
+needed to test selection, checksum rejection, fallback, or version smoke
+behavior.
+
 ## Usage
 
 A caller first acquires a lease with the Python API. The claim receipt supplies `CLAIM_ID`, `TOKEN`, and `REVISION` for guarded operations.
@@ -119,7 +152,7 @@ backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-The CLI version of this an authoritative task command under the claim with `exec`:
+The CLI version runs an authoritative task command under the claim with `exec`:
 
 ```sh
 worklease exec \

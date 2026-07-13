@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  python-assets:
+    name: Build Python assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Sync locked environment
+        run: mise run sync
+      - name: Verify package version matches tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          expected=${RELEASE_TAG#v}
+          actual=$(mise exec uv -- uv run python -c 'import importlib.metadata; print(importlib.metadata.version("worklease"))')
+          test "$actual" = "$expected"
+      - name: Build wheel and sdist
+        run: |
+          mkdir -p dist/release
+          mise exec uv -- uv build --out-dir dist/release
+      - name: Upload Python assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python
+          path: dist/release/*
+          if-no-files-found: error
+
+  native-assets:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }} executable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+          - os: macos-14
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Sync locked environment
+        run: mise run sync
+      - name: Build one-file executable with package metadata
+        env:
+          ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          mise exec uv -- uv run --with pyinstaller pyinstaller \
+            --clean --noconfirm --onefile \
+            --name "$ASSET_NAME" \
+            --copy-metadata worklease \
+            src/worklease/__main__.py
+      - name: Smoke-test downloaded-equivalent executable
+        env:
+          ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          expected=${RELEASE_TAG#v}
+          export EXPECTED_VERSION="$expected"
+          "dist/$ASSET_NAME" --version > version.json
+          python -c 'import json, os; p=json.load(open("version.json")); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"] and p["version"] == os.environ["EXPECTED_VERSION"]'
+      - name: Upload native asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-native-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/${{ env.ASSET_NAME }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    needs: [python-assets, native-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Generate and verify complete checksums
+        run: |
+          mise exec uv -- uv run python scripts/release_artifacts.py write --directory dist/release
+          mise exec uv -- uv run python scripts/release_artifacts.py verify --directory dist/release
+      - name: Publish tagged assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

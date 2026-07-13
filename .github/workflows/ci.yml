@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Sync locked environment
+        run: mise run sync
+      - name: Run tests
+        run: mise run test
+      - name: Typecheck
+        run: mise run typecheck
+      - name: Lint
+        run: mise run lint
+      - name: Check formatting
+        run: mise run format-check
+      - name: Build wheel and sdist
+        run: mise run build
+      - name: Install built wheel and smoke-test version
+        shell: bash
+        run: |
+          wheel=$(printf '%s\n' dist/*.whl)
+          uv tool install --force "$wheel"
+          worklease --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+
+  native:
+    name: Native (${{ matrix.platform }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+          - os: macos-14
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Sync locked environment
+        run: mise run sync
+      - name: Build one-file executable
+        env:
+          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          mise exec uv -- uv run --with pyinstaller pyinstaller \
+            --clean --noconfirm --onefile \
+            --name "$ASSET_NAME" \
+            --copy-metadata worklease \
+            src/worklease/__main__.py
+      - name: Smoke-test frozen version
+        env:
+          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
+        shell: bash
+        run: |
+          "dist/$ASSET_NAME" --version | python -c \
+            'import json,sys; p=json.load(sys.stdin); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"]'
+      - name: Validate native checksum manifest
+        env:
+          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          mkdir -p dist/release
+          cp "dist/$ASSET_NAME" dist/release/
+          mise exec uv -- uv run python scripts/release_artifacts.py write --directory dist/release
+          mise run release-validate
