@@ -74,17 +74,6 @@ Record two separate facts:
 
 `providerMutationFenced` defaults to `false`. Set it to `true` only when `conditionalWrite` is true and `fencingEvidence` proves the provider rejected stale writers as part of the same durable mutation. Pre/post reads detect some conflicts but do not fence the mutation.
 
-## Composition sequence
+## Generic workflow handoff
 
-1. Resolve explicit sources and selectors in caller order.
-2. Discover the full scoped collection and dependency closure.
-3. Normalize `Source`, `WorkRef`, and `WorkItem` values.
-4. Derive exact resources and merge current Worklease claim reads.
-5. Pass the normalized scope to the generic graph and selection operations.
-6. Acquire the selected resource before delegation or edits.
-7. Refresh provider state and claim ownership immediately before mutation.
-8. Perform the authorized provider write with conditional enforcement when available.
-9. Retain or re-read the provider receipt as the durable checkpoint.
-10. Release only after checkpoint verification; the release reason is audit metadata, not proof.
-
-Provider adapters supply steps 1–4 and 7–9. `worklease-workflow` owns the ordering and invariants across all ten steps.
+After producing normalized sources, items, resource policy, and declared capabilities, hand them to `worklease-workflow`. The provider adapter responds to capability calls when invoked; it does not expose a scheduler, work loop, `selectNext`, `selectWave`, claim lifecycle, or release policy. The normative contract alone decides graph construction, operation ordering, claim/revalidation timing, checkpoint-before-release, and structured outcomes.
