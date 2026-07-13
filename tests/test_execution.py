@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -140,6 +141,36 @@ class ExecutionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"):
                 execute(self.store, request, command)
+        self.assertFalse(marker.exists())
+
+    def test_ownership_loss_kills_descendant_after_leader_exit(self) -> None:
+        request = self.acquire("descendant-resource")
+        request = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id=request.operation_id,
+            ttl=0.2,
+        )
+        marker = self.home / "descendant-must-not-finish"
+        child_code = (
+            "import time; from pathlib import Path; "
+            "time.sleep(1); "
+            f"Path({str(marker)!r}).write_text('finished')"
+        )
+        parent_code = (
+            "import subprocess,sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        )
+        with patch.object(
+            self.store,
+            "heartbeat",
+            side_effect=LeaseError("claim-changed-during-guard", code=3),
+        ):
+            with self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"):
+                execute(self.store, request, [sys.executable, "-c", parent_code])
+        time.sleep(1.2)
         self.assertFalse(marker.exists())
 
     def test_started_intent_is_unknown_outcome_and_never_reruns(self) -> None:
