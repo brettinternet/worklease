@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 21:40'
+updated_date: '2026-07-13 21:44'
 labels:
   - architecture
   - packaging
@@ -142,6 +142,15 @@ Implementation progress checkpoint:
 - Next implementation task: [T4] Adapter capability isolation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #4, #5, #6, #7.
 
 Updated README with the same-host work-lease model, guarded exec and replace-file examples, Backlog.md usage, explicit local limitations, and MIT licensing. Verified documented CLI flags with uv run worklease exec --help and replace-file --help. Focused test suite passed with mise run test.
+T3 verifier-fix checkpoint:
+- Independent verifier PASS for T3 implementation range b8c6272, 030cd61, 805d99b, and 4e4b8a0; no findings remain.
+- Added same-resource lock-held operation execution/replacement, ownership validation before side effects, SIGTERM/SIGKILL process-group escalation including exited leaders and SIGTERM-resistant descendants, and replay validation before loading deleted inputs.
+- Added exact candidate-hash mismatch checks, raw symlink rejection on every replacement invocation, and regression coverage for contender exclusion, expiry during atomic replacement, descendant cleanup, changed replay inputs, and missing replay inputs.
+- Final verification under MISE_CONFIG_FILE=/Users/brett/dev/me/worklease/.worktrees/task-1-t3/mise.toml: mise exec uv -- uv run python -m unittest discover -s tests -v passed (23 tests); mise exec -- pyright src/worklease tests passed (0 errors). Focused T3 suite passed (10 tests). Independent verifier manual process-group, stale replacement, migration, and CLI replace-file checks passed.
+- Implementation commits: b8c6272, 030cd61, 805d99b, 4e4b8a0; all task-related and clean in task-1-t3 worktree.
+- Next implementation task: [T4] Adapter capability isolation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #4, #5, #6, #7.
+
+Resolved the task record merge state through Backlog.md after integrating the documentation update.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

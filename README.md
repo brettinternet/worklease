@@ -26,7 +26,7 @@ worklease exec \
   --token "$TOKEN" \
   --revision "$REVISION" \
   --operation-id "run-tests-001" \
-  -- python -m pytest tests
+  -- python -m unittest discover -s tests -v
 ```
 
 Replace a file only when its current SHA-256 matches the expected value:
