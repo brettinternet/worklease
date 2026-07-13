@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 22:13'
+updated_date: '2026-07-13 22:24'
 labels:
   - architecture
   - packaging
@@ -157,6 +157,8 @@ Added README guidance linking skills/worklease-workflow/SKILL.md. Documented the
 T4 Adapter capability isolation complete in commit ac373e7 (integrated into local main as ac0409b). Added lazy provider adapter loading and protocol-backed deterministic key/capability policy for GitHub, Backlog.md, Markdown, Linear, and unknown providers; preserved canonical repository-local identities, Markdown source-wide identity, coordination-only Linear/unknown behavior, and provider-fencing rejection. MarkdownAdapter delegates expected-SHA-256 replacement to the T3 atomic replacement core and rejects coordination-only claims. README documents same-host SQLite plus POSIX file-lock guarantees, Markdown expected-hash replacement, and no provider-side fencing. Verification: mise run test passed (33 tests); mise run lint passed; mise run format-check passed; mise run typecheck passed; staged pre-commit hooks passed. Next implementation task: [T5] Stable CLI contract and documentation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #5, #6, #7.
 
 T4 review fix: corrected local_resource to resolve relative git --git-common-dir against the probed source directory, keeping nested source identities stable across linked worktrees; added a regression test for main/worktree Backlog.md keys. Also made generic_execution_guarantee an adapter property. Fix commit 88c1094 (integrated into local main as 041228f). Reverification: 34 tests passed; lint, format-check, and typecheck passed; staged hooks passed. Independent T4 verifier recheck pending. Next implementation task remains [T5] Stable CLI contract and documentation; remaining acceptance criteria #2 (T4-independent portions), #3, #5, #6, #7.
+
+T4 final verifier-fix checkpoint: hardened all Git-hook GIT_* environment isolation for repository identity probing and replaced the layout-dependent linked-worktree test with a deterministic temporary nested repository/worktree regression that sanitizes Git variables for its own subprocesses. Implementation commit a1808d4 (integrated into local main as e2c240c); prior T4 commits ac373e7 and 88c1094 integrated as ac0409b and 041228f. Verification: main `mise run test` passed 34 tests; the same suite passed with GIT_DIR, GIT_WORK_TREE, and GIT_INDEX_FILE set; `mise run lint`, `mise run format-check`, and `mise run typecheck` passed; final independent verifier PASS: adapter suite 11/11 with no skips under normal and invalid Git-hook environments, targeted Ruff and Pyright passed, fresh reference-key comparisons passed. Next implementation task: [T5] Stable CLI contract and documentation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #5, #6, #7.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
