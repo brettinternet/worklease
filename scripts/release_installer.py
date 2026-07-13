@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
-_VERSION_RE = re.compile(r"^v(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+$")
+_VERSION_RE = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _REPOSITORY_RE = re.compile(r"^[^/\s]+/[^\s/]+$")
 
 

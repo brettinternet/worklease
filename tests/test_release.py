@@ -71,6 +71,13 @@ class ReleaseValidationTests(unittest.TestCase):
             )
         with self.assertRaises(ReleaseError):
             parse_checksums(f"{'a' * 64} asset\n{'a' * 64} asset\n")
+        for invalid in ("v01.2.3", "v1.02.3", "v1.2.03"):
+            with self.assertRaises(ReleaseError):
+                native_asset_name(invalid, system="Linux", machine="x86_64")
+        self.assertEqual(
+            "worklease-v0.0.0-linux-x86_64",
+            native_asset_name("v0.0.0", system="Linux", machine="x86_64"),
+        )
 
     def test_checksum_verification_rejects_changed_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -90,7 +90,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-native-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/${{ env.ASSET_NAME }}
+          path: dist/worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
 
   publish:
