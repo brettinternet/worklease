@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worklease"
+version = "0.1.0"
+description = "Provider-neutral same-host work leases"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Worklease contributors" }]
+dependencies = []
+
+[project.scripts]
+worklease = "worklease.cli:main"
+
+[dependency-groups]
+dev = []
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worklease"]
