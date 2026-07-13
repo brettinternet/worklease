@@ -37,6 +37,10 @@ class AdapterKeyTests(unittest.TestCase):
         self.assertTrue(result.fenced_mutations)
         self.assertFalse(result.provider_fencing)
         self.assertEqual(result.generic_execution_guarantee, "local-coordination")
+        self.assertEqual(
+            load_adapter("github").generic_execution_guarantee,
+            "local-coordination",
+        )
 
         downgraded = key(
             "github", "github.com/example/repo", "115", coordination_only=True
@@ -59,6 +63,20 @@ class AdapterKeyTests(unittest.TestCase):
         )
         self.assertEqual(markdown.capability, "source-claim")
         self.assertEqual(markdown.scope, "source")
+
+    def test_nested_source_keys_match_across_linked_worktrees(self) -> None:
+        worktree_root = Path(__file__).parents[1]
+        main_root = worktree_root.parent.parent
+        main_source = main_root / "docs" / "backlog"
+        if not main_source.is_dir():
+            self.skipTest("test checkout has no linked worktree sibling")
+
+        worktree_key = key(
+            "backlog-md", str(worktree_root / "docs" / "backlog"), "TASK-1"
+        )
+        main_key = key("backlog-md", str(main_source), "TASK-1")
+
+        self.assertEqual(worktree_key.resource, main_key.resource)
 
     def test_markdown_items_share_one_source_claim(self) -> None:
         source = Path(__file__).parents[1] / "README.md"
