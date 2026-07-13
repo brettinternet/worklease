@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 21:44'
+updated_date: '2026-07-13 21:47'
 labels:
   - architecture
   - packaging
@@ -151,6 +151,8 @@ T3 verifier-fix checkpoint:
 - Next implementation task: [T4] Adapter capability isolation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #4, #5, #6, #7.
 
 Resolved the task record merge state through Backlog.md after integrating the documentation update.
+
+Added README guidance linking skills/worklease-workflow/SKILL.md. Documented the agent sequence to discover dependencies, claim through the authoritative source, use worklease for same-host coordination, heartbeat, checkpoint, and release without implying provider-side fencing.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

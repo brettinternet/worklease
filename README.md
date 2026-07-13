@@ -79,6 +79,18 @@ backlog task edit TASK-42 --status "In Progress" --plain
 
 Run work under the claim, save a durable checkpoint, then release the exact claim. Backlog.md is at https://github.com/MrLesk/Backlog.md.
 
+## Agent workflow
+
+Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.md) before selecting work. It nudges them to:
+
+- discover the full work scope and dependencies
+- claim work through the caller's authoritative source
+- use worklease for same-host coordination and guarded operations
+- heartbeat during long work
+- save a durable checkpoint before releasing the local claim
+
+The skill does not choose providers or perform source-side claims. The caller's backlog remains authoritative.
+
 ## Limitations
 
 The built-in store uses SQLite and POSIX locks for cooperating callers on one host. It does not provide distributed locking, cross-host exclusion, or provider-side fencing. For distributed work, use a caller-provided authority that supplies those guarantees.
