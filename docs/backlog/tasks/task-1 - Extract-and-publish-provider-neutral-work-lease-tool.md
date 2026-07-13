@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 22:24'
+updated_date: '2026-07-13 22:51'
 labels:
   - architecture
   - packaging
@@ -159,6 +159,30 @@ T4 Adapter capability isolation complete in commit ac373e7 (integrated into loca
 T4 review fix: corrected local_resource to resolve relative git --git-common-dir against the probed source directory, keeping nested source identities stable across linked worktrees; added a regression test for main/worktree Backlog.md keys. Also made generic_execution_guarantee an adapter property. Fix commit 88c1094 (integrated into local main as 041228f). Reverification: 34 tests passed; lint, format-check, and typecheck passed; staged hooks passed. Independent T4 verifier recheck pending. Next implementation task remains [T5] Stable CLI contract and documentation; remaining acceptance criteria #2 (T4-independent portions), #3, #5, #6, #7.
 
 T4 final verifier-fix checkpoint: hardened all Git-hook GIT_* environment isolation for repository identity probing and replaced the layout-dependent linked-worktree test with a deterministic temporary nested repository/worktree regression that sanitizes Git variables for its own subprocesses. Implementation commit a1808d4 (integrated into local main as e2c240c); prior T4 commits ac373e7 and 88c1094 integrated as ac0409b and 041228f. Verification: main `mise run test` passed 34 tests; the same suite passed with GIT_DIR, GIT_WORK_TREE, and GIT_INDEX_FILE set; `mise run lint`, `mise run format-check`, and `mise run typecheck` passed; final independent verifier PASS: adapter suite 11/11 with no skips under normal and invalid Git-hook environments, targeted Ruff and Pyright passed, fresh reference-key comparisons passed. Next implementation task: [T5] Stable CLI contract and documentation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #5, #6, #7.
+
+T5 implementation progress checkpoint:
+- [T5] Stable CLI contract and documentation complete in commit 56d6573 (isolated worktree task-1-t5; ready for local integration).
+- Added key/acquire/status/list/heartbeat/release/exec/replace-file/version CLI commands, schema-versioned JSON envelopes by default, explicit text list/version output, token-redacted status/list, deterministic malformed-input errors and exit codes, child-status propagation, adapter key wiring, replace-file wiring, parser boundary protection, and comprehensive tests/test_cli.py coverage.
+- Updated README with the command schema, JSON/text contract, token handling, stable exit codes, and locked mise/uv development/package commands.
+- Verification: `mise run format-check` passed; `mise run lint` passed; `mise run typecheck` passed (0 errors); `mise run test` passed (40 tests).
+- Next implementation task: [T6] CI and release validation.
+- Remaining acceptance criteria: #2 (T5 portion), #3 (T5 portion), #6, #7.
+
+T5 verifier-fix checkpoint:
+- Initial independent verifier found malformed `--ttl nan`/`inf` CLI errors emitted non-standard `ttl:NaN`/`Infinity` JSON and claim-bearing error paths exposed bearer tokens.
+- Fix commit: 958a042 (on top of 56d6573). `require_ttl` now emits finite, strict-JSON-safe error details; all LeaseError claim payloads use `include_token=False` while successful acquire/heartbeat owner receipts retain tokens; tests cover nan/inf/non-numeric TTL strict parsing plus active second-acquire and bad-token release redaction.
+- Final verification: `mise run format-check` passed; `mise run lint` passed; `mise run typecheck` passed (0 errors); `mise run test` passed (41 tests).
+- Independent verifier recheck is required before release; final candidate commits are 56d6573 and 958a042.
+
+T5 final verifier checkpoint:
+- Independent verifier PASS for final HEAD 958a042e25dd67acab0d29bbe3d8e065bc9aed04 (diff from 56d6573 through HEAD); no findings remain.
+- Verifier evidence: targeted `PYTHONPATH=src python -m unittest tests.test_cli -v` passed 7/7; strict JSON direct checks passed for nan/inf/not-a-number TTL; active second-acquire and bad-token release errors omitted token fields and actual bearer; successful acquire/heartbeat retained owner token; parser-boundary child `--format text`, text list/status, no recovery flag, adapter key, and replace-file wiring all passed.
+- T5 implementation is complete and reviewed at commits 56d6573 and 958a042. Next implementation task remains [T6] CI and release validation; remaining acceptance criteria #2 (T5 portion), #3 (T5 portion), #6, #7.
+
+T5 integration checkpoint:
+- Verified T5 commits 56d6573 and 958a042 merged locally into main as 91f783c (non-fast-forward merge required because main contains the source-workflow merge f9c4e52; no conflicts; only T5 files changed by the merge).
+- Merged-main verification: `mise run format-check` passed; `mise run lint` passed; `mise run typecheck` passed (0 errors); `mise run test` passed (41 tests).
+- Provider item remains In Progress for normal one-pass handoff. Next implementation task is [T6] CI and release validation.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
