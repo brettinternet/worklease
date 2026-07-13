@@ -121,6 +121,20 @@ The built-in store does not provide distributed locking, cross-host exclusion, o
 
 ## Development
 
+Run the CLI through uv without invoking the release build step; uv may sync the project environment first:
+
+```sh
+uv run worklease --version
+```
+
+The equivalent mise convenience task forwards arguments after `--`:
+
+```sh
+mise run cli -- --version
+```
+
+Other development commands:
+
 ```sh
 mise run sync
 mise run test

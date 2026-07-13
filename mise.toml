@@ -14,6 +14,7 @@ pipx.uvx = true
 
 [tasks]
 sync = "uv sync --locked"
+cli = "uv run worklease"
 test = "uv run python -m unittest discover -s tests -v"
 typecheck = "pyright"
 lint = "uv run ruff check ."
