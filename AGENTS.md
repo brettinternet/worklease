@@ -49,7 +49,9 @@ Before handing off or committing changes:
 
 ## Worklease workflow
 
-For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define a provider-neutral contract only: work sources and item IDs are opaque, and the caller supplies discovery, mutation, and authority capabilities. Do not add provider assumptions to the contract or treat local coordination as provider-side fencing.
+For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
+
+When caller context does not already provide those source/provider capabilities, read [`skills/worklease-source-workflow/SKILL.md`](skills/worklease-source-workflow/SKILL.md) after the generic workflow skill. It maps caller-selected Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and custom sources into the generic contract. Load only the matching provider reference, keep provider credentials and writes caller-authorized, and leave graph selection and claim lifecycle in `worklease-workflow`.
 
 The short Backlog.md command nudge in this file is managed by `backlog agents`. Keep the managed block intact; refresh it after changing project instructions with:
 
@@ -57,11 +59,10 @@ The short Backlog.md command nudge in this file is managed by `backlog agents`. 
 backlog agents --update-instructions
 ```
 
-The detailed workflow remains in the generated Backlog guide and the reusable skill; the generated nudge should point agents there rather than duplicate either document.
+The detailed contracts remain in the generated Backlog guide and reusable skills; the generated nudge should point agents there rather than duplicate them.
 
 <!-- BACKLOG.MD GUIDELINES START -->
 <!-- backlog.md-instructions-version: 1.48.0 -->
-
 <CRITICAL_INSTRUCTION>
 
 ## Backlog.md Workflow
@@ -73,7 +74,6 @@ This project uses Backlog.md for task and project management.
 Use the overview to decide whether to search, read, create, or update Backlog tasks.
 
 Before task lifecycle actions, read the matching detailed guide:
-
 - `backlog instructions task-creation` before creating or splitting tasks
 - `backlog instructions task-execution` before planning, changing status or assignee, adding a plan or implementation notes, or implementing task work
 - `backlog instructions task-finalization` before checking acceptance criteria, writing final summaries, or moving tasks to terminal statuses
@@ -83,5 +83,4 @@ Use `backlog <command> --help` before running unfamiliar commands. Help shows op
 Do not edit Backlog task, draft, document, decision, or milestone markdown files directly. Use the `backlog` CLI so metadata, relationships, and history stay consistent.
 
 </CRITICAL_INSTRUCTION>
-
 <!-- BACKLOG.MD GUIDELINES END -->
