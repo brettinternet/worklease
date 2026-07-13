@@ -1,6 +1,6 @@
 project_name: "worklease"
 default_status: "To Do"
-statuses: ["To Do", "In Progress", "Done"]
+statuses: ["Blocked", "To Do", "In Progress", "Review", "Done"]
 labels: []
 date_format: yyyy-mm-dd
 max_column_width: 20
