@@ -10,6 +10,7 @@ import stat
 import tempfile
 
 from .models import LeaseError, MutationRequest, require_text
+from .locking import resource_lock
 from .store import LeaseStore
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -85,61 +86,76 @@ class FileReplacer:
             previousSha256=expected,
             sha256=candidate_hash,
         )
-        cached = self.store.begin_operation(
-            request, "replace-file", operation_request
-        )
-        if cached is not None:
-            if not bool(cached.get("ok", False)):
-                raise LeaseError(
-                    str(cached.get("error", "replace-file-failed")),
-                    code=3,
-                    operationId=request.operation_id,
-                )
-            return cached
+        with resource_lock(request.resource, self.store.home):
+            cached = self.store.begin_operation(
+                request,
+                "replace-file",
+                operation_request,
+                lock_held=True,
+            )
+            if cached is not None:
+                if not bool(cached.get("ok", False)):
+                    raise LeaseError(
+                        str(cached.get("error", "replace-file-failed")),
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                return cached
 
-        # Recheck after recording intent. A concurrent external writer must not
-        # turn an expected-hash operation into an unguarded overwrite.
-        if target.is_symlink():
-            raise LeaseError("target-is-symlink", code=64, path=str(target))
-        current_hash = file_sha256(target)
-        if current_hash != expected:
-            failure: dict[str, object] = {
-                "ok": False,
+            # Recheck after recording intent. A concurrent external writer must
+            # not turn an expected-hash operation into an unguarded overwrite.
+            if target.is_symlink():
+                raise LeaseError("target-is-symlink", code=64, path=str(target))
+            current_hash = file_sha256(target)
+            if current_hash != expected:
+                failure: dict[str, object] = {
+                    "ok": False,
+                    "operation": "replace-file",
+                    "operationId": request.operation_id,
+                    "idempotent": False,
+                    "error": "file-version-conflict",
+                    "path": str(target),
+                    "previousSha256": expected,
+                    "actualSha256": current_hash,
+                }
+                self.store.complete_operation(
+                    request,
+                    "replace-file",
+                    operation_request,
+                    failure,
+                    lock_held=True,
+                    allow_expired=True,
+                )
+                raise LeaseError(
+                    "file-version-conflict",
+                    code=3,
+                    path=str(target),
+                    expectedSha256=expected,
+                    actualSha256=current_hash,
+                )
+
+            self.store.validate_current(request, lock_held=True)
+            mode = stat.S_IMODE(target.stat().st_mode)
+            atomic_replace(target, content, mode)
+            receipt: dict[str, object] = {
+                "ok": True,
                 "operation": "replace-file",
                 "operationId": request.operation_id,
                 "idempotent": False,
-                "error": "file-version-conflict",
                 "path": str(target),
                 "previousSha256": expected,
-                "actualSha256": current_hash,
+                "sha256": candidate_hash,
+                "recovered": False,
+                "ttl": float(request.ttl),
             }
-            self.store.complete_operation(
-                request, "replace-file", operation_request, failure
+            return self.store.complete_operation(
+                request,
+                "replace-file",
+                operation_request,
+                receipt,
+                lock_held=True,
+                allow_expired=True,
             )
-            raise LeaseError(
-                "file-version-conflict",
-                code=3,
-                path=str(target),
-                expectedSha256=expected,
-                actualSha256=current_hash,
-            )
-
-        mode = stat.S_IMODE(target.stat().st_mode)
-        atomic_replace(target, content, mode)
-        receipt: dict[str, object] = {
-            "ok": True,
-            "operation": "replace-file",
-            "operationId": request.operation_id,
-            "idempotent": False,
-            "path": str(target),
-            "previousSha256": expected,
-            "sha256": candidate_hash,
-            "recovered": False,
-            "ttl": float(request.ttl),
-        }
-        return self.store.complete_operation(
-            request, "replace-file", operation_request, receipt
-        )
 
 
 def replace_file(

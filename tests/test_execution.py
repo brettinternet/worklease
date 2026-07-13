@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from typing import cast
+from worklease import replacement as replacement_module
 
 from worklease.cli import main as cli_main
 from worklease.execution import execute
@@ -18,6 +19,17 @@ from worklease.models import AcquireRequest, LeaseError, MutationRequest
 from worklease.replacement import replace_file
 from worklease.store import LeaseStore
 
+
+
+class MutableClock:
+    def __init__(self, value: float = 1_000.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 class ExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -173,8 +185,57 @@ class ExecutionTests(unittest.TestCase):
         link = self.home / "link.md"
         link.symlink_to(target)
         with self.assertRaisesRegex(LeaseError, "target-is-symlink"):
-            replace_file(self.store, request, link, hashlib.sha256(target.read_bytes()).hexdigest(), candidate)
+            replace_file(
+                self.store,
+                request,
+                link,
+                hashlib.sha256(target.read_bytes()).hexdigest(),
+                candidate,
+            )
         self.assertEqual("old\n", target.read_text())
+
+    def test_replacement_keeps_ownership_during_atomic_write(self) -> None:
+        clock = MutableClock()
+        store = LeaseStore(self.home / "expiry", clock=clock)
+        acquired = store.acquire(
+            AcquireRequest(
+                resource="expiring-resource",
+                claim_id="expiring-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:item:T3",
+                ttl=1,
+            )
+        )
+        claim = cast(dict[str, object], acquired["claim"])
+        revision = claim["revision"]
+        assert isinstance(revision, int)
+        request = MutationRequest(
+            resource="expiring-resource",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=revision,
+            operation_id="expiry-replace",
+            ttl=1,
+        )
+        target = self.home / "expiry-target.md"
+        candidate = self.home / "expiry-candidate.md"
+        target.write_text("old\n")
+        candidate.write_text("new\n")
+        expected = hashlib.sha256(target.read_bytes()).hexdigest()
+        original_atomic_replace = replacement_module.atomic_replace
+
+        def delayed_replace(path: Path, content: bytes, mode: int) -> None:
+            clock.advance(2)
+            original_atomic_replace(path, content, mode)
+
+        with patch.object(
+            replacement_module, "atomic_replace", side_effect=delayed_replace
+        ):
+            receipt = replace_file(store, request, target, expected, candidate)
+        self.assertTrue(receipt["ok"])
+        self.assertEqual("new\n", target.read_text())
 
     def test_cli_wires_exec_and_returns_child_status(self) -> None:
         request = self.acquire()

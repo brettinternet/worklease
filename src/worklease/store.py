@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, nullcontext
 import json
 import secrets
 import sqlite3
@@ -215,10 +215,13 @@ class LeaseStore:
         request: MutationRequest,
         kind: str,
         operation_request: dict[str, Any],
+        *,
+        lock_held: bool = False,
     ) -> dict[str, Any] | None:
         """Durably record an operation intent before an external side effect."""
 
-        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+        lock = nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        with lock, closing(self._connect()) as db:
             with transaction(db):
                 row = self._require_owner(db, request)
                 cached = self._cached_operation(
@@ -265,12 +268,29 @@ class LeaseStore:
         kind: str,
         operation_request: dict[str, Any],
         receipt: dict[str, Any],
+        *,
+        lock_held: bool = False,
+        allow_expired: bool = False,
     ) -> dict[str, Any]:
         """Persist a started operation's receipt and advance its claim."""
 
-        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+        lock = nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        with lock, closing(self._connect()) as db:
             with transaction(db):
-                row = self._require_current(db, request)
+                row = self._require_owner(db, request)
+                if int(row["revision"]) != request.revision:
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=request.resource,
+                        expectedRevision=int(row["revision"]),
+                        suppliedRevision=request.revision,
+                    )
+                if not allow_expired and self.clock() >= float(row["expires_at"]):
+                    raise LeaseError(
+                        "claim-expired",
+                        resource=request.resource,
+                        claim=self._claim(row).to_dict(),
+                    )
                 operation = self._operation_row(db, request)
                 if operation is None:
                     raise LeaseError(
@@ -367,6 +387,16 @@ class LeaseStore:
                         operationId=request.operation_id,
                     )
                 return receipt
+    def validate_current(
+        self, request: MutationRequest, *, lock_held: bool = False
+    ) -> dict[str, Any]:
+        """Validate ownership immediately before a guarded side effect."""
+
+        lock = nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        with lock, closing(self._connect()) as db:
+            with transaction(db):
+                row = self._require_current(db, request)
+                return self._claim(row).to_dict()
 
     def acquire(self, request: AcquireRequest) -> dict[str, Any]:
         """Acquire or idempotently retry one ownership epoch."""
@@ -503,11 +533,14 @@ class LeaseStore:
                     "claim": self._claim(created).to_dict(),
                 }
 
-    def heartbeat(self, request: MutationRequest) -> dict[str, Any]:
+    def heartbeat(
+        self, request: MutationRequest, *, lock_held: bool = False
+    ) -> dict[str, Any]:
         """Renew a claim and advance its revision."""
 
         ttl = require_ttl(request.ttl)
-        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+        lock = nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        with lock, closing(self._connect()) as db:
             with transaction(db):
                 row = self._require_owner(db, request)
                 operation_request = self._receipt_request(request)
