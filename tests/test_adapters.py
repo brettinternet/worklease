@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -65,18 +66,93 @@ class AdapterKeyTests(unittest.TestCase):
         self.assertEqual(markdown.scope, "source")
 
     def test_nested_source_keys_match_across_linked_worktrees(self) -> None:
-        worktree_root = Path(__file__).parents[1]
-        main_root = worktree_root.parent.parent
-        main_source = main_root / "docs" / "backlog"
-        if not main_source.is_dir():
-            self.skipTest("test checkout has no linked worktree sibling")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            git_environment = {
+                name: value
+                for name, value in os.environ.items()
+                if not name.startswith("GIT_")
+            }
+            source = root / "docs" / "backlog"
+            source.mkdir(parents=True)
+            (source / "source.md").write_text("# source\n")
+            subprocess.run(
+                ["git", "-C", str(root), "init", "--quiet"],
+                check=True,
+                env=git_environment,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "."],
+                check=True,
+                env=git_environment,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=worklease-test",
+                    "-c",
+                    "user.email=worklease-test@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "initial",
+                ],
+                check=True,
+                env=git_environment,
+            )
+            linked = Path(directory) / "linked"
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    str(linked),
+                    "HEAD",
+                ],
+                check=True,
+                env=git_environment,
+            )
+            try:
+                main_backlog = key(
+                    "backlog-md", str(root / "docs" / "backlog"), "TASK-1"
+                )
+                linked_backlog = key(
+                    "backlog-md", str(linked / "docs" / "backlog"), "TASK-1"
+                )
+                main_markdown = key(
+                    "markdown",
+                    str(root / "docs" / "backlog" / "source.md"),
+                    "ITEM-1",
+                )
+                linked_markdown = key(
+                    "markdown",
+                    str(linked / "docs" / "backlog" / "source.md"),
+                    "ITEM-1",
+                )
+            finally:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(root),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(linked),
+                    ],
+                    check=True,
+                    env=git_environment,
+                )
 
-        worktree_key = key(
-            "backlog-md", str(worktree_root / "docs" / "backlog"), "TASK-1"
-        )
-        main_key = key("backlog-md", str(main_source), "TASK-1")
-
-        self.assertEqual(worktree_key.resource, main_key.resource)
+            self.assertEqual(main_backlog.resource, linked_backlog.resource)
+            self.assertEqual(main_markdown.resource, linked_markdown.resource)
 
     def test_markdown_items_share_one_source_claim(self) -> None:
         source = Path(__file__).parents[1] / "README.md"
