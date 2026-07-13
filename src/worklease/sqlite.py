@@ -102,6 +102,24 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
             );
             """
         )
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(claims)")
+        }
+        if "coordination_only" not in columns:
+            connection.execute(
+                "ALTER TABLE claims ADD COLUMN coordination_only "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "acquire_ttl" not in columns:
+            connection.execute(
+                "ALTER TABLE claims ADD COLUMN acquire_ttl "
+                "REAL NOT NULL DEFAULT 900.0"
+            )
+        else:
+            connection.execute(
+                "UPDATE claims SET acquire_ttl = 900.0 WHERE acquire_ttl IS NULL"
+            )
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:

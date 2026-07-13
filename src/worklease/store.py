@@ -525,7 +525,7 @@ class LeaseStore:
                 return receipt
 
     def status(self, resource: str) -> dict[str, Any]:
-        """Read one claim, including its token for the owning caller."""
+        """Read one claim without exposing its bearer token."""
 
         require_resource(resource)
         with closing(self._connect()) as db:
@@ -538,7 +538,7 @@ class LeaseStore:
             "operation": "status",
             "resource": resource,
             "state": "active" if claim.active else "expired",
-            "claim": claim.to_dict(),
+            "claim": claim.to_dict(include_token=False),
         }
 
     def list_claims(self, resource: str | None = None) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import sqlite3
 import os
 from pathlib import Path
 import subprocess
@@ -156,16 +157,50 @@ class StoreTests(unittest.TestCase):
         next_claim = self.store.acquire(self.acquire_request("resource", "next"))
         self.assertGreater(next_claim["claim"]["revision"], request.revision)
 
-    def test_list_redacts_tokens_and_status_reports_expired_claim(self) -> None:
+    def test_list_and_status_redact_tokens(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))
         token = str(acquired["claim"]["token"])
         listed = self.store.list_claims()
         self.assertNotIn("token", listed["claims"][0])
         self.assertNotIn(token, json.dumps(listed))
-        self.clock.advance(1.1)
         status = self.store.status("resource")
-        self.assertEqual("expired", status["state"])
-        self.assertEqual(token, status["claim"]["token"])
+        self.assertNotIn("token", status["claim"])
+        self.assertNotIn(token, json.dumps(status))
+        self.clock.advance(1.1)
+        expired = self.store.status("resource")
+        self.assertEqual("expired", expired["state"])
+        self.assertNotIn("token", expired["claim"])
+
+    def test_legacy_claim_schema_is_migrated_before_read(self) -> None:
+        self.home.mkdir(parents=True)
+        connection = sqlite3.connect(self.home / "leases.sqlite3")
+        connection.executescript(
+            """
+            CREATE TABLE schema_meta(version INTEGER PRIMARY KEY);
+            INSERT INTO schema_meta(version) VALUES (1);
+            CREATE TABLE claims(
+                resource TEXT PRIMARY KEY,
+                claim_id TEXT NOT NULL,
+                token TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                work_key TEXT NOT NULL,
+                acquired_at REAL NOT NULL,
+                heartbeat_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+            INSERT INTO claims VALUES(
+                'legacy', 'claim', 'secret', 1, 'agent', 'session',
+                'owner', 'work', 1.0, 1.0, 2_000.0
+            );
+            """
+        )
+        connection.close()
+        status = LeaseStore(self.home, clock=self.clock).status("legacy")
+        self.assertEqual("active", status["state"])
+        self.assertNotIn("token", status["claim"])
 
     def test_invalid_ttl_and_blank_release_reason_do_not_change_state(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-ttl"):
