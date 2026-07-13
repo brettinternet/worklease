@@ -101,10 +101,12 @@ def _git_output(cwd: Path, *arguments: str) -> str | None:
     """Read repository identity without importing a Git or provider library."""
 
     environment = os.environ.copy()
-    # Git hooks export GIT_DIR for the main checkout. Remove it so a source
-    # inside an isolated worktree resolves against its own repository.
-    environment.pop("GIT_DIR", None)
-    environment.pop("GIT_WORK_TREE", None)
+    # Git hooks export repository-scoped GIT_* variables for the main
+    # checkout. Remove them so an isolated or temporary source resolves
+    # against its own repository.
+    for name in tuple(environment):
+        if name.startswith("GIT_"):
+            environment.pop(name, None)
     completed = subprocess.run(
         ["git", "-C", str(cwd), *arguments],
         text=True,
