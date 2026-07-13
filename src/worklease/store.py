@@ -104,6 +104,14 @@ class LeaseStore:
                 suppliedRevision=request.revision,
             )
         receipt = json.loads(str(row["receipt"]))
+        state = str(row["state"]) if "state" in row.keys() else "completed"
+        if state == "started":
+            raise LeaseError(
+                "unknown-outcome",
+                code=3,
+                operationId=request.operation_id,
+                operation=kind,
+            )
         receipt["idempotent"] = True
         return receipt
 
@@ -202,6 +210,163 @@ class LeaseStore:
             ),
         )
         return receipt
+    def begin_operation(
+        self,
+        request: MutationRequest,
+        kind: str,
+        operation_request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Durably record an operation intent before an external side effect."""
+
+        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+            with transaction(db):
+                row = self._require_owner(db, request)
+                cached = self._cached_operation(
+                    db, request, kind, operation_request
+                )
+                if cached is not None:
+                    return cached
+                row = self._require_current(db, request)
+                now = self.clock()
+                intent = {
+                    "ok": True,
+                    "operation": kind,
+                    "operationId": request.operation_id,
+                    "state": "started",
+                    "idempotent": False,
+                }
+                db.execute(
+                    """
+                    INSERT INTO operations(
+                        resource, claim_id, operation_id, kind, state, request,
+                        expected_revision, receipt, created_at
+                    ) VALUES (?, ?, ?, ?, 'started', ?, ?, ?, ?)
+                    """,
+                    (
+                        request.resource,
+                        request.claim_id,
+                        request.operation_id,
+                        kind,
+                        json.dumps(
+                            operation_request,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        request.revision,
+                        json.dumps(intent, sort_keys=True, separators=(",", ":")),
+                        now,
+                    ),
+                )
+                return None
+
+    def complete_operation(
+        self,
+        request: MutationRequest,
+        kind: str,
+        operation_request: dict[str, Any],
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a started operation's receipt and advance its claim."""
+
+        with resource_lock(request.resource, self.home), closing(self._connect()) as db:
+            with transaction(db):
+                row = self._require_current(db, request)
+                operation = self._operation_row(db, request)
+                if operation is None:
+                    raise LeaseError(
+                        "operation-not-found", code=3, operationId=request.operation_id
+                    )
+                recorded = json.loads(str(operation["request"]))
+                if {
+                    key: value for key, value in recorded.items() if key != "revision"
+                } != {
+                    key: value
+                    for key, value in operation_request.items()
+                    if key != "revision"
+                }:
+                    raise LeaseError(
+                        "operation-id-request-mismatch",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                state = str(operation["state"]) if "state" in operation.keys() else "completed"
+                if state == "completed":
+                    expected_revision = int(operation["expected_revision"])
+                    if request.revision != expected_revision:
+                        raise LeaseError(
+                            "stale-revision",
+                            resource=request.resource,
+                            expectedRevision=expected_revision,
+                            suppliedRevision=request.revision,
+                        )
+                    result = json.loads(str(operation["receipt"]))
+                    result["idempotent"] = True
+                    return result
+                if state != "started":
+                    raise LeaseError(
+                        "invalid-operation-state",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+
+                now = self.clock()
+                revision = int(row["revision"]) + 1
+                ttl = require_ttl(request.ttl)
+                updated = db.execute(
+                    """
+                    UPDATE claims
+                    SET revision = ?, heartbeat_at = ?, expires_at = ?
+                    WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
+                    """,
+                    (
+                        revision,
+                        now,
+                        now + ttl,
+                        request.resource,
+                        request.claim_id,
+                        request.token,
+                        request.revision,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise LeaseError(
+                        "claim-update-conflict", code=3, resource=request.resource
+                    )
+                db.execute(
+                    """
+                    INSERT INTO resources(resource, revision) VALUES (?, ?)
+                    ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                    """,
+                    (request.resource, revision),
+                )
+                current = self._current(db, request.resource)
+                if current is None:
+                    raise LeaseError(
+                        "claim-update-conflict", code=3, resource=request.resource
+                    )
+                receipt["claim"] = self._claim(current).to_dict()
+                changed = db.execute(
+                    """
+                    UPDATE operations
+                    SET state = 'completed', receipt = ?
+                    WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                        AND kind = ? AND state = 'started'
+                    """,
+                    (
+                        json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                        request.resource,
+                        request.claim_id,
+                        request.operation_id,
+                        kind,
+                    ),
+                )
+                if changed.rowcount != 1:
+                    raise LeaseError(
+                        "operation-completion-conflict",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                return receipt
 
     def acquire(self, request: AcquireRequest) -> dict[str, Any]:
         """Acquire or idempotently retry one ownership epoch."""

@@ -82,6 +82,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 claim_id TEXT NOT NULL,
                 operation_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'completed',
                 request TEXT NOT NULL,
                 expected_revision INTEGER NOT NULL,
                 receipt TEXT NOT NULL,
@@ -101,6 +102,18 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 PRIMARY KEY(resource, claim_id)
             );
             """
+        )
+        operation_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(operations)")
+        }
+        if "state" not in operation_columns:
+            connection.execute(
+                "ALTER TABLE operations ADD COLUMN state "
+                "TEXT NOT NULL DEFAULT 'completed'"
+            )
+        connection.execute(
+            "UPDATE operations SET state = 'completed' WHERE state IS NULL"
         )
         columns = {
             str(row["name"])
