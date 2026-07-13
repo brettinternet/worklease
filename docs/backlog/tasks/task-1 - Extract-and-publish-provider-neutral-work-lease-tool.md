@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 20:48'
+updated_date: '2026-07-13 21:04'
 labels:
   - architecture
   - packaging
@@ -80,7 +80,7 @@ Do not modify or migrate `~/.dotfiles/ai/.bin/backlog-claim`; do not add provide
 - [ ] #4 [T4] Optional GitHub, Backlog.md, Markdown, and Linear adapter modules implement only provider-specific identity/capability policy behind protocols; Markdown source claims expose the core atomic expected-SHA-256 `replace-file` operation, Linear/unknown providers remain local-coordination, and tests prove generic execution cannot claim provider fencing.
 - [ ] #5 [T5] Every command, including `--version`, emits schema-versioned JSON by default; `--format text` is explicit; list/status never expose bearer tokens in JSON or plaintext, and tests cover stable fields, exit codes, redaction, rejected token-recovery flags, malformed input, and child-command failures.
 - [ ] #6 [T6] CI runs the targeted concurrency, crash/expiry, stale-ownership, installation, pyright, build, and release-validation checks on supported POSIX runners; a clean checkout can reproduce them through mise/uv without relying on the external helper.
-- [ ] #7 [T6] Tagged `vX.Y.Z` releases publish wheel and sdist assets plus a SHA-256 `checksums.txt`; the tested `mise run install-release VERSION=vX.Y.Z` path downloads the exact GitHub asset using `WORKLEASE_REPOSITORY` when run locally, verifies its checksum, installs it with uv, and smoke-tests `worklease --version`.
+- [ ] #7 [T6] Tagged `vX.Y.Z` releases publish wheel and sdist assets plus one-file PyInstaller executables for the supported POSIX Linux/macOS architecture matrix, with OS/architecture names and a SHA-256 `checksums.txt` covering every asset. The PyInstaller build preserves `worklease` package metadata so `worklease --version` works from the frozen executable. The tested `mise run install-release VERSION=vX.Y.Z` path downloads the exact matching native asset when available, verifies its checksum, installs and executes it, and falls back to the exact versioned wheel with checksum verification when no matching native asset is available; local runs require `WORKLEASE_REPOSITORY=owner/name`. Tests cover asset selection, checksum validation, fallback behavior, and the downloaded artifact's `worklease --version` smoke test.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -91,7 +91,7 @@ Do not modify or migrate `~/.dotfiles/ai/.bin/backlog-claim`; do not add provide
 3. **[T3] Guarded local operations (AC2).** Implement `src/worklease/execution.py` and `src/worklease/replacement.py`, wiring `exec` and `replace-file` into the CLI. `exec` must persist an operation intent before spawning an argv-only child, capture output, renew during long commands, terminate the process group on ownership loss where possible, persist a receipt on completion, replay identical completed requests without a second side effect, and return `unknown-outcome` without rerunning an intent left started after a parent crash. `replace-file` must reject symlinks, require an expected SHA-256 of the target, atomically write/fsync/rename while held by the opaque lease, preserve mode, and use the same receipt/stale-claim rules. Add `tests/test_execution.py` and `tests/test_replacement.py`, including stale requests, crash-during-exec recovery, exactly-once-after-receipt, and expected-hash conflicts. Verification: `mise exec uv -- uv run python -m unittest tests.test_execution tests.test_replacement -v`.
 4. **[T4] Adapter capability isolation (AC3, AC4).** Add `src/worklease/adapters/protocol.py`, `github.py`, `backlog_md.py`, `markdown.py`, and `linear.py` with lazy optional loading and deterministic key/capability results. Match the reference helper's canonical local-key behavior where applicable, make Markdown item inputs map to one source identity and delegate its expected-hash replacement to T3, represent Linear/unknown providers as local-coordination, and reject provider-fenced execution unless an adapter supplies a provider-side conditional check. Add adapter, import-boundary, and Markdown replacement integration tests; keep all network/workflow writes out of scope. Verification: `mise exec uv -- uv run python -m unittest tests.test_adapters -v`.
 5. **[T5] Stable CLI contract and documentation (AC3, AC5).** Finish `src/worklease/cli.py` output/error formatting and README sections for schema version 1, JSON default including `--version`, explicit plaintext, exit-code mapping, token redaction with no read-only recovery flag, same-host/POSIX limits, opaque resources, expected-hash file replacement, and adapter guarantees. Add integration tests for acquire/status/list/heartbeat/release/key/exec/replace-file/version, malformed input, rejected token-recovery flags, redaction, unknown-outcome recovery, and deterministic errors. Verification: `mise exec uv -- uv run python -m unittest tests.test_cli -v`.
-6. **[T6] CI and release validation (AC6, AC7).** Add `.github/workflows/ci.yml` for supported Linux/macOS mise/uv install, unittest, pyright, build, wheel/sdist installation, and checksum checks; add `.github/workflows/release.yml` for `v*` tags that publishes wheel/sdist and `checksums.txt` using `GITHUB_REPOSITORY`; add executable `scripts/install-release.sh` plus the `mise run install-release VERSION=...` task. The installer must require `WORKLEASE_REPOSITORY` outside Actions, choose the exact versioned wheel, verify SHA-256 before `uv tool install`, and smoke-test the installed CLI; test it against a local fixture and from the tag workflow. Verification: `mise exec -- pyright`, `mise exec uv -- uv run python -m unittest discover -s tests -v`, `mise exec uv -- uv build`, and the release-install smoke test.
+6. **[T6] CI and release validation (AC6, AC7).** Add `.github/workflows/ci.yml` for supported Linux/macOS mise/uv installation, unittest, pyright, wheel/sdist build and installation, native executable builds, artifact checksums, and release validation. Add `.github/workflows/release.yml` for `v*` tags that publishes wheel/sdist assets plus one-file PyInstaller executables for the supported POSIX Linux/macOS architecture matrix; preserve the existing no-Windows scope and use explicit OS/architecture asset names. The PyInstaller build must preserve package metadata with `--copy-metadata worklease` so the frozen CLI's `importlib.metadata.version('worklease')` lookup works. Publish a SHA-256 `checksums.txt` covering every release asset. Update `scripts/install-release.sh` and the `mise run install-release VERSION=...` path to require `WORKLEASE_REPOSITORY` outside Actions, select the exact matching native asset on supported targets, verify its checksum, install it, and smoke-test `worklease --version`; fall back to the exact versioned wheel with the same checksum verification when no matching native asset is available. Test native artifact selection, checksum validation, wheel fallback, and execution of the downloaded binary against a release fixture and in the tagged workflow. Verification: `mise exec -- pyright`, `mise exec uv -- uv run python -m unittest discover -s tests -v`, `mise exec uv -- uv build`, native binary smoke tests on each target runner, and the release-install smoke test.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -129,4 +129,16 @@ T2 verifier-fix checkpoint:
 - Verification: `mise exec uv -- uv run python -m unittest discover -s tests -v` passed (13 tests); `mise exec -- pyright src/worklease tests` passed (0 errors).
 - Independent verifier findings resolved; no T2 criteria remain open.
 - Next implementation task remains: [T3] Guarded local operations.
+
+Release scope update: TASK-1 T6/AC7 now includes standalone PyInstaller executables for the existing POSIX Linux/macOS architecture scope, metadata preservation, native-asset checksums, installer selection with wheel fallback, and downloaded-binary smoke tests. No Windows support is added.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @codex-main
+created: 2026-07-13 21:04
+---
+Expanded the in-progress release scope before T6: keep wheel/sdist, add POSIX Linux/macOS PyInstaller assets, preserve worklease metadata, verify checksums for every asset, select native binaries with wheel fallback, and execute the downloaded artifact in smoke tests.
+---
+<!-- COMMENTS:END -->
