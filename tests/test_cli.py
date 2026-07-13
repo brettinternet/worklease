@@ -174,13 +174,56 @@ class CliContractTests(unittest.TestCase):
         self.assertNotIn("secret-token", result.stdout)
         self.assertEqual("", result.stderr)
 
-        invalid_ttl = self.json_cli(
-            *self.acquire_arguments(),
-            "--ttl",
-            "nan",
-            expected_code=64,
+        for invalid_ttl_value in ("nan", "inf", "not-a-number"):
+            invalid_result = self.run_cli(
+                *self.acquire_arguments(),
+                "--ttl",
+                invalid_ttl_value,
+            )
+            self.assertEqual(64, invalid_result.returncode)
+            self.assertEqual("", invalid_result.stderr)
+
+            def reject_constant(value: str) -> None:
+                raise ValueError(value)
+
+            invalid_ttl = json.loads(
+                invalid_result.stdout, parse_constant=reject_constant
+            )
+            expected_error = (
+                "invalid-arguments"
+                if invalid_ttl_value == "not-a-number"
+                else "invalid-ttl"
+            )
+            self.assertEqual(expected_error, invalid_ttl["error"])
+
+    def test_stale_claim_errors_redact_current_token(self) -> None:
+        resource = "repo:stale-error"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="stale-error")
         )
-        self.assertEqual("invalid-ttl", invalid_ttl["error"])
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        stale_args = self.mutation_arguments(
+            "release", resource, claim, "stale-release"
+        )
+        contender = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="other"),
+            expected_code=2,
+        )
+        self.assertEqual("already-claimed", contender["error"])
+        self.assertNotIn('"token"', json.dumps(contender))
+
+        token_index = stale_args.index("--token") + 1
+        stale_args = (
+            *stale_args[:token_index],
+            "wrong",
+            *stale_args[token_index + 1 :],
+        )
+        stale = self.json_cli(*stale_args, "--reason", "stale", expected_code=2)
+        self.assertEqual("stale-claim", stale["error"])
+        self.assertNotIn('"token"', json.dumps(stale))
+        self.assertNotIn(token, json.dumps(stale))
 
     def test_exec_returns_child_status_and_schema_envelope(self) -> None:
         resource = "repo:exec"

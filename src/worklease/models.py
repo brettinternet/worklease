@@ -50,15 +50,21 @@ def require_text(value: str, field: str) -> str:
 
 
 def require_ttl(value: float) -> float:
+    """Validate a bounded finite lease TTL without leaking non-JSON values."""
+
     try:
         ttl = float(value)
     except (TypeError, ValueError) as error:
-        raise LeaseError("invalid-ttl", code=64, ttl=value) from error
+        raise LeaseError(
+            "invalid-ttl",
+            code=64,
+            minimumExclusive=0,
+            maximumInclusive=MAX_TTL,
+        ) from error
     if not math.isfinite(ttl) or ttl <= 0 or ttl > MAX_TTL:
         raise LeaseError(
             "invalid-ttl",
             code=64,
-            ttl=ttl,
             minimumExclusive=0,
             maximumInclusive=MAX_TTL,
         )
