@@ -34,11 +34,14 @@ jobs:
         run: mise run format-check
       - name: Build wheel and sdist
         run: mise run build
-      - name: Install built wheel and smoke-test version
+      - name: Install built wheel and sdist and smoke-test version
         shell: bash
         run: |
           wheel=$(printf '%s\n' dist/*.whl)
           uv tool install --force "$wheel"
+          worklease --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+          sdist=$(printf '%s\n' dist/*.tar.gz)
+          uv tool install --force "$sdist"
           worklease --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
 
   native:
