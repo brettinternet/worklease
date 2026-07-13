@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 21:04'
+updated_date: '2026-07-13 21:09'
 labels:
   - architecture
   - packaging
@@ -131,6 +131,15 @@ T2 verifier-fix checkpoint:
 - Next implementation task remains: [T3] Guarded local operations.
 
 Release scope update: TASK-1 T6/AC7 now includes standalone PyInstaller executables for the existing POSIX Linux/macOS architecture scope, metadata preservation, native-asset checksums, installer selection with wheel fallback, and downloaded-binary smoke tests. No Windows support is added.
+
+Implementation progress checkpoint:
+- [T3] Guarded local operations complete in commit b8c6272 (isolated worktree task-1-t3; verified and ready for local integration).
+- Added durable operation intent/completion state with legacy SQLite migration; argv-only guarded exec with stdout/stderr capture, periodic heartbeats, process-group termination on ownership loss, idempotent completed receipts, and unknown-outcome handling for started intents after parent interruption.
+- Added atomic expected-SHA-256 file replacement with symlink rejection, fsync/rename, mode preservation, stale/version checks, and idempotent receipts; wired exec and replace-file through the CLI.
+- Added tests/test_execution.py covering argv behavior, child failures, heartbeat renewal, ownership-loss termination, crash/unknown-outcome recovery, idempotent replay, expected-hash conflicts, symlink rejection, mode preservation, and CLI wiring.
+- Verification: mise exec uv -- uv run python -m unittest discover -s tests -v passed (21 tests); mise exec -- pyright src/worklease tests passed (0 errors).
+- Independent T3 verifier review is pending before claim release.
+- Next implementation task: [T4] Adapter capability isolation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #4, #5, #6, #7.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
