@@ -12,6 +12,7 @@ from scripts.release_artifacts import validate_checksums, write_checksums
 from scripts.release_installer import (
     ReleaseError,
     native_asset_name,
+    parse_checksums,
     select_asset,
     verify_checksum,
 )
@@ -36,7 +37,7 @@ class ReleaseValidationTests(unittest.TestCase):
             }
         )
         return subprocess.run(
-            [str(ROOT / "scripts/install-release.sh"), VERSION],
+            [str(ROOT / "scripts/install-release.sh"), f"VERSION={VERSION}"],
             cwd=ROOT,
             env=environment,
             check=False,
@@ -68,6 +69,8 @@ class ReleaseValidationTests(unittest.TestCase):
                 system="Linux",
                 machine="x86_64",
             )
+        with self.assertRaises(ReleaseError):
+            parse_checksums(f"{'a' * 64} asset\n{'a' * 64} asset\n")
 
     def test_checksum_verification_rejects_changed_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,7 +135,7 @@ class ReleaseValidationTests(unittest.TestCase):
             fake_uv.write_text(
                 "#!/bin/sh\n"
                 "set -eu\n"
-                'printf \'%s\\n\' "$*" >> "$UV_LOG"\n'
+                'printf \'%s %s\\n\' "${UV_TOOL_BIN_DIR:-}" "$*" >> "$UV_LOG"\n'
                 'if [ "$1" = tool ] && [ "$2" = run ]; then\n'
                 '  printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
                 '"ok":true,"version":"0.1.0"}\'\n'
@@ -154,8 +157,15 @@ class ReleaseValidationTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual("wheel", payload["kind"])
             commands = uv_log.read_text(encoding="utf-8").splitlines()
-            self.assertTrue(any(line.startswith("tool install") for line in commands))
-            self.assertTrue(any(line.startswith("tool run") for line in commands))
+            self.assertTrue(any(" tool install " in line for line in commands))
+            self.assertTrue(any(" tool run " in line for line in commands))
+            self.assertTrue(
+                any(
+                    str(root / "bin") in line
+                    for line in commands
+                    if " tool install " in line
+                )
+            )
 
     def test_manifest_covers_every_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

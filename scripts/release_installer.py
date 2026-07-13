@@ -72,7 +72,7 @@ def parse_checksums(text: str) -> dict[str, str]:
         if len(fields) != 2 or not _SHA256_RE.fullmatch(fields[0]):
             raise ReleaseError(f"invalid checksum line {line_number}")
         digest, filename = fields[0].lower(), fields[1].lstrip("*")
-        if not filename or filename in checksums and checksums[filename] != digest:
+        if not filename or filename in checksums:
             raise ReleaseError(f"duplicate checksum entry: {filename}")
         checksums[filename] = digest
     if not checksums:
@@ -185,7 +185,12 @@ def _smoke_wheel(uv: str, wheel: Path, expected: str) -> None:
     _version_from_output(result.stdout.strip(), expected)
 
 
-def _install_wheel(uv: str, wheel: Path, expected: str) -> None:
+def _install_wheel(
+    uv: str, wheel: Path, expected: str, install_directory: Path
+) -> None:
+    install_directory.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["UV_TOOL_BIN_DIR"] = str(install_directory)
     try:
         result = subprocess.run(
             [uv, "tool", "install", "--force", str(wheel)],
@@ -193,6 +198,7 @@ def _install_wheel(uv: str, wheel: Path, expected: str) -> None:
             capture_output=True,
             text=True,
             timeout=120,
+            env=environment,
         )
     except OSError as error:
         raise ReleaseError(f"cannot execute {uv}: {error}") from error
@@ -251,7 +257,10 @@ def install_release(version: str, install_directory: Path) -> dict[str, str]:
         _download(f"{base_url}{wheel_name}", wheel_path)
         verify_checksum(wheel_path, checksums[wheel_name])
         _install_wheel(
-            os.environ.get("WORKLEASE_UV", "uv"), wheel_path, expected_version
+            os.environ.get("WORKLEASE_UV", "uv"),
+            wheel_path,
+            expected_version,
+            install_directory,
         )
         return {"asset": wheel_name, "kind": "wheel", "path": str(wheel_path)}
 
