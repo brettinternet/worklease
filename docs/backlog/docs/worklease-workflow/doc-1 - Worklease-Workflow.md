@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-07-13 22:03'
+updated_date: '2026-07-13 22:08'
 tags:
   - agent
   - workflow
@@ -38,7 +38,7 @@ Then load the generic skill. The caller must supply an implementation of its cap
 - claim inspection, acquisition, heartbeat, and release authority; and
 - review and archive operations when supported.
 
-The skill treats source locators, item IDs, statuses, metadata, claim resources, and receipts as opaque caller-owned values. It deliberately contains no provider detection, resource derivation, provider commands, credential rules, or remote-fencing claims. When caller context does not already provide those mappings, load a provider-specific adapter after the generic contract and only for the providers actually resolved. The adapter inherits generic graph construction and selection; it records `providerMutationFenced: false` unless the provider mutation itself supplies fencing evidence.
+The skill treats source locators, item IDs, statuses, metadata, claim resources, and receipts as opaque caller-owned values. The generic contract contains no provider detection, provider commands, credential rules, or remote-fencing claims. After the caller selects a provider, source, and item, a bundled Worklease key adapter may supply a deterministic local resource and capability; it does not discover provider work or execute provider writes. When caller context does not already provide the remaining mappings, load a provider-specific workflow adapter after the generic contract and only for the providers actually resolved. That workflow adapter inherits generic graph construction and selection; it records `providerMutationFenced: false` unless the provider mutation itself supplies fencing evidence.
 
 ## Operating loop
 

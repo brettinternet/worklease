@@ -113,7 +113,7 @@ Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.m
 - treat a provider CLI/API mutation as local coordination unless the provider itself supplies conditional-write fencing
 - verify a durable provider checkpoint before releasing the local claim
 
-The skill does not choose providers, derive resource keys, schedule work, or perform provider-side claims. The caller's backlog remains authoritative.
+The skill does not choose providers or schedule work. After the caller selects a provider, source, and item, a bundled adapter may derive the deterministic local resource and capability; neither the skill nor those key adapters performs provider discovery, provider writes, or provider-side claims. The caller's backlog remains authoritative.
 
 ## Limitations
 
