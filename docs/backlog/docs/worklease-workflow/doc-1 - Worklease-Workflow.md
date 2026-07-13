@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-07-13 20:01'
+updated_date: '2026-07-13 22:03'
 tags:
   - agent
   - workflow
@@ -34,10 +34,11 @@ Then load the generic skill. The caller must supply an implementation of its cap
 - source resolution and discovery;
 - item reads and durable writes;
 - dependency/status/priority mapping;
-- claim, heartbeat, and release authority; and
+- one exact opaque claim resource per target and operation scope;
+- claim inspection, acquisition, heartbeat, and release authority; and
 - review and archive operations when supported.
 
-The skill treats source locators, item IDs, statuses, metadata, and provider receipts as opaque values. It deliberately contains no provider detection, provider commands, credential rules, or remote-fencing claims.
+The skill treats source locators, item IDs, statuses, metadata, claim resources, and receipts as opaque caller-owned values. It deliberately contains no provider detection, resource derivation, provider commands, credential rules, or remote-fencing claims. When caller context does not already provide those mappings, load a provider-specific adapter after the generic contract and only for the providers actually resolved. The adapter inherits generic graph construction and selection; it records `providerMutationFenced: false` unless the provider mutation itself supplies fencing evidence.
 
 ## Operating loop
 
@@ -45,15 +46,18 @@ The skill treats source locators, item IDs, statuses, metadata, and provider rec
 2. Discover the complete scoped item set, including dependencies needed for readiness checks.
 3. Build the dependency graph before selecting work; report missing or cyclic dependencies instead of guessing.
 4. Select one item or a dependency-ready wave, excluding active claims and terminal work.
-5. Atomically claim before delegation or edits; retain the claim ID, token, revision, and expiry.
-6. Heartbeat before the lease is half-expired and around long work.
-7. Re-read eligibility before each durable mutation; write progress through the caller's authority.
-8. Persist a coherent checkpoint before release or handoff.
-9. Revalidate the claim, checkpoint, and provider receipt; release only the matching claim.
-10. Review or archive only when the caller explicitly authorizes those boundaries.
+5. Accept one exact caller-supplied claim resource and atomically claim it before delegation or edits.
+6. Retain the resource, claim ID, token, revision, expiry, and guarantee; record the caller-declared guarantee scope alongside the receipt.
+7. Heartbeat before the lease is half-expired and around long work.
+8. Re-read eligibility, ownership, and provider state before each durable mutation.
+9. Persist and verify a coherent provider checkpoint before release or handoff.
+10. Release only the matching claim after retaining the provider receipt or verifying source state.
+11. Review or archive only when the caller explicitly authorizes those boundaries.
 
-If the caller cannot provide one capability, return a structured capability result. Never invent an assignee/status/comment lock, writable local shadow, or provider fencing guarantee. A same-host lease may coordinate cooperating callers, but it is not cross-host or provider-side exclusion unless the caller proves that stronger authority.
+Checkpoint-before-release is caller policy. Worklease validates ownership and a non-blank audit reason; the reason is not provider-checkpoint proof.
+
+If the caller cannot provide one capability, return a structured capability result. Never invent a resource mapping, assignee/status/comment lock, writable local shadow, or provider fencing guarantee. Worklease can fence its matching guarded local operation among cooperating same-host callers; it does not make an invoked provider CLI/API mutation provider-fenced or exclude cross-host workers. Never put the bearer token in status output, diagnostics, provider checkpoints, logs, or handoffs.
 
 ## Source of truth
 
-The caller's backing system remains authoritative for item content and workflow state. A local lease store, if provided by the caller, is coordination state only. For Backlog.md changes specifically, use `backlog task view`, `backlog task edit`, `backlog doc create/update`, and the matching built-in guide rather than editing `docs/backlog/` records directly.
+The caller's backing system remains authoritative for item content and workflow state. A Worklease claim or operation receipt is coordination evidence, not a provider checkpoint. For Backlog.md changes specifically, an authorized caller or adapter uses `backlog task view`, `backlog task edit`, `backlog doc create/update`, and the matching built-in guide rather than editing `docs/backlog/` records directly.

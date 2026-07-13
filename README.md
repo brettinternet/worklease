@@ -6,14 +6,18 @@ The caller's backlog or work system stays authoritative. Worklease provides loca
 
 ## Install
 
+### Local
+
 Requires Python 3.14 or newer.
+
+Clone repo and then:
 
 ```sh
 uv tool install .
 worklease --version
 ```
 
-## Use
+## Usage
 
 A caller first acquires a lease with the Python API. The claim receipt supplies `CLAIM_ID`, `TOKEN`, and `REVISION` for guarded operations.
 
@@ -49,7 +53,7 @@ Success is exit code 0. Lease and capability conflicts use 2. Idempotency and ve
 
 ## Backlog.md example
 
-A local adapter can map a Backlog.md task to one resource:
+A local adapter can map a [Backlog.md](https://github.com/MrLesk/Backlog.md) task to one resource:
 
 ```python
 from worklease.models import AcquireRequest
@@ -77,19 +81,19 @@ backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-Run work under the claim, save a durable checkpoint, then release the exact claim. Backlog.md is at https://github.com/MrLesk/Backlog.md.
+Run work under the claim, save a durable checkpoint, then release the exact claim.
 
 ## Agent workflow
 
-Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.md) before selecting work. It nudges them to:
+Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.md) before selecting work. It tells them to:
 
-- discover the full work scope and dependencies
-- claim work through the caller's authoritative source
-- use worklease for same-host coordination and guarded operations
-- heartbeat during long work
-- save a durable checkpoint before releasing the local claim
+- let the caller or provider adapter discover the full scope, dependencies, and one exact opaque claim resource
+- use `LeaseStore` for same-host claim inspection, acquisition, heartbeat, and release
+- use `worklease exec` or `worklease replace-file` only for the local operation they actually guard
+- treat a provider CLI/API mutation as local coordination unless the provider itself supplies conditional-write fencing
+- verify a durable provider checkpoint before releasing the local claim
 
-The skill does not choose providers or perform source-side claims. The caller's backlog remains authoritative.
+The skill does not choose providers, derive resource keys, schedule work, or perform provider-side claims. The caller's backlog remains authoritative.
 
 ## Limitations
 
@@ -103,7 +107,3 @@ mise run test
 mise run typecheck
 mise run build
 ```
-
-## License
-
-MIT. See [LICENSE](LICENSE).
