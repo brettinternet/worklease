@@ -174,7 +174,7 @@ class LeaseStore:
             raise LeaseError(
                 "stale-claim",
                 resource=request.resource,
-                claim=self._claim(row).to_dict(),
+                claim=self._claim(row).to_dict(include_token=False),
             )
         return row
 
@@ -193,7 +193,7 @@ class LeaseStore:
             raise LeaseError(
                 "claim-expired",
                 resource=request.resource,
-                claim=self._claim(row).to_dict(),
+                claim=self._claim(row).to_dict(include_token=False),
             )
         return row
 
@@ -337,7 +337,7 @@ class LeaseStore:
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,
-                    claim=self._claim(row).to_dict(),
+                    claim=self._claim(row).to_dict(include_token=False),
                 )
             operation = self._operation_row(db, request)
             if operation is None:
@@ -481,7 +481,7 @@ class LeaseStore:
                     raise LeaseError(
                         "claim-expired",
                         resource=request.resource,
-                        claim=self._claim(row).to_dict(),
+                        claim=self._claim(row).to_dict(include_token=False),
                     )
                 return {
                     "ok": True,
@@ -493,7 +493,7 @@ class LeaseStore:
                 raise LeaseError(
                     "already-claimed",
                     resource=request.resource,
-                    claim=self._claim(row).to_dict(),
+                    claim=self._claim(row).to_dict(include_token=False),
                 )
             epoch = db.execute(
                 "SELECT resource, acquired_at FROM epochs WHERE claim_id = ?",
@@ -613,7 +613,7 @@ class LeaseStore:
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,
-                    claim=self._claim(row).to_dict(),
+                    claim=self._claim(row).to_dict(include_token=False),
                 )
             receipt: dict[str, Any] = {
                 "ok": True,
@@ -680,7 +680,7 @@ class LeaseStore:
                 raise LeaseError(
                     "stale-claim",
                     resource=request.resource,
-                    claim=self._claim(row).to_dict(),
+                    claim=self._claim(row).to_dict(include_token=False),
                 )
             existing = db.execute(
                 """
@@ -724,7 +724,7 @@ class LeaseStore:
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,
-                    claim=self._claim(row).to_dict(),
+                    claim=self._claim(row).to_dict(include_token=False),
                 )
             receipt: dict[str, Any] = {
                 "ok": True,
