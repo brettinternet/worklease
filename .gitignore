@@ -3,5 +3,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-uv.lock
 mise.local.toml
+build/
+dist/
+*.egg-info/
+.coverage
+coverage.xml
+.worklease/
