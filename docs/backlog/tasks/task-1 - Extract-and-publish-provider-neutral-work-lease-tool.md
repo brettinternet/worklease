@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 20:42'
+updated_date: '2026-07-13 20:48'
 labels:
   - architecture
   - packaging
@@ -121,4 +121,12 @@ Implementation progress checkpoint:
 - Verification: `mise exec uv -- uv run python -m unittest discover -s tests -v` passed (12 tests); `mise exec -- pyright src/worklease tests` passed (0 errors).
 - Next implementation task: [T3] Guarded local operations.
 - Remaining acceptance criteria: #2 (T3 portion), #3, #4, #5, #6, #7.
+
+T2 verifier-fix checkpoint:
+- Corrected status read redaction so both status and list omit bearer tokens; added regression coverage.
+- Added schema migration compatibility for legacy claims tables missing acquire_ttl and coordination_only, with defaults and regression coverage.
+- Fix commit: 22f67bb (integrated into local main); T2 implementation commits are 7358658 and 22f67bb, plus durable checkpoint commit 6405653.
+- Verification: `mise exec uv -- uv run python -m unittest discover -s tests -v` passed (13 tests); `mise exec -- pyright src/worklease tests` passed (0 errors).
+- Independent verifier findings resolved; no T2 criteria remain open.
+- Next implementation task remains: [T3] Guarded local operations.
 <!-- SECTION:NOTES:END -->
