@@ -15,7 +15,7 @@ pipx.uvx = true
 [tasks]
 sync = "uv sync --locked"
 test = "uv run python -m unittest discover -s tests -v"
-typecheck = "mise exec -- pyright"
+typecheck = "pyright"
 lint = "uv run ruff check ."
 format = "uv run ruff format ."
 format-check = "uv run ruff format --check ."
