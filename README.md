@@ -81,6 +81,20 @@ backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
+Run an authoritative task command under the claim with `exec`:
+
+```sh
+worklease exec \
+  --resource "backlog.md:TASK-42" \
+  --claim-id "$CLAIM_ID" \
+  --token "$TOKEN" \
+  --revision "$REVISION" \
+  --operation-id "backlog-task-edit-42" \
+  -- backlog task edit TASK-42 --status "In Progress" --plain
+```
+
+The `--` marks the boundary between `worklease exec` options and the `backlog task` argv.
+
 Run work under the claim, save a durable checkpoint, then release the exact claim.
 
 ## Adapter boundary
