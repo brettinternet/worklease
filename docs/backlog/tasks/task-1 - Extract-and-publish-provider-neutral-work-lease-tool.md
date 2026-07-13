@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 21:09'
+updated_date: '2026-07-13 21:40'
 labels:
   - architecture
   - packaging
@@ -140,6 +140,8 @@ Implementation progress checkpoint:
 - Verification: mise exec uv -- uv run python -m unittest discover -s tests -v passed (21 tests); mise exec -- pyright src/worklease tests passed (0 errors).
 - Independent T3 verifier review is pending before claim release.
 - Next implementation task: [T4] Adapter capability isolation. Remaining acceptance criteria: #2 (T4-independent portions), #3, #4, #5, #6, #7.
+
+Updated README with the same-host work-lease model, guarded exec and replace-file examples, Backlog.md usage, explicit local limitations, and MIT licensing. Verified documented CLI flags with uv run worklease exec --help and replace-file --help. Focused test suite passed with mise run test.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
