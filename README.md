@@ -119,7 +119,7 @@ The built-in store's only guarantee is same-host SQLite plus POSIX file-lock coo
 
 ## Agent workflow
 
-Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.md) before selecting work. It tells them to:
+Agents first read the [Worklease workflow skill](skills/worklease-workflow/SKILL.md). To connect a concrete backlog, issue system, document, or custom source, load the [Worklease source workflow skill](skills/worklease-source-workflow/SKILL.md) after it. The normative workflow tells agents to:
 
 - let the caller or provider adapter discover the full scope, dependencies, and one exact opaque claim resource
 - use `LeaseStore` for same-host claim inspection, acquisition, heartbeat, and release
@@ -128,6 +128,17 @@ Agents can read the [worklease workflow skill](skills/worklease-workflow/SKILL.m
 - verify a durable provider checkpoint before releasing the local claim
 
 The skill does not choose providers or schedule work. After the caller selects a provider, source, and item, a bundled adapter may derive the deterministic local resource and capability; neither the skill nor those key adapters performs provider discovery, provider writes, or provider-side claims. The caller's backlog remains authoritative.
+
+### Connect your work source
+
+1. Define explicit source resolution and source-qualified `Source`, `WorkRef`, and `WorkItem` mappings.
+2. Use a bundled `worklease.adapters` key policy, or document one exact stable resource policy for the claim scope.
+3. Implement authorized provider reads, writes, durable receipts, review boundaries, and archive behavior; return `capability` for unsupported operations.
+4. Keep graph construction and selection in `worklease-workflow`; do not duplicate them in the provider adapter.
+5. Default `providerMutationFenced` to `false` unless the provider write itself atomically rejects stale writers and returns evidence.
+6. Validate the adapter with the [provider contract](skills/worklease-source-workflow/references/provider-contract.md), [authoring checklist](skills/worklease-source-workflow/references/provider-authoring-checklist.md), and the [matching guarantee example](skills/worklease-source-workflow/examples/index.md).
+
+Provider-specific mappings for Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and unknown systems are indexed in the [provider references](skills/worklease-source-workflow/references/providers/index.md).
 
 ## Limitations
 

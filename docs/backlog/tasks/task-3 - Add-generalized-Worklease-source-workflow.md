@@ -1,9 +1,11 @@
 ---
 id: TASK-3
 title: Add generalized Worklease source workflow
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-main'
 created_date: '2026-07-13 22:29'
+updated_date: '2026-07-13 22:37'
 labels:
   - architecture
   - documentation
@@ -32,3 +34,17 @@ Publish a reusable source/provider composition skill so users can connect Backlo
 - [ ] #5 README links the source workflow skill and gives succinct instructions for implementing a custom source adapter.
 - [ ] #6 Focused checks verify skill metadata, links, provider coverage, and the boundary between generic scheduling, bundled key adapters, and provider workflow adapters.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a progressive-loading worklease-source-workflow skill that inherits the normative worklease-workflow contract and defines the source/provider composition boundary.
+2. Add the provider capability contract, authoring checklist, provider references, and three guarantee-focused examples without provider SDK or personal-dotfiles assumptions.
+3. Link the skill from README with a concise custom-adapter procedure, run focused link/coverage/boundary checks plus repository quality gates, independently verify acceptance, and finalize the task.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented the generalized worklease-source-workflow skill, provider contract/checklist, six provider references, and three guarantee-focused examples. README now links both skills and gives a six-step custom-source procedure. Focused documentation smoke passed for skill metadata, 14 Markdown documents, all relative links, provider coverage, guarantee vocabulary, and exclusion of legacy backlog-claim assumptions.
+<!-- SECTION:NOTES:END -->
