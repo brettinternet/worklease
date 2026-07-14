@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-pass-20260714-worklease'
 created_date: '2026-07-14 02:34'
-updated_date: '2026-07-14 17:58'
+updated_date: '2026-07-14 18:11'
 labels:
   - coordination
   - lease
@@ -40,4 +40,6 @@ Extend TASK-4 with a true active-owner transfer that does not release the resour
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation pass claimed acceptance-1: add the atomic active-owner transfer API and persistence path with focused lifecycle tests. Remaining acceptance criteria: #1-#5.
+
+Implementation checkpoint (acceptance-1): commit b099d27 integrates the atomic TransferRequest/LeaseStore.transfer API, CLI transfer command, public export, version-1 schema entries, and focused lifecycle/CLI tests. The mutation updates one claim row inside one SQLite transaction, creates the successor epoch, preserves the checkpoint, advances revision, and returns the successor token only in the authorized response. Verification: mise run test (106 tests), mise run lint, mise run format-check, mise run typecheck, mise run hooks all passed. Next task: acceptance-2 successor token/revision/checkpoint guarantees and lifecycle/concurrency coverage. Remaining acceptance criteria: #2-#5.
 <!-- SECTION:NOTES:END -->
