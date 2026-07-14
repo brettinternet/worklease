@@ -380,8 +380,6 @@ def load_adapter(provider: str) -> ProviderAdapter:
     registration = load_policy(name)
     try:
         adapter = registration.factory(name)
-    except LeaseError:
-        raise
     except Exception as error:
         raise _policy_error("resource-policy-factory-failed", provider=name) from error
     if not isinstance(adapter, ProviderAdapter):

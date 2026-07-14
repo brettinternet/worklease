@@ -6,11 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
 from worklease.adapters import (
+    ProviderAdapter,
     ResourcePolicyDescriptor,
     ResourcePolicyRegistration,
     available_policy_names,
@@ -267,6 +269,25 @@ class AdapterKeyTests(unittest.TestCase):
             self.assertRaisesRegex(LeaseError, "resource-policy-contract-version"),
         ):
             load_adapter("external")
+
+        def failing_factory(provider: str) -> ProviderAdapter:
+            del provider
+            raise LeaseError("plugin-specific", code=64)
+
+        failing = ResourcePolicyRegistration(descriptor, failing_factory)
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    policy_registry.metadata,
+                    "entry_points",
+                    return_value=EntryPoints([EntryPoint(failing)]),
+                )
+            )
+            raised = stack.enter_context(
+                self.assertRaisesRegex(LeaseError, "resource-policy-factory-failed")
+            )
+            load_adapter("external")
+        self.assertEqual(raised.exception.details["schemaVersion"], 1)
 
         with (
             patch.object(
