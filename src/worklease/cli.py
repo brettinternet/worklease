@@ -10,8 +10,14 @@ from typing import Any, NoReturn
 
 from . import __version__
 from .adapters import key_result
-from .execution import execute
-from .models import AcquireRequest, LeaseError, MutationRequest
+from .execution import execute, execute_bundle
+from .models import (
+    AcquireRequest,
+    BundleAcquireRequest,
+    BundleMutationRequest,
+    LeaseError,
+    MutationRequest,
+)
 from .replacement import replace_file
 from .store import LeaseStore
 
@@ -19,12 +25,23 @@ _COMMANDS = frozenset(
     {
         "key",
         "acquire",
+        "acquire-bundle",
+        "bundle-acquire",
         "status",
+        "status-bundle",
+        "bundle-status",
+        "inspect-bundle",
         "list",
         "heartbeat",
+        "heartbeat-bundle",
+        "bundle-heartbeat",
         "checkpoint",
         "release",
+        "release-bundle",
+        "bundle-release",
         "exec",
+        "exec-bundle",
+        "bundle-exec",
         "replace-file",
     }
 )
@@ -70,6 +87,29 @@ def _common_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
     parser.add_argument("--resource", required=True)
+    parser.add_argument("--claim-id", required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--revision", required=True, type=int)
+    parser.add_argument("--operation-id", required=True)
+    if include_ttl:
+        parser.add_argument("--ttl", default=900.0, type=float)
+
+
+def _bundle_resources(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--resource",
+        "--resources",
+        dest="resources",
+        action="append",
+        required=True,
+        help="one exact opaque bundle resource (repeat for each member)",
+    )
+
+
+def _common_bundle_claim_arguments(
+    parser: argparse.ArgumentParser, *, include_ttl: bool = True
+) -> None:
+    _bundle_resources(parser)
     parser.add_argument("--claim-id", required=True)
     parser.add_argument("--token", required=True)
     parser.add_argument("--revision", required=True, type=int)
@@ -126,6 +166,29 @@ def _parser() -> _ArgumentParser:
     )
     acquire_parser.add_argument("--ttl", default=900.0, type=float)
 
+    acquire_bundle_parser = commands.add_parser(
+        "acquire-bundle",
+        aliases=("bundle-acquire",),
+        help="atomically acquire or reclaim an opaque resource bundle",
+    )
+    _add_output_arguments(acquire_bundle_parser)
+    _bundle_resources(acquire_bundle_parser)
+    acquire_bundle_parser.add_argument("--claim-id", required=True)
+    acquire_bundle_parser.add_argument("--agent-id", required=True)
+    acquire_bundle_parser.add_argument("--session-id", required=True)
+    acquire_bundle_parser.add_argument("--owner-id", required=True)
+    acquire_bundle_parser.add_argument("--work-key", required=True)
+    acquire_bundle_parser.add_argument("--coordination-only", action="store_true")
+    acquire_bundle_parser.add_argument("--ttl", default=900.0, type=float)
+
+    status_bundle_parser = commands.add_parser(
+        "status-bundle",
+        aliases=("bundle-status", "inspect-bundle"),
+        help="inspect an exact resource bundle",
+    )
+    _add_output_arguments(status_bundle_parser)
+    _bundle_resources(status_bundle_parser)
+
     status_parser = commands.add_parser("status", help="read current lease state")
     _add_output_arguments(status_parser)
     status_parser.add_argument("--resource", required=True)
@@ -155,6 +218,31 @@ def _parser() -> _ArgumentParser:
     _common_claim_arguments(execute_parser)
     execute_parser.add_argument("command", nargs=argparse.REMAINDER)
 
+    heartbeat_bundle_parser = commands.add_parser(
+        "heartbeat-bundle",
+        aliases=("bundle-heartbeat",),
+        help="renew every member of an active bundle",
+    )
+    _add_output_arguments(heartbeat_bundle_parser)
+    _common_bundle_claim_arguments(heartbeat_bundle_parser)
+
+    release_bundle_parser = commands.add_parser(
+        "release-bundle",
+        aliases=("bundle-release",),
+        help="release every member of an active bundle",
+    )
+    _add_output_arguments(release_bundle_parser)
+    _common_bundle_claim_arguments(release_bundle_parser, include_ttl=False)
+    release_bundle_parser.add_argument("--reason", required=True)
+
+    execute_bundle_parser = commands.add_parser(
+        "exec-bundle",
+        aliases=("bundle-exec",),
+        help="run one argv under an opaque bundle claim",
+    )
+    _add_output_arguments(execute_bundle_parser)
+    _common_bundle_claim_arguments(execute_bundle_parser)
+    execute_bundle_parser.add_argument("command", nargs=argparse.REMAINDER)
     replace_parser = commands.add_parser(
         "replace-file", help="atomically replace a file by expected hash"
     )
@@ -217,6 +305,17 @@ def _request(args: argparse.Namespace) -> MutationRequest:
     )
 
 
+def _bundle_request(args: argparse.Namespace) -> BundleMutationRequest:
+    return BundleMutationRequest(
+        resources=tuple(args.resources),
+        claim_id=args.claim_id,
+        token=args.token,
+        revision=args.revision,
+        operation_id=args.operation_id,
+        ttl=getattr(args, "ttl", 900.0),
+    )
+
+
 def _dispatch(
     args: argparse.Namespace, store: LeaseStore | None
 ) -> tuple[dict[str, object], int]:
@@ -248,6 +347,26 @@ def _dispatch(
             ),
             0,
         )
+    if operation in {"acquire-bundle", "bundle-acquire"}:
+        assert store is not None
+        return (
+            store.acquire_bundle(
+                BundleAcquireRequest(
+                    resources=tuple(args.resources),
+                    claim_id=args.claim_id,
+                    agent_id=args.agent_id,
+                    session_id=args.session_id,
+                    owner_id=args.owner_id,
+                    work_key=args.work_key,
+                    ttl=args.ttl,
+                    coordination_only=args.coordination_only,
+                )
+            ),
+            0,
+        )
+    if operation in {"status-bundle", "bundle-status", "inspect-bundle"}:
+        assert store is not None
+        return store.bundle_status(tuple(args.resources)), 0
     if operation == "status":
         assert store is not None
         return store.status(args.resource), 0
@@ -264,9 +383,21 @@ def _dispatch(
         except (TypeError, ValueError) as error:
             raise LeaseError("invalid-checkpoint", code=64) from error
         return store.checkpoint(_request(args), checkpoint), 0
+    if operation in {"heartbeat-bundle", "bundle-heartbeat"}:
+        assert store is not None
+        return store.heartbeat_bundle(_bundle_request(args)), 0
+    if operation in {"release-bundle", "bundle-release"}:
+        assert store is not None
+        return store.release_bundle(_bundle_request(args), args.reason), 0
     if operation == "release":
         assert store is not None
         return store.release(_request(args), args.reason), 0
+    if operation in {"exec-bundle", "bundle-exec"}:
+        assert store is not None
+        command = list(args.command)
+        if command and command[0] == "--":
+            command = command[1:]
+        return execute_bundle(store, _bundle_request(args), command)
     if operation == "exec":
         assert store is not None
         command = list(args.command)

@@ -17,6 +17,7 @@ from worklease.locking import resource_lock_path
 from worklease.models import (
     AcquireRequest,
     BundleAcquireRequest,
+    BundleMutationRequest,
     LeaseError,
     MutationRequest,
 )
@@ -452,6 +453,60 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
         self.assertTrue(recovered["reclaimed"])
         self.assertGreater(recovered["claim"]["revision"], first["claim"]["revision"])
         self.assertNotEqual(first["claim"]["token"], recovered["claim"]["token"])
+
+    def bundle_mutation(
+        self,
+        acquired: dict[str, object],
+        resources: tuple[str, ...],
+        operation_id: str,
+        *,
+        ttl: float = 10.0,
+    ) -> BundleMutationRequest:
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        return BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id=operation_id,
+            ttl=ttl,
+        )
+
+    def test_bundle_status_heartbeat_and_release_are_atomic_and_idempotent(
+        self,
+    ) -> None:
+        resources = ("resource-a", "resource-b")
+        acquired = self.store.acquire_bundle(self.bundle_request(resources, "bundle"))
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        status = self.store.bundle_status(resources)
+        self.assertEqual("active", status["state"])
+        self.assertNotIn(token, json.dumps(status))
+
+        heartbeat_request = self.bundle_mutation(
+            acquired, resources, "bundle-heartbeat"
+        )
+        heartbeat = self.store.heartbeat_bundle(heartbeat_request)
+        retry = self.store.heartbeat_bundle(heartbeat_request)
+        self.assertFalse(heartbeat["idempotent"])
+        self.assertTrue(retry["idempotent"])
+        self.assertEqual(heartbeat["claim"]["revision"], retry["claim"]["revision"])
+        self.assertEqual(
+            heartbeat["claim"]["revision"],
+            self.store.status("resource-b")["claim"]["revision"],
+        )
+        with self.assertRaisesRegex(LeaseError, "bundle-membership-mismatch"):
+            self.store.bundle_status(("resource-a",))
+
+        release_request = self.bundle_mutation(heartbeat, resources, "bundle-release")
+        released = self.store.release_bundle(release_request, "bundle complete")
+        replay = self.store.release_bundle(release_request, "bundle complete")
+        self.assertFalse(released["idempotent"])
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual("free", self.store.bundle_status(resources)["state"])
+        self.assertNotIn(token, json.dumps(released))
 
     def test_overlapping_bundles_have_one_winner_without_partial_claims(self) -> None:
         barrier = threading.Barrier(2)
