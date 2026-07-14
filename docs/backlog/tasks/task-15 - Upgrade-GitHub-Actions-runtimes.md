@@ -1,11 +1,11 @@
 ---
 id: TASK-15
 title: Upgrade GitHub Actions runtimes
-status: Blocked
+status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:44'
-updated_date: '2026-07-14 03:25'
+updated_date: '2026-07-14 03:51'
 labels: []
 dependencies: []
 modified_files:
@@ -30,7 +30,7 @@ Update every action used by the CI and release workflows to its current supporte
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Replace each CI and release workflow action reference with the latest upstream major release confirmed from GitHub. 2. Run repository quality gates and inspect workflow syntax/diffs. 3. Commit and push only the workflow and task-state changes, then verify the resulting CI run and any release workflow checks.
+1. Add a non-publishing workflow_dispatch release validation path so the upgraded release actions can run at the current package version without rewriting the existing v0.1.0 tag. 2. Run local workflow parsing and repository quality gates. 3. Commit only the workflow and task-state changes; document that the post-change remote workflow run requires the owner to push this commit because this pass does not have push authorization.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -45,4 +45,16 @@ Implementation checkpoint (release workflow evidence): gh run view 29301289631 -
 Pass commit: 2480a1b3e66fc689682230f7d266a7cf55e1b966 (task-state evidence only; no production changes). The open implementation task remains incomplete because no post-change release run exists; next context must obtain/verify a release run at the upgraded workflow revision before review.
 
 Implementation blocker (release evidence, 2026-07-14): release.yml is tag-only (`on.push.tags: v*`) and has no workflow_dispatch; `gh workflow run release.yml --ref main` returned HTTP 422: Workflow does not have workflow_dispatch trigger. The only Release run is 29301289631 at pre-change commit 1c0f6c8, triggered by published tag v0.1.0 (remote tag object afcf305cb1d36ba1cf9e1002e364dd4a28655759 peeling to 1c0f6c8); it succeeded but used legacy action majors and emitted Node.js 20 deprecation warnings. Upgraded workflow is on remote main 93cf51c68c8f22e4ae3e1b14b9311fe84ee42376, with actions/checkout v7, jdx/mise-action v4, upload-artifact v7, download-artifact v8, and softprops/action-gh-release v3. The v0.1.0 release is published, non-draft/non-prerelease, with existing assets; force-moving its tag would rewrite release provenance. A fresh tag must match package version 0.1.0, so a new tag requires an authorized version bump, commit push, tag push, and public release. The single oracle review confirmed no safe non-destructive trigger exists under current authorization. Unblock: owner explicitly authorizes a new version X, matching package-version change, commit push, fresh vX tag push/publication, then verify the post-change Release run at that head; alternatively owner revises or waives the post-change release-run acceptance criterion.
+
+Unblocked release evidence by adding workflow_dispatch with required release_tag (default v0.1.0). Manual runs build and checksum-verify Python/native assets while guarding the GitHub release publication step with if: github.event_name == push; tag-triggered releases remain unchanged. Verification: mise run lint passed; mise run format-check passed (23 files); mise run test passed (62 tests); mise run typecheck passed (0 errors); Ruby Psych parsed both workflow files; every uses line remains an immutable 40-character SHA with version comment; manual input and publish guard are present. A post-change remote run is not claimed because this pass has no push authorization.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @brett
+created: 2026-07-14 03:48
+---
+Unblocking the release-evidence blocker without creating or force-moving a release tag: add workflow_dispatch with an explicit release_tag input and skip publication for manual validation runs. The existing push-tag release path remains unchanged.
+---
+<!-- COMMENTS:END -->

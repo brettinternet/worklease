@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag/version to validate without publishing a release
+        required: true
+        default: v0.1.0
+        type: string
+
 
 permissions:
   contents: read
@@ -23,7 +31,7 @@ jobs:
         run: mise run sync
       - name: Verify package version matches tag
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           expected=${RELEASE_TAG#v}
           actual=$(mise exec uv -- uv run python -c 'import importlib.metadata; print(importlib.metadata.version("worklease"))')
@@ -69,7 +77,7 @@ jobs:
         run: mise run sync
       - name: Build one-file executable with package metadata
         env:
-          ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
         run: |
           mise exec uv -- uv run --locked --group release pyinstaller \
             --clean --noconfirm --onefile \
@@ -79,8 +87,8 @@ jobs:
             src/worklease/__main__.py
       - name: Smoke-test frozen version and adapter key
         env:
-          ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           expected=${RELEASE_TAG#v}
@@ -93,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-native-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
 
   publish:
@@ -120,6 +128,7 @@ jobs:
           mise exec uv -- uv run python scripts/release_artifacts.py write --directory dist/release
           mise exec uv -- uv run python scripts/release_artifacts.py verify --directory dist/release
       - name: Publish tagged assets
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ github.ref_name }}
