@@ -368,6 +368,107 @@ def _text_value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _text_atom(value: object) -> str:
+    """Keep simple labels readable while escaping control characters."""
+
+    text = "" if value is None else str(value)
+    if any(character in text for character in "\r\n\t"):
+        return _text_value(text)
+    return text
+
+
+def _text_label(field: str) -> str:
+    """Convert protocol camelCase names to stable readable labels."""
+
+    result: list[str] = []
+    for index, character in enumerate(field):
+        if (
+            character.isupper()
+            and index
+            and (field[index - 1].islower() or field[index - 1].isdigit())
+        ):
+            result.append("_")
+        result.append(character.upper())
+    return "".join(result)
+
+
+def _text_header(payload: dict[str, object]) -> None:
+    operation = str(payload.get("operation", "unknown"))
+    if payload.get("ok"):
+        print(f"OK {operation}")
+    else:
+        print(f"ERROR {operation}: {_text_atom(payload.get('error', 'unknown-error'))}")
+
+
+def _emit_error_details(payload: dict[str, object]) -> None:
+    """Print only stable, non-secret error details."""
+
+    allowed = (
+        "resource",
+        "operationId",
+        "targetOperationId",
+        "provider",
+        "field",
+        "claimId",
+        "expectedRevision",
+        "suppliedRevision",
+        "minimumExclusive",
+        "maximumInclusive",
+        "state",
+        "guarantee",
+        "providerFencing",
+        "expectedRequestSha256",
+    )
+    for field in allowed:
+        if field in payload:
+            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
+
+
+def _claim_fields(
+    claim: dict[str, object], *, include_token: bool = False
+) -> tuple[tuple[str, object], ...]:
+    fields: list[tuple[str, object]] = []
+    if "resource" in claim:
+        fields.append(("RESOURCE", claim["resource"]))
+    if "resources" in claim:
+        fields.append(("RESOURCES", claim["resources"]))
+    fields.extend(
+        (
+            ("CLAIM_ID", claim.get("claimId")),
+            ("REVISION", claim.get("revision")),
+            ("EXPIRES_AT", claim.get("expiresAt")),
+            ("GUARANTEE", claim.get("guarantee")),
+        )
+    )
+    if include_token:
+        fields.insert(2, ("TOKEN", claim.get("token")))
+    return tuple(fields)
+
+
+def _emit_claim(
+    claim: object, *, include_token: bool = False, label: str = "CLAIM"
+) -> None:
+    if not isinstance(claim, dict):
+        print(f"{label}\t<none>")
+        return
+    print(label)
+    for field, value in _claim_fields(claim, include_token=include_token):
+        print(f"{field}\t{_text_value(value)}")
+
+
+def _emit_command(command: object) -> None:
+    if not isinstance(command, dict):
+        print("COMMAND\t<none>")
+        return
+    print("COMMAND")
+    for field in ("returncode", "executionDirectory"):
+        if field in command:
+            print(f"{_text_label(field)}\t{_text_value(command[field])}")
+    for field in ("stdout", "stderr"):
+        if field in command:
+            print(f"{_text_label(field)}\t{_text_value(command[field])}")
+
+
 def _emit_verbose_status(payload: dict[str, object]) -> None:
     print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
     print(f"STATE\t{payload.get('state', '')}")
@@ -424,71 +525,265 @@ def _emit_verbose_status(payload: dict[str, object]) -> None:
         print(f"GUIDANCE\t{_text_value(guidance)}")
 
 
+def _render_version(payload: dict[str, object]) -> None:
+    if payload.get("ok"):
+        print(_text_atom(payload.get("version", "")))
+    else:
+        _text_header(payload)
+        _emit_error_details(payload)
+
+
+def _render_key(payload: dict[str, object]) -> None:
+    _text_header(payload)
+    for field in (
+        "provider",
+        "resource",
+        "scope",
+        "capability",
+        "genericExecutionGuarantee",
+        "fencedMutations",
+        "providerFencing",
+    ):
+        if field in payload:
+            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
+    if not payload.get("ok"):
+        _emit_error_details(payload)
+
+
+def _render_policy_list(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    print(
+        "NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION\t"
+        "KEY_POLICY_VERSION\tSCOPE\tCAPABILITY\t"
+        "GENERIC_EXECUTION_GUARANTEE\tPROVIDER_FENCING_SUPPORTED"
+    )
+    policies = payload.get("policies", [])
+    if isinstance(policies, list):
+        fields = (
+            "name",
+            "origin",
+            "originVersion",
+            "contractVersion",
+            "keyPolicyVersion",
+            "scope",
+            "capability",
+            "genericExecutionGuarantee",
+            "providerFencingSupported",
+        )
+        for policy in policies:
+            if isinstance(policy, dict):
+                print("\t".join(_text_atom(policy.get(field, "")) for field in fields))
+
+
+def _render_policy_describe(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    fields = (
+        "name",
+        "origin",
+        "originVersion",
+        "contractVersion",
+        "keyPolicyVersion",
+        "scope",
+        "capability",
+        "providerFencingSupported",
+    )
+    for field in fields:
+        if field in payload:
+            print(f"{field}: {_text_atom(payload[field])}")
+
+
+def _render_list(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    print("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT")
+    claims = payload.get("claims", [])
+    if isinstance(claims, list):
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            print(
+                "\t".join(
+                    (
+                        "active" if claim.get("active") else "expired",
+                        _text_atom(claim.get("resource", "")),
+                        _text_atom(claim.get("claimId", "")),
+                        _text_atom(claim.get("ownerId", "")),
+                        _text_atom(claim.get("expiresAt", "")),
+                    )
+                )
+            )
+
+
+def _render_status(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    print(f"STATE\t{_text_atom(payload.get('state', ''))}")
+    _emit_claim(payload.get("claim"))
+
+
+def _render_status_verbose(payload: dict[str, object]) -> None:
+    if payload.get("ok"):
+        _emit_verbose_status(payload)
+    else:
+        _text_header(payload)
+        _emit_error_details(payload)
+
+
+def _render_inspect_operation(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    for field in (
+        "resource",
+        "operationId",
+        "kind",
+        "state",
+        "outcome",
+        "expectedRevision",
+        "requestSha256",
+        "reconciliationOperationId",
+        "createdAt",
+        "reconciledAt",
+    ):
+        if field in payload:
+            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
+
+
+def _render_gc(payload: dict[str, object]) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    for field in ("dryRun", "capturedAt", "cutoff", "retentionDays"):
+        if field in payload:
+            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
+    eligible = payload.get("eligible", {})
+    if isinstance(eligible, dict):
+        print("ELIGIBLE")
+        for record_type in sorted(eligible):
+            summary = eligible[record_type]
+            if isinstance(summary, dict):
+                print(
+                    f"{record_type}\t{summary.get('count', 0)}\t"
+                    f"{_text_value(summary.get('oldest'))}\t"
+                    f"{_text_value(summary.get('newest'))}"
+                )
+
+
+def _render_mutation(payload: dict[str, object]) -> None:
+    _text_header(payload)
+    if not payload.get("ok"):
+        _emit_error_details(payload)
+        if "command" in payload:
+            _emit_command(payload["command"])
+        return
+    for field in (
+        "operationId",
+        "targetOperationId",
+        "releasedClaimId",
+        "releasedRevision",
+    ):
+        if field in payload:
+            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
+    if "checkpoint" in payload:
+        print(f"CHECKPOINT\t{_text_value(payload['checkpoint'])}")
+    if "checkpointBytes" in payload:
+        print(f"CHECKPOINT_BYTES\t{_text_value(payload['checkpointBytes'])}")
+    if "releasedAt" in payload:
+        print(f"RELEASED_AT\t{_text_value(payload['releasedAt'])}")
+    if "reason" in payload:
+        print(f"REASON\t{_text_value(payload['reason'])}")
+    if "ttl" in payload:
+        print(f"TTL\t{_text_value(payload['ttl'])}")
+    if "guarantee" in payload:
+        print(f"GUARANTEE\t{_text_value(payload['guarantee'])}")
+    if "providerFencing" in payload:
+        print(f"PROVIDER_FENCING\t{_text_value(payload['providerFencing'])}")
+    if "command" in payload:
+        _emit_command(payload["command"])
+    claim_token = payload.get("operation") in {
+        "acquire",
+        "acquire-bundle",
+        "bundle-acquire",
+        "heartbeat",
+        "checkpoint",
+        "heartbeat-bundle",
+        "bundle-heartbeat",
+        "transfer",
+    }
+    _emit_claim(payload.get("claim"), include_token=claim_token)
+
+
+def _render_generic(payload: dict[str, object]) -> None:
+    _text_header(payload)
+    if not payload.get("ok"):
+        _emit_error_details(payload)
+        return
+    for field in sorted(payload):
+        if field in {"schemaVersion", "operation", "ok", "claim", "command"}:
+            continue
+        value = payload[field]
+        if field == "token":
+            continue
+        print(f"{_text_label(field)}\t{_text_value(value)}")
+    if "claim" in payload:
+        _emit_claim(payload["claim"])
+    if "command" in payload:
+        _emit_command(payload["command"])
+
+
+_TEXT_RENDERERS = {
+    "version": _render_version,
+    "key": _render_key,
+    "policy-list": _render_policy_list,
+    "policy-describe": _render_policy_describe,
+    "list": _render_list,
+    "status": _render_status,
+    "status-bundle": _render_status,
+    "bundle-status": _render_status,
+    "inspect-bundle": _render_status,
+    "status-verbose": _render_status_verbose,
+    "inspect-operation": _render_inspect_operation,
+    "gc": _render_gc,
+    "acquire": _render_mutation,
+    "acquire-bundle": _render_mutation,
+    "bundle-acquire": _render_mutation,
+    "heartbeat": _render_mutation,
+    "checkpoint": _render_mutation,
+    "heartbeat-bundle": _render_mutation,
+    "bundle-heartbeat": _render_mutation,
+    "transfer": _render_mutation,
+    "release": _render_mutation,
+    "release-bundle": _render_mutation,
+    "bundle-release": _render_mutation,
+    "exec": _render_mutation,
+    "exec-bundle": _render_mutation,
+    "bundle-exec": _render_mutation,
+    "replace-file": _render_mutation,
+    "reconcile-operation": _render_mutation,
+}
+
+
 def _emit(payload: dict[str, object], output_format: str) -> None:
     if output_format == "text":
-        if payload.get("operation") == "version" and payload.get("ok"):
-            print(payload["version"])
-            return
-        if payload.get("operation") == "list" and payload.get("ok"):
-            print("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT")
-            claims = payload.get("claims", [])
-            if isinstance(claims, list):
-                for claim in claims:
-                    if not isinstance(claim, dict):
-                        continue
-                    print(
-                        "\t".join(
-                            (
-                                "active" if claim.get("active") else "expired",
-                                str(claim.get("resource", "")),
-                                str(claim.get("claimId", "")),
-                                str(claim.get("ownerId", "")),
-                                str(claim.get("expiresAt", "")),
-                            )
-                        )
-                    )
-            return
-        if payload.get("operation") == "policy-list" and payload.get("ok"):
-            print(
-                "NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION\t"
-                "KEY_POLICY_VERSION\tSCOPE\tCAPABILITY\t"
-                "GENERIC_EXECUTION_GUARANTEE\tPROVIDER_FENCING_SUPPORTED"
-            )
-            policies = payload.get("policies", [])
-            if isinstance(policies, list):
-                fields = (
-                    "name",
-                    "origin",
-                    "originVersion",
-                    "contractVersion",
-                    "keyPolicyVersion",
-                    "scope",
-                    "capability",
-                    "genericExecutionGuarantee",
-                    "providerFencingSupported",
-                )
-                for policy in policies:
-                    if isinstance(policy, dict):
-                        print("\t".join(str(policy.get(field, "")) for field in fields))
-            return
-        if payload.get("operation") == "policy-describe" and payload.get("ok"):
-            fields = (
-                "name",
-                "origin",
-                "originVersion",
-                "contractVersion",
-                "keyPolicyVersion",
-                "scope",
-                "capability",
-                "genericExecutionGuarantee",
-                "providerFencingSupported",
-            )
-            for field in fields:
-                print(f"{field}: {payload.get(field, '')}")
-        if payload.get("operation") == "status-verbose" and payload.get("ok"):
-            _emit_verbose_status(payload)
-            return
-        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        renderer = _TEXT_RENDERERS.get(
+            str(payload.get("operation", "unknown")), _render_generic
+        )
+        renderer(payload)
         return
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
