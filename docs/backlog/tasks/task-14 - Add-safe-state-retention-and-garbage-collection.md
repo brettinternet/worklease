@@ -1,11 +1,11 @@
 ---
 id: TASK-14
 title: Add safe state retention and garbage collection
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-fresh-20260714-worklease-review-task14'
 created_date: '2026-07-14 02:34'
-updated_date: '2026-07-14 22:57'
+updated_date: '2026-07-14 23:15'
 labels:
   - storage
   - maintenance
@@ -27,11 +27,11 @@ Add an explicit retention policy and safe garbage-collection operation for durab
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A dry-run reports deterministic counts and age ranges for records eligible under an explicit retention cutoff without mutating state.
-- [ ] #2 Applied garbage collection never deletes active or expired-but-unreclaimed claims, unresolved started operations, records required by current ownership, or receipts inside the documented idempotency and recovery window.
-- [ ] #3 Collection runs safely with concurrent acquire, heartbeat, guarded operation, reconciliation, and release activity, leaving either the pre-collection or committed post-collection state after interruption.
-- [ ] #4 Malformed cutoffs, unsupported retention settings, storage conflicts, and attempted removal of protected records fail with stable schema-versioned results and no partial deletion.
-- [ ] #5 Automated tests cover retention boundaries, protected unknown outcomes, active and expired claims, concurrent lifecycle activity, dry-run parity, interrupted collection, and documented operational guidance.
+- [x] #1 A dry-run reports deterministic counts and age ranges for records eligible under an explicit retention cutoff without mutating state.
+- [x] #2 Applied garbage collection never deletes active or expired-but-unreclaimed claims, unresolved started operations, records required by current ownership, or receipts inside the documented idempotency and recovery window.
+- [x] #3 Collection runs safely with concurrent acquire, heartbeat, guarded operation, reconciliation, and release activity, leaving either the pre-collection or committed post-collection state after interruption.
+- [x] #4 Malformed cutoffs, unsupported retention settings, storage conflicts, and attempted removal of protected records fail with stable schema-versioned results and no partial deletion.
+- [x] #5 Automated tests cover retention boundaries, protected unknown outcomes, active and expired claims, concurrent lifecycle activity, dry-run parity, interrupted collection, and documented operational guidance.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -90,4 +90,14 @@ Review pass claimed for accumulated implementation at e6e598c, 317337b, e6ce900,
 Review marker: reviewed implementation commits e6e598cc6c92a33c2df1cf2d98ef81894c7b75cb, 317337b4fffe6b36ea97e495e381b8b7505af31f, e6ce9008f753cf81d876bfffcc897b2369bae6a6, d84d7884f93bc54a51027ac5c8c0b31132873bb4, f90d98dc7c412cdbd6ec567cf948b5b382bf6f1d, df1dbcbd0192cf457e42e9d2f07791edefc13ff4, 1a6d7450e07db8b96f5da956e321f2b489c5758c, 380c81e2858d8b12ecbdc41d46cb11ff0674f069; review-fix commit 63f182387a22cd17bb17aea85d7fcd9ca1a47791. Full implementation-review applied for SQLite transaction atomicity, retention/protection predicates, revision continuity, schema/CLI compatibility, concurrency, migration, failure paths, and operational documentation. Findings fixed: resource protection predicates now match reconciliation claim/kind identity; reused-operation regression expects the monotonic post-reacquire revision. Focused GC/schema tests 19/19 passed; mise run lint, format-check, test, typecheck, and hooks passed. Review is clean; integration deferred because canonical main has overlapping staged TASK-14 schema/test changes and provider notes.
 
 Finalization evidence (review branch HEAD 63f182387a22cd17bb17aea85d7fcd9ca1a47791; accumulated commits e6e598cc6c92a33c2df1cf2d98ef81894c7b75cb, 317337b4fffe6b36ea97e495e381b8b7505af31f, e6ce9008f753cf81d876bfffcc897b2369bae6a6, d84d7884f93bc54a51027ac5c8c0b31132873bb4, f90d98dc7c412cdbd6ec567cf948b5b382bf6f1d, df1dbcbd0192cf457e42e9d2f07791edefc13ff4, 1a6d7450e07db8b96f5da956e321f2b489c5758c, 380c81e2858d8b12ecbdc41d46cb11ff0674f069, review fix 63f182387a22cd17bb17aea85d7fcd9ca1a47791). AC1: focused GC tests verify deterministic dry-run counts, strict cutoff, and age ranges. AC2: focused tests verify active and expired claim protection, unresolved direct/bundle operations, protected records, and revision tombstones. AC3: focused tests verify concurrent acquire/heartbeat/complete/reconcile/release serialization and injected interruption rollback. AC4: focused tests verify malformed cutoff, protected-record rollback, schema-versioned CLI output, migration, and no partial deletion. AC5: focused GC/schema tests 19/19 pass; README operational guidance covers defaults, cutoff, apply, protections, backups, and TASK-6/TASK-7 exclusions. Gates: mise run lint, format-check, test, typecheck, hooks all passed. Task remains In Progress because verified commits are not yet integrated into canonical main.
+
+Review checkpoint: reviewed: implementation commits e6ce9008, d84d7884, f90d98d, df1dbcb, 1a6d7450, 380c81e2; review-fix commits: 63f1823 and 4d9933d. Full data-integrity, schema/migration, concurrency, interruption, compatibility, and acceptance review found and fixed cross-claim reconciliation evidence loss by persisting target_claim_id with conservative ambiguous legacy migration. Verification: mise run lint, mise run format-check, mise run test (143 tests), mise run typecheck, mise run hooks; focused GC/schema tests passed; independent verifier PASS AC1-AC5 including cross-claim, reused operation ID, unique/ambiguous legacy migration, rollback, concurrency, and CLI error probes.
+
+Integration checkpoint: cherry-picked review fix 4d9933d as canonical main commit 6363391 under guarded control-exec. Clean integrated HEAD gates: lint, format-check, test (147), and typecheck passed; canonical main had unrelated TASK-17 provider edits reported separately.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented deterministic dry-run and atomic garbage collection with protected claims/unknown outcomes, revision-preserving tombstones, schema-versioned CLI errors, migration-safe reconciliation target identity, concurrency/interruption safety, tests, and operational documentation. Full implementation review fixed cross-claim reconciliation evidence loss in 4d9933d; integrated as 6363391. Verified with mise run lint, mise run format-check, mise run test (147 tests), mise run typecheck, mise run hooks, focused GC/schema tests, and independent integrated verification.
+<!-- SECTION:FINAL_SUMMARY:END -->
