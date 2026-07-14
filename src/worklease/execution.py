@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import replace
 
+from .execution_context import provider_environment, resolve_execution_directory
 from .locking import resource_lock, resource_locks
 from .models import BundleMutationRequest, LeaseError, MutationRequest, require_text
 from .store import LeaseStore
@@ -77,8 +78,13 @@ class GuardedExecutor:
         """Execute an argv without a shell and persist an idempotent receipt."""
 
         argv = self._validate_command(command)
+        execution_directory = resolve_execution_directory(
+            request.provider_directory, git_primary=request.git_primary
+        )
         ttl = request.ttl
-        operation_request = request.request_dict(argv=argv)
+        operation_request = request.request_dict(
+            argv=argv, executionDirectory=execution_directory.request_value()
+        )
         with resource_lock(request.resource, self.store.home):
             cached = self.store.begin_operation(
                 request, "exec", operation_request, lock_held=True
@@ -126,6 +132,14 @@ class GuardedExecutor:
                     encoding="utf-8",
                     errors="replace",
                     start_new_session=(os.name == "posix"),
+                    cwd=(
+                        str(execution_directory.path)
+                        if execution_directory.path is not None
+                        else None
+                    ),
+                    env=provider_environment()
+                    if execution_directory.provider
+                    else None,
                 )
                 interval = max(float(ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
@@ -182,6 +196,7 @@ class GuardedExecutor:
                 "returncode": returncode,
                 "stdout": stdout,
                 "stderr": stderr,
+                "executionDirectory": execution_directory.request_value(),
             }
             receipt: dict[str, object] = {
                 "ok": returncode == 0,
@@ -210,7 +225,12 @@ class GuardedExecutor:
         """Execute one argv while renewing an all-member bundle claim."""
 
         argv = self._validate_command(command)
-        operation_request = request.request_dict(argv=argv)
+        execution_directory = resolve_execution_directory(
+            request.provider_directory, git_primary=request.git_primary
+        )
+        operation_request = request.request_dict(
+            argv=argv, executionDirectory=execution_directory.request_value()
+        )
         operation_request["tokenHash"] = hashlib.sha256(
             request.token.encode("utf-8")
         ).hexdigest()
@@ -266,6 +286,14 @@ class GuardedExecutor:
                     encoding="utf-8",
                     errors="replace",
                     start_new_session=(os.name == "posix"),
+                    cwd=(
+                        str(execution_directory.path)
+                        if execution_directory.path is not None
+                        else None
+                    ),
+                    env=provider_environment()
+                    if execution_directory.provider
+                    else None,
                 )
                 interval = max(float(request.ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
@@ -322,6 +350,7 @@ class GuardedExecutor:
                 "returncode": returncode,
                 "stdout": stdout,
                 "stderr": stderr,
+                "executionDirectory": execution_directory.request_value(),
             }
             receipt: dict[str, object] = {
                 "ok": returncode == 0,

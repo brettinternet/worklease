@@ -237,6 +237,8 @@ class BundleMutationRequest:
     revision: int
     operation_id: str
     ttl: float = DEFAULT_TTL
+    provider_directory: str | None = None
+    git_primary: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "resources", require_bundle_resources(self.resources))
@@ -247,6 +249,12 @@ class BundleMutationRequest:
             raise LeaseError("invalid-revision", code=64, revision=self.revision)
         if self.revision < 1:
             raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        if self.provider_directory is not None:
+            require_text(self.provider_directory, "provider-directory")
+        if not isinstance(self.git_primary, bool):
+            raise LeaseError("invalid-git-primary", code=64)
+        if self.provider_directory is not None and self.git_primary:
+            raise LeaseError("conflicting-execution-directory", code=64)
         require_ttl(self.ttl)
 
     @property
@@ -283,6 +291,8 @@ class MutationRequest:
     revision: int
     operation_id: str
     ttl: float = DEFAULT_TTL
+    provider_directory: str | None = None
+    git_primary: bool = False
 
     def __post_init__(self) -> None:
         require_resource(self.resource)
@@ -293,6 +303,12 @@ class MutationRequest:
             raise LeaseError("invalid-revision", code=64, revision=self.revision)
         if self.revision < 1:
             raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        if self.provider_directory is not None:
+            require_text(self.provider_directory, "provider-directory")
+        if not isinstance(self.git_primary, bool):
+            raise LeaseError("invalid-git-primary", code=64)
+        if self.provider_directory is not None and self.git_primary:
+            raise LeaseError("conflicting-execution-directory", code=64)
         require_ttl(self.ttl)
 
     def request_dict(self, **extra: Any) -> dict[str, Any]:
