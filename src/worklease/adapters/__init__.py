@@ -1,46 +1,22 @@
-"""Lazy provider adapter loading.
+"""Lazy, versioned resource-policy loading.
 
-Importing :mod:`worklease.adapters` loads only the provider-neutral protocol.
-Provider modules are imported on first use so optional policy stays outside the
-core lease and execution modules.
+Importing :mod:`worklease.adapters` loads only the provider-neutral protocol
+and registry. Policy implementations and external entry points are imported
+only after a caller selects one exact policy name.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from importlib import import_module
-from typing import TYPE_CHECKING, cast
-
-from ..models import LeaseError
-from .protocol import ProviderAdapter, ResourceKey, normalize_provider
-
-if TYPE_CHECKING:
-    from types import ModuleType
-
-_MODULES = {
-    "github": ".github",
-    "backlog-md": ".backlog_md",
-    "markdown": ".markdown",
-    "linear": ".linear",
-}
-
-
-def load_adapter(provider: str) -> ProviderAdapter:
-    """Load exactly one adapter module on demand.
-
-    Unknown provider names intentionally use Linear's coordination-only policy;
-    they retain their provider name in the derived identity and never gain
-    provider-fenced capabilities by accident.
-    """
-
-    normalized = normalize_provider(provider)
-    module_name = _MODULES.get(normalized, ".linear")
-    module: ModuleType = import_module(module_name, __name__)
-    factory = getattr(module, "create_adapter", None)
-    if not callable(factory):
-        raise LeaseError("adapter-capability-unavailable", code=2, provider=normalized)
-    factory = cast(Callable[[str], ProviderAdapter], factory)
-    return factory(normalized)
+from .protocol import ProviderAdapter, ResourceKey
+from .registry import (
+    RESOURCE_POLICY_CONTRACT_VERSION,
+    RESOURCE_POLICY_ENTRY_POINT_GROUP,
+    ResourcePolicyDescriptor,
+    ResourcePolicyRegistration,
+    available_policy_names,
+    load_adapter,
+    load_policy,
+)
 
 
 def key(
@@ -50,7 +26,7 @@ def key(
     *,
     coordination_only: bool = False,
 ) -> ResourceKey:
-    """Derive and return one deterministic provider resource key."""
+    """Derive one deterministic key using the selected resource policy."""
 
     return load_adapter(provider).key(source, item, coordination_only=coordination_only)
 
@@ -74,14 +50,22 @@ def key_result(
     *,
     coordination_only: bool = False,
 ) -> dict[str, object]:
+    """Return the stable JSON-compatible key result."""
+
     return key(provider, source, item, coordination_only=coordination_only).to_dict()
 
 
 __all__ = [
+    "RESOURCE_POLICY_CONTRACT_VERSION",
+    "RESOURCE_POLICY_ENTRY_POINT_GROUP",
     "ProviderAdapter",
     "ResourceKey",
+    "ResourcePolicyDescriptor",
+    "ResourcePolicyRegistration",
+    "available_policy_names",
     "key",
     "key_result",
     "load_adapter",
+    "load_policy",
     "resource_key",
 ]
