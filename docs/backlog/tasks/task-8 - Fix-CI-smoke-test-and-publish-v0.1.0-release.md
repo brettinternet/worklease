@@ -5,11 +5,12 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:17'
-updated_date: '2026-07-14 02:19'
+updated_date: '2026-07-14 02:29'
 labels: []
 dependencies: []
 modified_files:
   - .github/workflows/ci.yml
+  - tests/test_execution.py
 ordinal: 8000
 ---
 
@@ -37,4 +38,6 @@ Make the repository CI green on every configured runner, then publish the existi
 
 <!-- SECTION:NOTES:BEGIN -->
 Diagnosed both failing CI runs (29299234847 and 29299457356): macos-15-intel could not find the uv-installed worklease executable because $HOME/.local/bin was not on PATH. Updated .github/workflows/ci.yml to resolve uv tool dir --bin and invoke that exact executable. Local gates passed: mise run sync, test (55 tests), typecheck, lint, format-check, build. Exact wheel and sdist smoke block passed with version 0.1.0.
+
+Fresh CI run 29300826838 passed the package smoke fix on every platform but exposed two macos-15-intel ownership-test startup races. Gated injected LeaseError on each started marker before cleanup; repeated both focused ownership tests 10/10 passed. Local full suite then exposed claim-expired in the long-child heartbeat test under load; widened only that test to ttl=1.0 and a 1.2-second child, preserving heartbeat/revision assertions. Repeated heartbeat test 5/5 passed and full suite 55/55 passed; lint, format-check, typecheck, and build all passed.
 <!-- SECTION:NOTES:END -->

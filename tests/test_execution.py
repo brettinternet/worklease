@@ -101,7 +101,7 @@ class ExecutionTests(unittest.TestCase):
             token=request.token,
             revision=request.revision,
             operation_id=request.operation_id,
-            ttl=0.2,
+            ttl=1.0,
         )
         receipt, code = execute(
             self.store,
@@ -109,7 +109,7 @@ class ExecutionTests(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import time; time.sleep(0.45); print('done'); raise SystemExit(7)",
+                "import time; time.sleep(1.2); print('done'); raise SystemExit(7)",
             ],
         )
         self.assertEqual(7, code)
@@ -224,7 +224,7 @@ class ExecutionTests(unittest.TestCase):
         ) -> dict[str, object]:
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if not started.exists():
                 return original_heartbeat(heartbeat_request, lock_held=lock_held)
             raise LeaseError("claim-changed-during-guard", code=3)
 
@@ -238,6 +238,7 @@ class ExecutionTests(unittest.TestCase):
         ):
             execute(self.store, request, command)
         self.assertTrue(started.exists())
+
         self.assertGreaterEqual(calls, 2)
         self.assertFalse(marker.exists())
 
@@ -272,7 +273,7 @@ class ExecutionTests(unittest.TestCase):
         ) -> dict[str, object]:
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if not started.exists():
                 return original_heartbeat(heartbeat_request, lock_held=lock_held)
             raise LeaseError("claim-changed-during-guard", code=3)
 
