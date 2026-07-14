@@ -102,6 +102,18 @@ def _common_claim_arguments(
         parser.add_argument("--ttl", default=900.0, type=float)
 
 
+def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--provider-directory",
+        help="run provider commands from this validated working directory",
+    )
+    parser.add_argument(
+        "--git-primary",
+        action="store_true",
+        help="derive the registered Git primary/control worktree",
+    )
+
+
 def _bundle_resources(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--resource",
@@ -265,6 +277,7 @@ def _parser() -> _ArgumentParser:
     execute_parser = commands.add_parser("exec", help="run one argv under a lease")
     _add_output_arguments(execute_parser)
     _common_claim_arguments(execute_parser)
+    _execution_directory_arguments(execute_parser)
     execute_parser.add_argument("command", nargs=argparse.REMAINDER)
 
     heartbeat_bundle_parser = commands.add_parser(
@@ -291,6 +304,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(execute_bundle_parser)
     _common_bundle_claim_arguments(execute_bundle_parser)
+    _execution_directory_arguments(execute_bundle_parser)
     execute_bundle_parser.add_argument("command", nargs=argparse.REMAINDER)
     replace_parser = commands.add_parser(
         "replace-file", help="atomically replace a file by expected hash"
@@ -453,6 +467,8 @@ def _request(args: argparse.Namespace) -> MutationRequest:
         revision=args.revision,
         operation_id=args.operation_id,
         ttl=getattr(args, "ttl", 900.0),
+        provider_directory=getattr(args, "provider_directory", None),
+        git_primary=getattr(args, "git_primary", False),
     )
 
 
@@ -464,6 +480,8 @@ def _bundle_request(args: argparse.Namespace) -> BundleMutationRequest:
         revision=args.revision,
         operation_id=args.operation_id,
         ttl=getattr(args, "ttl", 900.0),
+        provider_directory=getattr(args, "provider_directory", None),
+        git_primary=getattr(args, "git_primary", False),
     )
 
 

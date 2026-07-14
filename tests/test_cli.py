@@ -404,14 +404,20 @@ class CliContractTests(unittest.TestCase):
             ),
             "--operation-id",
             "bundle-exec-cli",
+            "--provider-directory",
+            self.home.name,
             "--",
             sys.executable,
             "-c",
-            "print('bundle-output')",
+            "from pathlib import Path; print(Path.cwd())",
         )
         command = executed["command"]
         assert isinstance(command, dict)
-        self.assertEqual("bundle-output\n", command["stdout"])
+        self.assertEqual(
+            {"mode": "provider-directory", "path": str(Path(self.home.name).resolve())},
+            command["executionDirectory"],
+        )
+        self.assertEqual(f"{Path(self.home.name).resolve()}\n", command["stdout"])
         self.assertNotIn(token, json.dumps(executed))
         replayed = self.json_cli(
             "exec-bundle",
@@ -421,15 +427,19 @@ class CliContractTests(unittest.TestCase):
             ),
             "--operation-id",
             "bundle-exec-cli",
+            "--provider-directory",
+            self.home.name,
             "--",
             sys.executable,
             "-c",
-            "print('bundle-output')",
+            "from pathlib import Path; print(Path.cwd())",
         )
         replayed_command = replayed["command"]
         assert isinstance(replayed_command, dict)
         self.assertTrue(replayed["idempotent"])
-        self.assertEqual("bundle-output\n", replayed_command["stdout"])
+        self.assertEqual(
+            f"{Path(self.home.name).resolve()}\n", replayed_command["stdout"]
+        )
         executed_claim = executed["claim"]
         assert isinstance(executed_claim, dict)
         released = self.json_cli(
@@ -545,6 +555,8 @@ class CliContractTests(unittest.TestCase):
         assert isinstance(claim, dict)
         payload = self.json_cli(
             *self.mutation_arguments("exec", resource, claim, "exec-cli"),
+            "--provider-directory",
+            self.home.name,
             "--",
             sys.executable,
             "-c",
@@ -554,6 +566,10 @@ class CliContractTests(unittest.TestCase):
         )
         command = payload["command"]
         assert isinstance(command, dict)
+        self.assertEqual(
+            {"mode": "provider-directory", "path": str(Path(self.home.name).resolve())},
+            command["executionDirectory"],
+        )
         self.assertEqual(True, payload["ok"])
         self.assertEqual("child-output\n", command["stdout"])
         self.assertNotIn(str(claim["token"]), json.dumps(payload))

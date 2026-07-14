@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -93,6 +94,70 @@ class ExecutionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
             execute(self.store, request, [sys.executable, "-c", "print('changed')"])
+
+    def test_provider_directory_receipt_replay_conflict_and_environment(self) -> None:
+        request = self.acquire("provider-directory", operation_id="provider-exec")
+        provider = Path(self.temporary.name) / "provider"
+        alternate = Path(self.temporary.name) / "alternate"
+        provider.mkdir()
+        alternate.mkdir()
+        request = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id=request.operation_id,
+            ttl=request.ttl,
+            provider_directory=str(provider),
+        )
+        script = (
+            "import json, os; from pathlib import Path; "
+            "print(json.dumps({'cwd': str(Path.cwd()), "
+            "'gitDir': os.environ.get('GIT_DIR'), "
+            "'gitWorkTree': os.environ.get('GIT_WORK_TREE'), "
+            "'gitAuthor': os.environ.get('GIT_AUTHOR_NAME'), "
+            "'gitConfig': os.environ.get('GIT_CONFIG_GLOBAL')}))"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_DIR": "redirected",
+                "GIT_WORK_TREE": "redirected-work-tree",
+                "GIT_AUTHOR_NAME": "preserved-author",
+                "GIT_CONFIG_GLOBAL": "preserved-config",
+            },
+        ):
+            receipt, code = execute(self.store, request, [sys.executable, "-c", script])
+        self.assertEqual(0, code)
+        command = cast(dict[str, object], receipt["command"])
+        self.assertEqual(
+            {
+                "cwd": str(provider.resolve()),
+                "gitDir": None,
+                "gitWorkTree": None,
+                "gitAuthor": "preserved-author",
+                "gitConfig": "preserved-config",
+            },
+            json.loads(str(command["stdout"])),
+        )
+        self.assertEqual(
+            {"mode": "provider-directory", "path": str(provider.resolve())},
+            command["executionDirectory"],
+        )
+        claim = cast(dict[str, object], receipt["claim"])
+        revision = claim["revision"]
+        assert isinstance(revision, int)
+        conflicting = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=revision,
+            operation_id=request.operation_id,
+            ttl=request.ttl,
+            provider_directory=str(alternate),
+        )
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            execute(self.store, conflicting, [sys.executable, "-c", script])
 
     def test_exec_heartbeats_during_long_child_and_returns_failure_status(self) -> None:
         request = self.acquire()
