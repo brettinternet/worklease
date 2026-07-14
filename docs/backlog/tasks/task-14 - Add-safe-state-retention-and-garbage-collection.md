@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-review-task14'
 created_date: '2026-07-14 02:34'
-updated_date: '2026-07-14 22:49'
+updated_date: '2026-07-14 22:55'
 labels:
   - storage
   - maintenance
@@ -86,4 +86,6 @@ Verifier findings fixed in commit 380c81e2858d8b12ecbdc41d46cb11ff0674f069: GC r
 Independent verifier PASS after fixes: AC1-AC5 all PASS; targeted reused-operation regression and packaged gc schema validation pass; focused tests 19/19 pass with no remaining concrete defect.
 
 Review pass claimed for accumulated implementation at e6e598c, 317337b, e6ce900, d84d788, f90d98d, df1dbcb, 1a6d745, 380c81e; canonical review checkpoint refreshed.
+
+Review marker: reviewed implementation commits e6e598cc6c92a33c2df1cf2d98ef81894c7b75cb, 317337b4fffe6b36ea97e495e381b8b7505af31f, e6ce9008f753cf81d876bfffcc897b2369bae6a6, d84d7884f93bc54a51027ac5c8c0b31132873bb4, f90d98dc7c412cdbd6ec567cf948b5b382bf6f1d, df1dbcbd0192cf457e42e9d2f07791edefc13ff4, 1a6d7450e07db8b96f5da956e321f2b489c5758c, 380c81e2858d8b12ecbdc41d46cb11ff0674f069; review-fix commit 63f182387a22cd17bb17aea85d7fcd9ca1a47791. Full implementation-review applied for SQLite transaction atomicity, retention/protection predicates, revision continuity, schema/CLI compatibility, concurrency, migration, failure paths, and operational documentation. Findings fixed: resource protection predicates now match reconciliation claim/kind identity; reused-operation regression expects the monotonic post-reacquire revision. Focused GC/schema tests 19/19 passed; mise run lint, format-check, test, typecheck, and hooks passed. Review is clean; integration deferred because canonical main has overlapping staged TASK-14 schema/test changes and provider notes.
 <!-- SECTION:NOTES:END -->
