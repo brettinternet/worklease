@@ -907,6 +907,13 @@ class CliContractTests(unittest.TestCase):
         self.assertIn('"repo:text-escape-\\u001b[31m"', escaped)
         self.assertNotIn("\x1b", escaped)
 
+        del_resource = "repo:text-del-\x7f"
+        self.json_cli(
+            *self.acquire_arguments(resource=del_resource, claim_id="text-del")
+        )
+        del_escaped = self.text_cli("list", "--resource", del_resource)
+        self.assertIn('"repo:text-del-\\u007f"', del_escaped)
+        self.assertNotIn("\x7f", del_escaped)
         acquired = self.json_cli(
             *self.acquire_arguments(resource="repo:text-read", claim_id="text-read")
         )
@@ -1336,6 +1343,11 @@ class CliContractTests(unittest.TestCase):
         claim = acquired["claim"]
         assert isinstance(claim, dict)
         token = str(claim["token"])
+        bundle_list = self.text_cli("list", "--resource", resources[0])
+        self.assertIn(
+            '["repo:text-canonical-a","repo:text-canonical-b"]',
+            bundle_list,
+        )
         bundle_args = (
             "--resource",
             resources[0],

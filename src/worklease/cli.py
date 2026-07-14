@@ -365,14 +365,20 @@ def _parser() -> _ArgumentParser:
 def _text_value(value: object) -> str:
     """Render one text-mode scalar without allowing control-character injection."""
 
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return "".join(
+        (f"\\u{ord(character):04x}" if 0x7F <= ord(character) <= 0x9F else character)
+        for character in rendered
+    )
 
 
 def _text_atom(value: object) -> str:
     """Keep simple labels readable while escaping control characters."""
 
     text = "" if value is None else str(value)
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in text):
+    if any(
+        ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in text
+    ):
         return _text_value(text)
     return text
 
@@ -609,11 +615,17 @@ def _render_list(payload: dict[str, object]) -> None:
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
+            resource = claim.get("resource")
+            resource_text = (
+                _text_atom(resource)
+                if resource is not None
+                else _text_value(claim.get("resources", []))
+            )
             print(
                 "\t".join(
                     (
                         "active" if claim.get("active") else "expired",
-                        _text_atom(claim.get("resource", "")),
+                        resource_text,
                         _text_atom(claim.get("claimId", "")),
                         _text_atom(claim.get("ownerId", "")),
                         _text_atom(claim.get("expiresAt", "")),
