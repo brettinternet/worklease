@@ -179,6 +179,65 @@ class CliContractTests(unittest.TestCase):
             "free", self.json_cli("status", "--resource", resource)["state"]
         )
 
+    def test_verbose_status_cli_is_redacted_and_has_stable_text(self) -> None:
+        resource = "repo:verbose-cli"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="verbose-cli")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        request = MutationRequest(
+            resource=resource,
+            claim_id=str(claim["claimId"]),
+            token=token,
+            revision=int(claim["revision"]),
+            operation_id="verbose-cli-unknown",
+        )
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_operation(
+                request,
+                "exec",
+                {
+                    "revision": request.revision,
+                    "command": ["printf", "verbose-sentinel"],
+                    "token": token,
+                },
+            )
+        )
+
+        verbose = self.json_cli(
+            "status",
+            "--resource",
+            resource,
+            "--verbose",
+        )
+        self.assertEqual("status-verbose", verbose["operation"])
+        self.assertEqual("active", verbose["state"])
+        self.assertNotIn(token, json.dumps(verbose))
+        self.assertNotIn("verbose-sentinel", json.dumps(verbose))
+        unknown_operations = verbose["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        self.assertEqual("verbose-cli-unknown", unknown_operations[0]["operationId"])
+
+        text = self.run_cli(
+            "status",
+            "--resource",
+            resource,
+            "--verbose",
+            "--format",
+            "text",
+        )
+        self.assertEqual(0, text.returncode)
+        self.assertEqual("", text.stderr)
+        self.assertIn(f'RESOURCE\t"{resource}"', text.stdout)
+        self.assertIn("STATE\tactive", text.stdout)
+        self.assertIn('UNKNOWN\t"verbose-cli-unknown"\t"exec"', text.stdout)
+        self.assertIn("UNKNOWN_OPERATIONS\t1", text.stdout)
+        self.assertNotIn(token, text.stdout)
+        self.assertNotIn("verbose-sentinel", text.stdout)
+
     def test_operation_inspection_and_reconciliation_cli(self) -> None:
         resource = "repo:reconcile"
         acquired = self.json_cli(*self.acquire_arguments(resource=resource))
