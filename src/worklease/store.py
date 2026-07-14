@@ -300,6 +300,16 @@ class LeaseStore:
                         operationId=request.operation_id,
                     )
                 receipt = json.loads(str(replay["receipt"]))
+                claim = receipt.get("claim")
+                if isinstance(claim, dict) and int(owner["revision"]) > int(
+                    claim.get("revision", owner["revision"])
+                ):
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=request.resource,
+                        expectedRevision=int(owner["revision"]),
+                        suppliedRevision=request.revision,
+                    )
                 receipt["idempotent"] = True
                 return receipt
             self._require_current(db, request)

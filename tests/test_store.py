@@ -420,6 +420,35 @@ class StoreTests(unittest.TestCase):
                 "observed-success",
                 {"providerReceipt": "changed"},
             )
+        advanced = self.store.heartbeat(
+            MutationRequest(
+                resource=target.resource,
+                claim_id=target.claim_id,
+                token=target.token,
+                revision=reconcile["claim"]["revision"],
+                operation_id="heartbeat-after-reconcile",
+            )
+        )
+        self.assertGreater(
+            advanced["claim"]["revision"], reconcile["claim"]["revision"]
+        )
+        with self.assertRaisesRegex(LeaseError, "stale-revision"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt-1"},
+            )
+        self.clock.advance(901)
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt-1"},
+            )
         with sqlite3.connect(self.home / "leases.sqlite3") as db:
             original = db.execute(
                 """
