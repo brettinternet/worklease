@@ -214,15 +214,28 @@ class ExecutionTests(unittest.TestCase):
                 f"Path({str(marker)!r}).write_text('finished')"
             ),
         ]
+        original_heartbeat = self.store.heartbeat
+        calls = 0
+
+        def heartbeat_then_fail(
+            heartbeat_request: MutationRequest, *, lock_held: bool = False
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return original_heartbeat(heartbeat_request, lock_held=lock_held)
+            raise LeaseError("claim-changed-during-guard", code=3)
+
         with (
             patch.object(
                 self.store,
                 "heartbeat",
-                side_effect=LeaseError("claim-changed-during-guard", code=3),
+                side_effect=heartbeat_then_fail,
             ),
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),
         ):
             execute(self.store, request, command)
+        self.assertGreaterEqual(calls, 2)
         self.assertFalse(marker.exists())
 
     def test_ownership_loss_kills_descendant_after_leader_exit(self) -> None:
@@ -246,15 +259,28 @@ class ExecutionTests(unittest.TestCase):
             "import subprocess,sys; "
             f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
         )
+        original_heartbeat = self.store.heartbeat
+        calls = 0
+
+        def heartbeat_then_fail(
+            heartbeat_request: MutationRequest, *, lock_held: bool = False
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return original_heartbeat(heartbeat_request, lock_held=lock_held)
+            raise LeaseError("claim-changed-during-guard", code=3)
+
         with (
             patch.object(
                 self.store,
                 "heartbeat",
-                side_effect=LeaseError("claim-changed-during-guard", code=3),
+                side_effect=heartbeat_then_fail,
             ),
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),
         ):
             execute(self.store, request, [sys.executable, "-c", parent_code])
+        self.assertGreaterEqual(calls, 2)
         time.sleep(1.2)
         self.assertFalse(marker.exists())
 
