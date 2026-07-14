@@ -76,6 +76,42 @@ worklease acquire \
 The successful response contains the claim's `claimId`, `token`, `revision`, `expiresAt`, `heartbeatAt`, `workKey`, and `guarantee`. Save the returned token and revision for the next mutation. An active claim is one ownership epoch, not an assignment or status marker. An acquire of an expired epoch creates a fresh claim ID and token and may include its prior coordination checkpoint as recovery metadata.
 
 The default TTL is 900 seconds and the maximum is 3600 seconds. Heartbeat before half the lease elapses and around long operations. Never adopt or renew an unexpired claim merely because the agent or session identity is unchanged.
+### Credential sources for mutations
+
+Every claim-bearing mutation accepts exactly one credential source: the
+compatibility `--token TOKEN` argument, `--token-file PATH`, or `--token-fd FD`.
+Prefer a 0600 token file or an inherited file descriptor so the bearer value
+does not appear in shell history or the process argument list:
+
+```sh
+umask 077
+TOKEN_FILE="$(mktemp)"
+printf '%s\n' "$TOKEN" >"$TOKEN_FILE"
+```
+
+Use `--token-file "$TOKEN_FILE"` in the lifecycle commands below. The file is
+opened without following symlinks, must be a regular owner-only file, and is
+read once before the local store or a child process is opened. `--token-fd FD`
+reads one inherited descriptor (including FD 0) once through a non-inheritable
+duplicate; close the descriptor after the command. Both non-argv sources accept
+at most 4096 UTF-8 bytes, one optional trailing newline, and reject empty,
+multiline, NUL-containing, oversized, unreadable, or unsafe input. Missing or
+conflicting sources fail before state changes. Direct `--token` remains
+supported for compatibility but exposes the secret to shell history and
+process-list inspection; no source places the value in diagnostics, output,
+exceptions, or child environments.
+
+For a descriptor-based handoff, keep the secret out of argv while invoking the
+same commands:
+
+```sh
+worklease heartbeat --resource "$RESOURCE" --claim-id "$CLAIM_ID" \
+  --token-fd 3 --revision "$REVISION" \
+  --operation-id "heartbeat-TASK-42-001" --ttl 900 3<"$TOKEN_FILE"
+```
+
+The file and descriptor sources have the same ownership, stale-revision, and
+idempotency semantics as `--token`.
 
 ### 3. Inspect and keep the lease alive
 
@@ -87,13 +123,18 @@ worklease list --resource "$RESOURCE"
 worklease heartbeat \
   --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
-  --token "$TOKEN" \
+  --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
   --operation-id "heartbeat-TASK-42-001" \
   --ttl 900
 ```
 
-A successful heartbeat atomically renews the lease and advances the active `revision`; replace `REVISION` with the returned value. Stale, expired, wrong-token, and conflicting requests fail without changing ownership. Operation IDs are idempotency keys: replay the exact same request to recover a lost response, and never reuse one for changed inputs.
+A successful heartbeat atomically renews the lease and advances the active
+`revision`; replace `REVISION` with the returned value. Stale, expired,
+wrong-token, and conflicting requests fail without changing ownership.
+Operation IDs are idempotency keys: replay the exact same request to recover a
+lost response, and never reuse one for changed inputs.
+
 
 For crash diagnosis, add `--verbose` to status. This remains a read-only projection and does not reclaim, adopt, reconcile, heartbeat, release, or otherwise mutate the resource:
 
@@ -126,7 +167,7 @@ variables); Git identity, configuration, and credential variables are preserved.
 worklease exec \
   --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
-  --token "$TOKEN" \
+  --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
   --operation-id "run-tests-TASK-42-001" \
   --git-primary \
@@ -162,7 +203,7 @@ Only the current claimant may record an observed result. Supply the inspected fi
 worklease reconcile-operation \
   --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
-  --token "$TOKEN" \
+  --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
   --operation-id "reconcile-TASK-42-001" \
   --target-operation-id "run-tests-TASK-42-001" \
@@ -185,7 +226,7 @@ MARKDOWN_KEY_JSON="$(worklease key \
 MARKDOWN_RESOURCE="$(printf '%s\n' "$MARKDOWN_KEY_JSON" | python -c \
   'import json, sys; print(json.load(sys.stdin)["resource"])')"
 # Acquire MARKDOWN_RESOURCE using the lifecycle above and retain:
-# MARKDOWN_CLAIM_ID, MARKDOWN_TOKEN, and MARKDOWN_REVISION.
+# MARKDOWN_TOKEN_FILE is a separate 0600 file containing the source claim token.
 ```
 
 Compute the expected SHA-256 from the current file, prepare replacement content separately, and use the returned revision afterward:
@@ -195,7 +236,7 @@ CURRENT_SHA256="$(shasum -a 256 docs/backlog.md | cut -d ' ' -f 1)"
 worklease replace-file \
   --resource "$MARKDOWN_RESOURCE" \
   --claim-id "$MARKDOWN_CLAIM_ID" \
-  --token "$MARKDOWN_TOKEN" \
+  --token-file "$MARKDOWN_TOKEN_FILE" \
   --revision "$MARKDOWN_REVISION" \
   --operation-id "replace-backlog-001" \
   --path docs/backlog.md \
@@ -213,7 +254,7 @@ Worklease has a `checkpoint` command, but its bounded JSON value is **coordinati
 worklease checkpoint \
   --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
-  --token "$TOKEN" \
+  --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
   --operation-id "checkpoint-TASK-42-001" \
   --checkpoint '{"phase":"tests","case":42}' \
@@ -232,7 +273,7 @@ Release only after the caller's durable provider checkpoint has been verified. U
 worklease release \
   --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
-  --token "$TOKEN" \
+  --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
   --operation-id "release-TASK-42-001" \
   --reason "provider checkpoint verified"
@@ -291,25 +332,31 @@ worklease acquire --resource RESOURCE --claim-id ID --agent-id ID \
 worklease status --resource RESOURCE [--verbose]
 worklease list [--resource RESOURCE]
 worklease inspect-operation --resource RESOURCE --operation-id OPERATION_ID
-worklease reconcile-operation --resource RESOURCE --claim-id ID --token TOKEN \
+worklease reconcile-operation --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID \
   --target-operation-id TARGET_OPERATION_ID \
   --expected-request-sha256 SHA256 \
   --outcome observed-success|observed-failure --evidence JSON
-worklease heartbeat --resource RESOURCE --claim-id ID --token TOKEN \
+worklease heartbeat --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID [--ttl SECONDS]
-worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
+worklease checkpoint --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID --checkpoint JSON [--ttl SECONDS]
-worklease exec --resource RESOURCE --claim-id ID --token TOKEN \
+worklease exec --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID \
   [--provider-directory DIR | --git-primary] -- COMMAND ARG...
 worklease exec-bundle --resource RESOURCE [--resource RESOURCE ...] \
-  --claim-id ID --token TOKEN --revision REVISION --operation-id OPERATION_ID \
+  --claim-id ID [--token TOKEN | --token-file PATH | --token-fd FD] \
   [--provider-directory DIR | --git-primary] -- COMMAND ARG...
-worklease replace-file --resource RESOURCE --claim-id ID --token TOKEN \
+worklease replace-file --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID --path PATH \
   --expected-sha256 SHA256 --content-file CONTENT_FILE
-worklease release --resource RESOURCE --claim-id ID --token TOKEN \
+worklease release --resource RESOURCE --claim-id ID \
+  [--token TOKEN | --token-file PATH | --token-fd FD] \
   --revision REVISION --operation-id OPERATION_ID --reason REASON
 ```
 
