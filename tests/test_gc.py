@@ -333,6 +333,42 @@ class GarbageCollectionTests(unittest.TestCase):
         self._seed_released("repo:gc-before-cutoff")
         self.now = 100.0
         self._seed_released("repo:gc-at-cutoff")
+        with connect(self.home.name) as db:
+            for label, recorded_at in (("old", 0.0), ("boundary", 100.0)):
+                resource = f"repo:gc-operation-{label}"
+                operation_id = f"operation-gc-{label}"
+                claim_id = f"claim-gc-{label}"
+                db.execute(
+                    """
+                    INSERT INTO operations(
+                        resource, claim_id, operation_id, kind, state,
+                        request, expected_revision, receipt, created_at
+                    ) VALUES (?, ?, ?, 'exec', 'completed', '{}', 1, '{}', ?)
+                    """,
+                    (resource, claim_id, operation_id, recorded_at),
+                )
+                db.execute(
+                    """
+                    INSERT INTO reconciliations(
+                        resource, operation_id, kind, claim_id, outcome,
+                        evidence, resolver_agent_id, resolver_session_id,
+                        resolver_owner_id, resolver_work_key, request_sha256,
+                        reconciliation_operation_id, reconciled_at, receipt
+                    ) VALUES (
+                        ?, ?, 'exec', ?, 'observed-success', '{}',
+                        'agent', 'session', 'owner', 'work',
+                        ?, ?, ?, '{}'
+                    )
+                    """,
+                    (
+                        resource,
+                        operation_id,
+                        claim_id,
+                        "0" * 64,
+                        f"reconcile-{label}",
+                        recorded_at,
+                    ),
+                )
 
         result = self.store.garbage_collect(
             cutoff="1970-01-01T00:01:40Z",
@@ -346,6 +382,8 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertEqual(1, eligible["epochs"]["count"])
         self.assertEqual(1, eligible["releases"]["count"])
         self.assertEqual(1, eligible["resources"]["count"])
+        self.assertEqual(1, eligible["operations"]["count"])
+        self.assertEqual(1, eligible["reconciliations"]["count"])
         self.assertEqual(
             "1970-01-01T00:00:00Z",
             eligible["epochs"]["oldest"],
