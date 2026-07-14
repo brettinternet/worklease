@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-07-14 03:43'
+updated_date: '2026-07-14 03:50'
 tags:
   - agent
   - workflow
@@ -67,7 +67,7 @@ worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID --checkpoint JSON [--ttl SECONDS]
 ```
 
-Its version-1 JSON success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim. The claim reports the incremented `revision`, `heartbeatAt`, `expiresAt`, and local guarantee. Replaying the same operation ID with the same request returns the original receipt; changed values, stale revisions, expired claims, and wrong tokens fail without changing the checkpoint. Read-only `status` and `list` include the checkpoint but never the bearer token.
+Its version-1 JSON success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`. The mutation response includes the bearer token once; keep it secret and out of logs. Read-only `status` and `list` include the checkpoint but never the bearer token. Replaying the same operation ID with the same request returns the cached receipt, even after the lease expires; a changed request under the same operation ID, or a new/uncached request with stale/expired ownership, fails without changing the checkpoint.
 
 The latest value is retained on the active claim. A clean `release` copies it into release history, and a later acquire returns it with `recovery: "clean-handoff"`. If the claim expires first, the next acquire returns the retained value with `recovery: "expired-recovery"`. A first acquire has no recovery marker. Retention is local SQLite coordination state and is not lease-TTL-limited: the latest value survives clean release and expiry recovery until a future explicit retention or garbage-collection operation removes it. The caller's provider remains authoritative for progress, and checkpoints do not provide provider-side fencing, cross-host exclusion, or exactly-once external effects.
 

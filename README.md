@@ -116,7 +116,7 @@ worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
   [--ttl SECONDS]
 ```
 
-`status` and `list` never return bearer tokens. Tokens cannot be recovered. `acquire` and `heartbeat` return the token once; keep it secret and out of logs. `list --format text` prints state, resource, claim, owner, and expiry columns.
+`status` and `list` never return bearer tokens. Tokens cannot be recovered. `acquire`, `heartbeat`, and successful `checkpoint` return the token once in their mutation response; keep it secret and out of logs. `list --format text` prints state, resource, claim, owner, and expiry columns.
 
 ### Checkpoint contract
 
@@ -127,10 +127,12 @@ measures the UTF-8 bytes. The serialized checkpoint is limited to 8 KiB
 `invalid-checkpoint` or `checkpoint-too-large` without changing the claim.
 
 On success, the JSON response has `schemaVersion: 1`, `operation: "checkpoint"`,
-`checkpoint`, `checkpointBytes`, `operationId`, and the renewed
-claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`.
-Retrying the same operation ID with the same request returns the same receipt;
-changed values or stale ownership are rejected.
+`checkpoint`, `checkpointBytes`, `operationId`, and the renewed claim with its
+incremented `revision`, `heartbeatAt`, and `expiresAt`; the mutation response
+includes the bearer token once. Retrying the same operation ID with the same
+request returns the cached receipt, even after the lease expires; a changed
+request under the same operation ID, or a new/uncached request with
+stale/expired ownership, is rejected.
 
 The Python API is `LeaseStore.checkpoint(MutationRequest(...), value)`. It
 atomically writes the checkpoint, advances the revision, and renews the lease.
