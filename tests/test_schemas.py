@@ -161,6 +161,8 @@ class SchemaContractTests(unittest.TestCase):
             "key", "--provider", "unknown", "--source", "team", "--item", "ITEM-1"
         )
         self.assert_matches_commands_schema(error)
+        gc = self.run_cli("gc")
+        self.assert_matches_commands_schema(gc)
 
 
 if __name__ == "__main__":

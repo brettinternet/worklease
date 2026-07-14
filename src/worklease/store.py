@@ -2456,6 +2456,8 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = unresolved.resource
                           AND rec.operation_id = unresolved.operation_id
+                          AND rec.claim_id = unresolved.claim_id
+                          AND rec.kind = unresolved.kind
                     )
               )
               AND NOT EXISTS (
@@ -2499,6 +2501,8 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = unresolved.resource
                           AND rec.operation_id = unresolved.operation_id
+                          AND rec.claim_id = unresolved.claim_id
+                          AND rec.kind = unresolved.kind
                     )
               )
               AND NOT EXISTS (
@@ -2521,6 +2525,8 @@ class LeaseStore:
                       SELECT 1 FROM reconciliations AS r
                       WHERE r.resource = o.resource
                         AND r.operation_id = o.operation_id
+                        AND r.claim_id = o.claim_id
+                        AND r.kind = o.kind
                   )
               )
               AND NOT EXISTS (
@@ -2536,6 +2542,8 @@ class LeaseStore:
                   FROM reconciliations AS r
                   WHERE r.resource = o.resource
                     AND r.operation_id = o.operation_id
+                    AND r.claim_id = o.claim_id
+                    AND r.kind = o.kind
                     AND r.reconciled_at >= ?
               )
             """,
@@ -2563,6 +2571,8 @@ class LeaseStore:
                   FROM operations AS o
                   WHERE o.resource = r.resource
                     AND o.operation_id = r.operation_id
+                    AND o.claim_id = r.claim_id
+                    AND o.kind = r.kind
                     AND o.created_at >= ?
               )
             """,

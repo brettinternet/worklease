@@ -408,7 +408,7 @@ class GarbageCollectionTests(unittest.TestCase):
             eligible["epochs"]["newest"],
         )
 
-    def test_active_and_expired_claims_protect_old_records(self) -> None:
+    def test_expired_claim_protects_old_records(self) -> None:
         expired = self.store.acquire(
             AcquireRequest(
                 resource="repo:gc-expired",
@@ -420,7 +420,13 @@ class GarbageCollectionTests(unittest.TestCase):
                 ttl=1.0,
             )
         )
+        self.assertTrue(expired["ok"])
         self.now = 10.0
+        result = self.store.garbage_collect(cutoff="1970-01-01T00:00:10Z")
+        self.assertEqual(0, result["eligible"]["epochs"]["count"])
+        self.assertEqual(0, result["eligible"]["resources"]["count"])
+
+    def test_active_claim_protects_old_records(self) -> None:
         active = self.store.acquire(
             AcquireRequest(
                 resource="repo:gc-active",
@@ -432,13 +438,11 @@ class GarbageCollectionTests(unittest.TestCase):
                 ttl=100.0,
             )
         )
-        self.assertTrue(expired["ok"])
         self.assertTrue(active["ok"])
-        result = self.store.garbage_collect(
-            cutoff="1970-01-01T00:00:10Z",
-        )
-        for record_class in ("epochs", "resources"):
-            self.assertEqual(0, result["eligible"][record_class]["count"])
+        self.now = 10.0
+        result = self.store.garbage_collect(cutoff="1970-01-01T00:00:10Z")
+        self.assertEqual(0, result["eligible"]["epochs"]["count"])
+        self.assertEqual(0, result["eligible"]["resources"]["count"])
 
     def test_unresolved_bundle_operation_protects_epoch_and_resources(self) -> None:
         resources = ("repo:gc-bundle-a", "repo:gc-bundle-b")
@@ -724,6 +728,126 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertTrue(completed["ok"])
         self.assertTrue(reconciled["ok"])
         self.assertTrue(released["ok"])
+
+    def test_dry_run_does_not_mutate_records_or_revisions(self) -> None:
+        resource = "repo:gc-dry-run-snapshot"
+        self._seed_released(resource)
+        self.now = 31 * 86400
+        with connect(self.home.name) as db:
+            before = {
+                table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                for table in (
+                    "epochs",
+                    "bundle_epochs",
+                    "operations",
+                    "releases",
+                    "reconciliations",
+                    "resources",
+                )
+            }
+        self.store.garbage_collect()
+        with connect(self.home.name) as db:
+            after = {
+                table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                for table in before
+            }
+        self.assertEqual(before, after)
+
+    def test_reused_operation_id_does_not_hide_unresolved_operation(self) -> None:
+        resource = "repo:gc-reused-operation"
+        first = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-reused-first",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(first, dict)
+        first_request = MutationRequest(
+            resource=resource,
+            claim_id=str(first["claimId"]),
+            token=str(first["token"]),
+            revision=int(first["revision"]),
+            operation_id="reused-operation",
+        )
+        first_payload = {"command": ["old"]}
+        self.assertIsNone(
+            self.store.begin_operation(first_request, "exec", first_payload)
+        )
+        first_sha = hashlib.sha256(
+            json.dumps(first_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.store.reconcile_operation(
+            MutationRequest(
+                resource=resource,
+                claim_id=first_request.claim_id,
+                token=first_request.token,
+                revision=first_request.revision,
+                operation_id="reconcile-reused-old",
+            ),
+            first_request.operation_id,
+            first_sha,
+            "observed-success",
+            {"status": "ok"},
+        )
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=first_request.claim_id,
+                token=first_request.token,
+                revision=2,
+                operation_id="release-reused-old",
+            ),
+            "done",
+        )
+
+        self.now = 5.0
+        second = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-reused-second",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(second, dict)
+        second_request = MutationRequest(
+            resource=resource,
+            claim_id=str(second["claimId"]),
+            token=str(second["token"]),
+            revision=int(second["revision"]),
+            operation_id="reused-operation",
+        )
+        self.assertIsNone(
+            self.store.begin_operation(second_request, "exec", {"command": ["new"]})
+        )
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=second_request.claim_id,
+                token=second_request.token,
+                revision=second_request.revision,
+                operation_id="release-reused-new",
+            ),
+            "done",
+        )
+        self.now = 10.0
+        applied = self.store.garbage_collect(cutoff="1970-01-01T00:00:10Z", apply=True)
+        self.assertEqual(1, applied["collected"]["operations"]["count"])
+        with connect(self.home.name) as db:
+            remaining = db.execute(
+                "SELECT claim_id, state FROM operations WHERE resource = ?",
+                (resource,),
+            ).fetchall()
+        self.assertEqual(
+            [("claim-gc-reused-second", "started")],
+            [(str(row[0]), str(row[1])) for row in remaining],
+        )
 
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-gc-cutoff"):
