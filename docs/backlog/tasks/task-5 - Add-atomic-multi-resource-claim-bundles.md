@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 03:59'
+updated_date: '2026-07-14 04:27'
 labels:
   - coordination
   - leases
@@ -70,4 +70,6 @@ Allow a caller to acquire a finite set of exact opaque resources as one all-or-n
 Implementation checkpoint (T1 atomic bundle ownership): commit 042fae6ee87e36656d71272bc817cef0485cef34 adds bounded 1-32 resource bundle models, deterministic multi-resource POSIX locking, SQLite bundle epoch/member persistence, all-or-none acquisition/reclaim/idempotent retry, shared token/revision, bundle membership guards for single-resource mutations, read-only bundle projections, and lifecycle/concurrency/validation tests. Verification: mise run hooks passed (ruff and 66 tests); mise run lint passed; mise run format-check passed; mise run test passed (66 tests); mise run typecheck passed. Progress: T1 complete. Next task: T2 bundle inspect/heartbeat/guarded exec/release and CLI/schema wiring. Remaining acceptance: #3, #5 and T3 documentation/concurrency coverage.
 
 T1 review fix: independent verifier initially found cross-kind claim-id reuse: single acquire omitted bundle_epochs. Commit 0d46590cc8afe87b6a9278af301ef6bf08fa38af extends the single acquire epoch query across epochs and bundle_epochs and adds test_single_acquire_rejects_claim_id_used_by_bundle. Focused regression passed; hooks passed with 67 tests; lint, format-check, and typecheck passed. Verifier recheck: all T1 criteria PASS after fix. T1 remains complete; next task T2. Remaining acceptance: #3, #5 and T3 documentation/concurrency coverage.
+
+Implementation checkpoint (T2 bundle lifecycle and guarded operations): existing feature commit 5256952aa851b4030ae1f793e3e025242af8357c adds exact ordered bundle mutation authorization, atomic inspect/heartbeat/release, idempotent guarded bundle exec, schema-versioned CLI commands with aliases, redacted read-only receipts, and lifecycle tests. Verification: mise exec -- uv run python -m unittest tests.test_store tests.test_cli tests.test_execution passed (45 tests); mise run hooks passed (no staged files); mise run lint passed; mise run format-check passed; mise run test passed (69 tests); mise run typecheck passed. Progress: T2 complete. Next task: T3 concurrency contract and documentation. Remaining acceptance: #5.
 <!-- SECTION:NOTES:END -->
