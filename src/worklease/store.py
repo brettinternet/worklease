@@ -685,8 +685,15 @@ class LeaseStore:
         *,
         lock_held: bool = False,
     ) -> dict[str, Any]:
-        """Persist a bounded JSON checkpoint while renewing ownership."""
+        """Persist a bounded JSON checkpoint while renewing ownership.
 
+        ``value`` is canonicalized as JSON and must fit within the
+        ``MAX_CHECKPOINT_BYTES`` UTF-8 limit. The write, revision increment,
+        and lease renewal commit atomically. The latest value remains on the
+        active claim and is copied into release history for clean handoff or
+        expiry recovery; it is coordination metadata, not provider progress.
+
+        """
         serialized = serialize_checkpoint(value)
         operation_request = self._receipt_request(
             request, checkpoint=json.loads(serialized)

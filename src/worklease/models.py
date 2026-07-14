@@ -14,7 +14,13 @@ MAX_CHECKPOINT_BYTES = 8 * 1024
 
 
 def serialize_checkpoint(value: Any) -> str:
-    """Serialize one bounded JSON checkpoint without non-standard values."""
+    """Serialize one bounded JSON checkpoint without non-standard values.
+
+    Checkpoints are canonical JSON (sorted keys, compact separators, and
+    ``allow_nan=False``) and are limited to ``MAX_CHECKPOINT_BYTES`` UTF-8
+    bytes. The serialized form is retained by the local coordination store;
+    callers must keep provider progress authoritative.
+    """
 
     try:
         serialized = json.dumps(
@@ -32,6 +38,8 @@ def serialize_checkpoint(value: Any) -> str:
 
 
 def deserialize_checkpoint(value: str | None) -> Any:
+    """Decode a persisted canonical JSON checkpoint, if present."""
+
     if value is None:
         return None
     try:

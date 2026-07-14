@@ -111,9 +111,37 @@ worklease exec --resource RESOURCE --claim-id ID --token TOKEN \
 worklease replace-file --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID --path PATH \
   --expected-sha256 SHA256 --content-file CONTENT_FILE
+worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
+  --revision REVISION --operation-id OPERATION_ID --checkpoint JSON \
+  [--ttl SECONDS]
 ```
 
 `status` and `list` never return bearer tokens. Tokens cannot be recovered. `acquire` and `heartbeat` return the token once; keep it secret and out of logs. `list --format text` prints state, resource, claim, owner, and expiry columns.
+
+### Checkpoint contract
+
+`checkpoint` accepts exactly one JSON value. The Python API canonicalizes it
+with sorted object keys, compact separators, and `allow_nan=False`, then
+measures the UTF-8 bytes. The serialized checkpoint is limited to 8 KiB
+(`MAX_CHECKPOINT_BYTES = 8192`); non-JSON values and larger payloads return
+`invalid-checkpoint` or `checkpoint-too-large` without changing the claim.
+
+On success, the JSON response has `schemaVersion: 1`, `operation: "checkpoint"`,
+`checkpoint`, `checkpointBytes`, `operationId`, and the renewed
+claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`.
+Retrying the same operation ID with the same request returns the same receipt;
+changed values or stale ownership are rejected.
+
+The Python API is `LeaseStore.checkpoint(MutationRequest(...), value)`. It
+atomically writes the checkpoint, advances the revision, and renews the lease.
+The latest value remains on the active claim. A clean `release` copies it to
+release history; a later `acquire` reports `recovery: "clean-handoff"` and the
+checkpoint. If the claim expires first, the next acquire reports
+`recovery: "expired-recovery"` with the last checkpoint. A first acquire has
+no recovery marker. These records are local coordination metadata only; the
+backlog/provider remains authoritative for real progress, and the feature
+does not provide provider-side fencing, cross-host exclusion, or exactly-once
+external effects.
 
 Exit codes: `0` success, `2` lease or capability conflict, `3` idempotency or version/request mismatch, and `64` invalid input. `exec` returns the child status after the child starts.
 
