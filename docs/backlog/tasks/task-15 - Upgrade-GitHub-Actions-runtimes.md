@@ -1,11 +1,11 @@
 ---
 id: TASK-15
 title: Upgrade GitHub Actions runtimes
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:44'
-updated_date: '2026-07-14 04:06'
+updated_date: '2026-07-14 04:33'
 labels: []
 dependencies: []
 modified_files:
@@ -23,14 +23,14 @@ Update every action used by the CI and release workflows to its current supporte
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 All action references use the latest major releases confirmed from their upstream repositories.
-- [ ] #2 CI and release workflow checks complete without Node.js 20 deprecation warnings from the upgraded actions.
+- [x] #2 CI and release workflow checks complete without Node.js 20 deprecation warnings from the upgraded actions.
 - [x] #3 The repository quality gates and a post-change CI run pass.
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Add a non-publishing workflow_dispatch release validation path so the upgraded release actions can run at the current package version without rewriting the existing v0.1.0 tag. 2. Run local workflow parsing and repository quality gates. 3. Commit only the workflow and task-state changes; document that the post-change remote workflow run requires the owner to push this commit because this pass does not have push authorization.
+1. Keep the upgraded immutable action pins and non-publishing workflow_dispatch release validation path. 2. Verify the pushed workflow revision with the post-change CI push run and a manual release validation run without rewriting v0.1.0. 3. Run the local repository quality gates, record objective evidence, and finalize TASK-15.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -53,6 +53,8 @@ Independent verifier verdict at commit 5d046c0: AC #1 PASS; AC #2 UNVERIFIED bec
 AC3 verified from local quality gates (lint, format-check, 62 tests, typecheck) plus successful post-upgrade CI run 29302065979 on remote main at 93cf51c; AC2 remains unchecked because release-run evidence is still pending.
 
 Verification pass 2026-07-14: mise run lint passed; mise run format-check passed (23 files); mise run test passed (62 tests); mise run typecheck passed (0 errors); targeted workflow immutability test passed. gh run list --workflow release.yml still shows only 29301289631, the pre-upgrade v0.1.0 run; gh workflow view release.yml on remote main still has tag-only trigger, so no post-change Release run can be claimed. Local .github/workflows/release.yml has workflow_dispatch validation and a push-only publish guard, but that commit is not pushed. AC #2 remains unverified pending owner-authorized push and manual validation run.
+
+Final verification 2026-07-14: remote main 4fefe693be25e3000125c246360e34b2c2a3ecf1 passed CI push run 29305878671 with all jobs successful. Release workflow_dispatch run 29306013835 ran at the same head SHA and completed all five asset-build jobs plus checksum/publish job successfully; publication was skipped by the push-only guard. CI and release logs contain no Node.js 20/runtime deprecation warnings; the release log contains only an unrelated Buffer() deprecation warning. Local gates passed: mise run lint; mise run format-check (23 files); mise run test (72 tests); mise run typecheck (0 errors).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -64,3 +66,9 @@ created: 2026-07-14 03:48
 Unblocking the release-evidence blocker without creating or force-moving a release tag: add workflow_dispatch with an explicit release_tag input and skip publication for manual validation runs. The existing push-tag release path remains unchanged.
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Upgraded CI and release actions to current immutable major pins and added a non-publishing release validation trigger. Verified remote main SHA 4fefe693be25e3000125c246360e34b2c2a3ecf1 with CI run 29305878671 and release validation run 29306013835; all required jobs passed and no Node.js 20/runtime deprecation warnings appeared. Local lint, formatting, 72 tests, and typecheck also passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
