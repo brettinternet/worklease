@@ -1,11 +1,11 @@
 ---
 id: TASK-6
 title: Add explicit unknown-operation reconciliation
-status: In Progress
+status: Done
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 04:49'
+updated_date: '2026-07-14 05:22'
 labels:
   - coordination
   - recovery
@@ -28,11 +28,11 @@ Make operations that were durably started before an external side effect but nev
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A caller can inspect an operation by resource and operation ID and distinguish started/unknown, completed, and explicitly reconciled outcomes without receiving bearer tokens.
-- [ ] #2 An authorized current claimant can reconcile a prior unknown operation as observed success or observed failure with bounded caller-supplied evidence; stale claims and mismatched request fingerprints are rejected.
-- [ ] #3 Reconciliation is idempotent, cannot silently rerun or mutate the original external operation, and preserves the original request, timestamps, result, and resolver identity.
-- [ ] #4 A reconciled operation can be safely referenced by a later workflow so callers know whether to continue, stop, or issue a new operation ID for an explicitly approved retry.
-- [ ] #5 Crash, storage-failure, stale-owner, duplicate-resolution, malformed-evidence, and read-only token-redaction cases are covered by automated tests and documented in the CLI/API contract.
+- [x] #1 A caller can inspect an operation by resource and operation ID and distinguish started/unknown, completed, and explicitly reconciled outcomes without receiving bearer tokens.
+- [x] #2 An authorized current claimant can reconcile a prior unknown operation as observed success or observed failure with bounded caller-supplied evidence; stale claims and mismatched request fingerprints are rejected.
+- [x] #3 Reconciliation is idempotent, cannot silently rerun or mutate the original external operation, and preserves the original request, timestamps, result, and resolver identity.
+- [x] #4 A reconciled operation can be safely referenced by a later workflow so callers know whether to continue, stop, or issue a new operation ID for an explicitly approved retry.
+- [x] #5 Crash, storage-failure, stale-owner, duplicate-resolution, malformed-evidence, and read-only token-redaction cases are covered by automated tests and documented in the CLI/API contract.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -75,4 +75,16 @@ Implementation checkpoint (T2 authorized reconciliation): commit c082a9bf6b37c57
 T2 review fix: commit e548a029016befacd0497bfb4efbf975dab60c4b rejects reconciliation replays after a later heartbeat or claim expiry while preserving immediate idempotent replay. Added focused stale-revision and claim-expired coverage; full quality gates and hooks passed (74 tests). T2 remains complete; next task T3.
 
 Independent verifier found and confirmed one defect: direct LeaseStore reconciliation accepted arbitrary outcomes despite CLI choices. Fixed in commit c5cb74663f4fbe5f9fccfdd9739f145b16d352bb with store-side observed-success/observed-failure validation and focused regression coverage. Targeted store+CLI verification passed 41 tests; lint, format-check, typecheck, hooks passed. Verifier recheck criteria otherwise PASS; T2 complete, T3 next.
+
+Implementation checkpoint (T3 recovery tests and contract documentation): commit e1010b0b3ef06c709d6296d93f6a4c59de1cd582 adds fingerprint-mismatch, malformed/oversized-evidence, and reconciliation storage-rollback tests; documents inspect-operation/reconcile-operation recovery, immutable audit, bounded evidence, idempotent replay, and new-operation retry guidance in README and CLI contract. Targeted verification: mise exec -- uv run python -m unittest tests.test_store tests.test_cli passed (43 tests); mise run lint passed; mise run format-check passed; mise run test passed; mise run typecheck passed; mise run hooks passed. Progress: T3 complete. Next task: review complete accumulated TASK-6 implementation. Remaining acceptance: review evidence.
+
+Verifier correction: migration coverage was incomplete because the test did not exercise ALTER TABLE for a legacy reconciliations table. Commit e411ce8df41b36d2684129818ae7dd6af7bd8226 constructs a receipt-less legacy table, triggers inspection migration, and asserts the receipt column is restored. Reverification: focused tests.test_store and tests.test_cli passed (43 tests); mise run lint, format-check, test, typecheck, and hooks passed. T3 remains complete; next task: review complete accumulated TASK-6 implementation including e1010b0b3ef06c709d6296d93f6a4c59de1cd582 and e411ce8df41b36d2684129818ae7dd6af7bd8226.
+
+Review checkpoint: reviewed the complete TASK-6 implementation at commits 723f414, 4fefe69, c082a9b, e548a02, c5cb746, e1010b0, plus review-fix commit e411ce8. Full state/data-integrity/concurrency/API review found no remaining correctness, security, compatibility, performance, or maintainability findings after the migration-coverage fix. Verification: mise run lint, mise run format-check, mise run test (70 tests), mise run typecheck, and mise run hooks passed on the exact review snapshot. Review depth: full implementation-review rubric; findings/fixes: migration test coverage fixed in e411ce8. All acceptance criteria verified against implementation and tests; ready for integration.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented and reviewed explicit unknown-operation reconciliation. Added redacted inspect-operation projections, authorized append-only observed outcome reconciliation with bounded strict JSON evidence, fingerprint and claim/revision validation, idempotent replay, migration support, CLI wiring, recovery tests, and operator documentation. Review covered the accumulated implementation and e411ce8 migration-coverage fix under the full implementation-review rubric. Integrated to main at e411ce8; full quality gates passed (70 tests).
+<!-- SECTION:FINAL_SUMMARY:END -->
