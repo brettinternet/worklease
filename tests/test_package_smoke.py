@@ -6,10 +6,74 @@ import sys
 import unittest
 from importlib.metadata import version
 
-from worklease import __version__
+from worklease import (
+    AcquireRequest,
+    BundleAcquireRequest,
+    BundleClaim,
+    BundleMutationRequest,
+    BundleStatusRequest,
+    Claim,
+    ClaimError,
+    FileReplacer,
+    GuardedExecutor,
+    LeaseError,
+    LeaseStore,
+    MutationRequest,
+    ProviderAdapter,
+    ResourceKey,
+    __all__,
+    __version__,
+    execute,
+    execute_bundle,
+    replace_file,
+)
 
 
 class PackageSmokeTests(unittest.TestCase):
+    def test_public_facade_exports_supported_interfaces(self) -> None:
+        expected = {
+            "__version__",
+            "AcquireRequest",
+            "BundleAcquireRequest",
+            "BundleClaim",
+            "BundleMutationRequest",
+            "BundleStatusRequest",
+            "Claim",
+            "ClaimError",
+            "FileReplacer",
+            "GuardedExecutor",
+            "LeaseError",
+            "LeaseStore",
+            "MutationRequest",
+            "ProviderAdapter",
+            "ResourceKey",
+            "execute",
+            "execute_bundle",
+            "replace_file",
+        }
+
+        self.assertEqual(set(__all__), expected)
+        self.assertIs(ClaimError, LeaseError)
+        for value in (
+            AcquireRequest,
+            BundleAcquireRequest,
+            BundleClaim,
+            BundleMutationRequest,
+            BundleStatusRequest,
+            Claim,
+            FileReplacer,
+            GuardedExecutor,
+            LeaseError,
+            LeaseStore,
+            MutationRequest,
+            ProviderAdapter,
+            ResourceKey,
+            execute,
+            execute_bundle,
+            replace_file,
+        ):
+            self.assertIsNotNone(value)
+
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "worklease.cli", *args],
