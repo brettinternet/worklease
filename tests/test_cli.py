@@ -317,6 +317,23 @@ class CliContractTests(unittest.TestCase):
         assert isinstance(command, dict)
         self.assertEqual("bundle-output\n", command["stdout"])
         self.assertNotIn(token, json.dumps(executed))
+        replayed = self.json_cli(
+            "exec-bundle",
+            *(
+                *mutation[:-1],
+                str(heartbeat_claim["revision"]),
+            ),
+            "--operation-id",
+            "bundle-exec-cli",
+            "--",
+            sys.executable,
+            "-c",
+            "print('bundle-output')",
+        )
+        replayed_command = replayed["command"]
+        assert isinstance(replayed_command, dict)
+        self.assertTrue(replayed["idempotent"])
+        self.assertEqual("bundle-output\n", replayed_command["stdout"])
         executed_claim = executed["claim"]
         assert isinstance(executed_claim, dict)
         released = self.json_cli(

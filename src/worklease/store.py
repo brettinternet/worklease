@@ -1125,19 +1125,6 @@ class LeaseStore:
                 operation_request,
                 receipt,
             )
-            db.execute(
-                """
-                UPDATE operations
-                SET expected_revision = ?
-                WHERE resource = ? AND claim_id = ? AND state = 'started'
-                    AND kind = 'exec-bundle'
-                """,
-                (
-                    int(result["claim"]["revision"]),
-                    self._bundle_operation_resource(request.resources),
-                    request.claim_id,
-                ),
-            )
             return result
 
     def begin_bundle_operation(
@@ -1235,18 +1222,19 @@ class LeaseStore:
                     operationId=request.operation_id,
                 )
             expected_revision = int(operation["expected_revision"])
-            if request.revision != expected_revision:
-                raise LeaseError(
-                    "stale-revision",
-                    resource=",".join(request.resources),
-                    expectedRevision=expected_revision,
-                    suppliedRevision=request.revision,
-                )
-            if str(operation["state"]) == "completed":
+            state = str(operation["state"])
+            if state == "completed":
+                if request.revision != expected_revision:
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=",".join(request.resources),
+                        expectedRevision=expected_revision,
+                        suppliedRevision=request.revision,
+                    )
                 completed = json.loads(str(operation["receipt"]))
                 completed["idempotent"] = True
                 return completed
-            if str(operation["state"]) != "started":
+            if state != "started":
                 raise LeaseError(
                     "invalid-operation-state",
                     code=3,
