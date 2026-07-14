@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 14:30'
+updated_date: '2026-07-14 17:56'
 labels:
   - providers
   - sdk
@@ -74,4 +74,6 @@ Implementation pass T2 claimed under claim 25DA9323-BAB5-4C48-98DE-4F3C8860D25B;
 Implementation checkpoint (T2 provider conformance kit): commit f6669a7b3971fe7f7f3938811f3817bdeab917a7. Added reusable provider conformance case/report/helpers covering source qualification, dependency closure, unsupported capabilities, stale-version rejection, ambiguous receipts, receipt durability/redaction, and truthful fencing declarations; added 10 SDK conformance tests and public exports. Verification: SDK unittest (10 tests) passed; mise run lint, format-check, test, typecheck, hooks passed; uv build --wheel --sdist passed and artifacts include conformance.py. Next task: T3 external composition example and compatibility guide. Remaining criteria: AC4-AC5.
 
 Integration checkpoint: T2 implementation commit f6669a7b3971fe7f7f3938811f3817bdeab917a7 cherry-picked into canonical main as 37906f22ad1dcc97407ca6d50afd20ec91c64af0 under the provider/repository transaction lock. Canonical post-integration mise run lint, format-check, test, and typecheck passed; canonical SDK conformance unittest (10 tests) passed.
+
+Implementation pass T3 claimed under claim 13971093-FE78-4802-BC5A-DFBF582AC732; worker-attempt 99FB0210-9458-49F8-B3AE-45DB94133A32; canonical in-progress checkpoint refreshed.
 <!-- SECTION:NOTES:END -->
