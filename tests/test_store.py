@@ -266,6 +266,101 @@ class StoreTests(unittest.TestCase):
                 )
             )
 
+    def test_inspect_operation_redacts_unknown_and_completed_receipts(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        unknown_request = self.mutation(acquired, "resource", "unknown-1")
+        operation_request = {
+            "revision": unknown_request.revision,
+            "ttl": float(unknown_request.ttl),
+            "command": ["printf", "sentinel"],
+        }
+        self.assertIsNone(
+            self.store.begin_operation(unknown_request, "exec", operation_request)
+        )
+
+        unknown = self.store.inspect_operation("resource", "unknown-1")
+        self.assertEqual("unknown-outcome", unknown["state"])
+        self.assertEqual("exec", unknown["kind"])
+        self.assertNotIn("token", unknown)
+        self.assertNotIn("request", unknown)
+        self.assertNotIn("receipt", unknown)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-1"),
+            ).fetchone()
+        assert raw_request is not None
+        self.assertEqual(
+            hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest(),
+            unknown["requestSha256"],
+        )
+
+        heartbeat = self.store.heartbeat(
+            self.mutation(acquired, "resource", "completed-1")
+        )
+        completed = self.store.inspect_operation("resource", "completed-1")
+        self.assertEqual("completed", completed["state"])
+        self.assertEqual(
+            heartbeat["claim"]["revision"] - 1, completed["expectedRevision"]
+        )
+        self.assertNotIn("token", completed)
+        self.assertNotIn("receipt", completed)
+
+    def test_inspect_operation_reads_reconciliation_projection_and_migrates_table(
+        self,
+    ) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        request = self.mutation(acquired, "resource", "unknown-1")
+        self.store.begin_operation(
+            request,
+            "exec",
+            {"revision": request.revision, "ttl": float(request.ttl)},
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            table = db.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name = 'reconciliations'
+                """
+            ).fetchone()
+            self.assertEqual(("reconciliations",), table)
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, outcome, evidence,
+                    resolver_agent_id, resolver_session_id, resolver_owner_id,
+                    resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "resource",
+                    "unknown-1",
+                    "exec",
+                    str(request.claim_id),
+                    "observed-success",
+                    '{"token":"sentinel"}',
+                    "agent",
+                    "session",
+                    "owner",
+                    "work",
+                    "a" * 64,
+                    "reconcile-1",
+                    self.clock(),
+                ),
+            )
+            db.commit()
+
+        projection = self.store.inspect_operation("resource", "unknown-1")
+        self.assertEqual("reconciled", projection["state"])
+        self.assertEqual("observed-success", projection["outcome"])
+        self.assertEqual("reconcile-1", projection["reconciliationOperationId"])
+        self.assertNotIn("evidence", projection)
+        self.assertNotIn("sentinel", json.dumps(projection))
+
     def test_release_retry_is_idempotent_and_claim_id_cannot_be_reused(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         request = self.mutation(acquired, "resource", "release-1")

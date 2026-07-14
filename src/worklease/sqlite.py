@@ -153,6 +153,22 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 checkpoint TEXT,
                 PRIMARY KEY(resource, claim_id)
             );
+            CREATE TABLE IF NOT EXISTS reconciliations (
+                resource TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                claim_id TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                resolver_agent_id TEXT NOT NULL,
+                resolver_session_id TEXT NOT NULL,
+                resolver_owner_id TEXT NOT NULL,
+                resolver_work_key TEXT NOT NULL,
+                request_sha256 TEXT NOT NULL,
+                reconciliation_operation_id TEXT NOT NULL,
+                reconciled_at REAL NOT NULL,
+                PRIMARY KEY(resource, operation_id)
+            );
             """
         )
         operation_columns = {

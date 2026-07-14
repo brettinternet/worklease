@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -169,6 +170,67 @@ class LeaseStore:
                 "request": json.loads(str(row["request"])),
                 "receipt": receipt,
             }
+
+    def inspect_operation(self, resource: str, operation_id: str) -> dict[str, Any]:
+        """Read one operation without requiring ownership or exposing secrets."""
+
+        require_resource(resource)
+        require_text(operation_id, "operation-id")
+        with (
+            resource_lock(resource, self.home),
+            closing(self._connect()) as db,
+        ):
+            row = db.execute(
+                """
+                SELECT * FROM operations
+                WHERE resource = ? AND operation_id = ?
+                ORDER BY kind
+                LIMIT 1
+                """,
+                (resource, operation_id),
+            ).fetchone()
+            if row is None:
+                raise LeaseError(
+                    "operation-not-found",
+                    code=3,
+                    operationId=operation_id,
+                )
+            request_json = str(row["request"])
+            projection: dict[str, Any] = {
+                "ok": True,
+                "operation": "inspect-operation",
+                "resource": resource,
+                "operationId": operation_id,
+                "kind": str(row["kind"]),
+                "state": (
+                    "unknown-outcome"
+                    if str(row["state"]) == "started"
+                    else str(row["state"])
+                ),
+                "expectedRevision": int(row["expected_revision"]),
+                "requestSha256": hashlib.sha256(
+                    request_json.encode("utf-8")
+                ).hexdigest(),
+                "createdAt": self._timestamp(float(row["created_at"])),
+            }
+            reconciliation = db.execute(
+                """
+                SELECT outcome, reconciliation_operation_id, reconciled_at
+                FROM reconciliations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                (resource, operation_id),
+            ).fetchone()
+            if reconciliation is not None:
+                projection["state"] = "reconciled"
+                projection["outcome"] = str(reconciliation["outcome"])
+                projection["reconciliationOperationId"] = str(
+                    reconciliation["reconciliation_operation_id"]
+                )
+                projection["reconciledAt"] = self._timestamp(
+                    float(reconciliation["reconciled_at"])
+                )
+            return projection
 
     def _bundle_for_resource(
         self, connection: sqlite3.Connection, resource: str
