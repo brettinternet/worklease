@@ -317,7 +317,6 @@ class LeaseStore:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
-        allow_expired: bool = False,
     ) -> dict[str, Any]:
         """Persist a started operation's receipt and advance its claim."""
 
@@ -333,7 +332,7 @@ class LeaseStore:
                     expectedRevision=int(row["revision"]),
                     suppliedRevision=request.revision,
                 )
-            if not allow_expired and self.clock() >= float(row["expires_at"]):
+            if self.clock() >= float(row["expires_at"]):
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,

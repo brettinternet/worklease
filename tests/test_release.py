@@ -113,6 +113,35 @@ class ReleaseValidationTests(unittest.TestCase):
             self.assertEqual("native", payload["kind"])
             self.assertTrue((install_directory / "worklease").is_file())
 
+    def test_native_install_rejects_destination_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release = root / "release"
+            release.mkdir()
+            native = release / native_asset_name(
+                VERSION, system="Linux", machine="x86_64"
+            )
+            native.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
+                '"ok":true,"version":"0.1.0"}\'\n',
+                encoding="utf-8",
+            )
+            native.chmod(0o755)
+            write_checksums(release)
+            install_directory = root / "bin"
+            install_directory.mkdir()
+            destination = install_directory / "worklease"
+            sentinel = root / "sentinel"
+            sentinel.write_text("do not replace\n", encoding="utf-8")
+            destination.symlink_to(sentinel)
+
+            result = self.run_installer(release, install_directory)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("not a regular file", result.stderr)
+            self.assertEqual("do not replace\n", sentinel.read_text())
+
     def test_native_checksum_rejection_stops_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

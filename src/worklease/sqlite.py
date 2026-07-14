@@ -19,7 +19,7 @@ def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
     if override:
         return Path(override).expanduser().resolve()
     state_home = Path(
-        os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+        os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     )
     return (state_home / "worklease").expanduser().resolve()
 

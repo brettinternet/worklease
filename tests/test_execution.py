@@ -217,6 +217,44 @@ class ExecutionTests(unittest.TestCase):
         )
         self.assertTrue(replay_without_inputs["idempotent"])
 
+    def test_completed_replacement_replays_after_claim_expiry(self) -> None:
+        clock = MutableClock()
+        store = LeaseStore(self.home / "replay-expiry", clock=clock)
+        acquired = store.acquire(
+            AcquireRequest(
+                resource="replay-expiry-resource",
+                claim_id="replay-expiry-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:item:T3",
+                ttl=1,
+            )
+        )
+        claim = cast(dict[str, object], acquired["claim"])
+        revision = claim["revision"]
+        assert isinstance(revision, int)
+        request = MutationRequest(
+            resource="replay-expiry-resource",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=revision,
+            operation_id="replay-expiry-operation",
+            ttl=1,
+        )
+        target = self.home / "replay-expiry-target.md"
+        candidate = self.home / "replay-expiry-candidate.md"
+        target.write_text("old\n")
+        candidate.write_text("new\n")
+        expected = hashlib.sha256(target.read_bytes()).hexdigest()
+
+        first = replace_file(store, request, target, expected, candidate)
+        clock.advance(2)
+        retry = replace_file(store, request, target, expected, candidate)
+
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(retry["idempotent"])
+
     def test_replacement_rejects_wrong_hash_and_symlink(self) -> None:
         request = self.acquire("markdown-source")
         target = self.home / "target.md"
@@ -281,12 +319,16 @@ class ExecutionTests(unittest.TestCase):
             clock.advance(2)
             original_atomic_replace(path, content, mode)
 
-        with patch.object(
-            replacement_module, "atomic_replace", side_effect=delayed_replace
+        with (
+            patch.object(
+                replacement_module, "atomic_replace", side_effect=delayed_replace
+            ),
+            self.assertRaisesRegex(LeaseError, "claim-expired"),
         ):
-            receipt = replace_file(store, request, target, expected, candidate)
-        self.assertTrue(receipt["ok"])
+            replace_file(store, request, target, expected, candidate)
         self.assertEqual("new\n", target.read_text())
+        with self.assertRaisesRegex(LeaseError, "unknown-outcome"):
+            replace_file(store, request, target, expected, candidate)
 
     def test_cli_wires_exec_and_returns_child_status(self) -> None:
         request = self.acquire()

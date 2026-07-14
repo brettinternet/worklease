@@ -70,6 +70,23 @@ class StoreTests(unittest.TestCase):
             ttl=ttl,
         )
 
+    def test_empty_xdg_state_home_uses_default(self) -> None:
+        previous_work = os.environ.pop("WORKLEASE_HOME", None)
+        previous_xdg = os.environ.get("XDG_STATE_HOME")
+        try:
+            os.environ["XDG_STATE_HOME"] = ""
+            self.assertEqual(
+                Path.home() / ".local" / "state" / "worklease",
+                LeaseStore().home,
+            )
+        finally:
+            if previous_work is not None:
+                os.environ["WORKLEASE_HOME"] = previous_work
+            if previous_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = previous_xdg
+
     def test_opaque_resource_is_preserved_and_lock_hash_is_internal(self) -> None:
         resource = "  opaque provider/value::?  "
         acquired = self.store.acquire(self.acquire_request(resource, "claim"))

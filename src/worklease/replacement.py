@@ -165,7 +165,6 @@ class FileReplacer:
                     operation_request,
                     failure,
                     lock_held=True,
-                    allow_expired=True,
                 )
                 raise LeaseError(
                     "file-version-conflict",
@@ -195,7 +194,6 @@ class FileReplacer:
                 operation_request,
                 receipt,
                 lock_held=True,
-                allow_expired=True,
             )
 
 

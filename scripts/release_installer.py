@@ -246,8 +246,22 @@ def install_release(version: str, install_directory: Path) -> dict[str, str]:
                 verify_checksum(selected_path, checksums[selected_name])
                 install_directory.mkdir(parents=True, exist_ok=True)
                 target = install_directory / "worklease"
-                shutil.copyfile(selected_path, target)
-                target.chmod(0o755)
+                if target.is_symlink() or (target.exists() and not target.is_file()):
+                    raise ReleaseError(
+                        f"install target is not a regular file: {target}"
+                    )
+                temporary_descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=".worklease-", dir=install_directory
+                )
+                temporary = Path(temporary_name)
+                try:
+                    os.close(temporary_descriptor)
+                    shutil.copyfile(selected_path, temporary)
+                    temporary.chmod(0o755)
+                    os.replace(temporary, target)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
                 _smoke_native(target, expected_version)
                 return {"asset": selected_name, "kind": kind, "path": str(target)}
         wheel_name = wheel_asset_name(version)

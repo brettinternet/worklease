@@ -151,7 +151,6 @@ class GuardedExecutor:
                 operation_request,
                 receipt,
                 lock_held=True,
-                allow_expired=True,
             )
             return completed, returncode
 
