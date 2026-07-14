@@ -2427,175 +2427,314 @@ class LeaseStore:
             )
         return now - days * 86400, days
 
+    @staticmethod
+    def _gc_candidates(
+        db: sqlite3.Connection, cutoff_value: float
+    ) -> dict[str, list[sqlite3.Row]]:
+        """Capture one atomic set of records eligible for collection."""
+
+        epoch_rows = db.execute(
+            """
+            SELECT claim_id, acquired_at AS recorded_at
+            FROM epochs AS e
+            WHERE acquired_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM claims AS c
+                  WHERE c.claim_id = e.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM operations AS o
+                  WHERE o.claim_id = e.claim_id
+                    AND o.created_at >= ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM releases AS r
+                  WHERE r.claim_id = e.claim_id
+                    AND r.released_at >= ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM reconciliations AS rec
+                  WHERE rec.claim_id = e.claim_id
+                    AND rec.reconciled_at >= ?
+              )
+            """,
+            (cutoff_value, cutoff_value, cutoff_value, cutoff_value),
+        ).fetchall()
+        bundle_epoch_rows = db.execute(
+            """
+            SELECT claim_id, acquired_at AS recorded_at
+            FROM bundle_epochs AS e
+            WHERE acquired_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM bundles AS b
+                  WHERE b.claim_id = e.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM claims AS c, json_each(e.resources) AS member
+                  WHERE c.resource = member.value
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM operations AS o
+                  WHERE o.claim_id = e.claim_id
+                    AND o.created_at >= ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM reconciliations AS rec
+                  WHERE rec.claim_id = e.claim_id
+                    AND rec.reconciled_at >= ?
+              )
+            """,
+            (cutoff_value, cutoff_value, cutoff_value),
+        ).fetchall()
+        operation_rows = db.execute(
+            """
+            SELECT resource, claim_id, operation_id, kind,
+                   created_at AS recorded_at
+            FROM operations AS o
+            WHERE created_at < ?
+              AND (
+                  o.state = 'completed'
+                  OR EXISTS (
+                      SELECT 1 FROM reconciliations AS r
+                      WHERE r.resource = o.resource
+                        AND r.operation_id = o.operation_id
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM claims AS c
+                  WHERE c.claim_id = o.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM bundles AS b
+                  WHERE b.claim_id = o.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM reconciliations AS r
+                  WHERE r.resource = o.resource
+                    AND r.operation_id = o.operation_id
+                    AND r.reconciled_at >= ?
+              )
+            """,
+            (cutoff_value, cutoff_value),
+        ).fetchall()
+        release_rows = db.execute(
+            """
+            SELECT resource, claim_id, released_at AS recorded_at
+            FROM releases AS r
+            WHERE released_at < ?
+            """,
+            (cutoff_value,),
+        ).fetchall()
+        reconciliation_rows = db.execute(
+            """
+            SELECT resource, operation_id, reconciled_at AS recorded_at
+            FROM reconciliations AS r
+            WHERE reconciled_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM claims AS c
+                  WHERE c.claim_id = r.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM operations AS o
+                  WHERE o.resource = r.resource
+                    AND o.operation_id = r.operation_id
+                    AND o.created_at >= ?
+              )
+            """,
+            (cutoff_value, cutoff_value),
+        ).fetchall()
+        resource_rows = db.execute(
+            """
+            SELECT history.resource, latest_recorded_at AS recorded_at,
+                   r.revision
+            FROM (
+                SELECT resource, MAX(recorded_at) AS latest_recorded_at
+                FROM (
+                    SELECT resource, acquired_at AS recorded_at
+                    FROM epochs
+                    UNION ALL
+                    SELECT json_each.value AS resource,
+                           acquired_at AS recorded_at
+                    FROM bundle_epochs, json_each(bundle_epochs.resources)
+                    UNION ALL
+                    SELECT operations.resource, created_at AS recorded_at
+                    FROM operations
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM bundle_epochs AS bundle
+                        WHERE bundle.claim_id = operations.claim_id
+                    )
+                    UNION ALL
+                    SELECT resource, released_at AS recorded_at
+                    FROM releases
+                    UNION ALL
+                    SELECT resource, reconciled_at AS recorded_at
+                    FROM reconciliations
+                )
+                GROUP BY resource
+            ) AS history
+            JOIN resources AS r ON r.resource = history.resource
+            WHERE latest_recorded_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM claims AS c
+                  WHERE c.resource = r.resource
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM bundle_members AS m
+                  JOIN bundles AS b ON b.claim_id = m.claim_id
+                  WHERE m.resource = r.resource
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM operations AS o
+                  WHERE o.resource = r.resource
+                    AND o.state = 'started'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM reconciliations AS rec
+                        WHERE rec.resource = o.resource
+                          AND rec.operation_id = o.operation_id
+                    )
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM operations AS o
+                  JOIN bundle_epochs AS be ON be.claim_id = o.claim_id
+                  JOIN json_each(be.resources) AS member
+                  WHERE member.value = r.resource
+                    AND o.state = 'started'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM reconciliations AS rec
+                        WHERE rec.resource = o.resource
+                          AND rec.operation_id = o.operation_id
+                    )
+              )
+            """,
+            (cutoff_value,),
+        ).fetchall()
+        return {
+            "epochs": epoch_rows,
+            "bundleEpochs": bundle_epoch_rows,
+            "operations": operation_rows,
+            "releases": release_rows,
+            "reconciliations": reconciliation_rows,
+            "resources": resource_rows,
+        }
+
     def garbage_collect(
         self,
         *,
         retention_days: float | None = None,
         cutoff: str | None = None,
+        apply: bool = False,
     ) -> dict[str, Any]:
-        """Report records eligible for a future garbage-collection pass."""
+        """Inspect or atomically collect records older than a cutoff."""
 
+        if not isinstance(apply, bool):
+            raise LeaseError("invalid-gc-apply", code=64)
         now = float(self.clock())
         cutoff_value, resolved_days = self._gc_cutoff(now, retention_days, cutoff)
-        with closing(self._connect()) as db:
-            db.execute("BEGIN")
-            try:
-                epoch_rows = db.execute(
-                    """
-                    SELECT acquired_at AS recorded_at FROM epochs AS e
-                    WHERE acquired_at < ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM claims AS c
-                          WHERE c.claim_id = e.claim_id
-                      )
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                bundle_epoch_rows = db.execute(
-                    """
-                    SELECT acquired_at AS recorded_at
-                    FROM bundle_epochs AS e
-                    WHERE acquired_at < ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM bundles AS b
-                          WHERE b.claim_id = e.claim_id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM claims AS c, json_each(e.resources) AS member
-                          WHERE c.resource = member.value
-                      )
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                operation_rows = db.execute(
-                    """
-                    SELECT created_at AS recorded_at
-                    FROM operations AS o
-                    WHERE created_at < ?
-                      AND (
-                          o.state = 'completed'
-                          OR EXISTS (
-                              SELECT 1 FROM reconciliations AS r
-                              WHERE r.resource = o.resource
-                                AND r.operation_id = o.operation_id
-                          )
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM claims AS c
-                          WHERE c.claim_id = o.claim_id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM bundles AS b
-                          WHERE b.claim_id = o.claim_id
-                      )
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                release_rows = db.execute(
-                    """
-                    SELECT released_at AS recorded_at
-                    FROM releases AS r
-                    WHERE released_at < ?
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                reconciliation_rows = db.execute(
-                    """
-                    SELECT reconciled_at AS recorded_at
-                    FROM reconciliations AS r
-                    WHERE reconciled_at < ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM claims AS c
-                          WHERE c.claim_id = r.claim_id
-                      )
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                resource_rows = db.execute(
-                    """
-                    SELECT latest_recorded_at AS recorded_at
-                    FROM (
-                        SELECT resource, MAX(recorded_at) AS latest_recorded_at
-                        FROM (
-                            SELECT resource, acquired_at AS recorded_at
-                            FROM epochs
-                            UNION ALL
-                            SELECT json_each.value AS resource,
-                                   acquired_at AS recorded_at
-                            FROM bundle_epochs, json_each(bundle_epochs.resources)
-                            UNION ALL
-                            SELECT resource, created_at AS recorded_at
-                            FROM operations
-                            WHERE resource NOT LIKE 'bundle:%'
-                            UNION ALL
-                            SELECT resource, released_at AS recorded_at
-                            FROM releases
-                            UNION ALL
-                            SELECT resource, reconciled_at AS recorded_at
-                            FROM reconciliations
+
+        def summary(candidates: dict[str, list[sqlite3.Row]]) -> dict[str, Any]:
+            return {
+                name: self._gc_summary([float(row["recorded_at"]) for row in rows])
+                for name, rows in candidates.items()
+            }
+
+        def delete_candidates(
+            db: sqlite3.Connection, candidates: dict[str, list[sqlite3.Row]]
+        ) -> None:
+            statements = (
+                (
+                    "reconciliations",
+                    "DELETE FROM reconciliations "
+                    "WHERE resource = ? AND operation_id = ?",
+                    lambda row: (str(row["resource"]), str(row["operation_id"])),
+                ),
+                (
+                    "operations",
+                    "DELETE FROM operations "
+                    "WHERE resource = ? AND claim_id = ? "
+                    "AND operation_id = ? AND kind = ?",
+                    lambda row: (
+                        str(row["resource"]),
+                        str(row["claim_id"]),
+                        str(row["operation_id"]),
+                        str(row["kind"]),
+                    ),
+                ),
+                (
+                    "releases",
+                    "DELETE FROM releases WHERE resource = ? AND claim_id = ?",
+                    lambda row: (str(row["resource"]), str(row["claim_id"])),
+                ),
+                (
+                    "bundleEpochs",
+                    "DELETE FROM bundle_epochs WHERE claim_id = ?",
+                    lambda row: (str(row["claim_id"]),),
+                ),
+                (
+                    "epochs",
+                    "DELETE FROM epochs WHERE claim_id = ?",
+                    lambda row: (str(row["claim_id"]),),
+                ),
+                (
+                    "resources",
+                    "DELETE FROM resources WHERE resource = ?",
+                    lambda row: (str(row["resource"]),),
+                ),
+            )
+            for name, statement, parameters in statements:
+                for row in candidates[name]:
+                    deleted = db.execute(statement, parameters(row)).rowcount
+                    if deleted != 1:
+                        raise LeaseError(
+                            "gc-protected-record",
+                            code=3,
+                            recordClass=name,
                         )
-                        GROUP BY resource
-                    ) AS history
-                    JOIN resources AS r ON r.resource = history.resource
-                    WHERE latest_recorded_at < ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM claims AS c
-                          WHERE c.resource = r.resource
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM bundle_members AS m
-                          JOIN bundles AS b ON b.claim_id = m.claim_id
-                          WHERE m.resource = r.resource
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM operations AS o
-                          WHERE o.resource = r.resource
-                            AND o.state = 'started'
-                            AND NOT EXISTS (
-                                SELECT 1
-                                FROM reconciliations AS rec
-                                WHERE rec.resource = o.resource
-                                  AND rec.operation_id = o.operation_id
-                            )
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM operations AS o
-                          JOIN bundle_epochs AS be ON be.claim_id = o.claim_id
-                          JOIN json_each(be.resources) AS member
-                          WHERE member.value = r.resource
-                            AND o.state = 'started'
-                      )
-                    """,
-                    (cutoff_value,),
-                ).fetchall()
-                db.commit()
-            except BaseException:
-                db.rollback()
-                raise
+                    if name == "resources":
+                        db.execute(
+                            "INSERT INTO resources(resource, revision) VALUES (?, ?)",
+                            (str(row["resource"]), int(row["revision"])),
+                        )
 
-        def times(rows: list[sqlite3.Row]) -> list[float]:
-            return [float(row["recorded_at"]) for row in rows]
+        candidates: dict[str, list[sqlite3.Row]]
+        try:
+            with closing(self._connect()) as db:
+                if apply:
+                    with transaction(db):
+                        candidates = self._gc_candidates(db, cutoff_value)
+                        delete_candidates(db, candidates)
+                else:
+                    db.execute("BEGIN")
+                    try:
+                        candidates = self._gc_candidates(db, cutoff_value)
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+        except sqlite3.Error as error:
+            raise LeaseError("gc-storage-conflict", code=3) from error
 
-        eligible = {
-            "epochs": self._gc_summary(times(epoch_rows)),
-            "bundleEpochs": self._gc_summary(times(bundle_epoch_rows)),
-            "operations": self._gc_summary(times(operation_rows)),
-            "releases": self._gc_summary(times(release_rows)),
-            "reconciliations": self._gc_summary(times(reconciliation_rows)),
-            "resources": self._gc_summary(times(resource_rows)),
-        }
-        return {
+        eligible = summary(candidates)
+        result: dict[str, Any] = {
             "ok": True,
             "operation": "gc",
-            "dryRun": True,
+            "dryRun": not apply,
             "capturedAt": iso8601(now),
             "cutoff": iso8601(cutoff_value),
             "retentionDays": resolved_days,
             "eligible": eligible,
         }
+        if apply:
+            result["collected"] = eligible
+        return result
 
     @staticmethod
     def _timestamp(value: float) -> str:

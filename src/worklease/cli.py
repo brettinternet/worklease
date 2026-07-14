@@ -248,7 +248,7 @@ def _parser() -> _ArgumentParser:
     inspect_operation_parser.add_argument("--resource", required=True)
     inspect_operation_parser.add_argument("--operation-id", required=True)
     gc_parser = commands.add_parser(
-        "gc", help="report records eligible for garbage collection"
+        "gc", help="inspect or collect records eligible for garbage collection"
     )
     _add_output_arguments(gc_parser)
     gc_parser.add_argument(
@@ -260,6 +260,11 @@ def _parser() -> _ArgumentParser:
     gc_parser.add_argument(
         "--cutoff",
         help="explicit UTC cutoff timestamp (ISO-8601)",
+    )
+    gc_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="atomically delete records eligible under the selected cutoff",
     )
 
     reconcile_operation_parser = commands.add_parser(
@@ -600,6 +605,7 @@ def _dispatch(
             store.garbage_collect(
                 retention_days=getattr(args, "retention_days", None),
                 cutoff=getattr(args, "cutoff", None),
+                apply=getattr(args, "apply", False),
             ),
             0,
         )
