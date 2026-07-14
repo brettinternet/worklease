@@ -697,6 +697,47 @@ class CliContractTests(unittest.TestCase):
                 os.close(read_fd)
             self.assertTrue(released["ok"])
 
+            replace_resource = "repo:replace-file-source"
+            replace_claim = self.json_cli(
+                *self.acquire_arguments(
+                    resource=replace_resource, claim_id="replace-file-source"
+                )
+            )["claim"]
+            assert isinstance(replace_claim, dict)
+            replace_token = str(replace_claim["token"])
+            target = Path(directory) / "target"
+            candidate = Path(directory) / "candidate"
+            target.write_text("old\n", encoding="utf-8")
+            candidate.write_text("new\n", encoding="utf-8")
+            expected_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+            token_file.write_text(f"{replace_token}\n", encoding="utf-8")
+            replace_args = list(
+                self.mutation_arguments(
+                    "replace-file",
+                    replace_resource,
+                    replace_claim,
+                    "replace-file-source",
+                )
+            )
+            token_index = replace_args.index("--token")
+            del replace_args[token_index : token_index + 2]
+            replace_args.extend(
+                (
+                    "--token-file",
+                    str(token_file),
+                    "--path",
+                    str(target),
+                    "--expected-sha256",
+                    expected_sha256,
+                    "--content-file",
+                    str(candidate),
+                )
+            )
+            replaced = self.json_cli(*replace_args)
+            self.assertTrue(replaced["ok"])
+            self.assertEqual("new\n", target.read_text(encoding="utf-8"))
+            self.assertNotIn(replace_token, json.dumps(replaced))
+
         conflict = self.json_cli(
             "release",
             "--resource",
