@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:44'
-updated_date: '2026-07-14 03:59'
+updated_date: '2026-07-14 04:06'
 labels: []
 dependencies: []
 modified_files:
@@ -51,6 +51,8 @@ Unblocked release evidence by adding workflow_dispatch with required release_tag
 Independent verifier verdict at commit 5d046c0: AC #1 PASS; AC #2 UNVERIFIED because no post-change release run exists and the only release run 29301289631 predates the upgrade; AC #3 UNVERIFIED because no remote CI run exists at 5d046c0. Verifier found no workflow semantic defect. Remote origin/main remains 93cf51c, while commit 5d046c0 is local only; owner must push before triggering workflow_dispatch release validation and a post-change CI run.
 
 AC3 verified from local quality gates (lint, format-check, 62 tests, typecheck) plus successful post-upgrade CI run 29302065979 on remote main at 93cf51c; AC2 remains unchecked because release-run evidence is still pending.
+
+Verification pass 2026-07-14: mise run lint passed; mise run format-check passed (23 files); mise run test passed (62 tests); mise run typecheck passed (0 errors); targeted workflow immutability test passed. gh run list --workflow release.yml still shows only 29301289631, the pre-upgrade v0.1.0 run; gh workflow view release.yml on remote main still has tag-only trigger, so no post-change Release run can be claimed. Local .github/workflows/release.yml has workflow_dispatch validation and a push-only publish guard, but that commit is not pushed. AC #2 remains unverified pending owner-authorized push and manual validation run.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
