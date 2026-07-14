@@ -147,9 +147,28 @@ class CliContractTests(unittest.TestCase):
         assert isinstance(new_claim, dict)
         self.assertGreater(int(new_claim["revision"]), int(claim["revision"]))
         self.assertEqual(token, new_claim["token"])
+        checkpoint = self.json_cli(
+            *self.mutation_arguments(
+                "checkpoint", resource, new_claim, "checkpoint-cli"
+            ),
+            "--checkpoint",
+            '{"step":2,"done":false}',
+        )
+        checkpoint_claim = checkpoint["claim"]
+        assert isinstance(checkpoint_claim, dict)
+        self.assertEqual({"step": 2, "done": False}, checkpoint["checkpoint"])
+        self.assertGreater(
+            int(checkpoint_claim["revision"]), int(new_claim["revision"])
+        )
+        status_after_checkpoint = self.json_cli("status", "--resource", resource)
+        status_claim = status_after_checkpoint["claim"]
+        assert isinstance(status_claim, dict)
+        self.assertEqual({"step": 2, "done": False}, status_claim["checkpoint"])
 
         release = self.json_cli(
-            *self.mutation_arguments("release", resource, new_claim, "release-cli"),
+            *self.mutation_arguments(
+                "release", resource, checkpoint_claim, "release-cli"
+            ),
             "--reason",
             "checkpoint complete",
         )

@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_TTL = 900.0
 MAX_TTL = 3600.0
+MAX_CHECKPOINT_BYTES = 8 * 1024
+
+
+def serialize_checkpoint(value: Any) -> str:
+    """Serialize one bounded JSON checkpoint without non-standard values."""
+
+    try:
+        serialized = json.dumps(
+            value, allow_nan=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError) as error:
+        raise LeaseError("invalid-checkpoint", code=64) from error
+    if len(serialized.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
+        raise LeaseError(
+            "checkpoint-too-large",
+            code=64,
+            maximumBytes=MAX_CHECKPOINT_BYTES,
+        )
+    return serialized
+
+
+def deserialize_checkpoint(value: str | None) -> Any:
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError) as error:
+        raise LeaseError("invalid-checkpoint", code=3) from error
 
 
 class LeaseError(Exception):
@@ -157,6 +186,7 @@ class Claim:
     heartbeat_at: float
     expires_at: float
     active: bool
+    checkpoint: Any | None
 
     def to_dict(self, *, include_token: bool = True) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -174,6 +204,7 @@ class Claim:
             "expiresAt": iso8601(self.expires_at),
             "expiresAtEpoch": self.expires_at,
             "active": self.active,
+            "checkpoint": self.checkpoint,
         }
         if include_token:
             result["token"] = self.token
@@ -181,6 +212,10 @@ class Claim:
 
 
 def claim_from_row(row: Any, now: float) -> Claim:
+    columns = row.keys()
+    checkpoint = (
+        deserialize_checkpoint(row["checkpoint"]) if "checkpoint" in columns else None
+    )
     return Claim(
         resource=str(row["resource"]),
         claim_id=str(row["claim_id"]),
@@ -198,4 +233,5 @@ def claim_from_row(row: Any, now: float) -> Claim:
         heartbeat_at=float(row["heartbeat_at"]),
         expires_at=float(row["expires_at"]),
         active=now < float(row["expires_at"]),
+        checkpoint=checkpoint,
     )

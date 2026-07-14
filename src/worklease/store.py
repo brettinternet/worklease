@@ -18,9 +18,11 @@ from .models import (
     LeaseError,
     MutationRequest,
     claim_from_row,
+    deserialize_checkpoint,
     require_resource,
     require_text,
     require_ttl,
+    serialize_checkpoint,
 )
 from .sqlite import connect, lease_home, transaction
 
@@ -205,6 +207,8 @@ class LeaseStore:
         kind: str,
         operation_request: dict[str, Any],
         receipt: dict[str, Any],
+        *,
+        checkpoint: str | None = None,
     ) -> dict[str, Any]:
         now = self.clock()
         revision = int(row["revision"]) + 1
@@ -212,13 +216,15 @@ class LeaseStore:
         cursor = connection.execute(
             """
             UPDATE claims
-            SET revision = ?, heartbeat_at = ?, expires_at = ?
+            SET revision = ?, heartbeat_at = ?, expires_at = ?,
+                checkpoint = COALESCE(?, checkpoint)
             WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
             """,
             (
                 revision,
                 now,
                 now + ttl,
+                checkpoint,
                 request.resource,
                 request.claim_id,
                 request.token,
@@ -509,6 +515,29 @@ class LeaseStore:
                     resource=request.resource,
                     claim=self._claim(row).to_dict(include_token=False),
                 )
+            prior_checkpoint = (
+                str(row["checkpoint"])
+                if row is not None and row["checkpoint"] is not None
+                else None
+            )
+            recovery = "expired-recovery" if row is not None else None
+            if row is None:
+                prior_release = db.execute(
+                    """
+                    SELECT checkpoint FROM releases
+                    WHERE resource = ?
+                    ORDER BY released_at DESC
+                    LIMIT 1
+                    """,
+                    (request.resource,),
+                ).fetchone()
+                if prior_release is not None:
+                    prior_checkpoint = (
+                        str(prior_release["checkpoint"])
+                        if prior_release["checkpoint"] is not None
+                        else None
+                    )
+                    recovery = "clean-handoff"
             epoch = db.execute(
                 "SELECT resource, acquired_at FROM epochs WHERE claim_id = ?",
                 (request.claim_id,),
@@ -534,6 +563,13 @@ class LeaseStore:
             token = self.token_factory()
             db.execute(
                 """
+                    INSERT INTO resources(resource, revision) VALUES (?, ?)
+                    ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                    """,
+                (request.resource, revision),
+            )
+            db.execute(
+                """
                     INSERT INTO epochs(
                         claim_id, resource, agent_id, session_id, owner_id,
                         work_key, acquired_at
@@ -551,18 +587,11 @@ class LeaseStore:
             )
             db.execute(
                 """
-                    INSERT INTO resources(resource, revision) VALUES (?, ?)
-                    ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
-                    """,
-                (request.resource, revision),
-            )
-            db.execute(
-                """
                     INSERT INTO claims(
                         resource, claim_id, token, revision, agent_id, session_id,
                         owner_id, work_key, coordination_only, acquired_at,
-                        acquire_ttl, heartbeat_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        acquire_ttl, heartbeat_at, expires_at, checkpoint
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(resource) DO UPDATE SET
                         claim_id=excluded.claim_id, token=excluded.token,
                         revision=excluded.revision, agent_id=excluded.agent_id,
@@ -572,7 +601,8 @@ class LeaseStore:
                         acquired_at=excluded.acquired_at,
                         acquire_ttl=excluded.acquire_ttl,
                         heartbeat_at=excluded.heartbeat_at,
-                        expires_at=excluded.expires_at
+                        expires_at=excluded.expires_at,
+                        checkpoint=excluded.checkpoint
                     """,
                 (
                     request.resource,
@@ -588,6 +618,7 @@ class LeaseStore:
                     ttl,
                     now,
                     now + ttl,
+                    prior_checkpoint,
                 ),
             )
             created = self._current(db, request.resource)
@@ -598,6 +629,8 @@ class LeaseStore:
                 "operation": "acquire",
                 "idempotent": False,
                 "reclaimed": row is not None,
+                "recovery": recovery,
+                "checkpoint": deserialize_checkpoint(prior_checkpoint),
                 "claim": self._claim(created).to_dict(),
             }
 
@@ -643,6 +676,48 @@ class LeaseStore:
                 "heartbeat",
                 operation_request,
                 receipt,
+            )
+
+    def checkpoint(
+        self,
+        request: MutationRequest,
+        value: Any,
+        *,
+        lock_held: bool = False,
+    ) -> dict[str, Any]:
+        """Persist a bounded JSON checkpoint while renewing ownership."""
+
+        serialized = serialize_checkpoint(value)
+        operation_request = self._receipt_request(
+            request, checkpoint=json.loads(serialized)
+        )
+        lock = (
+            nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        )
+        with lock, closing(self._connect()) as db, transaction(db):
+            row = self._require_owner(db, request)
+            cached = self._cached_operation(
+                db, request, "checkpoint", operation_request
+            )
+            if cached is not None:
+                return cached
+            self._require_current(db, request)
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "checkpoint",
+                "operationId": request.operation_id,
+                "idempotent": False,
+                "checkpoint": json.loads(serialized),
+                "checkpointBytes": len(serialized.encode("utf-8")),
+            }
+            return self._advance_claim(
+                db,
+                row,
+                request,
+                "checkpoint",
+                operation_request,
+                receipt,
+                checkpoint=serialized,
             )
 
     @staticmethod
@@ -725,13 +800,16 @@ class LeaseStore:
                 "releasedRevision": request.revision,
                 "releasedAt": self._timestamp(self.clock()),
                 "reason": reason,
+                "checkpoint": deserialize_checkpoint(
+                    row["checkpoint"] if row["checkpoint"] is not None else None
+                ),
             }
             db.execute(
                 """
                     INSERT INTO releases(
                         resource, claim_id, token, revision, operation_id,
-                        request, released_at, receipt
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        request, released_at, receipt, checkpoint
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 (
                     request.resource,
@@ -744,6 +822,7 @@ class LeaseStore:
                     ),
                     self.clock(),
                     json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    row["checkpoint"],
                 ),
             )
             deleted = db.execute(

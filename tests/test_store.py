@@ -165,6 +165,56 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(first["claim"]["token"], second["claim"]["token"])
         self.assertGreater(second["claim"]["revision"], first["claim"]["revision"])
 
+    def test_checkpoint_renews_replays_and_rejects_stale_owner(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        request = self.mutation(acquired, "resource", "checkpoint-1")
+        first = self.store.checkpoint(request, {"step": 1, "items": ["a"]})
+        retry = self.store.checkpoint(request, {"step": 1, "items": ["a"]})
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(retry["idempotent"])
+        self.assertEqual(first["claim"]["revision"], retry["claim"]["revision"])
+        self.assertEqual({"step": 1, "items": ["a"]}, first["checkpoint"])
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.checkpoint(request, {"step": 2})
+        status = self.store.status("resource")
+        self.assertEqual({"step": 1, "items": ["a"]}, status["claim"]["checkpoint"])
+
+    def test_checkpoint_size_and_expiry_are_rejected_without_changes(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))
+        request = self.mutation(acquired, "resource", "checkpoint-1", ttl=1)
+        with self.assertRaisesRegex(LeaseError, "checkpoint-too-large"):
+            self.store.checkpoint(request, "x" * 9000)
+        self.assertIsNone(self.store.status("resource")["claim"]["checkpoint"])
+        self.clock.advance(1.1)
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.checkpoint(request, {"step": 1})
+
+    def test_checkpoint_survives_clean_release_and_expired_recovery(self) -> None:
+        first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))
+        checkpoint_request = self.mutation(first, "resource", "checkpoint-1", ttl=1)
+        checkpointed = self.store.checkpoint(checkpoint_request, {"offset": 4})
+        release_request = MutationRequest(
+            resource="resource",
+            claim_id=str(checkpointed["claim"]["claimId"]),
+            token=str(first["claim"]["token"]),
+            revision=int(checkpointed["claim"]["revision"]),
+            operation_id="release-1",
+        )
+        released = self.store.release(release_request, "checkpoint complete")
+        self.assertEqual({"offset": 4}, released["checkpoint"])
+        handed_off = self.store.acquire(self.acquire_request("resource", "second"))
+        self.assertEqual("clean-handoff", handed_off["recovery"])
+        self.assertEqual({"offset": 4}, handed_off["checkpoint"])
+        checkpointed_again = self.store.checkpoint(
+            self.mutation(handed_off, "resource", "checkpoint-2"),
+            {"offset": 8},
+        )
+        self.assertEqual({"offset": 8}, checkpointed_again["checkpoint"])
+        self.clock.advance(901)
+        recovered = self.store.acquire(self.acquire_request("resource", "third"))
+        self.assertEqual("expired-recovery", recovered["recovery"])
+        self.assertEqual({"offset": 8}, recovered["checkpoint"])
+
     def test_acquire_retry_rejects_any_ttl_change(self) -> None:
         self.store.acquire(self.acquire_request("resource", "claim", ttl=1))
         request = self.acquire_request("resource", "claim", ttl=1.0000001)

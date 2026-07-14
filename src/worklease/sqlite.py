@@ -95,7 +95,8 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 acquired_at REAL NOT NULL,
                 acquire_ttl REAL NOT NULL,
                 heartbeat_at REAL NOT NULL,
-                expires_at REAL NOT NULL
+                expires_at REAL NOT NULL,
+                checkpoint TEXT
             );
 
             CREATE TABLE IF NOT EXISTS operations (
@@ -110,7 +111,6 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 created_at REAL NOT NULL,
                 PRIMARY KEY(resource, claim_id, operation_id, kind)
             );
-
             CREATE TABLE IF NOT EXISTS releases (
                 resource TEXT NOT NULL,
                 claim_id TEXT NOT NULL,
@@ -120,6 +120,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 request TEXT NOT NULL,
                 released_at REAL NOT NULL,
                 receipt TEXT NOT NULL,
+                checkpoint TEXT,
                 PRIMARY KEY(resource, claim_id)
             );
             """
@@ -149,6 +150,14 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
             connection.execute(
                 "UPDATE claims SET acquire_ttl = 900.0 WHERE acquire_ttl IS NULL"
             )
+        if "checkpoint" not in columns:
+            connection.execute("ALTER TABLE claims ADD COLUMN checkpoint TEXT")
+        release_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(releases)")
+        }
+        if "checkpoint" not in release_columns:
+            connection.execute("ALTER TABLE releases ADD COLUMN checkpoint TEXT")
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:

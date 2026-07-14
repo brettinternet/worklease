@@ -16,7 +16,17 @@ from .replacement import replace_file
 from .store import LeaseStore
 
 _COMMANDS = frozenset(
-    {"key", "acquire", "status", "list", "heartbeat", "release", "exec", "replace-file"}
+    {
+        "key",
+        "acquire",
+        "status",
+        "list",
+        "heartbeat",
+        "checkpoint",
+        "release",
+        "exec",
+        "replace-file",
+    }
 )
 
 
@@ -119,6 +129,13 @@ def _parser() -> _ArgumentParser:
     status_parser = commands.add_parser("status", help="read current lease state")
     _add_output_arguments(status_parser)
     status_parser.add_argument("--resource", required=True)
+
+    checkpoint_parser = commands.add_parser(
+        "checkpoint", help="persist a bounded JSON checkpoint and renew a lease"
+    )
+    _add_output_arguments(checkpoint_parser)
+    _common_claim_arguments(checkpoint_parser)
+    checkpoint_parser.add_argument("--checkpoint", required=True)
 
     list_parser = commands.add_parser("list", help="list current and expired claims")
     _add_output_arguments(list_parser)
@@ -240,6 +257,13 @@ def _dispatch(
     if operation == "heartbeat":
         assert store is not None
         return store.heartbeat(_request(args)), 0
+    if operation == "checkpoint":
+        assert store is not None
+        try:
+            checkpoint = json.loads(args.checkpoint)
+        except (TypeError, ValueError) as error:
+            raise LeaseError("invalid-checkpoint", code=64) from error
+        return store.checkpoint(_request(args), checkpoint), 0
     if operation == "release":
         assert store is not None
         return store.release(_request(args), args.reason), 0
