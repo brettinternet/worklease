@@ -94,6 +94,8 @@ def _receipt_ok(
         failures.append(f"{operation}-receipt-operation")
     if not receipt.durable_location:
         failures.append(f"{operation}-receipt-location")
+    if not receipt.observed_state:
+        failures.append(f"{operation}-receipt-state")
     if receipt.outcome != expected_outcome:
         failures.append(f"{operation}-receipt-outcome")
     if receipt.conditional_write and receipt.fencing_evidence is None:
@@ -167,10 +169,16 @@ def run_provider_conformance(
         if isinstance(discovered, CapabilityResult):
             failures.append("discover-unsupported")
         elif not isinstance(discovered, tuple):
-            failures.append("dependency-closure")
+            failures.append("complete-discovery")
         else:
             discovered_refs = {item.ref for item in discovered}
-            if any(
+            expected_refs = tuple(item.ref for item in case.discovered)
+            actual_refs = tuple(item.ref for item in discovered)
+            if actual_refs != expected_refs:
+                failures.append("complete-discovery")
+            elif len(discovered_refs) != len(discovered):
+                failures.append("discovery-duplicates")
+            elif any(
                 item.ref.source_id != case.source.id
                 or any(
                     dependency.source_id != case.source.id
@@ -188,7 +196,15 @@ def run_provider_conformance(
             elif case.item.ref not in discovered_refs:
                 failures.append("fixture-item-missing")
             else:
-                checks.extend(("source-qualified-items", "dependency-closure"))
+                checks.extend(
+                    (
+                        "complete-discovery",
+                        "source-qualified-items",
+                        "dependency-closure",
+                    )
+                )
+
+        current_version = case.item.provider_version
 
         read_result = provider.read_item(case.item.ref)
         if isinstance(read_result, WorkItem) and read_result.ref == case.item.ref:
@@ -197,7 +213,18 @@ def run_provider_conformance(
             failures.append("authoritative-read")
 
         policy = provider.resource_policy(case.item.ref, case.work_key)
-        if isinstance(policy, ResourcePolicySelection):
+        if "resource-policy" in case.unsupported_operations:
+            if _capability_ok(
+                policy,
+                provider_kind,
+                "resource-policy",
+                supported=False,
+                secrets=secrets,
+            ):
+                checks.append("unsupported-capability:resource-policy")
+            else:
+                failures.append("unsupported-capability:resource-policy")
+        elif isinstance(policy, ResourcePolicySelection):
             repeat_policy = provider.resource_policy(case.item.ref, case.work_key)
             if (
                 not isinstance(repeat_policy, ResourcePolicySelection)
@@ -224,7 +251,7 @@ def run_provider_conformance(
             case.item.ref,
             {"conformance": "write-state"},
             case.authority,
-            case.item.provider_version,
+            current_version,
         )
         if "write-state" in case.unsupported_operations:
             if _capability_ok(
@@ -239,6 +266,8 @@ def run_provider_conformance(
                 failures.append("unsupported-capability:" + "write-state")
         elif isinstance(write_result, ProviderReceipt):
             receipts.append(write_result)
+            if write_result.provider_version is not None:
+                current_version = write_result.provider_version
             failures.extend(
                 _receipt_ok(
                     write_result,
@@ -286,7 +315,7 @@ def run_provider_conformance(
             case.item.ref,
             {"conformance": "record-progress"},
             case.authority,
-            case.item.provider_version,
+            current_version,
         )
         if "record-progress" in case.unsupported_operations:
             if _capability_ok(
@@ -301,6 +330,8 @@ def run_provider_conformance(
                 failures.append("unsupported-capability:" + "record-progress")
         elif isinstance(progress_result, ProviderReceipt):
             receipts.append(progress_result)
+            if progress_result.provider_version is not None:
+                current_version = progress_result.provider_version
             failures.extend(
                 _receipt_ok(
                     progress_result,
@@ -327,7 +358,7 @@ def run_provider_conformance(
             case.source, None, case.authority
         )
         archive_result = provider.archive(
-            case.item.ref, case.authority, case.item.provider_version
+            case.item.ref, case.authority, current_version
         )
         if "review-boundary" in case.unsupported_operations:
             if _capability_ok(
@@ -362,7 +393,27 @@ def run_provider_conformance(
                 failures.append("unsupported-capability:" + "archive")
         elif isinstance(archive_result, ProviderReceipt):
             receipts.append(archive_result)
-            checks.append("archive-receipt")
+            if archive_result.provider_version is not None:
+                current_version = archive_result.provider_version
+            failures.extend(
+                _receipt_ok(
+                    archive_result,
+                    case,
+                    "archive",
+                    expected_outcome=(
+                        "ambiguous"
+                        if "archive" in case.ambiguous_operations
+                        else "confirmed"
+                    ),
+                )
+            )
+            if "archive" in case.ambiguous_operations:
+                if archive_result.outcome == "ambiguous":
+                    checks.append("ambiguous-outcome")
+                else:
+                    failures.append("ambiguous-outcome")
+            else:
+                checks.append("archive-receipt")
         elif not _redacted(archive_result, secrets):
             failures.append("token-redaction")
         else:

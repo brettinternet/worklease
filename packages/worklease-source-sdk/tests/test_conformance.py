@@ -28,6 +28,7 @@ class ExampleProvider:
         self.source = source
         self.items = items
         self.ambiguous = ambiguous
+        self.version = "v1"
 
     def resolve(self, arguments: tuple[str, ...], context: Mapping[str, object]):
         del arguments, context
@@ -60,15 +61,17 @@ class ExampleProvider:
         expected_version: str | None = None,
     ):
         del authority
-        if expected_version == "__stale_provider_version__":
+        if expected_version != self.version:
             return CapabilityResult(
                 "write-state", self.kind, False, "stale-provider-version"
             )
+        next_version = f"v{int(self.version.removeprefix('v')) + 1}"
+        self.version = next_version
         return ProviderReceipt(
             source_id=ref.source_id,
             ref=ref,
             operation="write-state",
-            provider_version="v2",
+            provider_version=next_version,
             durable_location="example://receipts/write-state/1",
             observed_state=dict(patch),
             conditional_write=True,
@@ -83,12 +86,18 @@ class ExampleProvider:
         authority: object,
         expected_version: str | None = None,
     ):
-        del authority, expected_version
+        del authority
+        if expected_version != self.version:
+            return CapabilityResult(
+                "record-progress", self.kind, False, "stale-provider-version"
+            )
+        next_version = f"v{int(self.version.removeprefix('v')) + 1}"
+        self.version = next_version
         return ProviderReceipt(
             source_id=ref.source_id,
             ref=ref,
             operation="record-progress",
-            provider_version="v3",
+            provider_version=next_version,
             durable_location="example://receipts/progress/1",
             observed_state=dict(checkpoint),
             conditional_write=True,
@@ -110,13 +119,19 @@ class ExampleProvider:
         authority: object,
         expected_version: str | None = None,
     ):
-        del authority, expected_version
+        del authority
+        if expected_version != self.version:
+            return CapabilityResult(
+                "archive", self.kind, False, "stale-provider-version"
+            )
+        next_version = f"v{int(self.version.removeprefix('v')) + 1}"
+        self.version = next_version
         ref = target if isinstance(target, WorkRef) else None
         return ProviderReceipt(
             source_id=self.source.id,
             ref=ref,
             operation="archive",
-            provider_version="v4",
+            provider_version=next_version,
             durable_location="example://receipts/archive/1",
             observed_state={"archived": True},
             conditional_write=True,
@@ -125,6 +140,10 @@ class ExampleProvider:
 
 
 class ReadOnlyProvider(ExampleProvider):
+    def resource_policy(self, ref, work_key):
+        del ref, work_key
+        return CapabilityResult("resource-policy", self.kind, False, "read-only")
+
     def write_state(self, ref, patch, authority, expected_version=None):
         del ref, patch, authority, expected_version
         return CapabilityResult("write-state", self.kind, False, "read-only")
@@ -165,6 +184,21 @@ class UntruthfulProvider(LeakingProvider):
             scope=policy.scope,
             generic_execution_guarantee=policy.generic_execution_guarantee,
             provider_fencing=True,
+        )
+
+
+class EmptyArchiveProvider(ExampleProvider):
+    def archive(self, target, authority, expected_version=None):
+        del authority, expected_version
+        ref = target if isinstance(target, WorkRef) else None
+        return ProviderReceipt(
+            source_id=self.source.id,
+            ref=ref,
+            operation="archive",
+            provider_version="v2",
+            durable_location="example://receipts/archive/1",
+            observed_state={},
+            conditional_write=False,
         )
 
 
@@ -217,7 +251,13 @@ class ProviderConformanceTests(unittest.TestCase):
             ReadOnlyProvider(self.source, self.items),
             self.case(
                 unsupported_operations=frozenset(
-                    {"write-state", "record-progress", "review-boundary", "archive"}
+                    {
+                        "write-state",
+                        "record-progress",
+                        "resource-policy",
+                        "review-boundary",
+                        "archive",
+                    }
                 )
             ),
         )
@@ -227,6 +267,7 @@ class ProviderConformanceTests(unittest.TestCase):
             {
                 "unsupported-capability:write-state",
                 "unsupported-capability:record-progress",
+                "unsupported-capability:resource-policy",
                 "unsupported-capability:review-boundary",
                 "unsupported-capability:archive",
             },
@@ -254,6 +295,14 @@ class ProviderConformanceTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertIn("token-redaction", report.failures)
 
+    def test_archive_receipt_must_prove_state(self) -> None:
+        report = run_provider_conformance(
+            EmptyArchiveProvider(self.source, self.items), self.case()
+        )
+
+        self.assertFalse(report.passed)
+        self.assertIn("archive-receipt-state", report.failures)
+
     def test_provider_fencing_declaration_requires_evidence(self) -> None:
         report = run_provider_conformance(
             UntruthfulProvider(self.source, self.items), self.case()
@@ -270,6 +319,23 @@ class ProviderConformanceTests(unittest.TestCase):
 
         self.assertFalse(report.passed)
         self.assertIn("dependency-closure", report.failures)
+
+    def test_discovery_must_cover_expected_collection(self) -> None:
+        independent = WorkItem(
+            WorkRef(self.source.id, "independent"),
+            "Independent",
+            "independent body",
+            (),
+            WorkItemState("ready", False, False),
+            provider_version="v1",
+        )
+        report = run_provider_conformance(
+            ExampleProvider(self.source, self.items),
+            self.case(discovered=(*self.items, independent)),
+        )
+
+        self.assertFalse(report.passed)
+        self.assertIn("complete-discovery", report.failures)
 
 
 if __name__ == "__main__":
