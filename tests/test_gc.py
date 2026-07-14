@@ -75,6 +75,51 @@ class GarbageCollectionTests(unittest.TestCase):
         )
         self.assertTrue(current["ok"])
 
+    def test_dry_run_protects_unresolved_operations_from_resource_inventory(
+        self,
+    ) -> None:
+        resource = "repo:gc-unknown"
+        acquired = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-unknown",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc-unknown",
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = MutationRequest(
+            resource=resource,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="exec-gc-unknown",
+        )
+        self.assertIsNone(
+            self.store.begin_operation(
+                request,
+                "exec",
+                {"command": ["sentinel"]},
+            )
+        )
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=request.claim_id,
+                token=request.token,
+                revision=request.revision,
+                operation_id="release-gc-unknown",
+            ),
+            "done",
+        )
+        self.now = 31 * 86400
+        result = self.store.garbage_collect()
+        self.assertEqual(0, result["eligible"]["operations"]["count"])
+        self.assertEqual(0, result["eligible"]["resources"]["count"])
+
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-gc-cutoff"):
             self.store.garbage_collect(cutoff="not-a-timestamp")

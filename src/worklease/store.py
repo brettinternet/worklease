@@ -2548,6 +2548,26 @@ class LeaseStore:
                           JOIN bundles AS b ON b.claim_id = m.claim_id
                           WHERE m.resource = r.resource
                       )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM operations AS o
+                          WHERE o.resource = r.resource
+                            AND o.state = 'started'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM reconciliations AS rec
+                                WHERE rec.resource = o.resource
+                                  AND rec.operation_id = o.operation_id
+                            )
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM operations AS o
+                          JOIN bundle_epochs AS be ON be.claim_id = o.claim_id
+                          JOIN json_each(be.resources) AS member
+                          WHERE member.value = r.resource
+                            AND o.state = 'started'
+                      )
                     """,
                     (cutoff_value,),
                 ).fetchall()
