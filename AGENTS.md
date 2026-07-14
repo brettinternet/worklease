@@ -51,7 +51,14 @@ Before handing off or committing changes:
 
 For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
 
-When caller context does not already provide those source/provider capabilities, read [`skills/worklease-source-workflow/SKILL.md`](skills/worklease-source-workflow/SKILL.md) after the generic workflow skill. It maps caller-selected Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and custom sources into the generic contract. Load only the matching provider reference, keep provider credentials and writes caller-authorized, and leave graph selection and claim lifecycle in `worklease-workflow`.
+When caller context does not already provide those source/provider capabilities,
+read
+[`skills/worklease-workflow/references/source-workflow.md`](skills/worklease-workflow/references/source-workflow.md)
+after the generic contract. It maps caller-selected Backlog.md, loose Markdown,
+GitHub Issues, Linear, Jira, and custom sources into that contract. Load only
+the matching provider reference, keep provider credentials and writes
+caller-authorized, and leave graph selection and claim lifecycle in
+`worklease-workflow`.
 
 The short Backlog.md command nudge in this file is managed by `backlog agents`. Keep the managed block intact; refresh it after changing project instructions with:
 

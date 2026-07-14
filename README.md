@@ -22,6 +22,18 @@ Tagged releases include checksummed Python packages and native executables. With
 
 Then run `mise install`. Pin a version by replacing `latest` with `vX.Y.Z`.
 
+### Install the agent skill
+
+Ask your agent to follow [`skills/AGENTS.md`](skills/AGENTS.md). The portable
+Agent Skills bundle is [`skills/worklease-workflow/`](skills/worklease-workflow/);
+install that complete directory at the same Git tag as the CLI. The agent must
+use its documented skill installer or discovery directory rather than assuming
+a product-specific path. Skill installation does not install the CLI.
+
+For example, tell your agent: “Read
+`https://github.com/brettinternet/worklease/blob/vX.Y.Z/skills/AGENTS.md` and
+install the Worklease skill for this agent.”
+
 For a verified direct install, use:
 
 ```sh
@@ -169,7 +181,13 @@ Agents should follow this sequence:
 4. Revalidate dependencies, ownership, guarantee scope, and provider state before every durable mutation.
 5. Verify the authoritative provider checkpoint before release, review, handoff, or archive.
 
-Read the [provider-neutral workflow skill](skills/worklease-workflow/SKILL.md) before implementing an agent loop. To connect Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, or a custom source, also read the [source workflow skill](skills/worklease-source-workflow/SKILL.md). The [source-provider contract](skills/worklease-source-workflow/references/provider-contract.md) and [SDK compatibility guide](docs/source-provider-sdk-compatibility.md) define adapter and receipt requirements.
+Read the [portable Worklease workflow skill](skills/worklease-workflow/SKILL.md)
+before implementing an agent loop. It contains the provider-neutral contract
+and source mappings for Backlog.md, loose Markdown, GitHub Issues, Linear,
+Jira, and custom sources. The
+[source-provider contract](skills/worklease-workflow/references/source-provider-contract.md)
+and [SDK compatibility guide](docs/source-provider-sdk-compatibility.md) define
+adapter and receipt requirements.
 
 ## CLI and compatibility
 

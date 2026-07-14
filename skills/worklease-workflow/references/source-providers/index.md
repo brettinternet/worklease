@@ -1,6 +1,8 @@
 # Provider References
 
-Load only the reference matching each caller-resolved provider kind. These references define provider deltas; [`worklease-workflow`](../../../worklease-workflow/references/contract.md) remains normative.
+Load only the reference matching each caller-resolved provider kind. These
+references define provider deltas; [`contract.md`](../contract.md) remains
+normative.
 
 - [`backlog-md.md`](backlog-md.md) — Backlog.md projects and tasks
 - [`loose-markdown.md`](loose-markdown.md) — established Markdown work sources

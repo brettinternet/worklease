@@ -1,7 +1,6 @@
 ---
 name: worklease-workflow
-description: Coordinate generic work items with dependency-aware selection, bounded claims, durable progress, review boundaries, and archive operations without assuming a backend or provider.
-disable-model-invocation: true
+description: Coordinate generic work items from Backlog.md, Markdown, GitHub Issues, Linear, Jira, or custom sources with dependency-aware selection, bounded claims, durable progress, review boundaries, and archive operations. Use when an agent needs a safe Worklease loop without assuming a backend or provider.
 ---
 
 # Worklease Workflow
@@ -13,9 +12,15 @@ This skill does not discover, name, select, or configure providers. It does not 
 ## Progressive loading
 
 1. Read [`references/contract.md`](references/contract.md) before designing or executing a workflow.
-2. Declare the caller's capability object: source resolution, discovery, reads, writes, caller-supplied opaque claim resources, claim reads and authority, and any review/archive operations.
-3. Map the caller's source and claim service to the normalized contract without leaking backend assumptions into scheduling logic.
-4. Use only capabilities the caller explicitly authorizes. A missing capability is a structured result, never an invented fallback.
+2. When caller context does not already implement the source/provider capability
+   object, read [`references/source-workflow.md`](references/source-workflow.md)
+   and load only the matching provider reference.
+3. Declare source resolution, discovery, reads, writes, caller-supplied opaque
+   claim resources, claim reads and authority, and any review/archive operations.
+4. Map the caller's source and claim service to the normalized contract without
+   leaking backend assumptions into scheduling logic.
+5. Use only capabilities the caller explicitly authorizes. A missing capability
+   is a structured result, never an invented fallback.
 
 ## Worklease capability boundary
 
@@ -45,7 +50,17 @@ Checkpoint-before-release is a caller-enforced precondition. Worklease validates
 
 ## Provider integration boundary
 
-If the caller's existing context does not already implement the capability object, load a provider-specific workflow adapter skill or equivalent context after this contract. That layer owns source detection and resolution, source-qualified item/status/dependency/order mapping, authenticated reads and writes, durable provider receipts, and provider-specific review/archive behavior; it may use a bundled Worklease key adapter for canonical resource and local-capability policy. It records `providerMutationFenced: false` unless the provider mutation itself supplies fencing evidence. It must reuse this contract's graph construction, selection, ownership, and checkpoint-ordering invariants rather than restating them. Bundled key adapters do not replace this workflow layer. Load only the mappings for the providers actually resolved.
+If the caller's existing context does not already implement the capability
+object, load [`references/source-workflow.md`](references/source-workflow.md)
+after the generic contract. That layer owns source detection and resolution,
+source-qualified item/status/dependency/order mapping, authenticated reads and
+writes, durable provider receipts, and provider-specific review/archive
+behavior; it may use a bundled Worklease key adapter for canonical resource and
+local-capability policy. It records `providerMutationFenced: false` unless the
+provider mutation itself supplies fencing evidence. It must reuse this
+contract's graph construction, selection, ownership, and checkpoint-ordering
+invariants rather than restating them. Bundled key adapters do not replace this
+workflow layer. Load only the mappings for the providers actually resolved.
 
 ## Responsibility boundary
 

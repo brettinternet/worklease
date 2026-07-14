@@ -48,7 +48,8 @@ demonstrates a provider conditional-write operation that rejects stale writers
 atomically and returns evidence. Pre/post reads, local locks, timestamps,
 assignments, and command success do not satisfy that requirement.
 
-Complete [`../provider-authoring-checklist.md`](../provider-authoring-checklist.md)
+Complete
+[`../source-provider-authoring-checklist.md`](../source-provider-authoring-checklist.md)
 before adding a dedicated provider reference. Add only the provider-specific
 delta; inherit all scheduling and claim-lifecycle rules from
 `worklease-workflow`.

@@ -1,7 +1,7 @@
 # Source Provider SDK Compatibility
 
 The `worklease-source-sdk` distribution publishes the provider boundary from
-[`provider-contract.md`](../skills/worklease-source-workflow/references/provider-contract.md).
+[`source-provider-contract.md`](../skills/worklease-workflow/references/source-provider-contract.md).
 It is deliberately separate from the `worklease` lease core: providers own
 credentials, network clients, discovery, authoritative writes, receipts, and
 provider versions. The source workflow owns dependency scheduling and claim

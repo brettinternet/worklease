@@ -1,6 +1,7 @@
 # Source Provider Contract
 
-This contract defines the provider-specific delta required by [`worklease-workflow`](../../worklease-workflow/references/contract.md). It does not replace or restate that contract.
+This contract defines the provider-specific delta required by the normative
+[`contract.md`](contract.md). It does not replace or restate that contract.
 
 ## Adapter declaration
 
