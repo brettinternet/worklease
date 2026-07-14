@@ -294,7 +294,8 @@ class ExecutionTests(unittest.TestCase):
     def test_started_intent_is_unknown_outcome_and_never_reruns(self) -> None:
         request = self.acquire()
         operation_request = request.request_dict(
-            argv=[sys.executable, "-c", "print('must not run')"]
+            argv=[sys.executable, "-c", "print('must not run')"],
+            executionDirectory={"mode": "caller"},
         )
         self.assertIsNone(
             self.store.begin_operation(request, "exec", operation_request)
@@ -479,7 +480,9 @@ from worklease.models import MutationRequest
 from worklease.store import LeaseStore
 store = LeaseStore({str(self.home)!r})
 request = MutationRequest({request.resource!r}, {request.claim_id!r}, {request.token!r}, {request.revision}, {request.operation_id!r}, ttl=5)
-store.begin_operation(request, 'exec', request.request_dict(argv=['echo', 'crash']))
+store.begin_operation(request, 'exec', request.request_dict(
+    argv=['echo', 'crash'], executionDirectory={{'mode': 'caller'}}
+))
 """
         environment = {
             **os.environ,
