@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worklease-example-source-provider"
+version = "0.1.0"
+description = "Test-only source-provider and resource-policy composition example"
+requires-python = ">=3.14"
+dependencies = [
+    "worklease-source-sdk>=0.1,<1",
+    "worklease>=0.1,<1",
+]
+
+[project.entry-points."worklease.resource_policies"]
+example-source = "source_provider_example.policy:registration"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/source_provider_example"]

@@ -370,6 +370,8 @@ The Worklease source workflow defines the provider-neutral boundary. See the
 and [provider references](skills/worklease-source-workflow/references/providers/index.md)
 for source-specific mapping rules.
 
+For typed external-provider SDK compatibility rules, receipt requirements, and a public TASK-10 resource-policy composition example, see the [source-provider SDK compatibility guide](docs/source-provider-sdk-compatibility.md).
+
 ## Guarantees
 
 The built-in store coordinates cooperating callers on one host through SQLite and POSIX file locks. It does not provide distributed locking, cross-host exclusion, or provider-side fencing. Claims are exact ownership epochs with bearer credentials and compare-and-set revisions. Tokens are accepted only by claim mutations and guarded operations; never put them in logs, comments, checkpoints, or handoffs.
