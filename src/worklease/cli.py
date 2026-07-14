@@ -31,6 +31,8 @@ _COMMANDS = frozenset(
         "status-bundle",
         "bundle-status",
         "inspect-bundle",
+        "inspect-operation",
+        "reconcile-operation",
         "list",
         "heartbeat",
         "heartbeat-bundle",
@@ -192,6 +194,27 @@ def _parser() -> _ArgumentParser:
     status_parser = commands.add_parser("status", help="read current lease state")
     _add_output_arguments(status_parser)
     status_parser.add_argument("--resource", required=True)
+
+    inspect_operation_parser = commands.add_parser(
+        "inspect-operation", help="inspect one operation outcome"
+    )
+    _add_output_arguments(inspect_operation_parser)
+    inspect_operation_parser.add_argument("--resource", required=True)
+    inspect_operation_parser.add_argument("--operation-id", required=True)
+
+    reconcile_operation_parser = commands.add_parser(
+        "reconcile-operation", help="record an observed operation outcome"
+    )
+    _add_output_arguments(reconcile_operation_parser)
+    _common_claim_arguments(reconcile_operation_parser)
+    reconcile_operation_parser.add_argument("--target-operation-id", required=True)
+    reconcile_operation_parser.add_argument("--expected-request-sha256", required=True)
+    reconcile_operation_parser.add_argument(
+        "--outcome",
+        required=True,
+        choices=("observed-success", "observed-failure"),
+    )
+    reconcile_operation_parser.add_argument("--evidence", required=True)
 
     checkpoint_parser = commands.add_parser(
         "checkpoint", help="persist a bounded JSON checkpoint and renew a lease"
@@ -370,6 +393,25 @@ def _dispatch(
     if operation == "status":
         assert store is not None
         return store.status(args.resource), 0
+    if operation == "inspect-operation":
+        assert store is not None
+        return store.inspect_operation(args.resource, args.operation_id), 0
+    if operation == "reconcile-operation":
+        assert store is not None
+        try:
+            evidence = json.loads(args.evidence)
+        except (TypeError, ValueError) as error:
+            raise LeaseError("invalid-evidence", code=64) from error
+        return (
+            store.reconcile_operation(
+                _request(args),
+                args.target_operation_id,
+                args.expected_request_sha256,
+                args.outcome,
+                evidence,
+            ),
+            0,
+        )
     if operation == "list":
         assert store is not None
         return store.list_claims(args.resource), 0

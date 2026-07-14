@@ -240,6 +240,211 @@ class LeaseStore:
                 )
             return projection
 
+    def reconcile_operation(
+        self,
+        request: MutationRequest,
+        target_operation_id: str,
+        expected_request_sha256: str,
+        outcome: str,
+        evidence: Any,
+    ) -> dict[str, Any]:
+        """Record an observed result for one started operation without replaying it."""
+
+        require_text(target_operation_id, "target-operation-id")
+        require_text(expected_request_sha256, "expected-request-sha256")
+        if request.operation_id == target_operation_id:
+            raise LeaseError(
+                "operation-id-conflict",
+                code=64,
+                operationId=request.operation_id,
+            )
+        if len(expected_request_sha256) != 64 or any(
+            value not in "0123456789abcdefABCDEF" for value in expected_request_sha256
+        ):
+            raise LeaseError("invalid-request-sha256", code=64)
+        try:
+            evidence_json = serialize_checkpoint(evidence)
+        except LeaseError as error:
+            raise LeaseError(
+                "invalid-evidence", code=error.code, **error.details
+            ) from error
+        with (
+            resource_lock(request.resource, self.home),
+            closing(self._connect()) as db,
+            transaction(db),
+        ):
+            owner = self._require_owner(db, request)
+            if self.clock() >= float(owner["expires_at"]):
+                raise LeaseError(
+                    "claim-expired",
+                    resource=request.resource,
+                    claim=self._claim(owner).to_dict(include_token=False),
+                )
+            replay = db.execute(
+                """
+                SELECT * FROM reconciliations
+                WHERE resource = ? AND reconciliation_operation_id = ?
+                """,
+                (request.resource, request.operation_id),
+            ).fetchone()
+            if replay is not None:
+                if (
+                    str(replay["operation_id"]) != target_operation_id
+                    or str(replay["outcome"]) != outcome
+                    or str(replay["request_sha256"]) != expected_request_sha256
+                    or str(replay["evidence"]) != evidence_json
+                ):
+                    raise LeaseError(
+                        "operation-id-request-mismatch",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                receipt = json.loads(str(replay["receipt"]))
+                claim = receipt.get("claim")
+                if isinstance(claim, dict) and int(owner["revision"]) > int(
+                    claim.get("revision", owner["revision"])
+                ):
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=request.resource,
+                        expectedRevision=int(owner["revision"]),
+                        suppliedRevision=request.revision,
+                    )
+                receipt["idempotent"] = True
+                return receipt
+            self._require_current(db, request)
+            target_rows = db.execute(
+                """
+                SELECT * FROM operations
+                WHERE resource = ? AND operation_id = ?
+                ORDER BY claim_id, kind
+                """,
+                (request.resource, target_operation_id),
+            ).fetchall()
+            if not target_rows:
+                raise LeaseError(
+                    "operation-not-found",
+                    code=3,
+                    operationId=target_operation_id,
+                )
+            if len(target_rows) != 1:
+                raise LeaseError(
+                    "operation-id-ambiguous",
+                    code=3,
+                    resource=request.resource,
+                    operationId=target_operation_id,
+                )
+            target = target_rows[0]
+            if str(target["state"]) != "started":
+                raise LeaseError(
+                    "operation-not-unknown",
+                    code=3,
+                    operationId=target_operation_id,
+                    state=(
+                        "unknown-outcome"
+                        if str(target["state"]) == "started"
+                        else str(target["state"])
+                    ),
+                )
+            actual_sha256 = hashlib.sha256(
+                str(target["request"]).encode("utf-8")
+            ).hexdigest()
+            if actual_sha256 != expected_request_sha256:
+                raise LeaseError(
+                    "request-fingerprint-mismatch",
+                    code=3,
+                    operationId=target_operation_id,
+                    expectedRequestSha256=expected_request_sha256,
+                )
+            existing_target = db.execute(
+                """
+                SELECT 1 FROM reconciliations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                (request.resource, target_operation_id),
+            ).fetchone()
+            if existing_target is not None:
+                raise LeaseError(
+                    "operation-already-reconciled",
+                    code=3,
+                    operationId=target_operation_id,
+                )
+            now = self.clock()
+            revision = int(owner["revision"]) + 1
+            ttl = require_ttl(request.ttl)
+            updated = db.execute(
+                """
+                UPDATE claims
+                SET revision = ?, heartbeat_at = ?, expires_at = ?
+                WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
+                """,
+                (
+                    revision,
+                    now,
+                    now + ttl,
+                    request.resource,
+                    request.claim_id,
+                    request.token,
+                    request.revision,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise LeaseError(
+                    "claim-update-conflict", code=3, resource=request.resource
+                )
+            db.execute(
+                """
+                INSERT INTO resources(resource, revision) VALUES (?, ?)
+                ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                """,
+                (request.resource, revision),
+            )
+            current = self._current(db, request.resource)
+            if current is None:
+                raise LeaseError(
+                    "claim-update-conflict", code=3, resource=request.resource
+                )
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "reconcile-operation",
+                "operationId": request.operation_id,
+                "targetOperationId": target_operation_id,
+                "resource": request.resource,
+                "state": "reconciled",
+                "outcome": outcome,
+                "requestSha256": expected_request_sha256,
+                "reconciledAt": self._timestamp(now),
+                "idempotent": False,
+                "claim": self._claim(current).to_dict(include_token=False),
+            }
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, outcome, evidence,
+                    resolver_agent_id, resolver_session_id, resolver_owner_id,
+                    resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at, receipt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.resource,
+                    target_operation_id,
+                    str(target["kind"]),
+                    str(request.claim_id),
+                    outcome,
+                    evidence_json,
+                    str(current["agent_id"]),
+                    str(current["session_id"]),
+                    str(current["owner_id"]),
+                    str(current["work_key"]),
+                    expected_request_sha256,
+                    request.operation_id,
+                    now,
+                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            return receipt
+
     def _bundle_for_resource(
         self, connection: sqlite3.Connection, resource: str
     ) -> sqlite3.Row | None:

@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 
 from worklease import __version__
+from worklease.models import MutationRequest
+from worklease.store import LeaseStore
 
 
 class CliContractTests(unittest.TestCase):
@@ -176,6 +178,73 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(
             "free", self.json_cli("status", "--resource", resource)["state"]
         )
+
+    def test_operation_inspection_and_reconciliation_cli(self) -> None:
+        resource = "repo:reconcile"
+        acquired = self.json_cli(*self.acquire_arguments(resource=resource))
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = MutationRequest(
+            resource=resource,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="unknown-cli",
+        )
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_operation(
+                request,
+                "exec",
+                {"revision": request.revision, "argv": ["deploy", "artifact"]},
+            )
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(
+                {"revision": request.revision, "argv": ["deploy", "artifact"]},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        inspected = self.json_cli(
+            "inspect-operation",
+            "--resource",
+            resource,
+            "--operation-id",
+            "unknown-cli",
+        )
+        self.assertEqual("unknown-outcome", inspected["state"])
+        self.assertNotIn(str(claim["token"]), json.dumps(inspected))
+        reconciled = self.json_cli(
+            *self.mutation_arguments(
+                "reconcile-operation", resource, claim, "reconcile-cli"
+            ),
+            "--target-operation-id",
+            "unknown-cli",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-failure",
+            "--evidence",
+            '{"provider":"did-not-run"}',
+        )
+        self.assertEqual("reconciled", reconciled["state"])
+        self.assertEqual("observed-failure", reconciled["outcome"])
+        self.assertNotIn(str(claim["token"]), json.dumps(reconciled))
+        replay = self.json_cli(
+            *self.mutation_arguments(
+                "reconcile-operation", resource, claim, "reconcile-cli"
+            ),
+            "--target-operation-id",
+            "unknown-cli",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-failure",
+            "--evidence",
+            '{"provider":"did-not-run"}',
+        )
+        self.assertTrue(replay["idempotent"])
 
     def test_bundle_cli_lifecycle_and_guarded_exec(self) -> None:
         resources = ("repo:bundle-a", "repo:bundle-b")

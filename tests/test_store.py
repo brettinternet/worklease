@@ -362,6 +362,103 @@ class StoreTests(unittest.TestCase):
         self.assertNotIn("evidence", projection)
         self.assertNotIn("sentinel", json.dumps(projection))
 
+    def test_reconcile_operation_is_authorized_idempotent_and_append_only(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        target = self.mutation(acquired, "resource", "unknown-1")
+        operation_request = {
+            "revision": target.revision,
+            "ttl": float(target.ttl),
+            "command": ["publish", "artifact"],
+        }
+        self.assertIsNone(self.store.begin_operation(target, "exec", operation_request))
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-1"),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+        reconcile_request = MutationRequest(
+            resource=target.resource,
+            claim_id=target.claim_id,
+            token=target.token,
+            revision=target.revision,
+            operation_id="reconcile-1",
+            ttl=target.ttl,
+        )
+        reconcile = self.store.reconcile_operation(
+            reconcile_request,
+            "unknown-1",
+            request_sha256,
+            "observed-success",
+            {"providerReceipt": "receipt-1"},
+        )
+        self.assertFalse(reconcile["idempotent"])
+        self.assertEqual(2, reconcile["claim"]["revision"])
+        self.assertNotIn("token", reconcile["claim"])
+        self.assertEqual(
+            "reconciled", self.store.inspect_operation("resource", "unknown-1")["state"]
+        )
+
+        replay = self.store.reconcile_operation(
+            reconcile_request,
+            "unknown-1",
+            request_sha256,
+            "observed-success",
+            {"providerReceipt": "receipt-1"},
+        )
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(reconcile["claim"], replay["claim"])
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "changed"},
+            )
+        advanced = self.store.heartbeat(
+            MutationRequest(
+                resource=target.resource,
+                claim_id=target.claim_id,
+                token=target.token,
+                revision=reconcile["claim"]["revision"],
+                operation_id="heartbeat-after-reconcile",
+            )
+        )
+        self.assertGreater(
+            advanced["claim"]["revision"], reconcile["claim"]["revision"]
+        )
+        with self.assertRaisesRegex(LeaseError, "stale-revision"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt-1"},
+            )
+        self.clock.advance(901)
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt-1"},
+            )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            original = db.execute(
+                """
+                SELECT state, request FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-1"),
+            ).fetchone()
+        self.assertEqual(("started", str(raw_request[0])), original)
+
     def test_inspect_operation_rejects_reused_operation_id_as_ambiguous(self) -> None:
         first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))
         first_request = self.mutation(first, "resource", "reused-1", ttl=1)
