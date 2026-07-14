@@ -18,8 +18,14 @@ from unittest.mock import patch
 from worklease import execution_context
 from worklease import replacement as replacement_module
 from worklease.cli import main as cli_main
-from worklease.execution import execute
-from worklease.models import AcquireRequest, LeaseError, MutationRequest
+from worklease.execution import execute, execute_bundle
+from worklease.models import (
+    AcquireRequest,
+    BundleAcquireRequest,
+    BundleMutationRequest,
+    LeaseError,
+    MutationRequest,
+)
 from worklease.replacement import replace_file
 from worklease.store import LeaseStore
 
@@ -559,11 +565,212 @@ store.begin_operation(request, 'exec', request.request_dict(
             env=environment,
             capture_output=True,
             text=True,
-            check=False,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
         with self.assertRaisesRegex(LeaseError, "unknown-outcome"):
             execute(self.store, request, ["echo", "crash"])
+
+    def test_git_primary_resolves_linked_symlink_and_separate_git_dir(self) -> None:
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+        def git(cwd: Path, *arguments: str) -> None:
+            subprocess.run(
+                ["git", "-C", str(cwd), *arguments],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        primary = Path(self.temporary.name) / "primary"
+        primary.mkdir()
+        git(primary, "init", "-b", "main")
+        (primary / "tracked").write_text("tracked\n")
+        git(primary, "add", "tracked")
+        git(
+            primary,
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        )
+        linked = Path(self.temporary.name) / "linked"
+        git(primary, "worktree", "add", "-b", "linked", str(linked))
+        linked_alias = Path(self.temporary.name) / "linked-alias"
+        linked_alias.symlink_to(linked, target_is_directory=True)
+        self.assertEqual(
+            primary.resolve(),
+            execution_context.resolve_execution_directory(
+                git_primary=True, cwd=linked_alias
+            ).path,
+        )
+
+        separate = Path(self.temporary.name) / "separate"
+        separate_git = Path(self.temporary.name) / "separate.git"
+        separate.mkdir()
+        subprocess.run(
+            [
+                "git",
+                "init",
+                "-b",
+                "main",
+                "--separate-git-dir",
+                str(separate_git),
+                str(separate),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        (separate / "tracked").write_text("tracked\n")
+        git(separate, "add", "tracked")
+        git(
+            separate,
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        )
+        separate_linked = Path(self.temporary.name) / "separate-linked"
+        git(separate, "worktree", "add", "-b", "linked", str(separate_linked))
+        self.assertEqual(
+            separate.resolve(),
+            execution_context.resolve_execution_directory(
+                git_primary=True, cwd=separate_linked
+            ).path,
+        )
+
+    def test_git_primary_stays_inside_nested_repository(self) -> None:
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+        def git(cwd: Path, *arguments: str) -> None:
+            subprocess.run(
+                ["git", "-C", str(cwd), *arguments],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        outer = Path(self.temporary.name) / "outer"
+        inner = outer / "nested"
+        inner.mkdir(parents=True)
+        git(outer, "init", "-b", "main")
+        (outer / "tracked").write_text("tracked\n")
+        git(outer, "add", "tracked")
+        git(
+            outer,
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "outer",
+        )
+        git(inner, "init", "-b", "main")
+        (inner / "nested-tracked").write_text("nested\n")
+        git(inner, "add", "nested-tracked")
+        git(
+            inner,
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "inner",
+        )
+        self.assertEqual(
+            inner.resolve(),
+            execution_context.resolve_execution_directory(
+                git_primary=True, cwd=inner
+            ).path,
+        )
+
+    def test_caller_mode_reports_caller_directory_without_provider_sanitization(
+        self,
+    ) -> None:
+        request = self.acquire("caller-directory")
+        script = (
+            "import json, os; from pathlib import Path; "
+            "print(json.dumps({'cwd': str(Path.cwd()), "
+            "'gitDir': os.environ.get('GIT_DIR')}))"
+        )
+        with patch.dict(os.environ, {"GIT_DIR": "caller-routing"}):
+            receipt, code = execute(
+                self.store,
+                request,
+                [sys.executable, "-c", script],
+            )
+        self.assertEqual(0, code)
+        command = cast(dict[str, object], receipt["command"])
+        self.assertEqual({"mode": "caller"}, command["executionDirectory"])
+        self.assertEqual(
+            {"cwd": str(Path.cwd()), "gitDir": "caller-routing"},
+            json.loads(str(command["stdout"])),
+        )
+
+    def test_bundle_provider_directory_replay_conflict(self) -> None:
+        resources = ("bundle-a", "bundle-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:item:T3",
+                ttl=5,
+            )
+        )
+        claim = cast(dict[str, object], acquired["claim"])
+        provider = Path(self.temporary.name) / "bundle-provider"
+        alternate = Path(self.temporary.name) / "bundle-alternate"
+        provider.mkdir()
+        alternate.mkdir()
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=cast(int, claim["revision"]),
+            operation_id="bundle-provider-exec",
+            ttl=5,
+            provider_directory=str(provider),
+        )
+        first, code = execute_bundle(
+            self.store,
+            request,
+            [sys.executable, "-c", "from pathlib import Path; print(Path.cwd())"],
+        )
+        self.assertEqual(0, code)
+        first_command = cast(dict[str, object], first["command"])
+        self.assertEqual(
+            {"mode": "provider-directory", "path": str(provider.resolve())},
+            first_command["executionDirectory"],
+        )
+        replay = BundleMutationRequest(
+            resources=resources,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=cast(int, cast(dict[str, object], first["claim"])["revision"]),
+            operation_id=request.operation_id,
+            ttl=request.ttl,
+            provider_directory=str(alternate),
+        )
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            execute_bundle(
+                self.store,
+                replay,
+                [sys.executable, "-c", "print('must not run')"],
+            )
 
     def test_git_primary_ignores_prunable_linked_worktree(self) -> None:
         primary = Path(self.temporary.name) / "primary"

@@ -77,7 +77,43 @@ def _resolve_directory(value: str | os.PathLike[str], *, reason: str) -> Path:
     return path
 
 
-def _worktree_paths(probe: Path) -> list[Path]:
+def _primary_worktree(probe: Path, common: Path) -> Path | None:
+    candidates = [probe]
+    try:
+        candidates.extend(
+            candidate for candidate in common.parent.iterdir() if candidate.is_dir()
+        )
+    except OSError:
+        return None
+    for candidate in candidates:
+        marker = candidate / ".git"
+        try:
+            if marker.is_dir() and marker.resolve(strict=True) == common:
+                return candidate.resolve(strict=True)
+            if marker.is_file():
+                value = marker.read_text(encoding="utf-8").strip()
+                if value.startswith("gitdir:"):
+                    target = Path(value[7:].strip())
+                    if not target.is_absolute():
+                        target = candidate / target
+                    if target.resolve(strict=True) == common:
+                        return candidate.resolve(strict=True)
+        except OSError, RuntimeError, UnicodeError:
+            continue
+    return None
+
+
+def _worktree_paths(probe: Path, common: Path | None = None) -> list[Path]:
+    if common is None:
+        value = _git_output(probe, "rev-parse", "--git-common-dir")
+        if value is not None:
+            common = Path(value)
+            if not common.is_absolute():
+                common = probe / common
+            try:
+                common = common.resolve(strict=True)
+            except OSError, RuntimeError:
+                common = None
     environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         completed = subprocess.run(
@@ -95,12 +131,13 @@ def _worktree_paths(probe: Path) -> list[Path]:
     for line in completed.stdout.splitlines():
         if line.startswith("worktree "):
             try:
-                paths.append(
-                    _resolve_directory(
-                        line.removeprefix("worktree "),
-                        reason="invalid-provider-working-directory",
-                    )
+                path = _resolve_directory(
+                    line.removeprefix("worktree "),
+                    reason="invalid-provider-working-directory",
                 )
+                if common is not None and path == common:
+                    path = _primary_worktree(probe, common) or path
+                paths.append(path)
             except LeaseError:
                 # A prunable linked worktree is not a candidate; continue
                 # resolving the registered primary checkout.
@@ -127,7 +164,7 @@ def _git_primary(cwd: Path) -> Path:
     except (OSError, RuntimeError) as error:
         raise LeaseError("git-primary-unavailable", code=64) from error
     candidates: list[Path] = []
-    for candidate in _worktree_paths(probe):
+    for candidate in _worktree_paths(probe, common):
         git_dir = _git_output(candidate, "rev-parse", "--git-dir")
         if git_dir is None:
             continue

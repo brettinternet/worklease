@@ -73,14 +73,16 @@
         "reclaimed": {"type": "boolean"},
         "recovery": {"type": ["string", "null"], "enum": ["clean-handoff", "expired-recovery", null]},
         "checkpoint": {},
+        "executionDirectory": {"$ref": "common.json#/$defs/ExecutionDirectory"},
         "command": {
           "type": "object",
-          "required": ["argv", "returncode", "stdout", "stderr"],
+          "required": ["argv", "returncode", "stdout", "stderr", "executionDirectory"],
           "properties": {
             "argv": {"type": "array", "items": {"type": "string"}},
             "returncode": {"type": "integer"},
             "stdout": {"type": "string"},
-            "stderr": {"type": "string"}
+            "stderr": {"type": "string"},
+            "executionDirectory": {"$ref": "common.json#/$defs/ExecutionDirectory"}
           },
           "additionalProperties": true
         },

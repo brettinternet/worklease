@@ -229,7 +229,12 @@ class BundleAcquireRequest:
 
 @dataclass(frozen=True, slots=True)
 class BundleMutationRequest:
-    """Authorize one lifecycle operation across an exact bundle."""
+    """Authorize one lifecycle operation across an exact bundle.
+
+    ``provider_directory`` selects an explicit normalized provider checkout;
+    ``git_primary`` derives the registered primary/control worktree. Leave both
+    unset to preserve the caller-directory execution mode.
+    """
 
     resources: tuple[str, ...]
     claim_id: str
@@ -285,6 +290,12 @@ class BundleStatusRequest:
 
 @dataclass(frozen=True, slots=True)
 class MutationRequest:
+    """Authorize one guarded command for an exact resource.
+
+    ``provider_directory`` and ``git_primary`` select provider execution
+    semantics; when neither is set, the command runs from the caller directory.
+    """
+
     resource: str
     claim_id: str
     token: str

@@ -12,6 +12,29 @@
       },
       "additionalProperties": true
     },
+    "ExecutionDirectory": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["caller", "provider-directory", "git-primary"]},
+        "path": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "caller"}}},
+          "then": {"not": {"required": ["path"]}}
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {"enum": ["provider-directory", "git-primary"]}
+            }
+          },
+          "then": {"required": ["path"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "Error": {
       "allOf": [
         {"$ref": "#/$defs/Envelope"},

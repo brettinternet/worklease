@@ -112,7 +112,15 @@ The projection never returns bearer tokens, raw requests or receipts, command ou
 
 ### 4. Run one guarded command
 
-`exec` passes argv directly without a shell. It renews the claim while the child runs, records the child result, and advances the revision when the operation completes:
+`exec` passes argv directly without a shell. Without provider execution options it
+keeps the caller's current working directory and inherited environment. Provider
+execution opts into either `--provider-directory DIR` or `--git-primary`; both
+resolve a canonical absolute directory before the child starts. The resolved
+`executionDirectory` (`mode` plus normalized `path`) is part of the operation
+request and receipt, so reusing an operation ID with a different directory is an
+idempotency conflict. Provider children have Git repository-routing variables
+removed (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and related routing
+variables); Git identity, configuration, and credential variables are preserved.
 
 ```sh
 worklease exec \
@@ -121,10 +129,22 @@ worklease exec \
   --token "$TOKEN" \
   --revision "$REVISION" \
   --operation-id "run-tests-TASK-42-001" \
+  --git-primary \
   -- python -m unittest discover -s tests -v
 ```
 
-Use the returned claim revision for the next operation. A non-zero child status is reported as `child-process-failed`; an uncertain start or storage outcome is reported as `unknown-outcome` and must be reconciled before retrying external work. A successful replay of the same operation ID and identical request returns the cached receipt without running the command again.
+Use `--provider-directory DIR` when the provider checkout is supplied explicitly.
+`--git-primary` resolves the one registered non-bare primary/control worktree
+for the repository containing the caller; missing, ambiguous, prunable-only,
+unregistered, or cross-repository candidates fail before the child starts.
+`exec-bundle` and its `bundle-exec` alias accept the same options and receipt
+semantics.
+
+Use the returned claim revision for the next operation. A non-zero child status is
+reported as `child-process-failed`; an uncertain start or storage outcome is
+reported as `unknown-outcome` and must be reconciled before retrying external work.
+A successful replay of the same operation ID and identical request returns the
+cached receipt without running the command again.
 
 If `exec` reports `unknown-outcome`, do not replay the external command automatically. Inspect the durable local operation first:
 
@@ -281,7 +301,11 @@ worklease heartbeat --resource RESOURCE --claim-id ID --token TOKEN \
 worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID --checkpoint JSON [--ttl SECONDS]
 worklease exec --resource RESOURCE --claim-id ID --token TOKEN \
-  --revision REVISION --operation-id OPERATION_ID -- COMMAND ARG...
+  --revision REVISION --operation-id OPERATION_ID \
+  [--provider-directory DIR | --git-primary] -- COMMAND ARG...
+worklease exec-bundle --resource RESOURCE [--resource RESOURCE ...] \
+  --claim-id ID --token TOKEN --revision REVISION --operation-id OPERATION_ID \
+  [--provider-directory DIR | --git-primary] -- COMMAND ARG...
 worklease replace-file --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID --path PATH \
   --expected-sha256 SHA256 --content-file CONTENT_FILE
@@ -289,9 +313,17 @@ worklease release --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID --reason REASON
 ```
 
+`exec` and `exec-bundle` default to `mode: caller`. Provider modes return a
+normalized absolute `executionDirectory` in the command receipt and operation
+identity. `--provider-directory` and `--git-primary` are mutually exclusive.
+The `git-primary` mode requires one registered, non-bare primary/control worktree
+in the caller's repository. All provider execution receipts retain
+`guarantee: local-coordination` and `providerFencing: false`; a guarded local
+operation does not fence provider-side writes.
+
 Exit codes are `0` for success, `2` for lease or capability conflicts, `3` for idempotency/version or unknown-outcome failures, `64` for invalid input, and `75` for storage failure. `exec` returns the child status after the child starts.
 
-The state directory is selected by `--home`, then `WORKLEASE_HOME`, then `XDG_STATE_HOME/worklease`, defaulting to `~/.local/state/worklease`. Keep it private and use a separate home for isolated tests or independent coordination domains.
+The state directory is selected by `--home`, then `WORKLEASE_HOME`, then `XDG_STATE_HOME/worklease`, defaulting to `~/.local/state/worklease`. Use an absolute path or this user-level default; never set `WORKLEASE_HOME` to a repository-relative path in linked worktrees, because each checkout would otherwise create a separate lease authority. Keep it private and use a separate home for isolated tests or independent coordination domains.
 
 ## Bundle claims
 
@@ -401,6 +433,13 @@ Python API compatibility follows semantic versioning: additive exports and
 optional fields are minor-version changes; behavior changes, removals, or new
 required arguments require a major version. A public symbol is deprecated in
 documentation before removal.
+
+Python callers set the optional `MutationRequest.provider_directory` or
+`MutationRequest.git_primary` fields (and the matching
+`BundleMutationRequest` fields) to select provider execution. Leaving both unset
+preserves caller-directory execution. Receipts include the normalized
+`executionDirectory` mode and path for provider modes, and these values are
+part of the operation identity used for replay checks.
 
 JSON responses use schema version 1. Consumers must ignore unknown fields and
 must rely on stable `reason` values and exit codes rather than human-readable
