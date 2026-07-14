@@ -467,6 +467,105 @@ class StoreTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(("started", str(raw_request[0])), original)
 
+    def test_reconcile_rejects_fingerprint_and_malformed_evidence(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        target = self.mutation(acquired, "resource", "unknown-invalid")
+        operation_request = {
+            "revision": target.revision,
+            "argv": ["publish", "artifact"],
+        }
+        self.assertIsNone(self.store.begin_operation(target, "exec", operation_request))
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-invalid"),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+        reconcile_request = self.mutation(acquired, "resource", "reconcile-invalid")
+        with self.assertRaisesRegex(LeaseError, "request-fingerprint-mismatch"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-invalid",
+                "0" * 64,
+                "observed-failure",
+                {"provider": "did-not-run"},
+            )
+        with self.assertRaisesRegex(LeaseError, "invalid-evidence"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-invalid",
+                request_sha256,
+                "observed-failure",
+                {"not-json": float("nan")},
+            )
+        with self.assertRaisesRegex(LeaseError, "invalid-evidence"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-invalid",
+                request_sha256,
+                "observed-failure",
+                {"evidence": "x" * 8193},
+            )
+        self.assertEqual(
+            "unknown-outcome",
+            self.store.inspect_operation("resource", "unknown-invalid")["state"],
+        )
+
+    def test_reconcile_storage_failure_rolls_back_claim_and_audit_record(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        target = self.mutation(acquired, "resource", "unknown-storage")
+        self.assertIsNone(
+            self.store.begin_operation(
+                target,
+                "exec",
+                {"revision": target.revision, "argv": ["publish", "artifact"]},
+            )
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-storage"),
+            ).fetchone()
+            assert raw_request is not None
+            request_sha256 = hashlib.sha256(
+                str(raw_request[0]).encode("utf-8")
+            ).hexdigest()
+            db.execute(
+                """
+                CREATE TRIGGER fail_reconciliation_insert
+                BEFORE INSERT ON reconciliations
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected reconciliation failure');
+                END
+                """
+            )
+            db.commit()
+        reconcile_request = self.mutation(acquired, "resource", "reconcile-storage")
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "injected reconciliation failure"
+        ):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-storage",
+                request_sha256,
+                "observed-success",
+                {"provider": "observed"},
+            )
+        status = self.store.status("resource")
+        assert isinstance(status["claim"], dict)
+        self.assertEqual(int(target.revision), int(status["claim"]["revision"]))
+        self.assertEqual(
+            "unknown-outcome",
+            self.store.inspect_operation("resource", "unknown-storage")["state"],
+        )
+
     def test_inspect_operation_rejects_reused_operation_id_as_ambiguous(self) -> None:
         first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))
         first_request = self.mutation(first, "resource", "reused-1", ttl=1)

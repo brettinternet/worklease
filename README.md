@@ -111,6 +111,33 @@ worklease exec \
 
 Use the returned claim revision for the next operation. A non-zero child status is reported as `child-process-failed`; an uncertain start or storage outcome is reported as `unknown-outcome` and must be reconciled before retrying external work. A successful replay of the same operation ID and identical request returns the cached receipt without running the command again.
 
+If `exec` reports `unknown-outcome`, do not replay the external command automatically. Inspect the durable local operation first:
+
+```sh
+worklease inspect-operation \
+  --resource "$RESOURCE" \
+  --operation-id "run-tests-TASK-42-001"
+```
+
+Inspection returns only the operation kind, expected revision, creation time, and a SHA-256 fingerprint of the persisted request. It reports `unknown-outcome`, `completed`, or `reconciled`; it never returns the request, receipt, evidence, or bearer token. A reconciled `observed-success` means the caller may continue from the provider-verified result. A reconciled `observed-failure` means the caller must stop or issue a new operation ID for an explicitly approved retry; it must never reuse the original operation ID to rerun the external command.
+
+Only the current claimant may record an observed result. Supply the inspected fingerprint and bounded strict JSON evidence from the provider or other authoritative observer:
+
+```sh
+worklease reconcile-operation \
+  --resource "$RESOURCE" \
+  --claim-id "$CLAIM_ID" \
+  --token "$TOKEN" \
+  --revision "$REVISION" \
+  --operation-id "reconcile-TASK-42-001" \
+  --target-operation-id "run-tests-TASK-42-001" \
+  --expected-request-sha256 "$REQUEST_SHA256" \
+  --outcome observed-success \
+  --evidence '{"providerReceipt":"receipt-123","observedAt":"2026-07-13T12:00:00Z"}'
+```
+
+The target operation remains immutable; reconciliation appends an audit record containing the resolver identity, outcome, fingerprint, evidence, and timestamps. Evidence is canonical JSON and limited to 8192 UTF-8 bytes. Replaying the exact reconciliation request returns its cached receipt; changed evidence, outcome, fingerprint, claim, or revision fails without another external side effect. A storage failure leaves the claim revision and unknown operation unchanged.
+
 ### 5. Replace a Markdown source by expected hash
 
 `replace-file` is a fenced, atomic compare-and-swap for one source file. Derive a **source-wide** Markdown resource and acquire that resource before replacing the file; do not reuse an item-scoped resource:
@@ -228,6 +255,12 @@ worklease acquire --resource RESOURCE --claim-id ID --agent-id ID \
   --session-id ID --owner-id ID --work-key WORK_KEY [--ttl SECONDS]
 worklease status --resource RESOURCE
 worklease list [--resource RESOURCE]
+worklease inspect-operation --resource RESOURCE --operation-id OPERATION_ID
+worklease reconcile-operation --resource RESOURCE --claim-id ID --token TOKEN \
+  --revision REVISION --operation-id OPERATION_ID \
+  --target-operation-id TARGET_OPERATION_ID \
+  --expected-request-sha256 SHA256 \
+  --outcome observed-success|observed-failure --evidence JSON
 worklease heartbeat --resource RESOURCE --claim-id ID --token TOKEN \
   --revision REVISION --operation-id OPERATION_ID [--ttl SECONDS]
 worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
