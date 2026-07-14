@@ -328,6 +328,27 @@ class StoreTests(unittest.TestCase):
                 """
             ).fetchone()
             self.assertEqual(("reconciliations",), table)
+            db.execute("ALTER TABLE reconciliations RENAME TO reconciliations_legacy")
+            db.execute(
+                """
+                CREATE TABLE reconciliations(
+                    resource TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    claim_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    resolver_agent_id TEXT NOT NULL,
+                    resolver_session_id TEXT NOT NULL,
+                    resolver_owner_id TEXT NOT NULL,
+                    resolver_work_key TEXT NOT NULL,
+                    request_sha256 TEXT NOT NULL,
+                    reconciliation_operation_id TEXT NOT NULL,
+                    reconciled_at REAL NOT NULL,
+                    PRIMARY KEY(resource, operation_id)
+                )
+                """
+            )
             db.execute(
                 """
                 INSERT INTO reconciliations(
@@ -361,6 +382,11 @@ class StoreTests(unittest.TestCase):
         self.assertEqual("reconcile-1", projection["reconciliationOperationId"])
         self.assertNotIn("evidence", projection)
         self.assertNotIn("sentinel", json.dumps(projection))
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            columns = {
+                str(row[1]) for row in db.execute("PRAGMA table_info(reconciliations)")
+            }
+        self.assertIn("receipt", columns)
 
     def test_reconcile_operation_is_authorized_idempotent_and_append_only(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
