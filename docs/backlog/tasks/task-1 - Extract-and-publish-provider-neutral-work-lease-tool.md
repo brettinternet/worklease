@@ -1,11 +1,11 @@
 ---
 id: TASK-1
 title: Extract and publish provider-neutral work-lease tool
-status: In Progress
+status: Done
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-13 23:28'
+updated_date: '2026-07-14 01:44'
 labels:
   - architecture
   - packaging
@@ -75,12 +75,12 @@ Do not modify or migrate `~/.dotfiles/ai/.bin/backlog-claim`; do not add provide
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 [T1] Package bootstrap: `mise exec uv -- uv sync --locked` installs the `worklease` distribution from `pyproject.toml`; default `mise exec uv -- uv run worklease --version` returns a JSON object containing the packaged version, while `--format text --version` returns the bare version; README and mise tasks document development, test, typecheck, build, and package-install commands using the existing Python 3.14/latest uv/pyright toolchain.
-- [ ] #2 [T2, T3] Provider-neutral behavior: opaque resource strings are stored and compared exactly (with any hashing limited to internal lock filenames), and targeted tests prove one-winner concurrency, independent-resource concurrency, SQLite/file-lock serialization, TTL expiry and reclaim, crash recovery, heartbeat, release, monotonically increasing revisions, random token replacement, idempotent retries, operation/request mismatch rejection, stale-token/revision rejection, durable crash-during-exec `unknown-outcome` handling without automatic rerun, and guarded process behavior without provider imports.
-- [ ] #3 [T4, T5] README and CLI output explicitly state the only built-in guarantee is same-host SQLite plus POSIX file-lock coordination, including the Markdown expected-hash replacement path; bundled adapters cannot claim remote/provider-side fencing unless they perform provider-side conditional checks, and generic execution reports local coordination rather than provider fencing.
-- [ ] #4 [T4] Optional GitHub, Backlog.md, Markdown, and Linear adapter modules implement only provider-specific identity/capability policy behind protocols; Markdown source claims expose the core atomic expected-SHA-256 `replace-file` operation, Linear/unknown providers remain local-coordination, and tests prove generic execution cannot claim provider fencing.
-- [ ] #5 [T5] Every command, including `--version`, emits schema-versioned JSON by default; `--format text` is explicit; list/status never expose bearer tokens in JSON or plaintext, and tests cover stable fields, exit codes, redaction, rejected token-recovery flags, malformed input, and child-command failures.
-- [ ] #6 [T6] CI runs the targeted concurrency, crash/expiry, stale-ownership, installation, pyright, build, and release-validation checks on supported POSIX runners; a clean checkout can reproduce them through mise/uv without relying on the external helper.
-- [ ] #7 [T6] Tagged `vX.Y.Z` releases publish wheel and sdist assets plus one-file PyInstaller executables for the supported POSIX Linux/macOS architecture matrix, with OS/architecture names and a SHA-256 `checksums.txt` covering every asset. The PyInstaller build preserves `worklease` package metadata so `worklease --version` works from the frozen executable. The tested `mise run install-release VERSION=vX.Y.Z` path downloads the exact matching native asset when available, verifies its checksum, installs and executes it, and falls back to the exact versioned wheel with checksum verification when no matching native asset is available; local runs require `WORKLEASE_REPOSITORY=owner/name`. Tests cover asset selection, checksum validation, fallback behavior, and the downloaded artifact's `worklease --version` smoke test.
+- [x] #2 [T2, T3] Provider-neutral behavior: opaque resource strings are stored and compared exactly (with any hashing limited to internal lock filenames), and targeted tests prove one-winner concurrency, independent-resource concurrency, SQLite/file-lock serialization, TTL expiry and reclaim, crash recovery, heartbeat, release, monotonically increasing revisions, random token replacement, idempotent retries, operation/request mismatch rejection, stale-token/revision rejection, durable crash-during-exec `unknown-outcome` handling without automatic rerun, and guarded process behavior without provider imports.
+- [x] #3 [T4, T5] README and CLI output explicitly state the only built-in guarantee is same-host SQLite plus POSIX file-lock coordination, including the Markdown expected-hash replacement path; bundled adapters cannot claim remote/provider-side fencing unless they perform provider-side conditional checks, and generic execution reports local coordination rather than provider fencing.
+- [x] #4 [T4] Optional GitHub, Backlog.md, Markdown, and Linear adapter modules implement only provider-specific identity/capability policy behind protocols; Markdown source claims expose the core atomic expected-SHA-256 `replace-file` operation, Linear/unknown providers remain local-coordination, and tests prove generic execution cannot claim provider fencing.
+- [x] #5 [T5] Every command, including `--version`, emits schema-versioned JSON by default; `--format text` is explicit; list/status never expose bearer tokens in JSON or plaintext, and tests cover stable fields, exit codes, redaction, rejected token-recovery flags, malformed input, and child-command failures.
+- [x] #6 [T6] CI runs the targeted concurrency, crash/expiry, stale-ownership, installation, pyright, build, and release-validation checks on supported POSIX runners; a clean checkout can reproduce them through mise/uv without relying on the external helper.
+- [x] #7 [T6] Tagged `vX.Y.Z` releases publish wheel and sdist assets plus one-file PyInstaller executables for the supported POSIX Linux/macOS architecture matrix, with OS/architecture names and a SHA-256 `checksums.txt` covering every asset. The PyInstaller build preserves `worklease` package metadata so `worklease --version` works from the frozen executable. The tested `mise run install-release VERSION=vX.Y.Z` path downloads the exact matching native asset when available, verifies its checksum, installs and executes it, and falls back to the exact versioned wheel with checksum verification when no matching native asset is available; local runs require `WORKLEASE_REPOSITORY=owner/name`. Tests cover asset selection, checksum validation, fallback behavior, and the downloaded artifact's `worklease --version` smoke test.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -190,6 +190,8 @@ T6 implementation progress checkpoint:
 - Added exact-version checksum-verifying installer with native-first selection, 404 wheel fallback, supported UV_TOOL_BIN_DIR install-directory propagation, downloaded native/wheel --version smoke tests, strict tag validation, and local live-GitHub-independent tests.
 - Verification: mise exec uv -- uv sync --locked passed; mise run lint passed; mise run format-check passed; mise run typecheck passed (0 errors); mise run test passed (47 tests); mise run build passed; mise exec uv -- uv run python -m unittest tests.test_release -v passed (6/6); actual PyInstaller arm64 one-file --version smoke passed with JSON version 0.1.0; built sdist isolated --version smoke passed; Ruby Psych workflow parse and sh -n passed. Final independent verifier PASS at HEAD 52fd668; no findings.
 - T6 implementation task is complete. Next pass: REVIEW TASK-1 accumulated implementation at exact commits; item remains In Progress and acceptance markers remain review-pending.
+
+REVIEWED: accumulated implementation commits through HEAD 656c731; independent final verifier PASS at HEAD 656c731 with focused ownership/storage regressions 3/3 OK; full format-check, lint, typecheck, unittest discovery (55 tests), build, and PyInstaller version/key smoke passed; no actionable findings remain; acceptance criteria #2-#7 complete.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -201,3 +203,9 @@ created: 2026-07-13 21:04
 Expanded the in-progress release scope before T6: keep wheel/sdist, add POSIX Linux/macOS PyInstaller assets, preserve worklease metadata, verify checksums for every asset, select native binaries with wheel fallback, and execute the downloaded artifact in smoke tests.
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-1 complete and reviewed. Accumulated implementation and review-fix commits through 656c731 satisfy acceptance criteria #1-#7. Final independent verifier PASS; no findings. Release/package workflows and installer validated.
+<!-- SECTION:FINAL_SUMMARY:END -->
