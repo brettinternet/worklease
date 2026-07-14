@@ -1,11 +1,11 @@
 ---
 id: TASK-5
 title: Add atomic multi-resource claim bundles
-status: In Progress
+status: Done
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 04:27'
+updated_date: '2026-07-14 04:57'
 labels:
   - coordination
   - leases
@@ -29,11 +29,11 @@ Allow a caller to acquire a finite set of exact opaque resources as one all-or-n
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A bundle acquisition either owns every requested resource or owns none of them, including when one resource is already active or acquisition fails partway through.
-- [ ] #2 Bundle acquisition uses deterministic ordering and same-host coordination so concurrent overlapping bundles cannot deadlock or leave partial claims behind.
-- [ ] #3 The receipt provides a coherent way to inspect, heartbeat, execute guarded work against, and release the bundle; stale, expired, conflicting, and repeated requests have stable JSON errors and idempotent behavior.
-- [ ] #4 Exact duplicate resources, empty bundles, oversized bundles, and invalid resource identities are rejected deterministically without leaking bearer tokens.
-- [ ] #5 Automated concurrency tests and README/workflow documentation cover bundle semantics, conflict reporting, lifecycle behavior, and the unchanged provider-neutral guarantee.
+- [x] #1 A bundle acquisition either owns every requested resource or owns none of them, including when one resource is already active or acquisition fails partway through.
+- [x] #2 Bundle acquisition uses deterministic ordering and same-host coordination so concurrent overlapping bundles cannot deadlock or leave partial claims behind.
+- [x] #3 The receipt provides a coherent way to inspect, heartbeat, execute guarded work against, and release the bundle; stale, expired, conflicting, and repeated requests have stable JSON errors and idempotent behavior.
+- [x] #4 Exact duplicate resources, empty bundles, oversized bundles, and invalid resource identities are rejected deterministically without leaking bearer tokens.
+- [x] #5 Automated concurrency tests and README/workflow documentation cover bundle semantics, conflict reporting, lifecycle behavior, and the unchanged provider-neutral guarantee.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -72,4 +72,14 @@ Implementation checkpoint (T1 atomic bundle ownership): commit 042fae6ee87e36656
 T1 review fix: independent verifier initially found cross-kind claim-id reuse: single acquire omitted bundle_epochs. Commit 0d46590cc8afe87b6a9278af301ef6bf08fa38af extends the single acquire epoch query across epochs and bundle_epochs and adds test_single_acquire_rejects_claim_id_used_by_bundle. Focused regression passed; hooks passed with 67 tests; lint, format-check, and typecheck passed. Verifier recheck: all T1 criteria PASS after fix. T1 remains complete; next task T2. Remaining acceptance: #3, #5 and T3 documentation/concurrency coverage.
 
 Implementation checkpoint (T2 bundle lifecycle and guarded operations): existing feature commit 5256952aa851b4030ae1f793e3e025242af8357c adds exact ordered bundle mutation authorization, atomic inspect/heartbeat/release, idempotent guarded bundle exec, schema-versioned CLI commands with aliases, redacted read-only receipts, and lifecycle tests. Verification: mise exec -- uv run python -m unittest tests.test_store tests.test_cli tests.test_execution passed (45 tests); mise run hooks passed (no staged files); mise run lint passed; mise run format-check passed; mise run test passed (69 tests); mise run typecheck passed. Progress: T2 complete. Next task: T3 concurrency contract and documentation. Remaining acceptance: #5.
+
+Implementation checkpoint (T3 concurrency contract and documentation): commit 4f7e720 adds deterministic subprocess contention coverage with a held cross-process lock, stale-owner rejection after expiry reclaim, changed-operation replay rejection without revision changes, and injected mid-acquire rollback coverage. README and skills/worklease-workflow document 1-32 exact opaque resources, duplicate/order semantics, deterministic locking, all-or-none lifecycle, shared revision, and unchanged same-host/provider-neutral guarantee. Verification: mise run lint passed; mise run format-check passed; mise run test passed (76 tests); mise run typecheck passed (0 errors); mise run hooks passed. Progress: T3 complete. Next: review TASK-5 accumulated commits 042fae6, 0d46590, 5256952, 4f7e720. Remaining acceptance: #1-#4. Claim: D25FBAB0-2E10-471B-9710-5E13CE921696; guarantee: local-coordination (fenced provider mutation unavailable).
+
+Review checkpoint: reviewed full accumulated implementation commits 042fae6, 0d46590, 5256952, 4f7e720 and review-fix commit 5c74eef. Full concurrency/transaction review found and fixed bundle guarded-exec exact-request replay failure; fix preserves original operation revision for idempotent completion replay and adds CLI regression coverage. Verification: mise run hooks, lint, format-check, test (76 tests), and typecheck passed on the exact review snapshot and integrated main.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented and reviewed atomic multi-resource claim bundles across acquisition, deterministic locking, lifecycle, guarded execution, CLI/schema, concurrency tests, and documentation. Review fix 5c74eef restores exact-request idempotent exec-bundle replay after internal heartbeats. Verified with full quality gates and 76 passing tests.
+<!-- SECTION:FINAL_SUMMARY:END -->
