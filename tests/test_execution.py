@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from worklease import execution_context
 from worklease import replacement as replacement_module
 from worklease.cli import main as cli_main
 from worklease.execution import execute
@@ -498,6 +499,21 @@ store.begin_operation(request, 'exec', request.request_dict(
         self.assertEqual(0, completed.returncode, completed.stderr)
         with self.assertRaisesRegex(LeaseError, "unknown-outcome"):
             execute(self.store, request, ["echo", "crash"])
+
+    def test_git_primary_ignores_prunable_linked_worktree(self) -> None:
+        primary = Path(self.temporary.name) / "primary"
+        primary.mkdir()
+        porcelain = (
+            f"worktree {primary}\n"
+            "HEAD 123\n"
+            "worktree /missing/prunable\n"
+            "HEAD 456\n"
+            "prunable gitdir file points to non-existent location\n"
+        )
+        completed = subprocess.CompletedProcess(["git"], 0, stdout=porcelain, stderr="")
+        with patch.object(execution_context.subprocess, "run", return_value=completed):
+            paths = execution_context._worktree_paths(primary)
+        self.assertEqual([primary.resolve()], paths)
 
 
 if __name__ == "__main__":
