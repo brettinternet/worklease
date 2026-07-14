@@ -1,11 +1,11 @@
 ---
 id: TASK-9
 title: Correct lifecycle and guarantee documentation
-status: To Do
+status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 04:41'
 labels:
   - documentation
   - cli
@@ -62,4 +62,6 @@ Make the README a runnable and accurate guide to the released Worklease lifecycl
 **Next action:** inventory released CLI help, then rewrite the lifecycle in one coherent documentation pass.
 
 **Refinement checkpoint:** refined: TASK-9 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=ebaa9c09-b189-40f3-bfff-ba59a6534bde; claimRevision=6; refinement: complete.
+
+Implementation checkpoint (T1 runnable lifecycle and guarantee guide): commit e376ee83fe4118ac307752dc4d6bc21275d2910b on isolated branch rewrites README lifecycle/CLI contract/recipes/guarantee boundary and adds workflow checkpoint terminology. Smoke-tested key, acquire, checkpoint, exec, and release with /tmp/worklease-task9-smoke; verified checkpoint/exec revision advances and release consumes latest revision. mise run lint, format-check, test (72 tests), typecheck, and hooks passed. T1 complete. Next task: review complete accumulated TASK-9 implementation. Remaining acceptance: review evidence. Executable baseline conflict: checkpoint is a released coordination-metadata command; docs distinguish it from provider-durable checkpoint state.
 <!-- SECTION:NOTES:END -->
