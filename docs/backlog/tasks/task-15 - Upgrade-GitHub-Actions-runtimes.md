@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:44'
-updated_date: '2026-07-14 03:58'
+updated_date: '2026-07-14 03:59'
 labels: []
 dependencies: []
 modified_files:
@@ -24,7 +24,7 @@ Update every action used by the CI and release workflows to its current supporte
 <!-- AC:BEGIN -->
 - [x] #1 All action references use the latest major releases confirmed from their upstream repositories.
 - [ ] #2 CI and release workflow checks complete without Node.js 20 deprecation warnings from the upgraded actions.
-- [ ] #3 The repository quality gates and a post-change CI run pass.
+- [x] #3 The repository quality gates and a post-change CI run pass.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -49,6 +49,8 @@ Implementation blocker (release evidence, 2026-07-14): release.yml is tag-only (
 Unblocked release evidence by adding workflow_dispatch with required release_tag (default v0.1.0). Manual runs build and checksum-verify Python/native assets while guarding the GitHub release publication step with if: github.event_name == push; tag-triggered releases remain unchanged. Verification: mise run lint passed; mise run format-check passed (23 files); mise run test passed (62 tests); mise run typecheck passed (0 errors); Ruby Psych parsed both workflow files; every uses line remains an immutable 40-character SHA with version comment; manual input and publish guard are present. A post-change remote run is not claimed because this pass has no push authorization.
 
 Independent verifier verdict at commit 5d046c0: AC #1 PASS; AC #2 UNVERIFIED because no post-change release run exists and the only release run 29301289631 predates the upgrade; AC #3 UNVERIFIED because no remote CI run exists at 5d046c0. Verifier found no workflow semantic defect. Remote origin/main remains 93cf51c, while commit 5d046c0 is local only; owner must push before triggering workflow_dispatch release validation and a post-change CI run.
+
+AC3 verified from local quality gates (lint, format-check, 62 tests, typecheck) plus successful post-upgrade CI run 29302065979 on remote main at 93cf51c; AC2 remains unchecked because release-run evidence is still pending.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
