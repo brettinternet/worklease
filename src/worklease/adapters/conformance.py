@@ -126,11 +126,26 @@ def run_policy_conformance(
         if not item_values or len(set(item_values)) != len(item_values):
             failures.append("sample-items")
         else:
-            keys = tuple(
-                _key(registration, provider, source, item) for item in item_values
+            resources = tuple(
+                _key(registration, provider, source, item).resource
+                for item in item_values
             )
-            resources = tuple(key.resource for key in keys)
-            if len(set(resources)) != len(resources):
+            if descriptor.scope == "source":
+                if len(set(resources)) != 1:
+                    failures.append("scope-semantics")
+                else:
+                    checks.append("scope-semantics")
+                other_source = _key(
+                    registration,
+                    provider,
+                    f"{source}::conformance-other-source",
+                    item_values[0],
+                )
+                if other_source.resource == resources[0]:
+                    failures.append("collision-avoidance")
+                else:
+                    checks.append("collision-avoidance")
+            elif len(set(resources)) != len(resources):
                 failures.append("collision-avoidance")
             else:
                 checks.append("collision-avoidance")
@@ -143,16 +158,22 @@ def run_policy_conformance(
             else:
                 checks.append("identity-stability")
             package_root = Path(__file__).resolve().parents[2]
-            process_resource = _cross_process_resource(
-                provider, source, item_values[0], package_root=package_root
+            process_resources = tuple(
+                _cross_process_resource(
+                    provider, source, item, package_root=package_root
+                )
+                for item in item_values
             )
-            if process_resource != resources[0]:
+            if process_resources != resources:
                 failures.append("process-stability")
             else:
                 checks.append("process-stability")
             for alternate in equivalent_sources:
-                alternate_key = _key(registration, provider, alternate, item_values[0])
-                if alternate_key.resource != resources[0]:
+                alternate_resources = tuple(
+                    _key(registration, provider, alternate, item).resource
+                    for item in item_values
+                )
+                if alternate_resources != resources:
                     failures.append("worktree-stability")
                     break
             else:

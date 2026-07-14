@@ -212,6 +212,15 @@ class AdapterKeyTests(unittest.TestCase):
             set(report.checks),
         )
 
+    def test_source_scoped_policy_conformance_preserves_source_identity(self) -> None:
+        report = run_policy_conformance(
+            "markdown",
+            source="/tmp/worklease-source.md",
+            items=("item-a", "item-b"),
+        )
+        self.assertTrue(report.passed, report.failures)
+        self.assertIn("scope-semantics", report.checks)
+
     def test_external_policy_registration_and_failures_are_deterministic(self) -> None:
         descriptor = ResourcePolicyDescriptor(
             name="external",
