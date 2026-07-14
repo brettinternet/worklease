@@ -1,11 +1,11 @@
 ---
 id: TASK-11
 title: Publish source provider extension SDK
-status: In Progress
+status: Review
 assignee:
   - '@codex-loop-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 17:56'
+updated_date: '2026-07-14 18:00'
 labels:
   - providers
   - sdk
@@ -76,4 +76,6 @@ Implementation checkpoint (T2 provider conformance kit): commit f6669a7b3971fe7f
 Integration checkpoint: T2 implementation commit f6669a7b3971fe7f7f3938811f3817bdeab917a7 cherry-picked into canonical main as 37906f22ad1dcc97407ca6d50afd20ec91c64af0 under the provider/repository transaction lock. Canonical post-integration mise run lint, format-check, test, and typecheck passed; canonical SDK conformance unittest (10 tests) passed.
 
 Implementation pass T3 claimed under claim 13971093-FE78-4802-BC5A-DFBF582AC732; worker-attempt 99FB0210-9458-49F8-B3AE-45DB94133A32; canonical in-progress checkpoint refreshed.
+
+Implementation checkpoint (T3 external composition example and compatibility guide): commit cdd286cb4047cec90ff01a087836ace9402cef3b (already present on canonical main). Added test-only worklease-example-source-provider distribution depending on worklease-source-sdk and TASK-10 public resource-policy types; registered worklease.resource_policies entry point; added complete source-provider example, compatibility/versioning guide, and SDK/example tests. Targeted verification: SDK/example unittest discover (18 tests) passed; uv build --project packages/worklease-source-sdk and example both built wheel/sdist; mise run lint, format-check, test, typecheck passed; mise run hooks passed with no staged files. Remaining criteria: AC1-AC5 require review; next pass REVIEW.
 <!-- SECTION:NOTES:END -->
