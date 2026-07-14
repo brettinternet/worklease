@@ -30,7 +30,7 @@ from .models import (
     require_ttl,
     serialize_checkpoint,
 )
-from .sqlite import connect, lease_home, transaction
+from .sqlite import connect, connect_readonly, lease_home, transaction
 
 
 class LeaseStore:
@@ -1987,10 +1987,26 @@ class LeaseStore:
         """Read a redacted diagnostic projection without mutating state."""
 
         require_resource(resource)
-        with (
-            resource_lock(resource, self.home),
-            closing(self._connect()) as db,
-        ):
+        database = self.home / "leases.sqlite3"
+        state_files = (
+            database,
+            database.with_name(f"{database.name}-wal"),
+            database.with_name(f"{database.name}-shm"),
+        )
+        if any(path.is_symlink() for path in state_files):
+            raise LeaseError("state-file-is-symlink", code=64)
+        if not database.is_file():
+            return {
+                "schemaVersion": 1,
+                "ok": True,
+                "operation": "status-verbose",
+                "resource": resource,
+                "state": "free",
+                "claim": None,
+                "unknownOperations": [],
+                "release": None,
+            }
+        with closing(connect_readonly(self.home)) as db:
             now = self.clock()
             row = self._current(db, resource)
             claim: dict[str, Any] | None = None

@@ -239,6 +239,16 @@ def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     return connection
 
 
+def connect_readonly(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
+    """Open an existing database without creating or migrating schema."""
+
+    database = lease_home(home) / "leases.sqlite3"
+    connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
+    return connection
+
+
 @contextmanager
 def transaction(connection: sqlite3.Connection) -> Iterator[None]:
     """Run one immediate SQLite transaction."""

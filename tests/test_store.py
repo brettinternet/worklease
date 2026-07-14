@@ -640,6 +640,14 @@ class StoreTests(unittest.TestCase):
         self.assertEqual("expired", expired["state"])
         self.assertNotIn("token", expired["claim"])
 
+    def test_verbose_status_fresh_home_is_read_only(self) -> None:
+        fresh_home = self.home / "fresh"
+        self.assertFalse(fresh_home.exists())
+        diagnostic = LeaseStore(fresh_home).status_verbose("fresh-resource")
+        self.assertEqual("free", diagnostic["state"])
+        self.assertEqual([], diagnostic["unknownOperations"])
+        self.assertFalse(fresh_home.exists())
+
     def test_verbose_status_is_redacted_deterministic_and_read_only(self) -> None:
         resource = "verbose-resource"
         acquired = self.store.acquire(self.acquire_request(resource, "claim", ttl=1))
@@ -657,6 +665,9 @@ class StoreTests(unittest.TestCase):
             )
         )
 
+        before_active_tree = sorted(
+            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
+        )
         with sqlite3.connect(self.home / "leases.sqlite3") as db:
             before_active = db.execute(
                 """
@@ -677,6 +688,10 @@ class StoreTests(unittest.TestCase):
                 """
             ).fetchone()
         self.assertEqual(before_active, after_active)
+        after_active_tree = sorted(
+            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
+        )
+        self.assertEqual(before_active_tree, after_active_tree)
         self.assertEqual(1, active["schemaVersion"])
         self.assertEqual("active", active["state"])
         self.assertEqual(
