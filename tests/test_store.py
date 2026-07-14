@@ -640,6 +640,325 @@ class StoreTests(unittest.TestCase):
         self.assertEqual("expired", expired["state"])
         self.assertNotIn("token", expired["claim"])
 
+    def test_verbose_status_fresh_home_is_read_only(self) -> None:
+        fresh_home = self.home / "fresh"
+        self.assertFalse(fresh_home.exists())
+        diagnostic = LeaseStore(fresh_home).status_verbose("fresh-resource")
+        self.assertEqual("free", diagnostic["state"])
+        self.assertEqual([], diagnostic["unknownOperations"])
+        self.assertFalse(fresh_home.exists())
+
+    def test_verbose_status_is_redacted_deterministic_and_read_only(self) -> None:
+        resource = "verbose-resource"
+        acquired = self.store.acquire(self.acquire_request(resource, "claim", ttl=1))
+        token = str(acquired["claim"]["token"])
+        unknown_request = self.mutation(acquired, resource, "unknown-verbose")
+        self.assertIsNone(
+            self.store.begin_operation(
+                unknown_request,
+                "exec",
+                {
+                    "revision": unknown_request.revision,
+                    "command": ["printf", "sentinel-request"],
+                    "token": token,
+                },
+            )
+        )
+
+        before_active_tree = sorted(
+            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_active = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        active = self.store.status_verbose(resource)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_active = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        self.assertEqual(before_active, after_active)
+        after_active_tree = sorted(
+            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
+        )
+        self.assertEqual(before_active_tree, after_active_tree)
+        self.assertEqual(1, active["schemaVersion"])
+        self.assertEqual("active", active["state"])
+        self.assertEqual(
+            {
+                "resource",
+                "claimId",
+                "agentId",
+                "sessionId",
+                "ownerId",
+                "workKey",
+                "coordinationOnly",
+                "revision",
+                "acquiredAt",
+                "heartbeatAt",
+                "expiresAt",
+            },
+            set(active["claim"]),
+        )
+        self.assertEqual(
+            {
+                "operationId",
+                "kind",
+                "expectedRevision",
+                "createdAt",
+            },
+            set(active["unknownOperations"][0]),
+        )
+        self.assertEqual(
+            "unknown-verbose", active["unknownOperations"][0]["operationId"]
+        )
+        self.assertEqual("exec", active["unknownOperations"][0]["kind"])
+        self.assertIn("authoritative evidence", active["guidance"])
+        self.assertNotIn(token, json.dumps(active))
+        self.assertNotIn("sentinel-request", json.dumps(active))
+        self.assertNotIn("receipt", json.dumps(active))
+
+        released = self.store.release(unknown_request, "diagnostic complete")
+        self.assertEqual("diagnostic complete", released["reason"])
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_free = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        free = self.store.status_verbose(resource)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_free = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        self.assertEqual(before_free, after_free)
+        self.assertEqual("free", free["state"])
+        self.assertIsNone(free["claim"])
+        self.assertEqual(
+            {
+                "claimId",
+                "operationId",
+                "revision",
+                "releasedAt",
+            },
+            set(free["release"]),
+        )
+        self.assertEqual("unknown-verbose", free["unknownOperations"][0]["operationId"])
+
+    def test_verbose_status_reports_expired_claim_without_checkpoint_or_token(
+        self,
+    ) -> None:
+        acquired = self.store.acquire(self.acquire_request("expired", "claim", ttl=1))
+        token = str(acquired["claim"]["token"])
+        self.clock.advance(1.1)
+        diagnostic = self.store.status_verbose("expired")
+        self.assertEqual(1, diagnostic["schemaVersion"])
+        self.assertEqual("expired", diagnostic["state"])
+        self.assertEqual(False, diagnostic["claim"]["coordinationOnly"])
+        self.assertNotIn("checkpoint", diagnostic["claim"])
+        self.assertNotIn(token, json.dumps(diagnostic))
+
+    def test_verbose_status_keeps_reused_operation_id_unknown(self) -> None:
+        first = self.store.acquire(self.acquire_request("reused", "first", ttl=1))
+        first_request = self.mutation(first, "reused", "same-operation", ttl=1)
+        self.assertIsNone(
+            self.store.begin_operation(
+                first_request,
+                "exec",
+                {"revision": first_request.revision, "attempt": 1},
+            )
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                """,
+                ("reused", first_request.claim_id, first_request.operation_id),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+        reconcile_request = self.mutation(
+            first,
+            "reused",
+            "reconcile-same-operation",
+            ttl=1,
+        )
+        self.store.reconcile_operation(
+            reconcile_request,
+            "same-operation",
+            request_sha256,
+            "observed-success",
+            {"provider": "observed"},
+        )
+
+        self.clock.advance(1.1)
+        second = self.store.acquire(self.acquire_request("reused", "second"))
+        second_request = self.mutation(second, "reused", "same-operation")
+        self.assertIsNone(
+            self.store.begin_operation(
+                second_request,
+                "exec",
+                {"revision": second_request.revision, "attempt": 2},
+            )
+        )
+
+        diagnostic = self.store.status_verbose("reused")
+        unknown_operations = diagnostic["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        self.assertEqual(
+            ["same-operation"],
+            [operation["operationId"] for operation in unknown_operations],
+        )
+
+    def test_verbose_status_matches_reconciliation_by_request_fingerprint(
+        self,
+    ) -> None:
+        first = self.store.acquire(self.acquire_request("cross-claim", "first", ttl=1))
+        first_request = self.mutation(first, "cross-claim", "cross-operation", ttl=1)
+        self.assertIsNone(
+            self.store.begin_operation(
+                first_request,
+                "exec",
+                {"revision": first_request.revision, "attempt": 1},
+            )
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                """,
+                ("cross-claim", first_request.claim_id, first_request.operation_id),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+
+        self.clock.advance(1.1)
+        second = self.store.acquire(
+            self.acquire_request("cross-claim", "second", ttl=1)
+        )
+        resolver_request = self.mutation(
+            second,
+            "cross-claim",
+            "reconcile-cross-operation",
+            ttl=1,
+        )
+        self.store.reconcile_operation(
+            resolver_request,
+            "cross-operation",
+            request_sha256,
+            "observed-success",
+            {"provider": "observed"},
+        )
+
+        diagnostic = self.store.status_verbose("cross-claim")
+        self.assertEqual([], diagnostic["unknownOperations"])
+
+    def test_verbose_status_matches_reconciliation_kind(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("kind-match", "claim", ttl=60)
+        )
+        request = self.mutation(acquired, "kind-match", "same-operation")
+        operation_request = {"revision": request.revision, "attempt": 1}
+        self.assertIsNone(
+            self.store.begin_operation(request, "exec", operation_request)
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ? AND kind = ?
+                """,
+                ("kind-match", request.claim_id, request.operation_id, "exec"),
+            ).fetchone()
+            assert raw_request is not None
+            request_sha256 = hashlib.sha256(
+                str(raw_request[0]).encode("utf-8")
+            ).hexdigest()
+            db.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, state, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, ?, 'started', ?, ?, ?, ?)
+                """,
+                (
+                    "kind-match",
+                    request.claim_id,
+                    request.operation_id,
+                    "replace-file",
+                    raw_request[0],
+                    request.revision,
+                    "{}",
+                    self.clock(),
+                ),
+            )
+            claim = acquired["claim"]
+            assert isinstance(claim, dict)
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, outcome, evidence,
+                    resolver_agent_id, resolver_session_id, resolver_owner_id,
+                    resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at, receipt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "kind-match",
+                    "same-operation",
+                    "exec",
+                    request.claim_id,
+                    "observed-success",
+                    "{}",
+                    str(claim["agentId"]),
+                    str(claim["sessionId"]),
+                    str(claim["ownerId"]),
+                    str(claim["workKey"]),
+                    request_sha256,
+                    "manual-reconcile",
+                    self.clock(),
+                    "{}",
+                ),
+            )
+            db.commit()
+
+        diagnostic = self.store.status_verbose("kind-match")
+        unknown_operations = diagnostic["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        self.assertEqual(
+            [{"operationId": "same-operation", "kind": "replace-file"}],
+            [
+                {
+                    "operationId": operation["operationId"],
+                    "kind": operation["kind"],
+                }
+                for operation in unknown_operations
+            ],
+        )
+
     def test_legacy_claim_schema_is_migrated_before_read(self) -> None:
         self.home.mkdir(parents=True)
         connection = sqlite3.connect(self.home / "leases.sqlite3")
@@ -667,6 +986,18 @@ class StoreTests(unittest.TestCase):
             """
         )
         connection.close()
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        verbose = LeaseStore(self.home, clock=self.clock).status_verbose("legacy")
+        self.assertEqual("active", verbose["state"])
+        self.assertNotIn("token", json.dumps(verbose))
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        self.assertEqual(before_tables, after_tables)
         status = LeaseStore(self.home, clock=self.clock).status("legacy")
         self.assertEqual("active", status["state"])
         self.assertNotIn("token", status["claim"])

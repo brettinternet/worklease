@@ -215,6 +215,11 @@ def _parser() -> _ArgumentParser:
     status_parser = commands.add_parser("status", help="read current lease state")
     _add_output_arguments(status_parser)
     status_parser.add_argument("--resource", required=True)
+    status_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="include redacted diagnostic metadata and unknown outcomes",
+    )
 
     inspect_operation_parser = commands.add_parser(
         "inspect-operation", help="inspect one operation outcome"
@@ -298,6 +303,68 @@ def _parser() -> _ArgumentParser:
     return parser
 
 
+def _text_value(value: object) -> str:
+    """Render one text-mode scalar without allowing control-character injection."""
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _emit_verbose_status(payload: dict[str, object]) -> None:
+    print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
+    print(f"STATE\t{payload.get('state', '')}")
+
+    claim = payload.get("claim")
+    if isinstance(claim, dict):
+        print("CLAIM")
+        for field in (
+            "resource",
+            "claimId",
+            "agentId",
+            "sessionId",
+            "ownerId",
+            "workKey",
+            "coordinationOnly",
+            "revision",
+            "acquiredAt",
+            "heartbeatAt",
+            "expiresAt",
+        ):
+            print(f"{field}\t{_text_value(claim.get(field))}")
+    else:
+        print("CLAIM\t<none>")
+
+    unknown_operations = payload.get("unknownOperations", [])
+    if isinstance(unknown_operations, list):
+        print(f"UNKNOWN_OPERATIONS\t{len(unknown_operations)}")
+        for operation in unknown_operations:
+            if not isinstance(operation, dict):
+                continue
+            print(
+                "UNKNOWN\t"
+                + "\t".join(
+                    _text_value(operation.get(field))
+                    for field in (
+                        "operationId",
+                        "kind",
+                        "expectedRevision",
+                        "createdAt",
+                    )
+                )
+            )
+
+    release = payload.get("release")
+    if isinstance(release, dict):
+        print("RELEASE")
+        for field in ("claimId", "operationId", "revision", "releasedAt"):
+            print(f"{field}\t{_text_value(release.get(field))}")
+    else:
+        print("RELEASE\t<none>")
+
+    guidance = payload.get("guidance")
+    if guidance is not None:
+        print(f"GUIDANCE\t{_text_value(guidance)}")
+
+
 def _emit(payload: dict[str, object], output_format: str) -> None:
     if output_format == "text":
         if payload.get("operation") == "version" and payload.get("ok"):
@@ -359,6 +426,8 @@ def _emit(payload: dict[str, object], output_format: str) -> None:
             )
             for field in fields:
                 print(f"{field}: {payload.get(field, '')}")
+        if payload.get("operation") == "status-verbose" and payload.get("ok"):
+            _emit_verbose_status(payload)
             return
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
@@ -458,7 +527,12 @@ def _dispatch(
         return store.bundle_status(tuple(args.resources)), 0
     if operation == "status":
         assert store is not None
-        return store.status(args.resource), 0
+        return (
+            store.status_verbose(args.resource)
+            if args.verbose
+            else store.status(args.resource),
+            0,
+        )
     if operation == "inspect-operation":
         assert store is not None
         return store.inspect_operation(args.resource, args.operation_id), 0

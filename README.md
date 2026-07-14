@@ -79,7 +79,7 @@ The default TTL is 900 seconds and the maximum is 3600 seconds. Heartbeat before
 
 ### 3. Inspect and keep the lease alive
 
-Read-only status and list calls never expose bearer tokens:
+Read-only status, verbose status, and list calls never expose bearer tokens:
 
 ```sh
 worklease status --resource "$RESOURCE"
@@ -94,6 +94,21 @@ worklease heartbeat \
 ```
 
 A successful heartbeat atomically renews the lease and advances the active `revision`; replace `REVISION` with the returned value. Stale, expired, wrong-token, and conflicting requests fail without changing ownership. Operation IDs are idempotency keys: replay the exact same request to recover a lost response, and never reuse one for changed inputs.
+
+For crash diagnosis, add `--verbose` to status. This remains a read-only projection and does not reclaim, adopt, reconcile, heartbeat, release, or otherwise mutate the resource:
+
+```sh
+worklease status --resource "$RESOURCE" --verbose
+```
+
+The schema-versioned verbose response includes `schemaVersion: 1`, `ok`, `operation: "status-verbose"`, the opaque `resource`, one `state` (`free`, `active`, or `expired`) evaluated at one captured clock value, and only these allowlisted fields:
+
+- `claim`: `resource`, `claimId`, `agentId`, `sessionId`, `ownerId`, `workKey`, `coordinationOnly`, `revision`, `acquiredAt`, `heartbeatAt`, and `expiresAt`, or `null`.
+- `unknownOperations`: started operations with `operationId`, `kind`, `expectedRevision`, and `createdAt`, in deterministic `createdAt`/`operationId` order. These are unknown outcomes; inspect the authoritative provider before any retry, and use the separate reconciliation flow when authorized.
+- `release`: when release metadata exists, `claimId`, `operationId`, `revision`, and `releasedAt`, or `null`.
+- `guidance`: present only when unknown operations exist and contains safe, non-mutating retry guidance.
+
+The projection never returns bearer tokens, raw requests or receipts, command output, provider payloads, file contents, checkpoints, or completed operation receipts. `reclaimed` is an acquire-response fact only; it is not historical diagnostic state. For an active claim, wait for its expiry or obtain an authorized handoff. After expiry, acquire a fresh claim and token, then continue only after resolving any unknown provider outcome. The `fenced` or `local-coordination` guarantee remains unchanged; a local coordination lease is not provider-side or cross-host fencing.
 
 ### 4. Run one guarded command
 
@@ -253,7 +268,7 @@ The singleton commands used in the lifecycle are:
 worklease key --provider PROVIDER --source SOURCE --item ITEM [--coordination-only]
 worklease acquire --resource RESOURCE --claim-id ID --agent-id ID \
   --session-id ID --owner-id ID --work-key WORK_KEY [--ttl SECONDS]
-worklease status --resource RESOURCE
+worklease status --resource RESOURCE [--verbose]
 worklease list [--resource RESOURCE]
 worklease inspect-operation --resource RESOURCE --operation-id OPERATION_ID
 worklease reconcile-operation --resource RESOURCE --claim-id ID --token TOKEN \
