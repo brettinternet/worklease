@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-07-14 03:39'
+updated_date: '2026-07-14 03:43'
 tags:
   - agent
   - workflow
@@ -69,7 +69,7 @@ worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
 
 Its version-1 JSON success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim. The claim reports the incremented `revision`, `heartbeatAt`, `expiresAt`, and local guarantee. Replaying the same operation ID with the same request returns the original receipt; changed values, stale revisions, expired claims, and wrong tokens fail without changing the checkpoint. Read-only `status` and `list` include the checkpoint but never the bearer token.
 
-The latest value is retained on the active claim. A clean `release` copies it into release history, and a later acquire returns it with `recovery: "clean-handoff"`. If the claim expires first, the next acquire returns the retained value with `recovery: "expired-recovery"`. A first acquire has no recovery marker. Retention is local SQLite coordination state; the caller's provider remains authoritative for progress, and checkpoints do not provide provider-side fencing, cross-host exclusion, or exactly-once external effects.
+The latest value is retained on the active claim. A clean `release` copies it into release history, and a later acquire returns it with `recovery: "clean-handoff"`. If the claim expires first, the next acquire returns the retained value with `recovery: "expired-recovery"`. A first acquire has no recovery marker. Retention is local SQLite coordination state and is not lease-TTL-limited: the latest value survives clean release and expiry recovery until a future explicit retention or garbage-collection operation removes it. The caller's provider remains authoritative for progress, and checkpoints do not provide provider-side fencing, cross-host exclusion, or exactly-once external effects.
 
 If the caller cannot provide one capability, return a structured capability result. Never invent a resource mapping, assignee/status/comment lock, writable local shadow, or provider fencing guarantee. Worklease can fence its matching guarded local operation among cooperating same-host callers; it does not make an invoked provider CLI/API mutation provider-fenced or exclude cross-host workers. Never put the bearer token in status output, diagnostics, provider checkpoints, logs, or handoffs.
 

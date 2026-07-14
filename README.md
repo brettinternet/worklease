@@ -141,7 +141,9 @@ checkpoint. If the claim expires first, the next acquire reports
 no recovery marker. These records are local coordination metadata only; the
 backlog/provider remains authoritative for real progress, and the feature
 does not provide provider-side fencing, cross-host exclusion, or exactly-once
-external effects.
+external effects. Checkpoint retention is not lease-TTL-limited: the latest
+value survives clean release and expiry recovery until a future explicit
+retention or garbage-collection operation removes it.
 
 Exit codes: `0` success, `2` lease or capability conflict, `3` idempotency or version/request mismatch, and `64` invalid input. `exec` returns the child status after the child starts.
 
