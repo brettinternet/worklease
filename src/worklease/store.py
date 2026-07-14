@@ -17,6 +17,7 @@ from .models import (
     AcquireRequest,
     BundleAcquireRequest,
     BundleClaim,
+    BundleMutationRequest,
     Claim,
     LeaseError,
     MutationRequest,
@@ -583,6 +584,548 @@ class LeaseStore:
             self._bundle_resources(connection, str(row["claim_id"])),
             self.clock(),
         )
+
+    @staticmethod
+    def _bundle_operation_resource(resources: tuple[str, ...]) -> str:
+        return json.dumps(list(resources), separators=(",", ":"))
+
+    def _bundle_current(
+        self, connection: sqlite3.Connection, resources: tuple[str, ...]
+    ) -> sqlite3.Row | None:
+        placeholders = ",".join("?" for _ in resources)
+        rows = connection.execute(
+            f"""
+            SELECT m.resource, m.claim_id
+            FROM bundle_members AS m
+            WHERE m.resource IN ({placeholders})
+            """,
+            resources,
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != len(resources):
+            raise LeaseError(
+                "bundle-membership-mismatch",
+                code=3,
+                resource=",".join(resources),
+            )
+        claim_ids = {str(row["claim_id"]) for row in rows}
+        if len(claim_ids) != 1:
+            raise LeaseError(
+                "bundle-membership-mismatch",
+                code=3,
+                resource=",".join(resources),
+            )
+        claim_id = next(iter(claim_ids))
+        stored = self._bundle_resources(connection, claim_id)
+        if stored != resources:
+            raise LeaseError(
+                "bundle-membership-mismatch",
+                code=3,
+                resource=",".join(resources),
+            )
+        return self._bundle_row(connection, claim_id)
+
+    def _require_bundle_owner(
+        self, connection: sqlite3.Connection, request: BundleMutationRequest
+    ) -> sqlite3.Row:
+        row = self._bundle_current(connection, request.resources)
+        if row is None:
+            raise LeaseError(
+                "claim-not-found",
+                resource=",".join(request.resources),
+            )
+        if row["claim_id"] != request.claim_id or row["token"] != request.token:
+            raise LeaseError(
+                "stale-claim",
+                resource=",".join(request.resources),
+                claim=self._bundle_claim(connection, row).to_dict(include_token=False),
+            )
+        return row
+
+    def _require_bundle_current(
+        self, connection: sqlite3.Connection, request: BundleMutationRequest
+    ) -> sqlite3.Row:
+        row = self._require_bundle_owner(connection, request)
+        if int(row["revision"]) != request.revision:
+            raise LeaseError(
+                "stale-revision",
+                resource=",".join(request.resources),
+                expectedRevision=int(row["revision"]),
+                suppliedRevision=request.revision,
+            )
+        if self.clock() >= float(row["expires_at"]):
+            raise LeaseError(
+                "claim-expired",
+                resource=",".join(request.resources),
+                claim=self._bundle_claim(connection, row).to_dict(include_token=False),
+            )
+        return row
+
+    def _bundle_cached_operation(
+        self,
+        connection: sqlite3.Connection,
+        request: BundleMutationRequest,
+        kind: str,
+        expected: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            """
+            SELECT * FROM operations
+            WHERE resource = ? AND claim_id = ? AND operation_id = ?
+            ORDER BY kind
+            LIMIT 1
+            """,
+            (
+                self._bundle_operation_resource(request.resources),
+                request.claim_id,
+                request.operation_id,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        recorded = json.loads(str(row["request"]))
+        if str(row["kind"]) != kind or {
+            key: value for key, value in recorded.items() if key != "revision"
+        } != {key: value for key, value in expected.items() if key != "revision"}:
+            raise LeaseError(
+                "operation-id-request-mismatch",
+                code=3,
+                operationId=request.operation_id,
+            )
+        expected_revision = int(row["expected_revision"])
+        if request.revision != expected_revision:
+            raise LeaseError(
+                "stale-revision",
+                resource=",".join(request.resources),
+                expectedRevision=expected_revision,
+                suppliedRevision=request.revision,
+            )
+        if str(row["state"]) == "started":
+            raise LeaseError(
+                "unknown-outcome",
+                code=3,
+                operationId=request.operation_id,
+                operation=kind,
+            )
+        receipt = json.loads(str(row["receipt"]))
+        receipt["idempotent"] = True
+        return receipt
+
+    def _advance_bundle(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        request: BundleMutationRequest,
+        kind: str,
+        operation_request: dict[str, Any],
+        receipt: dict[str, Any],
+        *,
+        complete_operation: bool = False,
+    ) -> dict[str, Any]:
+        now = self.clock()
+        revision = int(row["revision"]) + 1
+        ttl = require_ttl(request.ttl)
+        updated = connection.execute(
+            """
+            UPDATE bundles
+            SET revision = ?, heartbeat_at = ?, expires_at = ?
+            WHERE claim_id = ? AND token = ? AND revision = ?
+            """,
+            (
+                revision,
+                now,
+                now + ttl,
+                request.claim_id,
+                request.token,
+                request.revision,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise LeaseError(
+                "claim-update-conflict",
+                code=3,
+                resource=",".join(request.resources),
+            )
+        for resource in request.resources:
+            member = connection.execute(
+                """
+                UPDATE claims
+                SET revision = ?, heartbeat_at = ?, expires_at = ?
+                WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
+                """,
+                (
+                    revision,
+                    now,
+                    now + ttl,
+                    resource,
+                    request.claim_id,
+                    request.token,
+                    request.revision,
+                ),
+            )
+            if member.rowcount != 1:
+                raise LeaseError(
+                    "claim-update-conflict",
+                    code=3,
+                    resource=",".join(request.resources),
+                )
+            connection.execute(
+                """
+                INSERT INTO resources(resource, revision) VALUES (?, ?)
+                ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                """,
+                (resource, revision),
+            )
+        current = self._bundle_row(connection, request.claim_id)
+        if current is None:
+            raise LeaseError(
+                "claim-update-conflict",
+                code=3,
+                resource=",".join(request.resources),
+            )
+        receipt["claim"] = self._bundle_claim(connection, current).to_dict(
+            include_token=kind != "exec-bundle"
+        )
+        encoded_receipt = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        operation_resource = self._bundle_operation_resource(request.resources)
+        if complete_operation:
+            changed = connection.execute(
+                """
+                UPDATE operations
+                SET state = 'completed', receipt = ?
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                    AND kind = ? AND state = 'started'
+                """,
+                (
+                    encoded_receipt,
+                    operation_resource,
+                    request.claim_id,
+                    request.operation_id,
+                    kind,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise LeaseError(
+                    "operation-completion-conflict",
+                    code=3,
+                    operationId=request.operation_id,
+                )
+        else:
+            connection.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    operation_resource,
+                    request.claim_id,
+                    request.operation_id,
+                    kind,
+                    json.dumps(
+                        operation_request, sort_keys=True, separators=(",", ":")
+                    ),
+                    request.revision,
+                    encoded_receipt,
+                    now,
+                ),
+            )
+        return receipt
+
+    def bundle_status(self, resources: tuple[str, ...]) -> dict[str, Any]:
+        """Inspect an exact ordered bundle without exposing its token."""
+
+        resources = require_bundle_resources(resources)
+        with (
+            resource_locks(resources, self.home),
+            closing(self._connect()) as db,
+            transaction(db),
+        ):
+            row = self._bundle_current(db, resources)
+            if row is None:
+                claims = db.execute(
+                    f"""
+                    SELECT resource FROM claims
+                    WHERE resource IN ({",".join("?" for _ in resources)})
+                    """,
+                    resources,
+                ).fetchall()
+                if claims:
+                    raise LeaseError(
+                        "bundle-membership-mismatch",
+                        code=3,
+                        resource=",".join(resources),
+                    )
+                return {
+                    "ok": True,
+                    "operation": "status-bundle",
+                    "resources": list(resources),
+                    "state": "free",
+                }
+            claim = self._bundle_claim(db, row)
+            return {
+                "ok": True,
+                "operation": "status-bundle",
+                "resources": list(resources),
+                "state": "active" if claim.active else "expired",
+                "claim": claim.to_dict(include_token=False),
+            }
+
+    def heartbeat_bundle(
+        self, request: BundleMutationRequest, *, lock_held: bool = False
+    ) -> dict[str, Any]:
+        """Renew every member and advance one shared bundle revision."""
+
+        ttl = require_ttl(request.ttl)
+        lock = (
+            nullcontext() if lock_held else resource_locks(request.resources, self.home)
+        )
+        with lock, closing(self._connect()) as db, transaction(db):
+            row = self._require_bundle_owner(db, request)
+            operation_request = request.request_dict()
+            cached = self._bundle_cached_operation(
+                db, request, "heartbeat-bundle", operation_request
+            )
+            if cached is not None:
+                return cached
+            self._require_bundle_current(db, request)
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "heartbeat-bundle",
+                "operationId": request.operation_id,
+                "idempotent": False,
+                "resources": list(request.resources),
+                "ttl": ttl,
+            }
+            result = self._advance_bundle(
+                db,
+                row,
+                request,
+                "heartbeat-bundle",
+                operation_request,
+                receipt,
+            )
+            db.execute(
+                """
+                UPDATE operations
+                SET expected_revision = ?
+                WHERE resource = ? AND claim_id = ? AND state = 'started'
+                    AND kind = 'exec-bundle'
+                """,
+                (
+                    int(result["claim"]["revision"]),
+                    self._bundle_operation_resource(request.resources),
+                    request.claim_id,
+                ),
+            )
+            return result
+
+    def begin_bundle_operation(
+        self,
+        request: BundleMutationRequest,
+        kind: str,
+        operation_request: dict[str, Any],
+        *,
+        lock_held: bool = False,
+    ) -> dict[str, Any] | None:
+        """Record a guarded bundle operation before its side effect."""
+
+        lock = (
+            nullcontext() if lock_held else resource_locks(request.resources, self.home)
+        )
+        with lock, closing(self._connect()) as db, transaction(db):
+            self._require_bundle_owner(db, request)
+            cached = self._bundle_cached_operation(db, request, kind, operation_request)
+            if cached is not None:
+                return cached
+            self._require_bundle_current(db, request)
+            intent = {
+                "ok": True,
+                "operation": kind,
+                "operationId": request.operation_id,
+                "state": "started",
+                "idempotent": False,
+            }
+            db.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, state, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, ?, 'started', ?, ?, ?, ?)
+                """,
+                (
+                    self._bundle_operation_resource(request.resources),
+                    request.claim_id,
+                    request.operation_id,
+                    kind,
+                    json.dumps(
+                        operation_request, sort_keys=True, separators=(",", ":")
+                    ),
+                    request.revision,
+                    json.dumps(intent, sort_keys=True, separators=(",", ":")),
+                    self.clock(),
+                ),
+            )
+            return None
+
+    def complete_bundle_operation(
+        self,
+        request: BundleMutationRequest,
+        kind: str,
+        operation_request: dict[str, Any],
+        receipt: dict[str, Any],
+        *,
+        lock_held: bool = False,
+    ) -> dict[str, Any]:
+        """Complete one started guarded bundle operation atomically."""
+
+        lock = (
+            nullcontext() if lock_held else resource_locks(request.resources, self.home)
+        )
+        with lock, closing(self._connect()) as db, transaction(db):
+            row = self._require_bundle_owner(db, request)
+            operation = db.execute(
+                """
+                SELECT * FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                    AND kind = ?
+                """,
+                (
+                    self._bundle_operation_resource(request.resources),
+                    request.claim_id,
+                    request.operation_id,
+                    kind,
+                ),
+            ).fetchone()
+            if operation is None:
+                raise LeaseError(
+                    "operation-not-found",
+                    code=3,
+                    operationId=request.operation_id,
+                )
+            recorded = json.loads(str(operation["request"]))
+            if {key: value for key, value in recorded.items() if key != "revision"} != {
+                key: value
+                for key, value in operation_request.items()
+                if key != "revision"
+            }:
+                raise LeaseError(
+                    "operation-id-request-mismatch",
+                    code=3,
+                    operationId=request.operation_id,
+                )
+            expected_revision = int(operation["expected_revision"])
+            if request.revision != expected_revision:
+                raise LeaseError(
+                    "stale-revision",
+                    resource=",".join(request.resources),
+                    expectedRevision=expected_revision,
+                    suppliedRevision=request.revision,
+                )
+            if str(operation["state"]) == "completed":
+                completed = json.loads(str(operation["receipt"]))
+                completed["idempotent"] = True
+                return completed
+            if str(operation["state"]) != "started":
+                raise LeaseError(
+                    "invalid-operation-state",
+                    code=3,
+                    operationId=request.operation_id,
+                )
+            self._require_bundle_current(db, request)
+            return self._advance_bundle(
+                db,
+                row,
+                request,
+                kind,
+                operation_request,
+                receipt,
+                complete_operation=True,
+            )
+
+    def _bundle_operation_request(
+        self, request: BundleMutationRequest, **extra: Any
+    ) -> dict[str, Any]:
+        value = request.request_dict(**extra)
+        value["tokenHash"] = hashlib.sha256(request.token.encode("utf-8")).hexdigest()
+        return value
+
+    def release_bundle(
+        self, request: BundleMutationRequest, reason: str
+    ) -> dict[str, Any]:
+        """Release every member of a bundle in one transaction."""
+
+        require_text(reason, "release-reason")
+        resources = request.resources
+        with (
+            resource_locks(resources, self.home),
+            closing(self._connect()) as db,
+            transaction(db),
+        ):
+            operation_request = self._bundle_operation_request(request, reason=reason)
+            cached = self._bundle_cached_operation(
+                db, request, "release-bundle", operation_request
+            )
+            if cached is not None:
+                return cached
+            self._require_bundle_current(db, request)
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "release-bundle",
+                "operationId": request.operation_id,
+                "idempotent": False,
+                "resources": list(resources),
+                "releasedClaimId": request.claim_id,
+                "releasedRevision": request.revision,
+                "releasedAt": self._timestamp(self.clock()),
+                "reason": reason,
+            }
+            db.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._bundle_operation_resource(resources),
+                    request.claim_id,
+                    request.operation_id,
+                    "release-bundle",
+                    json.dumps(
+                        operation_request, sort_keys=True, separators=(",", ":")
+                    ),
+                    request.revision,
+                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    self.clock(),
+                ),
+            )
+            deleted = db.execute(
+                f"""
+                DELETE FROM claims
+                WHERE claim_id = ? AND token = ? AND revision = ?
+                    AND resource IN ({",".join("?" for _ in resources)})
+                """,
+                (
+                    request.claim_id,
+                    request.token,
+                    request.revision,
+                    *resources,
+                ),
+            )
+            if deleted.rowcount != len(resources):
+                raise LeaseError(
+                    "claim-release-conflict",
+                    code=3,
+                    resource=",".join(resources),
+                )
+            db.execute(
+                "DELETE FROM bundle_members WHERE claim_id = ?", (request.claim_id,)
+            )
+            db.execute("DELETE FROM bundles WHERE claim_id = ?", (request.claim_id,))
+            return receipt
 
     def acquire_bundle(self, request: BundleAcquireRequest) -> dict[str, Any]:
         """Acquire one shared ownership epoch for all bundle resources."""

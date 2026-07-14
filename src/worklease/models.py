@@ -228,6 +228,54 @@ class BundleAcquireRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class BundleMutationRequest:
+    """Authorize one lifecycle operation across an exact bundle."""
+
+    resources: tuple[str, ...]
+    claim_id: str
+    token: str
+    revision: int
+    operation_id: str
+    ttl: float = DEFAULT_TTL
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "resources", require_bundle_resources(self.resources))
+        require_text(self.claim_id, "claim-id")
+        require_text(self.token, "token")
+        require_text(self.operation_id, "operation-id")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        if self.revision < 1:
+            raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        require_ttl(self.ttl)
+
+    @property
+    def resource(self) -> str:
+        """Return the canonical operation key for this ordered bundle."""
+
+        return json.dumps(list(self.resources), separators=(",", ":"))
+
+    def request_dict(self, **extra: Any) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "resources": list(self.resources),
+            "revision": self.revision,
+            "ttl": float(self.ttl),
+        }
+        value.update(extra)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class BundleStatusRequest:
+    """Inspect one exact ordered bundle without requiring its token."""
+
+    resources: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "resources", require_bundle_resources(self.resources))
+
+
+@dataclass(frozen=True, slots=True)
 class MutationRequest:
     resource: str
     claim_id: str

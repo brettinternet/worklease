@@ -177,6 +177,102 @@ class CliContractTests(unittest.TestCase):
             "free", self.json_cli("status", "--resource", resource)["state"]
         )
 
+    def test_bundle_cli_lifecycle_and_guarded_exec(self) -> None:
+        resources = ("repo:bundle-a", "repo:bundle-b")
+        acquire_args = (
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "bundle-cli",
+            "--agent-id",
+            "agent-cli",
+            "--session-id",
+            "session-cli",
+            "--owner-id",
+            "owner-cli",
+            "--work-key",
+            "implement:cli:bundle",
+        )
+        acquired = self.json_cli(*acquire_args)
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        status = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )
+        self.assertEqual("active", status["state"])
+        self.assertNotIn(token, json.dumps(status))
+
+        mutation = (
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            str(claim["claimId"]),
+            "--token",
+            token,
+            "--revision",
+            str(claim["revision"]),
+        )
+        heartbeat = self.json_cli(
+            "heartbeat-bundle",
+            *mutation,
+            "--operation-id",
+            "bundle-heartbeat-cli",
+        )
+        heartbeat_claim = heartbeat["claim"]
+        assert isinstance(heartbeat_claim, dict)
+        self.assertGreater(int(heartbeat_claim["revision"]), int(claim["revision"]))
+        executed = self.json_cli(
+            "exec-bundle",
+            *(
+                *mutation[:-1],
+                str(heartbeat_claim["revision"]),
+            ),
+            "--operation-id",
+            "bundle-exec-cli",
+            "--",
+            sys.executable,
+            "-c",
+            "print('bundle-output')",
+        )
+        command = executed["command"]
+        assert isinstance(command, dict)
+        self.assertEqual("bundle-output\n", command["stdout"])
+        self.assertNotIn(token, json.dumps(executed))
+        executed_claim = executed["claim"]
+        assert isinstance(executed_claim, dict)
+        released = self.json_cli(
+            "release-bundle",
+            *(
+                *mutation[:-1],
+                str(executed_claim["revision"]),
+            ),
+            "--operation-id",
+            "bundle-release-cli",
+            "--reason",
+            "bundle complete",
+        )
+        self.assertTrue(released["ok"])
+        self.assertEqual(
+            "free",
+            self.json_cli(
+                "status-bundle",
+                "--resource",
+                resources[0],
+                "--resource",
+                resources[1],
+            )["state"],
+        )
+
     def test_malformed_input_is_json_and_does_not_echo_secret_values(self) -> None:
         result = self.run_cli(
             "status", "--resource", "repo:cli", "--token", "secret-token"
