@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -152,6 +153,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.now = 31 * 86400
         result = self.store.garbage_collect()
         self.assertEqual(0, result["eligible"]["operations"]["count"])
+        self.assertEqual(0, result["eligible"]["epochs"]["count"])
         self.assertEqual(0, result["eligible"]["resources"]["count"])
 
     def test_apply_is_atomic_and_preserves_resource_revision(self) -> None:
@@ -222,6 +224,47 @@ class GarbageCollectionTests(unittest.TestCase):
         assert isinstance(claim, dict)
         self.assertEqual(2, claim["revision"])
 
+    def test_bundle_apply_preserves_resource_revisions(self) -> None:
+        resources = ("repo:gc-bundle-revision-a", "repo:gc-bundle-revision-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-revision",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.store.release_bundle(
+            BundleMutationRequest(
+                resources=resources,
+                claim_id=str(claim["claimId"]),
+                token=str(claim["token"]),
+                revision=int(claim["revision"]),
+                operation_id="bundle-release-gc-revision",
+            ),
+            "done",
+        )
+        self.now = 31 * 86400
+        applied = self.store.garbage_collect(apply=True)
+        self.assertEqual(2, applied["collected"]["resources"]["count"])
+        reacquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-revision-new",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )
+        new_claim = reacquired["claim"]
+        assert isinstance(new_claim, dict)
+        self.assertEqual(2, new_claim["revision"])
+
     def test_apply_rolls_back_on_protected_record_conflict(self) -> None:
         resource = "repo:gc-rollback"
         self._seed_released(resource)
@@ -253,6 +296,39 @@ class GarbageCollectionTests(unittest.TestCase):
                 ).fetchone()[0],
             )
 
+    def test_apply_rolls_back_on_injected_sqlite_interruption(self) -> None:
+        resource = "repo:gc-interrupted"
+        self._seed_released(resource)
+        self.now = 31 * 86400
+        with connect(self.home.name) as db:
+            db.execute(
+                """
+                CREATE TRIGGER fail_gc_epoch
+                AFTER DELETE ON epochs
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected-interruption');
+                END
+                """
+            )
+
+        with self.assertRaisesRegex(LeaseError, "gc-storage-conflict"):
+            self.store.garbage_collect(apply=True)
+        with connect(self.home.name) as db:
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM epochs WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM releases WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+
     def test_cutoff_is_strict_and_excludes_boundary_records(self) -> None:
         self._seed_released("repo:gc-before-cutoff")
         self.now = 100.0
@@ -262,6 +338,11 @@ class GarbageCollectionTests(unittest.TestCase):
             cutoff="1970-01-01T00:01:40Z",
         )
         eligible = result["eligible"]
+        for details in eligible.values():
+            self.assertEqual(
+                {"count", "oldest", "newest"},
+                set(details),
+            )
         self.assertEqual(1, eligible["epochs"]["count"])
         self.assertEqual(1, eligible["releases"]["count"])
         self.assertEqual(1, eligible["resources"]["count"])
@@ -456,6 +537,140 @@ class GarbageCollectionTests(unittest.TestCase):
         result = migrated.garbage_collect()
         self.assertEqual(0, result["eligible"]["epochs"]["count"])
         self.assertEqual("expired", migrated.status("legacy-gc")["state"])
+
+    def test_gc_serializes_operation_reconciliation_and_release(self) -> None:
+        operation_resource = "repo:gc-operation"
+        operation_claim = self.store.acquire(
+            AcquireRequest(
+                resource=operation_resource,
+                claim_id="claim-gc-operation",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(operation_claim, dict)
+        operation_request = MutationRequest(
+            resource=operation_resource,
+            claim_id=str(operation_claim["claimId"]),
+            token=str(operation_claim["token"]),
+            revision=int(operation_claim["revision"]),
+            operation_id="exec-gc-operation",
+        )
+        operation_payload = {"command": ["sentinel"]}
+        self.assertIsNone(
+            self.store.begin_operation(operation_request, "exec", operation_payload)
+        )
+
+        reconciliation_resource = "repo:gc-reconciliation"
+        reconciliation_claim = self.store.acquire(
+            AcquireRequest(
+                resource=reconciliation_resource,
+                claim_id="claim-gc-reconciliation",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(reconciliation_claim, dict)
+        target_operation = "target-gc-reconciliation"
+        target_payload = {"command": ["target"]}
+        target_request = MutationRequest(
+            resource=reconciliation_resource,
+            claim_id=str(reconciliation_claim["claimId"]),
+            token=str(reconciliation_claim["token"]),
+            revision=int(reconciliation_claim["revision"]),
+            operation_id=target_operation,
+        )
+        self.assertIsNone(
+            self.store.begin_operation(target_request, "exec", target_payload)
+        )
+        reconciliation_request = MutationRequest(
+            resource=reconciliation_resource,
+            claim_id=target_request.claim_id,
+            token=target_request.token,
+            revision=target_request.revision,
+            operation_id="reconcile-gc-operation",
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(target_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        release_resource = "repo:gc-release"
+        release_claim = self.store.acquire(
+            AcquireRequest(
+                resource=release_resource,
+                claim_id="claim-gc-release",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(release_claim, dict)
+        release_request = MutationRequest(
+            resource=release_resource,
+            claim_id=str(release_claim["claimId"]),
+            token=str(release_claim["token"]),
+            revision=int(release_claim["revision"]),
+            operation_id="release-gc-release",
+        )
+
+        self._seed_released("repo:gc-lifecycle-old")
+        self.now = 100.0
+        entered = threading.Event()
+        continue_collection = threading.Event()
+        base_candidates = LeaseStore._gc_candidates
+
+        class PausingStore(LeaseStore):
+            @staticmethod
+            def _gc_candidates(db, cutoff_value):
+                candidates = base_candidates(db, cutoff_value)
+                entered.set()
+                if not continue_collection.wait(5):
+                    raise AssertionError("timed out waiting to continue collection")
+                return candidates
+
+        pausing = PausingStore(self.home.name, clock=lambda: self.now)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            collection = executor.submit(
+                pausing.garbage_collect, cutoff="1970-01-01T00:01:40Z", apply=True
+            )
+            self.assertTrue(entered.wait(5))
+            complete = executor.submit(
+                self.store.complete_operation,
+                operation_request,
+                "exec",
+                operation_payload,
+                {
+                    "ok": True,
+                    "operation": "exec",
+                    "operationId": operation_request.operation_id,
+                },
+            )
+            reconcile = executor.submit(
+                self.store.reconcile_operation,
+                reconciliation_request,
+                target_operation,
+                request_sha256,
+                "observed-success",
+                {"status": "ok"},
+            )
+            release = executor.submit(self.store.release, release_request, "done")
+            continue_collection.set()
+            applied = collection.result(timeout=5)
+            completed = complete.result(timeout=5)
+            reconciled = reconcile.result(timeout=5)
+            released = release.result(timeout=5)
+
+        self.assertFalse(applied["dryRun"])
+        self.assertEqual(1, applied["collected"]["epochs"]["count"])
+        self.assertEqual(1, applied["collected"]["releases"]["count"])
+        self.assertTrue(completed["ok"])
+        self.assertTrue(reconciled["ok"])
+        self.assertTrue(released["ok"])
 
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-gc-cutoff"):
