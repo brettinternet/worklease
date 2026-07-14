@@ -204,12 +204,14 @@ class ExecutionTests(unittest.TestCase):
             operation_id=request.operation_id,
             ttl=0.1,
         )
+        started = self.home / "started"
         marker = self.home / "must-not-finish"
         command = [
             sys.executable,
             "-c",
             (
                 "import time; from pathlib import Path; "
+                f"Path({str(started)!r}).write_text('started'); "
                 "time.sleep(1); "
                 f"Path({str(marker)!r}).write_text('finished')"
             ),
@@ -235,6 +237,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),
         ):
             execute(self.store, request, command)
+        self.assertTrue(started.exists())
         self.assertGreaterEqual(calls, 2)
         self.assertFalse(marker.exists())
 
@@ -248,10 +251,12 @@ class ExecutionTests(unittest.TestCase):
             operation_id=request.operation_id,
             ttl=0.2,
         )
+        started = self.home / "descendant-started"
         marker = self.home / "descendant-must-not-finish"
         child_code = (
             "import signal,time; from pathlib import Path; "
             "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"Path({str(started)!r}).write_text('started'); "
             "time.sleep(1); "
             f"Path({str(marker)!r}).write_text('finished')"
         )
@@ -280,6 +285,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),
         ):
             execute(self.store, request, [sys.executable, "-c", parent_code])
+        self.assertTrue(started.exists())
         self.assertGreaterEqual(calls, 2)
         time.sleep(1.2)
         self.assertFalse(marker.exists())
