@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/common.json",
+  "$defs": {
+    "Envelope": {
+      "type": "object",
+      "required": ["schemaVersion", "operation", "ok"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "ok": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "Error": {
+      "allOf": [
+        {"$ref": "#/$defs/Envelope"},
+        {
+          "type": "object",
+          "required": ["error"],
+          "properties": {
+            "ok": {"const": false},
+            "error": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "Claim": {
+      "type": "object",
+      "required": [
+        "resource", "claimId", "revision", "agentId", "sessionId",
+        "ownerId", "workKey", "guarantee", "acquiredAt", "acquireTtl",
+        "heartbeatAt", "expiresAt", "expiresAtEpoch", "active"
+      ],
+      "properties": {
+        "resource": {"type": "string"},
+        "claimId": {"type": "string"},
+        "token": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "guarantee": {"enum": ["fenced", "local-coordination"]},
+        "acquiredAt": {"type": "string"},
+        "acquireTtl": {"type": "number", "exclusiveMinimum": 0},
+        "heartbeatAt": {"type": "string"},
+        "expiresAt": {"type": "string"},
+        "expiresAtEpoch": {"type": "number"},
+        "active": {"type": "boolean"},
+        "checkpoint": {}
+      },
+      "additionalProperties": false
+    },
+    "ReadOnlyClaim": {
+      "allOf": [
+        {"$ref": "#/$defs/Claim"},
+        {"not": {"required": ["token"]}}
+      ]
+    },
+    "ClaimWithToken": {
+      "allOf": [
+        {"$ref": "#/$defs/Claim"},
+        {"required": ["token"]}
+      ]
+    },
+    "BundleClaim": {
+      "type": "object",
+      "required": [
+        "resources", "claimId", "revision", "agentId", "sessionId",
+        "ownerId", "workKey", "guarantee", "acquiredAt", "acquireTtl",
+        "heartbeatAt", "expiresAt", "expiresAtEpoch", "active"
+      ],
+      "properties": {
+        "resources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "claimId": {"type": "string"},
+        "token": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "guarantee": {"enum": ["fenced", "local-coordination"]},
+        "acquiredAt": {"type": "string"},
+        "acquireTtl": {"type": "number", "exclusiveMinimum": 0},
+        "heartbeatAt": {"type": "string"},
+        "expiresAt": {"type": "string"},
+        "expiresAtEpoch": {"type": "number"},
+        "active": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "ReadOnlyBundleClaim": {
+      "allOf": [
+        {"$ref": "#/$defs/BundleClaim"},
+        {"not": {"required": ["token"]}}
+      ]
+    },
+    "BundleClaimWithToken": {
+      "allOf": [
+        {"$ref": "#/$defs/BundleClaim"},
+        {"required": ["token"]}
+      ]
+    },
+    "Receipt": {
+      "type": "object",
+      "required": ["ok", "operation"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "operation": {"type": "string"},
+        "operationId": {"type": "string"},
+        "idempotent": {"type": "boolean"},
+        "recovered": {"type": "boolean"},
+        "ttl": {"type": "number"}
+      },
+      "additionalProperties": true
+    },
+    "ResourceKey": {
+      "type": "object",
+      "required": [
+        "ok", "operation", "provider", "capability", "scope",
+        "fencedMutations", "providerFencing", "genericExecutionGuarantee",
+        "resource"
+      ],
+      "properties": {
+        "ok": {"const": true},
+        "operation": {"const": "key"},
+        "provider": {"type": "string"},
+        "capability": {"type": "string"},
+        "scope": {"type": "string"},
+        "fencedMutations": {"type": "boolean"},
+        "providerFencing": {"type": "boolean"},
+        "genericExecutionGuarantee": {"const": "local-coordination"},
+        "resource": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "PolicyDescriptor": {
+      "type": "object",
+      "required": [
+        "name", "origin", "originVersion", "contractVersion",
+        "keyPolicyVersion", "scope", "capability",
+        "genericExecutionGuarantee", "providerFencingSupported"
+      ],
+      "properties": {
+        "name": {"type": "string"},
+        "origin": {"type": "string"},
+        "originVersion": {"type": "string"},
+        "contractVersion": {"const": 1},
+        "keyPolicyVersion": {"type": "integer", "minimum": 1},
+        "scope": {"type": "string"},
+        "capability": {"type": "string"},
+        "genericExecutionGuarantee": {"const": "local-coordination"},
+        "providerFencingSupported": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

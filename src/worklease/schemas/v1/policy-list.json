@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/policy-list.json",
+  "allOf": [{"$ref": "commands.json"}, {"properties": {"operation": {"const": "policy-list"}}, "required": ["operation"]}]
+}

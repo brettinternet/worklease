@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/commands.json",
+  "title": "Worklease CLI response",
+  "description": "Schema for every released worklease CLI response. JSON is the default wire format.",
+  "allOf": [
+    {"$ref": "common.json#/$defs/Envelope"},
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "enum": [
+            "parse", "version", "key", "policy-list", "policy-describe",
+            "acquire", "bundle-acquire", "acquire-bundle",
+            "status", "bundle-status", "inspect-bundle", "status-bundle",
+            "inspect-operation", "reconcile-operation", "list", "heartbeat",
+            "checkpoint", "release", "bundle-heartbeat", "heartbeat-bundle",
+            "bundle-release", "release-bundle", "exec", "bundle-exec",
+            "exec-bundle", "replace-file"
+          ]
+        },
+        "ok": {"type": "boolean"},
+        "error": {"type": "string", "minLength": 1},
+        "claim": {
+          "anyOf": [
+            {"$ref": "common.json#/$defs/Claim"},
+            {"$ref": "common.json#/$defs/BundleClaim"}
+          ]
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {"$ref": "common.json#/$defs/ReadOnlyClaim"},
+              {"$ref": "common.json#/$defs/ReadOnlyBundleClaim"}
+            ]
+          }
+        },
+        "resources": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "policies": {
+          "type": "array",
+          "items": {"$ref": "common.json#/$defs/PolicyDescriptor"}
+        },
+        "resource": {"type": "string"},
+        "state": {"enum": ["free", "active", "expired"]},
+        "operationId": {"type": "string"},
+        "kind": {"type": "string"},
+        "version": {"type": "string"},
+        "provider": {"type": "string"},
+        "capability": {"type": "string"},
+        "scope": {"type": "string"},
+        "fencedMutations": {"type": "boolean"},
+        "providerFencing": {"type": "boolean"},
+        "genericExecutionGuarantee": {"const": "local-coordination"},
+        "idempotent": {"type": "boolean"},
+        "reclaimed": {"type": "boolean"},
+        "recovery": {"enum": ["clean-handoff", "expired-recovery"]},
+        "checkpoint": {},
+        "command": {
+          "type": "object",
+          "required": ["argv", "returncode", "stdout", "stderr"],
+          "properties": {
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "returncode": {"type": "integer"},
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "guarantee": {"enum": ["fenced", "local-coordination"]},
+        "ttl": {"type": "number"},
+        "path": {"type": "string"},
+        "previousSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "actualSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "request": {"type": "object"},
+        "receipt": {"$ref": "common.json#/$defs/Receipt"},
+        "reconciliation": {"type": ["object", "null"]}
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "reconcile-operation", "list"]
+          }
+        },
+        "required": ["operation"]
+      },
+      "then": {
+        "properties": {
+          "claim": {
+            "anyOf": [
+              {"$ref": "common.json#/$defs/ReadOnlyClaim"},
+              {"$ref": "common.json#/$defs/ReadOnlyBundleClaim"}
+            ]
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {"$ref": "common.json#/$defs/ReadOnlyClaim"},
+                {"$ref": "common.json#/$defs/ReadOnlyBundleClaim"}
+              ]
+            }
+          }
+        },
+        "not": {"required": ["token"]}
+      },
+      "else": {
+        "properties": {
+          "claim": {
+            "anyOf": [
+              {"$ref": "common.json#/$defs/ClaimWithToken"},
+              {"$ref": "common.json#/$defs/BundleClaimWithToken"}
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {"ok": {"const": true}}
+    },
+    {"$ref": "common.json#/$defs/Error"}
+  ],
+  "additionalProperties": true
+}

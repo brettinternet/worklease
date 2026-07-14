@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/envelope.json",
+  "$ref": "common.json#/$defs/Envelope"
+}
