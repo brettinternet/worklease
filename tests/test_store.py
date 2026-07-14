@@ -87,6 +87,32 @@ class StoreTests(unittest.TestCase):
             else:
                 os.environ["XDG_STATE_HOME"] = previous_xdg
 
+    def test_state_home_and_files_are_private_with_a_permissive_umask(self) -> None:
+        self.home.mkdir(parents=True, mode=0o755)
+        self.home.chmod(0o755)
+        previous_umask = os.umask(0o022)
+        try:
+            self.store.acquire(self.acquire_request("private", "claim"))
+        finally:
+            os.umask(previous_umask)
+
+        self.assertEqual(0o700, self.home.stat().st_mode & 0o777)
+        self.assertEqual(0o700, (self.home / "locks").stat().st_mode & 0o777)
+        for state_file in (path for path in self.home.rglob("*") if path.is_file()):
+            with self.subTest(path=state_file):
+                self.assertEqual(0o600, state_file.stat().st_mode & 0o777)
+
+    def test_state_database_symlink_is_rejected(self) -> None:
+        self.home.mkdir(parents=True)
+        sentinel = Path(self.temporary.name) / "sentinel"
+        sentinel.write_text("do not follow\n")
+        (self.home / "leases.sqlite3").symlink_to(sentinel)
+
+        with self.assertRaises(OSError):
+            self.store.status("resource")
+
+        self.assertEqual("do not follow\n", sentinel.read_text())
+
     def test_opaque_resource_is_preserved_and_lock_hash_is_internal(self) -> None:
         resource = "  opaque provider/value::?  "
         acquired = self.store.acquire(self.acquire_request(resource, "claim"))

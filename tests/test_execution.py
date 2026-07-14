@@ -147,7 +147,7 @@ class ExecutionTests(unittest.TestCase):
         ) -> dict[str, object]:
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if not started.exists():
                 return original_heartbeat(heartbeat_request, lock_held=lock_held)
             raise sqlite3.OperationalError("database is unavailable")
 
@@ -202,7 +202,7 @@ class ExecutionTests(unittest.TestCase):
             token=request.token,
             revision=request.revision,
             operation_id=request.operation_id,
-            ttl=0.1,
+            ttl=1.0,
         )
         started = self.home / "started"
         marker = self.home / "must-not-finish"

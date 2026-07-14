@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .models import LeaseError, require_resource
-from .sqlite import lease_home
+from .sqlite import lease_home, open_private_file, secure_directory
 
 
 def resource_lock_path(
@@ -19,8 +19,7 @@ def resource_lock_path(
     """Hash only for a safe filename; the resource itself remains opaque."""
 
     require_resource(resource)
-    directory = lease_home(home) / "locks"
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory = secure_directory(lease_home(home) / "locks")
     digest = hashlib.sha256(resource.encode("utf-8")).hexdigest()
     return directory / f"{digest}.lock"
 
@@ -32,7 +31,7 @@ def resource_lock(
     """Hold one non-blocking exclusive POSIX lock for a resource."""
 
     path = resource_lock_path(resource, home)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = open_private_file(path)
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

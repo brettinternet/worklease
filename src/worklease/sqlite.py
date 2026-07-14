@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import os
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,10 +25,30 @@ def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
     return (state_home / "worklease").expanduser().resolve()
 
 
+def secure_directory(path: Path) -> Path:
+    """Create a private state directory or tighten an existing one."""
+
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+    return path
+
+
+def open_private_file(path: Path) -> int:
+    """Open one regular state file without following a planted symlink."""
+
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise OSError(f"state path is not a regular file: {path}")
+    os.fchmod(descriptor, 0o600)
+    return descriptor
+
+
 @contextmanager
 def database_setup_lock(home: Path) -> Iterator[None]:
-    home.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor = os.open(home / "database.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    secure_directory(home)
+    descriptor = open_private_file(home / "database.lock")
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
@@ -133,14 +154,23 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     """Open a configured connection and create/migrate the schema."""
 
-    resolved_home = lease_home(home)
-    resolved_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-    connection = sqlite3.connect(
-        resolved_home / "leases.sqlite3", timeout=30, isolation_level=None
+    resolved_home = secure_directory(lease_home(home))
+    database = resolved_home / "leases.sqlite3"
+    sidecars = (
+        database.with_name(f"{database.name}-wal"),
+        database.with_name(f"{database.name}-shm"),
     )
+    os.close(open_private_file(database))
+    for state_file in sidecars:
+        if state_file.exists() or state_file.is_symlink():
+            os.close(open_private_file(state_file))
+    connection = sqlite3.connect(database, timeout=30, isolation_level=None)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 30000")
     _schema(connection, resolved_home)
+    for state_file in (database, *sidecars):
+        if state_file.exists() or state_file.is_symlink():
+            os.close(open_private_file(state_file))
     return connection
 
 

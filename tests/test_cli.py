@@ -259,6 +259,7 @@ class CliContractTests(unittest.TestCase):
         assert isinstance(command, dict)
         self.assertEqual(True, payload["ok"])
         self.assertEqual("child-output\n", command["stdout"])
+        self.assertNotIn(str(claim["token"]), json.dumps(payload))
 
         failed_claim = self.json_cli(
             *self.acquire_arguments(resource="repo:exec-fail", claim_id="exec-fail")
@@ -281,6 +282,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(False, failed_payload["providerFencing"])
         self.assertEqual(False, failed_payload["ok"])
         self.assertEqual(7, failed_payload["command"]["returncode"])
+        self.assertNotIn(str(failed_claim["token"]), json.dumps(failed_payload))
 
     def test_replace_file_is_wired_through_the_cli(self) -> None:
         directory = Path(self.home.name)
@@ -307,6 +309,7 @@ class CliContractTests(unittest.TestCase):
         )
         self.assertEqual(True, payload["ok"])
         self.assertEqual("new\n", target.read_text())
+        self.assertNotIn(str(claim["token"]), json.dumps(payload))
 
 
 if __name__ == "__main__":

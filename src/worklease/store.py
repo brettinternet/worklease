@@ -409,7 +409,10 @@ class LeaseStore:
                 raise LeaseError(
                     "claim-update-conflict", code=3, resource=request.resource
                 )
-            receipt["claim"] = self._claim(current).to_dict()
+            # Guarded-operation callers already hold the bearer token. Return
+            # the advanced revision without copying that secret into command
+            # output or the durable operation receipt.
+            receipt["claim"] = self._claim(current).to_dict(include_token=False)
             changed = db.execute(
                 """
                     UPDATE operations

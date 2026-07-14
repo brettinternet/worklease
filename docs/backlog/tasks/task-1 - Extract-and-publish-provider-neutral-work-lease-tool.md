@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex-main'
 created_date: '2026-07-13 19:25'
-updated_date: '2026-07-14 01:44'
+updated_date: '2026-07-14 02:41'
 labels:
   - architecture
   - packaging
@@ -192,6 +192,14 @@ T6 implementation progress checkpoint:
 - T6 implementation task is complete. Next pass: REVIEW TASK-1 accumulated implementation at exact commits; item remains In Progress and acceptance markers remain review-pending.
 
 REVIEWED: accumulated implementation commits through HEAD 656c731; independent final verifier PASS at HEAD 656c731 with focused ownership/storage regressions 3/3 OK; full format-check, lint, typecheck, unittest discovery (55 tests), build, and PyInstaller version/key smoke passed; no actionable findings remain; acceptance criteria #2-#7 complete.
+
+Post-completion review fix plan: centralize bearer-token redaction for completed guarded-operation claim receipts in LeaseStore.complete_operation, add CLI regression coverage for exec and replace-file success responses and replay behavior, then run the full quality gates and independent verification before returning the task to Done.
+
+Post-completion review fixes complete: tightened WORKLEASE_HOME and locks directories to 0700; database, sidecar, setup-lock, and resource-lock files to 0600; rejected symlink/non-regular state paths; and removed bearer tokens from completed exec/replace-file receipts while retaining acquire/heartbeat owner tokens. Verification: focused store/CLI suite 21/21 passed; full unittest discovery 56/56 passed; lint, format-check, typecheck, build, and staged hooks passed. Independent verifier PASS for all permission, hostile-path, token-response, replay, and regression criteria.
+
+Final staged-hook verification after adding the explicit database-symlink regression: 57/57 tests passed; Ruff formatting and lint passed.
+
+Final commit hook exposed two residual test-only startup races: the storage-failure injector failed by heartbeat count before child startup, and the ownership-loss test used a 100 ms lease that could expire under loaded scheduling. Both now synchronize failure on the child-start marker; the ownership test uses a 1 second lease. The exact pair passed 10/10 repeated runs without weakening the process-termination assertions.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -207,5 +215,5 @@ Expanded the in-progress release scope before T6: keep wheel/sdist, add POSIX Li
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-TASK-1 complete and reviewed. Accumulated implementation and review-fix commits through 656c731 satisfy acceptance criteria #1-#7. Final independent verifier PASS; no findings. Release/package workflows and installer validated.
+TASK-1 complete after post-completion security review. Same-host state permissions are hardened, unsafe state-file paths are rejected, and guarded-operation receipts no longer expose bearer tokens. Verified by 57 tests, lint, format-check, typecheck, build, staged hooks, and an independent hostile-path/token-replay review.
 <!-- SECTION:FINAL_SUMMARY:END -->
