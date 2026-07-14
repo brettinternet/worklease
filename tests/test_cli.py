@@ -1281,6 +1281,168 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual("ERROR status: invalid-arguments\n", parser_error.stdout)
         self.assertEqual("", parser_error.stderr)
 
+    def test_text_renderers_cover_canonical_bundle_operations(self) -> None:
+        empty = self.text_cli("list")
+        self.assertEqual("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT\n", empty)
+
+        acquire_text = self.text_cli(
+            *(
+                "acquire-bundle",
+                "--resource",
+                "repo:text-canonical-acquire-a",
+                "--resource",
+                "repo:text-canonical-acquire-b",
+                "--claim-id",
+                "text-canonical-acquire",
+                "--agent-id",
+                "agent",
+                "--session-id",
+                "session",
+                "--owner-id",
+                "owner",
+                "--work-key",
+                "text:canonical-acquire",
+            )
+        )
+        self.assertIn("OK acquire-bundle\n", acquire_text)
+        self.assertIn("TOKEN\t", acquire_text)
+
+        resources = ("repo:text-canonical-a", "repo:text-canonical-b")
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "text-canonical",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "text:canonical",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        bundle_args = (
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            str(claim["claimId"]),
+            "--token",
+            token,
+        )
+        inspected = self.text_cli(
+            "inspect-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )
+        self.assertIn("OK status-bundle\n", inspected)
+        heartbeat = self.text_cli(
+            "heartbeat-bundle",
+            *bundle_args,
+            "--revision",
+            str(claim["revision"]),
+            "--operation-id",
+            "text-canonical-heartbeat",
+        )
+        self.assertIn("OK heartbeat-bundle\n", heartbeat)
+        self.assertIn("TOKEN\t", heartbeat)
+        claim = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )["claim"]
+        assert isinstance(claim, dict)
+        executed = self.text_cli(
+            "exec-bundle",
+            *bundle_args,
+            "--revision",
+            str(claim["revision"]),
+            "--operation-id",
+            "text-canonical-exec",
+            "--provider-directory",
+            self.home.name,
+            "--",
+            sys.executable,
+            "-c",
+            "print('canonical-bundle')",
+        )
+        self.assertIn("OK exec-bundle\n", executed)
+        self.assertIn('STDOUT\t"canonical-bundle\\n"\n', executed)
+        claim = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )["claim"]
+        assert isinstance(claim, dict)
+        released = self.text_cli(
+            "release-bundle",
+            *bundle_args,
+            "--revision",
+            str(claim["revision"]),
+            "--operation-id",
+            "text-canonical-release",
+            "--reason",
+            "canonical complete",
+        )
+        self.assertIn("OK release-bundle\n", released)
+
+    def test_text_parser_errors_cover_every_command_and_alias(self) -> None:
+        commands = (
+            "key",
+            "policy",
+            "acquire",
+            "acquire-bundle",
+            "bundle-acquire",
+            "status",
+            "status-bundle",
+            "bundle-status",
+            "inspect-bundle",
+            "inspect-operation",
+            "reconcile-operation",
+            "gc",
+            "list",
+            "heartbeat",
+            "heartbeat-bundle",
+            "bundle-heartbeat",
+            "checkpoint",
+            "transfer",
+            "release",
+            "release-bundle",
+            "bundle-release",
+            "exec",
+            "exec-bundle",
+            "bundle-exec",
+            "replace-file",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                arguments = (
+                    (command, "--bad") if command in {"gc", "list"} else (command,)
+                )
+                failure = self.text_cli(*arguments, expected_code=64)
+                self.assertTrue(
+                    failure.startswith(f"ERROR {command}: invalid-arguments\n"),
+                    failure,
+                )
+        version_error = self.run_cli("--format", "text", "--version", "--bad")
+        self.assertEqual(64, version_error.returncode)
+        self.assertEqual("ERROR parse: invalid-arguments\n", version_error.stdout)
+        self.assertEqual("", version_error.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
