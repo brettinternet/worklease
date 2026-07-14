@@ -308,13 +308,51 @@ claims. They exclude cooperating local callers only; they do not provide
 distributed locking, cross-host exclusion, or provider-side fencing. Provider
 discovery, writes, receipts, and durable checkpoints remain caller/provider-owned.
 
-## Adapter boundary
+## Resource-policy and source-provider boundary
 
-Bundled adapters provide deterministic identities and local capability declarations. Backlog.md and GitHub derive helper-fenced item keys; Markdown derives one helper-fenced source key for all items; Linear and unknown providers derive coordination-only keys. Adapters do not discover provider work, authenticate, write providers, or claim provider-side fencing.
+Bundled resource policies derive deterministic local identities and declare
+claim scope and capability. Backlog.md and GitHub use helper-fenced item keys;
+Markdown uses one helper-fenced source key; Linear and explicitly selected
+`generic` use local coordination. An unknown provider name fails with
+`resource-policy-not-found`; callers must opt into `generic` when they
+intentionally need a coordination-only custom identity:
 
-`key` is a policy decision, not a provider mutation. `exec` and `replace-file` guard local operations only. A provider mutation is provider-fenced only when the provider itself atomically rejects stale writers and returns evidence; a Worklease local claim alone never implies that guarantee.
+```sh
+worklease key --provider generic --source ACCOUNT --item WORK
+```
 
-The Worklease source workflow defines the provider-neutral boundary. See the [source provider contract](skills/worklease-source-workflow/references/provider-contract.md) and [provider references](skills/worklease-source-workflow/references/providers/index.md) for source-specific mapping rules.
+Resource policies do not discover work, authenticate, execute provider writes,
+or prove provider-side fencing. A source-provider adapter owns resolution,
+complete discovery, authoritative reads and writes, receipts, review
+boundaries, and archive behavior. It may compose a resource policy, but the
+provider-neutral source workflow still owns dependency scheduling and claim
+lifecycle.
+
+Installed Python distributions can register policies through the
+`worklease.resource_policies` entry-point group. The contract version is 1;
+each registration declares its policy name, origin, key-policy version, claim
+scope, capability, generic execution guarantee, and provider-fencing support.
+Wheel and editable installs discover external registrations lazily when the
+selected policy is used. Frozen standalone executables expose built-in
+policies only and do not discover entry points from the build environment.
+
+Inspect the available registrations without loading policy implementations:
+
+```sh
+worklease policy list
+worklease policy describe --name generic
+```
+
+`key` is a policy decision, not a provider mutation. `exec` and
+`replace-file` guard local operations only. A provider mutation is
+provider-fenced only when the provider itself atomically rejects stale writers
+and returns evidence; a Worklease local claim alone never implies that
+guarantee.
+
+The Worklease source workflow defines the provider-neutral boundary. See the
+[source provider contract](skills/worklease-source-workflow/references/provider-contract.md)
+and [provider references](skills/worklease-source-workflow/references/providers/index.md)
+for source-specific mapping rules.
 
 ## Guarantees
 

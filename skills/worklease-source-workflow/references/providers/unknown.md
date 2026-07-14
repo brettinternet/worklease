@@ -18,20 +18,37 @@ If any identity, read, resource, or required write capability is ambiguous, stop
 
 ## Worklease resource policy
 
-A syntactically valid custom provider name can use the bundled unknown-provider fallback:
+Unknown provider names do not use an implicit resource-policy fallback. The
+caller must explicitly select the built-in `generic` policy when a
+coordination-only identity is appropriate:
 
 ```python
 from worklease.adapters import key
 
-resource_key = key(custom_provider_kind, source_locator, item_id)
+resource_key = key("generic", source_locator, item_id)
 ```
 
-The fallback preserves the provider name in deterministic resource identity and returns item-scoped `local-coordination`. It does not validate provider semantics, discover items, execute writes, or provide provider fencing.
+The generic policy preserves the supplied source and item in a deterministic
+item-scoped local-coordination identity. It does not validate provider
+semantics, discover items, execute writes, or provide provider fencing. A
+misspelled dedicated provider fails as `resource-policy-not-found` instead of
+silently joining another ownership domain.
 
-A custom resource policy is allowed only when it documents canonical source/item identity, claim granularity, collision avoidance, and stability across worktrees and sessions. The exact resource remains opaque to the Worklease core.
+A custom resource policy may be installed through the
+`worklease.resource_policies` entry-point group. Its version-1 descriptor must
+document canonical source/item identity, claim granularity, collision
+avoidance, and stability across worktrees and sessions. Wheel and editable
+installs discover these policies lazily; frozen standalone executables expose
+built-ins only.
 
 ## Guarantee and extension rule
 
-Set `providerMutationFenced: false`. Change it only after the custom adapter demonstrates a provider conditional-write operation that rejects stale writers atomically and returns evidence. Pre/post reads, local locks, timestamps, assignments, and command success do not satisfy that requirement.
+Set `providerMutationFenced: false`. Change it only after the custom adapter
+demonstrates a provider conditional-write operation that rejects stale writers
+atomically and returns evidence. Pre/post reads, local locks, timestamps,
+assignments, and command success do not satisfy that requirement.
 
-Complete [`../provider-authoring-checklist.md`](../provider-authoring-checklist.md) before replacing this fallback with a dedicated provider reference. Add only the provider-specific delta; inherit all scheduling and claim-lifecycle rules from `worklease-workflow`.
+Complete [`../provider-authoring-checklist.md`](../provider-authoring-checklist.md)
+before adding a dedicated provider reference. Add only the provider-specific
+delta; inherit all scheduling and claim-lifecycle rules from
+`worklease-workflow`.

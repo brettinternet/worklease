@@ -36,7 +36,9 @@ A provider reference must define how each value is read and how duplicate or amb
 
 ## Resource policy
 
-The caller supplies provider, source, and item identity before resource derivation. Prefer the bundled `worklease.adapters` key policy when its identity and claim scope fit:
+The caller supplies provider, source, and item identity before resource
+derivation. Prefer the bundled `worklease.adapters` key policy when its
+identity and claim scope fit:
 
 ```python
 from worklease.adapters import key
@@ -44,9 +46,25 @@ from worklease.adapters import key
 resource_key = key(provider_kind, source_locator, item_id)
 ```
 
-The returned `resource` is passed unchanged to Worklease. `capability` and `scope` describe local coordination policy, not provider discovery or provider-side fencing. Every contender for the same logical claim scope must receive the same exact resource.
+The returned `resource` is passed unchanged to Worklease. `capability` and
+`scope` describe local coordination policy, not provider discovery or
+provider-side fencing. Every contender for the same logical claim scope must
+receive the same exact resource.
 
-A custom resource policy must document canonicalization, claim granularity, collision avoidance across sources, and worktree/checkout stability. Session, agent, process, or temporary-path identity must not enter the resource.
+Resource policies are separate from source-provider adapters: they only select
+the local resource identity and guarantee declaration. A source-provider
+adapter owns reads, writes, receipts, review boundaries, and archive behavior;
+the generic workflow owns scheduling and claim lifecycle.
+
+External policies use the version-1 `worklease.resource_policies` entry-point
+contract. A descriptor declares origin, key-policy version, claim scope,
+capability, generic execution guarantee, and provider-fencing support.
+Installable wheels and editable installs can discover these registrations
+lazily; standalone frozen executables expose built-ins only.
+
+A custom resource policy must document canonicalization, claim granularity,
+collision avoidance across sources, and worktree/checkout stability. Session,
+agent, process, or temporary-path identity must not enter the resource.
 
 ## Provider receipts
 

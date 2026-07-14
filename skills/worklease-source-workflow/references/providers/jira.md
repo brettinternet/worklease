@@ -14,15 +14,22 @@ Discovery must follow provider pagination and include dependency items needed fo
 
 ## Worklease resource policy
 
-Jira currently uses the bundled unknown-provider policy while retaining the provider name:
+Jira uses the explicit built-in `generic` coordination policy because no
+provider-specific resource policy is bundled:
 
 ```python
 from worklease.adapters import key
 
-resource_key = key("jira", source_locator, issue_id)
+resource_key = key("generic", f"jira:{site}:{source_locator}", issue_id)
 ```
 
-The result is item-scoped `local-coordination`. It does not fence Jira mutations. Default `providerMutationFenced` to `false`; set it to `true` only when the caller's Jira operation supplies and atomically enforces a provider version/conditional predicate and returns evidence. A successful local request, assignee, transition, or updated timestamp alone is not fencing.
+Include the Jira site and collection identity in the source so distinct Jira
+systems cannot collide under the shared generic policy. The result is
+item-scoped `local-coordination`; it does not fence Jira mutations. Default
+`providerMutationFenced` to `false`; set it to `true` only when the caller's
+Jira operation supplies and atomically enforces a provider version/conditional
+predicate and returns evidence. A successful local request, assignee,
+transition, or updated timestamp alone is not fencing.
 
 ## Authoritative operations
 

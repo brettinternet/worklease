@@ -401,6 +401,22 @@ class AdapterKeyTests(unittest.TestCase):
         ):
             load_adapter("external")
 
+    def test_frozen_runtime_ignores_external_entry_points(self) -> None:
+        with (
+            patch.object(policy_registry.sys, "frozen", True, create=True),
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                side_effect=AssertionError("frozen runtime must not discover"),
+            ),
+        ):
+            self.assertEqual(
+                set(policy_registry.available_policy_names()),
+                {"backlog-md", "generic", "github", "linear", "markdown"},
+            )
+            with self.assertRaisesRegex(LeaseError, "resource-policy-not-found"):
+                load_adapter("external")
+
     def test_key_result_has_reference_compatible_fields(self) -> None:
         result = key_result("linear", "workspace", "issue")
 

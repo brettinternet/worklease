@@ -10,6 +10,7 @@ must return a :class:`ResourcePolicyRegistration`.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module, metadata
@@ -259,6 +260,8 @@ def _validate_registration(
 
 
 def _entry_points() -> tuple[Any, ...]:
+    if getattr(sys, "frozen", False):
+        return ()
     try:
         entries = metadata.entry_points()
         selected = entries.select(group=RESOURCE_POLICY_ENTRY_POINT_GROUP)

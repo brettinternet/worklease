@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worklease-policy-fixture"
+version = "1.2.3"
+description = "Test-only Worklease resource policy plugin"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.entry-points."worklease.resource_policies"]
+fixture = "fixture_policy:registration"
+[tool.hatch.build.targets.wheel]
+only-include = ["fixture_policy.py"]
