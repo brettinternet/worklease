@@ -1,9 +1,11 @@
 ---
 id: TASK-4.1
 title: Transfer active lease ownership atomically
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-loop-pass-20260714-worklease'
 created_date: '2026-07-14 02:34'
+updated_date: '2026-07-14 17:58'
 labels:
   - coordination
   - lease
@@ -33,3 +35,9 @@ Extend TASK-4 with a true active-owner transfer that does not release the resour
 - [ ] #4 Read-only status and diagnostics show non-secret handoff metadata without exposing either credential, and only the authorized transfer response returns the successor token.
 - [ ] #5 Automated concurrency and crash tests prove no contender can acquire during transfer, no stale owner can heartbeat/execute/release afterward, and interruption leaves exactly one valid ownership epoch.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation pass claimed acceptance-1: add the atomic active-owner transfer API and persistence path with focused lifecycle tests. Remaining acceptance criteria: #1-#5.
+<!-- SECTION:NOTES:END -->
