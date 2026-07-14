@@ -40,6 +40,7 @@ _COMMANDS = frozenset(
         "inspect-bundle",
         "inspect-operation",
         "reconcile-operation",
+        "gc",
         "list",
         "heartbeat",
         "heartbeat-bundle",
@@ -246,6 +247,20 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(inspect_operation_parser)
     inspect_operation_parser.add_argument("--resource", required=True)
     inspect_operation_parser.add_argument("--operation-id", required=True)
+    gc_parser = commands.add_parser(
+        "gc", help="report records eligible for garbage collection"
+    )
+    _add_output_arguments(gc_parser)
+    gc_parser.add_argument(
+        "--retention-days",
+        default=argparse.SUPPRESS,
+        type=float,
+        help="retain records newer than this many days (default: 30)",
+    )
+    gc_parser.add_argument(
+        "--cutoff",
+        help="explicit UTC cutoff timestamp (ISO-8601)",
+    )
 
     reconcile_operation_parser = commands.add_parser(
         "reconcile-operation", help="record an observed operation outcome"
@@ -579,6 +594,15 @@ def _dispatch(
     if operation == "inspect-operation":
         assert store is not None
         return store.inspect_operation(args.resource, args.operation_id), 0
+    if operation == "gc":
+        assert store is not None
+        return (
+            store.garbage_collect(
+                retention_days=getattr(args, "retention_days", None),
+                cutoff=getattr(args, "cutoff", None),
+            ),
+            0,
+        )
     if operation == "reconcile-operation":
         assert store is not None
         try:

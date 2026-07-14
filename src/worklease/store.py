@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
+import math
 import secrets
 import sqlite3
 import time
@@ -25,6 +27,7 @@ from .models import (
     bundle_claim_from_row,
     claim_from_row,
     deserialize_checkpoint,
+    iso8601,
     require_bundle_resources,
     require_resource,
     require_text,
@@ -2379,6 +2382,219 @@ class LeaseStore:
             "ok": True,
             "operation": "list",
             "claims": claims,
+        }
+
+    @staticmethod
+    def _gc_summary(timestamps: list[float]) -> dict[str, Any]:
+        if not timestamps:
+            return {"count": 0, "oldest": None, "newest": None}
+        return {
+            "count": len(timestamps),
+            "oldest": iso8601(min(timestamps)),
+            "newest": iso8601(max(timestamps)),
+        }
+
+    @staticmethod
+    def _gc_cutoff(
+        now: float, retention_days: float | None, cutoff: str | None
+    ) -> tuple[float, float | None]:
+        if retention_days is not None and cutoff is not None:
+            raise LeaseError("conflicting-gc-options", code=64)
+        if cutoff is not None:
+            if not isinstance(cutoff, str) or not cutoff.strip():
+                raise LeaseError("invalid-gc-cutoff", code=64)
+            try:
+                value = dt.datetime.fromisoformat(cutoff.strip().replace("Z", "+00:00"))
+                if value.tzinfo is None:
+                    raise ValueError
+                cutoff_value = value.timestamp()
+            except (TypeError, ValueError, OverflowError) as error:
+                raise LeaseError("invalid-gc-cutoff", code=64) from error
+            if not math.isfinite(cutoff_value) or cutoff_value > now:
+                raise LeaseError("invalid-gc-cutoff", code=64)
+            return cutoff_value, None
+        days = 30.0 if retention_days is None else retention_days
+        try:
+            days = float(days)
+        except (TypeError, ValueError) as error:
+            raise LeaseError("invalid-gc-retention", code=64) from error
+        if not math.isfinite(days) or days <= 0 or days > 36500:
+            raise LeaseError(
+                "invalid-gc-retention",
+                code=64,
+                minimumExclusive=0,
+                maximumInclusive=36500,
+            )
+        return now - days * 86400, days
+
+    def garbage_collect(
+        self,
+        *,
+        retention_days: float | None = None,
+        cutoff: str | None = None,
+    ) -> dict[str, Any]:
+        """Report records eligible for a future garbage-collection pass."""
+
+        now = float(self.clock())
+        cutoff_value, resolved_days = self._gc_cutoff(now, retention_days, cutoff)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                epoch_rows = db.execute(
+                    """
+                    SELECT acquired_at AS recorded_at FROM epochs AS e
+                    WHERE acquired_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM claims AS c
+                          WHERE c.claim_id = e.claim_id
+                      )
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                bundle_epoch_rows = db.execute(
+                    """
+                    SELECT acquired_at AS recorded_at
+                    FROM bundle_epochs AS e
+                    WHERE acquired_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bundles AS b
+                          WHERE b.claim_id = e.claim_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM claims AS c, json_each(e.resources) AS member
+                          WHERE c.resource = member.value
+                      )
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                operation_rows = db.execute(
+                    """
+                    SELECT created_at AS recorded_at
+                    FROM operations AS o
+                    WHERE created_at < ?
+                      AND (
+                          o.state = 'completed'
+                          OR EXISTS (
+                              SELECT 1 FROM reconciliations AS r
+                              WHERE r.resource = o.resource
+                                AND r.operation_id = o.operation_id
+                          )
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM claims AS c
+                          WHERE c.claim_id = o.claim_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bundles AS b
+                          WHERE b.claim_id = o.claim_id
+                      )
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                release_rows = db.execute(
+                    """
+                    SELECT released_at AS recorded_at
+                    FROM releases AS r
+                    WHERE released_at < ?
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                reconciliation_rows = db.execute(
+                    """
+                    SELECT reconciled_at AS recorded_at
+                    FROM reconciliations AS r
+                    WHERE reconciled_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM claims AS c
+                          WHERE c.claim_id = r.claim_id
+                      )
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                resource_rows = db.execute(
+                    """
+                    SELECT latest_recorded_at AS recorded_at
+                    FROM (
+                        SELECT resource, MAX(recorded_at) AS latest_recorded_at
+                        FROM (
+                            SELECT resource, acquired_at AS recorded_at
+                            FROM epochs
+                            UNION ALL
+                            SELECT json_each.value AS resource,
+                                   acquired_at AS recorded_at
+                            FROM bundle_epochs, json_each(bundle_epochs.resources)
+                            UNION ALL
+                            SELECT resource, created_at AS recorded_at
+                            FROM operations
+                            WHERE resource NOT LIKE 'bundle:%'
+                            UNION ALL
+                            SELECT resource, released_at AS recorded_at
+                            FROM releases
+                            UNION ALL
+                            SELECT resource, reconciled_at AS recorded_at
+                            FROM reconciliations
+                        )
+                        GROUP BY resource
+                    ) AS history
+                    JOIN resources AS r ON r.resource = history.resource
+                    WHERE latest_recorded_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM claims AS c
+                          WHERE c.resource = r.resource
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bundle_members AS m
+                          JOIN bundles AS b ON b.claim_id = m.claim_id
+                          WHERE m.resource = r.resource
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM operations AS o
+                          WHERE o.resource = r.resource
+                            AND o.state = 'started'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM reconciliations AS rec
+                                WHERE rec.resource = o.resource
+                                  AND rec.operation_id = o.operation_id
+                            )
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM operations AS o
+                          JOIN bundle_epochs AS be ON be.claim_id = o.claim_id
+                          JOIN json_each(be.resources) AS member
+                          WHERE member.value = r.resource
+                            AND o.state = 'started'
+                      )
+                    """,
+                    (cutoff_value,),
+                ).fetchall()
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+        def times(rows: list[sqlite3.Row]) -> list[float]:
+            return [float(row["recorded_at"]) for row in rows]
+
+        eligible = {
+            "epochs": self._gc_summary(times(epoch_rows)),
+            "bundleEpochs": self._gc_summary(times(bundle_epoch_rows)),
+            "operations": self._gc_summary(times(operation_rows)),
+            "releases": self._gc_summary(times(release_rows)),
+            "reconciliations": self._gc_summary(times(reconciliation_rows)),
+            "resources": self._gc_summary(times(resource_rows)),
+        }
+        return {
+            "ok": True,
+            "operation": "gc",
+            "dryRun": True,
+            "capturedAt": iso8601(now),
+            "cutoff": iso8601(cutoff_value),
+            "retentionDays": resolved_days,
+            "eligible": eligible,
         }
 
     @staticmethod
