@@ -4,7 +4,7 @@ title: Make guarded execution worktree-safe
 status: Done
 assignee: []
 created_date: '2026-07-14 04:41'
-updated_date: '2026-07-14 21:19'
+updated_date: '2026-07-14 21:20'
 labels:
   - git
   - worktrees
@@ -55,6 +55,8 @@ Ensure guarded provider mutations invoked from linked Git worktrees execute agai
 
 <!-- SECTION:NOTES:BEGIN -->
 Canonical main integration completed. Merged guarded execution directory and Git-primary worktree support, including CLI and bundle wiring, request/receipt identity, provider environment routing isolation, replay conflicts, linked/symlinked/separate/nested/prunable worktree handling, and worktree-stable WORKLEASE_HOME guidance. Verification: mise run lint passed; mise run format-check passed; mise run test passed for the full discovered suite; mise run typecheck passed with 0 errors; mise run hooks passed; package smoke tests passed during merge conflict resolution.
+
+AC2 evidence detail: the full suite covers registered-primary resolution across linked, symlinked, separate-Git-dir, nested-repository, and prunable-worktree cases. Source-level validation paths reject non-Git/missing, bare, ambiguous, unregistered, cross-repository, and unsafe directories before execution; no claim is made that every negative branch has a dedicated automated test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
