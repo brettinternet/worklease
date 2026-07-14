@@ -628,6 +628,11 @@ def _render_status(payload: dict[str, object]) -> None:
         _emit_error_details(payload)
         return
     _text_header(payload)
+    if not isinstance(payload.get("claim"), dict):
+        if "resource" in payload:
+            print(f"RESOURCE\t{_text_value(payload['resource'])}")
+        if "resources" in payload:
+            print(f"RESOURCES\t{_text_value(payload['resources'])}")
     print(f"STATE\t{_text_atom(payload.get('state', ''))}")
     _emit_claim(payload.get("claim"))
 

@@ -50,6 +50,19 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("ok", payload)
         return payload
 
+    def text_cli(
+        self,
+        *arguments: str,
+        expected_code: int = 0,
+        pass_fds: tuple[int, ...] = (),
+    ) -> str:
+        result = self.run_cli("--format", "text", *arguments, pass_fds=pass_fds)
+        self.assertEqual(expected_code, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertNotEqual("", result.stdout)
+        self.assertFalse(result.stdout.lstrip().startswith("{"))
+        return result.stdout
+
     @staticmethod
     def acquire_arguments(
         resource: str = "repo:cli",
@@ -835,6 +848,438 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(True, payload["ok"])
         self.assertEqual("new\n", target.read_text())
         self.assertNotIn(str(claim["token"]), json.dumps(payload))
+
+    def test_text_renderers_cover_read_only_commands_and_failures(self) -> None:
+        version = self.text_cli("--version")
+        self.assertEqual(f"{__version__}\n", version)
+
+        missing = self.text_cli(expected_code=64)
+        self.assertEqual("ERROR parse: missing-command\n", missing)
+
+        key = self.text_cli(
+            "key",
+            "--provider",
+            "linear",
+            "--source",
+            "team",
+            "--item",
+            "TEXT-KEY",
+        )
+        self.assertIn("OK key\n", key)
+        self.assertIn('PROVIDER\t"linear"\n', key)
+        self.assertNotIn("schemaVersion", key)
+
+        policies = self.text_cli("policy", "list")
+        self.assertIn("NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION", policies)
+        described = self.text_cli("policy", "describe", "--name", "generic")
+        self.assertIn("name: generic\n", described)
+        policy_error = self.text_cli(
+            "policy", "describe", "--name", "missing", expected_code=2
+        )
+        self.assertEqual(
+            'ERROR policy-describe: resource-policy-not-found\nPROVIDER\t"missing"\n',
+            policy_error,
+        )
+
+        free_status = self.text_cli("status", "--resource", "repo:text-free")
+        self.assertIn(
+            'OK status\nRESOURCE\t"repo:text-free"\nSTATE\tfree\n',
+            free_status,
+        )
+        free_bundle = self.text_cli(
+            "status-bundle",
+            "--resource",
+            "repo:text-free-a",
+            "--resource",
+            "repo:text-free-b",
+        )
+        self.assertIn(
+            'OK status-bundle\nRESOURCES\t["repo:text-free-a","repo:text-free-b"]\n'
+            "STATE\tfree\n",
+            free_bundle,
+        )
+
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource="repo:text-read", claim_id="text-read")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        status = self.text_cli("status", "--resource", "repo:text-read")
+        self.assertIn("OK status\nSTATE\tactive\n", status)
+        self.assertNotIn(token, status)
+        verbose = self.text_cli("status", "--resource", "repo:text-read", "--verbose")
+        self.assertIn('RESOURCE\t"repo:text-read"\nSTATE\tactive\n', verbose)
+        self.assertNotIn(token, verbose)
+        listed = self.text_cli("list", "--resource", "repo:text-read")
+        self.assertIn("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT\n", listed)
+        self.assertNotIn(token, listed)
+
+        resources = ("repo:text-read-a", "repo:text-read-b")
+        self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "text-read-bundle",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "text:read-bundle",
+        )
+        bundle_status = self.text_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )
+        self.assertIn("OK status-bundle\nSTATE\tactive\n", bundle_status)
+        self.assertNotIn(token, bundle_status)
+
+        operation_resource = "repo:text-inspect"
+        operation_acquired = self.json_cli(
+            *self.acquire_arguments(
+                resource=operation_resource, claim_id="text-inspect"
+            )
+        )
+        operation_claim = operation_acquired["claim"]
+        assert isinstance(operation_claim, dict)
+        operation_request = MutationRequest(
+            resource=operation_resource,
+            claim_id=str(operation_claim["claimId"]),
+            token=str(operation_claim["token"]),
+            revision=int(operation_claim["revision"]),
+            operation_id="text-inspect-operation",
+        )
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_operation(
+                operation_request,
+                "exec",
+                {"revision": operation_request.revision, "argv": ["text"]},
+            )
+        )
+        inspected = self.text_cli(
+            "inspect-operation",
+            "--resource",
+            operation_resource,
+            "--operation-id",
+            operation_request.operation_id,
+        )
+        self.assertIn("OK inspect-operation\n", inspected)
+        self.assertIn('STATE\t"unknown-outcome"\n', inspected)
+        inspect_error = self.text_cli(
+            "inspect-operation",
+            "--resource",
+            "repo:text-missing",
+            "--operation-id",
+            "missing",
+            expected_code=3,
+        )
+        self.assertEqual(
+            'ERROR inspect-operation: operation-not-found\nOPERATION_ID\t"missing"\n',
+            inspect_error,
+        )
+
+        gc = self.text_cli("gc")
+        self.assertIn("OK gc\nDRY_RUN\ttrue\n", gc)
+        gc_error = self.text_cli("gc", "--cutoff", "not-a-timestamp", expected_code=64)
+        self.assertIn("ERROR gc: invalid-gc-cutoff\n", gc_error)
+
+    def test_text_renderers_cover_mutations_aliases_and_child_failures(self) -> None:
+        acquired_text = self.text_cli(
+            *self.acquire_arguments(
+                resource="repo:text-acquire", claim_id="text-acquire"
+            )
+        )
+        self.assertIn("OK acquire\n", acquired_text)
+        self.assertIn("TOKEN\t", acquired_text)
+
+        resource = "repo:text-mutation"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="text-mutation")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+        heartbeat = self.text_cli(
+            *self.mutation_arguments("heartbeat", resource, claim, "text-heartbeat")
+        )
+        self.assertIn("OK heartbeat\n", heartbeat)
+        self.assertIn("TOKEN\t", heartbeat)
+        current = self.json_cli("status", "--resource", resource)["claim"]
+        assert isinstance(current, dict)
+        current = {**current, "token": token}
+        checkpoint = self.text_cli(
+            *self.mutation_arguments(
+                "checkpoint", resource, current, "text-checkpoint"
+            ),
+            "--checkpoint",
+            '{"step":"text","unicode":"café"}',
+        )
+        self.assertIn('CHECKPOINT\t{"step":"text","unicode":"café"}\n', checkpoint)
+        current = self.json_cli("status", "--resource", resource)["claim"]
+        assert isinstance(current, dict)
+        current = {**current, "token": token}
+
+        executed = self.text_cli(
+            *self.mutation_arguments("exec", resource, current, "text-exec"),
+            "--provider-directory",
+            self.home.name,
+            "--",
+            sys.executable,
+            "-c",
+            "print('text-child')",
+        )
+        self.assertIn("OK exec\n", executed)
+        self.assertIn('STDOUT\t"text-child\\n"\n', executed)
+        current = self.json_cli("status", "--resource", resource)["claim"]
+        assert isinstance(current, dict)
+        current = {**current, "token": token}
+        released = self.text_cli(
+            *self.mutation_arguments("release", resource, current, "text-release"),
+            "--reason",
+            "text complete",
+        )
+        self.assertIn("OK release\n", released)
+        self.assertIn("RELEASED_CLAIM_ID\t", released)
+
+        failed_resource = "repo:text-exec-failure"
+        failed_claim = self.json_cli(
+            *self.acquire_arguments(
+                resource=failed_resource, claim_id="text-exec-failure"
+            )
+        )["claim"]
+        assert isinstance(failed_claim, dict)
+        failed = self.text_cli(
+            *self.mutation_arguments(
+                "exec", failed_resource, failed_claim, "text-exec-failure"
+            ),
+            "--",
+            sys.executable,
+            "-c",
+            "import sys; print('child-stderr', file=sys.stderr); raise SystemExit(7)",
+            expected_code=7,
+        )
+        self.assertIn("ERROR exec: child-process-failed\n", failed)
+        self.assertIn('STDERR\t"child-stderr\\n"\n', failed)
+        self.assertNotIn(str(failed_claim["token"]), failed)
+
+        transfer_resource = "repo:text-transfer"
+        transfer_claim = self.json_cli(
+            *self.acquire_arguments(
+                resource=transfer_resource, claim_id="text-transfer"
+            )
+        )["claim"]
+        assert isinstance(transfer_claim, dict)
+        transferred = self.text_cli(
+            "transfer",
+            "--resource",
+            transfer_resource,
+            "--claim-id",
+            str(transfer_claim["claimId"]),
+            "--token",
+            str(transfer_claim["token"]),
+            "--revision",
+            str(transfer_claim["revision"]),
+            "--operation-id",
+            "text-transfer",
+            "--successor-claim-id",
+            "text-successor",
+            "--successor-agent-id",
+            "agent-successor",
+            "--successor-session-id",
+            "session-successor",
+            "--successor-owner-id",
+            "owner-successor",
+            "--successor-work-key",
+            "text:successor",
+        )
+        self.assertIn("OK transfer\n", transferred)
+        self.assertIn("TOKEN\t", transferred)
+
+        reconcile_resource = "repo:text-reconcile"
+        reconcile_acquired = self.json_cli(
+            *self.acquire_arguments(
+                resource=reconcile_resource, claim_id="text-reconcile"
+            )
+        )
+        reconcile_claim = reconcile_acquired["claim"]
+        assert isinstance(reconcile_claim, dict)
+        reconcile_request = MutationRequest(
+            resource=reconcile_resource,
+            claim_id=str(reconcile_claim["claimId"]),
+            token=str(reconcile_claim["token"]),
+            revision=int(reconcile_claim["revision"]),
+            operation_id="text-unknown",
+        )
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_operation(
+                reconcile_request,
+                "exec",
+                {"revision": reconcile_request.revision, "argv": ["text"]},
+            )
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(
+                {"revision": reconcile_request.revision, "argv": ["text"]},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        reconciled = self.text_cli(
+            *self.mutation_arguments(
+                "reconcile-operation",
+                reconcile_resource,
+                reconcile_claim,
+                "text-reconcile",
+            ),
+            "--target-operation-id",
+            "text-unknown",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-failure",
+            "--evidence",
+            '{"source":"text"}',
+        )
+        self.assertIn("OK reconcile-operation\n", reconciled)
+
+        directory = Path(self.home.name)
+        target = directory / "text-target"
+        candidate = directory / "text-candidate"
+        target.write_text("old\n")
+        candidate.write_text("new\n")
+        replace_resource = "repo:text-replace"
+        replace_claim = self.json_cli(
+            *self.acquire_arguments(resource=replace_resource, claim_id="text-replace")
+        )["claim"]
+        assert isinstance(replace_claim, dict)
+        replaced = self.text_cli(
+            *self.mutation_arguments(
+                "replace-file", replace_resource, replace_claim, "text-replace"
+            ),
+            "--path",
+            str(target),
+            "--expected-sha256",
+            hashlib.sha256(target.read_bytes()).hexdigest(),
+            "--content-file",
+            str(candidate),
+        )
+        self.assertIn("OK replace-file\n", replaced)
+        self.assertEqual("new\n", target.read_text())
+
+        resources = ("repo:text-alias-a", "repo:text-alias-b")
+        bundle_acquired = self.json_cli(
+            "bundle-acquire",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "text-alias",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "text:alias",
+        )
+        bundle_claim = bundle_acquired["claim"]
+        assert isinstance(bundle_claim, dict)
+        bundle_token = str(bundle_claim["token"])
+        bundle_status = self.text_cli(
+            "bundle-status",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )
+        self.assertIn("OK status-bundle\n", bundle_status)
+        bundle_args = (
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            str(bundle_claim["claimId"]),
+            "--token",
+            bundle_token,
+        )
+        bundle_heartbeat = self.text_cli(
+            "bundle-heartbeat",
+            *bundle_args,
+            "--revision",
+            str(bundle_claim["revision"]),
+            "--operation-id",
+            "text-bundle-heartbeat",
+        )
+        self.assertIn("OK heartbeat-bundle\n", bundle_heartbeat)
+        bundle_claim = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )["claim"]
+        assert isinstance(bundle_claim, dict)
+        bundle_exec = self.text_cli(
+            "bundle-exec",
+            *bundle_args,
+            "--revision",
+            str(bundle_claim["revision"]),
+            "--operation-id",
+            "text-bundle-exec",
+            "--provider-directory",
+            self.home.name,
+            "--",
+            sys.executable,
+            "-c",
+            "print('bundle-text-child')",
+        )
+        self.assertIn("OK exec-bundle\n", bundle_exec)
+        self.assertIn('STDOUT\t"bundle-text-child\\n"\n', bundle_exec)
+        bundle_claim = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )["claim"]
+        assert isinstance(bundle_claim, dict)
+        bundle_release = self.text_cli(
+            "bundle-release",
+            *bundle_args,
+            "--revision",
+            str(bundle_claim["revision"]),
+            "--operation-id",
+            "text-bundle-release",
+            "--reason",
+            "text bundle complete",
+        )
+        self.assertIn("OK release-bundle\n", bundle_release)
+
+        parser_error = self.run_cli(
+            "--format",
+            "text",
+            "status",
+            "--resource",
+            "repo:text-read",
+            "--bad",
+        )
+        self.assertEqual(64, parser_error.returncode)
+        self.assertEqual("ERROR status: invalid-arguments\n", parser_error.stdout)
+        self.assertEqual("", parser_error.stderr)
 
 
 if __name__ == "__main__":
