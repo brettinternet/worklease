@@ -2008,9 +2008,16 @@ class LeaseStore:
             }
         with closing(connect_readonly(self.home)) as db:
             now = self.clock()
-            row = self._current(db, resource)
+            tables = {
+                str(table["name"])
+                for table in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            row = self._current(db, resource) if "claims" in tables else None
             claim: dict[str, Any] | None = None
             if row is not None:
+                row_columns = set(row.keys())
                 claim = {
                     "resource": resource,
                     "claimId": str(row["claim_id"]),
@@ -2018,7 +2025,11 @@ class LeaseStore:
                     "sessionId": str(row["session_id"]),
                     "ownerId": str(row["owner_id"]),
                     "workKey": str(row["work_key"]),
-                    "coordinationOnly": bool(row["coordination_only"]),
+                    "coordinationOnly": (
+                        bool(row["coordination_only"])
+                        if "coordination_only" in row_columns
+                        else False
+                    ),
                     "revision": int(row["revision"]),
                     "acquiredAt": self._timestamp(float(row["acquired_at"])),
                     "heartbeatAt": self._timestamp(float(row["heartbeat_at"])),
@@ -2028,24 +2039,39 @@ class LeaseStore:
             else:
                 state = "free"
 
-            operation_rows = db.execute(
-                """
-                SELECT
-                    o.operation_id,
-                    o.kind,
-                    o.expected_revision,
-                    o.created_at,
-                    o.request,
-                    r.request_sha256,
-                    r.kind AS reconciliation_kind
-                FROM operations AS o
-                LEFT JOIN reconciliations AS r
-                  ON r.resource = o.resource AND r.operation_id = o.operation_id
-                WHERE o.resource = ? AND o.state = 'started'
-                ORDER BY o.created_at, o.operation_id, o.claim_id, o.kind
-                """,
-                (resource,),
-            ).fetchall()
+            if "operations" in tables and "reconciliations" in tables:
+                operation_rows = db.execute(
+                    """
+                    SELECT
+                        o.operation_id,
+                        o.kind,
+                        o.expected_revision,
+                        o.created_at,
+                        o.request,
+                        r.request_sha256,
+                        r.kind AS reconciliation_kind
+                    FROM operations AS o
+                    LEFT JOIN reconciliations AS r
+                      ON r.resource = o.resource AND r.operation_id = o.operation_id
+                    WHERE o.resource = ? AND o.state = 'started'
+                    ORDER BY o.created_at, o.operation_id, o.claim_id, o.kind
+                    """,
+                    (resource,),
+                ).fetchall()
+            elif "operations" in tables:
+                operation_rows = db.execute(
+                    """
+                    SELECT operation_id, kind, expected_revision, created_at,
+                           request, NULL AS request_sha256,
+                           NULL AS reconciliation_kind
+                    FROM operations
+                    WHERE resource = ? AND state = 'started'
+                    ORDER BY created_at, operation_id, claim_id, kind
+                    """,
+                    (resource,),
+                ).fetchall()
+            else:
+                operation_rows = []
             unknown_operations = []
             for operation in operation_rows:
                 reconciliation_sha256 = operation["request_sha256"]
@@ -2067,16 +2093,19 @@ class LeaseStore:
                     }
                 )
 
-            release_row = db.execute(
-                """
-                SELECT claim_id, operation_id, revision, released_at
-                FROM releases
-                WHERE resource = ?
-                ORDER BY released_at DESC, operation_id DESC
-                LIMIT 1
-                """,
-                (resource,),
-            ).fetchone()
+            if "releases" in tables:
+                release_row = db.execute(
+                    """
+                    SELECT claim_id, operation_id, revision, released_at
+                    FROM releases
+                    WHERE resource = ?
+                    ORDER BY released_at DESC, operation_id DESC, claim_id DESC
+                    LIMIT 1
+                    """,
+                    (resource,),
+                ).fetchone()
+            else:
+                release_row = None
             release = (
                 {
                     "claimId": str(release_row["claim_id"]),

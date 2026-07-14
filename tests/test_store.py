@@ -986,6 +986,18 @@ class StoreTests(unittest.TestCase):
             """
         )
         connection.close()
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        verbose = LeaseStore(self.home, clock=self.clock).status_verbose("legacy")
+        self.assertEqual("active", verbose["state"])
+        self.assertNotIn("token", json.dumps(verbose))
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        self.assertEqual(before_tables, after_tables)
         status = LeaseStore(self.home, clock=self.clock).status("legacy")
         self.assertEqual("active", status["state"])
         self.assertNotIn("token", status["claim"])
