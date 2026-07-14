@@ -1844,10 +1844,15 @@ class LeaseStore:
                 """
                 SELECT * FROM operations
                 WHERE resource = ? AND claim_id = ? AND operation_id = ?
-                  AND kind = 'transfer'
                 """,
                 (request.resource, request.claim_id, request.operation_id),
             ).fetchone()
+            if prior is not None and str(prior["kind"]) != "transfer":
+                raise LeaseError(
+                    "operation-id-request-mismatch",
+                    code=3,
+                    operationId=request.operation_id,
+                )
             if prior is not None:
                 recorded = json.loads(str(prior["request"]))
                 if {

@@ -222,6 +222,42 @@ class StoreTests(unittest.TestCase):
         with self.assertRaisesRegex(LeaseError, "already-claimed"):
             self.store.acquire(self.acquire_request("resource", "contender"))
 
+    def test_transfer_rejects_reuse_of_other_operation_kind(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("transfer-operation-id", "first")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        heartbeat = self.store.heartbeat(
+            self.mutation(acquired, "transfer-operation-id", "shared-operation-id")
+        )
+        current = heartbeat["claim"]
+        assert isinstance(current, dict)
+        transfer = TransferRequest(
+            resource="transfer-operation-id",
+            claim_id=str(current["claimId"]),
+            token=str(current["token"]),
+            revision=int(current["revision"]),
+            operation_id="shared-operation-id",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.transfer(transfer)
+        self.assertEqual(
+            "first",
+            self.store.status("transfer-operation-id")["claim"]["claimId"],
+        )
+        self.assertEqual(
+            "heartbeat",
+            self.store.inspect_operation(
+                "transfer-operation-id", "shared-operation-id"
+            )["kind"],
+        )
+
     def test_transfer_rejects_stale_replays_and_reused_successor_ids(self) -> None:
         acquired = self.store.acquire(
             self.acquire_request("transfer-rejections", "first")
