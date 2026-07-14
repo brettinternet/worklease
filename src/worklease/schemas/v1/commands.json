@@ -58,7 +58,7 @@
         "genericExecutionGuarantee": {"const": "local-coordination"},
         "idempotent": {"type": "boolean"},
         "reclaimed": {"type": "boolean"},
-        "recovery": {"enum": ["clean-handoff", "expired-recovery"]},
+        "recovery": {"type": ["string", "null"], "enum": ["clean-handoff", "expired-recovery", null]},
         "checkpoint": {},
         "command": {
           "type": "object",
@@ -113,8 +113,8 @@
         "properties": {
           "claim": {
             "anyOf": [
-              {"$ref": "common.json#/$defs/ClaimWithToken"},
-              {"$ref": "common.json#/$defs/BundleClaimWithToken"}
+              {"$ref": "common.json#/$defs/Claim"},
+              {"$ref": "common.json#/$defs/BundleClaim"}
             ]
           }
         }

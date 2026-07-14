@@ -17,6 +17,7 @@ worklease = "worklease.cli:main"
 
 [dependency-groups]
 dev = [
+    "jsonschema>=4.25.0",
     "ruff>=0.15.21",
 ]
 release = [

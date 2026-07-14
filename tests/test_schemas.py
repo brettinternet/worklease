@@ -9,6 +9,8 @@ import unittest
 from importlib.resources import files
 from typing import Any
 
+from jsonschema import Draft202012Validator, RefResolver
+
 READ_ONLY = {
     "parse",
     "version",
@@ -59,6 +61,14 @@ class SchemaContractTests(unittest.TestCase):
         schema_root = files("worklease").joinpath("schemas", "v1")
         self.common = json.loads(schema_root.joinpath("common.json").read_text())
         self.commands = json.loads(schema_root.joinpath("commands.json").read_text())
+        self.validator = Draft202012Validator(
+            self.commands,
+            resolver=RefResolver(
+                "https://worklease.dev/schemas/v1/commands.json",
+                self.commands,
+                store={"https://worklease.dev/schemas/v1/common.json": self.common},
+            ),
+        )
         self.index = json.loads(schema_root.joinpath("index.json").read_text())
         self.home = tempfile.TemporaryDirectory()
         self.environment = os.environ.copy()
@@ -79,6 +89,8 @@ class SchemaContractTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def assert_matches_commands_schema(self, payload: dict[str, Any]) -> None:
+        errors = list(self.validator.iter_errors(payload))
+        self.assertEqual([], errors, [error.message for error in errors])
         self.assertEqual(1, payload.get("schemaVersion"))
         operation = payload.get("operation")
         self.assertIn(operation, RELEASED_OPERATIONS)
