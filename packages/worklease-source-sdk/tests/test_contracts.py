@@ -70,6 +70,18 @@ class ContractSmokeTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             source.id = "other"  # type: ignore[misc]
 
+    def test_immutable_models_deep_freeze_opaque_containers(self) -> None:
+        nested = {"flags": ["original"], "metadata": {"version": 1}}
+        source = Source("source-1", "example", "collection", "Example", nested)
+
+        nested["flags"].append("mutated")
+        nested["metadata"]["version"] = 2
+
+        self.assertEqual(("original",), source.provider_data["flags"])
+        self.assertEqual(1, source.provider_data["metadata"]["version"])
+        with self.assertRaises(TypeError):
+            source.provider_data["metadata"]["version"] = 3  # type: ignore[index]
+
     def test_receipt_records_ambiguous_provider_outcome(self) -> None:
         receipt = ProviderReceipt(
             source_id="source-1",

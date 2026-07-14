@@ -17,10 +17,20 @@ def _text(value: str, field: str) -> str:
     return value.strip()
 
 
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(item) for item in value)
+    return value
+
+
 def _mapping(value: Mapping[str, object] | None) -> Mapping[str, object]:
     if value is None:
         return MappingProxyType({})
-    return MappingProxyType(dict(value))
+    return MappingProxyType({key: _freeze(item) for key, item in value.items()})
 
 
 @dataclass(frozen=True, slots=True)
