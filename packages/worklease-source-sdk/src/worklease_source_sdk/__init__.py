@@ -1,5 +1,11 @@
 """Public version-one source-provider SDK facade."""
 
+from .conformance import (
+    ProviderConformanceCase,
+    ProviderConformanceReport,
+    assert_provider_conformance,
+    run_provider_conformance,
+)
 from .models import (
     CONTRACT_VERSION,
     CapabilityResult,
@@ -28,6 +34,10 @@ __all__ = [
     "DiscoverResult",
     "MutationResult",
     "ProviderReceipt",
+    "ProviderConformanceCase",
+    "ProviderConformanceReport",
+    "assert_provider_conformance",
+    "run_provider_conformance",
     "ReadResult",
     "ReceiptOutcome",
     "ResourcePolicyResult",
