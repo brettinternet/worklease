@@ -20,7 +20,7 @@
           "inspect-operation", "reconcile-operation", "list", "heartbeat",
           "checkpoint", "transfer", "release", "bundle-heartbeat", "heartbeat-bundle",
           "bundle-release", "release-bundle", "exec", "bundle-exec",
-          "exec-bundle", "replace-file"
+          "exec-bundle", "replace-file", "gc"
         ]
       }
     }

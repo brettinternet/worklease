@@ -56,6 +56,7 @@ RELEASED_OPERATIONS = {
     "bundle-exec",
     "exec-bundle",
     "replace-file",
+    "gc",
 }
 
 

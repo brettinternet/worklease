@@ -1,11 +1,11 @@
 ---
 id: TASK-17
 title: Complete explicit human-readable CLI output
-status: To Do
+status: In Progress
 assignee:
-  - '@codex-main'
+  - '@codex-loop-fresh-20260714-worklease-task17-t1'
 created_date: '2026-07-14 02:46'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 22:10'
 labels:
   - cli
   - ux
@@ -13,6 +13,8 @@ dependencies: []
 references:
   - src/worklease/cli.py
   - README.md
+modified_files:
+  - src/worklease/cli.py
 priority: medium
 type: enhancement
 ordinal: 18000
@@ -62,4 +64,6 @@ Keep schema-versioned JSON as the default for agents and integrations. Make --fo
 **Next action:** inventory response payloads and implement the renderer registry without touching dispatch semantics.
 
 **Refinement checkpoint:** refined: TASK-17 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=2ee49790-a2f4-4772-b50a-d9533e283bbc; claimRevision=3; refinement: complete.
+
+Implementation checkpoint (T1): commit 29e8a2082eb15bcf0b2ef6702ceb4bc44b0330cc adds an explicit deterministic text-renderer registry for every released CLI command and aliases, with redacted read-only output and minimum owner fields for lifecycle mutations. Files: src/worklease/cli.py. Verification: mise run lint passed; mise run format-check passed; mise run test passed (127 tests); mise run typecheck passed; mise run hooks passed. Next task: T2 complete text contract tests. Remaining acceptance criteria: #1-#4.
 <!-- SECTION:NOTES:END -->
