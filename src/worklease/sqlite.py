@@ -158,6 +158,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 operation_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 claim_id TEXT NOT NULL,
+                target_claim_id TEXT NOT NULL DEFAULT '',
                 outcome TEXT NOT NULL,
                 evidence TEXT NOT NULL,
                 resolver_agent_id TEXT NOT NULL,
@@ -214,6 +215,47 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 "ALTER TABLE reconciliations ADD COLUMN receipt "
                 "TEXT NOT NULL DEFAULT '{}'"
             )
+        if "target_claim_id" not in reconciliation_columns:
+            connection.execute(
+                "ALTER TABLE reconciliations ADD COLUMN target_claim_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            """
+            UPDATE reconciliations AS r
+            SET target_claim_id = (
+                SELECT o.claim_id
+                FROM operations AS o
+                WHERE o.resource = r.resource
+                  AND o.operation_id = r.operation_id
+                  AND o.kind = r.kind
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM operations AS duplicate
+                      WHERE duplicate.resource = o.resource
+                        AND duplicate.operation_id = o.operation_id
+                        AND duplicate.kind = o.kind
+                        AND duplicate.claim_id != o.claim_id
+                  )
+            )
+            WHERE r.target_claim_id = ''
+              AND EXISTS (
+                  SELECT 1
+                  FROM operations AS o
+                  WHERE o.resource = r.resource
+                    AND o.operation_id = r.operation_id
+                    AND o.kind = r.kind
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM operations AS duplicate
+                        WHERE duplicate.resource = o.resource
+                          AND duplicate.operation_id = o.operation_id
+                          AND duplicate.kind = o.kind
+                          AND duplicate.claim_id != o.claim_id
+                    )
+              )
+            """,
+        )
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:

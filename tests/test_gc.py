@@ -857,6 +857,154 @@ class GarbageCollectionTests(unittest.TestCase):
             [(str(row[0]), int(row[1])) for row in resource_rows],
         )
 
+    def test_cross_claim_reconciliation_collects_target_pair_atomically(self) -> None:
+        resource = "repo:gc-cross-claim"
+        first = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-cross-first",
+                agent_id="agent-a",
+                session_id="session-a",
+                owner_id="owner-a",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(first, dict)
+        target = MutationRequest(
+            resource=resource,
+            claim_id=str(first["claimId"]),
+            token=str(first["token"]),
+            revision=int(first["revision"]),
+            operation_id="cross-claim-operation",
+        )
+        payload = {"command": ["cross-claim"]}
+        self.assertIsNone(self.store.begin_operation(target, "exec", payload))
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=target.claim_id,
+                token=target.token,
+                revision=target.revision,
+                operation_id="release-cross-first",
+            ),
+            "handoff",
+        )
+
+        self.now = 1.0
+        second = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-cross-second",
+                agent_id="agent-b",
+                session_id="session-b",
+                owner_id="owner-b",
+                work_key="implement:gc",
+            )
+        )["claim"]
+        assert isinstance(second, dict)
+        resolver = MutationRequest(
+            resource=resource,
+            claim_id=str(second["claimId"]),
+            token=str(second["token"]),
+            revision=int(second["revision"]),
+            operation_id="reconcile-cross-claim",
+        )
+        request_sha = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.store.reconcile_operation(
+            resolver,
+            target.operation_id,
+            request_sha,
+            "observed-success",
+            {"status": "ok"},
+        )
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=resolver.claim_id,
+                token=resolver.token,
+                revision=resolver.revision + 1,
+                operation_id="release-cross-second",
+            ),
+            "done",
+        )
+
+        self.now = 100.0
+        preview = self.store.garbage_collect(
+            cutoff="1970-01-01T00:00:10Z",
+        )
+        self.assertEqual(1, preview["eligible"]["operations"]["count"])
+        self.assertEqual(1, preview["eligible"]["reconciliations"]["count"])
+        self.assertEqual(2, preview["eligible"]["epochs"]["count"])
+        applied = self.store.garbage_collect(
+            cutoff="1970-01-01T00:00:10Z",
+            apply=True,
+        )
+        self.assertEqual(preview["eligible"], applied["collected"])
+        with connect(self.home.name) as db:
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM operations WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM reconciliations WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+
+    def test_ambiguous_legacy_reconciliation_remains_protected(self) -> None:
+        resource = "repo:gc-legacy-ambiguous"
+        with connect(self.home.name) as db:
+            for claim_id in ("legacy-target-a", "legacy-target-b"):
+                db.execute(
+                    """
+                    INSERT INTO operations(
+                        resource, claim_id, operation_id, kind, state,
+                        request, expected_revision, receipt, created_at
+                    ) VALUES (?, ?, 'legacy-operation', 'exec', 'started',
+                              '{}', 1, '{}', 0)
+                    """,
+                    (resource, claim_id),
+                )
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, outcome, evidence,
+                    resolver_agent_id, resolver_session_id, resolver_owner_id,
+                    resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at, receipt
+                ) VALUES (
+                    ?, 'legacy-operation', 'exec', 'legacy-resolver',
+                    'observed-success', '{}', 'agent', 'session', 'owner',
+                    'work', ?, 'legacy-reconcile', 0, '{}'
+                )
+                """,
+                (resource, "0" * 64),
+            )
+        self.now = 100.0
+        result = self.store.garbage_collect(
+            cutoff="1970-01-01T00:00:10Z",
+            apply=True,
+        )
+        self.assertEqual(0, result["collected"]["operations"]["count"])
+        self.assertEqual(0, result["collected"]["reconciliations"]["count"])
+        with connect(self.home.name) as db:
+            target_claim = db.execute(
+                """
+                SELECT target_claim_id
+                FROM reconciliations
+                WHERE resource = ?
+                """,
+                (resource,),
+            ).fetchone()[0]
+            self.assertEqual("", target_claim)
+
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-gc-cutoff"):
             self.store.garbage_collect(cutoff="not-a-timestamp")

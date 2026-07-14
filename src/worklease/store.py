@@ -430,17 +430,18 @@ class LeaseStore:
             db.execute(
                 """
                 INSERT INTO reconciliations(
-                    resource, operation_id, kind, claim_id, outcome, evidence,
-                    resolver_agent_id, resolver_session_id, resolver_owner_id,
-                    resolver_work_key, request_sha256,
+                    resource, operation_id, kind, claim_id, target_claim_id,
+                    outcome, evidence, resolver_agent_id, resolver_session_id,
+                    resolver_owner_id, resolver_work_key, request_sha256,
                     reconciliation_operation_id, reconciled_at, receipt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.resource,
                     target_operation_id,
                     str(target["kind"]),
                     str(request.claim_id),
+                    str(target["claim_id"]),
                     outcome,
                     evidence_json,
                     str(current["agent_id"]),
@@ -2456,7 +2457,7 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = unresolved.resource
                           AND rec.operation_id = unresolved.operation_id
-                          AND rec.claim_id = unresolved.claim_id
+                          AND rec.target_claim_id = unresolved.claim_id
                           AND rec.kind = unresolved.kind
                     )
               )
@@ -2501,7 +2502,7 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = unresolved.resource
                           AND rec.operation_id = unresolved.operation_id
-                          AND rec.claim_id = unresolved.claim_id
+                          AND rec.target_claim_id = unresolved.claim_id
                           AND rec.kind = unresolved.kind
                     )
               )
@@ -2525,7 +2526,7 @@ class LeaseStore:
                       SELECT 1 FROM reconciliations AS r
                       WHERE r.resource = o.resource
                         AND r.operation_id = o.operation_id
-                        AND r.claim_id = o.claim_id
+                        AND r.target_claim_id = o.claim_id
                         AND r.kind = o.kind
                   )
               )
@@ -2542,7 +2543,7 @@ class LeaseStore:
                   FROM reconciliations AS r
                   WHERE r.resource = o.resource
                     AND r.operation_id = o.operation_id
-                    AND r.claim_id = o.claim_id
+                    AND r.target_claim_id = o.claim_id
                     AND r.kind = o.kind
                     AND r.reconciled_at >= ?
               )
@@ -2562,6 +2563,7 @@ class LeaseStore:
             SELECT resource, operation_id, reconciled_at AS recorded_at
             FROM reconciliations AS r
             WHERE reconciled_at < ?
+              AND r.target_claim_id <> ''
               AND NOT EXISTS (
                   SELECT 1 FROM claims AS c
                   WHERE c.claim_id = r.claim_id
@@ -2571,7 +2573,7 @@ class LeaseStore:
                   FROM operations AS o
                   WHERE o.resource = r.resource
                     AND o.operation_id = r.operation_id
-                    AND o.claim_id = r.claim_id
+                    AND o.claim_id = r.target_claim_id
                     AND o.kind = r.kind
                     AND o.created_at >= ?
               )
@@ -2630,7 +2632,7 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = o.resource
                           AND rec.operation_id = o.operation_id
-                          AND rec.claim_id = o.claim_id
+                          AND rec.target_claim_id = o.claim_id
                           AND rec.kind = o.kind
                     )
               )
@@ -2646,7 +2648,7 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = o.resource
                           AND rec.operation_id = o.operation_id
-                          AND rec.claim_id = o.claim_id
+                          AND rec.target_claim_id = o.claim_id
                           AND rec.kind = o.kind
                     )
               )
