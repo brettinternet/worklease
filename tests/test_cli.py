@@ -23,17 +23,25 @@ class CliContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.home.cleanup()
 
-    def run_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+    def run_cli(
+        self, *arguments: str, pass_fds: tuple[int, ...] = ()
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "worklease.cli", *arguments],
             check=False,
             capture_output=True,
             text=True,
             env=self.environment,
+            pass_fds=pass_fds,
         )
 
-    def json_cli(self, *arguments: str, expected_code: int = 0) -> dict[str, object]:
-        result = self.run_cli(*arguments)
+    def json_cli(
+        self,
+        *arguments: str,
+        expected_code: int = 0,
+        pass_fds: tuple[int, ...] = (),
+    ) -> dict[str, object]:
+        result = self.run_cli(*arguments, pass_fds=pass_fds)
         self.assertEqual(expected_code, result.returncode, result.stderr)
         self.assertEqual("", result.stderr)
         payload = json.loads(result.stdout)
@@ -599,6 +607,115 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual("stale-claim", stale["error"])
         self.assertNotIn('"token"', json.dumps(stale))
         self.assertNotIn(token, json.dumps(stale))
+
+    def test_non_argv_token_sources_cover_lifecycle_and_prevent_state_changes(
+        self,
+    ) -> None:
+        resource = "repo:credential-cli"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="credential-cli")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "token"
+            token_file.write_text(f"{token}\n", encoding="utf-8")
+            token_file.chmod(0o600)
+            heartbeat_args = list(
+                self.mutation_arguments(
+                    "heartbeat", resource, claim, "credential-heartbeat"
+                )
+            )
+            resource_index = heartbeat_args.index("--resource") + 1
+            heartbeat_args[resource_index] = resource
+            token_index = heartbeat_args.index("--token")
+            del heartbeat_args[token_index : token_index + 2]
+            heartbeat_args.extend(("--token-file", str(token_file)))
+            heartbeat = self.json_cli(*heartbeat_args)
+            renewed = heartbeat["claim"]
+            assert isinstance(renewed, dict)
+            self.assertGreater(int(renewed["revision"]), int(claim["revision"]))
+
+            missing_args = list(
+                self.mutation_arguments(
+                    "release", resource, renewed, "credential-missing"
+                )
+            )
+            token_index = missing_args.index("--token")
+            del missing_args[token_index : token_index + 2]
+            missing = self.json_cli(
+                *missing_args,
+                "--reason",
+                "missing",
+                expected_code=64,
+            )
+            self.assertEqual("credential-missing", missing["error"])
+            self.assertEqual(
+                "active", self.json_cli("status", "--resource", resource)["state"]
+            )
+
+            read_fd, write_fd = os.pipe()
+
+            exec_args = list(
+                self.mutation_arguments("exec", resource, renewed, "credential-exec")
+            )
+            token_index = exec_args.index("--token")
+            del exec_args[token_index : token_index + 2]
+            exec_args.extend(
+                (
+                    "--token-file",
+                    str(token_file),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "import os; print(os.environ.get('WORKLEASE_TOKEN', ''))",
+                )
+            )
+            executed = self.json_cli(*exec_args)
+            self.assertNotIn(token, json.dumps(executed))
+            executed_claim = executed["claim"]
+            assert isinstance(executed_claim, dict)
+
+            try:
+                os.write(write_fd, token.encode("utf-8"))
+            finally:
+                os.close(write_fd)
+            try:
+                release_claim = {**executed_claim, "token": token}
+                release_args = list(
+                    self.mutation_arguments(
+                        "release", resource, release_claim, "credential-fd"
+                    )
+                )
+                token_index = release_args.index("--token")
+                del release_args[token_index : token_index + 2]
+                release_args.extend(("--token-fd", str(read_fd), "--reason", "done"))
+                released = self.json_cli(*release_args, pass_fds=(read_fd,))
+            finally:
+                os.close(read_fd)
+            self.assertTrue(released["ok"])
+
+        conflict = self.json_cli(
+            "release",
+            "--resource",
+            "repo:conflict",
+            "--claim-id",
+            "missing",
+            "--token",
+            "secret",
+            "--token-file",
+            "missing",
+            "--revision",
+            "1",
+            "--operation-id",
+            "conflict",
+            "--reason",
+            "conflict",
+            expected_code=64,
+        )
+        self.assertEqual("credential-source-conflict", conflict["error"])
 
     def test_exec_returns_child_status_and_schema_envelope(self) -> None:
         resource = "repo:exec"
