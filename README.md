@@ -19,19 +19,7 @@ worklease --version
 
 ### Tagged releases
 
-Tagged releases publish these exact asset names:
-
-```text
-worklease-X.Y.Z-py3-none-any.whl
-worklease-X.Y.Z.tar.gz
-worklease-vX.Y.Z-linux-x86_64
-worklease-vX.Y.Z-linux-arm64
-worklease-vX.Y.Z-macos-x86_64
-worklease-vX.Y.Z-macos-arm64
-checksums.txt
-```
-
-Native executables are one-file PyInstaller builds. They retain package metadata, so `worklease --version` reports the tagged version. `checksums.txt` covers every distributable asset.
+See [GitHub Releases](https://github.com/brettinternet/worklease/releases) for tagged builds and checksums.
 
 ### mise
 
@@ -252,7 +240,7 @@ Use the repository's Python 3.14 and locked toolchain:
 uv sync --locked
 uv run worklease --version
 uv run python -m unittest discover -s tests -v
-mise exec -- pyright src/worklease tests
+pyright src/worklease tests
 uv build
 ```
 
