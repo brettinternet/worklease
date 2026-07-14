@@ -640,6 +640,127 @@ class StoreTests(unittest.TestCase):
         self.assertEqual("expired", expired["state"])
         self.assertNotIn("token", expired["claim"])
 
+    def test_verbose_status_is_redacted_deterministic_and_read_only(self) -> None:
+        resource = "verbose-resource"
+        acquired = self.store.acquire(self.acquire_request(resource, "claim", ttl=1))
+        token = str(acquired["claim"]["token"])
+        unknown_request = self.mutation(acquired, resource, "unknown-verbose")
+        self.assertIsNone(
+            self.store.begin_operation(
+                unknown_request,
+                "exec",
+                {
+                    "revision": unknown_request.revision,
+                    "command": ["printf", "sentinel-request"],
+                    "token": token,
+                },
+            )
+        )
+
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_active = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        active = self.store.status_verbose(resource)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_active = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        self.assertEqual(before_active, after_active)
+        self.assertEqual(1, active["schemaVersion"])
+        self.assertEqual("active", active["state"])
+        self.assertEqual(
+            {
+                "resource",
+                "claimId",
+                "agentId",
+                "sessionId",
+                "ownerId",
+                "workKey",
+                "coordinationOnly",
+                "revision",
+                "acquiredAt",
+                "heartbeatAt",
+                "expiresAt",
+            },
+            set(active["claim"]),
+        )
+        self.assertEqual(
+            {
+                "operationId",
+                "kind",
+                "expectedRevision",
+                "createdAt",
+            },
+            set(active["unknownOperations"][0]),
+        )
+        self.assertEqual(
+            "unknown-verbose", active["unknownOperations"][0]["operationId"]
+        )
+        self.assertEqual("exec", active["unknownOperations"][0]["kind"])
+        self.assertIn("authoritative evidence", active["guidance"])
+        self.assertNotIn(token, json.dumps(active))
+        self.assertNotIn("sentinel-request", json.dumps(active))
+        self.assertNotIn("receipt", json.dumps(active))
+
+        released = self.store.release(unknown_request, "diagnostic complete")
+        self.assertEqual("diagnostic complete", released["reason"])
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            before_free = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        free = self.store.status_verbose(resource)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            after_free = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM claims),
+                    (SELECT COUNT(*) FROM operations),
+                    (SELECT COUNT(*) FROM releases)
+                """
+            ).fetchone()
+        self.assertEqual(before_free, after_free)
+        self.assertEqual("free", free["state"])
+        self.assertIsNone(free["claim"])
+        self.assertEqual(
+            {
+                "claimId",
+                "operationId",
+                "revision",
+                "releasedAt",
+            },
+            set(free["release"]),
+        )
+        self.assertEqual("unknown-verbose", free["unknownOperations"][0]["operationId"])
+
+    def test_verbose_status_reports_expired_claim_without_checkpoint_or_token(
+        self,
+    ) -> None:
+        acquired = self.store.acquire(self.acquire_request("expired", "claim", ttl=1))
+        token = str(acquired["claim"]["token"])
+        self.clock.advance(1.1)
+        diagnostic = self.store.status_verbose("expired")
+        self.assertEqual(1, diagnostic["schemaVersion"])
+        self.assertEqual("expired", diagnostic["state"])
+        self.assertEqual(False, diagnostic["claim"]["coordinationOnly"])
+        self.assertNotIn("checkpoint", diagnostic["claim"])
+        self.assertNotIn(token, json.dumps(diagnostic))
+
     def test_legacy_claim_schema_is_migrated_before_read(self) -> None:
         self.home.mkdir(parents=True)
         connection = sqlite3.connect(self.home / "leases.sqlite3")

@@ -1983,6 +1983,95 @@ class LeaseStore:
             "claim": claim_dict,
         }
 
+    def status_verbose(self, resource: str) -> dict[str, Any]:
+        """Read a redacted diagnostic projection without mutating state."""
+
+        require_resource(resource)
+        with (
+            resource_lock(resource, self.home),
+            closing(self._connect()) as db,
+        ):
+            now = self.clock()
+            row = self._current(db, resource)
+            claim: dict[str, Any] | None = None
+            if row is not None:
+                claim = {
+                    "resource": resource,
+                    "claimId": str(row["claim_id"]),
+                    "agentId": str(row["agent_id"]),
+                    "sessionId": str(row["session_id"]),
+                    "ownerId": str(row["owner_id"]),
+                    "workKey": str(row["work_key"]),
+                    "coordinationOnly": bool(row["coordination_only"]),
+                    "revision": int(row["revision"]),
+                    "acquiredAt": self._timestamp(float(row["acquired_at"])),
+                    "heartbeatAt": self._timestamp(float(row["heartbeat_at"])),
+                    "expiresAt": self._timestamp(float(row["expires_at"])),
+                }
+                state = "active" if now < float(row["expires_at"]) else "expired"
+            else:
+                state = "free"
+
+            operation_rows = db.execute(
+                """
+                SELECT o.operation_id, o.kind, o.expected_revision, o.created_at
+                FROM operations AS o
+                LEFT JOIN reconciliations AS r
+                  ON r.resource = o.resource AND r.operation_id = o.operation_id
+                WHERE o.resource = ? AND o.state = 'started'
+                  AND r.operation_id IS NULL
+                ORDER BY o.created_at, o.operation_id
+                """,
+                (resource,),
+            ).fetchall()
+            unknown_operations = [
+                {
+                    "operationId": str(operation["operation_id"]),
+                    "kind": str(operation["kind"]),
+                    "expectedRevision": int(operation["expected_revision"]),
+                    "createdAt": self._timestamp(float(operation["created_at"])),
+                }
+                for operation in operation_rows
+            ]
+
+            release_row = db.execute(
+                """
+                SELECT claim_id, operation_id, revision, released_at
+                FROM releases
+                WHERE resource = ?
+                ORDER BY released_at DESC, operation_id DESC
+                LIMIT 1
+                """,
+                (resource,),
+            ).fetchone()
+            release = (
+                {
+                    "claimId": str(release_row["claim_id"]),
+                    "operationId": str(release_row["operation_id"]),
+                    "revision": int(release_row["revision"]),
+                    "releasedAt": self._timestamp(float(release_row["released_at"])),
+                }
+                if release_row is not None
+                else None
+            )
+
+        projection: dict[str, Any] = {
+            "schemaVersion": 1,
+            "ok": True,
+            "operation": "status-verbose",
+            "resource": resource,
+            "state": state,
+            "claim": claim,
+            "unknownOperations": unknown_operations,
+            "release": release,
+        }
+        if unknown_operations:
+            projection["guidance"] = (
+                "Unknown outcomes are non-mutating diagnostics; do not replay "
+                "without authoritative evidence."
+            )
+        return projection
+
     def list_claims(self, resource: str | None = None) -> dict[str, Any]:
         """List claims without exposing bearer tokens."""
 
