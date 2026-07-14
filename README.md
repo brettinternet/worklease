@@ -190,6 +190,36 @@ worklease exec \
 
 Run work under the claim, save a durable checkpoint, then release the exact claim.
 
+## Bundle claims
+
+Use a bundle when one operation must own several exact resources together:
+
+```sh
+worklease acquire-bundle \
+  --resource "repo:file-a" --resource "repo:file-b" \
+  --claim-id "bundle-42" --agent-id "agent-42" \
+  --session-id "session-42" --owner-id "owner-42" \
+  --work-key "implement:bundle-42"
+```
+
+Bundles contain 1–32 non-empty opaque resources. Exact duplicates are rejected. The
+receipt preserves the caller's resource order; locking uses a deterministic internal
+order so overlapping bundles cannot deadlock. Acquisition, including expiry reclaim,
+is all-or-nothing: a conflict or storage failure leaves no partial member claims.
+
+Carry the one bundle `claimId`, `token`, and `revision` into `heartbeat-bundle`,
+`exec-bundle`, and `release-bundle`, repeating the complete resource list in its
+original order. These operations advance or consume one shared revision for every
+member; a single-resource lifecycle command cannot mutate a bundle member. Status
+is read-only and redacts the shared token. Reuse the same operation ID and request
+for an idempotent replay; changed requests, stale revisions, and stale owners fail
+without changing the bundle.
+
+Bundle claims use the same same-host coordination boundary as single-resource
+claims. They exclude cooperating local callers only; they do not provide
+distributed locking, cross-host exclusion, or provider-side fencing. Provider
+discovery, writes, receipts, and durable checkpoints remain caller/provider-owned.
+
 ## Adapter boundary
 
 Bundled adapters provide deterministic identities. GitHub and Backlog.md derive helper-fenced item keys. Markdown derives one helper-fenced source key for all items. Linear and unknown providers derive `local-coordination` keys. Adapters do not write to providers or claim provider-side fencing. Generic `exec` provides only local coordination.

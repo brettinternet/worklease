@@ -23,6 +23,17 @@ When the caller uses this repository's `worklease` package, map only the capabil
 
 The bundled `worklease.adapters` are deterministic resource-identity and local-capability policies for a caller-selected provider, source, and item. They may supply the exact opaque resource and declared local scope. They do not discover provider work, execute provider writes, or establish provider-side fencing.
 
+For work spanning several exact resources, use the bundle lifecycle when the caller
+needs all-or-nothing ownership. A bundle has 1–32 non-empty opaque resources,
+rejects exact duplicates, preserves caller order in receipts, and acquires locks in
+deterministic internal order. `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`,
+`release-bundle`, and `status-bundle` authorize the complete ordered member set
+with one shared claim ID, token, and revision; a member cannot be mutated through
+the single-resource API. Conflicts, expiry reclaim, and storage failures leave no
+partial bundle. This extends same-host coordination only: it does not add
+cross-host exclusion or provider-side fencing, and provider checkpoints remain
+caller/provider-owned.
+
 The caller or a bundled/external provider adapter must supply the canonical resource before acquisition. Every contender for the same logical target and operation scope must produce the same exact string; the lease core deliberately does not normalize or interpret it. Retain that resource with the claim receipt for every status, heartbeat, guarded operation, and release.
 
 Worklease emits `guarantee: fenced` for a normal claim but does not emit the normalized `guaranteeScope`; the caller or adapter must record that scope alongside the receipt. For Worklease, it is the matching guarded local `exec` or `replace-file` operation among cooperating callers on one host. Running a provider CLI or remote API inside that local operation does not create provider-side compare-and-set or cross-host fencing. When the durable provider mutation occurs outside that guarded local operation, report it as `local-coordination` unless the provider mutation itself supplies conditional-write or fencing evidence. Use a coordination-only claim when Worklease only excludes cooperating local schedulers and the durable mutation occurs outside a supported guarded operation.

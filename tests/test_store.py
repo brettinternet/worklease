@@ -657,6 +657,167 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
             "active", self.store.status(str(claim["resources"][1]))["state"]
         )
 
+    def test_overlapping_bundles_across_processes_have_one_winner(self) -> None:
+        self.store.status("process-schema")
+        script = """
+import json
+import os
+import time
+from pathlib import Path
+
+from worklease.models import BundleAcquireRequest, LeaseError
+from worklease.store import LeaseStore
+
+claim_id = os.environ["BUNDLE_CLAIM_ID"]
+marker_dir = Path(os.environ["BUNDLE_MARKER_DIR"])
+marker_dir.mkdir(parents=True, exist_ok=True)
+(marker_dir / f"ready-{claim_id}").touch()
+held_marker = marker_dir / "held"
+release_marker = marker_dir / "release"
+request = BundleAcquireRequest(
+    resources=("process-shared", f"process-{claim_id}"),
+    claim_id=claim_id,
+    agent_id=f"agent-{claim_id}",
+    session_id=f"session-{claim_id}",
+    owner_id=f"owner-{claim_id}",
+    work_key="implement:process:bundle",
+)
+
+def held_clock() -> float:
+    if not held_marker.exists():
+        held_marker.touch()
+        while not release_marker.exists():
+            time.sleep(0.01)
+    return time.time()
+
+try:
+    result = LeaseStore(clock=held_clock if claim_id == "process-a" else time.time).acquire_bundle(request)
+except LeaseError as error:
+    print(json.dumps({"result": error.reason}))
+else:
+    print(json.dumps({"result": "ok", "claim": result["claim"]}))
+"""
+        marker_dir = self.home / "process-markers"
+        marker_dir.mkdir(parents=True)
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+            "WORKLEASE_HOME": str(self.home),
+            "BUNDLE_MARKER_DIR": str(marker_dir),
+        }
+
+        def run_contender(claim_id: str) -> dict[str, object]:
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                env={**environment, "BUNDLE_CLAIM_ID": claim_id},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            decoded = json.loads(completed.stdout)
+            assert isinstance(decoded, dict)
+            return decoded
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(run_contender, "process-a")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (marker_dir / "held").exists():
+                time.sleep(0.01)
+            self.assertTrue((marker_dir / "held").exists())
+
+            future_b = executor.submit(run_contender, "process-b")
+            deadline = time.monotonic() + 5
+            while (
+                time.monotonic() < deadline
+                and not (marker_dir / "ready-process-b").exists()
+            ):
+                time.sleep(0.01)
+            self.assertTrue((marker_dir / "ready-process-b").exists())
+            (marker_dir / "release").touch()
+            results = [future_a.result(), future_b.result()]
+
+        self.assertEqual(1, sum(result["result"] == "ok" for result in results))
+        self.assertEqual(
+            1,
+            sum(
+                result["result"] in {"already-claimed", "resource-guarded"}
+                for result in results
+            ),
+        )
+        self.assertEqual("active", self.store.status("process-shared")["state"])
+
+    def test_bundle_stale_owner_cannot_mutate_after_expiry_reclaim(self) -> None:
+        resources = ("stale-a", "stale-b")
+        first = self.store.acquire_bundle(
+            self.bundle_request(resources, "stale-first", ttl=1)
+        )
+        old_request = self.bundle_mutation(first, resources, "stale-heartbeat")
+        self.clock.advance(1.1)
+        recovered = self.store.acquire_bundle(
+            self.bundle_request(resources, "stale-second")
+        )
+
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.heartbeat_bundle(old_request)
+        recovered_claim = recovered["claim"]
+        assert isinstance(recovered_claim, dict)
+        for resource in resources:
+            self.assertEqual(
+                recovered_claim["claimId"],
+                self.store.status(resource)["claim"]["claimId"],
+            )
+
+    def test_bundle_changed_operation_replay_is_rejected_without_revision_change(
+        self,
+    ) -> None:
+        resources = ("replay-a", "replay-b")
+        acquired = self.store.acquire_bundle(self.bundle_request(resources, "replay"))
+        request = self.bundle_mutation(acquired, resources, "changed-replay", ttl=2)
+        heartbeat = self.store.heartbeat_bundle(request)
+        claim = heartbeat["claim"]
+        assert isinstance(claim, dict)
+        changed = BundleMutationRequest(
+            resources=resources,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id=request.operation_id,
+            ttl=3,
+        )
+
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.heartbeat_bundle(changed)
+        self.assertEqual(
+            claim["revision"],
+            self.store.bundle_status(resources)["claim"]["revision"],
+        )
+
+    def test_bundle_acquire_rolls_back_after_partial_member_failure(self) -> None:
+        self.store.status("failure-schema")
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            db.execute(
+                """
+                CREATE TRIGGER fail_bundle_member
+                BEFORE INSERT ON claims
+                WHEN NEW.resource = 'bundle-failure-b'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected bundle failure');
+                END
+                """
+            )
+
+        resources = ("bundle-failure-a", "bundle-failure-b")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "injected bundle failure"):
+            self.store.acquire_bundle(self.bundle_request(resources, "partial"))
+
+        self.assertEqual("free", self.store.bundle_status(resources)["state"])
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            for table in ("bundle_epochs", "bundles", "bundle_members", "claims"):
+                self.assertEqual(
+                    0, db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
