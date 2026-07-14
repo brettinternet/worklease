@@ -4,13 +4,21 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
-from scripts.release_artifacts import validate_checksums, write_checksums
+from scripts.release_artifacts import (
+    PACKAGE_DATA,
+    validate_checksums,
+    validate_editable_package,
+    validate_native_artifact,
+    validate_python_artifact,
+    write_checksums,
+)
 from scripts.release_installer import (
     ReleaseError,
     native_asset_name,
@@ -260,6 +268,48 @@ class ReleaseValidationTests(unittest.TestCase):
         self.assertEqual(1, release.count("contents: write"))
         publish = release.split("  publish:", 1)[1]
         self.assertIn("    permissions:\n      contents: write", publish)
+
+    def test_package_artifacts_preserve_public_type_and_schema_data(self) -> None:
+        validate_editable_package(ROOT / "src" / "worklease")
+        uv = shutil.which("uv")
+        self.assertIsNotNone(uv)
+        assert uv is not None
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            result = subprocess.run(
+                [
+                    uv,
+                    "build",
+                    "--no-build-isolation",
+                    "--out-dir",
+                    str(output),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            artifacts = sorted(
+                path
+                for path in output.iterdir()
+                if path.name.endswith((".whl", ".tar.gz"))
+            )
+            self.assertEqual(2, len(artifacts))
+            self.assertEqual(1, sum(path.name.endswith(".whl") for path in artifacts))
+            self.assertEqual(
+                1, sum(path.name.endswith(".tar.gz") for path in artifacts)
+            )
+            for artifact in artifacts:
+                validate_python_artifact(artifact)
+            native = output / "worklease-native"
+            native.write_bytes(
+                b"\0".join(path.encode("utf-8") for path in PACKAGE_DATA)
+            )
+            validate_native_artifact(native)
+            native.write_bytes(PACKAGE_DATA[0].encode("utf-8"))
+            with self.assertRaises(ValueError):
+                validate_native_artifact(native)
 
     def test_manifest_covers_every_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

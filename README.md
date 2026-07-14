@@ -390,6 +390,31 @@ The caller or adapter must:
 
 The skills and key adapters do not select providers, schedule work, discover provider items, write provider progress, establish review boundaries, or claim provider-side fencing.
 
+## Compatibility and published artifacts
+
+The supported Python facade is the symbol list exported by `worklease` and
+listed in `worklease.__all__`. Modules such as `worklease.sqlite`,
+`worklease.locking`, and migration helpers are private implementation details.
+Python API compatibility follows semantic versioning: additive exports and
+optional fields are minor-version changes; behavior changes, removals, or new
+required arguments require a major version. A public symbol is deprecated in
+documentation before removal.
+
+JSON responses use schema version 1. Consumers must ignore unknown fields and
+must rely on stable `reason` values and exit codes rather than human-readable
+wording. Adding an optional response field remains within schema version 1.
+Removing a field, changing its meaning or type, adding a required field, or
+changing an error reason or exit-code contract requires a new schema version.
+Published schemas are in `worklease/schemas/v1/`; `index.json` enumerates the
+common, CLI, and command schemas. Read-only schemas never contain bearer
+tokens.
+
+Every supported distribution includes `worklease/py.typed` and the versioned
+schema files: editable source, wheels, sdists, and frozen standalone
+executables. Release builds run package-data smoke checks before publishing.
+Standalone executables include built-in policies only; they do not discover
+entry points from the build environment.
+
 ## Development
 
 Use the repository's Python 3.14 and locked toolchain:

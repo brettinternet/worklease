@@ -6,12 +6,72 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 try:
     from .release_installer import parse_checksums
 except ImportError:  # pragma: no cover - direct script execution
     from release_installer import parse_checksums
+
+
+PACKAGE_DATA = (
+    "worklease/py.typed",
+    "worklease/schemas/v1/index.json",
+    "worklease/schemas/v1/commands.json",
+)
+
+
+def _missing_package_data(names: set[str], *, source_prefix: str = "") -> list[str]:
+    """Return required public type/schema files absent from an artifact."""
+    return sorted(
+        required
+        for required in PACKAGE_DATA
+        if f"{source_prefix}{required}" not in names
+    )
+
+
+def validate_editable_package(package_directory: Path) -> None:
+    """Validate public type/schema files in an editable source checkout."""
+    names = {
+        f"worklease/{path.relative_to(package_directory).as_posix()}"
+        for path in package_directory.rglob("*")
+        if path.is_file()
+    }
+    missing = _missing_package_data(names)
+    if missing:
+        raise ValueError(f"editable package data missing: {missing}")
+
+
+def validate_python_artifact(path: Path) -> None:
+    """Validate public type/schema files in a wheel or source archive."""
+    if path.name.endswith(".whl"):
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+        missing = _missing_package_data(names)
+    elif path.name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(path, "r:gz") as archive:
+            names = {member.name for member in archive.getmembers()}
+        missing = sorted(
+            required
+            for required in PACKAGE_DATA
+            if not any(name.endswith(f"src/{required}") for name in names)
+        )
+    else:
+        raise ValueError(f"unsupported Python artifact: {path.name}")
+    if missing:
+        raise ValueError(f"{path.name} package data missing: {missing}")
+
+
+def validate_native_artifact(path: Path) -> None:
+    """Validate PyInstaller's embedded public type/schema files."""
+    content = path.read_bytes()
+    missing = [
+        required for required in PACKAGE_DATA if required.encode("utf-8") not in content
+    ]
+    if missing:
+        raise ValueError(f"{path.name} native package data missing: {missing}")
 
 
 def sha256_file(path: Path) -> str:
@@ -73,14 +133,31 @@ def main(argv: list[str] | None = None) -> int:
     for operation in ("write", "verify"):
         command = commands.add_parser(operation)
         command.add_argument("--directory", type=Path, required=True)
+    package_command = commands.add_parser(
+        "verify-package",
+        help="verify public type/schema files in one built artifact",
+    )
+    package_command.add_argument("--artifact", type=Path, required=True)
+    package_command.add_argument(
+        "--kind", choices=("editable", "python", "native"), required=True
+    )
     args = parser.parse_args(argv)
     try:
         if args.operation == "write":
             manifest = write_checksums(args.directory)
             print(manifest)
-        else:
+        elif args.operation == "verify":
             validate_checksums(args.directory)
             print("checksums valid")
+        elif args.kind == "editable":
+            validate_editable_package(args.artifact)
+            print("editable package data valid")
+        elif args.kind == "python":
+            validate_python_artifact(args.artifact)
+            print("Python package data valid")
+        else:
+            validate_native_artifact(args.artifact)
+            print("native package data valid")
     except (OSError, ValueError) as error:
         print(f"release validation failed: {error}", file=sys.stderr)
         return 1
