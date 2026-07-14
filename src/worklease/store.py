@@ -819,8 +819,15 @@ class LeaseStore:
                     )
                     recovery = "clean-handoff"
             epoch = db.execute(
-                "SELECT resource, acquired_at FROM epochs WHERE claim_id = ?",
-                (request.claim_id,),
+                """
+                SELECT resource, acquired_at FROM epochs WHERE claim_id = ?
+                UNION ALL
+                SELECT resources AS resource, acquired_at
+                FROM bundle_epochs
+                WHERE claim_id = ?
+                LIMIT 1
+                """,
+                (request.claim_id, request.claim_id),
             ).fetchone()
             if epoch is not None:
                 raise LeaseError(

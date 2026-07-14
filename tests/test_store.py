@@ -377,6 +377,14 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
             ttl=ttl,
         )
 
+    def test_single_acquire_rejects_claim_id_used_by_bundle(self) -> None:
+        self.store.acquire_bundle(
+            self.bundle_request(("bundle-resource",), "duplicate-id", ttl=1)
+        )
+        self.clock.advance(1.1)
+        with self.assertRaisesRegex(LeaseError, "claim-id-reused"):
+            self.store.acquire(self.acquire_request("single-resource", "duplicate-id"))
+
     def test_bundle_validation_rejects_invalid_shapes_and_bounds(self) -> None:
         for values, reason in (
             ((), "empty-bundle"),
