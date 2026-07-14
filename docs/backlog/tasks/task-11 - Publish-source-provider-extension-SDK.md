@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 07:41'
+updated_date: '2026-07-14 14:30'
 labels:
   - providers
   - sdk
@@ -68,4 +68,10 @@ Turn the documented source-provider capability contract into a stable typed SDK 
 Implementation checkpoint (T1 standalone typed provider SDK): commit 4674433690657adc3fa531c59c2a83b0760801de. Added packages/worklease-source-sdk as a stdlib-only typed distribution with immutable Source, WorkRef, WorkItem, ProviderReceipt (confirmed/ambiguous outcome), CapabilityResult, ResourcePolicySelection, ReviewBoundary, and SourceProvider protocol; included py.typed, contract version 1, package and SDK-local Pyright configs, and contract smoke tests. Verification: mise run lint, format-check, test, typecheck passed; SDK unittest (4 tests), SDK standalone pyright, wheel/sdist build passed. Next task: T2 provider conformance kit. Remaining criteria: AC2-AC5.
 
 Integration checkpoint: T1 source commit 4674433690657adc3fa531c59c2a83b0760801de cherry-picked into canonical main as 3c66b77 under the provider/repository transaction lock. Canonical post-integration mise run lint, format-check, test, and typecheck passed.
+
+Implementation pass T2 claimed under claim 25DA9323-BAB5-4C48-98DE-4F3C8860D25B; worker-attempt 0DEA0118-01CA-4347-BEB0-7849BF34A102; canonical in-progress checkpoint refreshed.
+
+Implementation checkpoint (T2 provider conformance kit): commit f6669a7b3971fe7f7f3938811f3817bdeab917a7. Added reusable provider conformance case/report/helpers covering source qualification, dependency closure, unsupported capabilities, stale-version rejection, ambiguous receipts, receipt durability/redaction, and truthful fencing declarations; added 10 SDK conformance tests and public exports. Verification: SDK unittest (10 tests) passed; mise run lint, format-check, test, typecheck, hooks passed; uv build --wheel --sdist passed and artifacts include conformance.py. Next task: T3 external composition example and compatibility guide. Remaining criteria: AC4-AC5.
+
+Integration checkpoint: T2 implementation commit f6669a7b3971fe7f7f3938811f3817bdeab917a7 cherry-picked into canonical main as 37906f22ad1dcc97407ca6d50afd20ec91c64af0 under the provider/repository transaction lock. Canonical post-integration mise run lint, format-check, test, and typecheck passed; canonical SDK conformance unittest (10 tests) passed.
 <!-- SECTION:NOTES:END -->
