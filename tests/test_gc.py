@@ -844,9 +844,17 @@ class GarbageCollectionTests(unittest.TestCase):
                 "SELECT claim_id, state FROM operations WHERE resource = ?",
                 (resource,),
             ).fetchall()
+            resource_rows = db.execute(
+                "SELECT resource, revision FROM resources WHERE resource = ?",
+                (resource,),
+            ).fetchall()
         self.assertEqual(
             [("claim-gc-reused-second", "started")],
             [(str(row[0]), str(row[1])) for row in remaining],
+        )
+        self.assertEqual(
+            [(resource, 3)],
+            [(str(row[0]), int(row[1])) for row in resource_rows],
         )
 
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:

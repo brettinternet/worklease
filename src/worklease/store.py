@@ -2630,6 +2630,8 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = o.resource
                           AND rec.operation_id = o.operation_id
+                          AND rec.claim_id = o.claim_id
+                          AND rec.kind = o.kind
                     )
               )
               AND NOT EXISTS (
@@ -2644,6 +2646,8 @@ class LeaseStore:
                         FROM reconciliations AS rec
                         WHERE rec.resource = o.resource
                           AND rec.operation_id = o.operation_id
+                          AND rec.claim_id = o.claim_id
+                          AND rec.kind = o.kind
                     )
               )
             """,
