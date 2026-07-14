@@ -20,6 +20,7 @@ This skill does not discover, name, select, or configure providers. It does not 
 ## Worklease capability boundary
 
 When the caller uses this repository's `worklease` package, map only the capabilities the tool actually supplies. `LeaseStore` can acquire, inspect, heartbeat, and release a bounded claim for one exact opaque `resource`; `worklease exec` and `worklease replace-file` can guard one local operation under that claim. The core lease service does not discover provider items, interpret statuses or dependencies, select work, authenticate to a provider, write provider progress, establish review boundaries, or archive provider data.
+`LeaseStore.checkpoint` and the `worklease checkpoint` command can persist a bounded coordination checkpoint and renew the active claim. That value is local recovery metadata, not provider progress; the caller still verifies its authoritative provider checkpoint before release.
 
 The bundled `worklease.adapters` are deterministic resource-identity and local-capability policies for a caller-selected provider, source, and item. They may supply the exact opaque resource and declared local scope. They do not discover provider work, execute provider writes, or establish provider-side fencing.
 

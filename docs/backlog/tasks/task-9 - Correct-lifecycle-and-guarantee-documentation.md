@@ -1,11 +1,11 @@
 ---
 id: TASK-9
 title: Correct lifecycle and guarantee documentation
-status: To Do
+status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 04:32'
 labels:
   - documentation
   - cli
@@ -62,4 +62,8 @@ Make the README a runnable and accurate guide to the released Worklease lifecycl
 **Next action:** inventory released CLI help, then rewrite the lifecycle in one coherent documentation pass.
 
 **Refinement checkpoint:** refined: TASK-9 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=ebaa9c09-b189-40f3-bfff-ba59a6534bde; claimRevision=6; refinement: complete.
+
+Pass claimed for T1 implementation; isolated worktree .worktrees/task-9-t1.
+
+Executable baseline check: worklease checkpoint is registered and available (mise exec -- worklease checkpoint --help), from completed TASK-4. Preserve and accurately describe this coordination-metadata command; do not imply it writes provider checkpoints. Literal AC #3 wording that current CLI has no checkpoint command conflicts with the released CLI and is interpreted as no provider-durable checkpoint command.
 <!-- SECTION:NOTES:END -->
