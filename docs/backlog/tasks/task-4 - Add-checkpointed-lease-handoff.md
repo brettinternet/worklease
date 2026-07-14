@@ -1,11 +1,11 @@
 ---
 id: TASK-4
 title: Add checkpointed lease handoff
-status: In Progress
+status: Review
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 03:53'
+updated_date: '2026-07-14 03:54'
 labels:
   - coordination
   - lease
@@ -28,9 +28,9 @@ Add an optional, bounded checkpoint to the lease lifecycle so long-running work 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An active owner can write or replace a bounded checkpoint while atomically renewing the lease; stale, expired, and wrong-token callers are rejected without changing the checkpoint.
-- [ ] #2 A subsequent acquire receives the last checkpoint plus an explicit clean-handoff versus expired-recovery indication, while read-only output never exposes bearer tokens.
-- [ ] #3 Checkpoint updates, clean release, lease expiry, re-acquisition, stale-owner rejection, size limits, and idempotent retry behavior are covered by automated tests.
+- [x] #1 An active owner can write or replace a bounded checkpoint while atomically renewing the lease; stale, expired, and wrong-token callers are rejected without changing the checkpoint.
+- [x] #2 A subsequent acquire receives the last checkpoint plus an explicit clean-handoff versus expired-recovery indication, while read-only output never exposes bearer tokens.
+- [x] #3 Checkpoint updates, clean release, lease expiry, re-acquisition, stale-owner rejection, size limits, and idempotent retry behavior are covered by automated tests.
 - [x] #4 The Python API, CLI JSON schema, and README/workflow documentation define checkpoint size, serialization, retention, and the unchanged local-coordination guarantee.
 <!-- AC:END -->
 
