@@ -1,11 +1,11 @@
 ---
 id: TASK-14
 title: Add safe state retention and garbage collection
-status: To Do
+status: In Progress
 assignee:
-  - '@codex-main'
+  - '@codex-loop-20260714-worklease-task14'
 created_date: '2026-07-14 02:34'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 19:38'
 labels:
   - storage
   - maintenance
@@ -64,4 +64,12 @@ Add an explicit retention policy and safe garbage-collection operation for durab
 **Next action:** implement the shared eligibility query and dry-run result first.
 
 **Refinement checkpoint:** refined: TASK-14 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=e76c23e9-584d-42b0-af61-192a6067f065; claimRevision=1; refinement: complete.
+
+Implementation pass T1 claimed under claim 97F686B0-F198-4509-9550-387221E39DC1; canonical in-progress checkpoint refreshed.
+
+Implementation checkpoint (T1): commit e6e598cc6c92a33c2df1cf2d98ef81894c7b75cb adds deterministic gc dry-run inventory and CLI command. Files: src/worklease/cli.py, src/worklease/store.py, tests/test_gc.py. Verification: mise run lint passed; mise run format-check passed; mise run test (126 tests) passed; mise run typecheck passed; mise run hooks passed. Next task: T2 atomic garbage collection. Remaining acceptance criteria: #1-#5.
+
+T1 verification fix claimed under claim A5239979-2980-4C4C-ACB3-3584B2D826EF; unresolved started-operation resource protection under review.
+
+Implementation follow-up (T1 safety fix): commit 317337b4fffe6b36ea97e495e381b8b7505af31f protects resource inventory from unresolved direct and bundle started operations and adds regression coverage. Verification: focused GC tests 4/4 passed; independent verifier PASS including direct/bundle probes, expired-claim protection, strict cutoff, schema-versioned validation errors; mise run lint, mise run format-check, mise run test (127 tests), mise run typecheck, and mise run hooks passed. T1 complete; next task T2 atomic garbage collection; remaining acceptance criteria #1-#5.
 <!-- SECTION:NOTES:END -->

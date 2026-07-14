@@ -1,11 +1,11 @@
 ---
 id: TASK-11
 title: Publish source provider extension SDK
-status: Review
+status: Done
 assignee:
-  - '@codex-loop-main'
+  - '@codex-loop-pass-20260714-worklease-review'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 18:00'
+updated_date: '2026-07-14 18:13'
 labels:
   - providers
   - sdk
@@ -27,11 +27,11 @@ Turn the documented source-provider capability contract into a stable typed SDK 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The public SDK defines typed source, source-qualified work reference, work item, provider receipt, capability result, and source-provider protocol contracts matching the documented provider boundary.
-- [ ] #2 The contract covers source resolution, complete discovery, authoritative reads, resource-policy selection, authorized state/progress writes, review boundaries, archive behavior, provider versions, and durable receipts without defining a scheduler or claim lifecycle.
-- [ ] #3 A reusable conformance kit verifies source qualification, dependency closure, unsupported-capability behavior, stale provider-version rejection, ambiguous outcomes, receipt durability, token redaction, and truthful provider-fencing declarations.
-- [ ] #4 An example external provider package composes the SDK with a TASK-10 resource policy without importing provider dependencies into worklease core modules.
-- [ ] #5 Versioning and compatibility documentation defines how third-party providers declare supported SDK and resource-policy contract versions.
+- [x] #1 The public SDK defines typed source, source-qualified work reference, work item, provider receipt, capability result, and source-provider protocol contracts matching the documented provider boundary.
+- [x] #2 The contract covers source resolution, complete discovery, authoritative reads, resource-policy selection, authorized state/progress writes, review boundaries, archive behavior, provider versions, and durable receipts without defining a scheduler or claim lifecycle.
+- [x] #3 A reusable conformance kit verifies source qualification, dependency closure, unsupported-capability behavior, stale provider-version rejection, ambiguous outcomes, receipt durability, token redaction, and truthful provider-fencing declarations.
+- [x] #4 An example external provider package composes the SDK with a TASK-10 resource policy without importing provider dependencies into worklease core modules.
+- [x] #5 Versioning and compatibility documentation defines how third-party providers declare supported SDK and resource-policy contract versions.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -78,4 +78,12 @@ Integration checkpoint: T2 implementation commit f6669a7b3971fe7f7f3938811f3817b
 Implementation pass T3 claimed under claim 13971093-FE78-4802-BC5A-DFBF582AC732; worker-attempt 99FB0210-9458-49F8-B3AE-45DB94133A32; canonical in-progress checkpoint refreshed.
 
 Implementation checkpoint (T3 external composition example and compatibility guide): commit cdd286cb4047cec90ff01a087836ace9402cef3b (already present on canonical main). Added test-only worklease-example-source-provider distribution depending on worklease-source-sdk and TASK-10 public resource-policy types; registered worklease.resource_policies entry point; added complete source-provider example, compatibility/versioning guide, and SDK/example tests. Targeted verification: SDK/example unittest discover (18 tests) passed; uv build --project packages/worklease-source-sdk and example both built wheel/sdist; mise run lint, format-check, test, typecheck passed; mise run hooks passed with no staged files. Remaining criteria: AC1-AC5 require review; next pass REVIEW.
+
+Review marker: reviewed: implementation commits 4674433, f6669a7, cdd286c; review-fix commit 24dc128; full implementation-review applied. Finding fixed: provider SDK immutable models shallow-copied nested metadata containers; recursively freeze mappings, lists, tuples, sets, and frozensets. No remaining findings. Verification: SDK tests 19 passed; canonical mise run lint, format-check, test, typecheck passed. Integration: review fix cherry-picked into canonical main as 24dc128.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed and reviewed TASK-11. The standalone typed source-provider SDK, conformance kit, external composition example, compatibility guide, and deep-freeze review fix are integrated in canonical main. Acceptance criteria 1-5 verified by SDK tests, full canonical quality gates, and full implementation review.
+<!-- SECTION:FINAL_SUMMARY:END -->
