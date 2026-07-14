@@ -860,6 +860,90 @@ class StoreTests(unittest.TestCase):
         diagnostic = self.store.status_verbose("cross-claim")
         self.assertEqual([], diagnostic["unknownOperations"])
 
+    def test_verbose_status_matches_reconciliation_kind(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("kind-match", "claim", ttl=60)
+        )
+        request = self.mutation(acquired, "kind-match", "same-operation")
+        operation_request = {"revision": request.revision, "attempt": 1}
+        self.assertIsNone(
+            self.store.begin_operation(request, "exec", operation_request)
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ? AND kind = ?
+                """,
+                ("kind-match", request.claim_id, request.operation_id, "exec"),
+            ).fetchone()
+            assert raw_request is not None
+            request_sha256 = hashlib.sha256(
+                str(raw_request[0]).encode("utf-8")
+            ).hexdigest()
+            db.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, state, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, ?, 'started', ?, ?, ?, ?)
+                """,
+                (
+                    "kind-match",
+                    request.claim_id,
+                    request.operation_id,
+                    "replace-file",
+                    raw_request[0],
+                    request.revision,
+                    "{}",
+                    self.clock(),
+                ),
+            )
+            claim = acquired["claim"]
+            assert isinstance(claim, dict)
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, outcome, evidence,
+                    resolver_agent_id, resolver_session_id, resolver_owner_id,
+                    resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at, receipt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "kind-match",
+                    "same-operation",
+                    "exec",
+                    request.claim_id,
+                    "observed-success",
+                    "{}",
+                    str(claim["agentId"]),
+                    str(claim["sessionId"]),
+                    str(claim["ownerId"]),
+                    str(claim["workKey"]),
+                    request_sha256,
+                    "manual-reconcile",
+                    self.clock(),
+                    "{}",
+                ),
+            )
+            db.commit()
+
+        diagnostic = self.store.status_verbose("kind-match")
+        unknown_operations = diagnostic["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        self.assertEqual(
+            [{"operationId": "same-operation", "kind": "replace-file"}],
+            [
+                {
+                    "operationId": operation["operationId"],
+                    "kind": operation["kind"],
+                }
+                for operation in unknown_operations
+            ],
+        )
+
     def test_legacy_claim_schema_is_migrated_before_read(self) -> None:
         self.home.mkdir(parents=True)
         connection = sqlite3.connect(self.home / "leases.sqlite3")

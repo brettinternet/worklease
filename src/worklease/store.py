@@ -2020,7 +2020,8 @@ class LeaseStore:
                     o.expected_revision,
                     o.created_at,
                     o.request,
-                    r.request_sha256
+                    r.request_sha256,
+                    r.kind AS reconciliation_kind
                 FROM operations AS o
                 LEFT JOIN reconciliations AS r
                   ON r.resource = o.resource AND r.operation_id = o.operation_id
@@ -2032,7 +2033,10 @@ class LeaseStore:
             unknown_operations = []
             for operation in operation_rows:
                 reconciliation_sha256 = operation["request_sha256"]
-                if reconciliation_sha256 is not None:
+                reconciliation_kind = operation["reconciliation_kind"]
+                if reconciliation_sha256 is not None and str(
+                    reconciliation_kind
+                ) == str(operation["kind"]):
                     operation_sha256 = hashlib.sha256(
                         str(operation["request"]).encode("utf-8")
                     ).hexdigest()
