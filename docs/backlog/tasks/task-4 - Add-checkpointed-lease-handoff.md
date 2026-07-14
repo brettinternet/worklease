@@ -1,11 +1,11 @@
 ---
 id: TASK-4
 title: Add checkpointed lease handoff
-status: Review
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 03:54'
+updated_date: '2026-07-14 04:01'
 labels:
   - coordination
   - lease
@@ -50,4 +50,12 @@ Implementation checkpoint (checkpoint-documentation): commit 3efb6575f3e8eabbd79
 Implementation follow-up (checkpoint-retention-policy): commit cb3e1850957c86ce06e5dc4bc31262c14d4f165f explicitly documents that checkpoint retention is not lease-TTL-limited and persists through clean release and expiry recovery until a future explicit retention/garbage-collection operation; README and Worklease Workflow guide now match the implementation. Verification: mise run hooks passed (62 tests); prior full gates remain green. Final implementation commits: 3efb6575f3e8eabbd7997bb08448829b675e323c and cb3e1850957c86ce06e5dc4bc31262c14d4f165f. Next task: review the complete accumulated TASK-4 implementation.
 
 Implementation follow-up (checkpoint-token-replay-docs): commit 6b8dbbaa7cbe18a4b97b8d301a2a9954bc450181 documents that successful checkpoint mutation responses include the bearer token once, read-only status/list redact it, completed exact-operation replays may return cached receipts after expiry, and only changed same-operation requests or new/uncached stale/expired attempts fail; README and Worklease Workflow guide are aligned. Independent bounded acceptance review: README/workflow wording matches src/worklease/store.py replay ordering and src/worklease/models.py serialization; focused checkpoint lifecycle/size/recovery/redaction tests passed; mise run lint, mise run format-check, mise run test (62 tests), mise run typecheck, and mise run hooks all passed. Prior verifier findings were fixed and rechecked by direct contract inspection. Next task: REVIEW complete accumulated TASK-4 implementation.
+
+reviewed: implementation commits 138761207585dd5e5446e1d7aec81258cb7b075a, 3efb6575f3e8eabbd7997bb08448829b675e323c, cb3e1850957c86ce06e5dc4bc31262c14d4f165f, 6b8dbbaa7cbe18a4b97b8d301a2a9954bc450181; full accumulated diff reviewed against all acceptance criteria and implementation-review rubric; no actionable findings; focused store/CLI suites 25 tests passed; mise run test 62 passed, lint, format-check, typecheck passed; hooks had no staged files.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented bounded checkpoint lifecycle with atomic renewal, recovery metadata, retention, CLI/API contract, and token-safe documentation. Reviewed the complete accumulated implementation at commits 1387612, 3efb657, cb3e185, and 6b8dbba; no actionable findings. Verified focused 25-test store/CLI suites and full 62-test suite, lint, format-check, and typecheck.
+<!-- SECTION:FINAL_SUMMARY:END -->
