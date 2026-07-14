@@ -1081,9 +1081,6 @@ class StoreTests(unittest.TestCase):
             )
         )
 
-        before_active_tree = sorted(
-            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
-        )
         with sqlite3.connect(self.home / "leases.sqlite3") as db:
             before_active = db.execute(
                 """
@@ -1093,6 +1090,9 @@ class StoreTests(unittest.TestCase):
                     (SELECT COUNT(*) FROM releases)
                 """
             ).fetchone()
+        before_active_tree = sorted(
+            path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
+        )
         active = self.store.status_verbose(resource)
         with sqlite3.connect(self.home / "leases.sqlite3") as db:
             after_active = db.execute(
