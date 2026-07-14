@@ -115,6 +115,34 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(False, payload["providerFencing"])
         self.assertEqual("local-coordination", payload["genericExecutionGuarantee"])
 
+    def test_policy_list_and_describe_commands_are_versioned(self) -> None:
+        listed = self.json_cli("policy", "list")
+        policies = listed["policies"]
+        self.assertIsInstance(policies, list)
+        assert isinstance(policies, list)
+        names = {policy["name"] for policy in policies if isinstance(policy, dict)}
+        self.assertIn("generic", names)
+        generic = self.json_cli("policy", "describe", "--name", "generic")
+        self.assertEqual("policy-describe", generic["operation"])
+        self.assertEqual("generic", generic["name"])
+        self.assertEqual(1, generic["contractVersion"])
+        self.assertEqual("local-coordination", generic["capability"])
+        self.assertFalse(generic["providerFencingSupported"])
+
+        text = self.run_cli(
+            "policy", "describe", "--name", "generic", "--format", "text"
+        )
+        self.assertEqual(0, text.returncode)
+        self.assertIn("name: generic\n", text.stdout)
+        self.assertIn("capability: local-coordination\n", text.stdout)
+
+    def test_policy_unknown_name_has_stable_error(self) -> None:
+        payload = self.json_cli(
+            "policy", "describe", "--name", "typo-provider", expected_code=2
+        )
+        self.assertEqual("resource-policy-not-found", payload["error"])
+        self.assertEqual(1, payload["schemaVersion"])
+
     def test_lifecycle_redacts_read_only_tokens_and_supports_text_list(self) -> None:
         resource = "repo:cli"
         acquired = self.json_cli(*self.acquire_arguments(resource=resource))

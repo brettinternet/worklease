@@ -7,6 +7,11 @@ only after a caller selects one exact policy name.
 
 from __future__ import annotations
 
+from .conformance import (
+    PolicyConformanceReport,
+    assert_policy_conformance,
+    run_policy_conformance,
+)
 from .protocol import ProviderAdapter, ResourceKey
 from .registry import (
     RESOURCE_POLICY_CONTRACT_VERSION,
@@ -14,8 +19,10 @@ from .registry import (
     ResourcePolicyDescriptor,
     ResourcePolicyRegistration,
     available_policy_names,
+    describe_policy,
     load_adapter,
     load_policy,
+    policy_descriptors,
 )
 
 
@@ -62,10 +69,15 @@ __all__ = [
     "ResourceKey",
     "ResourcePolicyDescriptor",
     "ResourcePolicyRegistration",
+    "PolicyConformanceReport",
+    "assert_policy_conformance",
     "available_policy_names",
+    "describe_policy",
     "key",
     "key_result",
     "load_adapter",
     "load_policy",
+    "policy_descriptors",
     "resource_key",
+    "run_policy_conformance",
 ]

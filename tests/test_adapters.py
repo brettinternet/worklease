@@ -19,6 +19,7 @@ from worklease.adapters import (
     key,
     key_result,
     load_adapter,
+    run_policy_conformance,
 )
 from worklease.adapters import registry as policy_registry
 from worklease.adapters.markdown import MarkdownAdapter
@@ -191,6 +192,24 @@ class AdapterKeyTests(unittest.TestCase):
         self.assertEqual(descriptor.contract_version, 1)
         self.assertEqual(
             descriptor.to_dict()["genericExecutionGuarantee"], "local-coordination"
+        )
+
+        report = run_policy_conformance(
+            "generic",
+            source="account",
+            items=("item-a", "item-b"),
+        )
+        self.assertTrue(report.passed, report.failures)
+        self.assertEqual(
+            {
+                "contract-version",
+                "key-policy-version",
+                "collision-avoidance",
+                "identity-stability",
+                "process-stability",
+                "worktree-stability",
+            },
+            set(report.checks),
         )
 
     def test_external_policy_registration_and_failures_are_deterministic(self) -> None:

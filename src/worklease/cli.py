@@ -9,7 +9,11 @@ from collections.abc import Sequence
 from typing import Any, NoReturn
 
 from . import __version__
-from .adapters import key_result
+from .adapters import (
+    describe_policy,
+    key_result,
+    policy_descriptors,
+)
 from .execution import execute, execute_bundle
 from .models import (
     AcquireRequest,
@@ -24,6 +28,7 @@ from .store import LeaseStore
 _COMMANDS = frozenset(
     {
         "key",
+        "policy",
         "acquire",
         "acquire-bundle",
         "bundle-acquire",
@@ -150,6 +155,22 @@ def _parser() -> _ArgumentParser:
         action="store_true",
         help="derive a lease that coordinates local workers without fencing writes",
     )
+
+    policy_parser = commands.add_parser(
+        "policy", help="inspect available resource-key policies"
+    )
+    policy_commands = policy_parser.add_subparsers(
+        dest="policy_operation", required=True, parser_class=_ArgumentParser
+    )
+    list_policy_parser = policy_commands.add_parser(
+        "list", help="list available resource-key policies"
+    )
+    _add_output_arguments(list_policy_parser)
+    describe_parser = policy_commands.add_parser(
+        "describe", help="describe one resource-key policy"
+    )
+    _add_output_arguments(describe_parser)
+    describe_parser.add_argument("--name", required=True)
 
     acquire_parser = commands.add_parser(
         "acquire", help="atomically acquire or reclaim a lease"
@@ -301,6 +322,44 @@ def _emit(payload: dict[str, object], output_format: str) -> None:
                         )
                     )
             return
+        if payload.get("operation") == "policy-list" and payload.get("ok"):
+            print(
+                "NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION\t"
+                "KEY_POLICY_VERSION\tSCOPE\tCAPABILITY\t"
+                "GENERIC_EXECUTION_GUARANTEE\tPROVIDER_FENCING_SUPPORTED"
+            )
+            policies = payload.get("policies", [])
+            if isinstance(policies, list):
+                fields = (
+                    "name",
+                    "origin",
+                    "originVersion",
+                    "contractVersion",
+                    "keyPolicyVersion",
+                    "scope",
+                    "capability",
+                    "genericExecutionGuarantee",
+                    "providerFencingSupported",
+                )
+                for policy in policies:
+                    if isinstance(policy, dict):
+                        print("\t".join(str(policy.get(field, "")) for field in fields))
+            return
+        if payload.get("operation") == "policy-describe" and payload.get("ok"):
+            fields = (
+                "name",
+                "origin",
+                "originVersion",
+                "contractVersion",
+                "keyPolicyVersion",
+                "scope",
+                "capability",
+                "genericExecutionGuarantee",
+                "providerFencingSupported",
+            )
+            for field in fields:
+                print(f"{field}: {payload.get(field, '')}")
+            return
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -343,6 +402,13 @@ def _dispatch(
     args: argparse.Namespace, store: LeaseStore | None
 ) -> tuple[dict[str, object], int]:
     operation = args.operation
+    if operation == "policy-list":
+        return {
+            "ok": True,
+            "policies": [descriptor.to_dict() for descriptor in policy_descriptors()],
+        }, 0
+    if operation == "policy-describe":
+        return {"ok": True, **describe_policy(args.name).to_dict()}, 0
     if operation == "key":
         return (
             key_result(
@@ -491,6 +557,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 64
 
+    if args.operation == "policy":
+        args.operation = f"policy-{args.policy_operation}"
+
     if args.version:
         _emit(
             _envelope(
@@ -512,7 +581,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         store = (
-            None if args.operation == "key" else LeaseStore(getattr(args, "home", None))
+            None
+            if args.operation in {"key", "policy-list", "policy-describe"}
+            else LeaseStore(getattr(args, "home", None))
         )
         payload, child_code = _dispatch(args, store)
         output = _envelope(args.operation, payload)

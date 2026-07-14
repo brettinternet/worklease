@@ -299,6 +299,18 @@ def available_policy_names() -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+def policy_descriptors() -> tuple[ResourcePolicyDescriptor, ...]:
+    """Load and return deterministic metadata for every available policy."""
+
+    return tuple(load_policy(name).descriptor for name in available_policy_names())
+
+
+def describe_policy(provider: str) -> ResourcePolicyDescriptor:
+    """Load one exact policy descriptor without constructing its adapter."""
+
+    return load_policy(provider).descriptor
+
+
 def _builtin_registration(name: str) -> ResourcePolicyRegistration:
     spec = _BUILTINS[name]
 
