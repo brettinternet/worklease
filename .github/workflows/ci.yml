@@ -39,10 +39,11 @@ jobs:
         run: |
           wheel=$(printf '%s\n' dist/*.whl)
           uv tool install --force "$wheel"
-          worklease --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+          tool_bin=$(uv tool dir --bin)
+          "$tool_bin/worklease" --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
           sdist=$(printf '%s\n' dist/*.tar.gz)
           uv tool install --force "$sdist"
-          worklease --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+          "$tool_bin/worklease" --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
 
   native:
     name: Native (${{ matrix.platform }}-${{ matrix.arch }})
