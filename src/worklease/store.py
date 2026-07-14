@@ -1874,6 +1874,20 @@ class LeaseStore:
                         expectedRevision=int(prior["expected_revision"]),
                         suppliedRevision=request.revision,
                     )
+                state = str(prior["state"])
+                if state == "started":
+                    raise LeaseError(
+                        "unknown-outcome",
+                        code=3,
+                        operationId=request.operation_id,
+                        operation="transfer",
+                    )
+                if state != "completed":
+                    raise LeaseError(
+                        "invalid-operation-state",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
                 receipt = json.loads(str(prior["receipt"]))
                 receipt["idempotent"] = True
                 return receipt
@@ -1904,9 +1918,18 @@ class LeaseStore:
                 SELECT claim_id FROM epochs WHERE claim_id = ?
                 UNION ALL
                 SELECT claim_id FROM bundle_epochs WHERE claim_id = ?
+                UNION ALL
+                SELECT claim_id FROM claims WHERE claim_id = ?
+                UNION ALL
+                SELECT claim_id FROM bundles WHERE claim_id = ?
                 LIMIT 1
                 """,
-                (request.successor_claim_id, request.successor_claim_id),
+                (
+                    request.successor_claim_id,
+                    request.successor_claim_id,
+                    request.successor_claim_id,
+                    request.successor_claim_id,
+                ),
             ).fetchone()
             if successor_epoch is not None:
                 raise LeaseError(

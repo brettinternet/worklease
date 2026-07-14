@@ -258,6 +258,78 @@ class StoreTests(unittest.TestCase):
             )["kind"],
         )
 
+    def test_transfer_does_not_replay_started_or_invalid_receipts(self) -> None:
+        resource = "transfer-unknown-outcome"
+        acquired = self.store.acquire(self.acquire_request(resource, "first"))
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        transfer = TransferRequest(
+            resource=resource,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        mutation = self.mutation(acquired, resource, transfer.operation_id)
+        operation_request = transfer.request_dict(
+            tokenSha256=hashlib.sha256(transfer.token.encode("utf-8")).hexdigest()
+        )
+        self.assertIsNone(
+            self.store.begin_operation(mutation, "transfer", operation_request)
+        )
+        with self.assertRaisesRegex(LeaseError, "unknown-outcome"):
+            self.store.transfer(transfer)
+        self.assertEqual(
+            "first",
+            self.store.status(resource)["claim"]["claimId"],
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            db.execute(
+                """
+                UPDATE operations
+                SET state = 'aborted'
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                """,
+                (resource, transfer.claim_id, transfer.operation_id),
+            )
+        with self.assertRaisesRegex(LeaseError, "invalid-operation-state"):
+            self.store.transfer(transfer)
+
+    def test_transfer_rejects_successor_id_in_legacy_claim_rows(self) -> None:
+        first_resource = "transfer-legacy-first"
+        second_resource = "transfer-legacy-second"
+        first = self.store.acquire(self.acquire_request(first_resource, "first"))
+        second = self.store.acquire(self.acquire_request(second_resource, "second"))
+        first_claim = first["claim"]
+        second_claim = second["claim"]
+        assert isinstance(first_claim, dict)
+        assert isinstance(second_claim, dict)
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            db.execute("DELETE FROM epochs")
+        transfer = TransferRequest(
+            resource=first_resource,
+            claim_id=str(first_claim["claimId"]),
+            token=str(first_claim["token"]),
+            revision=int(first_claim["revision"]),
+            operation_id="transfer-legacy",
+            successor_claim_id=str(second_claim["claimId"]),
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        with self.assertRaisesRegex(LeaseError, "claim-id-reused"):
+            self.store.transfer(transfer)
+        self.assertEqual(
+            "first",
+            self.store.status(first_resource)["claim"]["claimId"],
+        )
+
     def test_transfer_rejects_stale_replays_and_reused_successor_ids(self) -> None:
         acquired = self.store.acquire(
             self.acquire_request("transfer-rejections", "first")
