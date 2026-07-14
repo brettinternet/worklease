@@ -2014,25 +2014,38 @@ class LeaseStore:
 
             operation_rows = db.execute(
                 """
-                SELECT o.operation_id, o.kind, o.expected_revision, o.created_at
+                SELECT
+                    o.operation_id,
+                    o.kind,
+                    o.expected_revision,
+                    o.created_at,
+                    o.request,
+                    r.request_sha256
                 FROM operations AS o
                 LEFT JOIN reconciliations AS r
                   ON r.resource = o.resource AND r.operation_id = o.operation_id
                 WHERE o.resource = ? AND o.state = 'started'
-                  AND r.operation_id IS NULL
-                ORDER BY o.created_at, o.operation_id
+                ORDER BY o.created_at, o.operation_id, o.claim_id, o.kind
                 """,
                 (resource,),
             ).fetchall()
-            unknown_operations = [
-                {
-                    "operationId": str(operation["operation_id"]),
-                    "kind": str(operation["kind"]),
-                    "expectedRevision": int(operation["expected_revision"]),
-                    "createdAt": self._timestamp(float(operation["created_at"])),
-                }
-                for operation in operation_rows
-            ]
+            unknown_operations = []
+            for operation in operation_rows:
+                reconciliation_sha256 = operation["request_sha256"]
+                if reconciliation_sha256 is not None:
+                    operation_sha256 = hashlib.sha256(
+                        str(operation["request"]).encode("utf-8")
+                    ).hexdigest()
+                    if operation_sha256 == str(reconciliation_sha256):
+                        continue
+                unknown_operations.append(
+                    {
+                        "operationId": str(operation["operation_id"]),
+                        "kind": str(operation["kind"]),
+                        "expectedRevision": int(operation["expected_revision"]),
+                        "createdAt": self._timestamp(float(operation["created_at"])),
+                    }
+                )
 
             release_row = db.execute(
                 """

@@ -237,6 +237,15 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("UNKNOWN_OPERATIONS\t1", text.stdout)
         self.assertNotIn(token, text.stdout)
         self.assertNotIn("verbose-sentinel", text.stdout)
+        repeated_text = self.run_cli(
+            "status",
+            "--resource",
+            resource,
+            "--verbose",
+            "--format",
+            "text",
+        )
+        self.assertEqual(text.stdout, repeated_text.stdout)
 
     def test_operation_inspection_and_reconciliation_cli(self) -> None:
         resource = "repo:reconcile"

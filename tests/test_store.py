@@ -761,6 +761,105 @@ class StoreTests(unittest.TestCase):
         self.assertNotIn("checkpoint", diagnostic["claim"])
         self.assertNotIn(token, json.dumps(diagnostic))
 
+    def test_verbose_status_keeps_reused_operation_id_unknown(self) -> None:
+        first = self.store.acquire(self.acquire_request("reused", "first", ttl=1))
+        first_request = self.mutation(first, "reused", "same-operation", ttl=1)
+        self.assertIsNone(
+            self.store.begin_operation(
+                first_request,
+                "exec",
+                {"revision": first_request.revision, "attempt": 1},
+            )
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                """,
+                ("reused", first_request.claim_id, first_request.operation_id),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+        reconcile_request = self.mutation(
+            first,
+            "reused",
+            "reconcile-same-operation",
+            ttl=1,
+        )
+        self.store.reconcile_operation(
+            reconcile_request,
+            "same-operation",
+            request_sha256,
+            "observed-success",
+            {"provider": "observed"},
+        )
+
+        self.clock.advance(1.1)
+        second = self.store.acquire(self.acquire_request("reused", "second"))
+        second_request = self.mutation(second, "reused", "same-operation")
+        self.assertIsNone(
+            self.store.begin_operation(
+                second_request,
+                "exec",
+                {"revision": second_request.revision, "attempt": 2},
+            )
+        )
+
+        diagnostic = self.store.status_verbose("reused")
+        unknown_operations = diagnostic["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        self.assertEqual(
+            ["same-operation"],
+            [operation["operationId"] for operation in unknown_operations],
+        )
+
+    def test_verbose_status_matches_reconciliation_by_request_fingerprint(
+        self,
+    ) -> None:
+        first = self.store.acquire(self.acquire_request("cross-claim", "first", ttl=1))
+        first_request = self.mutation(first, "cross-claim", "cross-operation", ttl=1)
+        self.assertIsNone(
+            self.store.begin_operation(
+                first_request,
+                "exec",
+                {"revision": first_request.revision, "attempt": 1},
+            )
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            raw_request = db.execute(
+                """
+                SELECT request
+                FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                """,
+                ("cross-claim", first_request.claim_id, first_request.operation_id),
+            ).fetchone()
+        assert raw_request is not None
+        request_sha256 = hashlib.sha256(str(raw_request[0]).encode("utf-8")).hexdigest()
+
+        self.clock.advance(1.1)
+        second = self.store.acquire(
+            self.acquire_request("cross-claim", "second", ttl=1)
+        )
+        resolver_request = self.mutation(
+            second,
+            "cross-claim",
+            "reconcile-cross-operation",
+            ttl=1,
+        )
+        self.store.reconcile_operation(
+            resolver_request,
+            "cross-operation",
+            request_sha256,
+            "observed-success",
+            {"provider": "observed"},
+        )
+
+        diagnostic = self.store.status_verbose("cross-claim")
+        self.assertEqual([], diagnostic["unknownOperations"])
+
     def test_legacy_claim_schema_is_migrated_before_read(self) -> None:
         self.home.mkdir(parents=True)
         connection = sqlite3.connect(self.home / "leases.sqlite3")
