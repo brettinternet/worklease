@@ -40,6 +40,12 @@ jobs:
         run: |
           mkdir -p dist/release
           mise exec uv -- uv build --no-build-isolation --out-dir dist/release
+      - name: Verify Python package data
+        run: |
+          for artifact in dist/release/*.whl dist/release/*.tar.gz; do
+            mise exec uv -- uv run python scripts/release_artifacts.py \
+              verify-package --artifact "$artifact" --kind python
+          done
       - name: Upload Python assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -84,7 +90,14 @@ jobs:
             --name "$ASSET_NAME" \
             --copy-metadata worklease \
             --collect-submodules worklease.adapters \
+            --collect-data worklease \
             src/worklease/__main__.py
+      - name: Verify standalone package data
+        env:
+          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          mise exec uv -- uv run python scripts/release_artifacts.py \
+            verify-package --artifact "dist/$ASSET_NAME" --kind native
       - name: Smoke-test frozen version and adapter key
         env:
           ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
