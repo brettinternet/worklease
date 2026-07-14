@@ -14,6 +14,7 @@ from .adapters import (
     key_result,
     policy_descriptors,
 )
+from .credentials import resolve_credential
 from .execution import execute, execute_bundle
 from .models import (
     AcquireRequest,
@@ -97,7 +98,9 @@ def _common_claim_arguments(
 ) -> None:
     parser.add_argument("--resource", required=True)
     parser.add_argument("--claim-id", required=True)
-    parser.add_argument("--token", required=True)
+    parser.add_argument("--token")
+    parser.add_argument("--token-file")
+    parser.add_argument("--token-fd")
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--operation-id", required=True)
     if include_ttl:
@@ -132,7 +135,9 @@ def _common_bundle_claim_arguments(
 ) -> None:
     _bundle_resources(parser)
     parser.add_argument("--claim-id", required=True)
-    parser.add_argument("--token", required=True)
+    parser.add_argument("--token")
+    parser.add_argument("--token-file")
+    parser.add_argument("--token-fd")
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--operation-id", required=True)
     if include_ttl:
@@ -269,7 +274,9 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(transfer_parser)
     transfer_parser.add_argument("--resource", required=True)
     transfer_parser.add_argument("--claim-id", required=True)
-    transfer_parser.add_argument("--token", required=True)
+    transfer_parser.add_argument("--token")
+    transfer_parser.add_argument("--token-file")
+    transfer_parser.add_argument("--token-fd")
     transfer_parser.add_argument("--revision", required=True, type=int)
     transfer_parser.add_argument("--operation-id", required=True)
     transfer_parser.add_argument("--successor-claim-id", required=True)
@@ -671,6 +678,17 @@ def _fallback_output_format(argv: Sequence[str]) -> str:
     return "json"
 
 
+def _resolve_claim_credential(args: argparse.Namespace) -> None:
+    """Resolve exactly one claim credential before opening durable state."""
+
+    if hasattr(args, "token_file"):
+        args.token = resolve_credential(
+            token=getattr(args, "token", None),
+            token_file=getattr(args, "token_file", None),
+            token_fd=getattr(args, "token_fd", None),
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     output_format = _fallback_output_format(values)
@@ -710,6 +728,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 64
 
     try:
+        _resolve_claim_credential(args)
         store = (
             None
             if args.operation in {"key", "policy-list", "policy-describe"}
