@@ -329,6 +329,57 @@ class MutationRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class TransferRequest:
+    """Authorize one atomic transition to a fresh successor epoch."""
+
+    resource: str
+    claim_id: str
+    token: str
+    revision: int
+    operation_id: str
+    successor_claim_id: str
+    successor_agent_id: str
+    successor_session_id: str
+    successor_owner_id: str
+    successor_work_key: str
+    ttl: float = DEFAULT_TTL
+
+    def __post_init__(self) -> None:
+        require_resource(self.resource)
+        require_text(self.claim_id, "claim-id")
+        require_text(self.token, "token")
+        require_text(self.operation_id, "operation-id")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        if self.revision < 1:
+            raise LeaseError("invalid-revision", code=64, revision=self.revision)
+        for value, field in (
+            (self.successor_claim_id, "successor-claim-id"),
+            (self.successor_agent_id, "successor-agent-id"),
+            (self.successor_session_id, "successor-session-id"),
+            (self.successor_owner_id, "successor-owner-id"),
+            (self.successor_work_key, "successor-work-key"),
+        ):
+            require_text(value, field)
+        if self.successor_claim_id == self.claim_id:
+            raise LeaseError("claim-id-reused", code=64)
+        require_ttl(self.ttl)
+
+    def request_dict(self, **extra: Any) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "revision": self.revision,
+            "ttl": float(self.ttl),
+            "successorClaimId": self.successor_claim_id,
+            "successorAgentId": self.successor_agent_id,
+            "successorSessionId": self.successor_session_id,
+            "successorOwnerId": self.successor_owner_id,
+            "successorWorkKey": self.successor_work_key,
+        }
+        value.update(extra)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class Claim:
     resource: str
     claim_id: str

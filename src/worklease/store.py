@@ -21,6 +21,7 @@ from .models import (
     Claim,
     LeaseError,
     MutationRequest,
+    TransferRequest,
     bundle_claim_from_row,
     claim_from_row,
     deserialize_checkpoint,
@@ -1824,6 +1825,190 @@ class LeaseStore:
                 receipt,
                 checkpoint=serialized,
             )
+
+    def transfer(self, request: TransferRequest) -> dict[str, Any]:
+        """Atomically replace one active owner with a successor epoch."""
+
+        ttl = require_ttl(request.ttl)
+        operation_request = request.request_dict(
+            tokenSha256=hashlib.sha256(request.token.encode("utf-8")).hexdigest()
+        )
+        with (
+            resource_lock(request.resource, self.home),
+            closing(self._connect()) as db,
+            transaction(db),
+        ):
+            if self._bundle_for_resource(db, request.resource) is not None:
+                raise LeaseError("bundle-operation-required", resource=request.resource)
+            prior = db.execute(
+                """
+                SELECT * FROM operations
+                WHERE resource = ? AND claim_id = ? AND operation_id = ?
+                  AND kind = 'transfer'
+                """,
+                (request.resource, request.claim_id, request.operation_id),
+            ).fetchone()
+            if prior is not None:
+                recorded = json.loads(str(prior["request"]))
+                if {
+                    key: value for key, value in recorded.items() if key != "revision"
+                } != {
+                    key: value
+                    for key, value in operation_request.items()
+                    if key != "revision"
+                }:
+                    raise LeaseError(
+                        "operation-id-request-mismatch",
+                        code=3,
+                        operationId=request.operation_id,
+                    )
+                if int(prior["expected_revision"]) != request.revision:
+                    raise LeaseError(
+                        "stale-revision",
+                        resource=request.resource,
+                        expectedRevision=int(prior["expected_revision"]),
+                        suppliedRevision=request.revision,
+                    )
+                receipt = json.loads(str(prior["receipt"]))
+                receipt["idempotent"] = True
+                return receipt
+            row = self._current(db, request.resource)
+            if row is None:
+                raise LeaseError("claim-not-found", resource=request.resource)
+            if row["claim_id"] != request.claim_id or row["token"] != request.token:
+                raise LeaseError(
+                    "stale-claim",
+                    resource=request.resource,
+                    claim=self._claim(row).to_dict(include_token=False),
+                )
+            if int(row["revision"]) != request.revision:
+                raise LeaseError(
+                    "stale-revision",
+                    resource=request.resource,
+                    expectedRevision=int(row["revision"]),
+                    suppliedRevision=request.revision,
+                )
+            if self.clock() >= float(row["expires_at"]):
+                raise LeaseError(
+                    "claim-expired",
+                    resource=request.resource,
+                    claim=self._claim(row).to_dict(include_token=False),
+                )
+            successor_epoch = db.execute(
+                """
+                SELECT claim_id FROM epochs WHERE claim_id = ?
+                UNION ALL
+                SELECT claim_id FROM bundle_epochs WHERE claim_id = ?
+                LIMIT 1
+                """,
+                (request.successor_claim_id, request.successor_claim_id),
+            ).fetchone()
+            if successor_epoch is not None:
+                raise LeaseError(
+                    "claim-id-reused",
+                    resource=request.resource,
+                    claimId=request.successor_claim_id,
+                )
+            prior_resource = db.execute(
+                "SELECT revision FROM resources WHERE resource = ?",
+                (request.resource,),
+            ).fetchone()
+            revision = (
+                max(
+                    int(row["revision"]),
+                    int(prior_resource["revision"]) if prior_resource else 0,
+                )
+                + 1
+            )
+            token = self.token_factory()
+            while token == request.token:
+                token = self.token_factory()
+            now = self.clock()
+            db.execute(
+                """
+                INSERT INTO epochs(
+                    claim_id, resource, agent_id, session_id, owner_id,
+                    work_key, acquired_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.successor_claim_id,
+                    request.resource,
+                    request.successor_agent_id,
+                    request.successor_session_id,
+                    request.successor_owner_id,
+                    request.successor_work_key,
+                    now,
+                ),
+            )
+            cursor = db.execute(
+                """
+                UPDATE claims
+                SET claim_id = ?, token = ?, revision = ?, agent_id = ?,
+                    session_id = ?, owner_id = ?, work_key = ?,
+                    acquired_at = ?, acquire_ttl = ?, heartbeat_at = ?,
+                    expires_at = ?
+                WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
+                """,
+                (
+                    request.successor_claim_id,
+                    token,
+                    revision,
+                    request.successor_agent_id,
+                    request.successor_session_id,
+                    request.successor_owner_id,
+                    request.successor_work_key,
+                    now,
+                    ttl,
+                    now,
+                    now + ttl,
+                    request.resource,
+                    request.claim_id,
+                    request.token,
+                    request.revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LeaseError("claim-update-conflict", code=3)
+            db.execute(
+                """
+                INSERT INTO resources(resource, revision) VALUES (?, ?)
+                ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                """,
+                (request.resource, revision),
+            )
+            successor = self._current(db, request.resource)
+            if successor is None:
+                raise LeaseError("claim-update-conflict", code=3)
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "transfer",
+                "operationId": request.operation_id,
+                "idempotent": False,
+                "previousClaimId": request.claim_id,
+                "previousRevision": request.revision,
+                "claim": self._claim(successor).to_dict(),
+            }
+            db.execute(
+                """
+                INSERT INTO operations(
+                    resource, claim_id, operation_id, kind, request,
+                    expected_revision, receipt, created_at
+                ) VALUES (?, ?, ?, 'transfer', ?, ?, ?, ?)
+                """,
+                (
+                    request.resource,
+                    request.claim_id,
+                    request.operation_id,
+                    json.dumps(
+                        operation_request, sort_keys=True, separators=(",", ":")
+                    ),
+                    request.revision,
+                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    now,
+                ),
+            )
+            return receipt
 
     @staticmethod
     def _replay_release(

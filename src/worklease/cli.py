@@ -21,6 +21,7 @@ from .models import (
     BundleMutationRequest,
     LeaseError,
     MutationRequest,
+    TransferRequest,
 )
 from .replacement import replace_file
 from .store import LeaseStore
@@ -43,6 +44,7 @@ _COMMANDS = frozenset(
         "heartbeat-bundle",
         "bundle-heartbeat",
         "checkpoint",
+        "transfer",
         "release",
         "release-bundle",
         "bundle-release",
@@ -260,6 +262,22 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(checkpoint_parser)
     _common_claim_arguments(checkpoint_parser)
     checkpoint_parser.add_argument("--checkpoint", required=True)
+
+    transfer_parser = commands.add_parser(
+        "transfer", help="atomically transfer an active lease to a successor"
+    )
+    _add_output_arguments(transfer_parser)
+    transfer_parser.add_argument("--resource", required=True)
+    transfer_parser.add_argument("--claim-id", required=True)
+    transfer_parser.add_argument("--token", required=True)
+    transfer_parser.add_argument("--revision", required=True, type=int)
+    transfer_parser.add_argument("--operation-id", required=True)
+    transfer_parser.add_argument("--successor-claim-id", required=True)
+    transfer_parser.add_argument("--successor-agent-id", required=True)
+    transfer_parser.add_argument("--successor-session-id", required=True)
+    transfer_parser.add_argument("--successor-owner-id", required=True)
+    transfer_parser.add_argument("--successor-work-key", required=True)
+    transfer_parser.add_argument("--ttl", default=900.0, type=float)
 
     list_parser = commands.add_parser("list", help="list current and expired claims")
     _add_output_arguments(list_parser)
@@ -583,6 +601,26 @@ def _dispatch(
         except (TypeError, ValueError) as error:
             raise LeaseError("invalid-checkpoint", code=64) from error
         return store.checkpoint(_request(args), checkpoint), 0
+    if operation == "transfer":
+        assert store is not None
+        return (
+            store.transfer(
+                TransferRequest(
+                    resource=args.resource,
+                    claim_id=args.claim_id,
+                    token=args.token,
+                    revision=args.revision,
+                    operation_id=args.operation_id,
+                    successor_claim_id=args.successor_claim_id,
+                    successor_agent_id=args.successor_agent_id,
+                    successor_session_id=args.successor_session_id,
+                    successor_owner_id=args.successor_owner_id,
+                    successor_work_key=args.successor_work_key,
+                    ttl=args.ttl,
+                )
+            ),
+            0,
+        )
     if operation in {"heartbeat-bundle", "bundle-heartbeat"}:
         assert store is not None
         return store.heartbeat_bundle(_bundle_request(args)), 0

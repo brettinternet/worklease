@@ -14,7 +14,7 @@
             "acquire", "bundle-acquire", "acquire-bundle",
             "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle",
             "inspect-operation", "reconcile-operation", "list", "heartbeat",
-            "checkpoint", "release", "bundle-heartbeat", "heartbeat-bundle",
+            "checkpoint", "transfer", "release", "bundle-heartbeat", "heartbeat-bundle",
             "bundle-release", "release-bundle", "exec", "bundle-exec",
             "exec-bundle", "replace-file"
           ]

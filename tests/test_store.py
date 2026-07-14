@@ -20,6 +20,7 @@ from worklease.models import (
     BundleMutationRequest,
     LeaseError,
     MutationRequest,
+    TransferRequest,
 )
 from worklease.store import LeaseStore
 
@@ -184,6 +185,41 @@ class StoreTests(unittest.TestCase):
             self.store.checkpoint(request, {"step": 2})
         status = self.store.status("resource")
         self.assertEqual({"step": 1, "items": ["a"]}, status["claim"]["checkpoint"])
+
+    def test_transfer_replaces_owner_atomically_and_preserves_checkpoint(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "first"))
+        checkpointed = self.store.checkpoint(
+            self.mutation(acquired, "resource", "checkpoint-1"),
+            {"offset": 4},
+        )
+        claim = checkpointed["claim"]
+        assert isinstance(claim, dict)
+        request = TransferRequest(
+            resource="resource",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer-1",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:next",
+        )
+        transferred = self.store.transfer(request)
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+        self.assertFalse(transferred["idempotent"])
+        self.assertEqual("second", successor["claimId"])
+        self.assertEqual({"offset": 4}, successor["checkpoint"])
+        self.assertNotEqual(acquired["claim"]["token"], successor["token"])
+        self.assertGreater(successor["revision"], claim["revision"])
+        self.assertEqual("second", self.store.status("resource")["claim"]["claimId"])
+        replay = self.store.transfer(request)
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(successor["token"], replay["claim"]["token"])
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            self.store.acquire(self.acquire_request("resource", "contender"))
 
     def test_checkpoint_size_and_expiry_are_rejected_without_changes(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))

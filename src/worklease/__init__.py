@@ -19,6 +19,7 @@ from .models import (
     ClaimError,
     LeaseError,
     MutationRequest,
+    TransferRequest,
 )
 from .replacement import FileReplacer, replace_file
 from .store import LeaseStore
@@ -44,4 +45,5 @@ __all__ = [
     "execute",
     "execute_bundle",
     "replace_file",
+    "TransferRequest",
 ]

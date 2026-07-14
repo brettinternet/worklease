@@ -46,6 +46,7 @@ RELEASED_OPERATIONS = {
     "list",
     "heartbeat",
     "checkpoint",
+    "transfer",
     "release",
     "bundle-heartbeat",
     "heartbeat-bundle",

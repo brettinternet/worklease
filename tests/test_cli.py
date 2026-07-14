@@ -207,6 +207,60 @@ class CliContractTests(unittest.TestCase):
             "free", self.json_cli("status", "--resource", resource)["state"]
         )
 
+    def test_transfer_cli_returns_successor_claim_and_preserves_checkpoint(
+        self,
+    ) -> None:
+        resource = "repo:transfer-cli"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="transfer-first")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        checkpoint = self.json_cli(
+            *self.mutation_arguments(
+                "checkpoint", resource, claim, "transfer-checkpoint"
+            ),
+            "--checkpoint",
+            '{"step":1}',
+        )["claim"]
+        assert isinstance(checkpoint, dict)
+        arguments = (
+            "transfer",
+            "--resource",
+            resource,
+            "--claim-id",
+            str(checkpoint["claimId"]),
+            "--token",
+            str(claim["token"]),
+            "--revision",
+            str(checkpoint["revision"]),
+            "--operation-id",
+            "transfer-cli",
+            "--successor-claim-id",
+            "transfer-second",
+            "--successor-agent-id",
+            "agent-second",
+            "--successor-session-id",
+            "session-second",
+            "--successor-owner-id",
+            "owner-second",
+            "--successor-work-key",
+            "implement:cli:transfer",
+        )
+        transferred = self.json_cli(*arguments)
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+        self.assertEqual("transfer-second", successor["claimId"])
+        self.assertEqual({"step": 1}, successor["checkpoint"])
+        self.assertNotEqual(str(claim["token"]), str(successor["token"]))
+        replay = self.json_cli(*arguments)
+        self.assertTrue(replay["idempotent"])
+        replay_claim = replay["claim"]
+        assert isinstance(replay_claim, dict)
+        self.assertEqual(successor["token"], replay_claim["token"])
+        status = self.json_cli("status", "--resource", resource)
+        self.assertNotIn(str(successor["token"]), json.dumps(status))
+
     def test_verbose_status_cli_is_redacted_and_has_stable_text(self) -> None:
         resource = "repo:verbose-cli"
         acquired = self.json_cli(
