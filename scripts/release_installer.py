@@ -187,8 +187,11 @@ def _smoke_wheel(uv: str, wheel: Path, expected: str) -> None:
 
 def _install_wheel(
     uv: str, wheel: Path, expected: str, install_directory: Path
-) -> None:
+) -> Path:
     install_directory.mkdir(parents=True, exist_ok=True)
+    target = install_directory / "worklease"
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ReleaseError(f"install target is not a regular file: {target}")
     environment = os.environ.copy()
     environment["UV_TOOL_BIN_DIR"] = str(install_directory)
     try:
@@ -205,6 +208,31 @@ def _install_wheel(
     if result.returncode != 0:
         raise ReleaseError(f"wheel installation failed: {result.stderr}")
     _smoke_wheel(uv, wheel, expected)
+    if target.is_symlink():
+        try:
+            source = target.resolve(strict=True)
+        except OSError as error:
+            raise ReleaseError(
+                f"wheel install produced an unreadable executable: {target}"
+            ) from error
+    else:
+        source = target
+    if not source.is_file():
+        raise ReleaseError(f"wheel install produced no executable: {target}")
+    temporary_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".worklease-", dir=install_directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.close(temporary_descriptor)
+        shutil.copyfile(source, temporary)
+        temporary.chmod(0o755)
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    _smoke_native(target, expected)
+    return target
 
 
 def _base_url(version: str) -> str:
@@ -270,13 +298,13 @@ def install_release(version: str, install_directory: Path) -> dict[str, str]:
         wheel_path = directory / wheel_name
         _download(f"{base_url}{wheel_name}", wheel_path)
         verify_checksum(wheel_path, checksums[wheel_name])
-        _install_wheel(
+        installed = _install_wheel(
             os.environ.get("WORKLEASE_UV", "uv"),
             wheel_path,
             expected_version,
             install_directory,
         )
-        return {"asset": wheel_name, "kind": "wheel", "path": str(wheel_path)}
+        return {"asset": wheel_name, "kind": "wheel", "path": str(installed)}
 
 
 def main(argv: list[str] | None = None) -> int:

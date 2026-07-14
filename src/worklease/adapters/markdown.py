@@ -68,7 +68,7 @@ class MarkdownAdapter(BaseAdapter):
                 expectedResource=expected_resource,
                 path=str(resolved_target),
             )
-        claim = store.validate_current(request)
+        claim = store.owner_claim(request)
         if claim.get("guarantee") != "fenced":
             raise LeaseError(
                 "unsupported-coordination-replace-file",

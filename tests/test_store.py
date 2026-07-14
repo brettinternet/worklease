@@ -139,6 +139,12 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(first["claim"]["token"], second["claim"]["token"])
         self.assertGreater(second["claim"]["revision"], first["claim"]["revision"])
 
+    def test_acquire_retry_rejects_any_ttl_change(self) -> None:
+        self.store.acquire(self.acquire_request("resource", "claim", ttl=1))
+        request = self.acquire_request("resource", "claim", ttl=1.0000001)
+        with self.assertRaisesRegex(LeaseError, "claim-id-request-mismatch"):
+            self.store.acquire(request)
+
     def test_stale_owner_cannot_heartbeat_after_reclaim(self) -> None:
         first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))
         old = self.mutation(first, "resource", "old-heartbeat")
@@ -190,6 +196,8 @@ class StoreTests(unittest.TestCase):
             self.store.acquire(self.acquire_request("resource", "claim"))
         next_claim = self.store.acquire(self.acquire_request("resource", "next"))
         self.assertGreater(next_claim["claim"]["revision"], request.revision)
+        replay_after_reclaim = self.store.release(request, "checkpoint complete")
+        self.assertTrue(replay_after_reclaim["idempotent"])
 
     def test_list_and_status_redact_tokens(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))

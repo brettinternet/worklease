@@ -51,7 +51,7 @@ jobs:
           - os: ubuntu-24.04-arm
             platform: linux
             arch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             platform: macos
             arch: x86_64
           - os: macos-14
@@ -75,8 +75,9 @@ jobs:
             --clean --noconfirm --onefile \
             --name "$ASSET_NAME" \
             --copy-metadata worklease \
+            --collect-submodules worklease.adapters \
             src/worklease/__main__.py
-      - name: Smoke-test downloaded-equivalent executable
+      - name: Smoke-test frozen version and adapter key
         env:
           ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -86,6 +87,8 @@ jobs:
           export EXPECTED_VERSION="$expected"
           "dist/$ASSET_NAME" --version > version.json
           python -c 'import json, os; p=json.load(open("version.json")); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"] and p["version"] == os.environ["EXPECTED_VERSION"]'
+          "dist/$ASSET_NAME" key --provider github --source example/repo --item 1 > key.json
+          python -c 'import json; p=json.load(open("key.json")); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
       - name: Upload native asset
         uses: actions/upload-artifact@v4
         with:

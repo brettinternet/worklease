@@ -44,6 +44,8 @@ class ResourceKey:
             "capability": self.capability,
             "scope": self.scope,
             "fencedMutations": self.fenced_mutations,
+            "providerFencing": self.provider_fencing,
+            "genericExecutionGuarantee": self.generic_execution_guarantee,
             "resource": self.resource,
         }
 
@@ -107,13 +109,16 @@ def _git_output(cwd: Path, *arguments: str) -> str | None:
     for name in tuple(environment):
         if name.startswith("GIT_"):
             environment.pop(name, None)
-    completed = subprocess.run(
-        ["git", "-C", str(cwd), *arguments],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=environment,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+    except OSError:
+        return None
     if completed.returncode != 0:
         return None
     value = completed.stdout.strip()

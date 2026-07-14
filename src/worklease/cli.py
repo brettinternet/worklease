@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from . import __version__
 from .adapters import key_result
@@ -30,6 +30,10 @@ class _ArgumentError(Exception):
 
 class _ArgumentParser(argparse.ArgumentParser):
     """ArgumentParser variant that leaves output formatting to :func:`main`."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
         raise _ArgumentError(message)

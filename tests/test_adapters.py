@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from worklease.adapters import key, key_result, load_adapter
 from worklease.adapters.markdown import MarkdownAdapter
@@ -64,6 +65,14 @@ class AdapterKeyTests(unittest.TestCase):
         )
         self.assertEqual(markdown.capability, "source-claim")
         self.assertEqual(markdown.scope, "source")
+
+    def test_missing_git_uses_path_fallback(self) -> None:
+        with patch(
+            "worklease.adapters.protocol.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            result = key("backlog-md", "/tmp/worklease-project", "TASK-1")
+        self.assertTrue(result.resource.startswith("backlog-md:"))
 
     def test_nested_source_keys_match_across_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -199,6 +208,8 @@ class AdapterKeyTests(unittest.TestCase):
                 "capability",
                 "scope",
                 "fencedMutations",
+                "providerFencing",
+                "genericExecutionGuarantee",
                 "resource",
             },
         )
@@ -262,6 +273,14 @@ class MarkdownReplacementTests(unittest.TestCase):
             self.assertTrue(receipt["ok"])
             self.assertEqual(source.read_text(), "new\n")
             self.assertEqual(receipt["operation"], "replace-file")
+            retry = adapter.replace_file(
+                store,
+                request,
+                source,
+                hashlib.sha256(b"old\n").hexdigest(),
+                candidate,
+            )
+            self.assertTrue(retry["idempotent"])
 
     def test_markdown_coordination_only_claim_cannot_replace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

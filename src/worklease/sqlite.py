@@ -112,9 +112,6 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 "ALTER TABLE operations ADD COLUMN state "
                 "TEXT NOT NULL DEFAULT 'completed'"
             )
-        connection.execute(
-            "UPDATE operations SET state = 'completed' WHERE state IS NULL"
-        )
         columns = {
             str(row["name"]) for row in connection.execute("PRAGMA table_info(claims)")
         }

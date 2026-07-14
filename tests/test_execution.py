@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -39,11 +40,17 @@ class ExecutionTests(unittest.TestCase):
         self.home = Path(self.temporary.name) / "state"
         self.store = LeaseStore(self.home)
 
-    def acquire(self, resource: str = "opaque-resource") -> MutationRequest:
+    def acquire(
+        self,
+        resource: str = "opaque-resource",
+        *,
+        claim_id: str = "claim-1",
+        operation_id: str = "operation-1",
+    ) -> MutationRequest:
         acquired = self.store.acquire(
             AcquireRequest(
                 resource=resource,
-                claim_id="claim-1",
+                claim_id=claim_id,
                 agent_id="agent",
                 session_id="session",
                 owner_id="owner",
@@ -58,7 +65,7 @@ class ExecutionTests(unittest.TestCase):
             claim_id=str(claim["claimId"]),
             token=str(claim["token"]),
             revision=int(claim["revision"]),
-            operation_id="operation-1",
+            operation_id=operation_id,
             ttl=5,
         )
 
@@ -113,6 +120,79 @@ class ExecutionTests(unittest.TestCase):
         revision = claim["revision"]
         assert isinstance(revision, int)
         self.assertGreater(revision, request.revision)
+
+    def test_exec_storage_failure_terminates_child_as_unknown_outcome(self) -> None:
+        request = self.acquire("heartbeat-storage-failure")
+        request = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id=request.operation_id,
+            ttl=0.2,
+        )
+        started = self.home / "started"
+        finished = self.home / "finished"
+        script = (
+            "from pathlib import Path; import time; "
+            f"Path({str(started)!r}).write_text('started'); "
+            "time.sleep(1); "
+            f"Path({str(finished)!r}).write_text('finished')"
+        )
+        original_heartbeat = self.store.heartbeat
+        calls = 0
+
+        def heartbeat_then_fail(
+            heartbeat_request: MutationRequest, *, lock_held: bool = False
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return original_heartbeat(heartbeat_request, lock_held=lock_held)
+            raise sqlite3.OperationalError("database is unavailable")
+
+        with (
+            patch.object(self.store, "heartbeat", side_effect=heartbeat_then_fail),
+            self.assertRaisesRegex(LeaseError, "unknown-outcome"),
+        ):
+            execute(
+                self.store,
+                request,
+                [sys.executable, "-c", script],
+            )
+
+        self.assertTrue(started.exists())
+        self.assertFalse(finished.exists())
+        self.assertGreaterEqual(calls, 2)
+
+    def test_exec_decodes_invalid_output_and_normalizes_signal_status(self) -> None:
+        decode_request = self.acquire("invalid-output")
+        decoded, decoded_code = execute(
+            self.store,
+            decode_request,
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'\\xff')",
+            ],
+        )
+        self.assertEqual(0, decoded_code)
+        decoded_command = cast(dict[str, object], decoded["command"])
+        self.assertEqual("\ufffd", decoded_command["stdout"])
+
+        signal_request = self.acquire("signal-output", claim_id="signal-claim")
+        signaled, signaled_code = execute(
+            self.store,
+            signal_request,
+            [
+                sys.executable,
+                "-c",
+                "import os, signal; os.kill(os.getpid(), signal.SIGTERM)",
+            ],
+        )
+        self.assertEqual(143, signaled_code)
+        signaled_command = cast(dict[str, object], signaled["command"])
+        self.assertEqual(143, signaled_command["returncode"])
 
     def test_ownership_loss_terminates_running_process_group(self) -> None:
         request = self.acquire()

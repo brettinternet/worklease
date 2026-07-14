@@ -172,6 +172,14 @@ class ReleaseValidationTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 "set -eu\n"
                 'printf \'%s %s\\n\' "${UV_TOOL_BIN_DIR:-}" "$*" >> "$UV_LOG"\n'
+                'if [ "$1" = tool ] && [ "$2" = install ]; then\n'
+                "  cat > \"$UV_TOOL_BIN_DIR/managed-worklease\" <<'SCRIPT'\n"
+                "#!/bin/sh\n"
+                'printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version","ok":true,"version":"0.1.0"}\'\n'
+                "SCRIPT\n"
+                '  chmod +x "$UV_TOOL_BIN_DIR/managed-worklease"\n'
+                '  ln -s managed-worklease "$UV_TOOL_BIN_DIR/worklease"\n'
+                "fi\n"
                 'if [ "$1" = tool ] && [ "$2" = run ]; then\n'
                 '  printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
                 '"ok":true,"version":"0.1.0"}\'\n'

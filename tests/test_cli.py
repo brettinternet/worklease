@@ -110,6 +110,8 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(True, payload["ok"])
         self.assertEqual("local-coordination", payload["capability"])
         self.assertEqual(False, payload["fencedMutations"])
+        self.assertEqual(False, payload["providerFencing"])
+        self.assertEqual("local-coordination", payload["genericExecutionGuarantee"])
 
     def test_lifecycle_redacts_read_only_tokens_and_supports_text_list(self) -> None:
         resource = "repo:cli"
@@ -196,6 +198,18 @@ class CliContractTests(unittest.TestCase):
             )
             self.assertEqual(expected_error, invalid_ttl["error"])
 
+    def test_option_abbreviations_are_rejected(self) -> None:
+        result = self.run_cli(
+            "status",
+            "--res",
+            "repo:cli",
+        )
+        self.assertEqual(64, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("invalid-arguments", payload["error"])
+        self.assertEqual("status", payload["operation"])
+        self.assertEqual(1, payload["schemaVersion"])
+
     def test_stale_claim_errors_redact_current_token(self) -> None:
         resource = "repo:stale-error"
         acquired = self.json_cli(
@@ -262,6 +276,9 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(7, failed.returncode)
         failed_payload = json.loads(failed.stdout)
         self.assertEqual(1, failed_payload["schemaVersion"])
+        self.assertEqual("child-process-failed", failed_payload["error"])
+        self.assertEqual("local-coordination", failed_payload["guarantee"])
+        self.assertEqual(False, failed_payload["providerFencing"])
         self.assertEqual(False, failed_payload["ok"])
         self.assertEqual(7, failed_payload["command"]["returncode"])
 

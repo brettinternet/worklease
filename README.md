@@ -127,13 +127,16 @@ version/request mismatch, `64` invalid CLI input, and the child status for
 A local adapter can map a [Backlog.md](https://github.com/MrLesk/Backlog.md) task to one resource:
 
 ```python
+from worklease.adapters import key
 from worklease.models import AcquireRequest
 from worklease.store import LeaseStore
 
 task_id = "TASK-42"
+project_path = "docs/backlog"
+resource = key("backlog-md", project_path, task_id).resource
 lease = LeaseStore(".worklease").acquire(
     AcquireRequest(
-        resource=f"backlog.md:{task_id}",
+        resource=resource,
         claim_id="claim-42",
         agent_id="agent-42",
         session_id="session-42",
@@ -142,7 +145,8 @@ lease = LeaseStore(".worklease").acquire(
     )
 )
 claim = lease["claim"]
-# Pass claim["claimId"], claim["token"], and claim["revision"] to worklease exec or release.
+# Export resource, claim["claimId"], claim["token"], and claim["revision"]
+# for the matching worklease exec or release command.
 ```
 
 The caller reads and updates the authoritative task with Backlog.md:
@@ -152,11 +156,15 @@ backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-The CLI version runs an authoritative task command under the claim with `exec`:
+The CLI version runs an authoritative task command under the same derived
+resource and claim with `exec`:
 
 ```sh
+export RESOURCE="$(worklease key --provider backlog-md \
+  --source docs/backlog --item TASK-42 | python -c \
+  'import json,sys; print(json.load(sys.stdin)["resource"])')"
 worklease exec \
-  --resource "backlog.md:TASK-42" \
+  --resource "$RESOURCE" \
   --claim-id "$CLAIM_ID" \
   --token "$TOKEN" \
   --revision "$REVISION" \

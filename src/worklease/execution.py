@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sqlite3
 import subprocess
 from collections.abc import Sequence
 from contextlib import suppress
@@ -30,36 +31,44 @@ class GuardedExecutor:
         return values
 
     @staticmethod
-    def _terminate(process: subprocess.Popen[str]) -> None:
+    def _close_pipes(process: subprocess.Popen[str]) -> None:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                with suppress(OSError):
+                    stream.close()
+
+    @classmethod
+    def _terminate(cls, process: subprocess.Popen[str]) -> None:
         # A completed parent can still have descendants holding our pipes open.
         # On POSIX the dedicated process group is the ownership boundary.
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError, PermissionError:
+        try:
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError, PermissionError:
+                    return
+                try:
+                    if process.poll() is None:
+                        process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                with suppress(ProcessLookupError, PermissionError):
+                    # wait() only observes the group leader. Escalate for any
+                    # descendant that ignores SIGTERM or holds inherited pipes.
+                    os.killpg(process.pid, signal.SIGKILL)
+                with suppress(ChildProcessError):
+                    process.wait()
                 return
-            try:
-                if process.poll() is None:
-                    process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-            try:
-                # wait() only observes the group leader. Escalate for any
-                # descendant that ignores SIGTERM or holds inherited pipes.
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError, PermissionError:
-                return
-            with suppress(ChildProcessError):
-                process.wait()
-            return
 
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        finally:
+            cls._close_pipes(process)
 
     def execute(
         self, request: MutationRequest, command: Sequence[str]
@@ -82,54 +91,90 @@ class GuardedExecutor:
             current_request = request
             heartbeat_count = 0
             process: subprocess.Popen[str] | None = None
+
+            def renew() -> None:
+                nonlocal current_request, heartbeat_count
+                heartbeat_request = replace(
+                    current_request,
+                    operation_id=(
+                        f"{request.operation_id}:heartbeat:{heartbeat_count}"
+                    ),
+                )
+                heartbeat = self.store.heartbeat(heartbeat_request, lock_held=True)
+                claim = heartbeat.get("claim")
+                if not isinstance(claim, dict):
+                    raise LeaseError(
+                        "invalid-heartbeat-receipt",
+                        code=3,
+                        resource=request.resource,
+                    )
+                current_request = replace(
+                    current_request,
+                    revision=int(claim["revision"]),
+                )
+                heartbeat_count += 1
+
             try:
+                renew()
                 process = subprocess.Popen(
                     argv,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     start_new_session=(os.name == "posix"),
                 )
-                interval = max(0.01, min(float(ttl) / 3, 5.0))
+                interval = max(float(ttl) / 3, 1e-6)
+                interval = min(interval, 5.0)
                 while True:
                     try:
                         stdout, stderr = process.communicate(timeout=interval)
                         break
                     except subprocess.TimeoutExpired:
-                        heartbeat_request = replace(
-                            current_request,
-                            operation_id=(
-                                f"{request.operation_id}:heartbeat:{heartbeat_count}"
-                            ),
-                        )
-                        heartbeat = self.store.heartbeat(
-                            heartbeat_request, lock_held=True
-                        )
-                        claim = heartbeat.get("claim")
-                        if not isinstance(claim, dict):
-                            self._terminate(process)
-                            raise LeaseError(
-                                "invalid-heartbeat-receipt",
-                                code=3,
-                                resource=request.resource,
-                            ) from None
-                        current_request = replace(
-                            current_request,
-                            revision=int(claim["revision"]),
-                        )
-                        heartbeat_count += 1
+                        renew()
+                renew()
             except LeaseError:
                 if process is not None:
                     self._terminate(process)
                 raise
             except OSError as error:
+                if process is not None:
+                    self._terminate(process)
+                    raise LeaseError(
+                        "unknown-outcome",
+                        code=3,
+                        operationId=request.operation_id,
+                        operation="exec",
+                    ) from error
                 stdout = ""
                 stderr = str(error)
                 returncode = 127
+            except sqlite3.Error as error:
+                if process is not None:
+                    self._terminate(process)
+                    raise LeaseError(
+                        "unknown-outcome",
+                        code=3,
+                        operationId=request.operation_id,
+                        operation="exec",
+                    ) from error
+                raise LeaseError(
+                    "storage-failure",
+                    code=75,
+                    operationId=request.operation_id,
+                    operation="heartbeat",
+                ) from error
+            except BaseException:
+                if process is not None:
+                    self._terminate(process)
+                raise
             else:
                 assert process is not None
                 returncode = int(process.returncode)
+                if returncode < 0:
+                    returncode = 128 + (-returncode)
 
             command_receipt = {
                 "argv": argv,
@@ -144,7 +189,11 @@ class GuardedExecutor:
                 "idempotent": False,
                 "command": command_receipt,
                 "ttl": float(ttl),
+                "guarantee": "local-coordination",
+                "providerFencing": False,
             }
+            if returncode != 0:
+                receipt["error"] = "child-process-failed"
             completed = self.store.complete_operation(
                 current_request,
                 "exec",

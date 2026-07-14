@@ -81,11 +81,22 @@ class FileReplacer:
         raw_candidate = Path(content_file).expanduser()
         if raw_target.is_symlink():
             raise LeaseError("target-is-symlink", code=64, path=str(raw_target))
-        requested_target = raw_target.resolve(strict=False)
-        requested_candidate = raw_candidate.resolve(strict=False)
+        try:
+            requested_target = raw_target.resolve(strict=False)
+            requested_candidate = raw_candidate.resolve(strict=False)
+        except OSError as error:
+            raise LeaseError(
+                "file-unreadable",
+                code=64,
+                path=str(raw_target),
+                contentFile=str(raw_candidate),
+            ) from error
         candidate_hash: str | None = None
         if raw_candidate.is_file() and not raw_candidate.is_symlink():
-            candidate_hash = hashlib.sha256(raw_candidate.read_bytes()).hexdigest()
+            try:
+                candidate_hash = hashlib.sha256(raw_candidate.read_bytes()).hexdigest()
+            except OSError:
+                candidate_hash = None
 
         cached = self.store.read_operation(request, "replace-file")
         if cached is not None:
@@ -116,9 +127,17 @@ class FileReplacer:
                 )
             return receipt
 
-        target = _regular_file(raw_target, field="target")
-        candidate = _regular_file(raw_candidate, field="content-file")
-        content = candidate.read_bytes()
+        try:
+            target = _regular_file(raw_target, field="target")
+            candidate = _regular_file(raw_candidate, field="content-file")
+            content = candidate.read_bytes()
+        except OSError as error:
+            raise LeaseError(
+                "file-unreadable",
+                code=64,
+                path=str(raw_target),
+                contentFile=str(raw_candidate),
+            ) from error
         candidate_hash = hashlib.sha256(content).hexdigest()
 
         operation_request = request.request_dict(

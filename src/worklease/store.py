@@ -433,6 +433,18 @@ class LeaseStore:
                 )
             return receipt
 
+    def owner_claim(
+        self, request: MutationRequest, *, lock_held: bool = False
+    ) -> dict[str, Any]:
+        """Read the matching ownership epoch without requiring its revision."""
+
+        lock = (
+            nullcontext() if lock_held else resource_lock(request.resource, self.home)
+        )
+        with lock, closing(self._connect()) as db, transaction(db):
+            row = self._require_owner(db, request)
+            return self._claim(row).to_dict(include_token=False)
+
     def validate_current(
         self, request: MutationRequest, *, lock_held: bool = False
     ) -> dict[str, Any]:
@@ -450,12 +462,12 @@ class LeaseStore:
 
         require_resource(request.resource)
         ttl = require_ttl(request.ttl)
-        now = self.clock()
         with (
             resource_lock(request.resource, self.home),
             closing(self._connect()) as db,
             transaction(db),
         ):
+            now = self.clock()
             row = self._current(db, request.resource)
             if row is not None and row["claim_id"] == request.claim_id:
                 recorded = (
@@ -469,7 +481,7 @@ class LeaseStore:
                     raise LeaseError(
                         "claim-id-identity-mismatch", resource=request.resource
                     )
-                if abs(float(row["acquire_ttl"]) - ttl) > 1e-6:
+                if float(row["acquire_ttl"]) != ttl:
                     raise LeaseError(
                         "claim-id-request-mismatch",
                         code=3,
@@ -630,6 +642,36 @@ class LeaseStore:
                 receipt,
             )
 
+    @staticmethod
+    def _replay_release(
+        prior: sqlite3.Row | None,
+        request: MutationRequest,
+        operation_request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if prior is None:
+            return None
+        if str(prior["token"]) != request.token:
+            raise LeaseError("stale-claim", resource=request.resource)
+        recorded = json.loads(str(prior["request"]))
+        if {key: value for key, value in recorded.items() if key != "revision"} != {
+            key: value for key, value in operation_request.items() if key != "revision"
+        }:
+            raise LeaseError(
+                "operation-id-request-mismatch",
+                code=3,
+                operationId=request.operation_id,
+            )
+        if int(prior["revision"]) != request.revision:
+            raise LeaseError(
+                "stale-revision",
+                resource=request.resource,
+                expectedRevision=int(prior["revision"]),
+                suppliedRevision=request.revision,
+            )
+        receipt = json.loads(str(prior["receipt"]))
+        receipt["idempotent"] = True
+        return receipt
+
     def release(self, request: MutationRequest, reason: str) -> dict[str, Any]:
         """Release one active ownership epoch after a durable checkpoint."""
 
@@ -639,79 +681,25 @@ class LeaseStore:
             closing(self._connect()) as db,
             transaction(db),
         ):
-            row = self._current(db, request.resource)
             operation_request = self._receipt_request(
                 request, operationId=request.operation_id, reason=reason
             )
+            prior = db.execute(
+                "SELECT * FROM releases WHERE resource = ? AND claim_id = ?",
+                (request.resource, request.claim_id),
+            ).fetchone()
+            replayed = self._replay_release(prior, request, operation_request)
+            if replayed is not None:
+                return replayed
+            row = self._current(db, request.resource)
             if row is None:
-                prior = db.execute(
-                    "SELECT * FROM releases WHERE resource = ? AND claim_id = ?",
-                    (request.resource, request.claim_id),
-                ).fetchone()
-                if prior is None:
-                    raise LeaseError("claim-not-found", resource=request.resource)
-                if str(prior["token"]) != request.token:
-                    raise LeaseError("stale-claim", resource=request.resource)
-                recorded = json.loads(str(prior["request"]))
-                if {
-                    key: value for key, value in recorded.items() if key != "revision"
-                } != {
-                    key: value
-                    for key, value in operation_request.items()
-                    if key != "revision"
-                }:
-                    raise LeaseError(
-                        "operation-id-request-mismatch",
-                        code=3,
-                        operationId=request.operation_id,
-                    )
-                if int(prior["revision"]) != request.revision:
-                    raise LeaseError(
-                        "stale-revision",
-                        resource=request.resource,
-                        expectedRevision=int(prior["revision"]),
-                        suppliedRevision=request.revision,
-                    )
-                receipt = json.loads(str(prior["receipt"]))
-                receipt["idempotent"] = True
-                return receipt
+                raise LeaseError("claim-not-found", resource=request.resource)
             if row["claim_id"] != request.claim_id or row["token"] != request.token:
                 raise LeaseError(
                     "stale-claim",
                     resource=request.resource,
                     claim=self._claim(row).to_dict(include_token=False),
                 )
-            existing = db.execute(
-                """
-                    SELECT * FROM releases
-                    WHERE resource = ? AND claim_id = ?
-                    """,
-                (request.resource, request.claim_id),
-            ).fetchone()
-            if existing is not None:
-                recorded = json.loads(str(existing["request"]))
-                if {
-                    key: value for key, value in recorded.items() if key != "revision"
-                } != {
-                    key: value
-                    for key, value in operation_request.items()
-                    if key != "revision"
-                }:
-                    raise LeaseError(
-                        "operation-id-request-mismatch",
-                        code=3,
-                        operationId=request.operation_id,
-                    )
-                if int(existing["revision"]) != request.revision:
-                    raise LeaseError(
-                        "stale-revision",
-                        resource=request.resource,
-                        expectedRevision=int(existing["revision"]),
-                        suppliedRevision=request.revision,
-                    )
-                receipt = json.loads(str(existing["receipt"]))
-                receipt["idempotent"] = True
-                return receipt
             if int(row["revision"]) != request.revision:
                 raise LeaseError(
                     "stale-revision",
