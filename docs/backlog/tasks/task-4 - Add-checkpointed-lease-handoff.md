@@ -1,9 +1,11 @@
 ---
 id: TASK-4
 title: Add checkpointed lease handoff
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-07-14 02:06'
+updated_date: '2026-07-14 03:32'
 labels:
   - coordination
   - lease
@@ -31,3 +33,15 @@ Add an optional, bounded checkpoint to the lease lifecycle so long-running work 
 - [ ] #3 Checkpoint updates, clean release, lease expiry, re-acquisition, stale-owner rejection, size limits, and idempotent retry behavior are covered by automated tests.
 - [ ] #4 The Python API, CLI JSON schema, and README/workflow documentation define checkpoint size, serialization, retention, and the unchanged local-coordination guarantee.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add bounded checkpoint validation and persistence to the lease model/store, including atomic renewal and acquire/recovery metadata. 2. Expose checkpoint through the CLI and public API with idempotent ownership checks. 3. Add focused lifecycle tests for update, replay, stale/expiry rejection, release/reacquisition, size and token redaction. 4. Leave documentation acceptance work for the next implementation task.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation checkpoint (bounded-checkpoint-api): commit 138761207585dd5e5446e1d7aec81258cb7b075a adds 8 KiB canonical JSON checkpoints, SQLite migration/persistence across claims and releases, atomic checkpoint renewal with revision advance, clean-handoff/expired-recovery acquire metadata, CLI checkpoint command, token-redacted read-only projections, and lifecycle tests. mise run lint passed; mise run format-check passed (23 files); mise run test passed (62 tests); mise run typecheck passed (0 errors). Next task: document checkpoint size, JSON serialization, retention, CLI/API usage, and unchanged local-coordination guarantee in README/workflow docs. Remaining acceptance: #4 documentation; re-run full gates after docs.
+<!-- SECTION:NOTES:END -->
