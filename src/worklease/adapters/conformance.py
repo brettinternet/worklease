@@ -135,13 +135,16 @@ def run_policy_conformance(
                     failures.append("scope-semantics")
                 else:
                     checks.append("scope-semantics")
-                other_source = _key(
-                    registration,
-                    provider,
-                    f"{source}::conformance-other-source",
-                    item_values[0],
+                other_resources = tuple(
+                    _key(
+                        registration,
+                        provider,
+                        f"{source}::conformance-other-source",
+                        item,
+                    ).resource
+                    for item in item_values
                 )
-                if other_source.resource == resources[0]:
+                if len(set(other_resources)) != 1 or other_resources[0] == resources[0]:
                     failures.append("collision-avoidance")
                 else:
                     checks.append("collision-avoidance")

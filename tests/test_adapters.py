@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from worklease.adapters import (
     ProviderAdapter,
+    ResourceKey,
     ResourcePolicyDescriptor,
     ResourcePolicyRegistration,
     available_policy_names,
@@ -21,6 +22,7 @@ from worklease.adapters import (
     load_adapter,
     run_policy_conformance,
 )
+from worklease.adapters import conformance as policy_conformance
 from worklease.adapters import registry as policy_registry
 from worklease.adapters.markdown import MarkdownAdapter
 from worklease.models import AcquireRequest, LeaseError, MutationRequest
@@ -220,6 +222,68 @@ class AdapterKeyTests(unittest.TestCase):
         )
         self.assertTrue(report.passed, report.failures)
         self.assertIn("scope-semantics", report.checks)
+
+    def test_source_scope_collision_checks_every_sample_item(self) -> None:
+        descriptor = ResourcePolicyDescriptor(
+            name="fake",
+            origin="fixture",
+            origin_version="1.0",
+            scope="source",
+            capability="source-claim",
+        )
+
+        class FakeAdapter:
+            def key(
+                self,
+                source: str,
+                item: str,
+                *,
+                coordination_only: bool = False,
+            ) -> ResourceKey:
+                del coordination_only
+                if source == "source" or item == "item-b":
+                    resource = "same"
+                else:
+                    resource = f"other-{item}"
+                return ResourceKey(
+                    provider="fake",
+                    source=source,
+                    item=item,
+                    resource=resource,
+                    capability="source-claim",
+                    scope="source",
+                    fenced_mutations=False,
+                )
+
+            provider = "fake"
+
+            @property
+            def generic_execution_guarantee(self) -> str:
+                return "local-coordination"
+
+            def require_provider_fence(
+                self, conditional_check: object | None = None
+            ) -> None:
+                del conditional_check
+
+        registration = ResourcePolicyRegistration(
+            descriptor, lambda provider: FakeAdapter()
+        )
+        with (
+            patch.object(policy_conformance, "load_policy", return_value=registration),
+            patch.object(
+                policy_conformance,
+                "_cross_process_resource",
+                return_value="same",
+            ),
+        ):
+            report = run_policy_conformance(
+                "fake",
+                source="source",
+                items=("item-a", "item-b"),
+            )
+        self.assertFalse(report.passed)
+        self.assertIn("collision-avoidance", report.failures)
 
     def test_external_policy_registration_and_failures_are_deterministic(self) -> None:
         descriptor = ResourcePolicyDescriptor(
