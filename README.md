@@ -46,13 +46,6 @@ mise use --global 'github:brettinternet/worklease[matching=worklease,bin=worklea
 worklease --version
 ```
 
-`brettinternet/workrelease` does not currently resolve as a GitHub repository.
-If the releases are moved there, replace only the repository in the command:
-
-```sh
-mise use --global 'github:brettinternet/workrelease[matching=worklease,bin=worklease]'
-```
-
 `matching=worklease` narrows mise to this project's release assets, and its
 platform detection then selects the matching native asset for the operating
 system and architecture: `worklease-vX.Y.Z-{linux,macos}-{x86_64,arm64}`.
@@ -66,7 +59,6 @@ mise use --global 'github:brettinternet/worklease[matching=worklease,bin=worklea
 ```
 
 The `worklease --version` output reports the installed release version.
-
 
 Install an exact release with the reproducible mise task:
 
