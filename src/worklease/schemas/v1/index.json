@@ -16,7 +16,7 @@
         "enum": [
           "parse", "version", "key", "policy-list", "policy-describe",
           "acquire", "bundle-acquire", "acquire-bundle",
-          "status", "bundle-status", "inspect-bundle", "status-bundle",
+          "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle",
           "inspect-operation", "reconcile-operation", "list", "heartbeat",
           "checkpoint", "release", "bundle-heartbeat", "heartbeat-bundle",
           "bundle-release", "release-bundle", "exec", "bundle-exec",

@@ -18,6 +18,7 @@ READ_ONLY = {
     "policy-list",
     "policy-describe",
     "status",
+    "status-verbose",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -36,6 +37,7 @@ RELEASED_OPERATIONS = {
     "bundle-acquire",
     "acquire-bundle",
     "status",
+    "status-verbose",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -148,9 +150,10 @@ class SchemaContractTests(unittest.TestCase):
         self.assert_matches_commands_schema(acquired)
         token = acquired["claim"]["token"]
 
-        status = self.run_cli("status", "--resource", "schema:resource")
-        self.assert_matches_commands_schema(status)
-        self.assertNotIn(token, json.dumps(status))
+        verbose = self.run_cli("status", "--resource", "schema:resource", "--verbose")
+        self.assert_matches_commands_schema(verbose)
+        self.assertEqual("status-verbose", verbose["operation"])
+        self.assertNotIn(token, json.dumps(verbose))
 
         error = self.run_cli(
             "key", "--provider", "unknown", "--source", "team", "--item", "ITEM-1"

@@ -12,7 +12,7 @@
           "enum": [
             "parse", "version", "key", "policy-list", "policy-describe",
             "acquire", "bundle-acquire", "acquire-bundle",
-            "status", "bundle-status", "inspect-bundle", "status-bundle",
+            "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle",
             "inspect-operation", "reconcile-operation", "list", "heartbeat",
             "checkpoint", "release", "bundle-heartbeat", "heartbeat-bundle",
             "bundle-release", "release-bundle", "exec", "bundle-exec",
@@ -24,7 +24,9 @@
         "claim": {
           "anyOf": [
             {"$ref": "common.json#/$defs/Claim"},
-            {"$ref": "common.json#/$defs/BundleClaim"}
+            {"$ref": "common.json#/$defs/BundleClaim"},
+            {"$ref": "common.json#/$defs/StatusVerboseClaim"},
+            {"type": "null"}
           ]
         },
         "claims": {
@@ -41,6 +43,17 @@
           "items": {"type": "string"},
           "minItems": 1
         },
+        "unknownOperations": {
+          "type": "array",
+          "items": {"$ref": "common.json#/$defs/UnknownOperation"}
+        },
+        "release": {
+          "anyOf": [
+            {"$ref": "common.json#/$defs/ReleaseMetadata"},
+            {"type": "null"}
+          ]
+        },
+        "guidance": {"type": "string", "minLength": 1},
         "policies": {
           "type": "array",
           "items": {"$ref": "common.json#/$defs/PolicyDescriptor"}
@@ -84,7 +97,7 @@
       "if": {
         "properties": {
           "operation": {
-            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "reconcile-operation", "list"]
+            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "reconcile-operation", "list"]
           }
         },
         "required": ["operation"]
@@ -94,7 +107,9 @@
           "claim": {
             "anyOf": [
               {"$ref": "common.json#/$defs/ReadOnlyClaim"},
-              {"$ref": "common.json#/$defs/ReadOnlyBundleClaim"}
+              {"$ref": "common.json#/$defs/ReadOnlyBundleClaim"},
+              {"$ref": "common.json#/$defs/StatusVerboseClaim"},
+              {"type": "null"}
             ]
           },
           "claims": {

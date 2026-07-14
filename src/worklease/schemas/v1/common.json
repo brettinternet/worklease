@@ -64,6 +64,50 @@
         {"required": ["token"]}
       ]
     },
+    "StatusVerboseClaim": {
+      "type": "object",
+      "required": [
+        "resource", "claimId", "agentId", "sessionId", "ownerId",
+        "workKey", "coordinationOnly", "revision", "acquiredAt",
+        "heartbeatAt", "expiresAt"
+      ],
+      "properties": {
+        "resource": {"type": "string"},
+        "claimId": {"type": "string"},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "coordinationOnly": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 1},
+        "acquiredAt": {"type": "string"},
+        "heartbeatAt": {"type": "string"},
+        "expiresAt": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "UnknownOperation": {
+      "type": "object",
+      "required": ["operationId", "kind", "expectedRevision", "createdAt"],
+      "properties": {
+        "operationId": {"type": "string"},
+        "kind": {"type": "string"},
+        "expectedRevision": {"type": "integer", "minimum": 1},
+        "createdAt": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "ReleaseMetadata": {
+      "type": "object",
+      "required": ["claimId", "operationId", "revision", "releasedAt"],
+      "properties": {
+        "claimId": {"type": "string"},
+        "operationId": {"type": "string"},
+        "revision": {"type": "integer", "minimum": 1},
+        "releasedAt": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
     "BundleClaim": {
       "type": "object",
       "required": [
