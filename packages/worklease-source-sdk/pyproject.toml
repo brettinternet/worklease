@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worklease-source-sdk"
+version = "0.1.0"
+description = "Typed provider-neutral source workflow contracts"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Worklease contributors" }]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worklease_source_sdk"]
