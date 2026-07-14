@@ -1,11 +1,11 @@
 ---
 id: TASK-12
 title: Stabilize the public API and JSON schemas
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 07:16'
+updated_date: '2026-07-14 14:38'
 labels:
   - api
   - schema
@@ -27,11 +27,11 @@ Give library and CLI integrators an explicit, versioned compatibility surface in
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A documented public Python facade exports the supported request models, errors, lease store operations, guarded-operation interfaces, and resource-policy result types while internal persistence and locking modules remain explicitly private.
-- [ ] #2 Machine-readable JSON Schemas cover the common success and error envelopes, claims, operation receipts, key results, and every released CLI command response.
-- [ ] #3 Automated contract tests validate representative success and failure output against the published schemas and ensure read-only schemas cannot contain bearer tokens.
-- [ ] #4 Compatibility documentation defines additive changes, unknown-field handling, stable errors and exit codes, deprecation expectations, and the conditions requiring a new schema or API contract version.
-- [ ] #5 Wheel, sdist, editable, and supported standalone builds include the public type information and schema artifacts they claim to expose.
+- [x] #1 A documented public Python facade exports the supported request models, errors, lease store operations, guarded-operation interfaces, and resource-policy result types while internal persistence and locking modules remain explicitly private.
+- [x] #2 Machine-readable JSON Schemas cover the common success and error envelopes, claims, operation receipts, key results, and every released CLI command response.
+- [x] #3 Automated contract tests validate representative success and failure output against the published schemas and ensure read-only schemas cannot contain bearer tokens.
+- [x] #4 Compatibility documentation defines additive changes, unknown-field handling, stable errors and exit codes, deprecation expectations, and the conditions requiring a new schema or API contract version.
+- [x] #5 Wheel, sdist, editable, and supported standalone builds include the public type information and schema artifacts they claim to expose.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -78,4 +78,12 @@ Implementation pass T3 claimed under claim DD8DE4AE-95E9-497F-BDAB-04E0B8923A4E;
 Implementation pass T3 claimed under claim 6C0ABF59-4B6D-4B13-89B6-5A90979D9590; selector deferred active TASK-7 review; canonical in-progress checkpoint.
 
 Implementation checkpoint (T3 compatibility policy): implementation commit 1e0c5c27e28716ea3d06831c24c147026ae70643 integrated into main as 9fd7298b5fccf6d9c5dd44577191cc4bac436046. Added compatibility policy documentation, release artifact validators for editable/wheel/sdist/native package data, release workflow smoke checks, and standalone --collect-data packaging. Verification: mise run lint (passed); mise run format-check (passed); mise run typecheck (passed); mise run test (full suite passed); mise run hooks (passed); standalone PyInstaller build plus validator and --version/key smoke passed. All refined implementation tasks complete; next pass is accumulated-item review. Remaining acceptance: review evidence.
+
+reviewed: implementation commits e6e618dee21d1eafc15c7d16223c3bf229da6e6b, c715134bbb3ef2282fd0375fa041162afa7ff084, 1ef233fb03e383aaa2e3653f9ae2ff702682aa4b, 9fd7298b5fccf6d9c5dd44577191cc4bac436046; full implementation-review completed for public API, schemas, compatibility, packaging, security, and failure paths. Finding fixed in review-fix commit 9d52add: status-verbose was missing from schema/index/read-only coverage; added dedicated status-verbose schema, redacted claim/unknown-operation/release definitions, registry entries, and contract coverage. Verification: targeted schema/store/CLI suites passed; mise run lint, format-check, test (100 tests), typecheck, hooks passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-12 implementation and review complete. Public facade, JSON Schema v1, compatibility policy, and package artifact coverage are implemented, reviewed, fixed, and verified. Integrated commits: e6e618d, c715134, 1ef233f, 9fd7298, 9d52add.
+<!-- SECTION:FINAL_SUMMARY:END -->
