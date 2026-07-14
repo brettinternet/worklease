@@ -899,6 +899,14 @@ class CliContractTests(unittest.TestCase):
             free_bundle,
         )
 
+        control_resource = "repo:text-escape-\x1b[31m"
+        self.json_cli(
+            *self.acquire_arguments(resource=control_resource, claim_id="text-escape")
+        )
+        escaped = self.text_cli("list", "--resource", control_resource)
+        self.assertIn('"repo:text-escape-\\u001b[31m"', escaped)
+        self.assertNotIn("\x1b", escaped)
+
         acquired = self.json_cli(
             *self.acquire_arguments(resource="repo:text-read", claim_id="text-read")
         )

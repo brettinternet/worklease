@@ -372,7 +372,7 @@ def _text_atom(value: object) -> str:
     """Keep simple labels readable while escaping control characters."""
 
     text = "" if value is None else str(value)
-    if any(character in text for character in "\r\n\t"):
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in text):
         return _text_value(text)
     return text
 
