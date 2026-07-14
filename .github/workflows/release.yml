@@ -62,15 +62,19 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: x86_64
+            asset_arch: x64
           - os: ubuntu-24.04-arm
             platform: linux
             arch: arm64
+            asset_arch: arm64
           - os: macos-15-intel
             platform: macos
             arch: x86_64
+            asset_arch: x64
           - os: macos-14
             platform: macos
             arch: arm64
+            asset_arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out
@@ -82,39 +86,40 @@ jobs:
       - name: Sync locked environment
         run: mise run sync
       - name: Build one-file executable with package metadata
-        env:
-          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
         run: |
           mise exec uv -- uv run --locked --group release pyinstaller \
             --clean --noconfirm --onefile \
-            --name "$ASSET_NAME" \
+            --name worklease \
             --copy-metadata worklease \
             --collect-submodules worklease.adapters \
             --collect-data worklease \
             src/worklease/__main__.py
       - name: Verify standalone package data
-        env:
-          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
         run: |
           mise exec uv -- uv run python scripts/release_artifacts.py \
-            verify-package --artifact "dist/$ASSET_NAME" --kind native
+            verify-package --artifact dist/worklease --kind native
       - name: Smoke-test frozen version and adapter key
         env:
-          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           expected=${RELEASE_TAG#v}
           export EXPECTED_VERSION="$expected"
-          "dist/$ASSET_NAME" --version > version.json
+          dist/worklease --version > version.json
           python -c 'import json, os; p=json.load(open("version.json")); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"] and p["version"] == os.environ["EXPECTED_VERSION"]'
-          "dist/$ASSET_NAME" key --provider github --source example/repo --item 1 > key.json
+          dist/worklease key --provider github --source example/repo --item 1 > key.json
           python -c 'import json; p=json.load(open("key.json")); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
+      - name: Package mise-compatible native archive
+        env:
+          ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.asset_arch }}.tar.gz
+        run: |
+          mise exec uv -- uv run python scripts/release_artifacts.py \
+            package-native --executable dist/worklease --archive "dist/$ASSET_NAME"
       - name: Upload native asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-native-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.asset_arch }}.tar.gz
           if-no-files-found: error
 
   publish:

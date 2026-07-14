@@ -6,13 +6,16 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
 from scripts.release_artifacts import (
+    NATIVE_ARCHIVE_MEMBER,
     PACKAGE_DATA,
+    package_native_artifact,
     validate_checksums,
     validate_editable_package,
     validate_native_artifact,
@@ -85,7 +88,7 @@ class ReleaseValidationTests(unittest.TestCase):
             with self.assertRaises(ReleaseError):
                 native_asset_name(invalid, system="Linux", machine="x86_64")
         self.assertEqual(
-            "worklease-v0.0.0-linux-x86_64",
+            "worklease-v0.0.0-linux-x64.tar.gz",
             native_asset_name("v0.0.0", system="Linux", machine="x86_64"),
         )
 
@@ -107,13 +110,16 @@ class ReleaseValidationTests(unittest.TestCase):
             native = release / native_asset_name(
                 VERSION, system="Linux", machine="x86_64"
             )
-            native.write_text(
+            executable = root / "worklease"
+            executable.write_text(
                 "#!/bin/sh\n"
                 'printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
-                '"ok":true,"version":"0.1.0"}\'\n',
+                '"ok":true,"version":"0.1.0"}\'\n'
+                + "".join(f"# {path}\n" for path in PACKAGE_DATA),
                 encoding="utf-8",
             )
-            native.chmod(0o755)
+            executable.chmod(0o755)
+            package_native_artifact(executable, native)
             write_checksums(release)
             install_directory = root / "bin"
             result = self.run_installer(release, install_directory)
@@ -131,13 +137,16 @@ class ReleaseValidationTests(unittest.TestCase):
             native = release / native_asset_name(
                 VERSION, system="Linux", machine="x86_64"
             )
-            native.write_text(
+            executable = root / "worklease"
+            executable.write_text(
                 "#!/bin/sh\n"
                 'printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
-                '"ok":true,"version":"0.1.0"}\'\n',
+                '"ok":true,"version":"0.1.0"}\'\n'
+                + "".join(f"# {path}\n" for path in PACKAGE_DATA),
                 encoding="utf-8",
             )
-            native.chmod(0o755)
+            executable.chmod(0o755)
+            package_native_artifact(executable, native)
             write_checksums(release)
             install_directory = root / "bin"
             install_directory.mkdir()
@@ -160,10 +169,15 @@ class ReleaseValidationTests(unittest.TestCase):
             native = release / native_asset_name(
                 VERSION, system="Linux", machine="x86_64"
             )
-            native.write_text("#!/bin/sh\nprintf bad\n", encoding="utf-8")
-            native.chmod(0o755)
+            executable = root / "worklease"
+            executable.write_bytes(
+                b"#!/bin/sh\nprintf bad\n\0"
+                + b"\0".join(path.encode("utf-8") for path in PACKAGE_DATA)
+            )
+            executable.chmod(0o755)
+            package_native_artifact(executable, native)
             write_checksums(release)
-            native.write_text("#!/bin/sh\nprintf changed\n", encoding="utf-8")
+            native.write_bytes(b"changed")
             result = self.run_installer(release, root / "bin")
             self.assertNotEqual(0, result.returncode)
             self.assertIn("checksum mismatch", result.stderr)
@@ -310,6 +324,31 @@ class ReleaseValidationTests(unittest.TestCase):
             native.write_bytes(PACKAGE_DATA[0].encode("utf-8"))
             with self.assertRaises(ValueError):
                 validate_native_artifact(native)
+
+            native.write_bytes(
+                b"\0".join(path.encode("utf-8") for path in PACKAGE_DATA)
+            )
+            native.chmod(0o755)
+            archive = output / "worklease-v0.1.0-linux-x64.tar.gz"
+            package_native_artifact(native, archive)
+            validate_native_artifact(archive)
+            with tarfile.open(archive, "r:gz") as packaged:
+                member = packaged.getmember(NATIVE_ARCHIVE_MEMBER)
+                self.assertTrue(member.isfile())
+                self.assertTrue(member.mode & 0o111)
+
+    def test_workflow_packages_autodetected_native_archives(self) -> None:
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        for platform, architecture in (
+            ("linux", "x64"),
+            ("linux", "arm64"),
+            ("macos", "x64"),
+            ("macos", "arm64"),
+        ):
+            self.assertIn(f"platform: {platform}", release)
+            self.assertIn(f"asset_arch: {architecture}", release)
+        self.assertIn("${{ matrix.asset_arch }}.tar.gz", release)
+        self.assertIn("package-native --executable dist/worklease", release)
 
     def test_manifest_covers_every_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

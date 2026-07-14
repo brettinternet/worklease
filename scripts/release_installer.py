@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -45,15 +46,15 @@ def native_asset_name(
     if platform_name is None:
         raise ReleaseError(f"unsupported operating system: {normalized_system}")
     architectures = {
-        "amd64": "x86_64",
-        "x86_64": "x86_64",
+        "amd64": "x64",
+        "x86_64": "x64",
         "aarch64": "arm64",
         "arm64": "arm64",
     }
     architecture = architectures.get(normalized_machine)
     if architecture is None:
         raise ReleaseError(f"unsupported architecture: {normalized_machine}")
-    return f"worklease-{version}-{platform_name}-{architecture}"
+    return f"worklease-{version}-{platform_name}-{architecture}.tar.gz"
 
 
 def wheel_asset_name(version: str) -> str:
@@ -156,6 +157,43 @@ def _smoke_native(executable: Path, expected: str) -> None:
             f"downloaded {executable.name} --version failed with {result.returncode}"
         )
     _version_from_output(result.stdout.strip(), expected)
+
+
+def _install_native_archive(archive: Path, install_directory: Path) -> Path:
+    """Install only the expected executable from a verified native archive."""
+    install_directory.mkdir(parents=True, exist_ok=True)
+    target = install_directory / "worklease"
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ReleaseError(f"install target is not a regular file: {target}")
+    temporary_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".worklease-", dir=install_directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        with tarfile.open(archive, "r:gz") as source:
+            try:
+                member = source.getmember("bin/worklease")
+            except KeyError as error:
+                raise ReleaseError("native archive has no bin/worklease") from error
+            if not member.isfile() or not member.mode & 0o111:
+                raise ReleaseError("native archive bin/worklease is not executable")
+            executable = source.extractfile(member)
+            if executable is None:  # pragma: no cover - guarded by isfile
+                raise ReleaseError("cannot read native archive bin/worklease")
+            destination = os.fdopen(temporary_descriptor, "wb")
+            temporary_descriptor = -1
+            with destination:
+                shutil.copyfileobj(executable, destination)
+        temporary.chmod(0o755)
+        os.replace(temporary, target)
+    except (OSError, tarfile.TarError) as error:
+        raise ReleaseError(f"cannot extract native archive: {error}") from error
+    finally:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        if temporary.exists():
+            temporary.unlink()
+    return target
 
 
 def _smoke_wheel(uv: str, wheel: Path, expected: str) -> None:
@@ -272,24 +310,7 @@ def install_release(version: str, install_directory: Path) -> dict[str, str]:
             )
             if downloaded:
                 verify_checksum(selected_path, checksums[selected_name])
-                install_directory.mkdir(parents=True, exist_ok=True)
-                target = install_directory / "worklease"
-                if target.is_symlink() or (target.exists() and not target.is_file()):
-                    raise ReleaseError(
-                        f"install target is not a regular file: {target}"
-                    )
-                temporary_descriptor, temporary_name = tempfile.mkstemp(
-                    prefix=".worklease-", dir=install_directory
-                )
-                temporary = Path(temporary_name)
-                try:
-                    os.close(temporary_descriptor)
-                    shutil.copyfile(selected_path, temporary)
-                    temporary.chmod(0o755)
-                    os.replace(temporary, target)
-                finally:
-                    if temporary.exists():
-                        temporary.unlink()
+                target = _install_native_archive(selected_path, install_directory)
                 _smoke_native(target, expected_version)
                 return {"asset": selected_name, "kind": kind, "path": str(target)}
         wheel_name = wheel_asset_name(version)

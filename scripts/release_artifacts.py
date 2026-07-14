@@ -21,6 +21,7 @@ PACKAGE_DATA = (
     "worklease/schemas/v1/index.json",
     "worklease/schemas/v1/commands.json",
 )
+NATIVE_ARCHIVE_MEMBER = "bin/worklease"
 
 
 def _missing_package_data(names: set[str], *, source_prefix: str = "") -> list[str]:
@@ -64,14 +65,50 @@ def validate_python_artifact(path: Path) -> None:
         raise ValueError(f"{path.name} package data missing: {missing}")
 
 
-def validate_native_artifact(path: Path) -> None:
+def _validate_native_content(name: str, content: bytes) -> None:
     """Validate PyInstaller's embedded public type/schema files."""
-    content = path.read_bytes()
     missing = [
         required for required in PACKAGE_DATA if required.encode("utf-8") not in content
     ]
     if missing:
-        raise ValueError(f"{path.name} native package data missing: {missing}")
+        raise ValueError(f"{name} native package data missing: {missing}")
+
+
+def validate_native_artifact(path: Path) -> None:
+    """Validate a raw executable or a mise-compatible native archive."""
+    if path.name.endswith(".tar.gz"):
+        try:
+            with tarfile.open(path, "r:gz") as archive:
+                try:
+                    member = archive.getmember(NATIVE_ARCHIVE_MEMBER)
+                except KeyError as error:
+                    raise ValueError(
+                        f"{path.name} has no {NATIVE_ARCHIVE_MEMBER}"
+                    ) from error
+                if not member.isfile() or not member.mode & 0o111:
+                    raise ValueError(
+                        f"{path.name} {NATIVE_ARCHIVE_MEMBER} is not executable"
+                    )
+                stream = archive.extractfile(member)
+                if stream is None:  # pragma: no cover - guarded by isfile
+                    raise ValueError(f"cannot read {NATIVE_ARCHIVE_MEMBER}")
+                content = stream.read()
+        except tarfile.TarError as error:
+            raise ValueError(f"invalid native archive {path.name}: {error}") from error
+    else:
+        content = path.read_bytes()
+    _validate_native_content(path.name, content)
+
+
+def package_native_artifact(executable: Path, archive: Path) -> None:
+    """Package one executable at mise's autodetected ``bin/worklease`` path."""
+    if executable.is_symlink() or not executable.is_file():
+        raise ValueError(f"native executable is not a regular file: {executable}")
+    validate_native_artifact(executable)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "w:gz") as output:
+        output.add(executable, arcname=NATIVE_ARCHIVE_MEMBER, recursive=False)
+    validate_native_artifact(archive)
 
 
 def sha256_file(path: Path) -> str:
@@ -141,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
     package_command.add_argument(
         "--kind", choices=("editable", "python", "native"), required=True
     )
+    native_command = commands.add_parser(
+        "package-native",
+        help="package one executable as a mise-compatible native archive",
+    )
+    native_command.add_argument("--executable", type=Path, required=True)
+    native_command.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.operation == "write":
@@ -149,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.operation == "verify":
             validate_checksums(args.directory)
             print("checksums valid")
+        elif args.operation == "package-native":
+            package_native_artifact(args.executable, args.archive)
+            print(args.archive)
         elif args.kind == "editable":
             validate_editable_package(args.artifact)
             print("editable package data valid")
