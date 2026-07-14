@@ -389,6 +389,14 @@ class StoreTests(unittest.TestCase):
             operation_id="reconcile-1",
             ttl=target.ttl,
         )
+        with self.assertRaisesRegex(LeaseError, "invalid-reconciliation-outcome"):
+            self.store.reconcile_operation(
+                reconcile_request,
+                "unknown-1",
+                request_sha256,
+                "bogus",
+                {"providerReceipt": "receipt-1"},
+            )
         reconcile = self.store.reconcile_operation(
             reconcile_request,
             "unknown-1",

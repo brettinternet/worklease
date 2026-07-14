@@ -262,6 +262,12 @@ class LeaseStore:
             value not in "0123456789abcdefABCDEF" for value in expected_request_sha256
         ):
             raise LeaseError("invalid-request-sha256", code=64)
+        if outcome not in {"observed-success", "observed-failure"}:
+            raise LeaseError(
+                "invalid-reconciliation-outcome",
+                code=64,
+                outcome=outcome,
+            )
         try:
             evidence_json = serialize_checkpoint(evidence)
         except LeaseError as error:
