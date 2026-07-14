@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-14 02:44'
-updated_date: '2026-07-14 03:57'
+updated_date: '2026-07-14 03:58'
 labels: []
 dependencies: []
 modified_files:
@@ -22,7 +22,7 @@ Update every action used by the CI and release workflows to its current supporte
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 All action references use the latest major releases confirmed from their upstream repositories.
+- [x] #1 All action references use the latest major releases confirmed from their upstream repositories.
 - [ ] #2 CI and release workflow checks complete without Node.js 20 deprecation warnings from the upgraded actions.
 - [ ] #3 The repository quality gates and a post-change CI run pass.
 <!-- AC:END -->
