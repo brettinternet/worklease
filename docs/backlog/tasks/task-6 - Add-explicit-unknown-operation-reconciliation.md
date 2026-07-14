@@ -1,11 +1,11 @@
 ---
 id: TASK-6
 title: Add explicit unknown-operation reconciliation
-status: To Do
+status: In Progress
 assignee:
   - '@codex-main'
 created_date: '2026-07-14 02:06'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 04:41'
 labels:
   - coordination
   - recovery
@@ -65,4 +65,12 @@ Make operations that were durably started before an external side effect but nev
 **Next action:** implement T1 without changing existing exec/replace-file replay behavior.
 
 **Refinement checkpoint:** refined: TASK-6 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=dc2b456c-0c06-45bb-84e2-b52322386480; claimRevision=3; refinement: complete.
+
+Implementation checkpoint (T1 inspect immutable operation outcomes): commit fcb936eb0603922b2d2871a8ab8c9d10e494c20b adds read-only LeaseStore.inspect_operation projections for unknown, completed, and reconciled outcomes with canonical request SHA-256 fingerprints, no token/request/receipt/evidence exposure, and operation-not-found validation; adds reconciliation schema initialization/migration coverage. Targeted verification: mise exec -- uv run python -m unittest tests.test_store passed (24 tests); mise run lint passed; mise run format-check passed; mise run test passed (69 tests); mise run typecheck passed; mise run hooks passed. Progress: T1 complete. Next task: T2 authorized reconciliation and inspect-operation/reconcile-operation CLI wiring. Remaining acceptance: #2-#5 and T2/T3.,cwd:/Users/brett/dev/me/worklease/.worktrees/task-6-t1,timeout:120}
+
+T1 verifier correction: commit 4546c5cec2c14893a4ebaa66c8ef0216c4c84482 rejects ambiguous exact resource/operation-id lookups when an operation ID was reused across reclaimed claims, with focused coverage (25 store tests). Independent verifier PASS: unknown/completed/reconciled states, redacted projections, persisted-request SHA-256, original-row preservation, reconciliation-table initialization/migration, ambiguity guard, and unchanged exec/replace replay paths. Corrected verification: mise run lint, format-check, test (70 tests), typecheck, and hooks all passed. T1 remains complete; next task T2. ,cwd:/Users/brett/dev/me/worklease,timeout:120}
+
+Implementation checkpoint (T2 authorized reconciliation): commit c082a9bf6b37c57829ba74434ecbb68ab8c167dc adds append-only reconciliation records with strict bounded JSON evidence, active-claim/revision/fingerprint checks, idempotent changed-replay rejection, redacted receipts, migration support, and inspect-operation/reconcile-operation CLI commands. Verification: mise run lint, format-check, test (74 tests), typecheck, and hooks passed. Progress: T2 complete. Next task: T3 recovery tests and contract documentation. Remaining acceptance: #5.
+
+T2 review fix: commit e548a029016befacd0497bfb4efbf975dab60c4b rejects reconciliation replays after a later heartbeat or claim expiry while preserving immediate idempotent replay. Added focused stale-revision and claim-expired coverage; full quality gates and hooks passed (74 tests). T2 remains complete; next task T3.
 <!-- SECTION:NOTES:END -->
