@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from worklease.locking import resource_lock_path
@@ -220,6 +221,277 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(successor["token"], replay["claim"]["token"])
         with self.assertRaisesRegex(LeaseError, "already-claimed"):
             self.store.acquire(self.acquire_request("resource", "contender"))
+
+    def test_transfer_rejects_stale_replays_and_reused_successor_ids(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("transfer-rejections", "first")
+        )
+        checkpointed = self.store.checkpoint(
+            self.mutation(acquired, "transfer-rejections", "checkpoint"),
+            {"offset": 8},
+        )
+        claim = checkpointed["claim"]
+        assert isinstance(claim, dict)
+        transfer = TransferRequest(
+            resource="transfer-rejections",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        wrong_token = replace(
+            transfer,
+            token="wrong-token",
+            operation_id="wrong-token",
+            successor_claim_id="wrong-token-successor",
+        )
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.transfer(wrong_token)
+        self.assertEqual(
+            str(claim["claimId"]),
+            self.store.status("transfer-rejections")["claim"]["claimId"],
+        )
+
+        stale_revision = replace(
+            transfer,
+            revision=int(claim["revision"]) - 1,
+            operation_id="stale-revision",
+            successor_claim_id="stale-revision-successor",
+        )
+        with self.assertRaisesRegex(LeaseError, "stale-revision"):
+            self.store.transfer(stale_revision)
+        self.assertEqual(
+            int(claim["revision"]),
+            self.store.status("transfer-rejections")["claim"]["revision"],
+        )
+
+        transferred = self.store.transfer(transfer)
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+        changed_replay = replace(
+            transfer,
+            successor_owner_id="changed-owner",
+        )
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.transfer(changed_replay)
+        self.assertEqual(
+            "second",
+            self.store.status("transfer-rejections")["claim"]["claimId"],
+        )
+
+        reused_successor = TransferRequest(
+            resource="transfer-rejections",
+            claim_id=str(successor["claimId"]),
+            token=str(successor["token"]),
+            revision=int(successor["revision"]),
+            operation_id="reused-successor",
+            successor_claim_id=str(claim["claimId"]),
+            successor_agent_id="agent-reused",
+            successor_session_id="session-reused",
+            successor_owner_id="owner-reused",
+            successor_work_key="implement:item:reused",
+        )
+        with self.assertRaisesRegex(LeaseError, "claim-id-reused"):
+            self.store.transfer(reused_successor)
+
+        expiring = self.store.acquire(
+            self.acquire_request("transfer-expired", "expiring", ttl=1)
+        )
+        self.clock.advance(1.1)
+        expiring_claim = expiring["claim"]
+        assert isinstance(expiring_claim, dict)
+        expired = TransferRequest(
+            resource="transfer-expired",
+            claim_id=str(expiring_claim["claimId"]),
+            token=str(expiring_claim["token"]),
+            revision=int(expiring_claim["revision"]),
+            operation_id="expired",
+            successor_claim_id="expired-successor",
+            successor_agent_id="agent-expired",
+            successor_session_id="session-expired",
+            successor_owner_id="owner-expired",
+            successor_work_key="implement:item:expired",
+        )
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.transfer(expired)
+        self.assertEqual(
+            "expiring",
+            self.store.status("transfer-expired")["claim"]["claimId"],
+        )
+
+    def test_transfer_invalidates_stale_owner_for_every_mutation(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("transfer-stale", "first"))
+        checkpointed = self.store.checkpoint(
+            self.mutation(acquired, "transfer-stale", "checkpoint"),
+            {"offset": 2},
+        )
+        claim = checkpointed["claim"]
+        assert isinstance(claim, dict)
+        old_request = MutationRequest(
+            resource="transfer-stale",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="stale-operation",
+        )
+        transfer = TransferRequest(
+            resource="transfer-stale",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        transferred = self.store.transfer(transfer)
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.heartbeat(old_request)
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.checkpoint(old_request, {"offset": 3})
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.begin_operation(old_request, "exec", {"argv": ["child"]})
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.release(old_request, "stale owner")
+        current = self.store.status("transfer-stale")["claim"]
+        assert isinstance(current, dict)
+        self.assertEqual("second", current["claimId"])
+        self.assertEqual({"offset": 2}, current["checkpoint"])
+
+    def test_transfer_rolls_back_on_interruption_without_free_interval(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("transfer-rollback", "first")
+        )
+        checkpointed = self.store.checkpoint(
+            self.mutation(acquired, "transfer-rollback", "checkpoint"),
+            {"offset": 5},
+        )
+        claim = checkpointed["claim"]
+        assert isinstance(claim, dict)
+        transfer = TransferRequest(
+            resource="transfer-rollback",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            db.execute(
+                """
+                CREATE TRIGGER fail_transfer_receipt
+                BEFORE INSERT ON operations
+                WHEN NEW.kind = 'transfer'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected transfer failure');
+                END
+                """
+            )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "injected transfer failure"
+        ):
+            self.store.transfer(transfer)
+        status = self.store.status("transfer-rollback")
+        current = status["claim"]
+        assert isinstance(current, dict)
+        self.assertEqual("first", current["claimId"])
+        self.assertEqual({"offset": 5}, current["checkpoint"])
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM epochs WHERE resource = ?",
+                    ("transfer-rollback",),
+                ).fetchone()[0],
+            )
+            db.execute("DROP TRIGGER fail_transfer_receipt")
+        self.store.transfer(transfer)
+        self.assertEqual(
+            "second",
+            self.store.status("transfer-rollback")["claim"]["claimId"],
+        )
+
+    def test_transfer_serializes_contender_acquire(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("transfer-race", "first"))
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        transfer = TransferRequest(
+            resource="transfer-race",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:second",
+        )
+        contender_started = threading.Event()
+        transfer_entered = threading.Event()
+
+        def token_factory() -> str:
+            transfer_entered.set()
+            self.assertTrue(contender_started.wait(timeout=5))
+            return "successor-token"
+
+        transfer_store = LeaseStore(
+            self.home,
+            clock=self.clock,
+            token_factory=token_factory,
+        )
+
+        def run_transfer() -> tuple[str, object]:
+            try:
+                return "transfer", transfer_store.transfer(transfer)
+            except LeaseError as error:
+                return "transfer-error", error.reason
+
+        def run_acquire() -> tuple[str, object]:
+            self.assertTrue(transfer_entered.wait(timeout=5))
+            contender_started.set()
+            try:
+                return "acquire", self.store.acquire(
+                    self.acquire_request("transfer-race", "contender")
+                )
+            except LeaseError as error:
+                return "acquire-error", error.reason
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda fn: fn(), (run_transfer, run_acquire)))
+        self.assertIn(("transfer",), tuple(result[:1] for result in results))
+        self.assertTrue(
+            any(
+                result[0] == "acquire-error"
+                and result[1] in {"already-claimed", "resource-guarded"}
+                for result in results
+            )
+        )
+        current = self.store.status("transfer-race")["claim"]
+        assert isinstance(current, dict)
+        self.assertEqual("second", current["claimId"])
+        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM claims WHERE resource = ?",
+                    ("transfer-race",),
+                ).fetchone()[0],
+            )
 
     def test_checkpoint_size_and_expiry_are_rejected_without_changes(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))
