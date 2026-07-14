@@ -11,14 +11,18 @@ from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
 
-from .locking import resource_lock
+from .locking import resource_lock, resource_locks
 from .models import (
     AcquireRequest,
+    BundleAcquireRequest,
+    BundleClaim,
     Claim,
     LeaseError,
     MutationRequest,
+    bundle_claim_from_row,
     claim_from_row,
     deserialize_checkpoint,
+    require_bundle_resources,
     require_resource,
     require_text,
     require_ttl,
@@ -166,9 +170,31 @@ class LeaseStore:
                 "receipt": receipt,
             }
 
+    def _bundle_for_resource(
+        self, connection: sqlite3.Connection, resource: str
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT b.*
+            FROM bundles AS b
+            JOIN bundle_members AS m ON m.claim_id = b.claim_id
+            WHERE m.resource = ?
+            """,
+            (resource,),
+        ).fetchone()
+
     def _require_owner(
         self, connection: sqlite3.Connection, request: MutationRequest
     ) -> sqlite3.Row:
+        bundle = self._bundle_for_resource(connection, request.resource)
+        if bundle is not None:
+            raise LeaseError(
+                "bundle-operation-required",
+                resource=request.resource,
+                claim=self._bundle_claim(connection, bundle).to_dict(
+                    include_token=False
+                ),
+            )
         row = self._current(connection, request.resource)
         if row is None:
             raise LeaseError("claim-not-found", resource=request.resource)
@@ -466,6 +492,253 @@ class LeaseStore:
             row = self._require_current(db, request)
             return self._claim(row).to_dict()
 
+    @staticmethod
+    def _bundle_row(
+        connection: sqlite3.Connection, claim_id: str
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT * FROM bundles WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+
+    @staticmethod
+    def _bundle_resources(
+        connection: sqlite3.Connection, claim_id: str
+    ) -> tuple[str, ...]:
+        row = connection.execute(
+            "SELECT resources FROM bundle_epochs WHERE claim_id = ?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            raise LeaseError("bundle-not-found", code=3, claimId=claim_id)
+        return tuple(str(value) for value in json.loads(str(row["resources"])))
+
+    def _bundle_claim(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> BundleClaim:
+        return bundle_claim_from_row(
+            row,
+            self._bundle_resources(connection, str(row["claim_id"])),
+            self.clock(),
+        )
+
+    def acquire_bundle(self, request: BundleAcquireRequest) -> dict[str, Any]:
+        """Acquire one shared ownership epoch for all bundle resources."""
+
+        resources = require_bundle_resources(request.resources)
+        ttl = require_ttl(request.ttl)
+        with (
+            resource_locks(resources, self.home),
+            closing(self._connect()) as db,
+            transaction(db),
+        ):
+            now = self.clock()
+            bundle = self._bundle_row(db, request.claim_id)
+            if bundle is not None:
+                recorded_resources = self._bundle_resources(db, request.claim_id)
+                recorded = (
+                    recorded_resources,
+                    str(bundle["agent_id"]),
+                    str(bundle["session_id"]),
+                    str(bundle["owner_id"]),
+                    str(bundle["work_key"]),
+                    bool(bundle["coordination_only"]),
+                )
+                if recorded != request.identity:
+                    raise LeaseError(
+                        "claim-id-identity-mismatch",
+                        resource=",".join(resources),
+                    )
+                if float(bundle["acquire_ttl"]) != ttl:
+                    raise LeaseError(
+                        "claim-id-request-mismatch",
+                        code=3,
+                        resource=",".join(resources),
+                        claimId=request.claim_id,
+                    )
+                if now >= float(bundle["expires_at"]):
+                    raise LeaseError(
+                        "claim-expired",
+                        resource=",".join(resources),
+                        claim=self._bundle_claim(db, bundle).to_dict(
+                            include_token=False
+                        ),
+                    )
+                return {
+                    "ok": True,
+                    "operation": "acquire-bundle",
+                    "idempotent": True,
+                    "resources": list(resources),
+                    "claim": self._bundle_claim(db, bundle).to_dict(),
+                }
+
+            rows = db.execute(
+                f"SELECT * FROM claims WHERE resource IN ({','.join('?' for _ in resources)})",
+                resources,
+            ).fetchall()
+            for row in rows:
+                if now < float(row["expires_at"]):
+                    old_bundle = self._bundle_row(db, str(row["claim_id"]))
+                    conflict = (
+                        self._bundle_claim(db, old_bundle).to_dict(include_token=False)
+                        if old_bundle is not None
+                        else self._claim(row).to_dict(include_token=False)
+                    )
+                    raise LeaseError(
+                        "already-claimed",
+                        resource=str(row["resource"]),
+                        claim=conflict,
+                    )
+
+            for old_bundle_id in {
+                str(row["claim_id"])
+                for row in db.execute(
+                    f"SELECT claim_id FROM bundle_members WHERE resource IN ({','.join('?' for _ in resources)})",
+                    resources,
+                ).fetchall()
+            }:
+                old_bundle = self._bundle_row(db, old_bundle_id)
+                if old_bundle is not None and now >= float(old_bundle["expires_at"]):
+                    db.execute(
+                        "DELETE FROM bundle_members WHERE claim_id = ?",
+                        (old_bundle_id,),
+                    )
+                    db.execute(
+                        "DELETE FROM bundles WHERE claim_id = ?", (old_bundle_id,)
+                    )
+
+            epoch = db.execute(
+                """
+                SELECT claim_id FROM epochs WHERE claim_id = ?
+                UNION ALL
+                SELECT claim_id FROM bundle_epochs WHERE claim_id = ?
+                LIMIT 1
+                """,
+                (request.claim_id, request.claim_id),
+            ).fetchone()
+            if epoch is not None:
+                raise LeaseError(
+                    "claim-id-reused",
+                    resource=",".join(resources),
+                    claimId=request.claim_id,
+                )
+
+            revision_row = db.execute(
+                f"""
+                SELECT MAX(revision) AS revision FROM (
+                    SELECT revision FROM resources
+                    WHERE resource IN ({",".join("?" for _ in resources)})
+                    UNION ALL
+                    SELECT revision FROM claims
+                    WHERE resource IN ({",".join("?" for _ in resources)})
+                )
+                """,
+                (*resources, *resources),
+            ).fetchone()
+            revision = int(revision_row["revision"] or 0) + 1
+            token = self.token_factory()
+            db.execute(
+                """
+                INSERT INTO bundle_epochs(
+                    claim_id, resources, agent_id, session_id, owner_id,
+                    work_key, acquired_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.claim_id,
+                    json.dumps(list(resources), separators=(",", ":")),
+                    request.agent_id,
+                    request.session_id,
+                    request.owner_id,
+                    request.work_key,
+                    now,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO bundles(
+                    claim_id, token, revision, agent_id, session_id, owner_id,
+                    work_key, coordination_only, acquired_at, acquire_ttl,
+                    heartbeat_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.claim_id,
+                    token,
+                    revision,
+                    request.agent_id,
+                    request.session_id,
+                    request.owner_id,
+                    request.work_key,
+                    int(request.coordination_only),
+                    now,
+                    ttl,
+                    now,
+                    now + ttl,
+                ),
+            )
+            for resource in resources:
+                db.execute(
+                    """
+                    INSERT INTO bundle_members(resource, claim_id)
+                    VALUES (?, ?)
+                    """,
+                    (resource, request.claim_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO resources(resource, revision) VALUES (?, ?)
+                    ON CONFLICT(resource) DO UPDATE SET revision = excluded.revision
+                    """,
+                    (resource, revision),
+                )
+                db.execute(
+                    """
+                    INSERT INTO claims(
+                        resource, claim_id, token, revision, agent_id, session_id,
+                        owner_id, work_key, coordination_only, acquired_at,
+                        acquire_ttl, heartbeat_at, expires_at, checkpoint
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(resource) DO UPDATE SET
+                        claim_id=excluded.claim_id, token=excluded.token,
+                        revision=excluded.revision, agent_id=excluded.agent_id,
+                        session_id=excluded.session_id, owner_id=excluded.owner_id,
+                        work_key=excluded.work_key,
+                        coordination_only=excluded.coordination_only,
+                        acquired_at=excluded.acquired_at,
+                        acquire_ttl=excluded.acquire_ttl,
+                        heartbeat_at=excluded.heartbeat_at,
+                        expires_at=excluded.expires_at,
+                        checkpoint=NULL
+                    """,
+                    (
+                        resource,
+                        request.claim_id,
+                        token,
+                        revision,
+                        request.agent_id,
+                        request.session_id,
+                        request.owner_id,
+                        request.work_key,
+                        int(request.coordination_only),
+                        now,
+                        ttl,
+                        now,
+                        now + ttl,
+                    ),
+                )
+            created = self._bundle_row(db, request.claim_id)
+            if created is None:
+                raise LeaseError("bundle-create-conflict", code=3)
+            return {
+                "ok": True,
+                "operation": "acquire-bundle",
+                "idempotent": False,
+                "reclaimed": bool(rows),
+                "resources": list(resources),
+                "claim": self._bundle_claim(db, created).to_dict(),
+            }
+
     def acquire(self, request: AcquireRequest) -> dict[str, Any]:
         """Acquire or idempotently retry one ownership epoch."""
 
@@ -478,6 +751,13 @@ class LeaseStore:
         ):
             now = self.clock()
             row = self._current(db, request.resource)
+            bundle = self._bundle_for_resource(db, request.resource)
+            if bundle is not None:
+                raise LeaseError(
+                    "bundle-operation-required",
+                    resource=request.resource,
+                    claim=self._bundle_claim(db, bundle).to_dict(include_token=False),
+                )
             if row is not None and row["claim_id"] == request.claim_id:
                 recorded = (
                     str(row["agent_id"]),
@@ -539,8 +819,15 @@ class LeaseStore:
                     )
                     recovery = "clean-handoff"
             epoch = db.execute(
-                "SELECT resource, acquired_at FROM epochs WHERE claim_id = ?",
-                (request.claim_id,),
+                """
+                SELECT resource, acquired_at FROM epochs WHERE claim_id = ?
+                UNION ALL
+                SELECT resources AS resource, acquired_at
+                FROM bundle_epochs
+                WHERE claim_id = ?
+                LIMIT 1
+                """,
+                (request.claim_id, request.claim_id),
             ).fetchone()
             if epoch is not None:
                 raise LeaseError(
@@ -766,6 +1053,13 @@ class LeaseStore:
             closing(self._connect()) as db,
             transaction(db),
         ):
+            bundle = self._bundle_for_resource(db, request.resource)
+            if bundle is not None:
+                raise LeaseError(
+                    "bundle-operation-required",
+                    resource=request.resource,
+                    claim=self._bundle_claim(db, bundle).to_dict(include_token=False),
+                )
             operation_request = self._receipt_request(
                 request, operationId=request.operation_id, reason=reason
             )
@@ -856,20 +1150,26 @@ class LeaseStore:
         require_resource(resource)
         with closing(self._connect()) as db:
             row = self._current(db, resource)
-        if row is None:
-            return {
-                "ok": True,
-                "operation": "status",
-                "resource": resource,
-                "state": "free",
-            }
-        claim = self._claim(row)
+            bundle = self._bundle_for_resource(db, resource)
+            if row is None:
+                return {
+                    "ok": True,
+                    "operation": "status",
+                    "resource": resource,
+                    "state": "free",
+                }
+            if bundle is not None:
+                claim = self._bundle_claim(db, bundle)
+                claim_dict = claim.to_dict(include_token=False)
+            else:
+                claim = self._claim(row)
+                claim_dict = claim.to_dict(include_token=False)
         return {
             "ok": True,
             "operation": "status",
             "resource": resource,
             "state": "active" if claim.active else "expired",
-            "claim": claim.to_dict(include_token=False),
+            "claim": claim_dict,
         }
 
     def list_claims(self, resource: str | None = None) -> dict[str, Any]:
@@ -877,6 +1177,7 @@ class LeaseStore:
 
         if resource is not None:
             require_resource(resource)
+
         with closing(self._connect()) as db:
             if resource is None:
                 rows = db.execute("SELECT * FROM claims ORDER BY resource").fetchall()
@@ -885,10 +1186,24 @@ class LeaseStore:
                     "SELECT * FROM claims WHERE resource = ? ORDER BY resource",
                     (resource,),
                 ).fetchall()
+            claims: list[dict[str, Any]] = []
+            seen_bundles: set[str] = set()
+            for row in rows:
+                bundle = self._bundle_row(db, str(row["claim_id"]))
+                if bundle is not None:
+                    claim_id = str(bundle["claim_id"])
+                    if claim_id in seen_bundles:
+                        continue
+                    seen_bundles.add(claim_id)
+                    claims.append(
+                        self._bundle_claim(db, bundle).to_dict(include_token=False)
+                    )
+                else:
+                    claims.append(self._claim(row).to_dict(include_token=False))
         return {
             "ok": True,
             "operation": "list",
-            "claims": [self._claim(row).to_dict(include_token=False) for row in rows],
+            "claims": claims,
         }
 
     @staticmethod

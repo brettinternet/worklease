@@ -99,6 +99,36 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 checkpoint TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS bundle_epochs (
+                claim_id TEXT PRIMARY KEY,
+                resources TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                work_key TEXT NOT NULL,
+                acquired_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bundles (
+                claim_id TEXT PRIMARY KEY,
+                token TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                work_key TEXT NOT NULL,
+                coordination_only INTEGER NOT NULL DEFAULT 0,
+                acquired_at REAL NOT NULL,
+                acquire_ttl REAL NOT NULL,
+                heartbeat_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bundle_members (
+                resource TEXT PRIMARY KEY,
+                claim_id TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS operations (
                 resource TEXT NOT NULL,
                 claim_id TEXT NOT NULL,

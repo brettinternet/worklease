@@ -11,6 +11,35 @@ from typing import Any
 DEFAULT_TTL = 900.0
 MAX_TTL = 3600.0
 MAX_CHECKPOINT_BYTES = 8 * 1024
+MAX_BUNDLE_RESOURCES = 32
+
+
+def require_bundle_resources(values: Any) -> tuple[str, ...]:
+    """Validate an ordered, bounded set of exact opaque resources."""
+
+    if isinstance(values, (str, bytes)) or values is None:
+        raise LeaseError("invalid-bundle", code=64)
+    try:
+        resources = tuple(values)
+    except TypeError as error:
+        raise LeaseError("invalid-bundle", code=64) from error
+    if not resources:
+        raise LeaseError("empty-bundle", code=64)
+    if len(resources) > MAX_BUNDLE_RESOURCES:
+        raise LeaseError(
+            "bundle-too-large",
+            code=64,
+            maximumResources=MAX_BUNDLE_RESOURCES,
+        )
+    try:
+        validated = tuple(require_resource(resource) for resource in resources)
+    except LeaseError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise LeaseError("invalid-bundle", code=64) from error
+    if len(set(validated)) != len(validated):
+        raise LeaseError("duplicate-resource", code=64)
+    return validated
 
 
 def serialize_checkpoint(value: Any) -> str:
@@ -153,6 +182,52 @@ class AcquireRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class BundleAcquireRequest:
+    resources: tuple[str, ...]
+    claim_id: str
+    agent_id: str
+    session_id: str
+    owner_id: str
+    work_key: str
+    ttl: float = DEFAULT_TTL
+    coordination_only: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "resources", require_bundle_resources(self.resources))
+        for value, field in (
+            (self.claim_id, "claim-id"),
+            (self.agent_id, "agent-id"),
+            (self.session_id, "session-id"),
+            (self.owner_id, "owner-id"),
+            (self.work_key, "work-key"),
+        ):
+            require_text(value, field)
+        require_ttl(self.ttl)
+
+    @property
+    def identity(self) -> tuple[tuple[str, ...], str, str, str, str, bool]:
+        return (
+            self.resources,
+            self.agent_id,
+            self.session_id,
+            self.owner_id,
+            self.work_key,
+            self.coordination_only,
+        )
+
+    def request_dict(self) -> dict[str, Any]:
+        return {
+            "resources": list(self.resources),
+            "agentId": self.agent_id,
+            "sessionId": self.session_id,
+            "ownerId": self.owner_id,
+            "workKey": self.work_key,
+            "ttl": float(self.ttl),
+            "coordinationOnly": self.coordination_only,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MutationRequest:
     resource: str
     claim_id: str
@@ -219,7 +294,70 @@ class Claim:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class BundleClaim:
+    resources: tuple[str, ...]
+    claim_id: str
+    token: str
+    revision: int
+    agent_id: str
+    session_id: str
+    owner_id: str
+    work_key: str
+    guarantee: str
+    acquired_at: float
+    acquire_ttl: float
+    heartbeat_at: float
+    expires_at: float
+    active: bool
+
+    def to_dict(self, *, include_token: bool = True) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "resources": list(self.resources),
+            "claimId": self.claim_id,
+            "revision": self.revision,
+            "agentId": self.agent_id,
+            "sessionId": self.session_id,
+            "ownerId": self.owner_id,
+            "workKey": self.work_key,
+            "guarantee": self.guarantee,
+            "acquiredAt": iso8601(self.acquired_at),
+            "acquireTtl": self.acquire_ttl,
+            "heartbeatAt": iso8601(self.heartbeat_at),
+            "expiresAt": iso8601(self.expires_at),
+            "expiresAtEpoch": self.expires_at,
+            "active": self.active,
+        }
+        if include_token:
+            result["token"] = self.token
+        return result
+
+
+def bundle_claim_from_row(
+    row: Any, resources: tuple[str, ...], now: float
+) -> BundleClaim:
+    return BundleClaim(
+        resources=resources,
+        claim_id=str(row["claim_id"]),
+        token=str(row["token"]),
+        revision=int(row["revision"]),
+        agent_id=str(row["agent_id"]),
+        session_id=str(row["session_id"]),
+        owner_id=str(row["owner_id"]),
+        work_key=str(row["work_key"]),
+        guarantee=(
+            "local-coordination" if bool(row["coordination_only"]) else "fenced"
+        ),
+        acquired_at=float(row["acquired_at"]),
+        acquire_ttl=float(row["acquire_ttl"]),
+        heartbeat_at=float(row["heartbeat_at"]),
+        expires_at=float(row["expires_at"]),
+        active=now < float(row["expires_at"]),
+    )
+
+
 def claim_from_row(row: Any, now: float) -> Claim:
+
     columns = row.keys()
     checkpoint = (
         deserialize_checkpoint(row["checkpoint"]) if "checkpoint" in columns else None
