@@ -94,12 +94,17 @@ def _worktree_paths(probe: Path) -> list[Path]:
     paths: list[Path] = []
     for line in completed.stdout.splitlines():
         if line.startswith("worktree "):
-            paths.append(
-                _resolve_directory(
-                    line.removeprefix("worktree "),
-                    reason="invalid-provider-working-directory",
+            try:
+                paths.append(
+                    _resolve_directory(
+                        line.removeprefix("worktree "),
+                        reason="invalid-provider-working-directory",
+                    )
                 )
-            )
+            except LeaseError:
+                # A prunable linked worktree is not a candidate; continue
+                # resolving the registered primary checkout.
+                continue
         elif line == "bare":
             raise LeaseError("bare-repository", code=64)
     return paths
