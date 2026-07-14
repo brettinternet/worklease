@@ -3,9 +3,10 @@
 Resource policies define deterministic resource identities and claim capabilities.
 They deliberately do not discover providers, perform network calls, or mutate
 provider state. Built-ins are described without importing their modules; an
-adapter module is imported only after its policy is selected. External policies
-are exposed through the ``worklease.resource_policies`` entry-point group and
-must return a :class:`ResourcePolicyRegistration`.
+adapter module is imported only after its policy is selected. External policy
+registrations are loaded only when a name is inspected or selected through the
+``worklease.resource_policies`` entry-point group and must return a
+:class:`ResourcePolicyRegistration`.
 """
 
 from __future__ import annotations

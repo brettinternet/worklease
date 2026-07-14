@@ -336,7 +336,8 @@ Wheel and editable installs discover external registrations lazily when the
 selected policy is used. Frozen standalone executables expose built-in
 policies only and do not discover entry points from the build environment.
 
-Inspect the available registrations without loading policy implementations:
+Inspect available registrations and descriptors without constructing policy
+adapters:
 
 ```sh
 worklease policy list
