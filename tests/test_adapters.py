@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import subprocess
 import sys
@@ -11,7 +10,15 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from worklease.adapters import key, key_result, load_adapter
+from worklease.adapters import (
+    ResourcePolicyDescriptor,
+    ResourcePolicyRegistration,
+    available_policy_names,
+    key,
+    key_result,
+    load_adapter,
+)
+from worklease.adapters import registry as policy_registry
 from worklease.adapters.markdown import MarkdownAdapter
 from worklease.models import AcquireRequest, LeaseError, MutationRequest
 from worklease.store import LeaseStore
@@ -163,38 +170,123 @@ class AdapterKeyTests(unittest.TestCase):
             self.assertEqual(main_backlog.resource, linked_backlog.resource)
             self.assertEqual(main_markdown.resource, linked_markdown.resource)
 
-    def test_markdown_items_share_one_source_claim(self) -> None:
-        source = Path(__file__).parents[1] / "README.md"
+    def test_generic_policy_is_explicit_and_unknown_names_fail(self) -> None:
+        generic = key("generic", "account-uuid", "work-uuid")
+        self.assertEqual(generic.capability, "local-coordination")
+        self.assertFalse(generic.fenced_mutations)
+        with self.assertRaises(LeaseError) as raised:
+            key("future-provider", "account-uuid", "work-uuid")
+        self.assertEqual(raised.exception.reason, "resource-policy-not-found")
+        self.assertEqual(raised.exception.details["schemaVersion"], 1)
+        self.assertIn("generic", raised.exception.details["available"])
 
-        first = key("markdown", str(source), "ITEM-1")
-        second = key("markdown", str(source), "ITEM-2")
-
-        self.assertEqual(first.resource, second.resource)
-        self.assertEqual(first.capability, "source-claim")
-        self.assertEqual(first.scope, "source")
-
-    def test_linear_and_unknown_providers_are_deterministic_coordination(self) -> None:
-        linear = key("linear", "workspace-uuid/", "issue-uuid")
-        repeated = key("linear", "workspace-uuid", "issue-uuid")
-        future = key("future-provider", "account-uuid", "work-uuid")
-
-        self.assertEqual(linear.resource, repeated.resource)
-        self.assertEqual(linear.capability, "local-coordination")
-        self.assertFalse(linear.fenced_mutations)
-        self.assertEqual(future.capability, "local-coordination")
-        expected_identity = json.dumps(
-            {
-                "provider": "future-provider",
-                "source": "account-uuid",
-                "item": "work-uuid",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        expected_digest = hashlib.sha256(expected_identity.encode()).hexdigest()
+    def test_policy_descriptors_are_lazy_and_versioned(self) -> None:
         self.assertEqual(
-            future.resource, f"coordination:future-provider:{expected_digest}"
+            set(available_policy_names()),
+            {"backlog-md", "generic", "github", "linear", "markdown"},
         )
+        descriptor = policy_registry.load_policy("generic").descriptor
+        self.assertEqual(descriptor.contract_version, 1)
+        self.assertEqual(
+            descriptor.to_dict()["genericExecutionGuarantee"], "local-coordination"
+        )
+
+    def test_external_policy_registration_and_failures_are_deterministic(self) -> None:
+        descriptor = ResourcePolicyDescriptor(
+            name="external",
+            origin="fixture",
+            origin_version="1.2",
+            capability="item-claim",
+        )
+        registration = ResourcePolicyRegistration(
+            descriptor, lambda provider: load_adapter("github")
+        )
+
+        class EntryPoint:
+            def __init__(self, loaded: object, *, name: str = "external") -> None:
+                self.name = name
+                self.value = "fixture:policy"
+                self._loaded = loaded
+
+            def load(self) -> object:
+                if isinstance(self._loaded, BaseException):
+                    raise self._loaded
+                return self._loaded
+
+        class EntryPoints:
+            def __init__(self, values: list[EntryPoint]) -> None:
+                self.values = values
+
+            def select(self, *, group: str) -> list[EntryPoint]:
+                self.assert_group = group
+                return self.values
+
+        with patch.object(
+            policy_registry.metadata,
+            "entry_points",
+            return_value=EntryPoints([EntryPoint(registration)]),
+        ):
+            self.assertEqual(load_adapter("external").provider, "github")
+
+        with (
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                return_value=EntryPoints(
+                    [EntryPoint(registration), EntryPoint(registration)]
+                ),
+            ),
+            self.assertRaisesRegex(LeaseError, "resource-policy-duplicate"),
+        ):
+            load_adapter("external")
+        with (
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                return_value=EntryPoints([EntryPoint(registration, name="github")]),
+            ),
+            self.assertRaisesRegex(LeaseError, "resource-policy-duplicate"),
+        ):
+            load_adapter("github")
+
+        incompatible = ResourcePolicyRegistration(
+            ResourcePolicyDescriptor(
+                name="external",
+                origin="fixture",
+                origin_version="1.2",
+                contract_version=2,
+            ),
+            registration.factory,
+        )
+        with (
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                return_value=EntryPoints([EntryPoint(incompatible)]),
+            ),
+            self.assertRaisesRegex(LeaseError, "resource-policy-contract-version"),
+        ):
+            load_adapter("external")
+
+        with (
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                return_value=EntryPoints([EntryPoint(RuntimeError("boom"))]),
+            ),
+            self.assertRaisesRegex(LeaseError, "resource-policy-load-failed"),
+        ):
+            load_adapter("external")
+
+        with (
+            patch.object(
+                policy_registry.metadata,
+                "entry_points",
+                return_value=EntryPoints([EntryPoint(object())]),
+            ),
+            self.assertRaisesRegex(LeaseError, "resource-policy-invalid-descriptor"),
+        ):
+            load_adapter("external")
 
     def test_key_result_has_reference_compatible_fields(self) -> None:
         result = key_result("linear", "workspace", "issue")
@@ -222,7 +314,7 @@ class AdapterKeyTests(unittest.TestCase):
         self.assertNotIn("gh", sys.modules)
 
     def test_bundled_adapters_reject_provider_fencing(self) -> None:
-        for provider in ("github", "backlog-md", "markdown", "linear", "future"):
+        for provider in ("github", "backlog-md", "markdown", "linear", "generic"):
             with self.subTest(provider=provider):
                 adapter = load_adapter(provider)
                 with self.assertRaises(LeaseError) as raised:
