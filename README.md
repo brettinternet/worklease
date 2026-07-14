@@ -228,11 +228,11 @@ Run the reproducible development environment with the repository's Python 3.14
 and latest uv/pyright toolchain:
 
 ```sh
-mise exec uv -- uv sync --locked
-mise exec uv -- uv run worklease --version
-mise exec uv -- uv run python -m unittest discover -s tests -v
+uv sync --locked
+uv run worklease --version
+uv run python -m unittest discover -s tests -v
 mise exec -- pyright src/worklease tests
-mise exec uv -- uv build
+uv build
 ```
 
 The mise tasks are equivalent convenience wrappers:
@@ -248,6 +248,6 @@ mise run build
 Install the local package as a CLI tool:
 
 ```sh
-mise exec uv -- uv tool install .
+uv tool install .
 worklease --version
 ```
