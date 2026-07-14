@@ -199,6 +199,34 @@ State is selected by `--home`, then `WORKLEASE_HOME`, then `XDG_STATE_HOME/workl
 
 The supported Python API is the symbol list in `worklease.__all__` and follows semantic versioning. JSON responses use schema version 1; consumers must ignore unknown fields and rely on stable `reason` values and exit codes rather than message text. Published schemas live in `worklease/schemas/v1/`. Every distribution includes those schemas and `worklease/py.typed`.
 
+### Retention and garbage collection
+
+`gc` is a read-only dry run unless `--apply` is supplied. It uses a 30-day
+retention window by default and reports deterministic counts plus oldest/newest
+eligible timestamps for epochs, bundle epochs, operations, releases,
+reconciliations, and resource metadata:
+
+```sh
+worklease gc
+worklease gc --retention-days 90
+worklease gc --cutoff 2026-01-01T00:00:00Z --apply
+```
+
+Records strictly older than the captured cutoff are eligible. Active claims,
+expired-but-unreclaimed claims, current ownership, unresolved started
+operations, and records inside the retention window are always protected.
+Applying a collection uses one immediate SQLite transaction; interruption
+leaves either the pre-collection or committed post-collection state. Resource
+revision tombstones preserve monotonic revisions after historical metadata is
+removed.
+
+Use an explicit cutoff for repeatable maintenance and take the normal state
+database backup before applying a destructive collection. Invalid cutoffs,
+unsupported retention values, storage conflicts, and protected-record
+conflicts fail without partial deletion. Garbage collection does not reconcile
+unknown operations or provide verbose diagnostics; use the dedicated
+inspection and diagnostics commands for those concerns.
+
 ## Development
 
 Use the locked Python 3.14 toolchain:

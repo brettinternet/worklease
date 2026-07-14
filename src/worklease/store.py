@@ -2448,6 +2448,17 @@ class LeaseStore:
                     AND o.created_at >= ?
               )
               AND NOT EXISTS (
+                  SELECT 1 FROM operations AS unresolved
+                  WHERE unresolved.claim_id = e.claim_id
+                    AND unresolved.state = 'started'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM reconciliations AS rec
+                        WHERE rec.resource = unresolved.resource
+                          AND rec.operation_id = unresolved.operation_id
+                    )
+              )
+              AND NOT EXISTS (
                   SELECT 1 FROM releases AS r
                   WHERE r.claim_id = e.claim_id
                     AND r.released_at >= ?
@@ -2478,6 +2489,17 @@ class LeaseStore:
                   SELECT 1 FROM operations AS o
                   WHERE o.claim_id = e.claim_id
                     AND o.created_at >= ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM operations AS unresolved
+                  WHERE unresolved.claim_id = e.claim_id
+                    AND unresolved.state = 'started'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM reconciliations AS rec
+                        WHERE rec.resource = unresolved.resource
+                          AND rec.operation_id = unresolved.operation_id
+                    )
               )
               AND NOT EXISTS (
                   SELECT 1 FROM reconciliations AS rec
