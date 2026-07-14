@@ -167,6 +167,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 request_sha256 TEXT NOT NULL,
                 reconciliation_operation_id TEXT NOT NULL,
                 reconciled_at REAL NOT NULL,
+                receipt TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(resource, operation_id)
             );
             """
@@ -204,6 +205,15 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
         }
         if "checkpoint" not in release_columns:
             connection.execute("ALTER TABLE releases ADD COLUMN checkpoint TEXT")
+        reconciliation_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(reconciliations)")
+        }
+        if "receipt" not in reconciliation_columns:
+            connection.execute(
+                "ALTER TABLE reconciliations ADD COLUMN receipt "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
