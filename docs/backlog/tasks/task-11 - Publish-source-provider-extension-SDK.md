@@ -1,11 +1,11 @@
 ---
 id: TASK-11
 title: Publish source provider extension SDK
-status: To Do
+status: In Progress
 assignee:
-  - '@codex-main'
+  - '@codex-loop-main'
 created_date: '2026-07-14 02:33'
-updated_date: '2026-07-14 03:33'
+updated_date: '2026-07-14 07:41'
 labels:
   - providers
   - sdk
@@ -64,4 +64,8 @@ Turn the documented source-provider capability contract into a stable typed SDK 
 **Next action:** after TASK-10 completes, implement T1 directly from the provider contract before adding fixtures.
 
 **Refinement checkpoint:** refined: TASK-11 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=2b1b4ee5-1c42-4d33-ab3c-0957ce7c1035; claimRevision=3; prerequisite=TASK-10; refinement: complete.
+
+Implementation checkpoint (T1 standalone typed provider SDK): commit 4674433690657adc3fa531c59c2a83b0760801de. Added packages/worklease-source-sdk as a stdlib-only typed distribution with immutable Source, WorkRef, WorkItem, ProviderReceipt (confirmed/ambiguous outcome), CapabilityResult, ResourcePolicySelection, ReviewBoundary, and SourceProvider protocol; included py.typed, contract version 1, package and SDK-local Pyright configs, and contract smoke tests. Verification: mise run lint, format-check, test, typecheck passed; SDK unittest (4 tests), SDK standalone pyright, wheel/sdist build passed. Next task: T2 provider conformance kit. Remaining criteria: AC2-AC5.
+
+Integration checkpoint: T1 source commit 4674433690657adc3fa531c59c2a83b0760801de cherry-picked into canonical main as 3c66b77 under the provider/repository transaction lock. Canonical post-integration mise run lint, format-check, test, and typecheck passed.
 <!-- SECTION:NOTES:END -->
