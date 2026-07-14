@@ -181,21 +181,36 @@ class LeaseStore:
             resource_lock(resource, self.home),
             closing(self._connect()) as db,
         ):
-            row = db.execute(
+            rows = db.execute(
                 """
                 SELECT * FROM operations
                 WHERE resource = ? AND operation_id = ?
-                ORDER BY kind
-                LIMIT 1
+                ORDER BY claim_id, kind
                 """,
                 (resource, operation_id),
-            ).fetchone()
-            if row is None:
+            ).fetchall()
+            if not rows:
                 raise LeaseError(
                     "operation-not-found",
                     code=3,
                     operationId=operation_id,
                 )
+            if len(rows) != 1:
+                raise LeaseError(
+                    "operation-id-ambiguous",
+                    code=3,
+                    resource=resource,
+                    operationId=operation_id,
+                )
+            row = rows[0]
+            reconciliation = db.execute(
+                """
+                SELECT outcome, reconciliation_operation_id, reconciled_at
+                FROM reconciliations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                (resource, operation_id),
+            ).fetchone()
             request_json = str(row["request"])
             projection: dict[str, Any] = {
                 "ok": True,
@@ -214,14 +229,6 @@ class LeaseStore:
                 ).hexdigest(),
                 "createdAt": self._timestamp(float(row["created_at"])),
             }
-            reconciliation = db.execute(
-                """
-                SELECT outcome, reconciliation_operation_id, reconciled_at
-                FROM reconciliations
-                WHERE resource = ? AND operation_id = ?
-                """,
-                (resource, operation_id),
-            ).fetchone()
             if reconciliation is not None:
                 projection["state"] = "reconciled"
                 projection["outcome"] = str(reconciliation["outcome"])

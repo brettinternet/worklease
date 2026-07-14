@@ -362,6 +362,26 @@ class StoreTests(unittest.TestCase):
         self.assertNotIn("evidence", projection)
         self.assertNotIn("sentinel", json.dumps(projection))
 
+    def test_inspect_operation_rejects_reused_operation_id_as_ambiguous(self) -> None:
+        first = self.store.acquire(self.acquire_request("resource", "first", ttl=1))
+        first_request = self.mutation(first, "resource", "reused-1", ttl=1)
+        self.store.begin_operation(
+            first_request,
+            "exec",
+            {"revision": first_request.revision, "ttl": float(first_request.ttl)},
+        )
+        self.clock.advance(1.1)
+        second = self.store.acquire(self.acquire_request("resource", "second"))
+        second_request = self.mutation(second, "resource", "reused-1")
+        self.store.begin_operation(
+            second_request,
+            "exec",
+            {"revision": second_request.revision, "ttl": float(second_request.ttl)},
+        )
+
+        with self.assertRaisesRegex(LeaseError, "operation-id-ambiguous"):
+            self.store.inspect_operation("resource", "reused-1")
+
     def test_release_retry_is_idempotent_and_claim_id_cannot_be_reused(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         request = self.mutation(acquired, "resource", "release-1")
