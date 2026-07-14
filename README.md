@@ -1,6 +1,6 @@
 # worklease
 
-`worklease` coordinates generic work between humans and agents on one host. It is more than a lockfile. Each lease has a claim ID, token, revision, expiry, heartbeat, and idempotent operation receipts. It still works like a lockfile. A caller maps work to an opaque resource key, acquires it, does the work, records a checkpoint, and releases it.
+`worklease` coordinates work between humans and agents on one host. A caller maps work to an opaque resource key, acquires a lease, completes the work, records a checkpoint, and releases the lease. Each lease includes a claim ID, token, revision, expiry, heartbeat, and idempotent operation receipts.
 
 The caller's backlog or work system stays authoritative. Worklease provides local coordination state and guarded local operations.
 
@@ -10,7 +10,7 @@ The caller's backlog or work system stays authoritative. Worklease provides loca
 
 Requires Python 3.14 or newer.
 
-Clone repo and then:
+Clone the repository, then run:
 
 ```sh
 uv tool install .
@@ -31,26 +31,18 @@ worklease-vX.Y.Z-macos-arm64
 checksums.txt
 ```
 
-The native executables are one-file PyInstaller builds. They retain the
-`worklease` package metadata, so `worklease --version` reports the tagged
-version. `checksums.txt` covers every wheel, sdist, and native executable.
+Native executables are one-file PyInstaller builds. They retain package metadata, so `worklease --version` reports the tagged version. `checksums.txt` covers every distributable asset.
 
 ### mise
 
-Install the native release for the current platform through mise's GitHub
-backend. The releases currently published by this project are under
-`brettinternet/worklease`:
+Install the native release for the current platform through mise:
 
 ```sh
 mise use --global 'github:brettinternet/worklease[matching=worklease,bin=worklease]'
 worklease --version
 ```
 
-`matching=worklease` narrows mise to this project's release assets, and its
-platform detection then selects the matching native asset for the operating
-system and architecture: `worklease-vX.Y.Z-{linux,macos}-{x86_64,arm64}`.
-`bin=worklease` exposes the downloaded executable under the `worklease` command
-name. Pin an exact release by appending `@vX.Y.Z` to the backend specification.
+mise selects `worklease-vX.Y.Z-{linux,macos}-{x86_64,arm64}` for the current platform and exposes it as `worklease`. Append `@vX.Y.Z` to pin a release:
 
 For example:
 
@@ -58,26 +50,17 @@ For example:
 mise use --global 'github:brettinternet/worklease[matching=worklease,bin=worklease]@vX.Y.Z'
 ```
 
-The `worklease --version` output reports the installed release version.
-
-Install an exact release with the reproducible mise task:
+Or install an exact release with the reproducible task:
 
 ```sh
 WORKLEASE_REPOSITORY=owner/name mise run install-release VERSION=vX.Y.Z
 ```
 
-The installer requires an exact `vX.Y.Z` tag, verifies the selected asset
-against that release's SHA-256 manifest, runs its `--version` smoke test, and
-installs it into `~/.local/bin` (override with `WORKLEASE_INSTALL_DIR`). It
-selects the matching Linux/macOS native asset when available and otherwise
-downloads and verifies the exact `py3-none-any` wheel through `uv`. Local
-release tests use `WORKLEASE_RELEASE_BASE_URL`; no live GitHub access is
-needed to test selection, checksum rejection, fallback, or version smoke
-behavior.
+The task requires a `vX.Y.Z` tag, verifies the SHA-256 manifest and `--version`, then installs to `~/.local/bin`. Set `WORKLEASE_INSTALL_DIR` to change the destination. If no native asset matches, it installs the verified `py3-none-any` wheel through `uv`. Release tests can set `WORKLEASE_RELEASE_BASE_URL` to avoid live GitHub access.
 
 ## Usage
 
-A caller first acquires a lease with the Python API. The claim receipt supplies `CLAIM_ID`, `TOKEN`, and `REVISION` for guarded operations.
+Acquire a lease with the Python API. Use its `CLAIM_ID`, `TOKEN`, and `REVISION` for guarded operations:
 
 ```sh
 export WORKLEASE_HOME=.worklease
@@ -105,18 +88,11 @@ worklease replace-file \
   --content-file /tmp/app.py
 ```
 
-Both commands emit JSON by default with `schemaVersion: 1`, `operation`, and `ok`. `exec` runs argv without a shell. `replace-file` writes atomically and preserves file mode. Use `--format text --version` only for bare version output. Tokens are owner credentials and are omitted from read-only status and list responses.
-
-Success is exit code 0. Lease and capability conflicts use 2. Idempotency and version conflicts use 3. Invalid input uses 64. `exec` returns the child status.
+`exec` runs argv without a shell. `replace-file` writes atomically and preserves file mode.
 
 ## CLI contract
 
-Every command emits compact JSON by default. Successful responses contain
-`schemaVersion: 1`, `operation`, and `ok: true`; failures retain the same
-envelope with `ok: false` and a stable `error` value. Use `--format text`
-explicitly when a human-readable form is needed. The global options
-(`--format`, `--home`) may appear before a command, and the same options may
-appear after a command before its command-specific arguments.
+Commands emit compact JSON with `schemaVersion: 1`, `operation`, and `ok`. Failures also include a stable `error`. Use `--format text` for human-readable output. Put global options (`--format`, `--home`) before the command or before its command-specific arguments.
 
 The command set is:
 
@@ -137,19 +113,13 @@ worklease replace-file --resource RESOURCE --claim-id ID --token TOKEN \
   --expected-sha256 SHA256 --content-file CONTENT_FILE
 ```
 
-`status` and `list` are read-only and never return bearer tokens, including
-when `--format text` is selected. There is no token-recovery option. Acquire
-and heartbeat return the token once because the owner must supply it to
-conditional operations; store it as a secret and do not put it in logs.
-`list --format text` prints a tabular state/resource/claim/owner/expiry view.
-`exec` returns the child process status when a child starts. Exit codes are
-stable: `0` success, `2` lease or capability conflict, `3` idempotency or
-version/request mismatch, `64` invalid CLI input, and the child status for
-`exec`.
+`status` and `list` never return bearer tokens. Tokens cannot be recovered. `acquire` and `heartbeat` return the token once; keep it secret and out of logs. `list --format text` prints state, resource, claim, owner, and expiry columns.
+
+Exit codes: `0` success, `2` lease or capability conflict, `3` idempotency or version/request mismatch, and `64` invalid input. `exec` returns the child status after the child starts.
 
 ## Backlog.md example
 
-A local adapter can map a [Backlog.md](https://github.com/MrLesk/Backlog.md) task to one resource:
+Map a [Backlog.md](https://github.com/MrLesk/Backlog.md) task to one resource:
 
 ```python
 from worklease.adapters import key
@@ -174,15 +144,14 @@ claim = lease["claim"]
 # for the matching worklease exec or release command.
 ```
 
-The caller reads and updates the authoritative task with Backlog.md:
+Read and update the authoritative task through Backlog.md:
 
 ```sh
 backlog task view TASK-42 --plain
 backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-The CLI version runs an authoritative task command under the same derived
-resource and claim with `exec`:
+Run a task command under the same resource and claim:
 
 ```sh
 export RESOURCE="$(worklease key --provider backlog-md \
@@ -197,15 +166,15 @@ worklease exec \
   -- backlog task edit TASK-42 --status "In Progress" --plain
 ```
 
-The `--` marks the boundary between `worklease exec` options and the `backlog task` argv.
+`--` separates `worklease exec` options from the child command.
 
 Run work under the claim, save a durable checkpoint, then release the exact claim.
 
 ## Adapter boundary
 
-The bundled adapters are lazy, deterministic identity policies. GitHub and Backlog.md can derive helper-fenced item keys; Markdown derives one helper-fenced source key for every item; Linear and unknown providers derive `local-coordination` keys. None of these adapters performs provider writes or claims remote/provider-side fencing. Generic `exec` always reports and provides only local coordination.
+Bundled adapters provide deterministic identities. GitHub and Backlog.md derive helper-fenced item keys. Markdown derives one helper-fenced source key for all items. Linear and unknown providers derive `local-coordination` keys. Adapters do not write to providers or claim provider-side fencing. Generic `exec` provides only local coordination.
 
-Markdown source updates use the core atomic `replace-file` operation with an expected SHA-256, symlink rejection, mode preservation, and an atomic fsync/rename. A Markdown adapter rejects coordination-only claims before delegating to that operation.
+Markdown updates use `replace-file`: expected SHA-256, symlink rejection, mode preservation, and atomic fsync/rename. The Markdown adapter rejects coordination-only claims first.
 
 ```python
 from worklease.adapters import key_result
@@ -214,43 +183,38 @@ key_result("markdown", "docs/backlog.md", "ITEM-42")
 # {"capability": "source-claim", "scope": "source", ...}
 ```
 
-Provider-side execution remains unavailable until a provider adapter supplies a real conditional-write check. A same-host helper claim is never upgraded into that stronger guarantee.
+Provider-side execution requires an adapter with a real conditional-write check. A same-host claim never implies that guarantee.
 
 ## Guarantees
 
-The built-in store's only guarantee is same-host SQLite plus POSIX file-lock coordination for cooperating callers. It is not distributed locking, cross-host exclusion, or provider-side fencing.
+The built-in store coordinates cooperating callers on one host through SQLite and POSIX file locks. It does not provide distributed locking, cross-host exclusion, or provider-side fencing. For stronger guarantees, use the provider's conditional mutation authority. The provider remains authoritative for discovery, status, progress, review, and completion.
 
 ## Agent workflow
 
-Agents first read the [Worklease workflow skill](skills/worklease-workflow/SKILL.md). To connect a concrete backlog, issue system, document, or custom source, load the [Worklease source workflow skill](skills/worklease-source-workflow/SKILL.md) after it. The normative workflow tells agents to:
+First read the [Worklease workflow skill](skills/worklease-workflow/SKILL.md). To connect a backlog, issue system, document, or custom source, then read the [source workflow skill](skills/worklease-source-workflow/SKILL.md).
 
-- let the caller or provider adapter discover the full scope, dependencies, and one exact opaque claim resource
-- use `LeaseStore` for same-host claim inspection, acquisition, heartbeat, and release
-- use `worklease exec` or `worklease replace-file` only for the local operation they actually guard
-- treat a provider CLI/API mutation as local coordination unless the provider itself supplies conditional-write fencing
-- verify a durable provider checkpoint before releasing the local claim
+- Let the caller or adapter discover scope, dependencies, and one opaque claim resource.
+- Use `LeaseStore` to inspect, acquire, heartbeat, and release same-host claims.
+- Use `worklease exec` or `worklease replace-file` only for the operation being guarded.
+- Treat provider mutations as local coordination unless the provider supplies conditional-write fencing.
+- Verify a durable provider checkpoint before releasing the claim.
 
-The skill does not choose providers or schedule work. After the caller selects a provider, source, and item, a bundled adapter may derive the deterministic local resource and capability; neither the skill nor those key adapters performs provider discovery, provider writes, or provider-side claims. The caller's backlog remains authoritative.
+The skills and key adapters do not select providers, schedule work, discover provider items, write to providers, or claim provider-side fencing. The caller selects the provider, source, and item. Its backlog remains authoritative.
 
 ### Connect your work source
 
-1. Define explicit source resolution and source-qualified `Source`, `WorkRef`, and `WorkItem` mappings.
-2. Use a bundled `worklease.adapters` key policy, or document one exact stable resource policy for the claim scope.
-3. Implement authorized provider reads, writes, durable receipts, review boundaries, and archive behavior; return `capability` for unsupported operations.
-4. Keep graph construction and selection in `worklease-workflow`; do not duplicate them in the provider adapter.
-5. Default `providerMutationFenced` to `false` unless the provider write itself atomically rejects stale writers and returns evidence.
-6. Validate the adapter with the [provider contract](skills/worklease-source-workflow/references/provider-contract.md), [authoring checklist](skills/worklease-source-workflow/references/provider-authoring-checklist.md), and the [matching guarantee example](skills/worklease-source-workflow/examples/index.md).
+1. Define source resolution and source-qualified `Source`, `WorkRef`, and `WorkItem` mappings.
+2. Use a bundled key policy or document one stable resource policy for the claim scope.
+3. Implement authorized reads, writes, durable receipts, review boundaries, and archive behavior. Return `capability` for unsupported operations.
+4. Keep graph construction and selection in `worklease-workflow`.
+5. Default `providerMutationFenced` to `false`. Set it to `true` only when provider writes atomically reject stale writers and return evidence.
+6. Validate against the [provider contract](skills/worklease-source-workflow/references/provider-contract.md), [authoring checklist](skills/worklease-source-workflow/references/provider-authoring-checklist.md), and [guarantee examples](skills/worklease-source-workflow/examples/index.md).
 
-Provider-specific mappings for Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and unknown systems are indexed in the [provider references](skills/worklease-source-workflow/references/providers/index.md).
-
-## Limitations
-
-The built-in store does not provide distributed locking, cross-host exclusion, or provider-side fencing. For stronger guarantees, the caller must use its provider's conditional mutation authority. The provider remains authoritative for discovery, status, progress, review, and completion.
+See [provider references](skills/worklease-source-workflow/references/providers/index.md) for Backlog.md, Markdown, GitHub Issues, Linear, Jira, and unknown systems.
 
 ## Development
 
-Run the reproducible development environment with the repository's Python 3.14
-and latest uv/pyright toolchain:
+Use the repository's Python 3.14 and locked toolchain:
 
 ```sh
 uv sync --locked
@@ -260,7 +224,7 @@ mise exec -- pyright src/worklease tests
 uv build
 ```
 
-The mise tasks are equivalent convenience wrappers:
+Equivalent mise tasks:
 
 ```sh
 mise run sync
