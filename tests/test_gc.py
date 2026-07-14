@@ -369,6 +369,20 @@ class GarbageCollectionTests(unittest.TestCase):
                         recorded_at,
                     ),
                 )
+            for label, recorded_at in (("old", 0.0), ("boundary", 100.0)):
+                db.execute(
+                    """
+                    INSERT INTO bundle_epochs(
+                        claim_id, resources, agent_id, session_id,
+                        owner_id, work_key, acquired_at
+                    ) VALUES (?, ?, 'agent', 'session', 'owner', 'work', ?)
+                    """,
+                    (
+                        f"bundle-gc-{label}",
+                        json.dumps([f"repo:gc-bundle-{label}"]),
+                        recorded_at,
+                    ),
+                )
 
         result = self.store.garbage_collect(
             cutoff="1970-01-01T00:01:40Z",
@@ -382,6 +396,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertEqual(1, eligible["epochs"]["count"])
         self.assertEqual(1, eligible["releases"]["count"])
         self.assertEqual(1, eligible["resources"]["count"])
+        self.assertEqual(1, eligible["bundleEpochs"]["count"])
         self.assertEqual(1, eligible["operations"]["count"])
         self.assertEqual(1, eligible["reconciliations"]["count"])
         self.assertEqual(
