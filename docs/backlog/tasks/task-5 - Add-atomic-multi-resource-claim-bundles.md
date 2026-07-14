@@ -16,6 +16,13 @@ references:
   - src/worklease/locking.py
   - 'https://github.com/simke9445/agentlocks'
   - 'https://github.com/ThatHunky/agent-coord'
+modified_files:
+  - src/worklease/cli.py
+  - src/worklease/execution.py
+  - src/worklease/models.py
+  - src/worklease/store.py
+  - tests/test_cli.py
+  - tests/test_store.py
 priority: high
 type: feature
 ordinal: 5000
