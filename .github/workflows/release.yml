@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   python-assets:
@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install mise
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           cache: true
       - name: Sync locked environment
@@ -31,9 +31,9 @@ jobs:
       - name: Build wheel and sdist
         run: |
           mkdir -p dist/release
-          mise exec uv -- uv build --out-dir dist/release
+          mise exec uv -- uv build --no-build-isolation --out-dir dist/release
       - name: Upload Python assets
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-python
           path: dist/release/*
@@ -60,9 +60,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install mise
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           cache: true
       - name: Sync locked environment
@@ -71,7 +71,7 @@ jobs:
         env:
           ASSET_NAME: worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
         run: |
-          mise exec uv -- uv run --with pyinstaller pyinstaller \
+          mise exec uv -- uv run --locked --group release pyinstaller \
             --clean --noconfirm --onefile \
             --name "$ASSET_NAME" \
             --copy-metadata worklease \
@@ -90,7 +90,7 @@ jobs:
           "dist/$ASSET_NAME" key --provider github --source example/repo --item 1 > key.json
           python -c 'import json; p=json.load(open("key.json")); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
       - name: Upload native asset
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-native-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/worklease-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
@@ -100,15 +100,17 @@ jobs:
     name: Publish release assets
     needs: [python-assets, native-assets]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install mise
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           cache: true
       - name: Download all release assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
           path: dist/release
@@ -118,7 +120,7 @@ jobs:
           mise exec uv -- uv run python scripts/release_artifacts.py write --directory dist/release
           mise exec uv -- uv run python scripts/release_artifacts.py verify --directory dist/release
       - name: Publish tagged assets
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ github.ref_name }}
           files: dist/release/*

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -19,6 +19,10 @@ worklease = "worklease.cli:main"
 dev = [
     "ruff>=0.15.21",
 ]
+release = [
+    "hatchling==1.31.0",
+    "pyinstaller==6.21.0",
+]
 
 [tool.ruff]
 target-version = "py314"
@@ -34,7 +38,7 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "release"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/worklease"]

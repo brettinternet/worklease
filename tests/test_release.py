@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -210,6 +212,54 @@ class ReleaseValidationTests(unittest.TestCase):
                     if " tool install " in line
                 )
             )
+
+    def test_release_toolchain_is_exact_and_locked(self) -> None:
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        self.assertEqual(["hatchling==1.31.0"], project["build-system"]["requires"])
+        self.assertEqual(
+            ["hatchling==1.31.0", "pyinstaller==6.21.0"],
+            project["dependency-groups"]["release"],
+        )
+        self.assertIn("release", project["tool"]["uv"]["default-groups"])
+
+        locked = tomllib.loads((ROOT / "uv.lock").read_text())
+        versions = {
+            package["name"]: package["version"] for package in locked["package"]
+        }
+        self.assertEqual("1.31.0", versions["hatchling"])
+        self.assertEqual("6.21.0", versions["pyinstaller"])
+
+        workflows = "\n".join(
+            (ROOT / path).read_text()
+            for path in (".github/workflows/ci.yml", ".github/workflows/release.yml")
+        )
+        self.assertNotIn("--with pyinstaller", workflows)
+        self.assertEqual(
+            2, workflows.count("uv run --locked --group release pyinstaller")
+        )
+        self.assertIn("uv build --no-build-isolation", workflows)
+        self.assertIn("uv build --no-build-isolation", (ROOT / "mise.toml").read_text())
+
+    def test_workflow_actions_and_permissions_are_immutable(self) -> None:
+        action = re.compile(
+            r"^\s*uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$"
+        )
+        for name in ("ci.yml", "release.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text()
+            uses = [line for line in workflow.splitlines() if "uses:" in line]
+            self.assertTrue(uses)
+            for line in uses:
+                with self.subTest(workflow=name, action=line):
+                    self.assertRegex(line, action)
+            root = workflow.split("jobs:", 1)[0]
+            self.assertIn("permissions:\n  contents: read", root)
+
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertNotIn("contents: write", ci)
+        self.assertEqual(1, release.count("contents: write"))
+        publish = release.split("  publish:", 1)[1]
+        self.assertIn("    permissions:\n      contents: write", publish)
 
     def test_manifest_covers_every_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
