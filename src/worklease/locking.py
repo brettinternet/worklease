@@ -6,7 +6,7 @@ import fcntl
 import hashlib
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .models import LeaseError, require_resource
@@ -40,3 +40,20 @@ def resource_lock(
         yield
     finally:
         os.close(descriptor)
+
+
+@contextmanager
+def resource_locks(
+    resources: tuple[str, ...] | list[str],
+    home: str | os.PathLike[str] | None = None,
+) -> Iterator[None]:
+    """Hold a bundle's resource locks in deterministic path order."""
+
+    ordered = sorted(
+        (require_resource(resource) for resource in resources),
+        key=lambda resource: str(resource_lock_path(resource, home)),
+    )
+    with ExitStack() as stack:
+        for resource in ordered:
+            stack.enter_context(resource_lock(resource, home))
+        yield

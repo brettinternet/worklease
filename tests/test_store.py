@@ -14,7 +14,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from worklease.locking import resource_lock_path
-from worklease.models import AcquireRequest, LeaseError, MutationRequest
+from worklease.models import (
+    AcquireRequest,
+    BundleAcquireRequest,
+    LeaseError,
+    MutationRequest,
+)
 from worklease.store import LeaseStore
 
 
@@ -354,6 +359,125 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
             self.acquire_request("crash-resource", "parent")
         )
         self.assertTrue(reclaimed["reclaimed"])
+
+    @staticmethod
+    def bundle_request(
+        resources: tuple[str, ...],
+        claim_id: str,
+        *,
+        ttl: float = 10.0,
+    ) -> BundleAcquireRequest:
+        return BundleAcquireRequest(
+            resources=resources,
+            claim_id=claim_id,
+            agent_id=f"agent-{claim_id}",
+            session_id=f"session-{claim_id}",
+            owner_id=f"owner-{claim_id}",
+            work_key="implement:item:bundle",
+            ttl=ttl,
+        )
+
+    def test_bundle_validation_rejects_invalid_shapes_and_bounds(self) -> None:
+        for values, reason in (
+            ((), "empty-bundle"),
+            (("same", "same"), "duplicate-resource"),
+            (tuple(f"resource-{index}" for index in range(33)), "bundle-too-large"),
+            ("resource", "invalid-bundle"),
+            (None, "invalid-bundle"),
+        ):
+            with (
+                self.subTest(values=values),
+                self.assertRaisesRegex(LeaseError, reason),
+            ):
+                BundleAcquireRequest(
+                    resources=values,  # type: ignore[arg-type]
+                    claim_id="claim",
+                    agent_id="agent",
+                    session_id="session",
+                    owner_id="owner",
+                    work_key="work",
+                )
+
+    def test_bundle_acquire_is_atomic_and_single_member_mutations_are_rejected(
+        self,
+    ) -> None:
+        acquired = self.store.acquire_bundle(
+            self.bundle_request(("resource-a", "resource-b"), "bundle")
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.assertEqual(["resource-a", "resource-b"], claim["resources"])
+        self.assertEqual(
+            claim["claimId"], self.store.status("resource-a")["claim"]["claimId"]
+        )
+        self.assertEqual(
+            claim["revision"], self.store.status("resource-b")["claim"]["revision"]
+        )
+        self.assertNotIn(str(claim["token"]), json.dumps(self.store.list_claims()))
+        with self.assertRaisesRegex(LeaseError, "bundle-operation-required"):
+            self.store.heartbeat(
+                MutationRequest(
+                    resource="resource-a",
+                    claim_id=str(claim["claimId"]),
+                    token=str(claim["token"]),
+                    revision=int(claim["revision"]),
+                    operation_id="member-heartbeat",
+                )
+            )
+        with self.assertRaisesRegex(LeaseError, "bundle-operation-required"):
+            self.store.acquire(self.acquire_request("resource-a", "other"))
+        self.assertEqual(
+            str(claim["claimId"]),
+            self.store.status("resource-b")["claim"]["claimId"],
+        )
+
+    def test_bundle_retry_and_expiry_reclaim_are_idempotent_and_versioned(self) -> None:
+        request = self.bundle_request(("resource-a", "resource-b"), "first", ttl=1)
+        first = self.store.acquire_bundle(request)
+        retry = self.store.acquire_bundle(request)
+        self.assertTrue(retry["idempotent"])
+        self.assertEqual(first["claim"]["token"], retry["claim"]["token"])
+        self.clock.advance(1.1)
+        recovered = self.store.acquire_bundle(
+            self.bundle_request(("resource-a", "resource-b"), "second")
+        )
+        self.assertTrue(recovered["reclaimed"])
+        self.assertGreater(recovered["claim"]["revision"], first["claim"]["revision"])
+        self.assertNotEqual(first["claim"]["token"], recovered["claim"]["token"])
+
+    def test_overlapping_bundles_have_one_winner_without_partial_claims(self) -> None:
+        barrier = threading.Barrier(2)
+
+        def contender(claim_id: str) -> tuple[str, object]:
+            barrier.wait()
+            try:
+                return (
+                    "ok",
+                    self.store.acquire_bundle(
+                        self.bundle_request(("shared", claim_id), claim_id)
+                    ),
+                )
+            except LeaseError as error:
+                return error.reason, error
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(contender, ("bundle-a", "bundle-b")))
+        self.assertEqual(1, sum(result[0] == "ok" for result in results))
+        self.assertEqual(
+            1,
+            sum(
+                result[0] in {"already-claimed", "resource-guarded"}
+                for result in results
+            ),
+        )
+        winner = next(result[1] for result in results if result[0] == "ok")
+        assert isinstance(winner, dict)
+        claim = winner["claim"]
+        assert isinstance(claim, dict)
+        self.assertEqual("active", self.store.status("shared")["state"])
+        self.assertEqual(
+            "active", self.store.status(str(claim["resources"][1]))["state"]
+        )
 
 
 if __name__ == "__main__":
