@@ -1126,6 +1126,37 @@ def _shorten_text(value: str, width: int) -> str:
     return f"{value[:prefix_width]}…{value[-suffix_width:]}"
 
 
+_RESOURCE_BOUNDARIES = frozenset("/:#\\")
+
+
+def _shorten_resource(value: str, width: int) -> str:
+    """Keep resource component boundaries within a fixed display width."""
+
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return value[:width]
+
+    prefix_end: int | None = None
+    saw_component = False
+    for index, character in enumerate(value):
+        if character in _RESOURCE_BOUNDARIES:
+            if saw_component:
+                prefix_end = index + 1
+                break
+        else:
+            saw_component = True
+    if prefix_end is None or prefix_end >= width - 1:
+        return _shorten_text(value, width)
+
+    suffix_capacity = width - prefix_end - 1
+    suffix_start = len(value) - suffix_capacity
+    for index in range(suffix_start, len(value)):
+        if value[index] in _RESOURCE_BOUNDARIES:
+            return f"{value[:prefix_end]}…{value[index:]}"
+    return _shorten_text(value, width)
+
+
 def _relative_duration(seconds: float) -> str:
     """Render a non-negative approximate duration for a list row."""
 
@@ -1169,7 +1200,7 @@ def _list_resource(claim: dict[str, object], *, full: bool) -> str:
         if resource is not None
         else _text_value(claim.get("resources", []))
     )
-    return value if full else _shorten_text(value, _LIST_RESOURCE_WIDTH)
+    return value if full else _shorten_resource(value, _LIST_RESOURCE_WIDTH)
 
 
 def _render_list(

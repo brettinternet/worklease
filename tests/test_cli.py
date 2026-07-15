@@ -1090,11 +1090,16 @@ with resource_lock(resource):
                     in_field = False
             self.assertEqual(header_starts, starts, line)
 
+    def test_resource_shortening_bounds_opaque_values(self) -> None:
+        opaque = "opaque-resource-" + ("x" * 100)
+        for width in (0, 1, 2, 17, 52):
+            shortened = cli_module._shorten_resource(opaque, width)
+            self.assertLessEqual(len(shortened), width)
+        self.assertIn("…", cli_module._shorten_resource(opaque, 17))
+
     def test_text_list_uses_bounded_relative_values_with_full_override(self) -> None:
         now = 1_750_000_000.0
-        resource = (
-            "backlog-md:/Users/brett/dev/me/agentsupervisor/.git:docs/backlog:TASK-17"
-        )
+        resource = "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-18"
         claim_id = "6D075B01-11DD-42A9-A8EE-57B4773829F1"
         owner_id = "codex-loop-fresh-20260715-agentsupervisor-main"
         payload = {
@@ -1126,6 +1131,12 @@ with resource_lock(resource):
         compact = compact_output.getvalue()
         self.assertNotIn(resource, compact)
         self.assertIn("…", compact)
+        self.assertIn(
+            "backlog-md:…/me/worklease/.git:docs/backlog:TASK-18",
+            compact,
+        )
+        self.assertIn("docs/backlog", compact)
+        self.assertIn("TASK-18", compact)
         self.assertIn("6D075B01", compact)
         self.assertIn("3829F1", compact)
         self.assertIn("1h 2m", compact)
@@ -1146,9 +1157,7 @@ with resource_lock(resource):
         self.assertNotIn("1h 2m", full)
 
     def test_text_list_full_option_preserves_cli_and_json_values(self) -> None:
-        resource = (
-            "backlog-md:/Users/brett/dev/me/agentsupervisor/.git:docs/backlog:TASK-17"
-        )
+        resource = "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-18"
         claim_id = "claim-" + "x" * 40
         acquired = self.json_cli(
             *self.acquire_arguments(resource=resource, claim_id=claim_id)
