@@ -80,6 +80,31 @@ worklease acquire \
   --ttl 900
 ```
 
+To wait for a singleton resource without a check-then-acquire race, add a
+finite timeout. Acquisition retries the same atomic operation only for active
+singleton contention (`already-claimed`) or a transient local resource guard
+(`resource-guarded`):
+
+```sh
+worklease acquire \
+  --resource "$RESOURCE" \
+  --claim-id "$CLAIM_ID" \
+  --agent-id "$AGENT_ID" \
+  --session-id "$SESSION_ID" \
+  --owner-id "$OWNER_ID" \
+  --work-key "implement:TASK-42" \
+  --wait-timeout 30 \
+  --poll-interval 0.25
+```
+
+`--wait-timeout` is finite and non-negative; zero performs one immediate
+attempt. `--poll-interval` defaults to `0.25` seconds and is valid only with
+`--wait-timeout`; it must be finite and greater than zero. A timeout returns
+the last contention error with exit code `2` and never exposes a bearer token.
+Bundle members, including expired bundles, return
+`bundle-operation-required` immediately and must use the bundle lifecycle.
+
+
 Save the returned token and revision. The token appears only in successful mutation responses. Prefer a mode-0600 `--token-file` or inherited `--token-fd`; direct `--token` is supported but exposes the bearer secret in argv. Never put a token in logs, comments, checkpoints, or handoffs.
 
 Heartbeat before half the lease elapses and around long operations. Every successful mutation advances the revision; always use the newest returned value.
@@ -165,8 +190,10 @@ Stop on ownership loss, provider-version conflict, missing receipts, or unknown 
 ## Common patterns
 
 Singleton command: derive one stable local resource such as `local:formatter`, acquire it, run one argv through `exec`, and release the returned revision.
-
-Scarce resource: use one shared identity such as `local:port:8080` or `local:gpu:0`. Wait for the current claim or its expiry; do not steal it.
+Scarce resource: use one shared identity such as `local:port:8080` or
+`local:gpu:0`. Use singleton `acquire --wait-timeout` to wait for release or
+expiry without a check-then-acquire race; do not steal it. Bundle members
+require the bundle lifecycle and are never waited on by singleton acquisition.
 
 Source-wide Markdown update: derive a `markdown` key for the file, acquire the source claim, and use `replace-file` with the current SHA-256. The expected hash and atomic replacement fence that one local file mutation. A coordination-only claim cannot call `replace-file`.
 

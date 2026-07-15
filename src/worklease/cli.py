@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+import time
 from collections.abc import Sequence
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn, Protocol, cast
 
 from . import __version__
 from .adapters import (
@@ -202,6 +204,7 @@ def _add_output_arguments(
             default=argparse.SUPPRESS,
             help="output format (default: text)",
         )
+
     parser.add_argument(
         "--json",
         action="store_true",
@@ -345,6 +348,18 @@ def _parser() -> _ArgumentParser:
         "--coordination-only",
         action="store_true",
         help="mark this ownership epoch as unable to fence provider writes",
+    )
+    acquire_parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=None,
+        help="retry singleton acquisition for at most SECONDS",
+    )
+    acquire_parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=None,
+        help="seconds between singleton acquisition retries (requires --wait-timeout)",
     )
     acquire_parser.add_argument("--ttl", default=900.0, type=float)
 
@@ -1022,6 +1037,56 @@ def _bundle_request(args: argparse.Namespace) -> BundleMutationRequest:
     )
 
 
+class _AcquireStore(Protocol):
+    def acquire(self, request: AcquireRequest) -> dict[str, object]: ...
+
+
+_RETRYABLE_ACQUIRE_ERRORS = frozenset({"already-claimed", "resource-guarded"})
+_DEFAULT_POLL_INTERVAL = 0.25
+
+
+def _validate_wait_options(
+    wait_timeout: float | None, poll_interval: float | None
+) -> tuple[float | None, float | None]:
+    if wait_timeout is None:
+        if poll_interval is not None:
+            raise LeaseError("invalid-poll-interval", code=64)
+        return None, None
+    if not math.isfinite(wait_timeout) or wait_timeout < 0:
+        raise LeaseError("invalid-wait-timeout", code=64)
+    interval = _DEFAULT_POLL_INTERVAL if poll_interval is None else poll_interval
+    if not math.isfinite(interval) or interval <= 0:
+        raise LeaseError("invalid-poll-interval", code=64)
+    return wait_timeout, interval
+
+
+def _acquire_with_wait(
+    store: _AcquireStore,
+    request: AcquireRequest,
+    wait_timeout: float | None,
+    poll_interval: float | None,
+    *,
+    clock=time.monotonic,
+    sleeper=time.sleep,
+) -> dict[str, object]:
+    timeout, interval = _validate_wait_options(wait_timeout, poll_interval)
+    if timeout is None:
+        return store.acquire(request)
+    assert interval is not None
+
+    deadline = clock() + timeout
+    while True:
+        try:
+            return store.acquire(request)
+        except LeaseError as error:
+            if error.reason not in _RETRYABLE_ACQUIRE_ERRORS:
+                raise
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise
+            sleeper(min(interval, remaining))
+
+
 def _dispatch(
     args: argparse.Namespace, store: LeaseStore | None
 ) -> tuple[dict[str, object], int]:
@@ -1046,7 +1111,8 @@ def _dispatch(
     if operation == "acquire":
         assert store is not None
         return (
-            store.acquire(
+            _acquire_with_wait(
+                store,
                 AcquireRequest(
                     resource=args.resource,
                     claim_id=args.claim_id,
@@ -1056,7 +1122,9 @@ def _dispatch(
                     work_key=args.work_key,
                     ttl=args.ttl,
                     coordination_only=args.coordination_only,
-                )
+                ),
+                args.wait_timeout,
+                args.poll_interval,
             ),
             0,
         )

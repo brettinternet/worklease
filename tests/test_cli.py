@@ -10,7 +10,13 @@ import unittest
 from pathlib import Path
 
 from worklease import __version__
-from worklease.models import BundleMutationRequest, MutationRequest
+from worklease.cli import _acquire_with_wait
+from worklease.models import (
+    AcquireRequest,
+    BundleMutationRequest,
+    LeaseError,
+    MutationRequest,
+)
 from worklease.store import LeaseStore
 
 
@@ -144,6 +150,345 @@ class CliContractTests(unittest.TestCase):
         )
         self.assertIn("worklease status --resource local:formatter", result.stdout)
         self.assertEqual(1, result.stdout.count("derive one stable resource key"))
+
+    def test_wait_retries_transient_contention_until_acquire(self) -> None:
+        request = AcquireRequest(
+            resource="repo:wait-release",
+            claim_id="waiter",
+            agent_id="agent",
+            session_id="session",
+            owner_id="owner",
+            work_key="implement:wait",
+            ttl=30,
+        )
+
+        class SequenceStore:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise LeaseError("already-claimed", resource=request.resource)
+                return {"ok": True, "claim": {"claimId": request.claim_id}}
+
+        store = SequenceStore()
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(duration: float) -> None:
+            sleeps.append(duration)
+            now[0] += duration
+
+        result = _acquire_with_wait(
+            store,
+            request,
+            1.0,
+            0.25,
+            clock=lambda: now[0],
+            sleeper=sleep,
+        )
+        self.assertEqual({"ok": True, "claim": {"claimId": "waiter"}}, result)
+        self.assertEqual(2, store.attempts)
+        self.assertEqual([0.25], sleeps)
+
+    def test_no_wait_remains_one_atomic_attempt(self) -> None:
+        request = AcquireRequest(
+            resource="repo:wait-immediate",
+            claim_id="waiter",
+            agent_id="agent",
+            session_id="session",
+            owner_id="owner",
+            work_key="implement:wait",
+        )
+
+        class ImmediateConflict:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                raise LeaseError("already-claimed", resource=request.resource)
+
+        store = ImmediateConflict()
+        with self.assertRaises(LeaseError):
+            _acquire_with_wait(store, request, None, None)
+        self.assertEqual(1, store.attempts)
+
+    def test_wait_timeout_retries_resource_guards_and_preserves_error(self) -> None:
+        request = AcquireRequest(
+            resource="repo:wait-guard",
+            claim_id="waiter",
+            agent_id="agent",
+            session_id="session",
+            owner_id="owner",
+            work_key="implement:wait",
+            ttl=30,
+        )
+
+        class GuardedStore:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                raise LeaseError(
+                    "resource-guarded",
+                    resource=request.resource,
+                    token="secret-token",
+                )
+
+        store = GuardedStore()
+        now = [0.0]
+
+        def sleep(duration: float) -> None:
+            now[0] += duration
+
+        with self.assertRaises(LeaseError) as raised:
+            _acquire_with_wait(
+                store,
+                request,
+                0.5,
+                0.2,
+                clock=lambda: now[0],
+                sleeper=sleep,
+            )
+
+        self.assertEqual("resource-guarded", raised.exception.reason)
+        self.assertEqual("secret-token", raised.exception.details["token"])
+        self.assertEqual(4, store.attempts)
+
+    def test_wait_uses_real_store_release_expiry_and_heartbeat(self) -> None:
+        def acquire_request(resource: str, claim_id: str, ttl: float) -> AcquireRequest:
+            return AcquireRequest(
+                resource=resource,
+                claim_id=claim_id,
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key=f"implement:{resource}",
+                ttl=ttl,
+            )
+
+        now = [0.0]
+        store = LeaseStore(
+            self.home.name,
+            clock=lambda: now[0],
+            token_factory=lambda: "holder-token",
+        )
+
+        holder = store.acquire(acquire_request("repo:wait-release-real", "holder", 30))
+        holder_claim = holder["claim"]
+        assert isinstance(holder_claim, dict)
+        holder_mutation = MutationRequest(
+            resource="repo:wait-release-real",
+            claim_id="holder",
+            token=str(holder_claim["token"]),
+            revision=int(holder_claim["revision"]),
+            operation_id="release-holder",
+        )
+
+        class ReleaseAfterConflict:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                try:
+                    return store.acquire(request)
+                except LeaseError:
+                    if self.attempts == 1:
+                        store.release(holder_mutation, "test release")
+                    raise
+
+        release_store = ReleaseAfterConflict()
+        release_result = _acquire_with_wait(
+            release_store,
+            acquire_request("repo:wait-release-real", "waiter", 30),
+            1,
+            0.25,
+            clock=lambda: now[0],
+            sleeper=lambda duration: now.__setitem__(0, now[0] + duration),
+        )
+        self.assertTrue(release_result["ok"])
+        self.assertEqual(2, release_store.attempts)
+
+        now[0] = 0.0
+        expiry_store = LeaseStore(
+            self.home.name,
+            clock=lambda: now[0],
+            token_factory=lambda: "expiry-holder-token",
+        )
+        expiry_store.acquire(
+            acquire_request("repo:wait-expiry-real", "expiry-holder", 1)
+        )
+
+        class ExpiryAfterConflict:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                try:
+                    return expiry_store.acquire(request)
+                except LeaseError:
+                    if self.attempts == 1:
+                        now[0] = 1.1
+                    raise
+
+        expiry_store_wrapper = ExpiryAfterConflict()
+        expiry_result = _acquire_with_wait(
+            expiry_store_wrapper,
+            acquire_request("repo:wait-expiry-real", "expiry-waiter", 1),
+            2,
+            0.25,
+            clock=lambda: now[0],
+            sleeper=lambda duration: now.__setitem__(0, now[0] + duration),
+        )
+        self.assertTrue(expiry_result["ok"])
+        self.assertEqual(2, expiry_store_wrapper.attempts)
+
+        now[0] = 0.0
+        heartbeat_store = LeaseStore(
+            self.home.name,
+            clock=lambda: now[0],
+            token_factory=lambda: "heartbeat-holder-token",
+        )
+        heartbeat = heartbeat_store.acquire(
+            acquire_request("repo:wait-heartbeat-real", "heartbeat-holder", 1)
+        )
+        heartbeat_claim = heartbeat["claim"]
+        assert isinstance(heartbeat_claim, dict)
+        heartbeat_request = MutationRequest(
+            resource="repo:wait-heartbeat-real",
+            claim_id="heartbeat-holder",
+            token=str(heartbeat_claim["token"]),
+            revision=int(heartbeat_claim["revision"]),
+            operation_id="heartbeat-holder",
+            ttl=1,
+        )
+
+        class HeartbeatAfterConflict:
+            def __init__(self) -> None:
+                self.attempts = 0
+                self.renewed_expiry = 0.0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                try:
+                    return heartbeat_store.acquire(request)
+                except LeaseError:
+                    if self.attempts == 1:
+                        now[0] = 0.9
+                        renewed = heartbeat_store.heartbeat(heartbeat_request)
+                        renewed_claim = renewed["claim"]
+                        assert isinstance(renewed_claim, dict)
+                        self.renewed_expiry = float(renewed_claim["expiresAtEpoch"])
+                    raise
+
+        heartbeat_store_wrapper = HeartbeatAfterConflict()
+        heartbeat_result = _acquire_with_wait(
+            heartbeat_store_wrapper,
+            acquire_request("repo:wait-heartbeat-real", "heartbeat-waiter", 1),
+            3,
+            0.4,
+            clock=lambda: now[0],
+            sleeper=lambda duration: now.__setitem__(0, now[0] + duration),
+        )
+        self.assertTrue(heartbeat_result["ok"])
+        self.assertGreater(heartbeat_store_wrapper.renewed_expiry, 1.0)
+        self.assertEqual(4, heartbeat_store_wrapper.attempts)
+
+    def test_wait_options_are_singleton_only_and_validate_bounds(self) -> None:
+        invalid_poll = self.run_cli(
+            "--json",
+            "status",
+            "--resource",
+            "repo:wait-invalid",
+            "--poll-interval",
+            "0.1",
+        )
+        self.assertEqual(64, invalid_poll.returncode)
+        self.assertEqual("invalid-arguments", json.loads(invalid_poll.stdout)["error"])
+
+        for arguments in (
+            ("--wait-timeout", "nan"),
+            ("--wait-timeout", "-1"),
+            ("--wait-timeout", "1", "--poll-interval", "0"),
+        ):
+            result = self.run_cli("--json", *self.acquire_arguments(), *arguments)
+            self.assertEqual(64, result.returncode)
+            self.assertEqual(
+                "invalid-wait-timeout"
+                if arguments[0] == "--wait-timeout" and arguments[1] != "1"
+                else "invalid-poll-interval",
+                json.loads(result.stdout)["error"],
+            )
+
+    def test_wait_timeout_preserves_conflict_exit_code_and_redaction(self) -> None:
+        resource = "repo:wait-timeout"
+        self.json_cli(*self.acquire_arguments(resource=resource, claim_id="holder"))
+        result = self.run_cli(
+            "--json",
+            *self.acquire_arguments(resource=resource, claim_id="waiter"),
+            "--wait-timeout",
+            "0.01",
+            "--poll-interval",
+            "0.005",
+        )
+        self.assertEqual(2, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("already-claimed", payload["error"])
+        self.assertNotIn('"token"', result.stdout)
+
+        text = self.run_cli(
+            "--format",
+            "text",
+            *self.acquire_arguments(resource=resource, claim_id="text-waiter"),
+            "--wait-timeout",
+            "0",
+        )
+        self.assertEqual(2, text.returncode)
+        self.assertIn("ERROR acquire: already-claimed\n", text.stdout)
+        self.assertNotIn("token", text.stdout.lower())
+
+    def test_waiting_singleton_rejects_bundle_members_immediately(self) -> None:
+        resources = ("repo:wait-bundle-a", "repo:wait-bundle-b")
+        self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "wait-bundle",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "implement:wait-bundle",
+        )
+        result = self.run_cli(
+            "--json",
+            *self.acquire_arguments(resource=resources[0], claim_id="singleton"),
+            "--wait-timeout",
+            "0.25",
+            "--poll-interval",
+            "0.01",
+        )
+        self.assertEqual(2, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("bundle-operation-required", payload["error"])
+        self.assertNotIn('"token"', result.stdout)
+
+    def test_version_is_json_by_default_and_bare_in_text_mode(self) -> None:
+        payload = self.json_cli("--version")
+        self.assertEqual("version", payload["operation"])
+        self.assertEqual(True, payload["ok"])
+        self.assertEqual(__version__, payload["version"])
 
     def test_help_group_colors_follow_argparse_color_setting(self) -> None:
         color_environment = self.environment.copy()
