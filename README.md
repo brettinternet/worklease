@@ -227,6 +227,61 @@ conflicts fail without partial deletion. Garbage collection does not reconcile
 unknown operations or provide verbose diagnostics; use the dedicated
 inspection and diagnostics commands for those concerns.
 
+### Human-readable text grammar
+
+`--format text` is a stable, opt-in display format for people. Automation must
+continue to consume the default schema-versioned JSON. Text output is UTF-8,
+newline-delimited, and deterministic: fields appear in the order documented
+below, and tab (`\t`) separates columns. Scalar values use compact
+JSON-compatible escaping without spaces. Printable Unicode remains readable;
+control characters, C1 characters, and DEL are escaped (`\u0000` through
+`\u001f`, `\u007f` through `\u009f`) so values cannot create lines or columns.
+
+Successful operations normally begin with `OK <operation>`. Failures begin
+with `ERROR <operation>: <reason>`, followed by only allowlisted diagnostic
+fields (`RESOURCE`, `OPERATION_ID`, `TARGET_OPERATION_ID`, `PROVIDER`, `FIELD`,
+`CLAIM_ID`, revision bounds, `STATE`, `GUARANTEE`, `PROVIDER_FENCING`, or
+`EXPECTED_REQUEST_SHA256`). Parser failures use `ERROR parse: <reason>` and
+preserve the parser exit status.
+
+The command grammars are:
+
+- `version`: the version alone on success.
+- `key`: `OK key`, then `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`,
+  `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, and `PROVIDER_FENCING`.
+- `policy list`: one tab-separated header (`NAME`, `ORIGIN`, `ORIGIN_VERSION`,
+  `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`,
+  `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`), followed by
+  one row per policy. An empty list emits the header only.
+- `policy describe`: one `FIELD: value` line for each policy field.
+- `list`: the header `STATE RESOURCE CLAIM_ID OWNER_ID EXPIRES_AT`, with one
+  tab-separated `active` or `expired` row per claim. Tokens are never listed.
+- `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`: `OK
+  <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
+  block containing `RESOURCE`, `CLAIM_ID`, `REVISION`, `EXPIRES_AT`, and
+  `GUARANTEE`; an unclaimed resource emits `CLAIM <none>`.
+- `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
+  block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
+  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`.
+- `inspect-operation`: `OK inspect-operation`, followed by operation identity,
+  kind, state, outcome, hashes, and reconciliation timestamps when present.
+- `gc`: `OK gc`, retention fields, then an `ELIGIBLE` section with sorted
+  record-type rows containing count, oldest, and newest timestamps.
+- `acquire`, `acquire-bundle`, `bundle-acquire`, `heartbeat`, `checkpoint`,
+  `heartbeat-bundle`, `bundle-heartbeat`, `transfer`, `release`,
+  `release-bundle`, `bundle-release`, `exec`, `exec-bundle`, `bundle-exec`,
+  `replace-file`, and `reconcile-operation`: `OK <operation>`, operation and
+  mutation fields, then a `CLAIM` block. A successful acquire, heartbeat, or
+  checkpoint may include `TOKEN` because the owner needs it for the next
+  lifecycle step; other mutation and all failure output omit bearer tokens.
+
+Guarded child results add a `COMMAND` block with `RETURNCODE`,
+`EXECUTION_DIRECTORY`, `STDOUT`, and `STDERR` when those fields exist.
+`STDOUT` and `STDERR` are values, not raw appended streams, so their escaping
+rules are identical to every other scalar. Status and list output expose no
+bearer tokens or secret claim material; mutation output exposes only the
+minimum owner fields required to continue the lifecycle.
+
 ## Development
 
 Use the locked Python 3.14 toolchain:
