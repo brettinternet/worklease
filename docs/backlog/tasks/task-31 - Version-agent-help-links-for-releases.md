@@ -1,11 +1,11 @@
 ---
 id: TASK-31
 title: Version agent help links for releases
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-15 22:16'
-updated_date: '2026-07-15 22:20'
+updated_date: '2026-07-15 22:26'
 labels: []
 dependencies: []
 ordinal: 32000
@@ -19,9 +19,9 @@ Published Worklease CLI artifacts should direct agent workflow help to the match
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Published Python and native release artifacts embed their validated release version for agent workflow and README help links.
-- [ ] #2 Source and development builds continue to use main unless explicit valid published release metadata is supplied.
-- [ ] #3 Tests cover source, published-version, and invalid-metadata URL selection without changing existing help behavior.
+- [x] #1 Published Python and native release artifacts embed their validated release version for agent workflow and README help links.
+- [x] #2 Source and development builds continue to use main unless explicit valid published release metadata is supplied.
+- [x] #3 Tests cover source, published-version, and invalid-metadata URL selection without changing existing help behavior.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -34,4 +34,12 @@ Published Worklease CLI artifacts should direct agent workflow help to the match
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented build-time _release_metadata.py default, validated scripts/embed_release_metadata.py generation, CLI fallback/override behavior, and release workflow generation in both Python/native jobs. Focused CLI/release tests passed 52/52; embedded release-help smoke passed.
+
+Final validation: mise run lint, mise run format-check, mise run test, mise run typecheck, mise run build, and mise run hooks all passed. Built wheel includes worklease/_release_metadata.py. Independent verifier PASS covered all three acceptance criteria, source/valid/invalid/embedded URL selection, generator validation, and both release jobs.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Embedded validated release documentation metadata into Python and native release builds. Agent help now uses the matching v<release> ref for published artifacts, while source/development defaults remain on main with safe explicit metadata fallback. Added generator, workflow wiring, and regression coverage; all repository quality gates and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
