@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://worklease.dev/schemas/v1/commands.json",
   "title": "Worklease CLI response",
-  "description": "Schema for every released worklease CLI response. JSON is the default wire format.",
+  "description": "Schema for every released worklease CLI response. Human-readable text is the default; JSON is an explicit output format.",
   "allOf": [
     {"$ref": "common.json#/$defs/Envelope"},
     {

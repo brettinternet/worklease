@@ -47,8 +47,9 @@ This verifies the SHA-256 manifest and `--version`, preferring a native asset an
 
 The CLI emits compact human-readable text by default. Use `--json` (or
 `--format json`) for the schema-versioned JSON automation contract; `--format
-text` is an explicit equivalent. Output selection may appear before or after
-the command name, but `--json` cannot be combined with `--format`.
+text` is an explicit equivalent. Output selection may appear before the
+top-level command or after the command's final subcommand name, but `--json`
+cannot be combined with `--format`.
 
 ### 1. Derive one exact resource
 
