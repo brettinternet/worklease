@@ -1,11 +1,11 @@
 ---
 id: TASK-2
 title: Add Ruff and Lefthook checks
-status: In Progress
+status: Done
 assignee:
-  - '@codex-loop-fresh-20260714-worklease-pass'
+  - '@brett'
 created_date: '2026-07-13 21:15'
-updated_date: '2026-07-15 05:45'
+updated_date: '2026-07-15 05:50'
 labels:
   - tooling
   - quality
