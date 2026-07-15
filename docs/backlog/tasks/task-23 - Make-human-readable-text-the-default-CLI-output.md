@@ -1,11 +1,11 @@
 ---
 id: TASK-23
 title: Make human-readable text the default CLI output
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 02:24'
-updated_date: '2026-07-15 03:54'
+updated_date: '2026-07-15 03:56'
 labels: []
 dependencies: []
 references:
@@ -82,4 +82,12 @@ T2 complete in commit b807255bcc86870c785297c68321cace19b23da4. Verification pas
 Independent verifier found AC2 gap after b807255: scripts/release_installer.py parsed downloaded --version as JSON but did not request explicit JSON. Fixed native and wheel smoke invocations in commit 5e1121f and added test assertions that fail without --json. Re-verified targeted tests.test_release (11 passed), mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks. T2 now covers all known CLI JSON consumers; next pass remains full REVIEW of 67146aa, b807255, and 5e1121f.
 
 reviewed: full implementation-review; implementation commits 67146aa, b807255bcc86870c785297c68321cace19b23da4, 5e1121fb4bc6aaa481193288e0af9d968b010b4f; review-fix b47f5c4. Independent verifier PASS. Findings fixed: schema description now states text default and README clarifies output placement around top-level/final subcommand. Verified AC1-AC4 and DOD1-DOD2 with targeted 41-test CLI/package/schema/release run, direct default/JSON/conflict/child-argument smoke checks, mise run lint, format-check, test, and typecheck.
+
+integration: merged reviewed TASK-23 implementation and review fix into main at 8b70716; provider review/finalization state committed at 36cdb07. Integrated-checkout gates: mise run lint, mise run format-check, mise run test, mise run typecheck all passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Changed the CLI to human-readable text by default while preserving schema-versioned JSON behind --json or --format json, with deterministic conflict handling and explicit JSON release automation. Reviewed the complete implementation and fixed schema/README contract drift in b47f5c4. Verified with the independent acceptance review, targeted CLI/package/schema/release tests, direct smoke checks, and integrated mise lint, format-check, test, and typecheck gates. Integrated into main in 8b70716.
+<!-- SECTION:FINAL_SUMMARY:END -->
