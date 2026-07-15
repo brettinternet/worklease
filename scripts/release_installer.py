@@ -144,7 +144,7 @@ def _version_from_output(output: str, expected: str) -> None:
 def _smoke_native(executable: Path, expected: str) -> None:
     try:
         result = subprocess.run(
-            [str(executable), "--version"],
+            [str(executable), "--json", "--version"],
             check=False,
             capture_output=True,
             text=True,
@@ -207,6 +207,7 @@ def _smoke_wheel(uv: str, wheel: Path, expected: str) -> None:
                 "--from",
                 str(wheel),
                 "worklease",
+                "--json",
                 "--version",
             ],
             check=False,

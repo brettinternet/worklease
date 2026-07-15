@@ -114,6 +114,7 @@ class ReleaseValidationTests(unittest.TestCase):
             executable = root / "worklease"
             executable.write_text(
                 "#!/bin/sh\n"
+                'if [ "$1" != "--json" ] || [ "$2" != "--version" ]; then exit 91; fi\n'
                 'printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
                 '"ok":true,"version":"0.1.0"}\'\n'
                 + "".join(f"# {path}\n" for path in PACKAGE_DATA),
@@ -206,6 +207,7 @@ class ReleaseValidationTests(unittest.TestCase):
                 '  ln -s managed-worklease "$UV_TOOL_BIN_DIR/worklease"\n'
                 "fi\n"
                 'if [ "$1" = tool ] && [ "$2" = run ]; then\n'
+                '  if [ "$7" != "--json" ] || [ "$8" != "--version" ]; then exit 91; fi\n'
                 '  printf \'%s\\n\' \'{"schemaVersion":1,"operation":"version",'
                 '"ok":true,"version":"0.1.0"}\'\n'
                 "fi\n",
