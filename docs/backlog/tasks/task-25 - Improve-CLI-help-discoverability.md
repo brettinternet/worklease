@@ -1,11 +1,11 @@
 ---
 id: TASK-25
 title: Improve CLI help discoverability
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 04:10'
-updated_date: '2026-07-15 04:25'
+updated_date: '2026-07-15 04:27'
 labels:
   - cli
   - ux
@@ -23,11 +23,11 @@ Make the worklease help menus easier to scan and more useful for common workflow
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Top-level help groups related commands, including singleton, bundle, inspection/reconciliation, and maintenance commands.
-- [ ] #2 Top-level help includes one or two safe, copyable common-usage examples.
-- [ ] #3 The acquire, exec, release, and replace-file help menus each include a relevant example.
-- [ ] #4 Subprocess tests verify each enriched help command exits successfully and prints its examples to stdout.
-- [ ] #5 Existing command parsing and output behavior remain unchanged.
+- [x] #1 Top-level help groups related commands, including singleton, bundle, inspection/reconciliation, and maintenance commands.
+- [x] #2 Top-level help includes one or two safe, copyable common-usage examples.
+- [x] #3 The acquire, exec, release, and replace-file help menus each include a relevant example.
+- [x] #4 Subprocess tests verify each enriched help command exits successfully and prints its examples to stdout.
+- [x] #5 Existing command parsing and output behavior remain unchanged.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -43,3 +43,9 @@ Implemented grouped top-level argparse help with Singleton, Bundles, Inspection 
 
 Independent verifier initially found a missing closing quote in the release example; changed the example to shell-safe single quotes and strengthened the test to assert each example tail. Re-ran targeted help tests and all quality gates successfully.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Grouped top-level help into Singleton, Bundles, Inspection and reconciliation, and Maintenance sections while preserving command aliases. Added two top-level examples and shell-safe examples for acquire, exec, release, and replace-file. Added subprocess assertions for help exit status, grouped output, and complete example tails. Verified with targeted help subprocesses, sh -n validation of all four examples, mise run lint, mise run format-check, mise run typecheck, mise run test, and mise run hooks. Independent verifier passed all five acceptance criteria.
+<!-- SECTION:FINAL_SUMMARY:END -->
