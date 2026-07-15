@@ -1,11 +1,11 @@
 ---
 id: TASK-17
 title: Complete explicit human-readable CLI output
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-14 02:46'
-updated_date: '2026-07-15 00:18'
+updated_date: '2026-07-15 01:55'
 labels:
   - cli
   - ux
@@ -15,6 +15,8 @@ references:
   - README.md
 modified_files:
   - src/worklease/cli.py
+  - tests/test_cli.py
+  - README.md
 priority: medium
 type: enhancement
 ordinal: 18000
@@ -28,15 +30,15 @@ Keep schema-versioned JSON as the default for agents and integrations. Make --fo
 ### Implementation tasks
 - [x] T1 — Add deterministic command-specific text renderers without changing JSON payloads or exit codes (AC1-AC3)
 - [x] T2 — Add complete successful and failed text contract tests with redaction and escaping coverage (AC2-AC4)
-- [ ] T3 — Document the stable human-readable text grammar, examples, escaping, and security omissions (AC2-AC4)
+- [x] T3 — Document the stable human-readable text grammar, examples, escaping, and security omissions (AC2-AC4)
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 JSON remains the default for every command and its released schema and exit-code behavior remain compatible.
-- [ ] #2 Every command has a documented, deterministic --format text representation that does not emit compact JSON as a fallback.
-- [ ] #3 Text status and list output never expose bearer tokens; mutation output exposes only the minimum owner data needed for continued operation.
-- [ ] #4 Tests cover successful and failed text output for every command, including child-process failures and parser errors.
+- [x] #1 JSON remains the default for every command and its released schema and exit-code behavior remain compatible.
+- [x] #2 Every command has a documented, deterministic --format text representation that does not emit compact JSON as a fallback.
+- [x] #3 Text status and list output never expose bearer tokens; mutation output exposes only the minimum owner data needed for continued operation.
+- [x] #4 Tests cover successful and failed text output for every command, including child-process failures and parser errors.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -87,4 +89,16 @@ Independent verifier PASS after final fixes: 19/19 focused CLI tests; JSON compa
 BLOCKED (2026-07-15T00:08Z): implementation loop halted before coding because the item lacks the canonical ### Implementation tasks section with direct [ ]/[x] task entries required by backlog-source-workflow; the plan's [T1]-[T3] entries are not a claimable checklist. Evidence: backlog task view TASK-17 shows only Implementation Plan and prior notes; no canonical checklist. Attempt: refreshed provider state, acquired and released an implementation claim without edits. Unblock condition: run backlog-refine for TASK-17 to add a canonical ordered implementation-task checklist, then resume with @docs/backlog.
 
 UNBLOCK (2026-07-15T00:18Z): stale workflow blocker resolved without a product decision. Evidence: the existing refined T1-T3 implementation plan, completed T1/T2 checkpoints, and independent T2 verification define the canonical ordered checklist; no implementation scope changed. Disposition: added the required checklist with T1/T2 complete and T3 open, and restored In Progress for the resumable implementation handoff. Next action remains T3.
+
+Implementation checkpoint (T3): commit 8fadf87b656f6099e8eb0f317aa527dabdabf183 adds the stable human-readable --format text grammar, command coverage, examples, escaping rules, child stdout/stderr grammar, and security omissions to README.md. Files: README.md. Verification: mise run lint passed; mise run format-check passed; mise run test passed; mise run typecheck passed; mise run hooks passed. All implementation tasks are complete; next pass is REVIEW.
+
+REVIEWED: accumulated implementation commits 29e8a20, db0bf2d, 0083585, af414e4, df80acf, 8fadf87; review-fix commit 96b1722. Full implementation-review applied for CLI compatibility, deterministic text rendering, parser/child failures, redaction, escaping, bundle aliases, policy metadata, transfer successor-token semantics, and documentation. Findings fixed: policy-describe now renders keyPolicyVersion and genericExecutionGuarantee; README transfer-token contract corrected. Verification: focused CLI tests 19 passed; mise run lint passed; mise run format-check passed; mise run test 132 passed; mise run typecheck passed; mise run hooks passed. Independent verifier PASS after review fixes.
+
+Integration checkpoint: implementation and review-fix commits cherry-picked into canonical main as 1016747, fbb97da, f42eadd, d51c2db, f235f01, 960985d, and 51c02e0. Integrated main verification: mise run lint passed; mise run format-check passed; mise run test passed (151 tests via guarded cherry-pick hook); mise run typecheck passed; focused CLI tests 19 passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented explicit deterministic human-readable --format text renderers for every released CLI command and alias without changing default JSON or exit codes; added complete success/failure, parser, child-process, escaping, redaction, and bundle coverage; documented the stable grammar and security omissions. Full implementation review found and fixed policy-describe metadata omissions and corrected transfer successor-token documentation. Verified with focused CLI tests (19), full test suite (151), lint, format-check, typecheck, hooks, and independent verifier PASS. Integrated into canonical main.
+<!-- SECTION:FINAL_SUMMARY:END -->
