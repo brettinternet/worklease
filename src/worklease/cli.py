@@ -213,6 +213,125 @@ _TOP_LEVEL_EPILOG = f"""\
 {_agent_workflow_guidance()}"""
 
 
+def _single_line_epilog(example: str) -> str:
+    return f"""\
+Example:
+  {example}"""
+
+
+_KEY_EPILOG = _single_line_epilog(
+    "worklease key --provider backlog-md --source docs/backlog --item TASK-42"
+)
+_POLICY_EPILOG = _single_line_epilog("worklease policy list")
+_POLICY_LIST_EPILOG = _single_line_epilog("worklease policy list")
+_POLICY_DESCRIBE_EPILOG = _single_line_epilog(
+    "worklease policy describe --name generic"
+)
+_ACQUIRE_BUNDLE_EPILOG = """\
+Example:
+  worklease acquire-bundle \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --agent-id agent-1 \\
+    --session-id session-1 \\
+    --owner-id attempt-1 \\
+    --work-key format:repo"""
+_STATUS_BUNDLE_EPILOG = _single_line_epilog(
+    "worklease status-bundle --resource local:formatter"
+)
+_STATUS_EPILOG = _single_line_epilog("worklease status --resource local:formatter")
+_INSPECT_OPERATION_EPILOG = _single_line_epilog(
+    "worklease inspect-operation --resource local:formatter "
+    "--operation-id test-TASK-42-001"
+)
+_INSPECT_OPERATION_BUNDLE_EPILOG = _single_line_epilog(
+    "worklease inspect-operation-bundle --resource local:formatter "
+    "--operation-id test-TASK-42-001"
+)
+_GC_EPILOG = _single_line_epilog("worklease gc")
+_RECONCILE_OPERATION_EPILOG = """\
+Example:
+  worklease reconcile-operation \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id "reconcile-TASK-42-001" \\
+    --target-operation-id "test-TASK-42-001" \\
+    --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
+    --outcome observed-success \\
+    --evidence '{}'"""
+_RECONCILE_OPERATION_BUNDLE_EPILOG = """\
+Example:
+  worklease reconcile-operation-bundle \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id "reconcile-TASK-42-001" \\
+    --target-operation-id "test-TASK-42-001" \\
+    --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
+    --outcome observed-success \\
+    --evidence '{}'"""
+_CHECKPOINT_EPILOG = """\
+Example:
+  worklease checkpoint \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id "checkpoint-TASK-42-001" \\
+    --checkpoint '{"step":1}'"""
+_TRANSFER_EPILOG = """\
+Example:
+  worklease transfer \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id "transfer-TASK-42-001" \\
+    --successor-claim-id claim-successor \\
+    --successor-agent-id agent-2 \\
+    --successor-session-id session-2 \\
+    --successor-owner-id attempt-2 \\
+    --successor-work-key format:repo"""
+_LIST_EPILOG = _single_line_epilog("worklease list")
+_HEARTBEAT_EPILOG = """\
+Example:
+  worklease heartbeat \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id 'heartbeat-TASK-42-001'"""
+_HEARTBEAT_BUNDLE_EPILOG = """\
+Example:
+  worklease heartbeat-bundle \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id 'heartbeat-TASK-42-001'"""
+_RELEASE_BUNDLE_EPILOG = """\
+Example:
+  worklease release-bundle \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --token "$TOKEN" \\
+    --revision "$REVISION" \\
+    --operation-id "release-TASK-42-001" \\
+    --reason 'provider checkpoint verified'"""
+_EXEC_BUNDLE_EPILOG = """\
+Example:
+  worklease exec-bundle \\
+    --resource "$RESOURCE" \\
+    --claim-id "$CLAIM_ID" \\
+    --token-file "$TOKEN_FILE" \\
+    --revision "$REVISION" \\
+    --operation-id "test-TASK-42-001" \\
+    -- python -m unittest discover -s tests -v"""
+
+
 _ACQUIRE_EPILOG = """\
 Example:
   worklease acquire \\
@@ -435,7 +554,9 @@ def _parser() -> _ArgumentParser:
         action=_GroupedSubparsers,
     )
 
-    key_parser = commands.add_parser("key", help="derive one stable resource key")
+    key_parser = commands.add_parser(
+        "key", help="derive one stable resource key", epilog=_KEY_EPILOG
+    )
     _add_output_arguments(key_parser)
     key_parser.add_argument("--provider", required=True)
     key_parser.add_argument("--source", required=True)
@@ -447,17 +568,21 @@ def _parser() -> _ArgumentParser:
     )
 
     policy_parser = commands.add_parser(
-        "policy", help="inspect available resource-key policies"
+        "policy",
+        help="inspect available resource-key policies",
+        epilog=_POLICY_EPILOG,
     )
     policy_commands = policy_parser.add_subparsers(
         dest="policy_operation", required=True, parser_class=_ArgumentParser
     )
     list_policy_parser = policy_commands.add_parser(
-        "list", help="list available resource-key policies"
+        "list", help="list available resource-key policies", epilog=_POLICY_LIST_EPILOG
     )
     _add_output_arguments(list_policy_parser)
     describe_parser = policy_commands.add_parser(
-        "describe", help="describe one resource-key policy"
+        "describe",
+        help="describe one resource-key policy",
+        epilog=_POLICY_DESCRIBE_EPILOG,
     )
     _add_output_arguments(describe_parser)
     describe_parser.add_argument("--name", required=True)
@@ -502,6 +627,7 @@ def _parser() -> _ArgumentParser:
         "acquire-bundle",
         aliases=("bundle-acquire",),
         help="atomically acquire or reclaim an opaque resource bundle",
+        epilog=_ACQUIRE_BUNDLE_EPILOG,
     )
     _add_output_arguments(acquire_bundle_parser)
     _bundle_resources(acquire_bundle_parser)
@@ -517,11 +643,14 @@ def _parser() -> _ArgumentParser:
         "status-bundle",
         aliases=("bundle-status", "inspect-bundle"),
         help="inspect an exact resource bundle",
+        epilog=_STATUS_BUNDLE_EPILOG,
     )
     _add_output_arguments(status_bundle_parser)
     _bundle_resources(status_bundle_parser)
 
-    status_parser = commands.add_parser("status", help="read current lease state")
+    status_parser = commands.add_parser(
+        "status", help="read current lease state", epilog=_STATUS_EPILOG
+    )
     _add_output_arguments(status_parser)
     status_parser.add_argument("--resource", required=True)
     status_parser.add_argument(
@@ -531,19 +660,25 @@ def _parser() -> _ArgumentParser:
     )
 
     inspect_operation_parser = commands.add_parser(
-        "inspect-operation", help="inspect one operation outcome"
+        "inspect-operation",
+        help="inspect one operation outcome",
+        epilog=_INSPECT_OPERATION_EPILOG,
     )
     _add_output_arguments(inspect_operation_parser)
     inspect_operation_parser.add_argument("--resource", required=True)
     inspect_operation_parser.add_argument("--operation-id", required=True)
     inspect_bundle_operation_parser = commands.add_parser(
-        "inspect-operation-bundle", help="inspect one ordered bundle operation outcome"
+        "inspect-operation-bundle",
+        help="inspect one ordered bundle operation outcome",
+        epilog=_INSPECT_OPERATION_BUNDLE_EPILOG,
     )
     _add_output_arguments(inspect_bundle_operation_parser)
     _bundle_resources(inspect_bundle_operation_parser)
     inspect_bundle_operation_parser.add_argument("--operation-id", required=True)
     gc_parser = commands.add_parser(
-        "gc", help="inspect or collect records eligible for garbage collection"
+        "gc",
+        help="inspect or collect records eligible for garbage collection",
+        epilog=_GC_EPILOG,
     )
     _add_output_arguments(gc_parser)
     gc_parser.add_argument(
@@ -569,7 +704,9 @@ def _parser() -> _ArgumentParser:
         ),
     )
     reconcile_operation_parser = commands.add_parser(
-        "reconcile-operation", help="record an observed operation outcome"
+        "reconcile-operation",
+        help="record an observed operation outcome",
+        epilog=_RECONCILE_OPERATION_EPILOG,
     )
     _add_output_arguments(reconcile_operation_parser)
     _common_claim_arguments(reconcile_operation_parser)
@@ -584,6 +721,7 @@ def _parser() -> _ArgumentParser:
     reconcile_bundle_operation_parser = commands.add_parser(
         "reconcile-operation-bundle",
         help="record an observed ordered bundle operation outcome",
+        epilog=_RECONCILE_OPERATION_BUNDLE_EPILOG,
     )
     _add_output_arguments(reconcile_bundle_operation_parser)
     _common_bundle_claim_arguments(reconcile_bundle_operation_parser)
@@ -601,14 +739,18 @@ def _parser() -> _ArgumentParser:
     reconcile_bundle_operation_parser.add_argument("--evidence", required=True)
 
     checkpoint_parser = commands.add_parser(
-        "checkpoint", help="persist a bounded JSON checkpoint and renew a lease"
+        "checkpoint",
+        help="persist a bounded JSON checkpoint and renew a lease",
+        epilog=_CHECKPOINT_EPILOG,
     )
     _add_output_arguments(checkpoint_parser)
     _common_claim_arguments(checkpoint_parser)
     checkpoint_parser.add_argument("--checkpoint", required=True)
 
     transfer_parser = commands.add_parser(
-        "transfer", help="atomically transfer an active lease to a successor"
+        "transfer",
+        help="atomically transfer an active lease to a successor",
+        epilog=_TRANSFER_EPILOG,
     )
     _add_output_arguments(transfer_parser)
     transfer_parser.add_argument("--resource", required=True)
@@ -625,7 +767,9 @@ def _parser() -> _ArgumentParser:
     transfer_parser.add_argument("--successor-work-key", required=True)
     _add_ttl_argument(transfer_parser)
 
-    list_parser = commands.add_parser("list", help="list current and expired claims")
+    list_parser = commands.add_parser(
+        "list", help="list current and expired claims", epilog=_LIST_EPILOG
+    )
     _add_output_arguments(list_parser)
     list_parser.add_argument(
         "--resource",
@@ -637,7 +781,9 @@ def _parser() -> _ArgumentParser:
         help="show full resources, identifiers, and absolute expiry timestamps",
     )
 
-    heartbeat_parser = commands.add_parser("heartbeat", help="renew an active lease")
+    heartbeat_parser = commands.add_parser(
+        "heartbeat", help="renew an active lease", epilog=_HEARTBEAT_EPILOG
+    )
     _add_output_arguments(heartbeat_parser)
     _common_claim_arguments(heartbeat_parser)
 
@@ -660,6 +806,7 @@ def _parser() -> _ArgumentParser:
         "heartbeat-bundle",
         aliases=("bundle-heartbeat",),
         help="renew every member of an active bundle",
+        epilog=_HEARTBEAT_BUNDLE_EPILOG,
     )
     _add_output_arguments(heartbeat_bundle_parser)
     _common_bundle_claim_arguments(heartbeat_bundle_parser)
@@ -668,6 +815,7 @@ def _parser() -> _ArgumentParser:
         "release-bundle",
         aliases=("bundle-release",),
         help="release every member of an active bundle",
+        epilog=_RELEASE_BUNDLE_EPILOG,
     )
     _add_output_arguments(release_bundle_parser)
     _common_bundle_claim_arguments(release_bundle_parser, include_ttl=False)
@@ -677,6 +825,7 @@ def _parser() -> _ArgumentParser:
         "exec-bundle",
         aliases=("bundle-exec",),
         help="run one argv under an opaque bundle claim",
+        epilog=_EXEC_BUNDLE_EPILOG,
     )
     _add_output_arguments(execute_bundle_parser)
     _common_bundle_claim_arguments(execute_bundle_parser)
@@ -757,6 +906,7 @@ def _emit_error_details(payload: dict[str, object]) -> None:
         "guarantee",
         "providerFencing",
         "expectedRequestSha256",
+        "available",
     )
     for field in allowed:
         if field in payload:
@@ -1250,6 +1400,74 @@ def _operation_hint(argv: Sequence[str]) -> str:
     return "parse"
 
 
+def _command_help_path(argv: Sequence[str]) -> str:
+    options = _visible_output_options(argv)
+    for index, value in enumerate(options):
+        if value == "policy":
+            if index + 1 < len(options) and options[index + 1] in {"list", "describe"}:
+                return f"worklease policy {options[index + 1]}"
+            return "worklease policy"
+        if value in _COMMANDS:
+            return f"worklease {value}"
+    return "worklease"
+
+
+def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
+    command = _command_help_path(argv)
+    choice_match = re.search(
+        r"argument (--[\w-]+): invalid choice: .* \(choose from (.+)\)",
+        message,
+    )
+    if choice_match:
+        choices = re.findall(r"'([^']+)'", choice_match.group(2))
+        if choices:
+            return f"Valid values for {choice_match.group(1)}: " + ", ".join(choices)
+
+    expected_match = re.search(
+        r"argument (--[\w-]+): expected one argument",
+        message,
+    )
+    if expected_match:
+        option = expected_match.group(1)
+        if command == "worklease status" and option == "--resource":
+            return "Example: worklease status --resource local:formatter"
+        return f"Provide a value for {option}; see {command} --help"
+
+    required_match = re.search(
+        r"the following arguments are required: (.+)",
+        message,
+    )
+    if required_match:
+        options = re.findall(r"--[\w-]+", required_match.group(1))
+        if options:
+            if command == "worklease status" and "--resource" in options:
+                return "Example: worklease status --resource local:formatter"
+            return "Required options: " + ", ".join(options) + f"; see {command} --help"
+
+    if (
+        "unrecognized arguments" in message
+        or "invalid int value" in message
+        or "invalid float value" in message
+    ):
+        return f"See {command} --help for required options and examples"
+    return None
+
+
+def _emit_parser_hint(argv: Sequence[str], message: str) -> None:
+    hint = _parser_error_hint(argv, message)
+    if hint is not None:
+        print(f"HINT\t{_text_atom(hint)}")
+
+
+def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) -> None:
+    if (
+        output_format == "text"
+        and operation == "status"
+        and reason == "invalid-resource"
+    ):
+        print("HINT\tExample: worklease status --resource local:formatter")
+
+
 def _request(args: argparse.Namespace) -> MutationRequest:
     return MutationRequest(
         resource=args.resource,
@@ -1576,7 +1794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser = _parser()
         args = parser.parse_args(values)
         output_format = "json" if getattr(args, "json", False) else args.format
-    except _ArgumentError:
+    except _ArgumentError as error:
         _emit(
             _envelope(
                 _operation_hint(values),
@@ -1584,6 +1802,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             output_format,
         )
+        if output_format == "text":
+            _emit_parser_hint(values, error.message)
         return 64
     if args.help_all:
         print(_aggregate_help(parser), end="")
@@ -1628,6 +1848,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {"ok": False, **error.as_dict()},
         )
         _emit(output, output_format, full=getattr(args, "full", False))
+        _emit_runtime_error_hint(args.operation, error.reason, output_format)
         return error.code
 
 

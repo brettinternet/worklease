@@ -760,6 +760,77 @@ with resource_lock(resource):
                 self.assertIn(example, result.stdout)
                 self.assertIn(example_tail, result.stdout)
 
+    def test_help_examples_cover_every_canonical_command(self) -> None:
+        examples = {
+            (
+                "key",
+            ): "worklease key --provider backlog-md --source docs/backlog --item TASK-42",
+            ("policy",): "worklease policy list",
+            ("policy", "list"): "worklease policy list",
+            ("policy", "describe"): "worklease policy describe --name generic",
+            ("acquire",): "worklease acquire \\",
+            ("acquire-bundle",): "worklease acquire-bundle \\",
+            ("status-bundle",): "worklease status-bundle --resource local:formatter",
+            ("status",): "worklease status --resource local:formatter",
+            ("inspect-operation",): "worklease inspect-operation --resource",
+            (
+                "inspect-operation-bundle",
+            ): "worklease inspect-operation-bundle --resource",
+            ("gc",): "worklease gc",
+            ("reconcile-operation",): "worklease reconcile-operation \\",
+            ("reconcile-operation-bundle",): "worklease reconcile-operation-bundle \\",
+            ("checkpoint",): "worklease checkpoint \\",
+            ("transfer",): "worklease transfer \\",
+            ("list",): "worklease list",
+            ("heartbeat",): "worklease heartbeat \\",
+            ("release",): "worklease release \\",
+            ("exec",): "worklease exec \\",
+            ("heartbeat-bundle",): "worklease heartbeat-bundle \\",
+            ("release-bundle",): "worklease release-bundle \\",
+            ("exec-bundle",): "worklease exec-bundle \\",
+            ("replace-file",): "worklease replace-file \\",
+        }
+        for command, example in examples.items():
+            with self.subTest(command=command):
+                result = self.run_cli(*command, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                self.assertIn("Example:", result.stdout)
+                self.assertIn(example, result.stdout)
+
+        for command in (("heartbeat",), ("heartbeat-bundle",)):
+            with self.subTest(quoted_operation_id=command):
+                result = self.run_cli(*command, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                self.assertIn(
+                    "--operation-id 'heartbeat-TASK-42-001'",
+                    result.stdout,
+                )
+
+        aliases = {
+            "bundle-acquire": "acquire-bundle",
+            "bundle-status": "status-bundle",
+            "inspect-bundle": "status-bundle",
+            "bundle-heartbeat": "heartbeat-bundle",
+            "bundle-release": "release-bundle",
+            "bundle-exec": "exec-bundle",
+        }
+        for alias, canonical in aliases.items():
+            with self.subTest(alias=alias):
+                result = self.run_cli(alias, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                self.assertIn(f"worklease {canonical}", result.stdout)
+
+    def test_status_minimum_arguments_succeeds(self) -> None:
+        result = self.run_cli("status", "--resource", "local:formatter")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertIn("OK status\n", result.stdout)
+        self.assertIn("RESOURCE\t", result.stdout)
+        self.assertIn("STATE\tfree\n", result.stdout)
+
     def test_help_documents_lease_defaults(self) -> None:
         acquire_help = self.run_cli("acquire", "--help")
         self.assertEqual(0, acquire_help.returncode)
@@ -1523,7 +1594,11 @@ with resource_lock(resource):
             "status", "--resource", "repo:cli", "--token", "secret-token"
         )
         self.assertEqual(64, result.returncode)
-        self.assertEqual("ERROR status: invalid-arguments\n", result.stdout)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tSee worklease status --help for required options and examples\n",
+            result.stdout,
+        )
         self.assertNotIn("secret-token", result.stdout)
         self.assertEqual("", result.stderr)
 
@@ -1557,8 +1632,94 @@ with resource_lock(resource):
             "repo:cli",
         )
         self.assertEqual(64, result.returncode)
-        self.assertEqual("ERROR status: invalid-arguments\n", result.stdout)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tExample: worklease status --resource local:formatter\n",
+            result.stdout,
+        )
         self.assertEqual("", result.stderr)
+
+    def test_actionable_parser_hints_preserve_json_and_redact_values(self) -> None:
+        missing = self.run_cli("status")
+        self.assertEqual(64, missing.returncode)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tExample: worklease status --resource local:formatter\n",
+            missing.stdout,
+        )
+        self.assertNotIn("--resource\n", missing.stdout)
+        self.assertEqual("", missing.stderr)
+
+        missing_value = self.run_cli("status", "--resource")
+        self.assertEqual(64, missing_value.returncode)
+        self.assertIn(
+            "HINT\tExample: worklease status --resource local:formatter\n",
+            missing_value.stdout,
+        )
+        self.assertEqual("", missing_value.stderr)
+
+        empty_value = self.run_cli("status", "--resource", "")
+        self.assertEqual(64, empty_value.returncode)
+        self.assertIn(
+            "ERROR status: invalid-resource\n"
+            "HINT\tExample: worklease status --resource local:formatter\n",
+            empty_value.stdout,
+        )
+        self.assertEqual("", empty_value.stderr)
+
+        invalid_format = self.run_cli(
+            "status", "--format", "yaml", "--resource", "repo:cli"
+        )
+        self.assertEqual(64, invalid_format.returncode)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tValid values for --format: json, text\n",
+            invalid_format.stdout,
+        )
+        self.assertEqual("", invalid_format.stderr)
+
+        invalid_choice = self.run_cli(
+            "reconcile-operation",
+            "--resource",
+            "repo:cli",
+            "--claim-id",
+            "claim",
+            "--token",
+            "secret-token",
+            "--revision",
+            "1",
+            "--operation-id",
+            "operation",
+            "--target-operation-id",
+            "target",
+            "--expected-request-sha256",
+            "hash",
+            "--outcome",
+            "nope",
+            "--evidence",
+            "{}",
+        )
+        self.assertEqual(64, invalid_choice.returncode)
+        self.assertIn(
+            "HINT\tValid values for --outcome: observed-success, observed-failure\n",
+            invalid_choice.stdout,
+        )
+        self.assertNotIn("secret-token", invalid_choice.stdout)
+        self.assertEqual("", invalid_choice.stderr)
+
+        json_missing = self.run_cli("--json", "status")
+        self.assertEqual(64, json_missing.returncode)
+        self.assertEqual(
+            '{"error":"invalid-arguments","ok":false,"operation":"status",'
+            '"schemaVersion":1}\n',
+            json_missing.stdout,
+        )
+        self.assertEqual("", json_missing.stderr)
+
+        unknown_resource = self.run_cli("status", "--resource", "repo:never-claimed")
+        self.assertEqual(0, unknown_resource.returncode)
+        self.assertIn("STATE\tfree\n", unknown_resource.stdout)
+        self.assertEqual("", unknown_resource.stderr)
 
     def test_json_and_format_conflicts_are_order_independent(self) -> None:
         text_cases = (
@@ -1589,7 +1750,12 @@ with resource_lock(resource):
     def test_child_arguments_do_not_select_or_conflict_output(self) -> None:
         result = self.run_cli("exec", "--", "--json", "--format", "text")
         self.assertEqual(64, result.returncode)
-        self.assertEqual("ERROR exec: invalid-arguments\n", result.stdout)
+        self.assertEqual(
+            "ERROR exec: invalid-arguments\n"
+            "HINT\tRequired options: --resource, --claim-id, --revision, "
+            "--operation-id; see worklease exec --help\n",
+            result.stdout,
+        )
         self.assertEqual("", result.stderr)
 
     def test_stale_claim_errors_redact_current_token(self) -> None:
@@ -1879,10 +2045,15 @@ with resource_lock(resource):
         policy_error = self.text_cli(
             "policy", "describe", "--name", "missing", expected_code=2
         )
-        self.assertEqual(
-            'ERROR policy-describe: resource-policy-not-found\nPROVIDER\t"missing"\n',
-            policy_error,
+        self.assertTrue(
+            policy_error.startswith(
+                "ERROR policy-describe: resource-policy-not-found\n"
+                'PROVIDER\t"missing"\n'
+                "AVAILABLE\t"
+            )
         )
+        for policy_name in ("backlog-md", "generic", "github", "linear", "markdown"):
+            self.assertIn(f'"{policy_name}"', policy_error)
 
         free_status = self.text_cli("status", "--resource", "repo:text-free")
         self.assertIn(
@@ -2298,7 +2469,11 @@ with resource_lock(resource):
             "--bad",
         )
         self.assertEqual(64, parser_error.returncode)
-        self.assertEqual("ERROR status: invalid-arguments\n", parser_error.stdout)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tSee worklease status --help for required options and examples\n",
+            parser_error.stdout,
+        )
         self.assertEqual("", parser_error.stderr)
 
     def test_text_renderers_cover_canonical_bundle_operations(self) -> None:
@@ -2470,7 +2645,11 @@ with resource_lock(resource):
                 )
         version_error = self.run_cli("--format", "text", "--version", "--bad")
         self.assertEqual(64, version_error.returncode)
-        self.assertEqual("ERROR parse: invalid-arguments\n", version_error.stdout)
+        self.assertEqual(
+            "ERROR parse: invalid-arguments\n"
+            "HINT\tSee worklease --help for required options and examples\n",
+            version_error.stdout,
+        )
         self.assertEqual("", version_error.stderr)
 
 

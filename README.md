@@ -285,9 +285,12 @@ control characters, C1 characters, and DEL are escaped (`\u0000` through
 Successful operations normally begin with `OK <operation>`. Failures begin
 with `ERROR <operation>: <reason>`, followed by only allowlisted diagnostic
 fields (`RESOURCE`, `OPERATION_ID`, `TARGET_OPERATION_ID`, `PROVIDER`, `FIELD`,
-`CLAIM_ID`, revision bounds, `STATE`, `GUARANTEE`, `PROVIDER_FENCING`, or
-`EXPECTED_REQUEST_SHA256`). Parser failures use `ERROR parse: <reason>` and
-preserve the parser exit status.
+`CLAIM_ID`, revision bounds, `STATE`, `GUARANTEE`, `PROVIDER_FENCING`,
+`EXPECTED_REQUEST_SHA256`, or `AVAILABLE`). Parser failures use
+`ERROR <command>: invalid-arguments` (or `ERROR parse: invalid-arguments`
+when no command is identifiable), preserve the parser exit status, and may
+include a safe `HINT` with a command-specific example or valid values. Hints
+never echo rejected argument values.
 
 The command grammars are:
 
