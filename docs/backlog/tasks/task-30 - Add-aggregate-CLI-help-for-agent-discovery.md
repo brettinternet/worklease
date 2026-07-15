@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-15 19:07'
-updated_date: '2026-07-15 20:42'
+updated_date: '2026-07-15 20:46'
 labels: []
 dependencies: []
 ordinal: 31000
@@ -35,10 +35,14 @@ Provide an explicit read-only aggregate help mode for one-shot CLI onboarding wh
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented in src/worklease/cli.py and tests/test_cli.py. Added explicit --help-all traversal over the existing argparse tree, canonical command-path sections, nested policy commands, alias summaries, usage/options/epilog examples, deterministic output, and read-only behavior. Verification: aggregate subprocess coverage passed; every emitted canonical help invocation exited 0; aliases were not emitted as duplicate sections; full tests (40 CLI tests plus SDK suite) passed; mise run lint, mise run format-check, and mise run typecheck passed.
+
+Independent verifier PASS: HEAD e54e5d5 (Complete TASK-30) atop 5fe06b4 (Add aggregate CLI help); working tree clean. Direct --help-all emitted all 24 canonical headers including policy list/describe; targeted aggregate test, focused help tests, and full 40-test CLI module passed; alias and nested help smoke passed; no open issue.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Added explicit --help-all aggregate CLI help generated from the argparse tree. It emits deterministic canonical sections for all top-level and nested commands, including policy list/describe, with aliases and parser help content without duplicate alias sections. Verified by aggregate subprocess coverage, 40 CLI tests plus SDK tests, mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks.
+
+Independent verifier PASS on all four acceptance criteria against HEAD e54e5d5 and the actual diff.
 <!-- SECTION:FINAL_SUMMARY:END -->
