@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 02:24'
-updated_date: '2026-07-15 03:07'
+updated_date: '2026-07-15 03:21'
 labels: []
 dependencies: []
 references:
@@ -46,7 +46,7 @@ Before the first release, make the CLI default to its stable human-readable text
 <!-- SECTION:PLAN:BEGIN -->
 ### Implementation tasks
 - [x] T1 — Make CLI output selection text-first and add complete parser/renderer regression coverage (AC1-AC3). Update the existing shared output-option construction in `src/worklease/cli.py` so the root parser and command parsers default to text, retain `--format text|json`, add `--json` as an exact shorthand for JSON, and reject every `--json` plus `--format` combination even when the options straddle the command name. Update `_fallback_output_format` so parser failures follow the same contract while ignoring child argv after `--`. Extend existing CLI/package tests with default-text success and failure cases, explicit JSON through both forms and positions, aliases, `--version`, option conflicts, redaction, and child-argument isolation.
-- [ ] T2 — Migrate automation to explicit JSON and publish the human-first contract (AC2, AC4). Update existing JSON-parsing test helpers and release smoke commands to request JSON explicitly, keep schema validation against unchanged version-1 payloads, and revise CLI help plus `README.md` examples/reference text so interactive examples use the text default and agents/integrations use `--json` or `--format json`. Preserve all command additions present in the refreshed canonical branch.
+- [x] T2 — Migrate automation to explicit JSON and publish the human-first contract (AC2, AC4). Update existing JSON-parsing test helpers and release smoke commands to request JSON explicitly, keep schema validation against unchanged version-1 payloads, and revise CLI help plus `README.md` examples/reference text so interactive examples use the text default and agents/integrations use `--json` or `--format json`. Preserve all command additions present in the refreshed canonical branch.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -73,4 +73,6 @@ Before the first release, make the CLI default to its stable human-readable text
 refined: TASK-23 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=C36432D3-1385-4FCF-8E8E-FDC279574BF0; claimRevision=3; refinement: complete.
 
 T1 complete in commit 67146aa. Verification passed: mise run lint; mise run format-check; mise run typecheck; mise run test; targeted CLI/package/schema/execution/GC contract tests; direct smoke checks for default text, --json, conflicts, and child-argument isolation. Next task: T2. Remaining acceptance: AC4 and T2 automation/documentation work; AC2 coverage remains ongoing through T2.
+
+T2 complete in commit b807255bcc86870c785297c68321cace19b23da4. Verification passed: targeted CLI/package/schema/GC contract tests; direct text and explicit JSON smoke checks; mise run lint; mise run format-check; mise run test; mise run typecheck; mise run hooks. Updated CI and release smoke commands to request --json and revised README human-first output contract. All implementation tasks are complete; next pass is REVIEW. Acceptance criteria and Definition of Done remain pending accumulated review and integration evidence.
 <!-- SECTION:NOTES:END -->
