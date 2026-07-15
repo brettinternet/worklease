@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-13 21:15'
-updated_date: '2026-07-15 05:44'
+updated_date: '2026-07-15 05:45'
 labels:
   - tooling
   - quality
@@ -48,6 +48,8 @@ Add project-wide Python linting and formatting with Ruff, and staged-file pre-co
 Implemented Ruff 0.15.21 as a uv dev dependency, pyproject lint/format policy, mise lint/format tasks, and Lefthook 2.1.10 managed by mise. Lefthook validation passed; mise run hooks passed staged Ruff check, staged format check, and all 13 unit tests. mise run typecheck, mise run build, mise run sync, mise run lint, and mise run format-check all passed. TASK-1 changes remain intentionally unstaged.
 
 Implementation checkpoint T1: existing implementation commit 925ca18 verified in this pass with mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks. Canonical checklist normalized after verification.
+
+T1 complete. Implementation commit: 925ca18; canonical implementation-checkpoint commit: f8bd69f. Remaining: one REVIEW pass for the accumulated implementation and durable reviewed marker. Next task: REVIEW TASK-2.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
