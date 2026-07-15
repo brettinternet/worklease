@@ -822,9 +822,9 @@ with resource_lock(resource):
 
         text_list = self.run_cli("list", "--resource", resource, "--format", "text")
         self.assertEqual(0, text_list.returncode)
-        self.assertIn(
-            "STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT", text_list.stdout
-        )
+        self.assertIn("STATE", text_list.stdout)
+        self.assertIn("RESOURCE", text_list.stdout)
+        self.assertNotIn("\t", text_list.stdout)
         self.assertNotIn(token, text_list.stdout)
 
         heartbeat_args = self.mutation_arguments(
@@ -865,6 +865,37 @@ with resource_lock(resource):
         self.assertEqual(
             "free", self.json_cli("status", "--resource", resource)["state"]
         )
+
+    def test_text_list_aligns_columns_across_multiple_rows(self) -> None:
+        resources = (
+            "repo:text-align-short",
+            "repo:text-align-resource-with-a-long-name",
+        )
+        for index, resource in enumerate(resources):
+            self.json_cli(
+                *self.acquire_arguments(
+                    resource=resource,
+                    claim_id=f"text-align-{index}",
+                )
+            )
+
+        listed = self.text_cli("list")
+        lines = listed.rstrip("\n").splitlines()
+        self.assertEqual(3, len(lines))
+        self.assertNotIn("\t", listed)
+
+        headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+        header_starts = [lines[0].index(header) for header in headers]
+        for line in lines:
+            starts: list[int] = []
+            in_field = False
+            for index, character in enumerate(line):
+                if character != " " and not in_field:
+                    starts.append(index)
+                    in_field = True
+                elif character == " ":
+                    in_field = False
+            self.assertEqual(header_starts, starts, line)
 
     def test_transfer_cli_returns_successor_claim_and_preserves_checkpoint(
         self,
@@ -1692,7 +1723,9 @@ with resource_lock(resource):
         self.assertIn('RESOURCE\t"repo:text-read"\nSTATE\tactive\n', verbose)
         self.assertNotIn(token, verbose)
         listed = self.text_cli("list", "--resource", "repo:text-read")
-        self.assertIn("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT\n", listed)
+        self.assertIn("STATE", listed)
+        self.assertIn("RESOURCE", listed)
+        self.assertNotIn("\t", listed)
         self.assertNotIn(token, listed)
 
         resources = ("repo:text-read-a", "repo:text-read-b")
@@ -2063,7 +2096,10 @@ with resource_lock(resource):
 
     def test_text_renderers_cover_canonical_bundle_operations(self) -> None:
         empty = self.text_cli("list")
-        self.assertEqual("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT\n", empty)
+        self.assertEqual(
+            "STATE   RESOURCE   CLAIM_ID   OWNER_ID   EXPIRES_AT\n",
+            empty,
+        )
 
         acquire_text = self.text_cli(
             *(

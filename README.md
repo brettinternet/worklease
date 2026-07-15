@@ -299,8 +299,10 @@ The command grammars are:
   `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`), followed by
   one row per policy. An empty list emits the header only.
 - `policy describe`: one `FIELD: value` line for each policy field.
-- `list`: the header `STATE RESOURCE CLAIM_ID OWNER_ID EXPIRES_AT`, with one
-  tab-separated `active` or `expired` row per claim. Tokens are never listed.
+- `list`: a fixed-width, space-padded table with columns `STATE`, `RESOURCE`,
+  `CLAIM_ID`, `OWNER_ID`, and `EXPIRES_AT`, followed by one `active` or
+  `expired` row per claim. Column starts remain aligned across all rows.
+  Tokens are never listed.
 - `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`: `OK
   <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
   block containing `RESOURCE`, `CLAIM_ID`, `REVISION`, `EXPIRES_AT`, and

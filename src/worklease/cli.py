@@ -848,12 +848,25 @@ def _render_policy_describe(payload: dict[str, object]) -> None:
             print(f"{field}: {_text_atom(payload[field])}")
 
 
+def _render_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    all_rows = (headers, *rows)
+    widths = tuple(
+        max(len(row[index]) for row in all_rows) for index in range(len(headers))
+    )
+    for row in all_rows:
+        padded = [
+            cell.ljust(width) for cell, width in zip(row[:-1], widths[:-1], strict=True)
+        ]
+        padded.append(row[-1])
+        print("   ".join(padded))
+
+
 def _render_list(payload: dict[str, object]) -> None:
     if not payload.get("ok"):
         _text_header(payload)
         _emit_error_details(payload)
         return
-    print("STATE\tRESOURCE\tCLAIM_ID\tOWNER_ID\tEXPIRES_AT")
+    rows: list[tuple[str, ...]] = []
     claims = payload.get("claims", [])
     if isinstance(claims, list):
         for claim in claims:
@@ -865,17 +878,19 @@ def _render_list(payload: dict[str, object]) -> None:
                 if resource is not None
                 else _text_value(claim.get("resources", []))
             )
-            print(
-                "\t".join(
-                    (
-                        "active" if claim.get("active") else "expired",
-                        resource_text,
-                        _text_atom(claim.get("claimId", "")),
-                        _text_atom(claim.get("ownerId", "")),
-                        _text_atom(claim.get("expiresAt", "")),
-                    )
+            rows.append(
+                (
+                    "active" if claim.get("active") else "expired",
+                    resource_text,
+                    _text_atom(claim.get("claimId", "")),
+                    _text_atom(claim.get("ownerId", "")),
+                    _text_atom(claim.get("expiresAt", "")),
                 )
             )
+    _render_table(
+        ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT"),
+        rows,
+    )
 
 
 def _render_status(payload: dict[str, object]) -> None:
