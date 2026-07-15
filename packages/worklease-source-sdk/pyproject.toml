@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "worklease-source-sdk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Typed provider-neutral source workflow contracts"
 requires-python = ">=3.14"
 license = { text = "MIT" }

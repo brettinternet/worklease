@@ -9,7 +9,7 @@ on:
       release_tag:
         description: Tag/version to validate without publishing a release
         required: true
-        default: v0.2.0
+        default: v0.3.0
         type: string
 
 
