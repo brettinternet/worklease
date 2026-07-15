@@ -63,9 +63,9 @@ class CliContractTests(unittest.TestCase):
         output_arguments = (
             arguments
             if any(
-                value == "--json"
-                or value == "--format"
+                value in {"--json", "-j", "--format", "-f"}
                 or value.startswith("--format=")
+                or value.startswith("-f=")
                 for value in visible_arguments
             )
             else ("--json", *arguments)
@@ -720,6 +720,290 @@ with resource_lock(resource):
         self.assertEqual("version", payload["operation"])
         self.assertEqual(True, payload["ok"])
         self.assertEqual(__version__, payload["version"])
+
+    def test_short_flags_cover_parser_and_version(self) -> None:
+        version = self.run_cli("-v")
+        self.assertEqual(0, version.returncode, version.stderr)
+        self.assertEqual(f"{__version__}\n", version.stdout)
+        self.assertEqual("", version.stderr)
+
+        parser = cli_module._parser()
+        top_level = parser.parse_args(
+            ["-f", "json", "-j", "-H", "/tmp/worklease", "-a"]
+        )
+        self.assertEqual("json", top_level.format)
+        self.assertTrue(top_level.json)
+        self.assertEqual("/tmp/worklease", top_level.home)
+        self.assertTrue(top_level.help_all)
+
+        key = parser.parse_args(
+            ["key", "-f", "json", "-p", "provider", "-s", "source", "-i", "item", "-C"]
+        )
+        self.assertEqual(
+            ("provider", "source", "item", True),
+            (key.provider, key.source, key.item, key.coordination_only),
+        )
+
+        describe = parser.parse_args(["policy", "describe", "-n", "generic"])
+        self.assertEqual("generic", describe.name)
+
+        acquire = parser.parse_args(
+            [
+                "acquire",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-a",
+                "agent",
+                "-s",
+                "session",
+                "-o",
+                "owner",
+                "-w",
+                "work-key",
+                "-C",
+                "-W",
+                "5",
+                "-P",
+                "0.5",
+                "-T",
+                "60",
+            ]
+        )
+        self.assertEqual(
+            (
+                "resource",
+                "claim",
+                "agent",
+                "session",
+                "owner",
+                "work-key",
+                True,
+                5.0,
+                0.5,
+                60.0,
+            ),
+            (
+                acquire.resource,
+                acquire.claim_id,
+                acquire.agent_id,
+                acquire.session_id,
+                acquire.owner_id,
+                acquire.work_key,
+                acquire.coordination_only,
+                acquire.wait_timeout,
+                acquire.poll_interval,
+                acquire.ttl,
+            ),
+        )
+
+        status = parser.parse_args(["status", "-r", "resource", "-V"])
+        self.assertEqual(("resource", True), (status.resource, status.verbose))
+
+        inspect = parser.parse_args(
+            ["inspect-operation", "-r", "resource", "-o", "operation"]
+        )
+        self.assertEqual(
+            ("resource", "operation"), (inspect.resource, inspect.operation_id)
+        )
+
+        gc = parser.parse_args(["gc", "-r", "7", "-c", "cutoff", "-a"])
+        self.assertEqual(
+            (7.0, "cutoff", True), (gc.retention_days, gc.cutoff, gc.apply)
+        )
+
+        reconcile = parser.parse_args(
+            [
+                "reconcile-operation",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+                "--target-operation-id",
+                "target",
+                "-x",
+                "request-hash",
+                "-O",
+                "observed-success",
+                "-e",
+                "evidence",
+            ]
+        )
+        self.assertEqual(
+            (
+                "resource",
+                "claim",
+                "token",
+                3,
+                "operation",
+                60.0,
+                "target",
+                "request-hash",
+                "observed-success",
+                "evidence",
+            ),
+            (
+                reconcile.resource,
+                reconcile.claim_id,
+                reconcile.token,
+                reconcile.revision,
+                reconcile.operation_id,
+                reconcile.ttl,
+                reconcile.target_operation_id,
+                reconcile.expected_request_sha256,
+                reconcile.outcome,
+                reconcile.evidence,
+            ),
+        )
+
+        checkpoint = parser.parse_args(
+            [
+                "checkpoint",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+                "-k",
+                "{}",
+            ]
+        )
+        self.assertEqual("{}", checkpoint.checkpoint)
+
+        transfer = parser.parse_args(
+            [
+                "transfer",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-C",
+                "successor-claim",
+                "-A",
+                "successor-agent",
+                "-S",
+                "successor-session",
+                "-O",
+                "successor-owner",
+                "-W",
+                "successor-work-key",
+                "-T",
+                "60",
+            ]
+        )
+        self.assertEqual(
+            (
+                "successor-claim",
+                "successor-agent",
+                "successor-session",
+                "successor-owner",
+                "successor-work-key",
+            ),
+            (
+                transfer.successor_claim_id,
+                transfer.successor_agent_id,
+                transfer.successor_session_id,
+                transfer.successor_owner_id,
+                transfer.successor_work_key,
+            ),
+        )
+
+        listed = parser.parse_args(["list", "-r", "resource", "-F"])
+        self.assertEqual(("resource", True), (listed.resource, listed.full))
+
+        released = parser.parse_args(
+            [
+                "release",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-m",
+                "reason",
+            ]
+        )
+        self.assertEqual("reason", released.reason)
+
+        executed = parser.parse_args(
+            [
+                "exec",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+                "-d",
+                "/tmp",
+                "-g",
+                "--",
+                "echo",
+                "-v",
+            ]
+        )
+        self.assertEqual(["--", "echo", "-v"], executed.command)
+
+        replaced = parser.parse_args(
+            [
+                "replace-file",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+                "-p",
+                "path",
+                "-e",
+                "file-hash",
+                "-C",
+                "content-file",
+            ]
+        )
+        self.assertEqual(
+            ("path", "file-hash", "content-file"),
+            (replaced.path, replaced.expected_sha256, replaced.content_file),
+        )
 
     def test_help_group_colors_follow_argparse_color_setting(self) -> None:
         color_environment = self.environment.copy()
@@ -1677,6 +1961,16 @@ with resource_lock(resource):
             invalid_format.stdout,
         )
         self.assertEqual("", invalid_format.stderr)
+        short_invalid_format = self.run_cli(
+            "status", "-f", "yaml", "--resource", "repo:cli"
+        )
+        self.assertEqual(64, short_invalid_format.returncode)
+        self.assertEqual(
+            "ERROR status: invalid-arguments\n"
+            "HINT\tValid values for --format: json, text\n",
+            short_invalid_format.stdout,
+        )
+        self.assertEqual("", short_invalid_format.stderr)
 
         invalid_choice = self.run_cli(
             "reconcile-operation",
@@ -1726,6 +2020,9 @@ with resource_lock(resource):
             ("--json", "--format", "text", "status", "--resource", "repo:cli"),
             ("--format", "text", "status", "--json", "--resource", "repo:cli"),
             ("status", "--json", "--format", "text", "--resource", "repo:cli"),
+            ("-j", "-f", "text", "status", "--resource", "repo:cli"),
+            ("-f", "text", "status", "-j", "--resource", "repo:cli"),
+            ("status", "-j", "-f", "text", "--resource", "repo:cli"),
         )
         for arguments in text_cases:
             with self.subTest(arguments=arguments):
@@ -1737,6 +2034,8 @@ with resource_lock(resource):
         json_cases = (
             ("--json", "--format", "json", "status", "--resource", "repo:cli"),
             ("--format", "json", "status", "--json", "--resource", "repo:cli"),
+            ("-j", "-f", "json", "status", "--resource", "repo:cli"),
+            ("-f", "json", "status", "-j", "--resource", "repo:cli"),
         )
         for arguments in json_cases:
             with self.subTest(arguments=arguments):
