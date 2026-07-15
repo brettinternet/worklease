@@ -24,14 +24,17 @@ class CliContractTests(unittest.TestCase):
         self.home.cleanup()
 
     def run_cli(
-        self, *arguments: str, pass_fds: tuple[int, ...] = ()
+        self,
+        *arguments: str,
+        pass_fds: tuple[int, ...] = (),
+        environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "worklease.cli", *arguments],
             check=False,
             capture_output=True,
             text=True,
-            env=self.environment,
+            env=self.environment if environment is None else environment,
             pass_fds=pass_fds,
         )
 
@@ -141,6 +144,24 @@ class CliContractTests(unittest.TestCase):
         )
         self.assertIn("worklease status --resource local:formatter", result.stdout)
         self.assertEqual(1, result.stdout.count("derive one stable resource key"))
+
+    def test_help_group_colors_follow_argparse_color_setting(self) -> None:
+        color_environment = self.environment.copy()
+        color_environment["PYTHON_COLORS"] = "1"
+        color_environment.pop("NO_COLOR", None)
+        color_result = self.run_cli("--help", environment=color_environment)
+        self.assertEqual(0, color_result.returncode)
+        self.assertEqual("", color_result.stderr)
+        self.assertIn("\x1b[1;34mSingleton:\x1b[0m", color_result.stdout)
+        self.assertIn("\x1b[1;32mkey\x1b[0m", color_result.stdout)
+
+        no_color_environment = self.environment.copy()
+        no_color_environment["NO_COLOR"] = "1"
+        no_color_environment.pop("PYTHON_COLORS", None)
+        no_color_result = self.run_cli("--help", environment=no_color_environment)
+        self.assertEqual(0, no_color_result.returncode)
+        self.assertEqual("", no_color_result.stderr)
+        self.assertNotIn("\x1b[", no_color_result.stdout)
 
     def test_help_examples_cover_common_mutating_commands(self) -> None:
         examples = {

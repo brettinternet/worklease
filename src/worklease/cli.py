@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from . import __version__
 from .adapters import (
@@ -68,55 +68,79 @@ class _ArgumentError(Exception):
         self.message = message
 
 
+_HELP_HEADING_START = "\x1eH\x1f"
+_HELP_COMMAND_START = "\x1eC\x1f"
+_HELP_COLOR_END = "\x1eE\x1f"
+
+
+def _help_heading(value: str) -> str:
+    return f"{_HELP_HEADING_START}{value}{_HELP_COLOR_END}"
+
+
+def _help_command(value: str) -> str:
+    return f"{_HELP_COMMAND_START}{value}{_HELP_COLOR_END}"
+
+
+class _ColorizedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Preserve argparse colors in the manually grouped command epilog."""
+
+    def _fill_text(self, text: str, width: int, indent: str) -> str:
+        theme: Any = cast(Any, self)._theme
+        text = text.replace(_HELP_HEADING_START, theme.heading)
+        text = text.replace(_HELP_COMMAND_START, theme.action)
+        text = text.replace(_HELP_COLOR_END, theme.reset)
+        return super()._fill_text(text, width, indent)
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """ArgumentParser variant that leaves output formatting to :func:`main`."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("allow_abbrev", False)
-        kwargs.setdefault("formatter_class", argparse.RawDescriptionHelpFormatter)
+        kwargs.setdefault("formatter_class", _ColorizedHelpFormatter)
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
         raise _ArgumentError(message)
 
 
-_TOP_LEVEL_EPILOG = """\
-Command groups:
-  Singleton:
-    key                 derive one stable resource key
-    acquire             atomically acquire or reclaim a lease
-    status              read current lease state
-    list                list current and expired claims
-    heartbeat           renew an active lease
-    checkpoint          persist a bounded JSON checkpoint and renew a lease
-    exec                run one argv under a lease
-    release             release an active lease
-    transfer            atomically transfer an active lease to a successor
-    replace-file        atomically replace a file by expected hash
-  Bundles:
-    acquire-bundle (bundle-acquire)
+_TOP_LEVEL_EPILOG = f"""\
+{_help_heading("Command groups:")}
+  {_help_heading("Singleton:")}
+    {_help_command("key")}                 derive one stable resource key
+    {_help_command("acquire")}             atomically acquire or reclaim a lease
+    {_help_command("status")}              read current lease state
+    {_help_command("list")}                list current and expired claims
+    {_help_command("heartbeat")}           renew an active lease
+    {_help_command("checkpoint")}          persist a bounded JSON checkpoint and renew a lease
+    {_help_command("exec")}                run one argv under a lease
+    {_help_command("release")}             release an active lease
+    {_help_command("transfer")}            atomically transfer an active lease to a successor
+    {_help_command("replace-file")}        atomically replace a file by expected hash
+  {_help_heading("Bundles:")}
+    {_help_command("acquire-bundle (bundle-acquire)")}
                         atomically acquire or reclaim an opaque resource bundle
-    status-bundle (bundle-status, inspect-bundle)
+    {_help_command("status-bundle (bundle-status, inspect-bundle)")}
                         inspect an exact resource bundle
-    heartbeat-bundle (bundle-heartbeat)
+    {_help_command("heartbeat-bundle (bundle-heartbeat)")}
                         renew every member of an active bundle
-    exec-bundle (bundle-exec)
+    {_help_command("exec-bundle (bundle-exec)")}
                         run one argv under an opaque bundle claim
-    release-bundle (bundle-release)
+    {_help_command("release-bundle (bundle-release)")}
                         release every member of an active bundle
-  Inspection and reconciliation:
-    inspect-operation   inspect one operation outcome
-    reconcile-operation
+  {_help_heading("Inspection and reconciliation:")}
+    {_help_command("inspect-operation")}   inspect one operation outcome
+    {_help_command("reconcile-operation")}
                         record an observed operation outcome
-    inspect-operation-bundle
+    {_help_command("inspect-operation-bundle")}
                         inspect one ordered bundle operation outcome
-    reconcile-operation-bundle
+    {_help_command("reconcile-operation-bundle")}
                         record an observed ordered bundle operation outcome
-  Maintenance:
-    policy              inspect available resource-key policies
-    gc                  inspect or collect records eligible for garbage collection
+  {_help_heading("Maintenance:")}
+    {_help_command("policy")}              inspect available resource-key policies
+    {_help_command("gc")}                  inspect or collect records eligible for garbage collection
 
-Examples:
+{_help_heading("Examples:")}
   worklease key --provider backlog-md --source docs/backlog --item TASK-42
   worklease status --resource local:formatter"""
 
