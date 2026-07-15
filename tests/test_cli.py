@@ -121,6 +121,41 @@ class CliContractTests(unittest.TestCase):
             operation_id,
         )
 
+    def test_help_groups_commands_and_shows_common_examples(self) -> None:
+        result = self.run_cli("--help")
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("", result.stderr)
+        for section in (
+            "Singleton:",
+            "Bundles:",
+            "Inspection and reconciliation:",
+            "Maintenance:",
+            "acquire-bundle (bundle-acquire)",
+            "status-bundle (bundle-status, inspect-bundle)",
+        ):
+            with self.subTest(section=section):
+                self.assertIn(section, result.stdout)
+        self.assertIn(
+            "worklease key --provider backlog-md --source docs/backlog --item TASK-42",
+            result.stdout,
+        )
+        self.assertIn("worklease status --resource local:formatter", result.stdout)
+        self.assertEqual(1, result.stdout.count("derive one stable resource key"))
+
+    def test_help_examples_cover_common_mutating_commands(self) -> None:
+        examples = {
+            "acquire": "worklease acquire \\",
+            "exec": "worklease exec \\",
+            "release": "worklease release \\",
+            "replace-file": "worklease replace-file \\",
+        }
+        for command, example in examples.items():
+            with self.subTest(command=command):
+                result = self.run_cli(command, "--help")
+                self.assertEqual(0, result.returncode)
+                self.assertEqual("", result.stderr)
+                self.assertIn(example, result.stdout)
+
     def test_version_is_text_by_default_and_json_is_explicit(self) -> None:
         result = self.run_cli("--version")
         self.assertEqual(0, result.returncode)

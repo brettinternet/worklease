@@ -73,10 +73,99 @@ class _ArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("allow_abbrev", False)
+        kwargs.setdefault("formatter_class", argparse.RawDescriptionHelpFormatter)
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
         raise _ArgumentError(message)
+
+
+_TOP_LEVEL_EPILOG = """\
+Command groups:
+  Singleton:
+    key                 derive one stable resource key
+    acquire             atomically acquire or reclaim a lease
+    status              read current lease state
+    list                list current and expired claims
+    heartbeat           renew an active lease
+    checkpoint          persist a bounded JSON checkpoint and renew a lease
+    exec                run one argv under a lease
+    release             release an active lease
+    transfer            atomically transfer an active lease to a successor
+    replace-file        atomically replace a file by expected hash
+  Bundles:
+    acquire-bundle (bundle-acquire)
+                        atomically acquire or reclaim an opaque resource bundle
+    status-bundle (bundle-status, inspect-bundle)
+                        inspect an exact resource bundle
+    heartbeat-bundle (bundle-heartbeat)
+                        renew every member of an active bundle
+    exec-bundle (bundle-exec)
+                        run one argv under an opaque bundle claim
+    release-bundle (bundle-release)
+                        release every member of an active bundle
+  Inspection and reconciliation:
+    inspect-operation   inspect one operation outcome
+    reconcile-operation
+                        record an observed operation outcome
+    inspect-operation-bundle
+                        inspect one ordered bundle operation outcome
+    reconcile-operation-bundle
+                        record an observed ordered bundle operation outcome
+  Maintenance:
+    policy              inspect available resource-key policies
+    gc                  inspect or collect records eligible for garbage collection
+
+Examples:
+  worklease key --provider backlog-md --source docs/backlog --item TASK-42
+  worklease status --resource local:formatter"""
+
+
+_ACQUIRE_EPILOG = """\
+Example:
+  worklease acquire \\
+    --resource local:formatter \\
+    --claim-id claim-formatter \\
+    --agent-id agent-1 \\
+    --session-id session-1 \\
+    --owner-id attempt-1 \\
+    --work-key format:repo \\
+    --ttl 900"""
+
+
+_EXEC_EPILOG = """\
+Example:
+  worklease exec \\
+    --resource "$RESOURCE" \\
+    --claim-id "$CLAIM_ID" \\
+    --token-file "$TOKEN_FILE" \\
+    --revision "$REVISION" \\
+    --operation-id "test-TASK-42-001" \\
+    -- python -m unittest discover -s tests -v"""
+
+
+_RELEASE_EPILOG = """\
+Example:
+  worklease release \\
+    --resource "$RESOURCE" \\
+    --claim-id "$CLAIM_ID" \\
+    --token-file "$TOKEN_FILE" \\
+    --revision "$REVISION" \\
+    --operation-id "release-TASK-42-001" \\
+    --reason "provider checkpoint verified"""
+
+
+_REPLACE_FILE_EPILOG = """\
+Example:
+  worklease replace-file \\
+    --resource "$RESOURCE" \\
+    --claim-id "$CLAIM_ID" \\
+    --token-file "$TOKEN_FILE" \\
+    --revision "$REVISION" \\
+    --operation-id "replace-TASK-42-001" \\
+    --path docs/backlog/TASK-42.md \\
+    --expected-sha256 "$EXPECTED_SHA256" \\
+    --content-file /tmp/TASK-42.md"""
 
 
 def _add_output_arguments(
@@ -153,8 +242,15 @@ def _common_bundle_claim_arguments(
         parser.add_argument("--ttl", default=900.0, type=float)
 
 
+class _GroupedSubparsers(argparse._SubParsersAction):
+    """Leave top-level command grouping to the parser epilog."""
+
+    def _get_subactions(self) -> list[argparse.Action]:
+        return []
+
+
 def _parser() -> _ArgumentParser:
-    parser = _ArgumentParser(prog="worklease")
+    parser = _ArgumentParser(prog="worklease", epilog=_TOP_LEVEL_EPILOG)
     parser.add_argument(
         "--format",
         choices=("json", "text"),
@@ -177,7 +273,12 @@ def _parser() -> _ArgumentParser:
         action="store_true",
         help="print the packaged worklease version",
     )
-    commands = parser.add_subparsers(dest="operation", parser_class=_ArgumentParser)
+    commands = parser.add_subparsers(
+        dest="operation",
+        parser_class=_ArgumentParser,
+        metavar="COMMAND",
+        action=_GroupedSubparsers,
+    )
 
     key_parser = commands.add_parser("key", help="derive one stable resource key")
     _add_output_arguments(key_parser)
@@ -207,7 +308,7 @@ def _parser() -> _ArgumentParser:
     describe_parser.add_argument("--name", required=True)
 
     acquire_parser = commands.add_parser(
-        "acquire", help="atomically acquire or reclaim a lease"
+        "acquire", help="atomically acquire or reclaim a lease", epilog=_ACQUIRE_EPILOG
     )
     _add_output_arguments(acquire_parser)
     acquire_parser.add_argument("--resource", required=True)
@@ -352,12 +453,16 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(heartbeat_parser)
     _common_claim_arguments(heartbeat_parser)
 
-    release_parser = commands.add_parser("release", help="release an active lease")
+    release_parser = commands.add_parser(
+        "release", help="release an active lease", epilog=_RELEASE_EPILOG
+    )
     _add_output_arguments(release_parser)
     _common_claim_arguments(release_parser, include_ttl=False)
     release_parser.add_argument("--reason", required=True)
 
-    execute_parser = commands.add_parser("exec", help="run one argv under a lease")
+    execute_parser = commands.add_parser(
+        "exec", help="run one argv under a lease", epilog=_EXEC_EPILOG
+    )
     _add_output_arguments(execute_parser)
     _common_claim_arguments(execute_parser)
     _execution_directory_arguments(execute_parser)
@@ -390,7 +495,9 @@ def _parser() -> _ArgumentParser:
     _execution_directory_arguments(execute_bundle_parser)
     execute_bundle_parser.add_argument("command", nargs=argparse.REMAINDER)
     replace_parser = commands.add_parser(
-        "replace-file", help="atomically replace a file by expected hash"
+        "replace-file",
+        help="atomically replace a file by expected hash",
+        epilog=_REPLACE_FILE_EPILOG,
     )
     _add_output_arguments(replace_parser)
     _common_claim_arguments(replace_parser)
