@@ -198,6 +198,65 @@ class CliContractTests(unittest.TestCase):
             release_result.stdout,
         )
 
+    def test_aggregate_help_covers_parser_tree_without_alias_sections(self) -> None:
+        first_result = self.run_cli("--help-all")
+        second_result = self.run_cli("--help-all")
+        self.assertEqual(0, first_result.returncode)
+        self.assertEqual("", first_result.stderr)
+        self.assertEqual(first_result.stdout, second_result.stdout)
+
+        headers = [
+            line.removeprefix("=== ").removesuffix(" ===")
+            for line in first_result.stdout.splitlines()
+            if line.startswith("=== ") and line.endswith(" ===")
+        ]
+        expected_headers = [
+            "worklease",
+            "worklease key",
+            "worklease policy",
+            "worklease policy list",
+            "worklease policy describe",
+            "worklease acquire",
+            "worklease acquire-bundle",
+            "worklease status-bundle",
+            "worklease status",
+            "worklease inspect-operation",
+            "worklease inspect-operation-bundle",
+            "worklease gc",
+            "worklease reconcile-operation",
+            "worklease reconcile-operation-bundle",
+            "worklease checkpoint",
+            "worklease transfer",
+            "worklease list",
+            "worklease heartbeat",
+            "worklease release",
+            "worklease exec",
+            "worklease heartbeat-bundle",
+            "worklease release-bundle",
+            "worklease exec-bundle",
+            "worklease replace-file",
+        ]
+        self.assertEqual(expected_headers, headers)
+        self.assertIn("Aliases: bundle-acquire", first_result.stdout)
+        self.assertIn("Aliases: bundle-status, inspect-bundle", first_result.stdout)
+        self.assertIn("Aliases: bundle-heartbeat", first_result.stdout)
+        self.assertIn("Aliases: bundle-release", first_result.stdout)
+        self.assertIn("Aliases: bundle-exec", first_result.stdout)
+        self.assertNotIn("=== worklease bundle-acquire ===", first_result.stdout)
+        self.assertNotIn("=== worklease policy list (", first_result.stdout)
+        self.assertIn("usage: worklease policy list", first_result.stdout)
+        self.assertIn("usage: worklease acquire", first_result.stdout)
+        self.assertIn("Example:", first_result.stdout)
+
+        for header in headers[1:]:
+            arguments = (*header.split()[1:], "--help")
+            with self.subTest(command=header):
+                result = self.run_cli(*arguments)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+
+        self.assertEqual([], list(Path(self.home.name).iterdir()))
+
     def test_wait_retries_transient_contention_until_acquire(self) -> None:
         request = AcquireRequest(
             resource="repo:wait-release",

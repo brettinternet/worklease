@@ -350,6 +350,52 @@ class _GroupedSubparsers(argparse._SubParsersAction):
         return []
 
 
+def _canonical_subparsers(
+    action: argparse._SubParsersAction,
+) -> list[tuple[str, argparse.ArgumentParser, tuple[str, ...]]]:
+    """Return each parser once, preserving canonical names and aliases."""
+
+    parsers: list[tuple[str, argparse.ArgumentParser, tuple[str, ...]]] = []
+    by_parser: dict[int, int] = {}
+    for name, child in action.choices.items():
+        parser_index = by_parser.get(id(child))
+        if parser_index is None:
+            by_parser[id(child)] = len(parsers)
+            parsers.append((name, child, ()))
+        else:
+            canonical, parser, aliases = parsers[parser_index]
+            parsers[parser_index] = (canonical, parser, (*aliases, name))
+    return parsers
+
+
+def _aggregate_help(parser: argparse.ArgumentParser) -> str:
+    """Render deterministic help for the parser tree."""
+
+    sections: list[str] = []
+
+    def add_section(
+        command_path: tuple[str, ...],
+        command_parser: argparse.ArgumentParser,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        body = command_parser.format_help().rstrip()
+        alias_text = ", ".join(aliases) if aliases else "(none)"
+        sections.append(
+            f"=== {' '.join(command_path)} ===\n{body}\nAliases: {alias_text}"
+        )
+        for action in command_parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, child, child_aliases in _canonical_subparsers(action):
+                    add_section(
+                        (*command_path, name),
+                        child,
+                        child_aliases,
+                    )
+
+    add_section((parser.prog,), parser)
+    return "\n\n".join(sections) + "\n"
+
+
 def _parser() -> _ArgumentParser:
     parser = _ArgumentParser(prog="worklease", epilog=_TOP_LEVEL_EPILOG)
     parser.add_argument(
@@ -373,6 +419,11 @@ def _parser() -> _ArgumentParser:
         "--version",
         action="store_true",
         help="print the packaged worklease version",
+    )
+    parser.add_argument(
+        "--help-all",
+        action="store_true",
+        help="show help for every canonical command",
     )
     commands = parser.add_subparsers(
         dest="operation",
@@ -1439,7 +1490,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_format = _fallback_output_format(values)
     try:
         _validate_output_arguments(values)
-        args = _parser().parse_args(values)
+        parser = _parser()
+        args = parser.parse_args(values)
         output_format = "json" if getattr(args, "json", False) else args.format
     except _ArgumentError:
         _emit(
@@ -1450,6 +1502,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_format,
         )
         return 64
+    if args.help_all:
+        print(_aggregate_help(parser), end="")
+        return 0
 
     if args.operation == "policy":
         args.operation = f"policy-{args.policy_operation}"
