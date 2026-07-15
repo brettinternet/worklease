@@ -645,6 +645,14 @@ with resource_lock(resource):
         help_text = " ".join(acquire_help.stdout.split())
         self.assertIn("default: 0.25 seconds with --wait-timeout", help_text)
         self.assertIn("invalid without --wait-timeout", help_text)
+        self.assertIn("default: one immediate attempt; no retries", help_text)
+        top_level_help = self.run_cli("--help")
+        self.assertEqual(0, top_level_help.returncode)
+        self.assertIn(
+            "default: WORKLEASE_HOME, then XDG_STATE_HOME/worklease, "
+            "then ~/.local/state/worklease",
+            " ".join(top_level_help.stdout.split()),
+        )
 
         ttl_commands = (
             "acquire",
@@ -668,6 +676,55 @@ with resource_lock(resource):
                     f"lease lifetime in seconds (default: {DEFAULT_TTL:g})",
                     result.stdout,
                 )
+
+        gc_help = self.run_cli("gc", "--help")
+        self.assertEqual(0, gc_help.returncode)
+        self.assertEqual("", gc_help.stderr)
+        gc_help_text = " ".join(gc_help.stdout.split())
+        self.assertIn(
+            "retain records newer than this many days (default: 30)", gc_help_text
+        )
+        self.assertIn("default: derived from --retention-days", gc_help_text)
+        self.assertIn("default: dry run", gc_help_text)
+
+        for command in ("acquire", "exec", "release", "gc"):
+            with self.subTest(shared_home_default=command):
+                result = self.run_cli(command, "--help")
+                self.assertEqual(0, result.returncode)
+                self.assertIn(
+                    "default: WORKLEASE_HOME, then XDG_STATE_HOME/worklease, "
+                    "then ~/.local/state/worklease",
+                    " ".join(result.stdout.split()),
+                )
+
+        for command in ("exec", "exec-bundle"):
+            with self.subTest(execution_directory_default=command):
+                result = self.run_cli(command, "--help")
+                self.assertEqual(0, result.returncode)
+                self.assertIn(
+                    "default: caller directory", " ".join(result.stdout.split())
+                )
+
+        list_help = self.run_cli("list", "--help")
+        self.assertEqual(0, list_help.returncode)
+        self.assertIn("default: all resources", " ".join(list_help.stdout.split()))
+
+    def test_gc_cutoff_uses_default_retention_without_creating_conflict(self) -> None:
+        cutoff = self.json_cli("gc", "--cutoff", "2000-01-01T00:00:00Z")
+        self.assertIsNone(cutoff["retentionDays"])
+
+        explicit_conflict = self.run_cli(
+            "--json",
+            "gc",
+            "--retention-days",
+            "30",
+            "--cutoff",
+            "2000-01-01T00:00:00Z",
+        )
+        self.assertEqual(64, explicit_conflict.returncode)
+        self.assertEqual(
+            "conflicting-gc-options", json.loads(explicit_conflict.stdout)["error"]
+        )
 
     def test_version_is_text_by_default_and_json_is_explicit(self) -> None:
         result = self.run_cli("--version")

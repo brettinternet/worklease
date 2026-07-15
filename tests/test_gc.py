@@ -1112,6 +1112,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertEqual(1, payload["schemaVersion"])
         self.assertEqual("gc", payload["operation"])
         self.assertTrue(payload["dryRun"])
+        self.assertEqual(30.0, payload["retentionDays"])
 
 
 if __name__ == "__main__":

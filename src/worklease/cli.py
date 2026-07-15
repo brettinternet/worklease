@@ -28,7 +28,29 @@ from .models import (
     TransferRequest,
 )
 from .replacement import replace_file
-from .store import LeaseStore
+from .store import DEFAULT_GC_RETENTION_DAYS, LeaseStore
+
+_DEFAULT_HOME_HELP = (
+    "default: WORKLEASE_HOME, then XDG_STATE_HOME/worklease, "
+    "then ~/.local/state/worklease"
+)
+
+_DEFAULT_CUTOFF_HELP = "default: derived from --retention-days"
+
+
+class _ExplicitValueAction(argparse.Action):
+    """Record when an option was supplied instead of using its default."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"_{self.dest}_provided", True)
+
 
 _DEFAULT_POLL_INTERVAL = 0.25
 
@@ -217,7 +239,7 @@ def _add_output_arguments(
     parser.add_argument(
         "--home",
         default=argparse.SUPPRESS,
-        help="override WORKLEASE_HOME for this command",
+        help=f"override WORKLEASE_HOME for this command ({_DEFAULT_HOME_HELP})",
     )
 
 
@@ -247,12 +269,14 @@ def _common_claim_arguments(
 def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider-directory",
-        help="run provider commands from this validated working directory",
+        help="run provider commands from this validated working directory "
+        "(default: caller directory)",
     )
     parser.add_argument(
         "--git-primary",
         action="store_true",
-        help="derive the registered Git primary/control worktree",
+        help="derive the registered Git primary/control worktree "
+        "(default: caller directory)",
     )
 
 
@@ -305,7 +329,7 @@ def _parser() -> _ArgumentParser:
     parser.add_argument(
         "--home",
         default=None,
-        help="override WORKLEASE_HOME for this command",
+        help=f"override WORKLEASE_HOME for this command ({_DEFAULT_HOME_HELP})",
     )
     parser.add_argument(
         "--version",
@@ -365,7 +389,10 @@ def _parser() -> _ArgumentParser:
         "--wait-timeout",
         type=float,
         default=None,
-        help="retry singleton acquisition for at most SECONDS",
+        help=(
+            "retry singleton acquisition for at most SECONDS "
+            "(default: one immediate attempt; no retries)"
+        ),
     )
     acquire_parser.add_argument(
         "--poll-interval",
@@ -429,20 +456,26 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(gc_parser)
     gc_parser.add_argument(
         "--retention-days",
-        default=argparse.SUPPRESS,
+        action=_ExplicitValueAction,
+        default=DEFAULT_GC_RETENTION_DAYS,
         type=float,
-        help="retain records newer than this many days (default: 30)",
+        help=(
+            "retain records newer than this many days "
+            f"(default: {DEFAULT_GC_RETENTION_DAYS:g})"
+        ),
     )
     gc_parser.add_argument(
         "--cutoff",
-        help="explicit UTC cutoff timestamp (ISO-8601)",
+        help=f"explicit UTC cutoff timestamp (ISO-8601; {_DEFAULT_CUTOFF_HELP})",
     )
     gc_parser.add_argument(
         "--apply",
         action="store_true",
-        help="atomically delete records eligible under the selected cutoff",
+        help=(
+            "atomically delete records eligible under the selected cutoff "
+            "(default: dry run)"
+        ),
     )
-
     reconcile_operation_parser = commands.add_parser(
         "reconcile-operation", help="record an observed operation outcome"
     )
@@ -502,7 +535,10 @@ def _parser() -> _ArgumentParser:
 
     list_parser = commands.add_parser("list", help="list current and expired claims")
     _add_output_arguments(list_parser)
-    list_parser.add_argument("--resource", help="filter claims to one exact resource")
+    list_parser.add_argument(
+        "--resource",
+        help="filter claims to one exact resource (default: all resources)",
+    )
 
     heartbeat_parser = commands.add_parser("heartbeat", help="renew an active lease")
     _add_output_arguments(heartbeat_parser)
@@ -1183,9 +1219,14 @@ def _dispatch(
         ), 0
     if operation == "gc":
         assert store is not None
+        retention_days = getattr(args, "retention_days", None)
+        if getattr(args, "cutoff", None) is not None and not getattr(
+            args, "_retention_days_provided", False
+        ):
+            retention_days = None
         return (
             store.garbage_collect(
-                retention_days=getattr(args, "retention_days", None),
+                retention_days=retention_days,
                 cutoff=getattr(args, "cutoff", None),
                 apply=getattr(args, "apply", False),
             ),

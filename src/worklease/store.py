@@ -36,6 +36,8 @@ from .models import (
 )
 from .sqlite import connect, connect_readonly, lease_home, transaction
 
+DEFAULT_GC_RETENTION_DAYS = 30.0
+
 
 class LeaseStore:
     """Coordinate leases for opaque caller-supplied resources on one host."""
@@ -2665,7 +2667,7 @@ class LeaseStore:
             if not math.isfinite(cutoff_value) or cutoff_value > now:
                 raise LeaseError("invalid-gc-cutoff", code=64)
             return cutoff_value, None
-        days = 30.0 if retention_days is None else retention_days
+        days = DEFAULT_GC_RETENTION_DAYS if retention_days is None else retention_days
         try:
             days = float(days)
         except (TypeError, ValueError) as error:
