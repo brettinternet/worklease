@@ -144,17 +144,24 @@ class CliContractTests(unittest.TestCase):
 
     def test_help_examples_cover_common_mutating_commands(self) -> None:
         examples = {
-            "acquire": "worklease acquire \\",
-            "exec": "worklease exec \\",
-            "release": "worklease release \\",
-            "replace-file": "worklease replace-file \\",
+            "acquire": ("worklease acquire \\", "--ttl 900"),
+            "exec": ("worklease exec \\", "-- python -m unittest discover -s tests -v"),
+            "release": (
+                "worklease release \\",
+                "--reason 'provider checkpoint verified'",
+            ),
+            "replace-file": (
+                "worklease replace-file \\",
+                "--content-file /tmp/TASK-42.md",
+            ),
         }
-        for command, example in examples.items():
+        for command, (example, example_tail) in examples.items():
             with self.subTest(command=command):
                 result = self.run_cli(command, "--help")
                 self.assertEqual(0, result.returncode)
                 self.assertEqual("", result.stderr)
                 self.assertIn(example, result.stdout)
+                self.assertIn(example_tail, result.stdout)
 
     def test_version_is_text_by_default_and_json_is_explicit(self) -> None:
         result = self.run_cli("--version")

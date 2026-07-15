@@ -152,7 +152,7 @@ Example:
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
     --operation-id "release-TASK-42-001" \\
-    --reason "provider checkpoint verified"""
+    --reason 'provider checkpoint verified'"""
 
 
 _REPLACE_FILE_EPILOG = """\

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 04:10'
-updated_date: '2026-07-15 04:19'
+updated_date: '2026-07-15 04:25'
 labels:
   - cli
   - ux
@@ -40,4 +40,6 @@ Make the worklease help menus easier to scan and more useful for common workflow
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented grouped top-level argparse help with Singleton, Bundles, Inspection and reconciliation, and Maintenance sections. Added concise top-level examples plus acquire, exec, release, and replace-file epilogs. Added subprocess coverage for grouped help and each command example. Smoke-tested all enriched help commands; mise run lint, format-check, typecheck, and test pass.
+
+Independent verifier initially found a missing closing quote in the release example; changed the example to shell-safe single quotes and strengthened the test to assert each example tail. Re-ran targeted help tests and all quality gates successfully.
 <!-- SECTION:NOTES:END -->
