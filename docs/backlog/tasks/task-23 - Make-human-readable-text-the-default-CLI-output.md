@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 02:24'
-updated_date: '2026-07-15 03:21'
+updated_date: '2026-07-15 03:22'
 labels: []
 dependencies: []
 references:
@@ -16,6 +16,7 @@ modified_files:
   - tests/test_package_smoke.py
   - tests/test_schemas.py
   - tests/test_gc.py
+  - .github/workflows/ci.yml
   - .github/workflows/release.yml
   - README.md
 ordinal: 24000
