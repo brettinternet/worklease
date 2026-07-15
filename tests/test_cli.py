@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1016,6 +1018,91 @@ with resource_lock(resource):
                 elif character == " ":
                     in_field = False
             self.assertEqual(header_starts, starts, line)
+
+    def test_text_list_uses_bounded_relative_values_with_full_override(self) -> None:
+        now = 1_750_000_000.0
+        resource = (
+            "backlog-md:/Users/brett/dev/me/agentsupervisor/.git:docs/backlog:TASK-17"
+        )
+        claim_id = "6D075B01-11DD-42A9-A8EE-57B4773829F1"
+        owner_id = "codex-loop-fresh-20260715-agentsupervisor-main"
+        payload = {
+            "ok": True,
+            "operation": "list",
+            "claims": [
+                {
+                    "resource": resource,
+                    "claimId": claim_id,
+                    "ownerId": owner_id,
+                    "expiresAt": "2025-06-15T23:02:00Z",
+                    "expiresAtEpoch": now + 3720,
+                    "active": True,
+                },
+                {
+                    "resource": f"{resource}:expired",
+                    "claimId": f"{claim_id}-expired",
+                    "ownerId": owner_id,
+                    "expiresAt": "2025-06-15T21:58:50Z",
+                    "expiresAtEpoch": now - 190,
+                    "active": False,
+                },
+            ],
+        }
+
+        compact_output = StringIO()
+        with redirect_stdout(compact_output):
+            cli_module._render_list(payload, now=now)
+        compact = compact_output.getvalue()
+        self.assertNotIn(resource, compact)
+        self.assertIn("…", compact)
+        self.assertIn("6D075B01", compact)
+        self.assertIn("3829F1", compact)
+        self.assertIn("1h 2m", compact)
+        self.assertIn("expired 3m", compact)
+        self.assertLessEqual(
+            max(len(line) for line in compact.rstrip("\n").splitlines()),
+            124,
+        )
+
+        full_output = StringIO()
+        with redirect_stdout(full_output):
+            cli_module._render_list(payload, full=True, now=now)
+        full = full_output.getvalue()
+        self.assertIn(resource, full)
+        self.assertIn(claim_id, full)
+        self.assertIn(owner_id, full)
+        self.assertIn("2025-06-15T23:02:00Z", full)
+        self.assertNotIn("1h 2m", full)
+
+    def test_text_list_full_option_preserves_cli_and_json_values(self) -> None:
+        resource = (
+            "backlog-md:/Users/brett/dev/me/agentsupervisor/.git:docs/backlog:TASK-17"
+        )
+        claim_id = "claim-" + "x" * 40
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id=claim_id)
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+
+        compact = self.text_cli("list")
+        self.assertNotIn(resource, compact)
+
+        full = self.text_cli("list", "--full")
+        self.assertIn(resource, full)
+        self.assertIn(claim_id, full)
+        self.assertIn(str(claim["ownerId"]), full)
+        self.assertIn(str(claim["expiresAt"]), full)
+
+        listed = self.json_cli("list", "--full")
+        claims = listed["claims"]
+        assert isinstance(claims, list)
+        listed_claim = claims[0]
+        assert isinstance(listed_claim, dict)
+        self.assertEqual(resource, listed_claim["resource"])
+        self.assertEqual(claim_id, listed_claim["claimId"])
+        self.assertEqual(claim["ownerId"], listed_claim["ownerId"])
+        self.assertEqual(claim["expiresAt"], listed_claim["expiresAt"])
 
     def test_transfer_cli_returns_successor_claim_and_preserves_checkpoint(
         self,

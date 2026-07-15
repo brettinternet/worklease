@@ -302,7 +302,13 @@ The command grammars are:
 - `list`: a fixed-width, space-padded table with columns `STATE`, `RESOURCE`,
   `CLAIM_ID`, `OWNER_ID`, and `EXPIRES_AT`, followed by one `active` or
   `expired` row per claim. Column starts remain aligned across all rows.
-  Tokens are never listed.
+  Default text output bounds `RESOURCE` to 52 characters, `CLAIM_ID` to 18,
+  `OWNER_ID` to 24, and `EXPIRES_AT` to 16; long values keep a prefix and
+  suffix around an ellipsis. Active expiry values are approximate relative
+  durations such as `1h 2m`; expired values are labeled such as `expired 3m`.
+  `worklease list --full` shows the complete resource, identifiers, and
+  absolute expiry timestamps. `--json` and `--format json` always preserve
+  the complete underlying values. Tokens are never listed.
 - `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`: `OK
   <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
   block containing `RESOURCE`, `CLAIM_ID`, `REVISION`, `EXPIRES_AT`, and

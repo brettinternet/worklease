@@ -631,6 +631,11 @@ def _parser() -> _ArgumentParser:
         "--resource",
         help="filter claims to one exact resource (default: all resources)",
     )
+    list_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="show full resources, identifiers, and absolute expiry timestamps",
+    )
 
     heartbeat_parser = commands.add_parser("heartbeat", help="renew an active lease")
     _add_output_arguments(heartbeat_parser)
@@ -953,30 +958,101 @@ def _render_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None
         print("   ".join(padded))
 
 
-def _render_list(payload: dict[str, object]) -> None:
+_LIST_RESOURCE_WIDTH = 52
+_LIST_CLAIM_ID_WIDTH = 18
+_LIST_OWNER_ID_WIDTH = 24
+_LIST_EXPIRY_WIDTH = 16
+
+
+def _shorten_text(value: str, width: int) -> str:
+    """Keep a readable prefix and suffix within a fixed display width."""
+
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return value[:width]
+    prefix_width = (width - 1) // 2
+    suffix_width = width - 1 - prefix_width
+    return f"{value[:prefix_width]}…{value[-suffix_width:]}"
+
+
+def _relative_duration(seconds: float) -> str:
+    """Render a non-negative approximate duration for a list row."""
+
+    total_seconds = max(0, int(seconds))
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    total_minutes, _ = divmod(total_seconds, 60)
+    if total_minutes < 60:
+        return f"{total_minutes}m"
+    total_hours, minutes = divmod(total_minutes, 60)
+    if total_hours < 24:
+        return f"{total_hours}h {minutes}m" if minutes else f"{total_hours}h"
+    days, hours = divmod(total_hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
+
+def _compact_expiry(claim: dict[str, object], now: float) -> str:
+    """Render an expiry as a short relative value without negative durations."""
+
+    expires_value = claim.get("expiresAtEpoch")
+    if not isinstance(expires_value, (int, float, str)):
+        return _shorten_text(_text_atom(claim.get("expiresAt", "")), _LIST_EXPIRY_WIDTH)
+    try:
+        expires_at = float(expires_value)
+    except ValueError:
+        return _shorten_text(_text_atom(claim.get("expiresAt", "")), _LIST_EXPIRY_WIDTH)
+    remaining = expires_at - now
+    if remaining < 0:
+        return _shorten_text(
+            f"expired {_relative_duration(-remaining)}", _LIST_EXPIRY_WIDTH
+        )
+    if not claim.get("active", True):
+        return "expired"
+    return _shorten_text(_relative_duration(remaining), _LIST_EXPIRY_WIDTH)
+
+
+def _list_resource(claim: dict[str, object], *, full: bool) -> str:
+    resource = claim.get("resource")
+    value = (
+        _text_atom(resource)
+        if resource is not None
+        else _text_value(claim.get("resources", []))
+    )
+    return value if full else _shorten_text(value, _LIST_RESOURCE_WIDTH)
+
+
+def _render_list(
+    payload: dict[str, object], *, full: bool = False, now: float | None = None
+) -> None:
     if not payload.get("ok"):
         _text_header(payload)
         _emit_error_details(payload)
         return
+    display_now = time.time() if now is None else now
     rows: list[tuple[str, ...]] = []
     claims = payload.get("claims", [])
     if isinstance(claims, list):
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
-            resource = claim.get("resource")
-            resource_text = (
-                _text_atom(resource)
-                if resource is not None
-                else _text_value(claim.get("resources", []))
-            )
             rows.append(
                 (
                     "active" if claim.get("active") else "expired",
-                    resource_text,
-                    _text_atom(claim.get("claimId", "")),
-                    _text_atom(claim.get("ownerId", "")),
-                    _text_atom(claim.get("expiresAt", "")),
+                    _list_resource(claim, full=full),
+                    _text_atom(claim.get("claimId", ""))
+                    if full
+                    else _shorten_text(
+                        _text_atom(claim.get("claimId", "")), _LIST_CLAIM_ID_WIDTH
+                    ),
+                    _text_atom(claim.get("ownerId", ""))
+                    if full
+                    else _shorten_text(
+                        _text_atom(claim.get("ownerId", "")), _LIST_OWNER_ID_WIDTH
+                    ),
+                    _text_atom(claim.get("expiresAt", ""))
+                    if full
+                    else _compact_expiry(claim, display_now),
                 )
             )
     _render_table(
@@ -1149,12 +1225,16 @@ _TEXT_RENDERERS = {
 }
 
 
-def _emit(payload: dict[str, object], output_format: str) -> None:
+def _emit(
+    payload: dict[str, object], output_format: str, *, full: bool = False
+) -> None:
     if output_format == "text":
-        renderer = _TEXT_RENDERERS.get(
-            str(payload.get("operation", "unknown")), _render_generic
-        )
-        renderer(payload)
+        operation = str(payload.get("operation", "unknown"))
+        if operation == "list":
+            _render_list(payload, full=full)
+        else:
+            renderer = _TEXT_RENDERERS.get(operation, _render_generic)
+            renderer(payload)
         return
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
@@ -1540,14 +1620,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         payload, child_code = _dispatch(args, store)
         output = _envelope(args.operation, payload)
-        _emit(output, output_format)
+        _emit(output, output_format, full=getattr(args, "full", False))
         return child_code
     except LeaseError as error:
         output = _envelope(
             args.operation,
             {"ok": False, **error.as_dict()},
         )
-        _emit(output, output_format)
+        _emit(output, output_format, full=getattr(args, "full", False))
         return error.code
 
 
