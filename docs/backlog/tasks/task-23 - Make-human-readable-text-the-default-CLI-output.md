@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 02:24'
-updated_date: '2026-07-15 03:33'
+updated_date: '2026-07-15 03:54'
 labels: []
 dependencies: []
 references:
@@ -32,16 +32,16 @@ Before the first release, make the CLI default to its stable human-readable text
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — Every released command, alias, parser error, operation error, and --version emits the documented text representation when no output option is supplied.
-- [ ] #2 AC2 — --format json and --json both emit the existing schema-versioned JSON payloads with unchanged redaction and exit-code behavior wherever output selection is currently supported.
-- [ ] #3 AC3 — Combining --json with --format is rejected deterministically as invalid input rather than using argument order to choose a format.
-- [ ] #4 AC4 — CLI help, usage documentation, examples, and automated contract tests describe text as the default and require explicit JSON selection for agents and integrations.
+- [x] #1 AC1 — Every released command, alias, parser error, operation error, and --version emits the documented text representation when no output option is supplied.
+- [x] #2 AC2 — --format json and --json both emit the existing schema-versioned JSON payloads with unchanged redaction and exit-code behavior wherever output selection is currently supported.
+- [x] #3 AC3 — Combining --json with --format is rejected deterministically as invalid input rather than using argument order to choose a format.
+- [x] #4 AC4 — CLI help, usage documentation, examples, and automated contract tests describe text as the default and require explicit JSON selection for agents and integrations.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 DOD1 — Focused CLI, parser, schema, package-smoke, and documentation contract coverage passes.
-- [ ] #2 DOD2 — Full project quality gates and independent acceptance verification pass.
+- [x] #1 DOD1 — Focused CLI, parser, schema, package-smoke, and documentation contract coverage passes.
+- [x] #2 DOD2 — Full project quality gates and independent acceptance verification pass.
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -80,4 +80,6 @@ T1 complete in commit 67146aa. Verification passed: mise run lint; mise run form
 T2 complete in commit b807255bcc86870c785297c68321cace19b23da4. Verification passed: targeted CLI/package/schema/GC contract tests; direct text and explicit JSON smoke checks; mise run lint; mise run format-check; mise run test; mise run typecheck; mise run hooks. Updated CI and release smoke commands to request --json and revised README human-first output contract. All implementation tasks are complete; next pass is REVIEW. Acceptance criteria and Definition of Done remain pending accumulated review and integration evidence.
 
 Independent verifier found AC2 gap after b807255: scripts/release_installer.py parsed downloaded --version as JSON but did not request explicit JSON. Fixed native and wheel smoke invocations in commit 5e1121f and added test assertions that fail without --json. Re-verified targeted tests.test_release (11 passed), mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks. T2 now covers all known CLI JSON consumers; next pass remains full REVIEW of 67146aa, b807255, and 5e1121f.
+
+reviewed: full implementation-review; implementation commits 67146aa, b807255bcc86870c785297c68321cace19b23da4, 5e1121fb4bc6aaa481193288e0af9d968b010b4f; review-fix b47f5c4. Independent verifier PASS. Findings fixed: schema description now states text default and README clarifies output placement around top-level/final subcommand. Verified AC1-AC4 and DOD1-DOD2 with targeted 41-test CLI/package/schema/release run, direct default/JSON/conflict/child-argument smoke checks, mise run lint, format-check, test, and typecheck.
 <!-- SECTION:NOTES:END -->
