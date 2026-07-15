@@ -1,11 +1,11 @@
 ---
 id: TASK-17
 title: Complete explicit human-readable CLI output
-status: Blocked
+status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-14 02:46'
-updated_date: '2026-07-15 00:08'
+updated_date: '2026-07-15 00:18'
 labels:
   - cli
   - ux
@@ -24,6 +24,11 @@ ordinal: 18000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Keep schema-versioned JSON as the default for agents and integrations. Make --format text a consistently human-readable opt-in mode across every CLI command instead of falling back to compact JSON for most operations.
+
+### Implementation tasks
+- [x] T1 — Add deterministic command-specific text renderers without changing JSON payloads or exit codes (AC1-AC3)
+- [x] T2 — Add complete successful and failed text contract tests with redaction and escaping coverage (AC2-AC4)
+- [ ] T3 — Document the stable human-readable text grammar, examples, escaping, and security omissions (AC2-AC4)
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -80,4 +85,6 @@ Final T2 fixes: commit df80acf743486afc521e28d44afe0316f8490b3 centralizes C0/C1
 Independent verifier PASS after final fixes: 19/19 focused CLI tests; JSON compatibility, renderer registry/aliases, C0/C1/DEL and Unicode escaping, bundle-resource list identity/redaction, parser and child failures all pass. No remaining T2 defect. T3 human-readable output reference remains next.
 
 BLOCKED (2026-07-15T00:08Z): implementation loop halted before coding because the item lacks the canonical ### Implementation tasks section with direct [ ]/[x] task entries required by backlog-source-workflow; the plan's [T1]-[T3] entries are not a claimable checklist. Evidence: backlog task view TASK-17 shows only Implementation Plan and prior notes; no canonical checklist. Attempt: refreshed provider state, acquired and released an implementation claim without edits. Unblock condition: run backlog-refine for TASK-17 to add a canonical ordered implementation-task checklist, then resume with @docs/backlog.
+
+UNBLOCK (2026-07-15T00:18Z): stale workflow blocker resolved without a product decision. Evidence: the existing refined T1-T3 implementation plan, completed T1/T2 checkpoints, and independent T2 verification define the canonical ordered checklist; no implementation scope changed. Disposition: added the required checklist with T1/T2 complete and T3 open, and restored In Progress for the resumable implementation handoff. Next action remains T3.
 <!-- SECTION:NOTES:END -->
