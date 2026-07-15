@@ -1,11 +1,11 @@
 ---
 id: TASK-30
 title: Add aggregate CLI help for agent discovery
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-15 19:07'
-updated_date: '2026-07-15 20:40'
+updated_date: '2026-07-15 20:42'
 labels: []
 dependencies: []
 ordinal: 31000
@@ -36,3 +36,9 @@ Provide an explicit read-only aggregate help mode for one-shot CLI onboarding wh
 <!-- SECTION:NOTES:BEGIN -->
 Implemented in src/worklease/cli.py and tests/test_cli.py. Added explicit --help-all traversal over the existing argparse tree, canonical command-path sections, nested policy commands, alias summaries, usage/options/epilog examples, deterministic output, and read-only behavior. Verification: aggregate subprocess coverage passed; every emitted canonical help invocation exited 0; aliases were not emitted as duplicate sections; full tests (40 CLI tests plus SDK suite) passed; mise run lint, mise run format-check, and mise run typecheck passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added explicit --help-all aggregate CLI help generated from the argparse tree. It emits deterministic canonical sections for all top-level and nested commands, including policy list/describe, with aliases and parser help content without duplicate alias sections. Verified by aggregate subprocess coverage, 40 CLI tests plus SDK tests, mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks.
+<!-- SECTION:FINAL_SUMMARY:END -->
