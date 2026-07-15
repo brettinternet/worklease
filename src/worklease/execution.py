@@ -7,14 +7,109 @@ import os
 import signal
 import sqlite3
 import subprocess
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import BinaryIO, cast
 
 from .execution_context import provider_environment, resolve_execution_directory
 from .locking import resource_lock, resource_locks
 from .models import BundleMutationRequest, LeaseError, MutationRequest, require_text
 from .store import LeaseStore
+
+MAX_CAPTURE_BYTES = 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+@dataclass(slots=True)
+class _BoundedCapture:
+    """Continuously drain one pipe while retaining bounded receipt output."""
+
+    stream: BinaryIO
+    content: bytearray
+    total_bytes: int = 0
+    error: BaseException | None = None
+
+    def drain(self) -> None:
+        try:
+            while chunk := self.stream.read(_READ_CHUNK_BYTES):
+                self.total_bytes += len(chunk)
+                remaining = MAX_CAPTURE_BYTES - len(self.content)
+                if remaining > 0:
+                    self.content.extend(chunk[:remaining])
+        except (OSError, ValueError) as error:
+            self.error = error
+
+    def result(self) -> tuple[str, int, bool]:
+        text = bytes(self.content).decode("utf-8", errors="replace")
+        encoded = text.encode("utf-8")
+        representation_truncated = len(encoded) > MAX_CAPTURE_BYTES
+        if representation_truncated:
+            text = encoded[:MAX_CAPTURE_BYTES].decode("utf-8", errors="ignore")
+        return (
+            text,
+            self.total_bytes,
+            self.total_bytes > len(self.content) or representation_truncated,
+        )
+
+
+def _capture_output(
+    process: subprocess.Popen[bytes],
+    renew: Callable[[], None],
+    interval: float,
+) -> tuple[tuple[str, int, bool], tuple[str, int, bool]]:
+    """Drain both child pipes concurrently while ownership is renewed."""
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    captures = (
+        _BoundedCapture(cast(BinaryIO, process.stdout), bytearray()),
+        _BoundedCapture(cast(BinaryIO, process.stderr), bytearray()),
+    )
+    readers = tuple(
+        threading.Thread(target=capture.drain, daemon=True) for capture in captures
+    )
+    for reader in readers:
+        reader.start()
+
+    while process.poll() is None or any(reader.is_alive() for reader in readers):
+        for capture in captures:
+            if capture.error is not None:
+                raise OSError("child output capture failed") from capture.error
+        if process.poll() is None:
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=interval)
+        else:
+            for reader in readers:
+                reader.join(timeout=interval / len(readers))
+        if process.poll() is None or any(reader.is_alive() for reader in readers):
+            renew()
+
+    for capture in captures:
+        if capture.error is not None:
+            raise OSError("child output capture failed") from capture.error
+    return captures[0].result(), captures[1].result()
+
+
+def _command_receipt(
+    argv: list[str],
+    returncode: int,
+    stdout: tuple[str, int, bool],
+    stderr: tuple[str, int, bool],
+    execution_directory: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "argv": argv,
+        "returncode": returncode,
+        "stdout": stdout[0],
+        "stderr": stderr[0],
+        "stdoutBytes": stdout[1],
+        "stderrBytes": stderr[1],
+        "stdoutTruncated": stdout[2],
+        "stderrTruncated": stderr[2],
+        "executionDirectory": execution_directory,
+    }
 
 
 class GuardedExecutor:
@@ -33,14 +128,14 @@ class GuardedExecutor:
         return values
 
     @staticmethod
-    def _close_pipes(process: subprocess.Popen[str]) -> None:
+    def _close_pipes(process: subprocess.Popen[bytes]) -> None:
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 with suppress(OSError):
                     stream.close()
 
     @classmethod
-    def _terminate(cls, process: subprocess.Popen[str]) -> None:
+    def _terminate(cls, process: subprocess.Popen[bytes]) -> None:
         # A completed parent can still have descendants holding our pipes open.
         # On POSIX the dedicated process group is the ownership boundary.
         try:
@@ -97,7 +192,7 @@ class GuardedExecutor:
 
             current_request = request
             heartbeat_count = 0
-            process: subprocess.Popen[str] | None = None
+            process: subprocess.Popen[bytes] | None = None
 
             def renew() -> None:
                 nonlocal current_request, heartbeat_count
@@ -128,9 +223,6 @@ class GuardedExecutor:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     start_new_session=(os.name == "posix"),
                     cwd=(
                         str(execution_directory.path)
@@ -143,12 +235,8 @@ class GuardedExecutor:
                 )
                 interval = max(float(ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
-                while True:
-                    try:
-                        stdout, stderr = process.communicate(timeout=interval)
-                        break
-                    except subprocess.TimeoutExpired:
-                        renew()
+                stdout, stderr = _capture_output(process, renew, interval)
+                self._close_pipes(process)
                 renew()
             except LeaseError:
                 if process is not None:
@@ -163,8 +251,9 @@ class GuardedExecutor:
                         operationId=request.operation_id,
                         operation="exec",
                     ) from error
-                stdout = ""
-                stderr = str(error)
+                stdout = ("", 0, False)
+                message = str(error)
+                stderr = (message, len(message.encode("utf-8")), False)
                 returncode = 127
             except sqlite3.Error as error:
                 if process is not None:
@@ -191,13 +280,13 @@ class GuardedExecutor:
                 if returncode < 0:
                     returncode = 128 + (-returncode)
 
-            command_receipt = {
-                "argv": argv,
-                "returncode": returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "executionDirectory": execution_directory.request_value(),
-            }
+            command_receipt = _command_receipt(
+                argv,
+                returncode,
+                stdout,
+                stderr,
+                execution_directory.request_value(),
+            )
             receipt: dict[str, object] = {
                 "ok": returncode == 0,
                 "operation": "exec",
@@ -249,7 +338,7 @@ class GuardedExecutor:
 
             current_request = request
             heartbeat_count = 0
-            process: subprocess.Popen[str] | None = None
+            process: subprocess.Popen[bytes] | None = None
 
             def renew() -> None:
                 nonlocal current_request, heartbeat_count
@@ -282,9 +371,6 @@ class GuardedExecutor:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     start_new_session=(os.name == "posix"),
                     cwd=(
                         str(execution_directory.path)
@@ -297,12 +383,8 @@ class GuardedExecutor:
                 )
                 interval = max(float(request.ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
-                while True:
-                    try:
-                        stdout, stderr = process.communicate(timeout=interval)
-                        break
-                    except subprocess.TimeoutExpired:
-                        renew()
+                stdout, stderr = _capture_output(process, renew, interval)
+                self._close_pipes(process)
                 renew()
             except LeaseError:
                 if process is not None:
@@ -317,8 +399,9 @@ class GuardedExecutor:
                         operationId=request.operation_id,
                         operation="exec-bundle",
                     ) from error
-                stdout = ""
-                stderr = str(error)
+                stdout = ("", 0, False)
+                message = str(error)
+                stderr = (message, len(message.encode("utf-8")), False)
                 returncode = 127
             except sqlite3.Error as error:
                 if process is not None:
@@ -345,13 +428,13 @@ class GuardedExecutor:
                 if returncode < 0:
                     returncode = 128 + (-returncode)
 
-            command_receipt = {
-                "argv": argv,
-                "returncode": returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "executionDirectory": execution_directory.request_value(),
-            }
+            command_receipt = _command_receipt(
+                argv,
+                returncode,
+                stdout,
+                stderr,
+                execution_directory.request_value(),
+            )
             receipt: dict[str, object] = {
                 "ok": returncode == 0,
                 "operation": "exec-bundle",

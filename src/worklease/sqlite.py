@@ -10,6 +10,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from .models import LeaseError
+
+SCHEMA_VERSION = 1
+
 
 def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
     """Return the isolated state directory used by worklease."""
@@ -58,6 +62,26 @@ def database_setup_lock(home: Path) -> Iterator[None]:
 
 def _schema(connection: sqlite3.Connection, home: Path) -> None:
     with database_setup_lock(home):
+        metadata_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        ).fetchone()
+        if metadata_exists is not None:
+            try:
+                versions = tuple(
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM schema_meta ORDER BY version"
+                    )
+                )
+            except (sqlite3.Error, TypeError, ValueError) as error:
+                raise LeaseError("invalid-schema-version", code=3) from error
+            if versions != (SCHEMA_VERSION,):
+                raise LeaseError(
+                    "incompatible-schema-version",
+                    code=3,
+                    supportedVersion=SCHEMA_VERSION,
+                    foundVersions=list(versions),
+                )
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA synchronous = FULL")
         connection.executescript(
@@ -171,6 +195,7 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 receipt TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(resource, operation_id)
             );
+
             """
         )
         operation_columns = {
@@ -256,6 +281,30 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
               )
             """,
         )
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS claims_by_claim_id
+                ON claims(claim_id);
+            CREATE INDEX IF NOT EXISTS operations_by_claim_time
+                ON operations(claim_id, created_at);
+            CREATE INDEX IF NOT EXISTS operations_by_claim_state
+                ON operations(claim_id, state, resource, operation_id, kind);
+            CREATE INDEX IF NOT EXISTS operations_by_recorded_at
+                ON operations(created_at);
+            CREATE INDEX IF NOT EXISTS releases_by_claim_time
+                ON releases(claim_id, released_at);
+            CREATE INDEX IF NOT EXISTS releases_by_recorded_at
+                ON releases(released_at);
+            CREATE INDEX IF NOT EXISTS reconciliations_by_claim_time
+                ON reconciliations(claim_id, reconciled_at);
+            CREATE INDEX IF NOT EXISTS reconciliations_by_target
+                ON reconciliations(
+                    resource, operation_id, target_claim_id, kind, reconciled_at
+                );
+            CREATE INDEX IF NOT EXISTS reconciliations_by_recorded_at
+                ON reconciliations(reconciled_at);
+            """
+        )
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
@@ -272,13 +321,17 @@ def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
         if state_file.exists() or state_file.is_symlink():
             os.close(open_private_file(state_file))
     connection = sqlite3.connect(database, timeout=30, isolation_level=None)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
-    _schema(connection, resolved_home)
-    for state_file in (database, *sidecars):
-        if state_file.exists() or state_file.is_symlink():
-            os.close(open_private_file(state_file))
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
+        _schema(connection, resolved_home)
+        for state_file in (database, *sidecars):
+            if state_file.exists() or state_file.is_symlink():
+                os.close(open_private_file(state_file))
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 def connect_readonly(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:

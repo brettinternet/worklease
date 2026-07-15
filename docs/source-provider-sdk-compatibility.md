@@ -69,6 +69,10 @@ PYTHONPATH=packages/worklease-source-sdk/src:packages/worklease-source-sdk/examp
   python -m unittest discover -s packages/worklease-source-sdk/tests -v
 ```
 
+Tagged repository releases attach the SDK wheel and source distribution beside
+the lease-core Python and native assets. Install the SDK artifact from the same
+tag as the core before installing a provider package that depends on it.
+
 Wheel and editable installs discover external resource-policy entry points
 lazily. Frozen standalone `worklease` executables expose built-in policies only
 and do not discover entry points from the build environment. Provider packages

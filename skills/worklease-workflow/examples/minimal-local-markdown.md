@@ -16,14 +16,12 @@ Use this shape when one established Markdown file is the authoritative provider 
 import hashlib
 from pathlib import Path
 
-from worklease.adapters.markdown import MarkdownAdapter
-from worklease.models import AcquireRequest, MutationRequest
-from worklease.store import LeaseStore
+from worklease import AcquireRequest, LeaseStore, MutationRequest, replace_file
+from worklease.adapters import key
 
 source = Path("docs/work.md").resolve()
 candidate = Path(".tmp/work.md.candidate")
-adapter = MarkdownAdapter()
-resource = adapter.source_resource(source)
+resource = key("markdown", str(source), "__source__").resource
 store = LeaseStore()
 
 acquired = store.acquire(
@@ -39,7 +37,7 @@ acquired = store.acquire(
 claim = acquired["claim"]
 expected_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
 
-replacement = adapter.replace_file(
+replacement = replace_file(
     store,
     MutationRequest(
         resource=resource,

@@ -21,6 +21,7 @@ PACKAGE_DATA = (
     "worklease/schemas/v1/index.json",
     "worklease/schemas/v1/commands.json",
 )
+SDK_PACKAGE_DATA = ("worklease_source_sdk/py.typed",)
 NATIVE_ARCHIVE_MEMBER = "bin/worklease"
 
 
@@ -45,18 +46,20 @@ def validate_editable_package(package_directory: Path) -> None:
         raise ValueError(f"editable package data missing: {missing}")
 
 
-def validate_python_artifact(path: Path) -> None:
+def validate_python_artifact(
+    path: Path, *, package_data: tuple[str, ...] = PACKAGE_DATA
+) -> None:
     """Validate public type/schema files in a wheel or source archive."""
     if path.name.endswith(".whl"):
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
-        missing = _missing_package_data(names)
+        missing = sorted(required for required in package_data if required not in names)
     elif path.name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(path, "r:gz") as archive:
             names = {member.name for member in archive.getmembers()}
         missing = sorted(
             required
-            for required in PACKAGE_DATA
+            for required in package_data
             if not any(name.endswith(f"src/{required}") for name in names)
         )
     else:
@@ -176,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     package_command.add_argument("--artifact", type=Path, required=True)
     package_command.add_argument(
-        "--kind", choices=("editable", "python", "native"), required=True
+        "--kind", choices=("editable", "python", "sdk", "native"), required=True
     )
     native_command = commands.add_parser(
         "package-native",
@@ -201,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.kind == "python":
             validate_python_artifact(args.artifact)
             print("Python package data valid")
+        elif args.kind == "sdk":
+            validate_python_artifact(args.artifact, package_data=SDK_PACKAGE_DATA)
+            print("SDK package data valid")
         else:
             validate_native_artifact(args.artifact)
             print("native package data valid")

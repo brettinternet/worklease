@@ -116,7 +116,7 @@ class ExampleProvider(SourceProvider):
                 "resource-policy", self.kind, False, "item-not-found"
             )
         del work_key
-        key = ExamplePolicy().key(ref.source_id, ref.item_id)
+        key = ExamplePolicy().key(self.source.locator, ref.item_id)
         return ResourcePolicySelection(
             resource=key.resource,
             capability=key.capability,

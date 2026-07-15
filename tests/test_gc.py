@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 from worklease.models import (
@@ -165,7 +166,7 @@ class GarbageCollectionTests(unittest.TestCase):
         applied = self.store.garbage_collect(apply=True)
         self.assertFalse(applied["dryRun"])
         self.assertEqual(preview["eligible"], applied["collected"])
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             self.assertEqual(
                 0,
                 db.execute(
@@ -280,7 +281,7 @@ class GarbageCollectionTests(unittest.TestCase):
         failing = FailingStore(self.home.name, clock=lambda: self.now)
         with self.assertRaisesRegex(LeaseError, "gc-protected-record"):
             failing.garbage_collect(apply=True)
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             self.assertEqual(
                 1,
                 db.execute(
@@ -300,7 +301,7 @@ class GarbageCollectionTests(unittest.TestCase):
         resource = "repo:gc-interrupted"
         self._seed_released(resource)
         self.now = 31 * 86400
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             db.execute(
                 """
                 CREATE TRIGGER fail_gc_epoch
@@ -313,7 +314,7 @@ class GarbageCollectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LeaseError, "gc-storage-conflict"):
             self.store.garbage_collect(apply=True)
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             self.assertEqual(
                 1,
                 db.execute(
@@ -333,7 +334,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self._seed_released("repo:gc-before-cutoff")
         self.now = 100.0
         self._seed_released("repo:gc-at-cutoff")
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             for label, recorded_at in (("old", 0.0), ("boundary", 100.0)):
                 resource = f"repo:gc-operation-{label}"
                 operation_id = f"operation-gc-{label}"
@@ -483,7 +484,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.now = 31 * 86400
         eligible = self.store.garbage_collect()["eligible"]
         self.assertEqual(0, eligible["bundleEpochs"]["count"])
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             self.assertEqual(
                 "started",
                 db.execute(
@@ -492,6 +493,69 @@ class GarbageCollectionTests(unittest.TestCase):
                 ).fetchone()[0],
             )
         self.assertEqual(0, eligible["resources"]["count"])
+
+    def test_reconciled_bundle_operation_can_be_released_and_collected(self) -> None:
+        resources = ("repo:gc-reconciled-a", "repo:gc-reconciled-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-reconciled",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        target = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="bundle-gc-unknown",
+        )
+        operation_request = target.request_dict(argv=["sentinel"])
+        self.assertIsNone(
+            self.store.begin_bundle_operation(target, "exec-bundle", operation_request)
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        reconciled = self.store.reconcile_bundle_operation(
+            BundleMutationRequest(
+                resources=resources,
+                claim_id=target.claim_id,
+                token=target.token,
+                revision=target.revision,
+                operation_id="bundle-gc-reconcile",
+            ),
+            "bundle-gc-unknown",
+            request_sha256,
+            "observed-success",
+            {"verified": True},
+        )
+        reconciled_claim = reconciled["claim"]
+        assert isinstance(reconciled_claim, dict)
+        self.store.release_bundle(
+            BundleMutationRequest(
+                resources=resources,
+                claim_id=target.claim_id,
+                token=target.token,
+                revision=int(reconciled_claim["revision"]),
+                operation_id="bundle-gc-release",
+            ),
+            "verified",
+        )
+
+        self.now = 31 * 86400
+        eligible = self.store.garbage_collect()["eligible"]
+        self.assertEqual(1, eligible["bundleEpochs"]["count"])
+        self.assertEqual(2, eligible["operations"]["count"])
+        self.assertEqual(1, eligible["reconciliations"]["count"])
+        self.assertEqual(2, eligible["resources"]["count"])
 
     def test_gc_serializes_concurrent_acquire_and_heartbeat(self) -> None:
         resource = "repo:gc-concurrent"
@@ -565,7 +629,7 @@ class GarbageCollectionTests(unittest.TestCase):
 
     def test_gc_runs_after_legacy_claim_schema_migration(self) -> None:
         database = Path(self.home.name) / "leases.sqlite3"
-        with sqlite3.connect(database) as db:
+        with closing(sqlite3.connect(database)) as db, db:
             db.executescript(
                 """
                 CREATE TABLE schema_meta(version INTEGER PRIMARY KEY);
@@ -733,7 +797,7 @@ class GarbageCollectionTests(unittest.TestCase):
         resource = "repo:gc-dry-run-snapshot"
         self._seed_released(resource)
         self.now = 31 * 86400
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             before = {
                 table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
                 for table in (
@@ -746,7 +810,7 @@ class GarbageCollectionTests(unittest.TestCase):
                 )
             }
         self.store.garbage_collect()
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             after = {
                 table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
                 for table in before
@@ -839,7 +903,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.now = 10.0
         applied = self.store.garbage_collect(cutoff="1970-01-01T00:00:10Z", apply=True)
         self.assertEqual(1, applied["collected"]["operations"]["count"])
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             remaining = db.execute(
                 "SELECT claim_id, state FROM operations WHERE resource = ?",
                 (resource,),
@@ -942,7 +1006,7 @@ class GarbageCollectionTests(unittest.TestCase):
             apply=True,
         )
         self.assertEqual(preview["eligible"], applied["collected"])
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             self.assertEqual(
                 0,
                 db.execute(
@@ -960,7 +1024,7 @@ class GarbageCollectionTests(unittest.TestCase):
 
     def test_ambiguous_legacy_reconciliation_remains_protected(self) -> None:
         resource = "repo:gc-legacy-ambiguous"
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             for claim_id in ("legacy-target-a", "legacy-target-b"):
                 db.execute(
                     """
@@ -994,7 +1058,7 @@ class GarbageCollectionTests(unittest.TestCase):
         )
         self.assertEqual(0, result["collected"]["operations"]["count"])
         self.assertEqual(0, result["collected"]["reconciliations"]["count"])
-        with connect(self.home.name) as db:
+        with closing(connect(self.home.name)) as db, db:
             target_claim = db.execute(
                 """
                 SELECT target_claim_id
@@ -1008,6 +1072,29 @@ class GarbageCollectionTests(unittest.TestCase):
     def test_invalid_cutoff_is_stable_and_non_mutating(self) -> None:
         with self.assertRaisesRegex(LeaseError, "invalid-gc-cutoff"):
             self.store.garbage_collect(cutoff="not-a-timestamp")
+
+    def test_gc_history_lookups_have_dedicated_indexes(self) -> None:
+        self.store.garbage_collect()
+        expected = {
+            "claims_by_claim_id",
+            "operations_by_claim_time",
+            "operations_by_claim_state",
+            "operations_by_recorded_at",
+            "releases_by_claim_time",
+            "releases_by_recorded_at",
+            "reconciliations_by_claim_time",
+            "reconciliations_by_target",
+            "reconciliations_by_recorded_at",
+        }
+        with closing(connect(self.home.name)) as db, db:
+            actual = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%'"
+                )
+            }
+        self.assertTrue(expected <= actual)
 
     def test_cli_returns_schema_versioned_dry_run(self) -> None:
         environment = os.environ.copy()

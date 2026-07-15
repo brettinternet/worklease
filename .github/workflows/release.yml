@@ -40,11 +40,17 @@ jobs:
         run: |
           mkdir -p dist/release
           mise exec uv -- uv build --no-build-isolation --out-dir dist/release
+          mise exec uv -- uv build --project packages/worklease-source-sdk \
+            --no-build-isolation --out-dir dist/release
       - name: Verify Python package data
         run: |
-          for artifact in dist/release/*.whl dist/release/*.tar.gz; do
+          for artifact in dist/release/worklease-*.whl dist/release/worklease-*.tar.gz; do
             mise exec uv -- uv run python scripts/release_artifacts.py \
               verify-package --artifact "$artifact" --kind python
+          done
+          for artifact in dist/release/worklease_source_sdk-*.whl dist/release/worklease_source_sdk-*.tar.gz; do
+            mise exec uv -- uv run python scripts/release_artifacts.py \
+              verify-package --artifact "$artifact" --kind sdk
           done
       - name: Upload Python assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

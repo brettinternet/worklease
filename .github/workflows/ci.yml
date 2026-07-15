@@ -34,6 +34,14 @@ jobs:
         run: mise run format-check
       - name: Build wheel and sdist
         run: mise run build
+      - name: Build SDK and example distributions
+        run: |
+          mkdir -p dist/extensions
+          mise exec uv -- uv build --project packages/worklease-source-sdk \
+            --no-build-isolation --out-dir dist/extensions
+          mise exec uv -- uv build \
+            --project packages/worklease-source-sdk/examples/source-provider-plugin \
+            --no-build-isolation --out-dir dist/extensions
       - name: Install built wheel and sdist and smoke-test version
         shell: bash
         run: |
@@ -44,6 +52,14 @@ jobs:
           sdist=$(printf '%s\n' dist/*.tar.gz)
           uv tool install --force "$sdist"
           "$tool_bin/worklease" --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+      - name: Install SDK and example wheels together
+        shell: bash
+        run: |
+          target="$RUNNER_TEMP/worklease-extension-smoke"
+          mise exec uv -- uv pip install --no-index --target "$target" \
+            dist/*.whl dist/extensions/*.whl
+          PYTHONPATH="$target" python -c \
+            'import source_provider_example, worklease_source_sdk; assert source_provider_example.registration.descriptor.contract_version == worklease_source_sdk.CONTRACT_VERSION'
 
   native:
     name: Native (${{ matrix.platform }}-${{ matrix.arch }})

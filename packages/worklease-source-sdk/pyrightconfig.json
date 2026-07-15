@@ -1,4 +1,4 @@
 {
-  "include": ["src", "tests"],
-  "extraPaths": ["src"]
+  "include": ["src", "tests", "examples/source-provider-plugin/src"],
+  "extraPaths": ["src", "../../src", "examples/source-provider-plugin/src"]
 }

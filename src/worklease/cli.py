@@ -39,7 +39,9 @@ _COMMANDS = frozenset(
         "bundle-status",
         "inspect-bundle",
         "inspect-operation",
+        "inspect-operation-bundle",
         "reconcile-operation",
+        "reconcile-operation-bundle",
         "gc",
         "list",
         "heartbeat",
@@ -247,6 +249,12 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(inspect_operation_parser)
     inspect_operation_parser.add_argument("--resource", required=True)
     inspect_operation_parser.add_argument("--operation-id", required=True)
+    inspect_bundle_operation_parser = commands.add_parser(
+        "inspect-operation-bundle", help="inspect one ordered bundle operation outcome"
+    )
+    _add_output_arguments(inspect_bundle_operation_parser)
+    _bundle_resources(inspect_bundle_operation_parser)
+    inspect_bundle_operation_parser.add_argument("--operation-id", required=True)
     gc_parser = commands.add_parser(
         "gc", help="inspect or collect records eligible for garbage collection"
     )
@@ -280,6 +288,24 @@ def _parser() -> _ArgumentParser:
         choices=("observed-success", "observed-failure"),
     )
     reconcile_operation_parser.add_argument("--evidence", required=True)
+    reconcile_bundle_operation_parser = commands.add_parser(
+        "reconcile-operation-bundle",
+        help="record an observed ordered bundle operation outcome",
+    )
+    _add_output_arguments(reconcile_bundle_operation_parser)
+    _common_bundle_claim_arguments(reconcile_bundle_operation_parser)
+    reconcile_bundle_operation_parser.add_argument(
+        "--target-operation-id", required=True
+    )
+    reconcile_bundle_operation_parser.add_argument(
+        "--expected-request-sha256", required=True
+    )
+    reconcile_bundle_operation_parser.add_argument(
+        "--outcome",
+        required=True,
+        choices=("observed-success", "observed-failure"),
+    )
+    reconcile_bundle_operation_parser.add_argument("--evidence", required=True)
 
     checkpoint_parser = commands.add_parser(
         "checkpoint", help="persist a bounded JSON checkpoint and renew a lease"
@@ -467,7 +493,14 @@ def _emit_command(command: object) -> None:
         print("COMMAND\t<none>")
         return
     print("COMMAND")
-    for field in ("returncode", "executionDirectory"):
+    for field in (
+        "returncode",
+        "executionDirectory",
+        "stdoutBytes",
+        "stdoutTruncated",
+        "stderrBytes",
+        "stderrTruncated",
+    ):
         if field in command:
             print(f"{_text_label(field)}\t{_text_value(command[field])}")
     for field in ("stdout", "stderr"):
@@ -666,6 +699,7 @@ def _render_inspect_operation(payload: dict[str, object]) -> None:
     _text_header(payload)
     for field in (
         "resource",
+        "resources",
         "operationId",
         "kind",
         "state",
@@ -776,6 +810,7 @@ _TEXT_RENDERERS = {
     "inspect-bundle": _render_status,
     "status-verbose": _render_status_verbose,
     "inspect-operation": _render_inspect_operation,
+    "inspect-operation-bundle": _render_inspect_operation,
     "gc": _render_gc,
     "acquire": _render_mutation,
     "acquire-bundle": _render_mutation,
@@ -793,6 +828,7 @@ _TEXT_RENDERERS = {
     "bundle-exec": _render_mutation,
     "replace-file": _render_mutation,
     "reconcile-operation": _render_mutation,
+    "reconcile-operation-bundle": _render_mutation,
 }
 
 
@@ -912,6 +948,11 @@ def _dispatch(
     if operation == "inspect-operation":
         assert store is not None
         return store.inspect_operation(args.resource, args.operation_id), 0
+    if operation == "inspect-operation-bundle":
+        assert store is not None
+        return store.inspect_bundle_operation(
+            tuple(args.resources), args.operation_id
+        ), 0
     if operation == "gc":
         assert store is not None
         return (
@@ -931,6 +972,22 @@ def _dispatch(
         return (
             store.reconcile_operation(
                 _request(args),
+                args.target_operation_id,
+                args.expected_request_sha256,
+                args.outcome,
+                evidence,
+            ),
+            0,
+        )
+    if operation == "reconcile-operation-bundle":
+        assert store is not None
+        try:
+            evidence = json.loads(args.evidence)
+        except (TypeError, ValueError) as error:
+            raise LeaseError("invalid-evidence", code=64) from error
+        return (
+            store.reconcile_bundle_operation(
+                _bundle_request(args),
                 args.target_operation_id,
                 args.expected_request_sha256,
                 args.outcome,

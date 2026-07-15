@@ -33,7 +33,8 @@ For work spanning several exact resources, use the bundle lifecycle when the cal
 needs all-or-nothing ownership. A bundle has 1–32 non-empty opaque resources,
 rejects exact duplicates, preserves caller order in receipts, and acquires locks in
 deterministic internal order. `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`,
-`release-bundle`, and `status-bundle` authorize the complete ordered member set
+`inspect-operation-bundle`, `reconcile-operation-bundle`, `release-bundle`, and
+`status-bundle` authorize the complete ordered member set
 with one shared claim ID, token, and revision; a member cannot be mutated through
 the single-resource API. Conflicts, expiry reclaim, and storage failures leave no
 partial bundle. This extends same-host coordination only: it does not add
@@ -103,6 +104,12 @@ Return structured diagnostics for `blocked`, `active-claims`, `conflict`, `ambig
 Display only non-secret claim metadata: resource, claim ID, revision, expiry, authority, guarantee, and guarantee scope. Pass the bearer token only to claim mutations or guarded operations; never include it in diagnostics, checkpoints, logs, or handoffs.
 
 `worklease status --resource RESOURCE --verbose` is a read-only crash-diagnostic projection with `schemaVersion`, `ok`, `operation`, `resource`, `state`, `claim`, `unknownOperations`, `release`, and conditional `guidance` fields. It may report `free`, `active`, or `expired` state plus non-secret claim metadata, unresolved started-operation summaries, and latest release metadata. It must never expose bearer tokens, raw requests or receipts, command output, provider payloads, file contents, checkpoints, or completed operation receipts, and it must not reclaim, adopt, reconcile, heartbeat, release, or otherwise mutate state. Started operations represent unknown outcomes: inspect the authoritative provider before retrying and use the separate reconciliation flow when authorized. `reclaimed` is reported by acquire only and is not persisted historical diagnostic state. After expiry, acquire a fresh claim and token; retain the existing local-coordination or provider-fencing guarantee and never describe local coordination as provider-side or cross-host fencing.
+
+For an unknown `exec-bundle` outcome, pass the exact ordered member set to
+`inspect-operation-bundle`, verify the authoritative result, and use
+`reconcile-operation-bundle` under the exact current bundle claim. Bundle
+reconciliation is atomic across members, advances the shared revision, and does
+not reveal the bearer token.
 
 ## Human and agent use
 

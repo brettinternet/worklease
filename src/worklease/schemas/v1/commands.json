@@ -13,7 +13,8 @@
             "parse", "version", "key", "policy-list", "policy-describe",
             "acquire", "bundle-acquire", "acquire-bundle",
             "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle",
-            "inspect-operation", "reconcile-operation", "list", "heartbeat",
+            "inspect-operation", "inspect-operation-bundle",
+            "reconcile-operation", "reconcile-operation-bundle", "list", "heartbeat",
             "checkpoint", "transfer", "release", "bundle-heartbeat", "heartbeat-bundle",
             "bundle-release", "release-bundle", "exec", "bundle-exec",
             "exec-bundle", "replace-file", "gc"
@@ -59,7 +60,7 @@
           "items": {"$ref": "common.json#/$defs/PolicyDescriptor"}
         },
         "resource": {"type": "string"},
-        "state": {"enum": ["free", "active", "expired"]},
+        "state": {"enum": ["free", "active", "expired", "completed", "unknown-outcome", "reconciled"]},
         "operationId": {"type": "string"},
         "kind": {"type": "string"},
         "version": {"type": "string"},
@@ -82,6 +83,10 @@
             "returncode": {"type": "integer"},
             "stdout": {"type": "string"},
             "stderr": {"type": "string"},
+            "stdoutBytes": {"type": "integer", "minimum": 0},
+            "stderrBytes": {"type": "integer", "minimum": 0},
+            "stdoutTruncated": {"type": "boolean"},
+            "stderrTruncated": {"type": "boolean"},
             "executionDirectory": {"$ref": "common.json#/$defs/ExecutionDirectory"}
           },
           "additionalProperties": true
@@ -99,7 +104,7 @@
       "if": {
         "properties": {
           "operation": {
-            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "reconcile-operation", "list"]
+            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "inspect-operation-bundle", "reconcile-operation", "reconcile-operation-bundle", "list"]
           }
         },
         "required": ["operation"]

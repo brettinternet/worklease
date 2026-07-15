@@ -62,7 +62,8 @@ The response declares the claim scope and guarantee. Use `--coordination-only` w
 
 ### 2. Acquire a fresh ownership epoch
 
-Generate new claim, agent, session, and owner IDs for each attempt:
+Keep the agent ID stable for the logical agent. Generate fresh claim, session,
+owner/worker-attempt, and operation IDs for each attempt:
 
 ```sh
 worklease acquire \
@@ -122,6 +123,11 @@ worklease inspect-operation \
   --operation-id "test-TASK-42-001"
 ```
 
+For `exec-bundle`, use `inspect-operation-bundle` and
+`reconcile-operation-bundle`, repeating `--resource` in the exact acquisition
+order. Reconciliation requires the current bundle claim ID, token, and revision;
+it advances the whole bundle atomically and returns a redacted claim.
+
 Do not automatically rerun an uncertain external command.
 
 ### 4. Checkpoint and release
@@ -160,7 +166,9 @@ Scarce resource: use one shared identity such as `local:port:8080` or `local:gpu
 
 Source-wide Markdown update: derive a `markdown` key for the file, acquire the source claim, and use `replace-file` with the current SHA-256. The expected hash and atomic replacement fence that one local file mutation. A coordination-only claim cannot call `replace-file`.
 
-Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, and `release-bundle` for 1–32 exact resources. Bundle acquisition and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
+Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`, and `release-bundle` for 1–32 exact ordered resources. Bundle acquisition, reconciliation, and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
+
+Guarded commands continuously drain both output streams. Receipts retain at most 1 MiB of UTF-8 output per stream and report `stdoutBytes`/`stderrBytes` (total raw bytes observed) plus `stdoutTruncated`/`stderrTruncated`; small output is returned unchanged.
 
 Remote provider without conditional writes: acquire with `--coordination-only`; revalidate the claim, provider eligibility, and provider version before each direct API/CLI mutation; perform the write; then reread both claim and provider state. Retain the provider receipt and stop on conflict or ambiguity.
 
@@ -191,13 +199,18 @@ adapter and receipt requirements.
 
 ## CLI and compatibility
 
-Run `worklease COMMAND --help` for the complete command surface. Singleton lifecycle commands include `key`, `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `exec`, `replace-file`, and `release`; uncertain-operation handling uses `inspect-operation` and `reconcile-operation`; multi-resource equivalents use the `*-bundle` commands.
+Run `worklease COMMAND --help` for the complete command surface. Singleton lifecycle commands include `key`, `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `exec`, `replace-file`, and `release`; uncertain-operation handling uses `inspect-operation` and `reconcile-operation`; ordered multi-resource equivalents use `inspect-operation-bundle` and `reconcile-operation-bundle` with the other `*-bundle` commands.
 
 Exit codes are `0` for success, `2` for lease or capability conflicts, `3` for idempotency/version or unknown-outcome failures, `64` for invalid input, and `75` for storage failure. `exec` returns the child status after the child starts.
 
 State is selected by `--home`, then `WORKLEASE_HOME`, then `XDG_STATE_HOME/worklease`, defaulting to `~/.local/state/worklease`. Use an absolute, private path. Never use a repository-relative state path across linked worktrees because each checkout would create a separate lease authority.
 
-The supported Python API is the symbol list in `worklease.__all__` and follows semantic versioning. JSON responses use schema version 1; consumers must ignore unknown fields and rely on stable `reason` values and exit codes rather than message text. Published schemas live in `worklease/schemas/v1/`. Every distribution includes those schemas and `worklease/py.typed`.
+The supported lease API is the symbol list in `worklease.__all__`; the supported
+resource-policy extension API is `worklease.adapters.__all__`. Both follow
+semantic versioning. JSON responses use schema version 1; consumers must ignore
+unknown fields and rely on stable `reason` values and exit codes rather than
+message text. Published schemas live in `worklease/schemas/v1/`. Every
+distribution includes those schemas and `worklease/py.typed`.
 
 ### Retention and garbage collection
 
@@ -263,25 +276,28 @@ The command grammars are:
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
   block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
   `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`.
-- `inspect-operation`: `OK inspect-operation`, followed by operation identity,
-  kind, state, outcome, hashes, and reconciliation timestamps when present.
+- `inspect-operation` and `inspect-operation-bundle`: `OK <operation>`, followed
+  by singleton or ordered-bundle identity, kind, state, outcome, hashes, and
+  reconciliation timestamps when present.
 - `gc`: `OK gc`, retention fields, then an `ELIGIBLE` section with sorted
   record-type rows containing count, oldest, and newest timestamps.
 - `acquire`, `acquire-bundle`, `bundle-acquire`, `heartbeat`, `checkpoint`,
   `heartbeat-bundle`, `bundle-heartbeat`, `transfer`, `release`,
   `release-bundle`, `bundle-release`, `exec`, `exec-bundle`, `bundle-exec`,
-  `replace-file`, and `reconcile-operation`: `OK <operation>`, operation and
-  mutation fields, then a `CLAIM` block. A successful acquire, heartbeat,
+  `replace-file`, `reconcile-operation`, and `reconcile-operation-bundle`:
+  `OK <operation>`, operation and mutation fields, then a `CLAIM` block. A
+  successful acquire, heartbeat,
   checkpoint, or transfer may include `TOKEN` because the current or successor
   owner needs it for the next lifecycle step; other mutation and all failure
   output omit bearer tokens.
 
 Guarded child results add a `COMMAND` block with `RETURNCODE`,
-`EXECUTION_DIRECTORY`, `STDOUT`, and `STDERR` when those fields exist.
-`STDOUT` and `STDERR` are values, not raw appended streams, so their escaping
-rules are identical to every other scalar. Status and list output expose no
-bearer tokens or secret claim material; mutation output exposes only the
-minimum owner fields required to continue the lifecycle.
+`EXECUTION_DIRECTORY`, `STDOUT_BYTES`, `STDOUT_TRUNCATED`, `STDERR_BYTES`,
+`STDERR_TRUNCATED`, `STDOUT`, and `STDERR` in that order when those fields
+exist. `STDOUT` and `STDERR` are values, not raw appended streams, so their
+escaping rules are identical to every other scalar. Status and list output
+expose no bearer tokens or secret claim material; mutation output exposes only
+the minimum owner fields required to continue the lifecycle.
 
 ## Development
 

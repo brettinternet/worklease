@@ -15,6 +15,7 @@ from pathlib import Path
 from scripts.release_artifacts import (
     NATIVE_ARCHIVE_MEMBER,
     PACKAGE_DATA,
+    SDK_PACKAGE_DATA,
     package_native_artifact,
     validate_checksums,
     validate_editable_package,
@@ -316,6 +317,32 @@ class ReleaseValidationTests(unittest.TestCase):
             )
             for artifact in artifacts:
                 validate_python_artifact(artifact)
+
+            sdk_output = output / "sdk"
+            sdk_result = subprocess.run(
+                [
+                    uv,
+                    "build",
+                    "--project",
+                    str(ROOT / "packages/worklease-source-sdk"),
+                    "--no-build-isolation",
+                    "--out-dir",
+                    str(sdk_output),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, sdk_result.returncode, sdk_result.stderr)
+            sdk_artifacts = sorted(
+                path
+                for path in sdk_output.iterdir()
+                if path.name.endswith((".whl", ".tar.gz"))
+            )
+            self.assertEqual(2, len(sdk_artifacts))
+            for artifact in sdk_artifacts:
+                validate_python_artifact(artifact, package_data=SDK_PACKAGE_DATA)
             native = output / "worklease-native"
             native.write_bytes(
                 b"\0".join(path.encode("utf-8") for path in PACKAGE_DATA)
@@ -339,6 +366,8 @@ class ReleaseValidationTests(unittest.TestCase):
 
     def test_workflow_packages_autodetected_native_archives(self) -> None:
         release = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("--project packages/worklease-source-sdk", release)
+        self.assertIn("--kind sdk", release)
         for platform, architecture in (
             ("linux", "x64"),
             ("linux", "arm64"),

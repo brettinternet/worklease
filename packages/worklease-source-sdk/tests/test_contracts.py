@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import cast
 
 from worklease_source_sdk import (
     CONTRACT_VERSION,
@@ -77,10 +78,13 @@ class ContractSmokeTests(unittest.TestCase):
         nested["flags"].append("mutated")
         nested["metadata"]["version"] = 2
 
-        self.assertEqual(("original",), source.provider_data["flags"])
-        self.assertEqual(1, source.provider_data["metadata"]["version"])
+        provider_data = source.provider_data
+        assert provider_data is not None
+        self.assertEqual(("original",), provider_data["flags"])
+        metadata = cast(dict[str, int], provider_data["metadata"])
+        self.assertEqual(1, metadata["version"])
         with self.assertRaises(TypeError):
-            source.provider_data["metadata"]["version"] = 3  # type: ignore[index]
+            metadata["version"] = 3
 
     def test_receipt_records_ambiguous_provider_outcome(self) -> None:
         receipt = ProviderReceipt(

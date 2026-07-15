@@ -18,7 +18,7 @@ from unittest.mock import patch
 from worklease import execution_context
 from worklease import replacement as replacement_module
 from worklease.cli import main as cli_main
-from worklease.execution import execute, execute_bundle
+from worklease.execution import MAX_CAPTURE_BYTES, execute, execute_bundle
 from worklease.models import (
     AcquireRequest,
     BundleAcquireRequest,
@@ -96,10 +96,93 @@ class ExecutionTests(unittest.TestCase):
         first_command = cast(dict[str, object], first["command"])
         self.assertEqual("stdout\n", first_command["stdout"])
         self.assertEqual("stderr\n", first_command["stderr"])
+        self.assertEqual(7, first_command["stdoutBytes"])
+        self.assertEqual(7, first_command["stderrBytes"])
+        self.assertFalse(first_command["stdoutTruncated"])
+        self.assertFalse(first_command["stderrTruncated"])
         self.assertEqual("once\n", output_file.read_text())
 
         with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
             execute(self.store, request, [sys.executable, "-c", "print('changed')"])
+
+    def test_exec_bounds_large_output_and_replays_exact_receipt(self) -> None:
+        request = self.acquire("bounded-output", operation_id="bounded-exec")
+        total = MAX_CAPTURE_BYTES + 257
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                f"sys.stdout.buffer.write(b'x' * {total}); "
+                "sys.stderr.buffer.write(b'small')"
+            ),
+        ]
+
+        first, first_code = execute(self.store, request, command)
+        replay, replay_code = execute(self.store, request, command)
+
+        self.assertEqual(0, first_code)
+        self.assertEqual(0, replay_code)
+        first_command = cast(dict[str, object], first["command"])
+        replay_command = cast(dict[str, object], replay["command"])
+        self.assertEqual("x" * MAX_CAPTURE_BYTES, first_command["stdout"])
+        self.assertEqual(total, first_command["stdoutBytes"])
+        self.assertTrue(first_command["stdoutTruncated"])
+        self.assertEqual("small", first_command["stderr"])
+        self.assertEqual(5, first_command["stderrBytes"])
+        self.assertFalse(first_command["stderrTruncated"])
+        self.assertEqual(first_command, replay_command)
+        self.assertTrue(replay["idempotent"])
+
+    def test_exec_bundle_bounds_large_output_and_preserves_child_status(self) -> None:
+        resources = ("bounded-bundle-a", "bounded-bundle-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bounded-bundle-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="bounded-output",
+                ttl=5,
+            )
+        )
+        claim = cast(dict[str, object], acquired["claim"])
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=cast(int, claim["revision"]),
+            operation_id="bounded-bundle-exec",
+            ttl=5,
+        )
+        total = MAX_CAPTURE_BYTES + 511
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; print('bundle'); "
+                f"sys.stderr.buffer.write(b'e' * {total}); "
+                "raise SystemExit(9)"
+            ),
+        ]
+
+        first, first_code = execute_bundle(self.store, request, command)
+        replay, replay_code = execute_bundle(self.store, request, command)
+
+        self.assertEqual(9, first_code)
+        self.assertEqual(9, replay_code)
+        self.assertFalse(first["ok"])
+        first_command = cast(dict[str, object], first["command"])
+        replay_command = cast(dict[str, object], replay["command"])
+        self.assertEqual("bundle\n", first_command["stdout"])
+        self.assertEqual(7, first_command["stdoutBytes"])
+        self.assertFalse(first_command["stdoutTruncated"])
+        self.assertEqual("e" * MAX_CAPTURE_BYTES, first_command["stderr"])
+        self.assertEqual(total, first_command["stderrBytes"])
+        self.assertTrue(first_command["stderrTruncated"])
+        self.assertEqual(first_command, replay_command)
+        self.assertTrue(replay["idempotent"])
 
     def test_provider_directory_receipt_replay_conflict_and_environment(self) -> None:
         request = self.acquire("provider-directory", operation_id="provider-exec")

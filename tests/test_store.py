@@ -11,9 +11,13 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
+from worklease import sqlite as lease_sqlite
 from worklease.locking import resource_lock_path
 from worklease.models import (
     AcquireRequest,
@@ -118,8 +122,54 @@ class StoreTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             self.store.status("resource")
-
         self.assertEqual("do not follow\n", sentinel.read_text())
+
+    def test_unknown_schema_version_fails_before_migration(self) -> None:
+        self.home.mkdir(parents=True)
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.executescript(
+                """
+                CREATE TABLE schema_meta(version INTEGER PRIMARY KEY);
+                INSERT INTO schema_meta(version) VALUES (2);
+                CREATE TABLE future_sentinel(value TEXT NOT NULL);
+                INSERT INTO future_sentinel(value) VALUES ('preserve-me');
+                """
+            )
+
+        with self.assertRaisesRegex(LeaseError, "incompatible-schema-version"):
+            self.store.status("resource")
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            self.assertEqual(
+                [("preserve-me",)],
+                db.execute("SELECT value FROM future_sentinel").fetchall(),
+            )
+            self.assertIsNone(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'claims'"
+                ).fetchone()
+            )
+
+    def test_schema_failure_closes_new_connection(self) -> None:
+        opened: list[sqlite3.Connection] = []
+        real_connect = sqlite3.connect
+
+        def capture_connection(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            connection = real_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        with (
+            patch("worklease.sqlite.sqlite3.connect", side_effect=capture_connection),
+            patch("worklease.sqlite._schema", side_effect=RuntimeError("injected")),
+            self.assertRaisesRegex(RuntimeError, "injected"),
+        ):
+            lease_sqlite.connect(self.home)
+
+        self.assertEqual(1, len(opened))
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
 
     def test_opaque_resource_is_preserved_and_lock_hash_is_internal(self) -> None:
         resource = "  opaque provider/value::?  "
@@ -288,7 +338,7 @@ class StoreTests(unittest.TestCase):
             "first",
             self.store.status(resource)["claim"]["claimId"],
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute(
                 """
                 UPDATE operations
@@ -309,7 +359,7 @@ class StoreTests(unittest.TestCase):
         second_claim = second["claim"]
         assert isinstance(first_claim, dict)
         assert isinstance(second_claim, dict)
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute("DELETE FROM epochs")
         transfer = TransferRequest(
             resource=first_resource,
@@ -498,7 +548,7 @@ class StoreTests(unittest.TestCase):
             successor_owner_id="owner-second",
             successor_work_key="implement:item:second",
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute(
                 """
                 CREATE TRIGGER fail_transfer_receipt
@@ -518,7 +568,7 @@ class StoreTests(unittest.TestCase):
         assert isinstance(current, dict)
         self.assertEqual("first", current["claimId"])
         self.assertEqual({"offset": 5}, current["checkpoint"])
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             self.assertEqual(
                 1,
                 db.execute(
@@ -592,7 +642,7 @@ class StoreTests(unittest.TestCase):
         current = self.store.status("transfer-race")["claim"]
         assert isinstance(current, dict)
         self.assertEqual("second", current["claimId"])
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             self.assertEqual(
                 1,
                 db.execute(
@@ -701,7 +751,7 @@ class StoreTests(unittest.TestCase):
         self.assertNotIn("token", unknown)
         self.assertNotIn("request", unknown)
         self.assertNotIn("receipt", unknown)
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request FROM operations
@@ -736,7 +786,7 @@ class StoreTests(unittest.TestCase):
             "exec",
             {"revision": request.revision, "ttl": float(request.ttl)},
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             table = db.execute(
                 """
                 SELECT name FROM sqlite_master
@@ -798,7 +848,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual("reconcile-1", projection["reconciliationOperationId"])
         self.assertNotIn("evidence", projection)
         self.assertNotIn("sentinel", json.dumps(projection))
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             columns = {
                 str(row[1]) for row in db.execute("PRAGMA table_info(reconciliations)")
             }
@@ -813,7 +863,7 @@ class StoreTests(unittest.TestCase):
             "command": ["publish", "artifact"],
         }
         self.assertIsNone(self.store.begin_operation(target, "exec", operation_request))
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request FROM operations
@@ -862,6 +912,21 @@ class StoreTests(unittest.TestCase):
         )
         self.assertTrue(replay["idempotent"])
         self.assertEqual(reconcile["claim"], replay["claim"])
+        for changed_request in (
+            replace(reconcile_request, revision=999),
+            replace(reconcile_request, ttl=333),
+        ):
+            with (
+                self.subTest(changed_request=changed_request),
+                self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"),
+            ):
+                self.store.reconcile_operation(
+                    changed_request,
+                    "unknown-1",
+                    request_sha256,
+                    "observed-success",
+                    {"providerReceipt": "receipt-1"},
+                )
         with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
             self.store.reconcile_operation(
                 reconcile_request,
@@ -869,6 +934,46 @@ class StoreTests(unittest.TestCase):
                 request_sha256,
                 "observed-success",
                 {"providerReceipt": "changed"},
+            )
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            row = db.execute(
+                """
+                SELECT receipt FROM reconciliations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                ("resource", "unknown-1"),
+            ).fetchone()
+            assert row is not None
+            legacy_receipt = json.loads(str(row[0]))
+            legacy_receipt.pop("resolverRevision")
+            legacy_receipt.pop("ttl")
+            db.execute(
+                """
+                UPDATE reconciliations SET receipt = ?
+                WHERE resource = ? AND operation_id = ?
+                """,
+                (
+                    json.dumps(legacy_receipt, sort_keys=True, separators=(",", ":")),
+                    "resource",
+                    "unknown-1",
+                ),
+            )
+        legacy_replay = self.store.reconcile_operation(
+            reconcile_request,
+            "unknown-1",
+            request_sha256,
+            "observed-success",
+            {"providerReceipt": "receipt-1"},
+        )
+        self.assertTrue(legacy_replay["idempotent"])
+        with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
+            self.store.reconcile_operation(
+                replace(reconcile_request, revision=999),
+                "unknown-1",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt-1"},
             )
         advanced = self.store.heartbeat(
             MutationRequest(
@@ -899,7 +1004,7 @@ class StoreTests(unittest.TestCase):
                 "observed-success",
                 {"providerReceipt": "receipt-1"},
             )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             original = db.execute(
                 """
                 SELECT state, request FROM operations
@@ -909,6 +1014,134 @@ class StoreTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(("started", str(raw_request[0])), original)
 
+    def test_bundle_operation_reconciliation_preserves_order_and_authority(
+        self,
+    ) -> None:
+        resources = ("bundle:first", "bundle:second")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-reconcile",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="bundle-work",
+                ttl=10,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        target = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="bundle-unknown",
+            ttl=10,
+        )
+        operation_request = target.request_dict(argv=["publish", "bundle"])
+        self.assertIsNone(
+            self.store.begin_bundle_operation(target, "exec-bundle", operation_request)
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        reconciliation_request = replace(target, operation_id="bundle-reconcile")
+
+        inspected = self.store.inspect_bundle_operation(resources, "bundle-unknown")
+        self.assertEqual(list(resources), inspected["resources"])
+        self.assertEqual("unknown-outcome", inspected["state"])
+        self.assertNotIn(str(claim["token"]), json.dumps(inspected))
+        with self.assertRaisesRegex(LeaseError, "operation-not-found"):
+            self.store.inspect_bundle_operation(
+                tuple(reversed(resources)), "bundle-unknown"
+            )
+
+        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+            self.store.reconcile_bundle_operation(
+                replace(reconciliation_request, token="wrong"),
+                "bundle-unknown",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt"},
+            )
+        with self.assertRaisesRegex(LeaseError, "bundle-membership-mismatch"):
+            self.store.reconcile_bundle_operation(
+                replace(
+                    reconciliation_request,
+                    resources=tuple(reversed(resources)),
+                ),
+                "bundle-unknown",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt"},
+            )
+
+        reconciled = self.store.reconcile_bundle_operation(
+            reconciliation_request,
+            "bundle-unknown",
+            request_sha256,
+            "observed-success",
+            {"providerReceipt": "receipt"},
+        )
+        self.assertEqual("reconciled", reconciled["state"])
+        self.assertEqual(list(resources), reconciled["resources"])
+        self.assertNotIn(str(claim["token"]), json.dumps(reconciled))
+        replay = self.store.reconcile_bundle_operation(
+            reconciliation_request,
+            "bundle-unknown",
+            request_sha256,
+            "observed-success",
+            {"providerReceipt": "receipt"},
+        )
+        self.assertTrue(replay["idempotent"])
+        for changed_request in (
+            replace(reconciliation_request, revision=999),
+            replace(reconciliation_request, ttl=333),
+        ):
+            with (
+                self.subTest(changed_request=changed_request),
+                self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"),
+            ):
+                self.store.reconcile_bundle_operation(
+                    changed_request,
+                    "bundle-unknown",
+                    request_sha256,
+                    "observed-success",
+                    {"providerReceipt": "receipt"},
+                )
+        with self.assertRaisesRegex(LeaseError, "stale-revision"):
+            self.store.reconcile_bundle_operation(
+                replace(target, operation_id="bundle-reconcile-stale"),
+                "bundle-unknown",
+                request_sha256,
+                "observed-success",
+                {"providerReceipt": "receipt"},
+            )
+
+        inspected_after = self.store.inspect_bundle_operation(
+            resources, "bundle-unknown"
+        )
+        self.assertEqual("reconciled", inspected_after["state"])
+        reconciled_claim = reconciled["claim"]
+        assert isinstance(reconciled_claim, dict)
+        released = self.store.release_bundle(
+            replace(
+                target,
+                revision=int(reconciled_claim["revision"]),
+                operation_id="release-reconciled-bundle",
+            ),
+            "bundle result verified",
+        )
+        self.assertEqual(list(resources), released["resources"])
+        self.assertEqual("free", self.store.bundle_status(resources)["state"])
+        self.assertEqual(
+            "reconciled",
+            self.store.inspect_bundle_operation(resources, "bundle-unknown")["state"],
+        )
+
     def test_reconcile_rejects_fingerprint_and_malformed_evidence(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         target = self.mutation(acquired, "resource", "unknown-invalid")
@@ -917,7 +1150,7 @@ class StoreTests(unittest.TestCase):
             "argv": ["publish", "artifact"],
         }
         self.assertIsNone(self.store.begin_operation(target, "exec", operation_request))
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request FROM operations
@@ -967,7 +1200,7 @@ class StoreTests(unittest.TestCase):
                 {"revision": target.revision, "argv": ["publish", "artifact"]},
             )
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request FROM operations
@@ -1081,7 +1314,7 @@ class StoreTests(unittest.TestCase):
             )
         )
 
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             before_active = db.execute(
                 """
                 SELECT
@@ -1094,7 +1327,7 @@ class StoreTests(unittest.TestCase):
             path.relative_to(self.home).as_posix() for path in self.home.rglob("*")
         )
         active = self.store.status_verbose(resource)
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             after_active = db.execute(
                 """
                 SELECT
@@ -1146,7 +1379,7 @@ class StoreTests(unittest.TestCase):
 
         released = self.store.release(unknown_request, "diagnostic complete")
         self.assertEqual("diagnostic complete", released["reason"])
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             before_free = db.execute(
                 """
                 SELECT
@@ -1156,7 +1389,7 @@ class StoreTests(unittest.TestCase):
                 """
             ).fetchone()
         free = self.store.status_verbose(resource)
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             after_free = db.execute(
                 """
                 SELECT
@@ -1202,7 +1435,7 @@ class StoreTests(unittest.TestCase):
                 {"revision": first_request.revision, "attempt": 1},
             )
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request
@@ -1258,7 +1491,7 @@ class StoreTests(unittest.TestCase):
                 {"revision": first_request.revision, "attempt": 1},
             )
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request
@@ -1300,7 +1533,7 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(
             self.store.begin_operation(request, "exec", operation_request)
         )
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             raw_request = db.execute(
                 """
                 SELECT request
@@ -1402,14 +1635,14 @@ class StoreTests(unittest.TestCase):
             """
         )
         connection.close()
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             before_tables = db.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
             ).fetchall()
         verbose = LeaseStore(self.home, clock=self.clock).status_verbose("legacy")
         self.assertEqual("active", verbose["state"])
         self.assertNotIn("token", json.dumps(verbose))
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             after_tables = db.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
             ).fetchall()
@@ -1772,7 +2005,7 @@ else:
 
     def test_bundle_acquire_rolls_back_after_partial_member_failure(self) -> None:
         self.store.status("failure-schema")
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute(
                 """
                 CREATE TRIGGER fail_bundle_member
@@ -1789,7 +2022,7 @@ else:
             self.store.acquire_bundle(self.bundle_request(resources, "partial"))
 
         self.assertEqual("free", self.store.bundle_status(resources)["state"])
-        with sqlite3.connect(self.home / "leases.sqlite3") as db:
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             for table in ("bundle_epochs", "bundles", "bundle_members", "claims"):
                 self.assertEqual(
                     0, db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

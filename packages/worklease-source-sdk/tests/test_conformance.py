@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import unittest
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from worklease_source_sdk import (
     CONTRACT_VERSION,
     CapabilityResult,
+    DiscoverResult,
+    MutationResult,
     ProviderConformanceCase,
     ProviderReceipt,
+    ReadResult,
+    ResolveResult,
+    ResourcePolicyResult,
     ResourcePolicySelection,
     ReviewBoundary,
+    ReviewResult,
     Source,
     WorkItem,
     WorkItemState,
@@ -30,21 +36,23 @@ class ExampleProvider:
         self.ambiguous = ambiguous
         self.version = "v1"
 
-    def resolve(self, arguments: tuple[str, ...], context: Mapping[str, object]):
+    def resolve(
+        self, arguments: Sequence[str], context: Mapping[str, object]
+    ) -> ResolveResult:
         del arguments, context
         return (self.source,)
 
-    def discover(self, source: Source, selector: str | None = None):
+    def discover(self, source: Source, selector: str | None = None) -> DiscoverResult:
         del selector
         return self.items if source.id == self.source.id else ()
 
-    def read_item(self, ref: WorkRef):
+    def read_item(self, ref: WorkRef) -> ReadResult:
         for item in self.items:
             if item.ref == ref:
                 return item
         return CapabilityResult("read-item", self.kind, False, "not-found")
 
-    def resource_policy(self, ref: WorkRef, work_key: str):
+    def resource_policy(self, ref: WorkRef, work_key: str) -> ResourcePolicyResult:
         del work_key
         return ResourcePolicySelection(
             resource=f"{self.kind}:{ref.source_id}:{ref.item_id}",
@@ -59,7 +67,7 @@ class ExampleProvider:
         patch: Mapping[str, object],
         authority: object,
         expected_version: str | None = None,
-    ):
+    ) -> MutationResult:
         del authority
         if expected_version != self.version:
             return CapabilityResult(
@@ -85,7 +93,7 @@ class ExampleProvider:
         checkpoint: Mapping[str, object],
         authority: object,
         expected_version: str | None = None,
-    ):
+    ) -> MutationResult:
         del authority
         if expected_version != self.version:
             return CapabilityResult(
@@ -109,7 +117,7 @@ class ExampleProvider:
         source: Source,
         explicit_selector: str | None,
         authority: object,
-    ):
+    ) -> ReviewResult:
         del explicit_selector, authority
         return ReviewBoundary(source.id, (self.items[-1].ref.item_id,))
 
@@ -118,7 +126,7 @@ class ExampleProvider:
         target: Source | WorkRef,
         authority: object,
         expected_version: str | None = None,
-    ):
+    ) -> MutationResult:
         del authority
         if expected_version != self.version:
             return CapabilityResult(
@@ -178,6 +186,7 @@ class LeakingProvider(ExampleProvider):
 class UntruthfulProvider(LeakingProvider):
     def resource_policy(self, ref, work_key):
         policy = super().resource_policy(ref, work_key)
+        assert isinstance(policy, ResourcePolicySelection)
         return ResourcePolicySelection(
             resource=policy.resource,
             capability=policy.capability,
@@ -223,15 +232,21 @@ class ProviderConformanceTests(unittest.TestCase):
         )
         self.items = (root, self.item)
 
-    def case(self, **kwargs: object) -> ProviderConformanceCase:
-        values: dict[str, object] = {
-            "source": self.source,
-            "item": self.item,
-            "discovered": self.items,
-            "secrets": ("secret-token",),
-        }
-        values.update(kwargs)
-        return ProviderConformanceCase(**values)
+    def case(
+        self,
+        *,
+        discovered: tuple[WorkItem, ...] | None = None,
+        unsupported_operations: frozenset[str] = frozenset(),
+        ambiguous_operations: frozenset[str] = frozenset(),
+    ) -> ProviderConformanceCase:
+        return ProviderConformanceCase(
+            source=self.source,
+            item=self.item,
+            discovered=self.items if discovered is None else discovered,
+            unsupported_operations=unsupported_operations,
+            ambiguous_operations=ambiguous_operations,
+            secrets=("secret-token",),
+        )
 
     def test_good_provider_covers_boundary_and_stale_rejection(self) -> None:
         report = run_provider_conformance(

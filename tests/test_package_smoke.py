@@ -24,6 +24,7 @@ from worklease import (
     TransferRequest,
     __all__,
     __version__,
+    adapters,
     execute,
     execute_bundle,
     replace_file,
@@ -76,6 +77,30 @@ class PackageSmokeTests(unittest.TestCase):
             replace_file,
         ):
             self.assertIsNotNone(value)
+
+    def test_documented_adapter_facade_exports_extension_interfaces(self) -> None:
+        expected = {
+            "RESOURCE_POLICY_CONTRACT_VERSION",
+            "RESOURCE_POLICY_ENTRY_POINT_GROUP",
+            "ProviderAdapter",
+            "ResourceKey",
+            "ResourcePolicyDescriptor",
+            "ResourcePolicyRegistration",
+            "PolicyConformanceReport",
+            "assert_policy_conformance",
+            "available_policy_names",
+            "describe_policy",
+            "key",
+            "key_result",
+            "load_adapter",
+            "load_policy",
+            "policy_descriptors",
+            "resource_key",
+            "run_policy_conformance",
+        }
+        self.assertEqual(set(adapters.__all__), expected)
+        for name in adapters.__all__:
+            self.assertIsNotNone(getattr(adapters, name))
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from worklease import __version__
-from worklease.models import MutationRequest
+from worklease.models import BundleMutationRequest, MutationRequest
 from worklease.store import LeaseStore
 
 
@@ -416,6 +416,108 @@ class CliContractTests(unittest.TestCase):
             '{"provider":"did-not-run"}',
         )
         self.assertTrue(replay["idempotent"])
+
+    def test_bundle_operation_inspection_and_reconciliation_cli(self) -> None:
+        resources = ("repo:reconcile-a", "repo:reconcile-b")
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "bundle-reconcile-cli",
+            "--agent-id",
+            "agent-cli",
+            "--session-id",
+            "session-cli",
+            "--owner-id",
+            "owner-cli",
+            "--work-key",
+            "bundle-reconcile",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        target = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="bundle-unknown-cli",
+        )
+        operation_request = target.request_dict(argv=["deploy", "bundle"])
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_bundle_operation(target, "exec-bundle", operation_request)
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+        inspected = self.json_cli(
+            "inspect-operation-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--operation-id",
+            "bundle-unknown-cli",
+        )
+        self.assertEqual(list(resources), inspected["resources"])
+        self.assertEqual("unknown-outcome", inspected["state"])
+        self.assertNotIn(str(claim["token"]), json.dumps(inspected))
+        text = self.text_cli(
+            "inspect-operation-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--operation-id",
+            "bundle-unknown-cli",
+        )
+        self.assertIn("OK inspect-operation-bundle\n", text)
+        self.assertIn('RESOURCES\t["repo:reconcile-a","repo:reconcile-b"]\n', text)
+
+        mutation = (
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            str(claim["claimId"]),
+            "--token",
+            str(claim["token"]),
+            "--revision",
+            str(claim["revision"]),
+            "--operation-id",
+            "bundle-reconcile-cli",
+            "--target-operation-id",
+            "bundle-unknown-cli",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-success",
+            "--evidence",
+            '{"provider":"verified"}',
+        )
+        reconciled = self.json_cli("reconcile-operation-bundle", *mutation)
+        self.assertEqual("reconciled", reconciled["state"])
+        self.assertEqual(list(resources), reconciled["resources"])
+        self.assertNotIn(str(claim["token"]), json.dumps(reconciled))
+        replay = self.json_cli("reconcile-operation-bundle", *mutation)
+        self.assertTrue(replay["idempotent"])
+        reconciled_text = self.text_cli(
+            "inspect-operation-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--operation-id",
+            "bundle-unknown-cli",
+        )
+        self.assertIn('STATE\t"reconciled"\n', reconciled_text)
 
     def test_bundle_cli_lifecycle_and_guarded_exec(self) -> None:
         resources = ("repo:bundle-a", "repo:bundle-b")
@@ -1434,7 +1536,9 @@ class CliContractTests(unittest.TestCase):
             "bundle-status",
             "inspect-bundle",
             "inspect-operation",
+            "inspect-operation-bundle",
             "reconcile-operation",
+            "reconcile-operation-bundle",
             "gc",
             "list",
             "heartbeat",

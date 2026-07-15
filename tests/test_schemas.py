@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -10,6 +11,9 @@ from importlib.resources import files
 from typing import Any
 
 from jsonschema import Draft202012Validator, RefResolver
+
+from worklease.models import BundleMutationRequest
+from worklease.store import LeaseStore
 
 READ_ONLY = {
     "parse",
@@ -23,7 +27,9 @@ READ_ONLY = {
     "inspect-bundle",
     "status-bundle",
     "inspect-operation",
+    "inspect-operation-bundle",
     "reconcile-operation",
+    "reconcile-operation-bundle",
     "list",
 }
 
@@ -42,7 +48,9 @@ RELEASED_OPERATIONS = {
     "inspect-bundle",
     "status-bundle",
     "inspect-operation",
+    "inspect-operation-bundle",
     "reconcile-operation",
+    "reconcile-operation-bundle",
     "list",
     "heartbeat",
     "checkpoint",
@@ -163,6 +171,79 @@ class SchemaContractTests(unittest.TestCase):
         self.assert_matches_commands_schema(error)
         gc = self.run_cli("gc")
         self.assert_matches_commands_schema(gc)
+
+        bundle = self.run_cli(
+            "acquire-bundle",
+            "--resource",
+            "schema:bundle-a",
+            "--resource",
+            "schema:bundle-b",
+            "--claim-id",
+            "schema-bundle",
+            "--agent-id",
+            "schema-agent",
+            "--session-id",
+            "schema-session",
+            "--owner-id",
+            "schema-owner",
+            "--work-key",
+            "schema-work",
+        )
+        bundle_claim = bundle["claim"]
+        assert isinstance(bundle_claim, dict)
+        request = BundleMutationRequest(
+            resources=("schema:bundle-a", "schema:bundle-b"),
+            claim_id=str(bundle_claim["claimId"]),
+            token=str(bundle_claim["token"]),
+            revision=int(bundle_claim["revision"]),
+            operation_id="schema-bundle-unknown",
+        )
+        operation_request = request.request_dict(argv=["schema"])
+        self.assertIsNone(
+            LeaseStore(self.home.name).begin_bundle_operation(
+                request, "exec-bundle", operation_request
+            )
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        inspected = self.run_cli(
+            "inspect-operation-bundle",
+            "--resource",
+            "schema:bundle-a",
+            "--resource",
+            "schema:bundle-b",
+            "--operation-id",
+            "schema-bundle-unknown",
+        )
+        self.assert_matches_commands_schema(inspected)
+        reconciled = self.run_cli(
+            "reconcile-operation-bundle",
+            "--resource",
+            "schema:bundle-a",
+            "--resource",
+            "schema:bundle-b",
+            "--claim-id",
+            str(bundle_claim["claimId"]),
+            "--token",
+            str(bundle_claim["token"]),
+            "--revision",
+            str(bundle_claim["revision"]),
+            "--operation-id",
+            "schema-bundle-reconcile",
+            "--target-operation-id",
+            "schema-bundle-unknown",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-success",
+            "--evidence",
+            "{}",
+        )
+        self.assert_matches_commands_schema(reconciled)
+        self.assertNotIn(str(bundle_claim["token"]), json.dumps(reconciled))
 
 
 if __name__ == "__main__":

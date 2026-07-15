@@ -14,9 +14,8 @@ Use this shape for Linear, Jira, GitHub Issues, or another remote provider when 
 8. Release only after verification.
 
 ```python
+from worklease import AcquireRequest, LeaseStore
 from worklease.adapters import key
-from worklease.models import AcquireRequest
-from worklease.store import LeaseStore
 
 resource_key = key(provider_kind, source_locator, item_id, coordination_only=True)
 assert resource_key.capability == "local-coordination"

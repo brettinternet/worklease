@@ -15,13 +15,19 @@ pipx.uvx = true
 [tasks]
 sync = "uv sync --locked"
 cli = "uv run worklease"
-test = "uv run python -m unittest discover -s tests -v"
-typecheck = "pyright"
+test-core = "uv run python -m unittest discover -s tests -v"
+test-sdk = { run = "uv run python -m unittest discover -s packages/worklease-source-sdk/tests -v", env = { PYTHONPATH = "packages/worklease-source-sdk/src:packages/worklease-source-sdk/examples/source-provider-plugin/src" } }
+test = { depends = ["test-core", "test-sdk"] }
+typecheck-core = "pyright"
+typecheck-sdk = "pyright --project packages/worklease-source-sdk/pyrightconfig.json"
+typecheck = { depends = ["typecheck-core", "typecheck-sdk"] }
 lint = "uv run ruff check ."
 format = "uv run ruff format ."
 format-check = "uv run ruff format --check ."
 hooks-install = "lefthook install"
 hooks = "lefthook run pre-commit"
 build = "uv build --no-build-isolation"
+build-sdk = "uv build --project packages/worklease-source-sdk --no-build-isolation"
+build-sdk-example = "uv build --project packages/worklease-source-sdk/examples/source-provider-plugin --no-build-isolation"
 install-release = "scripts/install-release.sh"
 release-validate = "uv run python scripts/release_artifacts.py verify --directory dist/release"

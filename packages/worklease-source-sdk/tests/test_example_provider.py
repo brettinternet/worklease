@@ -33,6 +33,7 @@ class ExampleProviderTests(unittest.TestCase):
         resolved = provider.resolve(("demo",), {})
         self.assertEqual((provider.source,), resolved)
         discovered = provider.discover(provider.source, "item-2")
+        assert isinstance(discovered, tuple)
         self.assertEqual(
             ("item-1", "item-2"), tuple(item.ref.item_id for item in discovered)
         )
@@ -46,7 +47,11 @@ class ExampleProviderTests(unittest.TestCase):
         policy = provider.resource_policy(ref, "implement:item-1")
         self.assertIsInstance(policy, ResourcePolicySelection)
         assert isinstance(policy, ResourcePolicySelection)
-        self.assertEqual("example-source:example-source:demo#item-1", policy.resource)
+        self.assertEqual("example-source:demo#item-1", policy.resource)
+        self.assertEqual(
+            policy.resource,
+            registration.factory("example-source").key("demo", "item-1").resource,
+        )
         self.assertFalse(policy.provider_fencing)
         self.assertEqual(1, registration.descriptor.contract_version)
         self.assertEqual("item-claim", registration.descriptor.capability)
@@ -56,6 +61,7 @@ class ExampleProviderTests(unittest.TestCase):
         ref = WorkRef(provider.source.id, "item-1")
         stale = provider.write_state(ref, {"status": "done"}, object(), "v0")
         self.assertIsInstance(stale, CapabilityResult)
+        assert isinstance(stale, CapabilityResult)
         self.assertEqual("stale-provider-version", stale.reason)
         receipt = provider.write_state(ref, {"status": "done"}, object(), "v1")
         self.assertIsInstance(receipt, ProviderReceipt)
@@ -73,6 +79,7 @@ class ExampleProviderTests(unittest.TestCase):
         ref = WorkRef(provider.source.id, "item-1")
         denied = provider.archive(ref, None, "v1")
         self.assertIsInstance(denied, CapabilityResult)
+        assert isinstance(denied, CapabilityResult)
         self.assertEqual("authority-required", denied.reason)
         receipt = provider.archive(ref, object(), "v1")
         self.assertIsInstance(receipt, ProviderReceipt)
