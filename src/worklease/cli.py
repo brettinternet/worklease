@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
 import sys
 import time
 from collections.abc import Sequence
@@ -29,6 +31,40 @@ from .models import (
 )
 from .replacement import replace_file
 from .store import DEFAULT_GC_RETENTION_DAYS, LeaseStore
+
+_REPOSITORY_URL = "https://github.com/brettinternet/worklease"
+_PUBLISHED_RELEASE_VERSION_ENV = "WORKLEASE_PUBLISHED_RELEASE_VERSION"
+_CANONICAL_DOCS_REF = "main"
+_RELEASE_VERSION_PATTERN = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:[-+][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+
+
+def _documentation_url(path: str, *, release_version: str | None = None) -> str:
+    """Build a documentation URL from explicit published release metadata."""
+
+    ref = (
+        f"v{release_version}"
+        if release_version and _RELEASE_VERSION_PATTERN.fullmatch(release_version)
+        else _CANONICAL_DOCS_REF
+    )
+    return f"{_REPOSITORY_URL}/blob/{ref}/{path}"
+
+
+def _agent_workflow_guidance() -> str:
+    """Return stable onboarding guidance for workflow-oriented agents."""
+
+    release_version = os.environ.get(_PUBLISHED_RELEASE_VERSION_ENV)
+    return f"""\
+{_help_heading("Agent workflow:")}
+  Workflow semantics and source/provider coordination:
+    {_documentation_url("skills/worklease-workflow/SKILL.md", release_version=release_version)}
+  Project documentation and installation:
+    {_documentation_url("README.md", release_version=release_version)}
+  Use `worklease COMMAND --help` for command syntax and options.
+  Automation must request schema-versioned JSON with `--json` (or `--format json`)."""
+
 
 _DEFAULT_HOME_HELP = (
     "default: WORKLEASE_HOME, then XDG_STATE_HOME/worklease, "
@@ -169,7 +205,9 @@ _TOP_LEVEL_EPILOG = f"""\
 
 {_help_heading("Examples:")}
   worklease key --provider backlog-md --source docs/backlog --item TASK-42
-  worklease status --resource local:formatter"""
+  worklease status --resource local:formatter
+
+{_agent_workflow_guidance()}"""
 
 
 _ACQUIRE_EPILOG = """\

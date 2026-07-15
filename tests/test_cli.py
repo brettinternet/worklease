@@ -153,6 +153,51 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("worklease status --resource local:formatter", result.stdout)
         self.assertEqual(1, result.stdout.count("derive one stable resource key"))
 
+    def test_help_exposes_agent_workflow_and_docs_refs(self) -> None:
+        source_environment = self.environment.copy()
+        source_environment.pop("WORKLEASE_PUBLISHED_RELEASE_VERSION", None)
+        source_result = self.run_cli("--help", environment=source_environment)
+        self.assertEqual(0, source_result.returncode)
+        self.assertEqual("", source_result.stderr)
+        self.assertIn(
+            "https://github.com/brettinternet/worklease/blob/main/"
+            "skills/worklease-workflow/SKILL.md",
+            source_result.stdout,
+        )
+        self.assertIn(
+            "https://github.com/brettinternet/worklease/blob/main/README.md",
+            source_result.stdout,
+        )
+        self.assertIn(
+            "Workflow semantics and source/provider coordination", source_result.stdout
+        )
+        self.assertIn("worklease COMMAND --help", source_result.stdout)
+        self.assertIn("schema-versioned JSON with `--json`", source_result.stdout)
+        self.assertNotIn("blob/v0.3.0/", source_result.stdout)
+
+        invalid_environment = source_environment.copy()
+        invalid_environment["WORKLEASE_PUBLISHED_RELEASE_VERSION"] = "../unsafe"
+        invalid_result = self.run_cli("--help", environment=invalid_environment)
+        self.assertEqual(0, invalid_result.returncode)
+        self.assertEqual("", invalid_result.stderr)
+        self.assertIn(
+            "https://github.com/brettinternet/worklease/blob/main/"
+            "skills/worklease-workflow/SKILL.md",
+            invalid_result.stdout,
+        )
+        self.assertNotIn("../unsafe", invalid_result.stdout)
+
+        release_environment = source_environment.copy()
+        release_environment["WORKLEASE_PUBLISHED_RELEASE_VERSION"] = "9.9.9"
+        release_result = self.run_cli("--help", environment=release_environment)
+        self.assertEqual(0, release_result.returncode)
+        self.assertEqual("", release_result.stderr)
+        self.assertIn(
+            "https://github.com/brettinternet/worklease/blob/v9.9.9/"
+            "skills/worklease-workflow/SKILL.md",
+            release_result.stdout,
+        )
+
     def test_wait_retries_transient_contention_until_acquire(self) -> None:
         request = AcquireRequest(
             resource="repo:wait-release",
