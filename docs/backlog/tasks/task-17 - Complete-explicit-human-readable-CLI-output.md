@@ -1,11 +1,11 @@
 ---
 id: TASK-17
 title: Complete explicit human-readable CLI output
-status: In Progress
+status: Blocked
 assignee:
-  - '@codex-loop-fresh-20260714-worklease-task17-t1'
+  - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-14 02:46'
-updated_date: '2026-07-14 22:10'
+updated_date: '2026-07-15 00:08'
 labels:
   - cli
   - ux
@@ -66,4 +66,18 @@ Keep schema-versioned JSON as the default for agents and integrations. Make --fo
 **Refinement checkpoint:** refined: TASK-17 specification complete; provider=backlog-md; providerVersion=1.48.0; claimId=2ee49790-a2f4-4772-b50a-d9533e283bbc; claimRevision=3; refinement: complete.
 
 Implementation checkpoint (T1): commit 29e8a2082eb15bcf0b2ef6702ceb4bc44b0330cc adds an explicit deterministic text-renderer registry for every released CLI command and aliases, with redacted read-only output and minimum owner fields for lifecycle mutations. Files: src/worklease/cli.py. Verification: mise run lint passed; mise run format-check passed; mise run test passed (127 tests); mise run typecheck passed; mise run hooks passed. Next task: T2 complete text contract tests. Remaining acceptance criteria: #1-#4.
+
+Implementation checkpoint (T2): commit db0bf2d6a7d39ba060bf7a9f9bf1465f0ad9fba5 adds complete human-readable text contract coverage for released CLI commands, aliases, parser/child failures, redaction, escaping, free status identity, and GC. Files: src/worklease/cli.py, tests/test_cli.py. Verification: focused CLI tests (17 passed); mise run lint passed; mise run format-check passed; mise run test passed; mise run typecheck passed; mise run hooks passed. Next task: T3 human-readable output reference. Remaining acceptance criteria: #1-#4.
+
+T2 verification follow-up claimed: independent verifier found AC4 coverage gaps for aliases and per-command failures; add only missing text contract probes under this T2 ownership epoch.
+
+T2 coverage fix complete: commit 00835854dfa866c5168352c1466b5a4db8db8f9f adds canonical bundle text success probes, inspect-bundle, empty-list output, and parser-error coverage for every released command and alias. Verification: focused CLI tests (19 passed); mise run lint, format-check, test, typecheck, and hooks passed. Independent verifier rerun pending. Next task remains T3 human-readable output reference; implementation tasks T1-T2 complete.
+
+T2 control-escaping fix: commit af414e469c451962a639ac6292998106be8ff56c escapes all C0/DEL control characters in text atoms and adds isolated ESC regression coverage. Independent verifier finding resolved. Final T2 verification: focused CLI tests 19/19; mise run lint, format-check, test, typecheck, and hooks passed. Next task: T3 human-readable output reference; T2 implementation is complete.
+
+Final T2 fixes: commit df80acf743486afc521e28d44afe0316f8490b3 centralizes C0/C1/DEL escaping in _text_value, adds DEL regression coverage, and preserves bundle resources in text list output. Final gates passed: mise run lint, format-check, test, typecheck, and hooks; focused CLI tests 19/19. Independent verification rerun after the fixes is required before release.
+
+Independent verifier PASS after final fixes: 19/19 focused CLI tests; JSON compatibility, renderer registry/aliases, C0/C1/DEL and Unicode escaping, bundle-resource list identity/redaction, parser and child failures all pass. No remaining T2 defect. T3 human-readable output reference remains next.
+
+BLOCKED (2026-07-15T00:08Z): implementation loop halted before coding because the item lacks the canonical ### Implementation tasks section with direct [ ]/[x] task entries required by backlog-source-workflow; the plan's [T1]-[T3] entries are not a claimable checklist. Evidence: backlog task view TASK-17 shows only Implementation Plan and prior notes; no canonical checklist. Attempt: refreshed provider state, acquired and released an implementation claim without edits. Unblock condition: run backlog-refine for TASK-17 to add a canonical ordered implementation-task checklist, then resume with @docs/backlog.
 <!-- SECTION:NOTES:END -->
