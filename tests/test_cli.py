@@ -41,7 +41,20 @@ class CliContractTests(unittest.TestCase):
         expected_code: int = 0,
         pass_fds: tuple[int, ...] = (),
     ) -> dict[str, object]:
-        result = self.run_cli(*arguments, pass_fds=pass_fds)
+        visible_arguments = (
+            arguments[: arguments.index("--")] if "--" in arguments else arguments
+        )
+        output_arguments = (
+            arguments
+            if any(
+                value == "--json"
+                or value == "--format"
+                or value.startswith("--format=")
+                for value in visible_arguments
+            )
+            else ("--json", *arguments)
+        )
+        result = self.run_cli(*output_arguments, pass_fds=pass_fds)
         self.assertEqual(expected_code, result.returncode, result.stderr)
         self.assertEqual("", result.stderr)
         payload = json.loads(result.stdout)
@@ -108,16 +121,36 @@ class CliContractTests(unittest.TestCase):
             operation_id,
         )
 
-    def test_version_is_json_by_default_and_bare_in_text_mode(self) -> None:
-        payload = self.json_cli("--version")
-        self.assertEqual("version", payload["operation"])
-        self.assertEqual(True, payload["ok"])
-        self.assertEqual(__version__, payload["version"])
-
-        result = self.run_cli("--format", "text", "--version")
+    def test_version_is_text_by_default_and_json_is_explicit(self) -> None:
+        result = self.run_cli("--version")
         self.assertEqual(0, result.returncode)
         self.assertEqual(f"{__version__}\n", result.stdout)
         self.assertEqual("", result.stderr)
+
+        for arguments in (
+            ("--json", "--version"),
+            ("--format", "json", "--version"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(*arguments)
+                self.assertEqual(0, result.returncode)
+                payload = json.loads(result.stdout)
+                self.assertEqual("version", payload["operation"])
+                self.assertEqual(True, payload["ok"])
+                self.assertEqual(__version__, payload["version"])
+
+        command_local = self.run_cli(
+            "key",
+            "--json",
+            "--provider",
+            "linear",
+            "--source",
+            "acme",
+            "--item",
+            "T1",
+        )
+        self.assertEqual(0, command_local.returncode)
+        self.assertEqual(1, json.loads(command_local.stdout)["schemaVersion"])
 
     def test_key_is_schema_versioned_and_uses_adapter_policy(self) -> None:
         payload = self.json_cli(
@@ -642,26 +675,18 @@ class CliContractTests(unittest.TestCase):
             )["state"],
         )
 
-    def test_malformed_input_is_json_and_does_not_echo_secret_values(self) -> None:
+    def test_malformed_input_is_text_by_default_and_json_is_explicit(self) -> None:
         result = self.run_cli(
             "status", "--resource", "repo:cli", "--token", "secret-token"
         )
         self.assertEqual(64, result.returncode)
-        payload = json.loads(result.stdout)
-        self.assertEqual(
-            {
-                "error": "invalid-arguments",
-                "ok": False,
-                "operation": "status",
-                "schemaVersion": 1,
-            },
-            payload,
-        )
+        self.assertEqual("ERROR status: invalid-arguments\n", result.stdout)
         self.assertNotIn("secret-token", result.stdout)
         self.assertEqual("", result.stderr)
 
         for invalid_ttl_value in ("nan", "inf", "not-a-number"):
             invalid_result = self.run_cli(
+                "--json",
                 *self.acquire_arguments(),
                 "--ttl",
                 invalid_ttl_value,
@@ -689,10 +714,40 @@ class CliContractTests(unittest.TestCase):
             "repo:cli",
         )
         self.assertEqual(64, result.returncode)
-        payload = json.loads(result.stdout)
-        self.assertEqual("invalid-arguments", payload["error"])
-        self.assertEqual("status", payload["operation"])
-        self.assertEqual(1, payload["schemaVersion"])
+        self.assertEqual("ERROR status: invalid-arguments\n", result.stdout)
+        self.assertEqual("", result.stderr)
+
+    def test_json_and_format_conflicts_are_order_independent(self) -> None:
+        text_cases = (
+            ("--json", "--format", "text", "status", "--resource", "repo:cli"),
+            ("--format", "text", "status", "--json", "--resource", "repo:cli"),
+            ("status", "--json", "--format", "text", "--resource", "repo:cli"),
+        )
+        for arguments in text_cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(*arguments)
+                self.assertEqual(64, result.returncode)
+                self.assertEqual("ERROR status: invalid-arguments\n", result.stdout)
+                self.assertEqual("", result.stderr)
+
+        json_cases = (
+            ("--json", "--format", "json", "status", "--resource", "repo:cli"),
+            ("--format", "json", "status", "--json", "--resource", "repo:cli"),
+        )
+        for arguments in json_cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(*arguments)
+                self.assertEqual(64, result.returncode)
+                payload = json.loads(result.stdout)
+                self.assertEqual(1, payload["schemaVersion"])
+                self.assertEqual("status", payload["operation"])
+                self.assertEqual("invalid-arguments", payload["error"])
+
+    def test_child_arguments_do_not_select_or_conflict_output(self) -> None:
+        result = self.run_cli("exec", "--", "--json", "--format", "text")
+        self.assertEqual(64, result.returncode)
+        self.assertEqual("ERROR exec: invalid-arguments\n", result.stdout)
+        self.assertEqual("", result.stderr)
 
     def test_stale_claim_errors_redact_current_token(self) -> None:
         resource = "repo:stale-error"
@@ -906,6 +961,7 @@ class CliContractTests(unittest.TestCase):
         )["claim"]
         assert isinstance(failed_claim, dict)
         failed = self.run_cli(
+            "--json",
             *self.mutation_arguments(
                 "exec", "repo:exec-fail", failed_claim, "exec-fail-cli"
             ),

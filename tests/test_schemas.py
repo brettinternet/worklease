@@ -91,7 +91,7 @@ class SchemaContractTests(unittest.TestCase):
 
     def run_cli(self, *arguments: str) -> dict[str, Any]:
         result = subprocess.run(
-            [sys.executable, "-m", "worklease.cli", *arguments],
+            [sys.executable, "-m", "worklease.cli", "--json", *arguments],
             check=False,
             capture_output=True,
             text=True,

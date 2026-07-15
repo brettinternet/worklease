@@ -605,6 +605,7 @@ class ExecutionTests(unittest.TestCase):
         with redirect_stdout(output):
             code = cli_main(
                 [
+                    "--json",
                     "--home",
                     str(self.home),
                     "exec",
