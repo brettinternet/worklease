@@ -1,11 +1,11 @@
 ---
 id: TASK-24
 title: Add bounded blocking lease acquisition
-status: In Progress
+status: Done
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 03:22'
-updated_date: '2026-07-15 04:00'
+updated_date: '2026-07-15 05:29'
 labels: []
 dependencies: []
 modified_files:
@@ -36,7 +36,7 @@ Close the documented scarce-resource UX gap by adding bounded wait-and-acquire b
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 DOD1 — Targeted deterministic wait-acquisition tests and all repository quality gates pass.
-- [ ] #2 DOD2 — README syntax and compatibility claims match observed JSON/text CLI behavior, including redaction and exit code 2 on timeout.
+- [x] #2 DOD2 — README syntax and compatibility claims match observed JSON/text CLI behavior, including redaction and exit code 2 on timeout.
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -85,4 +85,14 @@ Open questions: none. Least-confident assumption: a fixed 0.25-second local poll
 Next action: implement T1 without changing `LeaseStore.acquire` semantics or adding a standalone wait operation.
 
 T1 complete in commit 424ac3c53368ff1e9695ef6b66b59053814803f2. Added bounded singleton --wait-timeout/--poll-interval retrying only already-claimed/resource-guarded with monotonic deadlines; bundle members remain immediate bundle-operation-required. Added deterministic tests for release, expiry, heartbeat extension, timeout/redaction, invalid options, no-wait, and text/JSON behavior; documented operator syntax. Verification: targeted 7 tests, full CLI unittest (27 passed), mise run lint, mise run format-check, mise run typecheck, mise run test, mise run hooks. Next pass: REVIEW.
+
+Full review completed against implementation 2d5de0d (recorded implementation marker 424ac3c53368ff1e9695ef6b66b59053814803f2) and review-fix 43941c46c19e68db0ace8cc392d5af69a16e68d7. Finding fixed: _acquire_with_wait now checks the monotonic deadline after sleeping, preventing acquire after exact or overshot timeout; added deterministic overshoot regression test. Verification: targeted wait tests 6 passed; mise run lint passed; mise run format-check passed; mise run typecheck passed; mise run test passed (19 SDK, 168 core); mise run hooks passed. Review depth: full (public CLI and concurrency/timeout behavior); no remaining findings. Integration is pending because canonical main has unrelated staged changes in src/worklease/cli.py and tests/test_cli.py plus untracked task-26 backlog item; merge was attempted under control lock and refused without overwriting dirty files.
+
+reviewed: implementation commits 566d282 and 53eabf2; review-fix commit 8114afd; full implementation-review applied for public CLI, timeout, concurrency, and bundle lifecycle behavior. Finding fixed: LeaseStore.acquire now preflight-classifies persisted bundle membership before resource locking while retaining the in-lock atomic recheck; added a CLI-path cross-process bundle-member lock regression. No remaining findings. Verification: 9 focused wait tests passed; mise run lint, mise run format-check, mise run test (174 core and 19 SDK), mise run typecheck, and mise run hooks passed. Integration: cherry-picked implementation commits 566d282 and 53eabf2 into canonical main; committed review fix 8114afd; canonical HEAD 8114afd.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added bounded singleton acquire waiting with monotonic timeout and poll validation, preserving atomic acquire, redacted conflict behavior, same-host guarantees, and immediate bundle-member rejection. Integrated commits 566d282 and 53eabf2 into canonical main and fixed persisted bundle-lock classification in 8114afd. Verified with 9 focused wait tests plus mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks.
+<!-- SECTION:FINAL_SUMMARY:END -->
