@@ -45,7 +45,11 @@ This verifies the SHA-256 manifest and `--version`, preferring a native asset an
 
 ## Core lifecycle
 
-The CLI emits compact schema-versioned JSON. Add `--format text` for human-readable output; global options such as `--format` and `--home` must precede command-specific arguments.
+The CLI emits compact human-readable text by default. Use `--json` (or
+`--format json`) for the schema-versioned JSON automation contract; `--format
+text` is an explicit equivalent. Output selection may appear before the
+top-level command or after the command's final subcommand name, but `--json`
+cannot be combined with `--format`.
 
 ### 1. Derive one exact resource
 
@@ -242,8 +246,9 @@ inspection and diagnostics commands for those concerns.
 
 ### Human-readable text grammar
 
-`--format text` is a stable, opt-in display format for people. Automation must
-continue to consume the default schema-versioned JSON. Text output is UTF-8,
+Text is the stable default display format for people. Automation must
+explicitly request schema-versioned JSON with `--json` or `--format json`.
+Text output is UTF-8,
 newline-delimited, and deterministic: fields appear in the order documented
 below, and tab (`\t`) separates columns. Scalar values use compact
 JSON-compatible escaping without spaces. Printable Unicode remains readable;

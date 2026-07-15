@@ -91,7 +91,7 @@ class SchemaContractTests(unittest.TestCase):
 
     def run_cli(self, *arguments: str) -> dict[str, Any]:
         result = subprocess.run(
-            [sys.executable, "-m", "worklease.cli", *arguments],
+            [sys.executable, "-m", "worklease.cli", "--json", *arguments],
             check=False,
             capture_output=True,
             text=True,
@@ -125,6 +125,11 @@ class SchemaContractTests(unittest.TestCase):
             for item in claims:
                 self.assertIsInstance(item, dict)
                 self.assertNotIn("token", item)
+
+    def test_schema_describes_human_text_as_default(self) -> None:
+        description = self.commands["description"]
+        self.assertIn("Human-readable text is the default", description)
+        self.assertIn("JSON is an explicit output format", description)
 
     def test_index_lists_every_released_operation_and_artifacts_are_parseable(
         self,

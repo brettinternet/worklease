@@ -1100,7 +1100,7 @@ class GarbageCollectionTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["WORKLEASE_HOME"] = self.home.name
         result = subprocess.run(
-            [sys.executable, "-m", "worklease.cli", "gc"],
+            [sys.executable, "-m", "worklease.cli", "--json", "gc"],
             check=False,
             capture_output=True,
             text=True,

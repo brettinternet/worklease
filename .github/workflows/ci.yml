@@ -48,10 +48,10 @@ jobs:
           wheel=$(printf '%s\n' dist/*.whl)
           uv tool install --force "$wheel"
           tool_bin=$(uv tool dir --bin)
-          "$tool_bin/worklease" --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+          "$tool_bin/worklease" --json --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
           sdist=$(printf '%s\n' dist/*.tar.gz)
           uv tool install --force "$sdist"
-          "$tool_bin/worklease" --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
+          "$tool_bin/worklease" --json --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
       - name: Install SDK and example wheels together
         shell: bash
         run: |
@@ -101,9 +101,9 @@ jobs:
           ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
         shell: bash
         run: |
-          "dist/$ASSET_NAME" --version | python -c \
+          "dist/$ASSET_NAME" --json --version | python -c \
             'import json,sys; p=json.load(sys.stdin); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"]'
-          "dist/$ASSET_NAME" key --provider github --source example/repo --item 1 | python -c \
+          "dist/$ASSET_NAME" --json key --provider github --source example/repo --item 1 | python -c \
             'import json,sys; p=json.load(sys.stdin); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
       - name: Validate native checksum manifest
         env:

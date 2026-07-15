@@ -87,8 +87,14 @@ def _add_output_arguments(
             "--format",
             choices=("json", "text"),
             default=argparse.SUPPRESS,
-            help="output format (default: json)",
+            help="output format (default: text)",
         )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="output JSON (equivalent to --format json)",
+    )
     parser.add_argument(
         "--home",
         default=argparse.SUPPRESS,
@@ -152,8 +158,14 @@ def _parser() -> _ArgumentParser:
     parser.add_argument(
         "--format",
         choices=("json", "text"),
-        default="json",
-        help="output format (default: json)",
+        default="text",
+        help="output format (default: text)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="output JSON (equivalent to --format json)",
     )
     parser.add_argument(
         "--home",
@@ -1064,18 +1076,41 @@ def _dispatch(
     raise _ArgumentError("missing-command")
 
 
-def _fallback_output_format(argv: Sequence[str]) -> str:
-    """Choose a safe format for parser errors without reading child argv."""
-
+def _visible_output_options(argv: Sequence[str]) -> list[str]:
     options = list(argv)
     if "--" in options:
         options = options[: options.index("--")]
+    return options
+
+
+def _validate_output_arguments(argv: Sequence[str]) -> None:
+    options = _visible_output_options(argv)
+    has_json = "--json" in options
+    has_format = any(
+        value == "--format" or value.startswith("--format=") for value in options
+    )
+    if has_json and has_format:
+        raise _ArgumentError("conflicting-output-format")
+
+
+def _fallback_output_format(argv: Sequence[str]) -> str:
+    """Choose a safe format for parser errors without reading child argv."""
+
+    options = _visible_output_options(argv)
+    explicit_format: str | None = None
+    has_json = False
     for index, value in enumerate(options):
-        if value == "--format" and index + 1 < len(options):
-            return "text" if options[index + 1] == "text" else "json"
-        if value == "--format=text":
-            return "text"
-    return "json"
+        if value == "--json":
+            has_json = True
+        elif value == "--format" and index + 1 < len(options):
+            explicit_format = options[index + 1]
+        elif value.startswith("--format="):
+            explicit_format = value.partition("=")[2]
+    if explicit_format in {"json", "text"}:
+        return explicit_format
+    if has_json:
+        return "json"
+    return "text"
 
 
 def _resolve_claim_credential(args: argparse.Namespace) -> None:
@@ -1093,8 +1128,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     output_format = _fallback_output_format(values)
     try:
+        _validate_output_arguments(values)
         args = _parser().parse_args(values)
-        output_format = args.format
+        output_format = "json" if getattr(args, "json", False) else args.format
     except _ArgumentError:
         _emit(
             _envelope(

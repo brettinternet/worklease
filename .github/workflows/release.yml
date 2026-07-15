@@ -111,9 +111,9 @@ jobs:
         run: |
           expected=${RELEASE_TAG#v}
           export EXPECTED_VERSION="$expected"
-          dist/worklease --version > version.json
+          dist/worklease --json --version > version.json
           python -c 'import json, os; p=json.load(open("version.json")); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"] and p["version"] == os.environ["EXPECTED_VERSION"]'
-          dist/worklease key --provider github --source example/repo --item 1 > key.json
+          dist/worklease --json key --provider github --source example/repo --item 1 > key.json
           python -c 'import json; p=json.load(open("key.json")); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
       - name: Package mise-compatible native archive
         env:
