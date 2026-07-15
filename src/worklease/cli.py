@@ -1085,6 +1085,8 @@ def _acquire_with_wait(
             if remaining <= 0:
                 raise
             sleeper(min(interval, remaining))
+            if clock() >= deadline:
+                raise
 
 
 def _dispatch(

@@ -256,7 +256,43 @@ class CliContractTests(unittest.TestCase):
 
         self.assertEqual("resource-guarded", raised.exception.reason)
         self.assertEqual("secret-token", raised.exception.details["token"])
-        self.assertEqual(4, store.attempts)
+        self.assertEqual(3, store.attempts)
+
+    def test_wait_does_not_retry_after_sleeper_overshoots_deadline(self) -> None:
+        request = AcquireRequest(
+            resource="repo:wait-overshoot",
+            claim_id="waiter",
+            agent_id="agent",
+            session_id="session",
+            owner_id="owner",
+            work_key="implement:wait",
+        )
+
+        class OvershootStore:
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def acquire(self, request: AcquireRequest) -> dict[str, object]:
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise LeaseError("already-claimed", resource=request.resource)
+                return {"ok": True}
+
+        store = OvershootStore()
+        now = [0.0]
+
+        with self.assertRaises(LeaseError) as raised:
+            _acquire_with_wait(
+                store,
+                request,
+                1.0,
+                0.25,
+                clock=lambda: now[0],
+                sleeper=lambda duration: now.__setitem__(0, now[0] + 2.0),
+            )
+
+        self.assertEqual("already-claimed", raised.exception.reason)
+        self.assertEqual(1, store.attempts)
 
     def test_wait_uses_real_store_release_expiry_and_heartbeat(self) -> None:
         def acquire_request(resource: str, claim_id: str, ttl: float) -> AcquireRequest:
