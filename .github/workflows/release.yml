@@ -36,6 +36,12 @@ jobs:
           expected=${RELEASE_TAG#v}
           actual=$(mise exec uv -- uv run python -c 'import importlib.metadata; print(importlib.metadata.version("worklease"))')
           test "$actual" = "$expected"
+      - name: Embed published documentation metadata
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          expected=${RELEASE_TAG#v}
+          mise exec uv -- uv run python scripts/embed_release_metadata.py "$expected"
       - name: Build wheel and sdist
         run: |
           mkdir -p dist/release
@@ -91,6 +97,12 @@ jobs:
           cache: true
       - name: Sync locked environment
         run: mise run sync
+      - name: Embed published documentation metadata
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          expected=${RELEASE_TAG#v}
+          mise exec uv -- uv run python scripts/embed_release_metadata.py "$expected"
       - name: Build one-file executable with package metadata
         run: |
           mise exec uv -- uv run --locked --group release pyinstaller \

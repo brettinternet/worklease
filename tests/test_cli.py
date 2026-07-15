@@ -9,8 +9,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from worklease import __version__
+from worklease import cli as cli_module
+from worklease._release_metadata import PUBLISHED_RELEASE_VERSION
 from worklease.cli import _acquire_with_wait
 from worklease.models import (
     DEFAULT_TTL,
@@ -154,6 +157,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(1, result.stdout.count("derive one stable resource key"))
 
     def test_help_exposes_agent_workflow_and_docs_refs(self) -> None:
+        self.assertIsNone(PUBLISHED_RELEASE_VERSION)
         source_environment = self.environment.copy()
         source_environment.pop("WORKLEASE_PUBLISHED_RELEASE_VERSION", None)
         source_result = self.run_cli("--help", environment=source_environment)
@@ -196,6 +200,18 @@ class CliContractTests(unittest.TestCase):
             "https://github.com/brettinternet/worklease/blob/v9.9.9/"
             "skills/worklease-workflow/SKILL.md",
             release_result.stdout,
+        )
+
+    def test_help_uses_embedded_release_metadata(self) -> None:
+        with (
+            patch.dict(os.environ, {"WORKLEASE_PUBLISHED_RELEASE_VERSION": ""}),
+            patch.object(cli_module, "PUBLISHED_RELEASE_VERSION", "9.9.9"),
+        ):
+            guidance = cli_module._agent_workflow_guidance()
+        self.assertIn(
+            "https://github.com/brettinternet/worklease/blob/v9.9.9/"
+            "skills/worklease-workflow/SKILL.md",
+            guidance,
         )
 
     def test_aggregate_help_covers_parser_tree_without_alias_sections(self) -> None:

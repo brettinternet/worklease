@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import Any, NoReturn, Protocol, cast
 
 from . import __version__
+from ._release_metadata import PUBLISHED_RELEASE_VERSION
 from .adapters import (
     describe_policy,
     key_result,
@@ -55,7 +56,9 @@ def _documentation_url(path: str, *, release_version: str | None = None) -> str:
 def _agent_workflow_guidance() -> str:
     """Return stable onboarding guidance for workflow-oriented agents."""
 
-    release_version = os.environ.get(_PUBLISHED_RELEASE_VERSION_ENV)
+    release_version = (
+        os.environ.get(_PUBLISHED_RELEASE_VERSION_ENV) or PUBLISHED_RELEASE_VERSION
+    )
     return f"""\
 {_help_heading("Agent workflow:")}
   Workflow semantics and source/provider coordination:

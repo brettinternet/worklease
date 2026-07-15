@@ -12,6 +12,10 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from scripts.embed_release_metadata import (
+    render_release_metadata,
+    write_release_metadata,
+)
 from scripts.release_artifacts import (
     NATIVE_ARCHIVE_MEMBER,
     PACKAGE_DATA,
@@ -238,6 +242,22 @@ class ReleaseValidationTests(unittest.TestCase):
                 )
             )
 
+    def test_release_metadata_generation_validates_and_embeds_version(self) -> None:
+        self.assertIn(
+            "PUBLISHED_RELEASE_VERSION: str | None = '0.4.0'",
+            render_release_metadata("0.4.0"),
+        )
+        with self.assertRaises(ValueError):
+            render_release_metadata("../unsafe")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "_release_metadata.py"
+            write_release_metadata("0.4.0", target)
+            self.assertIn(
+                "PUBLISHED_RELEASE_VERSION: str | None = '0.4.0'",
+                target.read_text(encoding="utf-8"),
+            )
+
     def test_release_toolchain_is_exact_and_locked(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())
         self.assertEqual(["hatchling==1.31.0"], project["build-system"]["requires"])
@@ -263,6 +283,9 @@ class ReleaseValidationTests(unittest.TestCase):
             2, workflows.count("uv run --locked --group release pyinstaller")
         )
         self.assertIn("uv build --no-build-isolation", workflows)
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertEqual(2, release.count("scripts/embed_release_metadata.py"))
+        self.assertEqual(4, release.count("expected=${RELEASE_TAG#v}"))
         self.assertIn("uv build --no-build-isolation", (ROOT / "mise.toml").read_text())
 
     def test_workflow_actions_and_permissions_are_immutable(self) -> None:
