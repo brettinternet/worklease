@@ -873,6 +873,8 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION", policies)
         described = self.text_cli("policy", "describe", "--name", "generic")
         self.assertIn("name: generic\n", described)
+        self.assertIn("keyPolicyVersion: 1\n", described)
+        self.assertIn("genericExecutionGuarantee: local-coordination\n", described)
         policy_error = self.text_cli(
             "policy", "describe", "--name", "missing", expected_code=2
         )

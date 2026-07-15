@@ -597,6 +597,7 @@ def _render_policy_describe(payload: dict[str, object]) -> None:
         "keyPolicyVersion",
         "scope",
         "capability",
+        "genericExecutionGuarantee",
         "providerFencingSupported",
     )
     for field in fields:

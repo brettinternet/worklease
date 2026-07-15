@@ -271,9 +271,10 @@ The command grammars are:
   `heartbeat-bundle`, `bundle-heartbeat`, `transfer`, `release`,
   `release-bundle`, `bundle-release`, `exec`, `exec-bundle`, `bundle-exec`,
   `replace-file`, and `reconcile-operation`: `OK <operation>`, operation and
-  mutation fields, then a `CLAIM` block. A successful acquire, heartbeat, or
-  checkpoint may include `TOKEN` because the owner needs it for the next
-  lifecycle step; other mutation and all failure output omit bearer tokens.
+  mutation fields, then a `CLAIM` block. A successful acquire, heartbeat,
+  checkpoint, or transfer may include `TOKEN` because the current or successor
+  owner needs it for the next lifecycle step; other mutation and all failure
+  output omit bearer tokens.
 
 Guarded child results add a `COMMAND` block with `RETURNCODE`,
 `EXECUTION_DIRECTORY`, `STDOUT`, and `STDERR` when those fields exist.
