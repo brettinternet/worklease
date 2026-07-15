@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@codex-loop-fresh-20260714-worklease-pass'
 created_date: '2026-07-15 02:24'
-updated_date: '2026-07-15 03:22'
+updated_date: '2026-07-15 03:33'
 labels: []
 dependencies: []
 references:
@@ -16,6 +16,8 @@ modified_files:
   - tests/test_package_smoke.py
   - tests/test_schemas.py
   - tests/test_gc.py
+  - scripts/release_installer.py
+  - tests/test_release.py
   - .github/workflows/ci.yml
   - .github/workflows/release.yml
   - README.md
@@ -76,4 +78,6 @@ refined: TASK-23 specification complete; provider=backlog-md; providerVersion=1.
 T1 complete in commit 67146aa. Verification passed: mise run lint; mise run format-check; mise run typecheck; mise run test; targeted CLI/package/schema/execution/GC contract tests; direct smoke checks for default text, --json, conflicts, and child-argument isolation. Next task: T2. Remaining acceptance: AC4 and T2 automation/documentation work; AC2 coverage remains ongoing through T2.
 
 T2 complete in commit b807255bcc86870c785297c68321cace19b23da4. Verification passed: targeted CLI/package/schema/GC contract tests; direct text and explicit JSON smoke checks; mise run lint; mise run format-check; mise run test; mise run typecheck; mise run hooks. Updated CI and release smoke commands to request --json and revised README human-first output contract. All implementation tasks are complete; next pass is REVIEW. Acceptance criteria and Definition of Done remain pending accumulated review and integration evidence.
+
+Independent verifier found AC2 gap after b807255: scripts/release_installer.py parsed downloaded --version as JSON but did not request explicit JSON. Fixed native and wheel smoke invocations in commit 5e1121f and added test assertions that fail without --json. Re-verified targeted tests.test_release (11 passed), mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks. T2 now covers all known CLI JSON consumers; next pass remains full REVIEW of 67146aa, b807255, and 5e1121f.
 <!-- SECTION:NOTES:END -->
