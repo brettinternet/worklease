@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -519,6 +520,77 @@ class CliContractTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual("bundle-operation-required", payload["error"])
         self.assertNotIn('"token"', result.stdout)
+
+    def test_waiting_singleton_rejects_bundle_members_while_locked(self) -> None:
+        resource = "repo:wait-bundle-held"
+        self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resource,
+            "--resource",
+            "repo:wait-bundle-held-peer",
+            "--claim-id",
+            "wait-bundle-held",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "implement:wait-bundle-held",
+        )
+        marker_dir = Path(self.home.name) / "bundle-lock-markers"
+        marker_dir.mkdir()
+        ready = marker_dir / "ready"
+        release = marker_dir / "release"
+        holder_script = """
+import os
+import time
+from pathlib import Path
+
+from worklease.locking import resource_lock
+
+resource = os.environ["WORKLEASE_RESOURCE"]
+ready = Path(os.environ["WORKLEASE_READY"])
+release = Path(os.environ["WORKLEASE_RELEASE"])
+with resource_lock(resource):
+    ready.touch()
+    while not release.exists():
+        time.sleep(0.01)
+"""
+        holder_environment = {
+            **self.environment,
+            "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+            "WORKLEASE_RESOURCE": resource,
+            "WORKLEASE_READY": str(ready),
+            "WORKLEASE_RELEASE": str(release),
+        }
+        holder = subprocess.Popen(
+            [sys.executable, "-c", holder_script],
+            env=holder_environment,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not ready.exists():
+                time.sleep(0.01)
+            self.assertTrue(ready.exists())
+
+            result = self.run_cli(
+                "--json",
+                *self.acquire_arguments(resource=resource, claim_id="singleton-held"),
+                "--wait-timeout",
+                "0.5",
+                "--poll-interval",
+                "0.2",
+            )
+            self.assertEqual(2, result.returncode)
+            payload = json.loads(result.stdout)
+            self.assertEqual("bundle-operation-required", payload["error"])
+            self.assertNotIn('"token"', result.stdout)
+        finally:
+            release.touch()
+            self.assertEqual(0, holder.wait(timeout=5))
 
     def test_version_is_json_by_default_and_bare_in_text_mode(self) -> None:
         payload = self.json_cli("--version")

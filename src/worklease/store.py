@@ -1798,6 +1798,19 @@ class LeaseStore:
 
         require_resource(request.resource)
         ttl = require_ttl(request.ttl)
+        # Classify persisted bundle membership before a concurrent bundle
+        # mutation can hold the resource lock. The in-lock check below
+        # remains authoritative for the acquire transaction.
+        with closing(self._connect()) as preflight:
+            bundle = self._bundle_for_resource(preflight, request.resource)
+            if bundle is not None:
+                raise LeaseError(
+                    "bundle-operation-required",
+                    resource=request.resource,
+                    claim=self._bundle_claim(preflight, bundle).to_dict(
+                        include_token=False
+                    ),
+                )
         with (
             resource_lock(request.resource, self.home),
             closing(self._connect()) as db,
