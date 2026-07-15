@@ -19,6 +19,7 @@ from .adapters import (
 from .credentials import resolve_credential
 from .execution import execute, execute_bundle
 from .models import (
+    DEFAULT_TTL,
     AcquireRequest,
     BundleAcquireRequest,
     BundleMutationRequest,
@@ -28,6 +29,8 @@ from .models import (
 )
 from .replacement import replace_file
 from .store import LeaseStore
+
+_DEFAULT_POLL_INTERVAL = 0.25
 
 _COMMANDS = frozenset(
     {
@@ -218,6 +221,15 @@ def _add_output_arguments(
     )
 
 
+def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ttl",
+        default=DEFAULT_TTL,
+        type=float,
+        help=f"lease lifetime in seconds (default: {DEFAULT_TTL:g})",
+    )
+
+
 def _common_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
@@ -229,7 +241,7 @@ def _common_claim_arguments(
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--operation-id", required=True)
     if include_ttl:
-        parser.add_argument("--ttl", default=900.0, type=float)
+        _add_ttl_argument(parser)
 
 
 def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
@@ -266,7 +278,7 @@ def _common_bundle_claim_arguments(
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--operation-id", required=True)
     if include_ttl:
-        parser.add_argument("--ttl", default=900.0, type=float)
+        _add_ttl_argument(parser)
 
 
 class _GroupedSubparsers(argparse._SubParsersAction):
@@ -359,9 +371,13 @@ def _parser() -> _ArgumentParser:
         "--poll-interval",
         type=float,
         default=None,
-        help="seconds between singleton acquisition retries (requires --wait-timeout)",
+        help=(
+            f"seconds between singleton acquisition retries "
+            f"(default: {_DEFAULT_POLL_INTERVAL:g} seconds with --wait-timeout; "
+            "invalid without --wait-timeout)"
+        ),
     )
-    acquire_parser.add_argument("--ttl", default=900.0, type=float)
+    _add_ttl_argument(acquire_parser)
 
     acquire_bundle_parser = commands.add_parser(
         "acquire-bundle",
@@ -376,7 +392,7 @@ def _parser() -> _ArgumentParser:
     acquire_bundle_parser.add_argument("--owner-id", required=True)
     acquire_bundle_parser.add_argument("--work-key", required=True)
     acquire_bundle_parser.add_argument("--coordination-only", action="store_true")
-    acquire_bundle_parser.add_argument("--ttl", default=900.0, type=float)
+    _add_ttl_argument(acquire_bundle_parser)
 
     status_bundle_parser = commands.add_parser(
         "status-bundle",
@@ -482,7 +498,7 @@ def _parser() -> _ArgumentParser:
     transfer_parser.add_argument("--successor-session-id", required=True)
     transfer_parser.add_argument("--successor-owner-id", required=True)
     transfer_parser.add_argument("--successor-work-key", required=True)
-    transfer_parser.add_argument("--ttl", default=900.0, type=float)
+    _add_ttl_argument(transfer_parser)
 
     list_parser = commands.add_parser("list", help="list current and expired claims")
     _add_output_arguments(list_parser)
@@ -1018,7 +1034,7 @@ def _request(args: argparse.Namespace) -> MutationRequest:
         token=args.token,
         revision=args.revision,
         operation_id=args.operation_id,
-        ttl=getattr(args, "ttl", 900.0),
+        ttl=getattr(args, "ttl", DEFAULT_TTL),
         provider_directory=getattr(args, "provider_directory", None),
         git_primary=getattr(args, "git_primary", False),
     )
@@ -1031,7 +1047,7 @@ def _bundle_request(args: argparse.Namespace) -> BundleMutationRequest:
         token=args.token,
         revision=args.revision,
         operation_id=args.operation_id,
-        ttl=getattr(args, "ttl", 900.0),
+        ttl=getattr(args, "ttl", DEFAULT_TTL),
         provider_directory=getattr(args, "provider_directory", None),
         git_primary=getattr(args, "git_primary", False),
     )
@@ -1042,7 +1058,6 @@ class _AcquireStore(Protocol):
 
 
 _RETRYABLE_ACQUIRE_ERRORS = frozenset({"already-claimed", "resource-guarded"})
-_DEFAULT_POLL_INTERVAL = 0.25
 
 
 def _validate_wait_options(

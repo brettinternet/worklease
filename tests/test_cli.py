@@ -13,6 +13,7 @@ from pathlib import Path
 from worklease import __version__
 from worklease.cli import _acquire_with_wait
 from worklease.models import (
+    DEFAULT_TTL,
     AcquireRequest,
     BundleMutationRequest,
     LeaseError,
@@ -185,7 +186,7 @@ class CliContractTests(unittest.TestCase):
             store,
             request,
             1.0,
-            0.25,
+            None,
             clock=lambda: now[0],
             sleeper=sleep,
         )
@@ -636,6 +637,37 @@ with resource_lock(resource):
                 self.assertEqual("", result.stderr)
                 self.assertIn(example, result.stdout)
                 self.assertIn(example_tail, result.stdout)
+
+    def test_help_documents_lease_defaults(self) -> None:
+        acquire_help = self.run_cli("acquire", "--help")
+        self.assertEqual(0, acquire_help.returncode)
+        self.assertEqual("", acquire_help.stderr)
+        help_text = " ".join(acquire_help.stdout.split())
+        self.assertIn("default: 0.25 seconds with --wait-timeout", help_text)
+        self.assertIn("invalid without --wait-timeout", help_text)
+
+        ttl_commands = (
+            "acquire",
+            "acquire-bundle",
+            "reconcile-operation",
+            "reconcile-operation-bundle",
+            "checkpoint",
+            "transfer",
+            "heartbeat",
+            "exec",
+            "heartbeat-bundle",
+            "exec-bundle",
+            "replace-file",
+        )
+        for command in ttl_commands:
+            with self.subTest(command=command):
+                result = self.run_cli(command, "--help")
+                self.assertEqual(0, result.returncode)
+                self.assertEqual("", result.stderr)
+                self.assertIn(
+                    f"lease lifetime in seconds (default: {DEFAULT_TTL:g})",
+                    result.stdout,
+                )
 
     def test_version_is_text_by_default_and_json_is_explicit(self) -> None:
         result = self.run_cli("--version")
