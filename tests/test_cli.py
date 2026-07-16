@@ -2412,6 +2412,42 @@ with resource_lock(resource):
         self.assertEqual("new\n", target.read_text())
         self.assertNotIn(str(claim["token"]), json.dumps(payload))
 
+    def test_no_arguments_show_help_and_invalid_commands_fail(self) -> None:
+        no_arguments = self.run_cli()
+        help_result = self.run_cli("--help")
+        self.assertEqual(0, no_arguments.returncode)
+        self.assertEqual("", no_arguments.stderr)
+        self.assertEqual(help_result.stdout, no_arguments.stdout)
+        self.assertIn("usage: worklease", no_arguments.stdout)
+
+        invalid_command = self.run_cli("not-a-command")
+        self.assertEqual(64, invalid_command.returncode)
+        self.assertEqual("", invalid_command.stderr)
+        self.assertIn("ERROR parse: invalid-arguments\n", invalid_command.stdout)
+        self.assertNotEqual(no_arguments.stdout, invalid_command.stdout)
+
+        incomplete_nested_command = self.run_cli("policy")
+        self.assertEqual(64, incomplete_nested_command.returncode)
+        self.assertEqual("", incomplete_nested_command.stderr)
+        self.assertIn(
+            "ERROR policy: invalid-arguments\n", incomplete_nested_command.stdout
+        )
+
+        for arguments in (("--json",), ("--format", "json")):
+            with self.subTest(arguments=arguments):
+                json_failure = self.run_cli(*arguments)
+                self.assertEqual(64, json_failure.returncode)
+                self.assertEqual("", json_failure.stderr)
+                self.assertEqual(
+                    {
+                        "error": "missing-command",
+                        "ok": False,
+                        "operation": "parse",
+                        "schemaVersion": 1,
+                    },
+                    json.loads(json_failure.stdout),
+                )
+
     def test_text_renderers_cover_read_only_commands_and_failures(self) -> None:
         version = self.text_cli("--version")
         self.assertEqual(f"{__version__}\n", version)

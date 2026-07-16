@@ -1867,6 +1867,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if output_format == "text":
             _emit_parser_hint(values, error.message)
         return 64
+    if not values:
+        print(parser.format_help(), end="")
+        return 0
+
     if args.help_all:
         print(_aggregate_help(parser), end="")
         return 0
