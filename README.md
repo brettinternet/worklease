@@ -7,8 +7,8 @@ Worklease guards local operations. The caller's backlog or work system remains a
 ## Features
 
 - Provider-neutral keys (`backlog-md`, `github`, `linear`, `markdown`, `generic`) and versioned external Python plugins.
-- Atomic leases and 1–32-resource bundles, TTLs, waits, heartbeats, checkpoints, transfers, and releases.
-- Guarded argv execution, routed directories, bounded output, and SHA-256 file replacement; coordination-only claims are non-fencing.
+- Atomic leases and ordered all-or-nothing 1–32-resource bundles, TTLs, bounded waits/checkpoints, heartbeats, monotonic revisions, transfers, and releases.
+- Guarded argv execution, routed directories, bounded output, and SHA-256 file replacement; `--coordination-only` claims are non-fencing.
 - Idempotent operations, receipts, and singleton/bundle unknown-outcome reconciliation.
 - Redacted diagnostics, file/FD tokens, deterministic text, versioned JSON, schemas, stable exit codes, and typed Python API.
 - Transactional retention/GC, portable agent workflow, source-provider SDK/mappings, and checksummed Python/native releases.
