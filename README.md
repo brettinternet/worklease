@@ -4,7 +4,25 @@
 
 Worklease guards local operations. The caller's backlog or work system remains authoritative for discovery, dependencies, progress, review, and completion. A same-host lease is not distributed locking or provider-side fencing.
 
-New to the model? Read [How resources, claims, and operations fit together](docs/claim-model.md) for diagrams of the provider-to-resource mapping, ownership epoch, mutation credentials, lifecycle, and required values.
+```mermaid
+flowchart LR
+    subgraph Without["Without Worklease"]
+        A1["Agent A selects TASK-42"] --> D1["Both start work"]
+        B1["Agent B selects TASK-42"] --> D1
+        D1 --> C1["Duplicate work<br/>conflicting writes<br/>uncertain ownership"]
+    end
+
+    subgraph With["With Worklease"]
+        A2["Agent A"] --> R["Same task<br/>same resource"]
+        B2["Agent B"] --> R
+        R --> Q["Atomic, expiring claim"]
+        Q --> W["One owner works"]
+        Q --> N["Other agent waits<br/>or selects other work"]
+        W --> P["Verified provider checkpoint"]
+    end
+```
+
+Same work derives the same resource, which gets one bounded owner. Read [how resources, claims, and operations fit together](docs/claim-model.md) for the complete model.
 
 ## Features
 
