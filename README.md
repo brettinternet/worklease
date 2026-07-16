@@ -6,13 +6,13 @@ Worklease guards local operations. The caller's backlog or work system remains a
 
 ## Features
 
-- **Provider-neutral coordination:** deterministic resource keys through built-in `backlog-md`, `github`, `linear`, `markdown`, and `generic` policies, plus versioned external Python policy plugins.
-- **Singleton and bundle claims:** atomic acquire/reclaim, TTL expiry, bounded waiting, heartbeats, bounded checkpoints, ownership transfer, release, monotonic revisions, and ordered all-or-nothing bundles of 1–32 resources.
-- **Guarded local mutations:** argv-only `exec` with explicit Git-primary/provider-directory routing, continuous bounded stdout/stderr capture, and SHA-256-checked atomic `replace-file`; `--coordination-only` makes the same-host, non-fencing boundary explicit.
-- **Ambiguity-safe operations:** idempotent operation IDs, receipts, and unknown-outcome inspection and reconciliation for singleton and bundle operations.
-- **Safe automation:** redacted diagnostics, token-file/token-fd credentials, deterministic human-readable text, schema-versioned JSON, published schemas, stable exit codes, and a typed Python API.
-- **Maintenance and integration:** transactional retention and garbage collection; a portable provider-neutral agent workflow and source-provider SDK with mappings for Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and custom sources; checksummed release assets and native executables.
-- **Complete CLI:** `key`, `policy list|describe`, singleton lifecycle commands (`acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `transfer`, `exec`, `replace-file`, `release`), bundle lifecycle commands (`acquire-bundle`, `status-bundle`, `heartbeat-bundle`, `exec-bundle`, `release-bundle`; aliases `bundle-*` and `inspect-bundle`), `inspect-operation`, `inspect-operation-bundle`, `reconcile-operation`, `reconcile-operation-bundle`, and `gc`.
+- Provider-neutral keys (`backlog-md`, `github`, `linear`, `markdown`, `generic`) and versioned external Python plugins.
+- Atomic leases and 1–32-resource bundles, TTLs, waits, heartbeats, checkpoints, transfers, and releases.
+- Guarded argv execution, routed directories, bounded output, and SHA-256 file replacement; coordination-only claims are non-fencing.
+- Idempotent operations, receipts, and singleton/bundle unknown-outcome reconciliation.
+- Redacted diagnostics, file/FD tokens, deterministic text, versioned JSON, schemas, stable exit codes, and typed Python API.
+- Transactional retention/GC, portable agent workflow, source-provider SDK/mappings, and checksummed Python/native releases.
+- Complete CLI: `key`, `policy list|describe`; singleton `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `transfer`, `exec`, `replace-file`, `release`; bundles `acquire-bundle`/`bundle-acquire`, `status-bundle`/`bundle-status`/`inspect-bundle`, `heartbeat-bundle`/`bundle-heartbeat`, `exec-bundle`/`bundle-exec`, `release-bundle`/`bundle-release`; `inspect-operation`, `inspect-operation-bundle`, `reconcile-operation`, `reconcile-operation-bundle`, and `gc`.
 
 ## Install
 
@@ -113,7 +113,6 @@ attempt. `--poll-interval` defaults to `0.25` seconds and is valid only with
 the last contention error with exit code `2` and never exposes a bearer token.
 Bundle members, including expired bundles, return
 `bundle-operation-required` immediately and must use the bundle lifecycle.
-
 
 Save the returned token and revision. The token appears only in successful mutation responses. Prefer a mode-0600 `--token-file` or inherited `--token-fd`; direct `--token` is supported but exposes the bearer secret in argv. Never put a token in logs, comments, checkpoints, or handoffs.
 
@@ -326,7 +325,7 @@ The command grammars are:
   absolute expiry timestamps. `--json` and `--format json` always preserve
   the complete underlying values. Tokens are never listed.
 - `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`: `OK
-  <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
+<operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
   block containing `RESOURCE`, `CLAIM_ID`, `REVISION`, `EXPIRES_AT`, and
   `GUARANTEE`; an unclaimed resource emits `CLAIM <none>`.
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
