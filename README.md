@@ -4,6 +4,16 @@
 
 Worklease guards local operations. The caller's backlog or work system remains authoritative for discovery, dependencies, progress, review, and completion. A same-host lease is not distributed locking or provider-side fencing.
 
+## Features
+
+- **Provider-neutral coordination:** deterministic resource keys through built-in `backlog-md`, `github`, `linear`, `markdown`, and `generic` policies, plus versioned external Python policy plugins.
+- **Singleton and bundle claims:** atomic acquire/reclaim, TTL expiry, bounded waiting, heartbeats, bounded checkpoints, ownership transfer, release, monotonic revisions, and ordered all-or-nothing bundles of 1–32 resources.
+- **Guarded local mutations:** argv-only `exec` with explicit Git-primary/provider-directory routing, continuous bounded stdout/stderr capture, and SHA-256-checked atomic `replace-file`; `--coordination-only` makes the same-host, non-fencing boundary explicit.
+- **Ambiguity-safe operations:** idempotent operation IDs, receipts, and unknown-outcome inspection and reconciliation for singleton and bundle operations.
+- **Safe automation:** redacted diagnostics, token-file/token-fd credentials, deterministic human-readable text, schema-versioned JSON, published schemas, stable exit codes, and a typed Python API.
+- **Maintenance and integration:** transactional retention and garbage collection; a portable provider-neutral agent workflow and source-provider SDK with mappings for Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, and custom sources; checksummed release assets and native executables.
+- **Complete CLI:** `key`, `policy list|describe`, singleton lifecycle commands (`acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `transfer`, `exec`, `replace-file`, `release`), bundle lifecycle commands (`acquire-bundle`, `status-bundle`, `heartbeat-bundle`, `exec-bundle`, `release-bundle`; aliases `bundle-*` and `inspect-bundle`), `inspect-operation`, `inspect-operation-bundle`, `reconcile-operation`, `reconcile-operation-bundle`, and `gc`.
+
 ## Install
 
 Requires Python 3.14 or newer for source installs.
