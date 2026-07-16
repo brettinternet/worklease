@@ -11,7 +11,12 @@ flowchart LR
         B1["Agent B selects TASK-42"] --> D1
         D1 --> C1["Duplicate work<br/>conflicting writes<br/>uncertain ownership"]
     end
+```
 
+The work could be a Linear ticket or a task defined in a markdown file.
+
+```mermaid
+flowchart LR
     subgraph With["With Worklease"]
         A2["Agent A"] --> R["Same task<br/>same resource"]
         B2["Agent B"] --> R
