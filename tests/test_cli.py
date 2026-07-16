@@ -832,7 +832,7 @@ with resource_lock(resource):
                 "operation",
                 "-T",
                 "60",
-                "--target-operation-id",
+                "-I",
                 "target",
                 "-x",
                 "request-hash",
@@ -872,6 +872,32 @@ with resource_lock(resource):
                 reconcile.evidence,
             ),
         )
+        reconcile_bundle = parser.parse_args(
+            [
+                "reconcile-operation-bundle",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-t",
+                "token",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+                "-I",
+                "target",
+                "-x",
+                "request-hash",
+                "-O",
+                "observed-success",
+                "-e",
+                "evidence",
+            ]
+        )
+        self.assertEqual("target", reconcile_bundle.target_operation_id)
         heartbeat = parser.parse_args(
             [
                 "heartbeat",

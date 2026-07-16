@@ -730,7 +730,9 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(reconcile_operation_parser)
     _common_claim_arguments(reconcile_operation_parser)
-    reconcile_operation_parser.add_argument("--target-operation-id", required=True)
+    reconcile_operation_parser.add_argument(
+        "-I", "--target-operation-id", required=True
+    )
     reconcile_operation_parser.add_argument(
         "-x", "--expected-request-sha256", required=True
     )
@@ -749,7 +751,7 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(reconcile_bundle_operation_parser)
     _common_bundle_claim_arguments(reconcile_bundle_operation_parser)
     reconcile_bundle_operation_parser.add_argument(
-        "--target-operation-id", required=True
+        "-I", "--target-operation-id", required=True
     )
     reconcile_bundle_operation_parser.add_argument(
         "-x", "--expected-request-sha256", required=True
