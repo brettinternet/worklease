@@ -4,6 +4,8 @@
 
 Worklease guards local operations. The caller's backlog or work system remains authoritative for discovery, dependencies, progress, review, and completion. A same-host lease is not distributed locking or provider-side fencing.
 
+New to the model? Read [How resources, claims, and operations fit together](docs/claim-model.md) for diagrams of the provider-to-resource mapping, ownership epoch, mutation credentials, lifecycle, and required values.
+
 ## Features
 
 - Provider-neutral keys (`backlog-md`, `github`, `linear`, `markdown`, `generic`) and versioned external Python plugins.
@@ -12,7 +14,6 @@ Worklease guards local operations. The caller's backlog or work system remains a
 - Idempotent operations, receipts, and singleton/bundle unknown-outcome reconciliation.
 - Redacted diagnostics, file/FD tokens, deterministic text, versioned JSON, schemas, stable exit codes, and typed Python API.
 - Transactional retention/GC, portable agent workflow, source-provider SDK/mappings, and checksummed Python/native releases.
-- Complete CLI: `key`, `policy list|describe`; singleton `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `transfer`, `exec`, `replace-file`, `release`; bundles `acquire-bundle`/`bundle-acquire`, `status-bundle`/`bundle-status`/`inspect-bundle`, `heartbeat-bundle`/`bundle-heartbeat`, `exec-bundle`/`bundle-exec`, `release-bundle`/`bundle-release`; `inspect-operation`, `inspect-operation-bundle`, `reconcile-operation`, `reconcile-operation-bundle`, and `gc`.
 
 ## Install
 
