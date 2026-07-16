@@ -1,11 +1,11 @@
 ---
 id: TASK-2
 title: Add Ruff and Lefthook checks
-status: Done
+status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-07-13 21:15'
-updated_date: '2026-07-15 05:50'
+updated_date: '2026-07-16 15:30'
 labels:
   - tooling
   - quality
@@ -34,12 +34,12 @@ Add project-wide Python linting and formatting with Ruff, and staged-file pre-co
 <!-- SECTION:PLAN:BEGIN -->
 ### Implementation tasks
 - [x] T1 — Add Ruff/Lefthook configuration, mise quality tasks, AGENTS guidance, and deterministic validation (AC1-AC4).
+- [x] T2 — Gate the Lefthook test command on staged Python files (AC2).
 
 ### Implementation approach
-1. Inspect repository Python, mise, and hook conventions plus installed tool versions.
-2. Add Ruff config and mise tasks for check/format, add Lefthook config and mise bootstrap task for staged Python checks.
-3. Update AGENTS.md with mandatory fix-and-verify guidance.
-4. Run targeted Ruff, Lefthook, and mise checks, finalize task evidence, and commit all changes.
+1. Add the staged-Python glob to the Lefthook test command, including nested paths.
+2. Verify staged non-Python files skip tests and staged Python files run the Python suite.
+3. Run required quality checks and finalize the task with objective evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -50,6 +50,10 @@ Implemented Ruff 0.15.21 as a uv dev dependency, pyproject lint/format policy, m
 Implementation checkpoint T1: existing implementation commit 925ca18 verified in this pass with mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks. Canonical checklist normalized after verification.
 
 T1 complete. Implementation commit: 925ca18; canonical implementation-checkpoint commit: f8bd69f. Remaining: one REVIEW pass for the accumulated implementation and durable reviewed marker. Next task: REVIEW TASK-2.
+
+Reopened to correct the pre-commit test trigger: tests currently run for every staged file instead of only staged Python changes.
+
+Validation T2: `mise run hooks` with no staged files skipped tests; a staged non-Python fixture skipped tests; a staged nested Python fixture at `packages/worklease-source-sdk/tests/.staged-hook-check.py` ran Ruff and both test suites successfully. Explicit `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck` all passed. Temporary fixtures were removed and only `lefthook.yml` plus this task record remain modified.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

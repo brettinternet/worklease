@@ -8,4 +8,5 @@ pre-commit:
       glob: "*.py"
       run: uv run ruff format --check {staged_files}
     tests:
+      glob: ["*.py", "**/*.py"]
       run: mise run test
