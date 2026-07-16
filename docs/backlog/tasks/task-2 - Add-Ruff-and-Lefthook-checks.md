@@ -1,7 +1,7 @@
 ---
 id: TASK-2
 title: Add Ruff and Lefthook checks
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-07-13 21:15'
@@ -54,10 +54,12 @@ T1 complete. Implementation commit: 925ca18; canonical implementation-checkpoint
 Reopened to correct the pre-commit test trigger: tests currently run for every staged file instead of only staged Python changes.
 
 Validation T2: `mise run hooks` with no staged files skipped tests; a staged non-Python fixture skipped tests; a staged nested Python fixture at `packages/worklease-source-sdk/tests/.staged-hook-check.py` ran Ruff and both test suites successfully. Explicit `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck` all passed. Temporary fixtures were removed and only `lefthook.yml` plus this task record remain modified.
+
+T2 implementation committed as e830c677e8b1cf4ef807028998641bc4921063e0.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added Ruff 0.15.21 configuration and mise lint/format tasks, Lefthook 2.1.10 staged-file pre-commit checks with tests, and AGENTS.md quality-gate guidance. Verified with mise run sync, lint, format-check, typecheck, build, and hooks; Lefthook validation passed and all 13 unit tests passed. Changes are committed.
+Added `glob: ["*.py", "**/*.py"]` to the Lefthook test command so staged Python changes, including nested package files, run `mise run test`; staged non-Python changes skip it. Verified no-staged and staged non-Python skips, staged nested Python execution, `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck`. Implementation commit: e830c677e8b1cf4ef807028998641bc4921063e0.
 <!-- SECTION:FINAL_SUMMARY:END -->
