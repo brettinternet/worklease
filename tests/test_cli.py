@@ -822,6 +822,10 @@ with resource_lock(resource):
                 "claim",
                 "-t",
                 "token",
+                "-F",
+                "token-file",
+                "-D",
+                "3",
                 "-R",
                 "3",
                 "-o",
@@ -843,6 +847,8 @@ with resource_lock(resource):
                 "resource",
                 "claim",
                 "token",
+                "token-file",
+                "3",
                 3,
                 "operation",
                 60.0,
@@ -855,6 +861,8 @@ with resource_lock(resource):
                 reconcile.resource,
                 reconcile.claim_id,
                 reconcile.token,
+                reconcile.token_file,
+                reconcile.token_fd,
                 reconcile.revision,
                 reconcile.operation_id,
                 reconcile.ttl,
@@ -863,6 +871,52 @@ with resource_lock(resource):
                 reconcile.outcome,
                 reconcile.evidence,
             ),
+        )
+        heartbeat = parser.parse_args(
+            [
+                "heartbeat",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-F",
+                "token-file",
+                "-D",
+                "3",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+            ]
+        )
+        self.assertEqual(
+            ("token-file", "3"), (heartbeat.token_file, heartbeat.token_fd)
+        )
+
+        heartbeat_bundle = parser.parse_args(
+            [
+                "heartbeat-bundle",
+                "-r",
+                "resource",
+                "-c",
+                "claim",
+                "-F",
+                "token-file",
+                "-D",
+                "3",
+                "-R",
+                "3",
+                "-o",
+                "operation",
+                "-T",
+                "60",
+            ]
+        )
+        self.assertEqual(
+            ("token-file", "3"),
+            (heartbeat_bundle.token_file, heartbeat_bundle.token_fd),
         )
 
         checkpoint = parser.parse_args(
@@ -895,6 +949,10 @@ with resource_lock(resource):
                 "claim",
                 "-t",
                 "token",
+                "-F",
+                "token-file",
+                "-D",
+                "3",
                 "-R",
                 "3",
                 "-o",
@@ -915,6 +973,8 @@ with resource_lock(resource):
         )
         self.assertEqual(
             (
+                "token-file",
+                "3",
                 "successor-claim",
                 "successor-agent",
                 "successor-session",
@@ -922,6 +982,8 @@ with resource_lock(resource):
                 "successor-work-key",
             ),
             (
+                transfer.token_file,
+                transfer.token_fd,
                 transfer.successor_claim_id,
                 transfer.successor_agent_id,
                 transfer.successor_session_id,
