@@ -384,6 +384,7 @@ def _add_output_arguments(
 ) -> None:
     if include_format:
         parser.add_argument(
+            "-f",
             "--format",
             choices=("json", "text"),
             default=argparse.SUPPRESS,
@@ -391,12 +392,14 @@ def _add_output_arguments(
         )
 
     parser.add_argument(
+        "-j",
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
         help="output JSON (equivalent to --format json)",
     )
     parser.add_argument(
+        "-H",
         "--home",
         default=argparse.SUPPRESS,
         help=f"override WORKLEASE_HOME for this command ({_DEFAULT_HOME_HELP})",
@@ -405,6 +408,7 @@ def _add_output_arguments(
 
 def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-T",
         "--ttl",
         default=DEFAULT_TTL,
         type=float,
@@ -415,24 +419,26 @@ def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
 def _common_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
-    parser.add_argument("--resource", required=True)
-    parser.add_argument("--claim-id", required=True)
-    parser.add_argument("--token")
-    parser.add_argument("--token-file")
-    parser.add_argument("--token-fd")
-    parser.add_argument("--revision", required=True, type=int)
-    parser.add_argument("--operation-id", required=True)
+    parser.add_argument("-r", "--resource", required=True)
+    parser.add_argument("-c", "--claim-id", required=True)
+    parser.add_argument("-t", "--token")
+    parser.add_argument("-F", "--token-file")
+    parser.add_argument("-D", "--token-fd")
+    parser.add_argument("-R", "--revision", required=True, type=int)
+    parser.add_argument("-o", "--operation-id", required=True)
     if include_ttl:
         _add_ttl_argument(parser)
 
 
 def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-d",
         "--provider-directory",
         help="run provider commands from this validated working directory "
         "(default: caller directory)",
     )
     parser.add_argument(
+        "-g",
         "--git-primary",
         action="store_true",
         help="derive the registered Git primary/control worktree "
@@ -442,6 +448,7 @@ def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _bundle_resources(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-r",
         "--resource",
         "--resources",
         dest="resources",
@@ -455,12 +462,12 @@ def _common_bundle_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
     _bundle_resources(parser)
-    parser.add_argument("--claim-id", required=True)
-    parser.add_argument("--token")
-    parser.add_argument("--token-file")
-    parser.add_argument("--token-fd")
-    parser.add_argument("--revision", required=True, type=int)
-    parser.add_argument("--operation-id", required=True)
+    parser.add_argument("-c", "--claim-id", required=True)
+    parser.add_argument("-t", "--token")
+    parser.add_argument("-F", "--token-file")
+    parser.add_argument("-D", "--token-fd")
+    parser.add_argument("-R", "--revision", required=True, type=int)
+    parser.add_argument("-o", "--operation-id", required=True)
     if include_ttl:
         _add_ttl_argument(parser)
 
@@ -521,28 +528,33 @@ def _aggregate_help(parser: argparse.ArgumentParser) -> str:
 def _parser() -> _ArgumentParser:
     parser = _ArgumentParser(prog="worklease", epilog=_TOP_LEVEL_EPILOG)
     parser.add_argument(
+        "-f",
         "--format",
         choices=("json", "text"),
         default="text",
         help="output format (default: text)",
     )
     parser.add_argument(
+        "-j",
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
         help="output JSON (equivalent to --format json)",
     )
     parser.add_argument(
+        "-H",
         "--home",
         default=None,
         help=f"override WORKLEASE_HOME for this command ({_DEFAULT_HOME_HELP})",
     )
     parser.add_argument(
+        "-v",
         "--version",
         action="store_true",
         help="print the packaged worklease version",
     )
     parser.add_argument(
+        "-a",
         "--help-all",
         action="store_true",
         help="show help for every canonical command",
@@ -558,10 +570,11 @@ def _parser() -> _ArgumentParser:
         "key", help="derive one stable resource key", epilog=_KEY_EPILOG
     )
     _add_output_arguments(key_parser)
-    key_parser.add_argument("--provider", required=True)
-    key_parser.add_argument("--source", required=True)
-    key_parser.add_argument("--item", required=True)
+    key_parser.add_argument("-p", "--provider", required=True)
+    key_parser.add_argument("-s", "--source", required=True)
+    key_parser.add_argument("-i", "--item", required=True)
     key_parser.add_argument(
+        "-C",
         "--coordination-only",
         action="store_true",
         help="derive a lease that coordinates local workers without fencing writes",
@@ -585,24 +598,26 @@ def _parser() -> _ArgumentParser:
         epilog=_POLICY_DESCRIBE_EPILOG,
     )
     _add_output_arguments(describe_parser)
-    describe_parser.add_argument("--name", required=True)
+    describe_parser.add_argument("-n", "--name", required=True)
 
     acquire_parser = commands.add_parser(
         "acquire", help="atomically acquire or reclaim a lease", epilog=_ACQUIRE_EPILOG
     )
     _add_output_arguments(acquire_parser)
-    acquire_parser.add_argument("--resource", required=True)
-    acquire_parser.add_argument("--claim-id", required=True)
-    acquire_parser.add_argument("--agent-id", required=True)
-    acquire_parser.add_argument("--session-id", required=True)
-    acquire_parser.add_argument("--owner-id", required=True)
-    acquire_parser.add_argument("--work-key", required=True)
+    acquire_parser.add_argument("-r", "--resource", required=True)
+    acquire_parser.add_argument("-c", "--claim-id", required=True)
+    acquire_parser.add_argument("-a", "--agent-id", required=True)
+    acquire_parser.add_argument("-s", "--session-id", required=True)
+    acquire_parser.add_argument("-o", "--owner-id", required=True)
+    acquire_parser.add_argument("-w", "--work-key", required=True)
     acquire_parser.add_argument(
+        "-C",
         "--coordination-only",
         action="store_true",
         help="mark this ownership epoch as unable to fence provider writes",
     )
     acquire_parser.add_argument(
+        "-W",
         "--wait-timeout",
         type=float,
         default=None,
@@ -612,6 +627,7 @@ def _parser() -> _ArgumentParser:
         ),
     )
     acquire_parser.add_argument(
+        "-P",
         "--poll-interval",
         type=float,
         default=None,
@@ -631,12 +647,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(acquire_bundle_parser)
     _bundle_resources(acquire_bundle_parser)
-    acquire_bundle_parser.add_argument("--claim-id", required=True)
-    acquire_bundle_parser.add_argument("--agent-id", required=True)
-    acquire_bundle_parser.add_argument("--session-id", required=True)
-    acquire_bundle_parser.add_argument("--owner-id", required=True)
-    acquire_bundle_parser.add_argument("--work-key", required=True)
-    acquire_bundle_parser.add_argument("--coordination-only", action="store_true")
+    acquire_bundle_parser.add_argument("-c", "--claim-id", required=True)
+    acquire_bundle_parser.add_argument("-a", "--agent-id", required=True)
+    acquire_bundle_parser.add_argument("-s", "--session-id", required=True)
+    acquire_bundle_parser.add_argument("-o", "--owner-id", required=True)
+    acquire_bundle_parser.add_argument("-w", "--work-key", required=True)
+    acquire_bundle_parser.add_argument("-C", "--coordination-only", action="store_true")
     _add_ttl_argument(acquire_bundle_parser)
 
     status_bundle_parser = commands.add_parser(
@@ -652,8 +668,9 @@ def _parser() -> _ArgumentParser:
         "status", help="read current lease state", epilog=_STATUS_EPILOG
     )
     _add_output_arguments(status_parser)
-    status_parser.add_argument("--resource", required=True)
+    status_parser.add_argument("-r", "--resource", required=True)
     status_parser.add_argument(
+        "-V",
         "--verbose",
         action="store_true",
         help="include redacted diagnostic metadata and unknown outcomes",
@@ -665,8 +682,8 @@ def _parser() -> _ArgumentParser:
         epilog=_INSPECT_OPERATION_EPILOG,
     )
     _add_output_arguments(inspect_operation_parser)
-    inspect_operation_parser.add_argument("--resource", required=True)
-    inspect_operation_parser.add_argument("--operation-id", required=True)
+    inspect_operation_parser.add_argument("-r", "--resource", required=True)
+    inspect_operation_parser.add_argument("-o", "--operation-id", required=True)
     inspect_bundle_operation_parser = commands.add_parser(
         "inspect-operation-bundle",
         help="inspect one ordered bundle operation outcome",
@@ -674,7 +691,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(inspect_bundle_operation_parser)
     _bundle_resources(inspect_bundle_operation_parser)
-    inspect_bundle_operation_parser.add_argument("--operation-id", required=True)
+    inspect_bundle_operation_parser.add_argument("-o", "--operation-id", required=True)
     gc_parser = commands.add_parser(
         "gc",
         help="inspect or collect records eligible for garbage collection",
@@ -682,6 +699,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(gc_parser)
     gc_parser.add_argument(
+        "-r",
         "--retention-days",
         action=_ExplicitValueAction,
         default=DEFAULT_GC_RETENTION_DAYS,
@@ -692,10 +710,12 @@ def _parser() -> _ArgumentParser:
         ),
     )
     gc_parser.add_argument(
+        "-c",
         "--cutoff",
         help=f"explicit UTC cutoff timestamp (ISO-8601; {_DEFAULT_CUTOFF_HELP})",
     )
     gc_parser.add_argument(
+        "-a",
         "--apply",
         action="store_true",
         help=(
@@ -710,14 +730,19 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(reconcile_operation_parser)
     _common_claim_arguments(reconcile_operation_parser)
-    reconcile_operation_parser.add_argument("--target-operation-id", required=True)
-    reconcile_operation_parser.add_argument("--expected-request-sha256", required=True)
     reconcile_operation_parser.add_argument(
+        "-I", "--target-operation-id", required=True
+    )
+    reconcile_operation_parser.add_argument(
+        "-x", "--expected-request-sha256", required=True
+    )
+    reconcile_operation_parser.add_argument(
+        "-O",
         "--outcome",
         required=True,
         choices=("observed-success", "observed-failure"),
     )
-    reconcile_operation_parser.add_argument("--evidence", required=True)
+    reconcile_operation_parser.add_argument("-e", "--evidence", required=True)
     reconcile_bundle_operation_parser = commands.add_parser(
         "reconcile-operation-bundle",
         help="record an observed ordered bundle operation outcome",
@@ -726,17 +751,18 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(reconcile_bundle_operation_parser)
     _common_bundle_claim_arguments(reconcile_bundle_operation_parser)
     reconcile_bundle_operation_parser.add_argument(
-        "--target-operation-id", required=True
+        "-I", "--target-operation-id", required=True
     )
     reconcile_bundle_operation_parser.add_argument(
-        "--expected-request-sha256", required=True
+        "-x", "--expected-request-sha256", required=True
     )
     reconcile_bundle_operation_parser.add_argument(
+        "-O",
         "--outcome",
         required=True,
         choices=("observed-success", "observed-failure"),
     )
-    reconcile_bundle_operation_parser.add_argument("--evidence", required=True)
+    reconcile_bundle_operation_parser.add_argument("-e", "--evidence", required=True)
 
     checkpoint_parser = commands.add_parser(
         "checkpoint",
@@ -745,7 +771,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(checkpoint_parser)
     _common_claim_arguments(checkpoint_parser)
-    checkpoint_parser.add_argument("--checkpoint", required=True)
+    checkpoint_parser.add_argument("-k", "--checkpoint", required=True)
 
     transfer_parser = commands.add_parser(
         "transfer",
@@ -753,18 +779,18 @@ def _parser() -> _ArgumentParser:
         epilog=_TRANSFER_EPILOG,
     )
     _add_output_arguments(transfer_parser)
-    transfer_parser.add_argument("--resource", required=True)
-    transfer_parser.add_argument("--claim-id", required=True)
-    transfer_parser.add_argument("--token")
-    transfer_parser.add_argument("--token-file")
-    transfer_parser.add_argument("--token-fd")
-    transfer_parser.add_argument("--revision", required=True, type=int)
-    transfer_parser.add_argument("--operation-id", required=True)
-    transfer_parser.add_argument("--successor-claim-id", required=True)
-    transfer_parser.add_argument("--successor-agent-id", required=True)
-    transfer_parser.add_argument("--successor-session-id", required=True)
-    transfer_parser.add_argument("--successor-owner-id", required=True)
-    transfer_parser.add_argument("--successor-work-key", required=True)
+    transfer_parser.add_argument("-r", "--resource", required=True)
+    transfer_parser.add_argument("-c", "--claim-id", required=True)
+    transfer_parser.add_argument("-t", "--token")
+    transfer_parser.add_argument("-F", "--token-file")
+    transfer_parser.add_argument("-D", "--token-fd")
+    transfer_parser.add_argument("-R", "--revision", required=True, type=int)
+    transfer_parser.add_argument("-o", "--operation-id", required=True)
+    transfer_parser.add_argument("-C", "--successor-claim-id", required=True)
+    transfer_parser.add_argument("-A", "--successor-agent-id", required=True)
+    transfer_parser.add_argument("-S", "--successor-session-id", required=True)
+    transfer_parser.add_argument("-O", "--successor-owner-id", required=True)
+    transfer_parser.add_argument("-W", "--successor-work-key", required=True)
     _add_ttl_argument(transfer_parser)
 
     list_parser = commands.add_parser(
@@ -772,10 +798,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(list_parser)
     list_parser.add_argument(
+        "-r",
         "--resource",
         help="filter claims to one exact resource (default: all resources)",
     )
     list_parser.add_argument(
+        "-F",
         "--full",
         action="store_true",
         help="show full resources, identifiers, and absolute expiry timestamps",
@@ -792,7 +820,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(release_parser)
     _common_claim_arguments(release_parser, include_ttl=False)
-    release_parser.add_argument("--reason", required=True)
+    release_parser.add_argument("-m", "--reason", required=True)
 
     execute_parser = commands.add_parser(
         "exec", help="run one argv under a lease", epilog=_EXEC_EPILOG
@@ -819,7 +847,7 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(release_bundle_parser)
     _common_bundle_claim_arguments(release_bundle_parser, include_ttl=False)
-    release_bundle_parser.add_argument("--reason", required=True)
+    release_bundle_parser.add_argument("-m", "--reason", required=True)
 
     execute_bundle_parser = commands.add_parser(
         "exec-bundle",
@@ -838,9 +866,9 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(replace_parser)
     _common_claim_arguments(replace_parser)
-    replace_parser.add_argument("--path", required=True)
-    replace_parser.add_argument("--expected-sha256", required=True)
-    replace_parser.add_argument("--content-file", required=True)
+    replace_parser.add_argument("-p", "--path", required=True)
+    replace_parser.add_argument("-e", "--expected-sha256", required=True)
+    replace_parser.add_argument("-C", "--content-file", required=True)
     return parser
 
 
@@ -1446,7 +1474,7 @@ def _command_help_path(argv: Sequence[str]) -> str:
 def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
     command = _command_help_path(argv)
     choice_match = re.search(
-        r"argument (--[\w-]+): invalid choice: .* \(choose from (.+)\)",
+        r"argument (?:-[\w-]+/)?(--[\w-]+): invalid choice: .* \(choose from (.+)\)",
         message,
     )
     if choice_match:
@@ -1455,7 +1483,7 @@ def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
             return f"Valid values for {choice_match.group(1)}: " + ", ".join(choices)
 
     expected_match = re.search(
-        r"argument (--[\w-]+): expected one argument",
+        r"argument (?:-[\w-]+/)?(--[\w-]+): expected one argument",
         message,
     )
     if expected_match:
@@ -1778,9 +1806,12 @@ def _visible_output_options(argv: Sequence[str]) -> list[str]:
 
 def _validate_output_arguments(argv: Sequence[str]) -> None:
     options = _visible_output_options(argv)
-    has_json = "--json" in options
+    has_json = "--json" in options or "-j" in options
     has_format = any(
-        value == "--format" or value.startswith("--format=") for value in options
+        value in {"--format", "-f"}
+        or value.startswith("--format=")
+        or value.startswith("-f=")
+        for value in options
     )
     if has_json and has_format:
         raise _ArgumentError("conflicting-output-format")
@@ -1793,11 +1824,11 @@ def _fallback_output_format(argv: Sequence[str]) -> str:
     explicit_format: str | None = None
     has_json = False
     for index, value in enumerate(options):
-        if value == "--json":
+        if value in {"--json", "-j"}:
             has_json = True
-        elif value == "--format" and index + 1 < len(options):
+        elif value in {"--format", "-f"} and index + 1 < len(options):
             explicit_format = options[index + 1]
-        elif value.startswith("--format="):
+        elif value.startswith("--format=") or value.startswith("-f="):
             explicit_format = value.partition("=")[2]
     if explicit_format in {"json", "text"}:
         return explicit_format
