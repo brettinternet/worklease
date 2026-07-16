@@ -1469,6 +1469,62 @@ with resource_lock(resource):
             self.assertLessEqual(len(shortened), width)
         self.assertIn("…", cli_module._shorten_resource(opaque, 17))
 
+    def test_resource_shortening_preserves_path_anchors_for_deep_resources(
+        self,
+    ) -> None:
+        resources = (
+            (
+                "backlog-md:/Users/brett/dev/me/a/b/c/d/worklease/.git:"
+                "docs/backlog:TASK-xxxxxxxx",
+                "backlog-md:…/worklease:docs/backlog:TASK-xxxxxxxx",
+            ),
+            (
+                "backlog-md:C:\\Users\\brett\\dev\\a\\b\\worklease\\.git:"
+                "docs\\backlog:TASK-xxxxxxxx",
+                "backlog-md:…\\worklease:docs\\backlog:TASK-xxxxxxxx",
+            ),
+        )
+        for resource, expected in resources:
+            shortened = cli_module._shorten_resource(resource, 52)
+            self.assertEqual(expected, shortened)
+            self.assertLessEqual(len(shortened), 52)
+
+        oversized_suffix = (
+            "backlog-md:/Users/brett/dev/me/a/b/worklease/.git:"
+            "docs/backlog:" + ("x" * 100)
+        )
+        self.assertLessEqual(
+            len(cli_module._shorten_resource(oversized_suffix, 52)),
+            52,
+        )
+
+    def test_text_list_renders_deep_resource_path_anchor(self) -> None:
+        resource = (
+            "backlog-md:/Users/brett/dev/me/a/b/c/d/worklease/.git:"
+            "docs/backlog:TASK-xxxxxxxx"
+        )
+        payload = {
+            "ok": True,
+            "operation": "list",
+            "claims": [
+                {
+                    "resource": resource,
+                    "claimId": "claim-deep-path",
+                    "ownerId": "owner-deep-path",
+                    "expiresAt": "2025-06-15T23:02:00Z",
+                    "expiresAtEpoch": 1_750_003_720.0,
+                    "active": True,
+                }
+            ],
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_list(payload, now=1_750_000_000.0)
+
+        rendered = output.getvalue()
+        self.assertIn("backlog-md:…/worklease:docs/backlog:TASK-xxxxxxxx", rendered)
+        self.assertNotIn(resource, rendered)
+
     def test_text_list_uses_bounded_relative_values_with_full_override(self) -> None:
         now = 1_750_000_000.0
         resource = "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-18"
