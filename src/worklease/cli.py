@@ -1158,7 +1158,7 @@ _RESOURCE_BOUNDARIES = frozenset("/:#\\")
 
 
 def _shorten_resource(value: str, width: int) -> str:
-    """Keep resource component boundaries within a fixed display width."""
+    """Keep a path component and the longest fitting resource suffix."""
 
     if len(value) <= width:
         return value
@@ -1178,11 +1178,75 @@ def _shorten_resource(value: str, width: int) -> str:
         return _shorten_text(value, width)
 
     suffix_capacity = width - prefix_end - 1
-    suffix_start = len(value) - suffix_capacity
-    for index in range(suffix_start, len(value)):
+    suffix_start: int | None = None
+    for index in range(len(value) - suffix_capacity, len(value)):
         if value[index] in _RESOURCE_BOUNDARIES:
-            return f"{value[:prefix_end]}…{value[index:]}"
-    return _shorten_text(value, width)
+            suffix_start = index
+            break
+    if suffix_start is None:
+        return _shorten_text(value, width)
+
+    prefix = value[:prefix_end]
+    shortened = f"{prefix}…{value[suffix_start:]}"
+    path_end = value.find(":", suffix_start)
+    if path_end < 0:
+        path_end = len(value)
+    visible_path_component = False
+    path_component_start: int | None = None
+    for index in range(suffix_start, path_end):
+        if value[index] in "/\\":
+            if (
+                path_component_start is not None
+                and path_component_start < index
+                and value[path_component_start] != "."
+            ):
+                visible_path_component = True
+            path_component_start = index + 1
+        elif path_component_start is None:
+            path_component_start = index
+    if (
+        path_component_start is not None
+        and path_component_start < path_end
+        and value[path_component_start] != "."
+    ):
+        visible_path_component = True
+    if len(shortened) <= width and visible_path_component:
+        return shortened
+
+    anchor: tuple[int, int] | None = None
+    component_start: int | None = None
+    for index in range(prefix_end, suffix_start):
+        if value[index] in _RESOURCE_BOUNDARIES:
+            if (
+                component_start is not None
+                and component_start < index
+                and component_start > prefix_end
+                and value[component_start - 1] in "/\\"
+                and value[component_start] != "."
+            ):
+                anchor = (component_start, index)
+            component_start = None
+        elif component_start is None:
+            component_start = index
+    if (
+        component_start is not None
+        and component_start < suffix_start
+        and component_start > prefix_end
+        and value[component_start - 1] in "/\\"
+        and value[component_start] != "."
+    ):
+        anchor = (component_start, suffix_start)
+
+    if anchor is not None:
+        anchor_start, anchor_end = anchor
+        anchor_text = value[anchor_start - 1 : anchor_end]
+        for index in range(suffix_start, len(value)):
+            if value[index] in _RESOURCE_BOUNDARIES:
+                candidate = f"{prefix}…{anchor_text}{value[index:]}"
+                if len(candidate) <= width:
+                    return candidate
+
+    return shortened if len(shortened) <= width else _shorten_text(value, width)
 
 
 def _relative_duration(seconds: float) -> str:
