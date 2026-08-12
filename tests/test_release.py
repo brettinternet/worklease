@@ -260,9 +260,9 @@ class ReleaseValidationTests(unittest.TestCase):
 
     def test_release_toolchain_is_exact_and_locked(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())
-        self.assertEqual(["hatchling==1.31.0"], project["build-system"]["requires"])
+        self.assertEqual(["hatchling==1.32.0"], project["build-system"]["requires"])
         self.assertEqual(
-            ["hatchling==1.31.0", "pyinstaller==6.21.0"],
+            ["hatchling==1.32.0", "pyinstaller==6.22.0"],
             project["dependency-groups"]["release"],
         )
         self.assertIn("release", project["tool"]["uv"]["default-groups"])
@@ -271,8 +271,8 @@ class ReleaseValidationTests(unittest.TestCase):
         versions = {
             package["name"]: package["version"] for package in locked["package"]
         }
-        self.assertEqual("1.31.0", versions["hatchling"])
-        self.assertEqual("6.21.0", versions["pyinstaller"])
+        self.assertEqual("1.32.0", versions["hatchling"])
+        self.assertEqual("6.22.0", versions["pyinstaller"])
 
         workflows = "\n".join(
             (ROOT / path).read_text()
