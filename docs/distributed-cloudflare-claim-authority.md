@@ -113,6 +113,14 @@ organization, or repository authority namespace. Define bundles as atomic only
 within one namespace. Reject cross-namespace bundles instead of partially
 acquiring them.
 
+Treat the object's SQLite database as the only authoritative state. Durable
+Objects are evicted when idle, so in-memory values must never outlive a single
+request as claim state. Expiry needs no timer: every request evaluates
+`expires_at` lazily against authority time, which is invariant 1 below.
+Retention cleanup of operation receipts, retained checkpoints, and release
+history should use the Durable Object Alarms API rather than per-request
+sweeps.
+
 ### D1 boundary
 
 D1 should not participate in acquisition, heartbeat, expiry replacement, or
@@ -175,6 +183,12 @@ field. It must increase across successive claims for a resource. `revision`
 continues to protect mutations within one claim. A downstream provider gains no
 protection from `fence` unless it records the latest accepted value and rejects
 older values.
+
+`fence` is per resource, not per claim. A bundle acquire draws the next fence
+from each member's `resource_state` row inside the single acquisition
+transaction, and the bundle receipt reports one fence per member resource.
+There is no bundle-level fence, because members may have different ownership
+histories.
 
 The claim token is a secret bearer credential. Store only a hash when possible.
 Exact replay of a successful acquire must still recover the same response, so
@@ -302,8 +316,11 @@ audit path. That is separate product scope and should not be part of the first
 private deployment.
 
 A Cloudflare-managed domain is not required for a prototype because Workers can
-use a `workers.dev` address. A custom domain provides a stable authority
-identity and a natural Cloudflare Access policy boundary.
+use a `workers.dev` address. Cloudflare Access policies cannot protect a
+`workers.dev` hostname, so a prototype there must enforce its own credential
+check inside the Worker before any Durable Object dispatch. A custom domain
+provides a stable authority identity and a natural Cloudflare Access policy
+boundary.
 
 ## CLI integration
 
@@ -472,6 +489,7 @@ the provider explicitly enforces the authority epoch.
 - [Cloudflare Durable Objects design guidance](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)
 - [Cloudflare Durable Object SQLite storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
 - [Cloudflare Durable Object SQLite transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#transaction)
+- [Cloudflare Durable Object Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
 - [Cloudflare Workers storage options](https://developers.cloudflare.com/workers/platform/storage-options/)
 - [Cloudflare D1 read replication and Sessions](https://developers.cloudflare.com/d1/best-practices/read-replication/)
 - [Cloudflare Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
