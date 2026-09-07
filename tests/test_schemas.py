@@ -240,6 +240,15 @@ class SchemaContractTests(unittest.TestCase):
                 "utf-8"
             )
         ).hexdigest()
+        bundle_verbose = self.run_cli(
+            "status", "--resource", "schema:bundle-b", "--verbose"
+        )
+        self.assert_matches_commands_schema(bundle_verbose)
+        verbose_claim = bundle_verbose["claim"]
+        assert isinstance(verbose_claim, dict)
+        self.assertEqual(
+            ["schema:bundle-a", "schema:bundle-b"], verbose_claim["resources"]
+        )
         inspected = self.run_cli(
             "inspect-operation-bundle",
             "--resource",

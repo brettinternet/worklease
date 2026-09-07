@@ -1437,7 +1437,7 @@ def _emit_verbose_status(payload: dict[str, object]) -> None:
     if isinstance(claim, dict):
         print("CLAIM")
         for field in (
-            "resource",
+            "resources" if "resources" in claim else "resource",
             "claimId",
             "agentId",
             "sessionId",
