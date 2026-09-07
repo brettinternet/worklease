@@ -1,10 +1,11 @@
 ---
 id: TASK-59.3
 title: Disclose provenance and coverage in resource history
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-07 17:17'
-updated_date: '2026-09-07 17:28'
+updated_date: '2026-09-07 17:45'
 labels:
   - cli
   - storage
@@ -66,3 +67,9 @@ Non-goals: `--at`, `--since`, identity filters, all-resource output, JSON Lines 
 4. Add projection, GC, migration, query-plan, schema, and text tests for singleton, bundle, legacy, partial-retention, and no-retained-epoch cases.
 5. Run focused tests and all repository quality gates, then finalize TASK-59.3 with criterion-level evidence.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Started implementation in an isolated worktree; TASK-59.2 dependency is complete.
+<!-- SECTION:NOTES:END -->
