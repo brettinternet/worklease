@@ -181,16 +181,3 @@ State directory precedence is:
 4. `~/.local/state/worklease`
 
 Avoid repository-relative state, especially across linked worktrees.
-
-## Development
-
-```bash
-mise run sync
-mise run lint
-mise run format-check
-mise run test
-mise run typecheck
-mise run build
-```
-
-Read [CHANGELOG.md](CHANGELOG.md) for release history and [LICENSE](LICENSE) for licensing terms.
