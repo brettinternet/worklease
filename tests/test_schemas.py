@@ -134,6 +134,11 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn("Human-readable text is the default", description)
         self.assertIn("JSON is an explicit output format", description)
 
+    def test_schema_documents_invalid_token_reason(self) -> None:
+        reason = self.common["$defs"]["ErrorReason"]
+        self.assertIn("invalid-token", reason["description"])
+        self.assertIn("invalid-token", reason["examples"])
+
     def test_index_lists_every_released_operation_and_artifacts_are_parseable(
         self,
     ) -> None:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added the stable `invalid-token` reason (exit code 2) when a current claim ID is paired with an incorrect bearer token. This additive reason is a minor-version API change; `stale-claim` remains reserved for claim ID ownership loss.
+
 ### Breaking CLI changes
 
 Short options now have one meaning across the complete command tree. Long options are unchanged. Update scripts as follows:

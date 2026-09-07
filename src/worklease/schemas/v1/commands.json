@@ -21,7 +21,7 @@
           ]
         },
         "ok": {"type": "boolean"},
-        "error": {"type": "string", "minLength": 1},
+        "error": {"$ref": "common.json#/$defs/ErrorReason"},
         "claim": {
           "anyOf": [
             {"$ref": "common.json#/$defs/Claim"},

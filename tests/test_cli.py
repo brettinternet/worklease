@@ -3111,31 +3111,31 @@ with resource_lock(resource):
         assert isinstance(command, dict)
         self.assertEqual("--format=oneline\n", command["stdout"])
 
-    def test_stale_claim_errors_redact_current_token(self) -> None:
-        resource = "repo:stale-error"
+    def test_heartbeat_distinguishes_invalid_token_from_stale_claim(self) -> None:
+        resource = "repo:ownership-error"
         acquired = self.json_cli(
-            *self.acquire_arguments(resource=resource, claim_id="stale-error")
+            *self.acquire_arguments(resource=resource, claim_id="current-claim")
         )
         claim = acquired["claim"]
         assert isinstance(claim, dict)
         token = str(claim["token"])
-        stale_args = self.mutation_arguments(
-            "release", resource, claim, "stale-release"
+        heartbeat_args = list(
+            self.mutation_arguments("heartbeat", resource, claim, "ownership-heartbeat")
         )
-        contender = self.json_cli(
-            *self.acquire_arguments(resource=resource, claim_id="other"),
-            expected_code=2,
-        )
-        self.assertEqual("already-claimed", contender["error"])
-        self.assertNotIn('"token"', json.dumps(contender))
 
-        token_index = stale_args.index("--token") + 1
-        stale_args = (
-            *stale_args[:token_index],
-            "wrong",
-            *stale_args[token_index + 1 :],
-        )
-        stale = self.json_cli(*stale_args, "--reason", "stale", expected_code=2)
+        token_index = heartbeat_args.index("--token") + 1
+        invalid_token_args = heartbeat_args.copy()
+        invalid_token_args[token_index] = "wrong-tøken"
+        invalid = self.json_cli(*invalid_token_args, expected_code=2)
+        self.assertEqual("invalid-token", invalid["error"])
+        self.assertNotIn('"token"', json.dumps(invalid))
+        self.assertNotIn(token, json.dumps(invalid))
+        self.assertNotIn("wrong-tøken", json.dumps(invalid))
+
+        claim_id_index = heartbeat_args.index("--claim-id") + 1
+        stale_claim_args = heartbeat_args.copy()
+        stale_claim_args[claim_id_index] = "wrong-claim"
+        stale = self.json_cli(*stale_claim_args, expected_code=2)
         self.assertEqual("stale-claim", stale["error"])
         self.assertNotIn('"token"', json.dumps(stale))
         self.assertNotIn(token, json.dumps(stale))

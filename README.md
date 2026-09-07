@@ -171,6 +171,8 @@ worklease status --resource "$RESOURCE" --format json
 
 `--json` and `--format json` provide the schema-versioned JSON contract. Default output is human-readable text. Run `worklease COMMAND --help` or `worklease --help-all` for complete command details.
 
+Exit code `2` reports lease or capability conflicts. `stale-claim` means the claim ID no longer owns the resource; `invalid-token` means the claim ID is current but its supplied bearer token is invalid. Reload the credential and revalidate ownership before retrying `invalid-token`; stop mutating under `stale-claim`. Neither response exposes token material.
+
 Prefer lease files, token files, or file descriptors for bearer tokens. Never log tokens. Passing `--token` exposes the token in process arguments.
 
 State directory precedence is:

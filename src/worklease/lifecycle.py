@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import sqlite3
 from contextlib import closing
 from typing import Any
 
+from .credentials import credentials_match
 from .locking import resource_lock, resource_locks
 from .models import (
     BundleMutationRequest,
@@ -179,11 +179,15 @@ class LifecycleMixin:
             row = self._current(db, request.resource)
             if row is None:
                 raise LeaseError("claim-not-found", resource=request.resource)
-            if row["claim_id"] != request.claim_id or not hmac.compare_digest(
-                str(row["token"]), request.token
-            ):
+            if row["claim_id"] != request.claim_id:
                 raise LeaseError(
                     "stale-claim",
+                    resource=request.resource,
+                    claim=self._claim(row).to_dict(include_token=False),
+                )
+            if not credentials_match(str(row["token"]), request.token):
+                raise LeaseError(
+                    "invalid-token",
                     resource=request.resource,
                     claim=self._claim(row).to_dict(include_token=False),
                 )
@@ -341,7 +345,7 @@ class LifecycleMixin:
     ) -> dict[str, Any] | None:
         if prior is None:
             return None
-        if not hmac.compare_digest(str(prior["token"]), request.token):
+        if not credentials_match(str(prior["token"]), request.token):
             raise LeaseError("stale-claim", resource=request.resource)
         recorded = json.loads(str(prior["request"]))
         if {key: value for key, value in recorded.items() if key != "revision"} != {
@@ -392,11 +396,15 @@ class LifecycleMixin:
             row = self._current(db, request.resource)
             if row is None:
                 raise LeaseError("claim-not-found", resource=request.resource)
-            if row["claim_id"] != request.claim_id or not hmac.compare_digest(
-                str(row["token"]), request.token
-            ):
+            if row["claim_id"] != request.claim_id:
                 raise LeaseError(
                     "stale-claim",
+                    resource=request.resource,
+                    claim=self._claim(row).to_dict(include_token=False),
+                )
+            if not credentials_match(str(row["token"]), request.token):
+                raise LeaseError(
+                    "invalid-token",
                     resource=request.resource,
                     claim=self._claim(row).to_dict(include_token=False),
                 )
