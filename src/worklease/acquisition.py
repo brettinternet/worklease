@@ -89,6 +89,7 @@ class AcquisitionMixin:
                         claim=conflict,
                     )
 
+            retired_bundle_ids: set[str] = set()
             for old_bundle_id in {
                 str(row["claim_id"])
                 for row in db.execute(
@@ -98,6 +99,23 @@ class AcquisitionMixin:
             }:
                 old_bundle = self._bundle_row(db, old_bundle_id)
                 if old_bundle is not None and not lease_is_active(old_bundle, now):
+                    old_claims = db.execute(
+                        "SELECT * FROM claims WHERE claim_id = ? ORDER BY resource",
+                        (old_bundle_id,),
+                    ).fetchall()
+                    for old_claim in old_claims:
+                        old_resource = str(old_claim["resource"])
+                        self._record_epoch_termination(
+                            db,
+                            old_claim,
+                            reason="expired",
+                            effective_at=float(old_claim["expires_at"]),
+                            recorded_at=now,
+                            successor_claim_id=(
+                                request.claim_id if old_resource in resources else None
+                            ),
+                        )
+                    retired_bundle_ids.add(old_bundle_id)
                     db.execute(
                         "DELETE FROM claims WHERE claim_id = ?", (old_bundle_id,)
                     )
@@ -107,6 +125,17 @@ class AcquisitionMixin:
                     )
                     db.execute(
                         "DELETE FROM bundles WHERE claim_id = ?", (old_bundle_id,)
+                    )
+
+            for old_claim in rows:
+                if str(old_claim["claim_id"]) not in retired_bundle_ids:
+                    self._record_epoch_termination(
+                        db,
+                        old_claim,
+                        reason="expired",
+                        effective_at=float(old_claim["expires_at"]),
+                        recorded_at=now,
+                        successor_claim_id=request.claim_id,
                     )
 
             epoch = db.execute(
@@ -143,8 +172,8 @@ class AcquisitionMixin:
                 """
                 INSERT INTO bundle_epochs(
                     claim_id, resources, agent_id, session_id, owner_id,
-                    work_key, acquired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    work_key, acquired_at, acquisition_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.claim_id,
@@ -154,6 +183,7 @@ class AcquisitionMixin:
                     request.owner_id,
                     request.work_key,
                     now,
+                    revision,
                 ),
             )
             db.execute(
@@ -342,6 +372,15 @@ class AcquisitionMixin:
                 + 1
             )
             token = self.token_factory()
+            if row is not None:
+                self._record_epoch_termination(
+                    db,
+                    row,
+                    reason="expired",
+                    effective_at=float(row["expires_at"]),
+                    recorded_at=now,
+                    successor_claim_id=request.claim_id,
+                )
             db.execute(
                 """
                 INSERT INTO resources(resource, revision) VALUES (?, ?)
@@ -353,8 +392,8 @@ class AcquisitionMixin:
                 """
                 INSERT INTO epochs(
                     claim_id, resource, agent_id, session_id, owner_id,
-                    work_key, acquired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    work_key, acquired_at, acquisition_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.claim_id,
@@ -364,6 +403,7 @@ class AcquisitionMixin:
                     request.owner_id,
                     request.work_key,
                     now,
+                    revision,
                 ),
             )
             db.execute(

@@ -103,6 +103,42 @@ class ClaimStoreMixin:
     def _bundle_operation_resource(resources: tuple[str, ...]) -> str:
         return json.dumps(list(resources), separators=(",", ":"))
 
+    @staticmethod
+    def _record_epoch_termination(
+        connection: sqlite3.Connection,
+        claim: sqlite3.Row,
+        *,
+        reason: str,
+        effective_at: float,
+        recorded_at: float,
+        successor_claim_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> None:
+        """Persist one token-free final snapshot for an ownership epoch."""
+
+        connection.execute(
+            """
+            INSERT INTO epoch_terminations(
+                resource, claim_id, reason, effective_at, recorded_at,
+                final_revision, heartbeat_at, expires_at, checkpoint,
+                successor_claim_id, operation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(claim["resource"]),
+                str(claim["claim_id"]),
+                reason,
+                effective_at,
+                recorded_at,
+                int(claim["revision"]),
+                float(claim["heartbeat_at"]),
+                float(claim["expires_at"]),
+                claim["checkpoint"],
+                successor_claim_id,
+                operation_id,
+            ),
+        )
+
     def _bundle_for_resource(
         self: Any, connection: sqlite3.Connection, resource: str
     ) -> sqlite3.Row | None:

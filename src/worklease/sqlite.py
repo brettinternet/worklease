@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .models import LeaseError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_TABLES = frozenset(
     {
@@ -26,6 +26,7 @@ _SCHEMA_TABLES = frozenset(
         "operations",
         "releases",
         "reconciliations",
+        "epoch_terminations",
     }
 )
 _SCHEMA_INDEXES = frozenset(
@@ -40,13 +41,32 @@ _SCHEMA_INDEXES = frozenset(
         "reconciliations_by_claim_time",
         "reconciliations_by_target",
         "reconciliations_by_recorded_at",
+        "epoch_terminations_by_claim_time",
+        "epoch_terminations_by_recorded_at",
     }
 )
 _SCHEMA_REQUIRED_COLUMNS = {
     "operations": frozenset({"state"}),
+    "epochs": frozenset({"acquisition_revision"}),
+    "bundle_epochs": frozenset({"acquisition_revision"}),
     "claims": frozenset({"coordination_only", "acquire_ttl", "checkpoint"}),
     "releases": frozenset({"checkpoint"}),
     "reconciliations": frozenset({"receipt", "target_claim_id"}),
+    "epoch_terminations": frozenset(
+        {
+            "resource",
+            "claim_id",
+            "reason",
+            "effective_at",
+            "recorded_at",
+            "final_revision",
+            "heartbeat_at",
+            "expires_at",
+            "checkpoint",
+            "successor_claim_id",
+            "operation_id",
+        }
+    ),
 }
 
 
@@ -144,7 +164,8 @@ def _schema_has_known_table(connection: sqlite3.Connection) -> bool:
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name IN (
                 'epochs', 'resources', 'claims', 'bundle_epochs', 'bundles',
-                'bundle_members', 'operations', 'releases', 'reconciliations'
+                'bundle_members', 'operations', 'releases', 'reconciliations',
+                'epoch_terminations'
             )
             LIMIT 1
             """
@@ -180,6 +201,8 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
         connection.execute("PRAGMA synchronous = FULL")
         connection.executescript(
             """
+            BEGIN IMMEDIATE;
+
             CREATE TABLE IF NOT EXISTS schema_meta (
                 version INTEGER PRIMARY KEY
             );
@@ -191,7 +214,8 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
                 session_id TEXT NOT NULL,
                 owner_id TEXT NOT NULL,
                 work_key TEXT NOT NULL,
-                acquired_at REAL NOT NULL
+                acquired_at REAL NOT NULL,
+                acquisition_revision INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS resources (
@@ -223,7 +247,8 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
                 session_id TEXT NOT NULL,
                 owner_id TEXT NOT NULL,
                 work_key TEXT NOT NULL,
-                acquired_at REAL NOT NULL
+                acquired_at REAL NOT NULL,
+                acquisition_revision INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS bundles (
@@ -289,8 +314,40 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
                 PRIMARY KEY(resource, operation_id)
             );
 
+            CREATE TABLE IF NOT EXISTS epoch_terminations (
+                resource TEXT NOT NULL,
+                claim_id TEXT NOT NULL,
+                reason TEXT NOT NULL CHECK(
+                    reason IN ('released', 'transferred', 'expired')
+                ),
+                effective_at REAL NOT NULL,
+                recorded_at REAL NOT NULL,
+                final_revision INTEGER NOT NULL,
+                heartbeat_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                checkpoint TEXT,
+                successor_claim_id TEXT,
+                operation_id TEXT,
+                PRIMARY KEY(resource, claim_id)
+            );
+
             """
         )
+        epoch_columns = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(epochs)")
+        }
+        if "acquisition_revision" not in epoch_columns:
+            connection.execute(
+                "ALTER TABLE epochs ADD COLUMN acquisition_revision INTEGER"
+            )
+        bundle_epoch_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(bundle_epochs)")
+        }
+        if "acquisition_revision" not in bundle_epoch_columns:
+            connection.execute(
+                "ALTER TABLE bundle_epochs ADD COLUMN acquisition_revision INTEGER"
+            )
         operation_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(operations)")
@@ -374,36 +431,38 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
               )
             """,
         )
-        connection.executescript(
-            """
-            CREATE INDEX IF NOT EXISTS claims_by_claim_id
-                ON claims(claim_id);
-            CREATE INDEX IF NOT EXISTS operations_by_claim_time
-                ON operations(claim_id, created_at);
-            CREATE INDEX IF NOT EXISTS operations_by_claim_state
-                ON operations(claim_id, state, resource, operation_id, kind);
-            CREATE INDEX IF NOT EXISTS operations_by_resource_operation
-                ON operations(resource, operation_id);
-            CREATE INDEX IF NOT EXISTS operations_by_recorded_at
-                ON operations(created_at);
-            CREATE INDEX IF NOT EXISTS releases_by_claim_time
-                ON releases(claim_id, released_at);
-            CREATE INDEX IF NOT EXISTS releases_by_recorded_at
-                ON releases(released_at);
-            CREATE INDEX IF NOT EXISTS reconciliations_by_claim_time
-                ON reconciliations(claim_id, reconciled_at);
-            CREATE INDEX IF NOT EXISTS reconciliations_by_target
-                ON reconciliations(
-                    resource, operation_id, target_claim_id, kind, reconciled_at
-                );
-            CREATE INDEX IF NOT EXISTS reconciliations_by_recorded_at
-                ON reconciliations(reconciled_at);
-            """
-        )
+        for statement in (
+            "CREATE INDEX IF NOT EXISTS claims_by_claim_id ON claims(claim_id)",
+            "CREATE INDEX IF NOT EXISTS operations_by_claim_time "
+            "ON operations(claim_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS operations_by_claim_state "
+            "ON operations(claim_id, state, resource, operation_id, kind)",
+            "CREATE INDEX IF NOT EXISTS operations_by_resource_operation "
+            "ON operations(resource, operation_id)",
+            "CREATE INDEX IF NOT EXISTS operations_by_recorded_at "
+            "ON operations(created_at)",
+            "CREATE INDEX IF NOT EXISTS releases_by_claim_time "
+            "ON releases(claim_id, released_at)",
+            "CREATE INDEX IF NOT EXISTS releases_by_recorded_at "
+            "ON releases(released_at)",
+            "CREATE INDEX IF NOT EXISTS reconciliations_by_claim_time "
+            "ON reconciliations(claim_id, reconciled_at)",
+            "CREATE INDEX IF NOT EXISTS reconciliations_by_target "
+            "ON reconciliations(resource, operation_id, target_claim_id, kind, "
+            "reconciled_at)",
+            "CREATE INDEX IF NOT EXISTS reconciliations_by_recorded_at "
+            "ON reconciliations(reconciled_at)",
+            "CREATE INDEX IF NOT EXISTS epoch_terminations_by_claim_time "
+            "ON epoch_terminations(claim_id, recorded_at)",
+            "CREATE INDEX IF NOT EXISTS epoch_terminations_by_recorded_at "
+            "ON epoch_terminations(recorded_at)",
+        ):
+            connection.execute(statement)
         connection.execute("DELETE FROM schema_meta")
         connection.execute(
             "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
         )
+        connection.commit()
 
 
 def _schema(connection: sqlite3.Connection, home: Path) -> None:

@@ -111,6 +111,75 @@ class GarbageCollectionTests(unittest.TestCase):
         )
         self.assertTrue(current["ok"])
 
+    def test_termination_record_time_protects_associated_history_until_cutoff(
+        self,
+    ) -> None:
+        resource = "repo:gc-termination-window"
+        acquired = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-termination-window",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=100,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.now = 10
+        heartbeat = self.store.heartbeat(
+            MutationRequest(
+                resource=resource,
+                claim_id=str(claim["claimId"]),
+                token=str(claim["token"]),
+                revision=int(claim["revision"]),
+                operation_id="heartbeat-before-termination",
+                ttl=100,
+            )
+        )
+        renewed = heartbeat["claim"]
+        assert isinstance(renewed, dict)
+        self.now = 50
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=str(renewed["claimId"]),
+                token=str(renewed["token"]),
+                revision=int(renewed["revision"]),
+                operation_id="release-at-termination",
+            ),
+            "done",
+        )
+        self.now = 100
+
+        protected = self.store.garbage_collect(cutoff="1970-01-01T00:00:40Z")[
+            "eligible"
+        ]
+        self.assertTrue(all(details["count"] == 0 for details in protected.values()))
+
+        eligible = self.store.garbage_collect(cutoff="1970-01-01T00:01:00Z")["eligible"]
+        self.assertEqual(1, eligible["epochs"]["count"])
+        self.assertEqual(1, eligible["operations"]["count"])
+        self.assertEqual(1, eligible["releases"]["count"])
+        self.assertEqual(1, eligible["resources"]["count"])
+        self.store.garbage_collect(cutoff="1970-01-01T00:01:00Z", apply=True)
+        with closing(connect(self.home.name)) as db:
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM epoch_terminations WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM epochs WHERE resource = ?", (resource,)
+                ).fetchone()[0],
+            )
+
     def test_dry_run_protects_unresolved_operations_from_resource_inventory(
         self,
     ) -> None:
@@ -855,6 +924,7 @@ class GarbageCollectionTests(unittest.TestCase):
                     "operations",
                     "releases",
                     "reconciliations",
+                    "epoch_terminations",
                     "resources",
                 )
             }

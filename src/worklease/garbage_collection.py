@@ -68,9 +68,20 @@ class GarbageCollectionMixin:
 
         epoch_rows = db.execute(
             """
-            SELECT claim_id, acquired_at AS recorded_at
+            SELECT claim_id,
+                   COALESCE(
+                       (SELECT MAX(t.recorded_at)
+                        FROM epoch_terminations AS t
+                        WHERE t.claim_id = e.claim_id),
+                       acquired_at
+                   ) AS recorded_at
             FROM epochs AS e
-            WHERE acquired_at < ?
+            WHERE COALESCE(
+                      (SELECT MAX(t.recorded_at)
+                       FROM epoch_terminations AS t
+                       WHERE t.claim_id = e.claim_id),
+                      acquired_at
+                  ) < ?
               AND NOT EXISTS (
                   SELECT 1 FROM claims AS c
                   WHERE c.claim_id = e.claim_id
@@ -108,9 +119,20 @@ class GarbageCollectionMixin:
         ).fetchall()
         bundle_epoch_rows = db.execute(
             """
-            SELECT claim_id, acquired_at AS recorded_at
+            SELECT claim_id,
+                   COALESCE(
+                       (SELECT MAX(t.recorded_at)
+                        FROM epoch_terminations AS t
+                        WHERE t.claim_id = e.claim_id),
+                       acquired_at
+                   ) AS recorded_at
             FROM bundle_epochs AS e
-            WHERE acquired_at < ?
+            WHERE COALESCE(
+                      (SELECT MAX(t.recorded_at)
+                       FROM epoch_terminations AS t
+                       WHERE t.claim_id = e.claim_id),
+                      acquired_at
+                  ) < ?
               AND NOT EXISTS (
                   SELECT 1 FROM bundles AS b
                   WHERE b.claim_id = e.claim_id
@@ -172,6 +194,11 @@ class GarbageCollectionMixin:
                   WHERE b.claim_id = o.claim_id
               )
               AND NOT EXISTS (
+                  SELECT 1 FROM epoch_terminations AS t
+                  WHERE t.claim_id = o.claim_id
+                    AND t.recorded_at >= ?
+              )
+              AND NOT EXISTS (
                   SELECT 1
                   FROM reconciliations AS r
                   WHERE r.resource = o.resource
@@ -181,15 +208,20 @@ class GarbageCollectionMixin:
                     AND r.reconciled_at >= ?
               )
             """,
-            (cutoff_value, cutoff_value),
+            (cutoff_value, cutoff_value, cutoff_value),
         ).fetchall()
         release_rows = db.execute(
             """
             SELECT resource, claim_id, released_at AS recorded_at
             FROM releases AS r
             WHERE released_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM epoch_terminations AS t
+                  WHERE t.claim_id = r.claim_id
+                    AND t.recorded_at >= ?
+              )
             """,
-            (cutoff_value,),
+            (cutoff_value, cutoff_value),
         ).fetchall()
         reconciliation_rows = db.execute(
             """
@@ -209,6 +241,11 @@ class GarbageCollectionMixin:
               AND NOT EXISTS (
                   SELECT 1 FROM claims AS c
                   WHERE c.claim_id = r.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM epoch_terminations AS t
+                  WHERE t.recorded_at >= ?
+                    AND t.claim_id IN (r.claim_id, r.target_claim_id)
               )
               AND NOT EXISTS (
                   SELECT 1
@@ -233,7 +270,7 @@ class GarbageCollectionMixin:
                     )
               )
             """,
-            (cutoff_value, cutoff_value),
+            (cutoff_value, cutoff_value, cutoff_value),
         ).fetchall()
         resource_rows = db.execute(
             """
@@ -262,6 +299,9 @@ class GarbageCollectionMixin:
                     UNION ALL
                     SELECT resource, reconciled_at AS recorded_at
                     FROM reconciliations
+                    UNION ALL
+                    SELECT resource, recorded_at
+                    FROM epoch_terminations
                 )
                 GROUP BY resource
             ) AS history
@@ -364,6 +404,11 @@ class GarbageCollectionMixin:
         )
         for name, statement, parameters in statements:
             for row in candidates[name]:
+                if name in {"bundleEpochs", "epochs"}:
+                    db.execute(
+                        "DELETE FROM epoch_terminations WHERE claim_id = ?",
+                        (str(row["claim_id"]),),
+                    )
                 deleted = db.execute(statement, parameters(row)).rowcount
                 if deleted != 1:
                     raise LeaseError(

@@ -52,6 +52,15 @@ class LifecycleMixin:
             if cached is not None:
                 return cached
             self._require_bundle_current(db, request)
+            now = self.clock()
+            member_claims = db.execute(
+                "SELECT * FROM claims WHERE claim_id = ? ORDER BY resource",
+                (request.claim_id,),
+            ).fetchall()
+            if len(member_claims) != len(resources):
+                raise LeaseError(
+                    "claim-release-conflict", code=3, resource=",".join(resources)
+                )
             receipt: dict[str, Any] = {
                 "ok": True,
                 "operation": "release-bundle",
@@ -60,7 +69,7 @@ class LifecycleMixin:
                 "resources": list(resources),
                 "releasedClaimId": request.claim_id,
                 "releasedRevision": request.revision,
-                "releasedAt": self._timestamp(self.clock()),
+                "releasedAt": self._timestamp(now),
                 "reason": reason,
             }
             db.execute(
@@ -80,9 +89,18 @@ class LifecycleMixin:
                     ),
                     request.revision,
                     json.dumps(receipt, sort_keys=True, separators=(",", ":")),
-                    self.clock(),
+                    now,
                 ),
             )
+            for member_claim in member_claims:
+                self._record_epoch_termination(
+                    db,
+                    member_claim,
+                    reason="released",
+                    effective_at=now,
+                    recorded_at=now,
+                    operation_id=request.operation_id,
+                )
             deleted = db.execute(
                 f"""
                 DELETE FROM claims
@@ -257,8 +275,8 @@ class LifecycleMixin:
                 """
                 INSERT INTO epochs(
                     claim_id, resource, agent_id, session_id, owner_id,
-                    work_key, acquired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    work_key, acquired_at, acquisition_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.successor_claim_id,
@@ -268,7 +286,17 @@ class LifecycleMixin:
                     request.successor_owner_id,
                     request.successor_work_key,
                     now,
+                    revision,
                 ),
+            )
+            self._record_epoch_termination(
+                db,
+                row,
+                reason="transferred",
+                effective_at=now,
+                recorded_at=now,
+                successor_claim_id=request.successor_claim_id,
+                operation_id=request.operation_id,
             )
             cursor = db.execute(
                 """
@@ -431,6 +459,7 @@ class LifecycleMixin:
                     resource=request.resource,
                     claim=self._claim(row).to_dict(include_token=False),
                 )
+            now = self.clock()
             receipt: dict[str, Any] = {
                 "ok": True,
                 "operation": "release",
@@ -438,7 +467,7 @@ class LifecycleMixin:
                 "idempotent": False,
                 "releasedClaimId": request.claim_id,
                 "releasedRevision": request.revision,
-                "releasedAt": self._timestamp(self.clock()),
+                "releasedAt": self._timestamp(now),
                 "reason": reason,
                 "checkpoint": deserialize_checkpoint(
                     row["checkpoint"] if row["checkpoint"] is not None else None
@@ -460,10 +489,18 @@ class LifecycleMixin:
                     json.dumps(
                         operation_request, sort_keys=True, separators=(",", ":")
                     ),
-                    self.clock(),
+                    now,
                     json.dumps(receipt, sort_keys=True, separators=(",", ":")),
                     row["checkpoint"],
                 ),
+            )
+            self._record_epoch_termination(
+                db,
+                row,
+                reason="released",
+                effective_at=now,
+                recorded_at=now,
+                operation_id=request.operation_id,
             )
             deleted = db.execute(
                 """

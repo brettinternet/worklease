@@ -204,6 +204,37 @@ current time is before `expiresAt`. A heartbeat should occur before half the
 lease elapses and around long operations. Expiry permits a new ownership epoch;
 it does not permit a successor to adopt the old claim ID or token.
 
+## Retained local epoch boundaries
+
+Worklease retains local, token-free ownership history separately from current
+claim state. Every epoch created after the schema-v3 migration records its
+acquisition revision. Release, transfer, and replacement of expired ownership
+record a terminal snapshot containing the reason, effective and recorded
+times, final revision, last heartbeat and expiry, optional checkpoint,
+optional successor claim ID, and applicable operation ID. Bundle transitions
+record one snapshot per member resource.
+
+A terminal snapshot contains no bearer token, token hash, raw request, or raw
+receipt. The existing singleton `releases` rows remain replay and clean-handoff
+state; they are not the canonical epoch-ending record. A transfer or release
+uses one authority-clock value for both its effective and recorded time. An
+expired replacement is effective at the predecessor's stored expiry but is
+recorded when the successor transaction observes and replaces it.
+
+Expiry remains lazy. Reading an expired current claim does not mutate storage,
+so an expired-but-unreclaimed epoch remains open in retained history until a
+later replacement records its end. Pre-migration epochs keep a null acquisition
+revision and no fabricated termination when the database cannot prove those
+values. History already removed by `gc --apply` cannot be reconstructed.
+Garbage collection retains an epoch and its associated rows through the
+termination's `recorded_at` retention window, then deletes the terminal and
+epoch records atomically.
+
+This data is retention-bounded diagnostics on one local Worklease database. It
+is not provider progress, provider evidence, an attestation, tamper evidence,
+or cross-host history. The work provider remains authoritative for item state
+and progress.
+
 ## Three meanings of state
 
 “State” appears at three different boundaries:

@@ -130,7 +130,7 @@ class StoreTests(unittest.TestCase):
             db.executescript(
                 """
                 CREATE TABLE schema_meta(version INTEGER PRIMARY KEY);
-                INSERT INTO schema_meta(version) VALUES (2);
+                INSERT INTO schema_meta(version) VALUES (999);
                 CREATE TABLE future_sentinel(value TEXT NOT NULL);
                 INSERT INTO future_sentinel(value) VALUES ('preserve-me');
                 """
@@ -149,6 +149,62 @@ class StoreTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master "
                     "WHERE type = 'table' AND name = 'claims'"
                 ).fetchone()
+            )
+
+    def test_epoch_schema_migration_preserves_legacy_rows_without_fabricating_history(
+        self,
+    ) -> None:
+        acquired = self.store.acquire(self.acquire_request("legacy", "legacy-claim"))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute("DROP INDEX epoch_terminations_by_claim_time")
+            db.execute("DROP INDEX epoch_terminations_by_recorded_at")
+            db.execute("DROP TABLE epoch_terminations")
+            db.execute("ALTER TABLE epochs DROP COLUMN acquisition_revision")
+            db.execute("ALTER TABLE bundle_epochs DROP COLUMN acquisition_revision")
+            db.execute("UPDATE schema_meta SET version = 2")
+
+        migrated = LeaseStore(self.home, clock=self.clock)
+        self.assertEqual("active", migrated.status("legacy")["state"])
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                (lease_sqlite.SCHEMA_VERSION,),
+                db.execute("SELECT version FROM schema_meta").fetchone(),
+            )
+            epoch = db.execute(
+                "SELECT acquisition_revision FROM epochs WHERE claim_id = ?",
+                (acquired["claim"]["claimId"],),
+            ).fetchone()
+            self.assertEqual((None,), epoch)
+            self.assertEqual(
+                0,
+                db.execute("SELECT COUNT(*) FROM epoch_terminations").fetchone()[0],
+            )
+
+    def test_epoch_schema_migration_rolls_back_atomically(self) -> None:
+        self.store.acquire(self.acquire_request("legacy", "legacy-claim"))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute("DROP INDEX epoch_terminations_by_claim_time")
+            db.execute("DROP INDEX epoch_terminations_by_recorded_at")
+            db.execute("DROP TABLE epoch_terminations")
+            db.execute("ALTER TABLE epochs DROP COLUMN acquisition_revision")
+            db.execute("ALTER TABLE bundle_epochs DROP COLUMN acquisition_revision")
+            db.execute("UPDATE schema_meta SET version = 2")
+            db.execute("CREATE VIEW epoch_terminations AS SELECT 1 AS sentinel")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            LeaseStore(self.home, clock=self.clock).status("legacy")
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                (2,), db.execute("SELECT version FROM schema_meta").fetchone()
+            )
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(epochs)")}
+            self.assertNotIn("acquisition_revision", columns)
+            self.assertEqual(
+                ("epoch_terminations", "view"),
+                db.execute(
+                    "SELECT name, type FROM sqlite_master WHERE name = 'epoch_terminations'"
+                ).fetchone(),
             )
 
     def test_empty_schema_marker_resumes_interrupted_migration(self) -> None:
@@ -269,6 +325,107 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(second["reclaimed"])
         self.assertNotEqual(first["claim"]["token"], second["claim"]["token"])
         self.assertGreater(second["claim"]["revision"], first["claim"]["revision"])
+
+    def test_epoch_revisions_and_singleton_expiry_termination_are_atomic(self) -> None:
+        first = self.store.acquire(self.acquire_request("history", "first", ttl=1))
+        checkpointed = self.store.checkpoint(
+            self.mutation(first, "history", "checkpoint", ttl=1),
+            {"offset": 4},
+        )
+        self.clock.advance(1.1)
+
+        self.assertEqual("expired", self.store.status("history")["state"])
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                0,
+                db.execute("SELECT COUNT(*) FROM epoch_terminations").fetchone()[0],
+            )
+
+        second = self.store.acquire(self.acquire_request("history", "second"))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            revisions = db.execute(
+                "SELECT claim_id, acquisition_revision FROM epochs ORDER BY rowid"
+            ).fetchall()
+            termination = db.execute(
+                "SELECT * FROM epoch_terminations WHERE resource = 'history'"
+            ).fetchone()
+            columns = {
+                str(row[1])
+                for row in db.execute("PRAGMA table_info(epoch_terminations)")
+            }
+
+        self.assertEqual(
+            [
+                ("first", first["claim"]["revision"]),
+                ("second", second["claim"]["revision"]),
+            ],
+            [tuple(row) for row in revisions],
+        )
+        assert termination is not None
+        self.assertEqual("expired", termination["reason"])
+        self.assertEqual(first["claim"]["expiresAtEpoch"], termination["effective_at"])
+        self.assertEqual(self.clock.value, termination["recorded_at"])
+        self.assertEqual(
+            checkpointed["claim"]["revision"], termination["final_revision"]
+        )
+        self.assertEqual(1_000.0, termination["heartbeat_at"])
+        self.assertEqual(
+            checkpointed["claim"]["expiresAtEpoch"], termination["expires_at"]
+        )
+        self.assertEqual('{"offset":4}', termination["checkpoint"])
+        self.assertEqual("second", termination["successor_claim_id"])
+        self.assertIsNone(termination["operation_id"])
+        self.assertTrue(
+            {"token", "token_hash", "request", "receipt"}.isdisjoint(columns)
+        )
+
+    def test_singleton_transfer_and_release_record_terminal_snapshots(self) -> None:
+        first = self.store.acquire(self.acquire_request("handoff", "first"))
+        first_claim = first["claim"]
+        assert isinstance(first_claim, dict)
+        self.clock.advance(2)
+        transferred = self.store.transfer(
+            TransferRequest(
+                resource="handoff",
+                claim_id=str(first_claim["claimId"]),
+                token=str(first_claim["token"]),
+                revision=int(first_claim["revision"]),
+                operation_id="transfer",
+                successor_claim_id="second",
+                successor_agent_id="agent-second",
+                successor_session_id="session-second",
+                successor_owner_id="owner-second",
+                successor_work_key="implement:second",
+            )
+        )
+        second_claim = transferred["claim"]
+        assert isinstance(second_claim, dict)
+        self.store.release(self.mutation(transferred, "handoff", "release"), "done")
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT * FROM epoch_terminations ORDER BY effective_at, claim_id"
+            ).fetchall()
+            revisions = db.execute(
+                "SELECT claim_id, acquisition_revision FROM epochs ORDER BY rowid"
+            ).fetchall()
+
+        self.assertEqual(
+            [("first", 1), ("second", 2)], [tuple(row) for row in revisions]
+        )
+        self.assertEqual(["transferred", "released"], [row["reason"] for row in rows])
+        self.assertEqual(self.clock.value, rows[0]["effective_at"])
+        self.assertEqual(rows[0]["effective_at"], rows[0]["recorded_at"])
+        self.assertEqual("second", rows[0]["successor_claim_id"])
+        self.assertEqual("transfer", rows[0]["operation_id"])
+        self.assertEqual(first_claim["revision"], rows[0]["final_revision"])
+        self.assertEqual(self.clock.value, rows[1]["effective_at"])
+        self.assertEqual(rows[1]["effective_at"], rows[1]["recorded_at"])
+        self.assertIsNone(rows[1]["successor_claim_id"])
+        self.assertEqual("release", rows[1]["operation_id"])
+        self.assertEqual(second_claim["revision"], rows[1]["final_revision"])
 
     def test_small_backward_clock_step_keeps_a_live_lease(self) -> None:
         # A routine NTP correction must not dispossess a working holder.
@@ -793,6 +950,13 @@ class StoreTests(unittest.TestCase):
                 1,
                 db.execute(
                     "SELECT COUNT(*) FROM epochs WHERE resource = ?",
+                    ("transfer-rollback",),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM epoch_terminations WHERE resource = ?",
                     ("transfer-rollback",),
                 ).fetchone()[0],
             )
@@ -2053,6 +2217,46 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
         self.assertGreater(recovered["claim"]["revision"], first["claim"]["revision"])
         self.assertNotEqual(first["claim"]["token"], recovered["claim"]["token"])
 
+    def test_exact_expired_bundle_replacement_records_each_member_once(self) -> None:
+        resources = ("exact-a", "exact-b")
+        first = self.store.acquire_bundle(
+            self.bundle_request(resources, "exact-first", ttl=1)
+        )
+        self.clock.advance(1.1)
+        self.store.acquire_bundle(self.bundle_request(resources, "exact-second"))
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            rows = db.execute(
+                """
+                SELECT resource, reason, effective_at, recorded_at,
+                       successor_claim_id, operation_id
+                FROM epoch_terminations
+                WHERE claim_id = 'exact-first'
+                ORDER BY resource
+                """
+            ).fetchall()
+        self.assertEqual(
+            [
+                (
+                    "exact-a",
+                    "expired",
+                    first["claim"]["expiresAtEpoch"],
+                    self.clock.value,
+                    "exact-second",
+                    None,
+                ),
+                (
+                    "exact-b",
+                    "expired",
+                    first["claim"]["expiresAtEpoch"],
+                    self.clock.value,
+                    "exact-second",
+                    None,
+                ),
+            ],
+            rows,
+        )
+
     def test_overlapping_expired_bundle_reclaim_removes_all_old_claim_rows(
         self,
     ) -> None:
@@ -2097,6 +2301,67 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
             revision=int(claim["revision"]),
             operation_id=operation_id,
             ttl=ttl,
+        )
+
+    def test_bundle_partial_expiry_replacement_and_release_record_each_member(
+        self,
+    ) -> None:
+        first_resources = ("history-a", "history-b")
+        first = self.store.acquire_bundle(
+            self.bundle_request(first_resources, "first", ttl=1)
+        )
+        self.clock.advance(1.1)
+        second_resources = ("history-b", "history-c")
+        second = self.store.acquire_bundle(
+            self.bundle_request(second_resources, "second")
+        )
+        self.store.release_bundle(
+            self.bundle_mutation(second, second_resources, "release-second"),
+            "done",
+        )
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT * FROM epoch_terminations ORDER BY claim_id, resource"
+            ).fetchall()
+            revisions = db.execute(
+                "SELECT claim_id, acquisition_revision FROM bundle_epochs ORDER BY rowid"
+            ).fetchall()
+
+        self.assertEqual(
+            [
+                ("first", first["claim"]["revision"]),
+                ("second", second["claim"]["revision"]),
+            ],
+            [tuple(row) for row in revisions],
+        )
+        self.assertEqual(
+            [
+                ("first", "history-a", "expired", None, None),
+                ("first", "history-b", "expired", "second", None),
+                ("second", "history-b", "released", None, "release-second"),
+                ("second", "history-c", "released", None, "release-second"),
+            ],
+            [
+                (
+                    row["claim_id"],
+                    row["resource"],
+                    row["reason"],
+                    row["successor_claim_id"],
+                    row["operation_id"],
+                )
+                for row in rows
+            ],
+        )
+        self.assertTrue(
+            all(
+                row["effective_at"] == first["claim"]["expiresAtEpoch"]
+                for row in rows[:2]
+            )
+        )
+        self.assertTrue(
+            all(row["effective_at"] == row["recorded_at"] for row in rows[2:])
         )
 
     def test_verbose_status_projects_bundle_and_unknown_operation(self) -> None:
@@ -2385,6 +2650,53 @@ else:
             self.store.bundle_status(resources)["claim"]["revision"],
         )
 
+    def test_bundle_expiry_replacement_rolls_back_terminations_with_new_claim(
+        self,
+    ) -> None:
+        old_resources = ("rollback-old-a", "rollback-old-b")
+        self.store.acquire_bundle(
+            self.bundle_request(old_resources, "rollback-old", ttl=1)
+        )
+        self.clock.advance(1.1)
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute(
+                """
+                CREATE TRIGGER fail_replacement_claim
+                BEFORE INSERT ON claims
+                WHEN NEW.claim_id = 'rollback-new'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected replacement failure');
+                END
+                """
+            )
+
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "injected replacement failure"
+        ):
+            self.store.acquire_bundle(
+                self.bundle_request(
+                    ("rollback-old-b", "rollback-new-c"), "rollback-new"
+                )
+            )
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                0,
+                db.execute("SELECT COUNT(*) FROM epoch_terminations").fetchone()[0],
+            )
+            self.assertEqual(
+                2,
+                db.execute(
+                    "SELECT COUNT(*) FROM claims WHERE claim_id = 'rollback-old'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM bundles WHERE claim_id = 'rollback-old'"
+                ).fetchone()[0],
+            )
+
     def test_bundle_acquire_rolls_back_after_partial_member_failure(self) -> None:
         self.store.status("failure-schema")
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
@@ -2405,7 +2717,13 @@ else:
 
         self.assertEqual("free", self.store.bundle_status(resources)["state"])
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
-            for table in ("bundle_epochs", "bundles", "bundle_members", "claims"):
+            for table in (
+                "bundle_epochs",
+                "bundles",
+                "bundle_members",
+                "claims",
+                "epoch_terminations",
+            ):
                 self.assertEqual(
                     0, db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 )
