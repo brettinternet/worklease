@@ -1,10 +1,11 @@
 ---
 id: TASK-59.1
 title: Persist ownership epoch boundaries
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-07 15:00'
-updated_date: '2026-09-07 15:25'
+updated_date: '2026-09-07 16:36'
 labels:
   - storage
 dependencies: []
@@ -17,6 +18,15 @@ references:
   - tests/test_store.py
   - tests/test_gc.py
   - docs/claim-model.md
+modified_files:
+  - docs/claim-model.md
+  - src/worklease/acquisition.py
+  - src/worklease/claims.py
+  - src/worklease/garbage_collection.py
+  - src/worklease/lifecycle.py
+  - src/worklease/sqlite.py
+  - tests/test_gc.py
+  - tests/test_store.py
 parent_task_id: TASK-59
 priority: medium
 type: enhancement
@@ -41,12 +51,38 @@ Increment and migrate the SQLite schema without fabricating unavailable history.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each new singleton or bundle epoch persists its acquisition revision atomically with current ownership; legacy rows with no provable value remain null.
-- [ ] #2 Singleton expiry replacement atomically records reason `expired`, effective time equal to the prior expiry, replacement record time, final state, and successor claim ID.
-- [ ] #3 Singleton transfer and release atomically record reasons `transferred` and `released` with one captured transition time, final state, and the applicable successor and operation IDs.
-- [ ] #4 Bundle release and expired-bundle cleanup record exactly one termination per retired member; partial-overlap replacement retires the full prior bundle and links the successor only to reacquired resources.
-- [ ] #5 Termination rows contain no token, token hash, request, or receipt, while singleton release replay, bundle replay, and clean or expired checkpoint recovery retain current behavior.
-- [ ] #6 `gc` uses termination `recorded_at`, protects associated retained history inside the window, and atomically deletes eligible termination and epoch history without changing dry-run behavior.
-- [ ] #7 Schema migration is atomic, preserves every existing row, leaves unavailable historical fields null, and opens pre-migration databases without data loss.
-- [ ] #8 Tests cover singleton transitions, exact and partial-overlap bundle replacement, bundle release, rollback atomicity, migration, garbage collection, and unchanged public status, list, inspection, recovery, and replay behavior; `docs/claim-model.md` documents the boundary model.
+- [x] #1 Each new singleton or bundle epoch persists its acquisition revision atomically with current ownership; legacy rows with no provable value remain null.
+- [x] #2 Singleton expiry replacement atomically records reason `expired`, effective time equal to the prior expiry, replacement record time, final state, and successor claim ID.
+- [x] #3 Singleton transfer and release atomically record reasons `transferred` and `released` with one captured transition time, final state, and the applicable successor and operation IDs.
+- [x] #4 Bundle release and expired-bundle cleanup record exactly one termination per retired member; partial-overlap replacement retires the full prior bundle and links the successor only to reacquired resources.
+- [x] #5 Termination rows contain no token, token hash, request, or receipt, while singleton release replay, bundle replay, and clean or expired checkpoint recovery retain current behavior.
+- [x] #6 `gc` uses termination `recorded_at`, protects associated retained history inside the window, and atomically deletes eligible termination and epoch history without changing dry-run behavior.
+- [x] #7 Schema migration is atomic, preserves every existing row, leaves unavailable historical fields null, and opens pre-migration databases without data loss.
+- [x] #8 Tests cover singleton transitions, exact and partial-overlap bundle replacement, bundle release, rollback atomicity, migration, garbage collection, and unchanged public status, list, inspection, recovery, and replay behavior; `docs/claim-model.md` documents the boundary model.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Migrate SQLite to schema v3 atomically, adding nullable acquisition revisions and token-free epoch terminations without backfilling unprovable legacy values.
+2. Record singleton and bundle acquisition revisions plus release, transfer, and expired-replacement terminations inside existing ownership transactions.
+3. Make GC retention termination-aware while preserving dry-run semantics and atomic epoch/history deletion.
+4. Add transition, rollback, migration, GC, regression, and redaction tests; document the boundary model.
+5. Run focused tests, full repository quality gates, adversarial review, then commit, merge to main, finalize TASK-59.1, and clean the worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Selected as the earliest dependency-ready item; TASK-59.2 depends on it. Acquired the item-scoped local coordination lease and created HWT workspace w57 on branch task-59.1-epoch-boundaries.
+
+Implemented schema v3 acquisition revisions and token-free epoch terminations for singleton and bundle expiry replacement, transfer, and release. GC now retains associated history through termination recorded_at and removes termination plus epoch atomically. Added migration, rollback, exact/partial bundle, lifecycle, retention, redaction, and boundary documentation coverage. Full test suite passed (261 core + 19 SDK); lint, format-check, and typecheck passed.
+
+Post-merge validation on main passed: mise run lint, mise run format-check, mise run test (261 core + 19 SDK), and mise run typecheck. Independent adversarial review reported no actionable findings.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Persisted truthful acquisition ordering and token-free terminal snapshots for singleton and bundle ownership epochs, including release, transfer, expiry replacement, partial-overlap bundle retirement, and termination-aware garbage collection. Schema v3 migration is atomic and leaves unprovable legacy history null. Verified by lifecycle, migration, rollback, redaction, GC, and regression tests; all repository quality gates passed after merge, and independent review found no defects.
+<!-- SECTION:FINAL_SUMMARY:END -->
