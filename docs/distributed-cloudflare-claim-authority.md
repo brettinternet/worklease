@@ -95,31 +95,30 @@ access. Namespace authorization comes from server-owned identity and policy.
 
 ### Durable Object boundary
 
-Start with one Durable Object per authority namespace. For a private deployment,
-one namespace and therefore one object is sufficient.
+Start with one Durable Object per authority namespace. One object is enough for
+a private deployment.
 
-The object serializes every claim lifecycle request for that namespace and
-stores all related rows in its local SQLite database. This preserves atomic
-bundle operations because every member of a bundle participates in one storage
-transaction.
+| Design | Bundle behavior | Decision |
+| --- | --- | --- |
+| One object per namespace | Every member shares one SQLite transaction | Use this first |
+| One object per resource | Atomic bundles need distributed transactions or a separate coordinator | Defer until throughput requires it |
 
-Do not begin with one Durable Object per resource. That design scales individual
-resources but loses atomic acquisition across a bundle. Recoverable distributed
-transactions or a separate bundle coordinator would add complexity without a
-current throughput requirement.
+The object serializes every claim request in its namespace and stores all rows
+in its local SQLite database.
 
-If a future installation outgrows one object, shard by an explicit tenant,
-organization, or repository authority namespace. Define bundles as atomic only
-within one namespace. Reject cross-namespace bundles instead of partially
-acquiring them.
+If one object becomes too small:
 
-Treat the object's SQLite database as the only authoritative state. Durable
-Objects are evicted when idle, so in-memory values must never outlive a single
-request as claim state. Expiry needs no timer: every request evaluates
-`expires_at` lazily against authority time, which is invariant 1 below.
-Retention cleanup of operation receipts, retained checkpoints, and release
-history should use the Durable Object Alarms API rather than per-request
-sweeps.
+1. Shard by an explicit tenant, organization, or repository namespace.
+2. Keep bundles atomic only within one namespace.
+3. Reject cross-namespace bundles before acquiring any member.
+
+SQLite is the only authoritative state. Durable Objects can be evicted while
+idle, so in-memory claim state must not outlive a request.
+
+- Evaluate `expires_at` lazily against authority time. No expiry timer is
+  needed.
+- Use Durable Object Alarms for retention cleanup of operation receipts,
+  checkpoints, and release history. Do not sweep on every request.
 
 ### D1 boundary
 
@@ -190,13 +189,14 @@ transaction, and the bundle receipt reports one fence per member resource.
 There is no bundle-level fence, because members may have different ownership
 histories.
 
-The claim token is a secret bearer credential. Store only a hash when possible.
-Exact replay of a successful acquire must still recover the same response, so
-the implementation needs a deliberate secret-recovery design, such as an
-encrypted cached receipt or a bearer derived from server-secret material and
-the immutable claim epoch. Key rotation and replay behavior must be specified
-before deployment. Never place the raw token in status, list, checkpoint,
-provider comments, request logs, or handoffs.
+The claim token is a secret bearer credential.
+
+| Requirement | Options or boundary |
+| --- | --- |
+| Storage | Store only a hash when possible |
+| Exact acquire replay | Recover the same response from an encrypted cached receipt, or derive the bearer from server-secret material and the immutable claim epoch |
+| Key rotation | Specify rotation and replay behavior before deployment |
+| Redaction | Never place the raw token in status, list, checkpoints, provider comments, request logs, or handoffs |
 
 ## Protocol
 

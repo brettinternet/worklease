@@ -94,20 +94,19 @@ a different lock instead of making them contend.
 | `checkpoint` | Optional bounded local recovery metadata | Helps a successor resume; it is not authoritative provider progress |
 | provider version | Provider-side version, hash, or conditional-write value | Detects changes to authoritative work independently of the claim revision |
 
-The identifiers deliberately overlap in human meaning but not in safety role:
+The identifiers answer different questions:
 
-```text
-agent ID   = which logical agent?
-session ID = which invocation?
-owner ID   = which worker attempt?
-claim ID   = which ownership epoch?
-work key   = doing what?
-resource   = contending over what?
-```
+| Identifier | Question |
+| --- | --- |
+| `agent ID` | Which logical agent is running? |
+| `session ID` | Which invocation is this? |
+| `owner ID` | Which worker attempt is this? |
+| `claim ID` | Which ownership epoch is this? |
+| `work key` | What is the worker doing? |
+| `resource` | What exact unit is contested? |
 
-Matching an agent, session, owner, or work key never authorizes adoption of an
-existing claim. Only the exact active claim ID, bearer token, and current
-revision authorize its next mutation.
+These values do not authorize claim adoption. A mutation requires the active
+claim ID, bearer token, and current revision.
 
 ## Required values by operation
 
@@ -175,17 +174,20 @@ sequenceDiagram
     L-->>W: resource available
 ```
 
-The token answers “do you possess this ownership epoch?” The revision answers
-“are you acting on its latest state?” The operation ID answers “is this the
-same exact request being retried?”
+Each value protects a different boundary:
 
-Every successful claim mutation advances the revision. Replace the held value
-with the returned revision. Reusing an older value must fail even when the
-claim ID and token are otherwise correct.
+```text
+claim ID + token     = possession of this ownership epoch
+claim revision       = current claim state
+operation ID         = retry of this exact request
+provider version     = current provider state
+```
 
-An operation ID is not a general correlation ID. Reuse it only to recover the
-same request after a lost response. Changed inputs—including TTL, command,
-checkpoint, or release reason—require a new operation ID.
+Successful claim mutations return a new revision. Store and use that revision
+for the next mutation. Reusing an older revision fails.
+
+Reuse an operation ID only after a lost response, and only with the same
+request. A changed command, checkpoint, TTL, or release reason needs a new ID.
 
 ## Expiry and recovery
 

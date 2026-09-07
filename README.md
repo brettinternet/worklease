@@ -91,15 +91,17 @@ Keep the lease handle private. Do not place Worklease state in a repository path
 
 ## Guarded execution duration
 
-`exec` and `exec-bundle` bound child runtime and inherited-pipe draining with
-`--max-duration`, which defaults to `3600` seconds and must be finite, greater
-than zero, and representable by the host timer. On expiry Worklease terminates the child's process group, records the
-operation as completed with reason `child-process-timeout`, and exits `124`.
+`exec` and `exec-bundle` require a finite `--max-duration` greater than zero
+and representable by the host timer. The default is `3600` seconds.
 
-A grandchild that inherits stdout or stderr can keep pipe draining active after
-the direct child exits. The same deadline still applies. A grandchild that
-escapes the process group may survive; Worklease stops draining at the deadline,
-so captured output may be truncated.
+The deadline covers both the child runtime and inherited-pipe draining. When it
+expires, Worklease terminates the child's process group, records
+`child-process-timeout`, and exits `124`.
+
+After the child starts, `exec` returns the child's exit status unless the
+deadline expires. A grandchild that escapes the process group may survive.
+Worklease stops draining at the deadline, so captured stdout or stderr may be
+truncated.
 
 ## Heartbeats and contention
 
@@ -109,16 +111,15 @@ Renew long-running work before the TTL expires:
 worklease heartbeat --lease-file "$LEASE_FILE" --ttl 900
 ```
 
-Lease expiry uses the system wall clock because timestamps persist across
-processes. A lease is expired once the clock passes its expiry, so a forward
-clock jump can expire a lease immediately; synchronize the host clock and stop
-and reacquire after significant clock adjustments.
+Lease expiry uses the system wall clock:
 
-A backward clock step never strips a live lease from its holder. It does inflate
-the stored expiry, so the next contender re-anchors the lease to the corrected
-clock instead of waiting for the clock to catch up. An abandoned lease is
-therefore reclaimable within one TTL of the first contention rather than after
-the full size of the clock step.
+- A forward clock jump can expire a lease immediately.
+- A backward step does not remove a live lease.
+- After a backward step, the next contender re-anchors the stored expiry.
+- An abandoned lease is reclaimable within one TTL after contention.
+
+Synchronize the host clock. After a significant adjustment, stop and reacquire
+the lease.
 
 For contention, wait briefly instead of failing immediately:
 
@@ -132,9 +133,19 @@ worklease acquire \
 
 ## How it works
 
-A worker derives a stable resource key from an item, source, or other work identity. It atomically acquires an expiring lease, performs guarded local operations, records checkpoints, and releases the lease.
+```text
+work identity
+    │
+    ▼
+stable resource key
+    │
+    ▼
+expiring lease ──► guarded local work ──► checkpoint ──► release
+```
 
-The lease is coordination state on the host. The provider still decides whether work exists, is complete, or should be retried.
+Workers that derive the same resource key contend for one lease. The lease
+coordinates local work only. The external provider remains authoritative for
+eligibility, progress, completion, and retries.
 
 ### Guarantees and boundaries
 
@@ -207,7 +218,15 @@ worklease status --resource "$RESOURCE" --format json
 
 `--json` and `--format json` provide the schema-versioned JSON contract. Default output is human-readable text. Run `worklease COMMAND --help` or `worklease --help-all` for complete command details.
 
-Exit code `2` reports lease or capability conflicts. Guarded commands otherwise return the child status; `child-process-timeout` returns `124`. `stale-claim` means the claim ID no longer owns the resource; `invalid-token` means the claim ID is current but its supplied bearer token is invalid. Reload the credential and revalidate ownership before retrying `invalid-token`; stop mutating under `stale-claim`. Neither response exposes token material.
+| Result | Meaning | Action |
+| --- | --- | --- |
+| Exit `2` | Lease or capability conflict | Check the stable reason |
+| Child exit status | Guarded command completed | Handle the child result |
+| Exit `124` | `child-process-timeout` | Inspect the timed-out operation |
+| `stale-claim` | The claim ID no longer owns the resource | Stop mutating |
+| `invalid-token` | The claim is current, but the token is wrong | Reload the credential and revalidate ownership |
+
+Conflict responses never expose token material.
 
 Prefer lease files, token files, or file descriptors for bearer tokens. Never log tokens. Passing `--token` exposes the token in process arguments.
 

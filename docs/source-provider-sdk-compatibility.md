@@ -22,19 +22,22 @@ another provider or policy.
 
 ## Provider implementation boundary
 
-Implement `SourceProvider` with typed, source-qualified `Source`, `WorkRef`,
-and `WorkItem` values. `discover` returns the complete source collection and
-its dependency closure. `read_item` reads the authoritative provider. Mutating
-methods accept caller-supplied authority and return a `ProviderReceipt` that
-contains the post-write provider version, durable location, observed state,
-and conditional-write/fencing evidence. Unsupported operations return an
-explicit `CapabilityResult`.
+A `SourceProvider` should:
 
-The SDK does not define `selectNext`, a scheduler, claim acquisition,
-heartbeat, release, or a provider credential mechanism. Do not put bearer
-tokens in models, receipts, diagnostics, or checkpoints. A provider may report
-`provider_fencing=True` only when the provider itself conditionally rejects
-stale writers and returns evidence; a local Worklease claim is not evidence.
+1. Return typed, source-qualified `Source`, `WorkRef`, and `WorkItem` values.
+2. Let `discover` return the complete source and dependency closure.
+3. Let `read_item` read authoritative provider state.
+4. Accept caller-supplied authority for mutations.
+5. Return a `ProviderReceipt` with the post-write version, durable location,
+   observed state, and conditional-write or fencing evidence.
+6. Return an explicit `CapabilityResult` for unsupported operations.
+
+The SDK does not define scheduling, claim lifecycle, or provider credentials.
+Never put bearer tokens in models, receipts, diagnostics, or checkpoints.
+
+Set `provider_fencing=True` only when the provider itself rejects stale writes
+conditionally and returns evidence. A local Worklease claim is not provider
+fencing evidence.
 
 ## Resource-policy composition
 

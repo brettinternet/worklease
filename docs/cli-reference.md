@@ -86,10 +86,8 @@ distribution includes those schemas and `worklease/py.typed`.
 
 ## Retention and garbage collection
 
-`gc` is a read-only dry run unless `--apply` is supplied. It uses a 30-day
-retention window by default and reports deterministic counts plus oldest and
-newest eligible timestamps for epochs, bundle epochs, operations, releases,
-reconciliations, and resource metadata:
+`gc` is a read-only dry run unless `--apply` is supplied. The default retention
+window is 30 days.
 
 ```sh
 worklease gc
@@ -97,104 +95,135 @@ worklease gc --retention-days 90
 worklease gc --cutoff 2026-01-01T00:00:00Z --apply
 ```
 
-Records strictly older than the captured cutoff are eligible. Active claims,
-expired-but-unreclaimed claims, current ownership, unresolved started
-operations, and records inside the retention window are always protected.
-Applying a collection uses one immediate SQLite transaction; interruption leaves
-either the pre-collection or the committed post-collection state. Resource
-revision tombstones preserve monotonic revisions after historical metadata is
+The result reports deterministic counts, oldest eligible timestamp, and newest
+eligible timestamp for each category:
+
+| Category |
+| --- |
+| epochs |
+| bundle epochs |
+| operations |
+| releases |
+| reconciliations |
+| resource metadata |
+
+Records strictly older than the captured cutoff are eligible. GC always
+protects:
+
+- active claims;
+- expired but unreclaimed claims;
+- current ownership;
+- unresolved started operations;
+- records inside the retention window.
+
+Applying GC uses one immediate SQLite transaction. Interruption leaves either
+the state from before collection or the committed state after collection.
+Resource revision tombstones preserve monotonic revisions after old metadata is
 removed.
 
-Use an explicit cutoff for repeatable maintenance, and take the normal state
-database backup before applying a destructive collection. Invalid cutoffs,
-unsupported retention values, storage conflicts, and protected-record conflicts
-fail without partial deletion. Garbage collection does not reconcile unknown
-operations or provide verbose diagnostics; use the dedicated inspection and
-diagnostics commands for those concerns.
+Use an explicit cutoff for repeatable maintenance. Back up the normal state
+database before applying a destructive collection.
+
+Invalid cutoffs, unsupported retention values, storage conflicts, and
+protected-record conflicts fail without partial deletion. GC does not reconcile
+unknown operations or provide verbose diagnostics. Use the dedicated inspection
+and diagnostic commands for those cases.
 
 ## Human-readable text grammar
 
-Text is the stable default display format for people. Automation must explicitly
-request schema-versioned JSON with `--json` or `--format json`.
+Text is the stable default for people. Automation must explicitly request
+schema-versioned JSON with `--json` or `--format json`.
 
-Text output is UTF-8, newline-delimited, and deterministic: fields appear in the
-order documented below, and tab (`\t`) separates columns. Scalar values use
-compact JSON-compatible escaping without spaces. Printable Unicode remains
-readable; control characters, C1 characters, and DEL are escaped
-(`\u0000` through `\u001f`, `\u007f` through `\u009f`) so values cannot create
-lines or columns.
+Output is UTF-8, newline-delimited, and deterministic:
+
+- Fields use the order documented below.
+- Tabs separate columns.
+- Scalar values use compact JSON-compatible escaping without spaces.
+- Printable Unicode remains readable.
+- Control characters, C1 characters, and DEL are escaped as `\u0000` through
+  `\u001f`, `\u007f` through `\u009f`.
+- Escaping prevents values from creating lines or columns.
 
 Successful operations normally begin with `OK <operation>`. Failures begin with
-`ERROR <operation>: <reason>`, followed by only allowlisted diagnostic fields
-(`RESOURCE`, `OPERATION_ID`, `TARGET_OPERATION_ID`, `PROVIDER`, `FIELD`,
-`CLAIM_ID`, revision bounds, `STATE`, `GUARANTEE`, `PROVIDER_FENCING`,
-`EXPECTED_REQUEST_SHA256`, or `AVAILABLE`). Parser failures use `ERROR
-<command>: invalid-arguments` (or `ERROR parse: invalid-arguments` when no
-command is identifiable), preserve the parser exit status, and may include a
-safe `HINT` with a command-specific example or valid values. Hints never echo
-rejected argument values.
+`ERROR <operation>: <reason>` and may contain only these diagnostic fields:
 
-The command grammars are:
+```text
+RESOURCE
+OPERATION_ID
+TARGET_OPERATION_ID
+PROVIDER
+FIELD
+CLAIM_ID
+revision bounds
+STATE
+GUARANTEE
+PROVIDER_FENCING
+EXPECTED_REQUEST_SHA256
+AVAILABLE
+```
 
-- `version`: the version alone on success.
-- `key`: `OK key`, then `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`,
-  `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, and `PROVIDER_FENCING`.
-- `policy list`: one tab-separated header (`NAME`, `ORIGIN`, `ORIGIN_VERSION`,
-  `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`,
-  `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`), followed by one
-  row per policy. An empty list emits the header only.
-- `policy describe`: one `FIELD: value` line for each policy field.
-- `list`: a fixed-width, space-padded table with columns `STATE`, `RESOURCE`,
-  `CLAIM_ID`, `OWNER_ID`, and `EXPIRES_AT`, followed by one `active` or
-  `expired` row per claim. Column starts remain aligned across all rows, and
-  widths are measured in terminal columns, so East Asian wide characters count
-  as two and combining marks as zero. Default text output bounds `RESOURCE` to
-  52 columns, `CLAIM_ID` to 18, `OWNER_ID` to 24, and `EXPIRES_AT` to 16. Long
-  path-like resource values keep their leading component, a useful path
-  component when space permits, and the longest suffix beginning at a
-  separator. This keeps recognizable repository, source, and item boundaries;
-  other long values keep a prefix and suffix around an ellipsis. Active expiry
-  values are approximate relative durations such as `1h 2m`; expired values are
-  labeled such as `expired 3m`. `worklease list --full` shows the complete
-  resource, identifiers, and absolute expiry timestamps. `--json` and
-  `--format json` always preserve the complete underlying values. Tokens are
-  never listed.
-- `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`:
-  `OK <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
-  block containing `RESOURCE`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`,
-  `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, and `GUARANTEE`; an
-  unclaimed resource emits `CLAIM <none>`.
-- `status --verbose`: resource and state lines, a full diagnostic `CLAIM` block
-  without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a `RELEASE` block
-  or `RELEASE <none>`, and optional `GUIDANCE`. For a bundle member, the claim
-  block uses `RESOURCES` with the ordered bundle resources instead of
-  `RESOURCE`, and unknown operations include started bundle operations such as
-  `exec-bundle`. JSON output likewise uses the claim's `resources` array. Field
-  labels use the same upper-snake convention as all other text renderers.
-- `inspect-operation` and `inspect-operation-bundle`: `OK <operation>`, followed
-  by singleton or ordered-bundle identity, kind, state, outcome, hashes, and
-  reconciliation timestamps when present.
-- `gc`: `OK gc`, retention fields, then an `ELIGIBLE` section with sorted
-  record-type rows containing count, oldest, and newest timestamps.
-- `acquire`, `acquire-bundle`, `bundle-acquire`, `heartbeat`, `checkpoint`,
-  `heartbeat-bundle`, `bundle-heartbeat`, `transfer`, `release`,
-  `release-bundle`, `bundle-release`, `exec`, `exec-bundle`, `bundle-exec`,
-  `replace-file`, `reconcile-operation`, and `reconcile-operation-bundle`:
-  `OK <operation>`, operation and mutation fields, then a `CLAIM` block. The
-  block includes `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, and
-  `WORK_KEY` along with the resource, revision, expiry, and guarantee. A
-  successful acquire, heartbeat, checkpoint, or transfer may include `TOKEN`
-  because the current or successor owner needs it for the next lifecycle step;
-  other mutation and all failure output omit bearer tokens. When `--lease-file`
-  is used the token is written to the handle instead of the output.
+Parser failures use `ERROR <command>: invalid-arguments`. When no command is
+identifiable, they use `ERROR parse: invalid-arguments`. Parser failures keep
+the parser exit status and may include a safe command-specific `HINT` with an
+example or valid values. Hints never echo rejected argument values.
 
-Guarded child results add a `COMMAND` block with `RETURNCODE`,
-`EXECUTION_DIRECTORY`, `STDOUT_BYTES`, `STDOUT_TRUNCATED`, `STDERR_BYTES`,
-`STDERR_TRUNCATED`, `STDOUT`, and `STDERR` in that order when those fields
-exist. `STDOUT` and `STDERR` are values, not raw appended streams, so their
-escaping rules are identical to every other scalar. Status and list output
-expose no bearer tokens or secret claim material; mutation output exposes only
-the minimum owner fields required to continue the lifecycle.
+### Command output
+
+| Commands | Ordered output |
+| --- | --- |
+| `version` | Version only |
+| `key` | `OK key`, `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, `PROVIDER_FENCING` |
+| `policy list` | Header `NAME`, `ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`, then rows |
+| `policy describe` | One `FIELD: value` line per policy field |
+| `list` | Fixed-width `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, `EXPIRES_AT`, then rows |
+| `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, optional `RESOURCE` or `RESOURCES`, `STATE`, then `CLAIM` fields `RESOURCE` or `RESOURCES`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, `GUARANTEE` |
+| `status --verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
+| `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
+| `gc` | `OK gc`, retention fields, then sorted `ELIGIBLE` rows with count, oldest, and newest timestamps |
+| Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
+
+`list` uses a fixed-width, space-padded table. Widths follow terminal columns:
+East Asian wide characters count as two, and combining marks count as zero.
+
+| Field | Default width |
+| --- | ---: |
+| `RESOURCE` | 52 |
+| `CLAIM_ID` | 18 |
+| `OWNER_ID` | 24 |
+| `EXPIRES_AT` | 16 |
+
+Long paths keep recognizable repository, source, and item boundaries. Other
+long values keep a prefix and suffix around an ellipsis. Active expiry values
+use approximate durations such as `1h 2m`; expired values use labels such as
+`expired 3m`.
+
+`worklease list --full` and JSON preserve complete values. An empty policy list
+emits its header only. An unclaimed status emits `CLAIM <none>`. Tokens are
+never listed.
+
+For `status --verbose`, bundle claims use ordered `RESOURCES`, including the
+JSON claim's `resources` array. Unknown operations include started bundle
+operations such as `exec-bundle`. A missing release emits `RELEASE <none>`.
+Field labels use upper snake case.
+
+Successful `acquire`, `heartbeat`, `checkpoint`, and `transfer` may include
+`TOKEN` for the next lifecycle step. Other mutation output and all failures
+omit bearer tokens. With `--lease-file`, the token is written to the handle
+instead. Guarded child results append a `COMMAND` block in this order when
+present:
+
+```text
+RETURNCODE
+EXECUTION_DIRECTORY
+STDOUT_BYTES
+STDOUT_TRUNCATED
+STDERR_BYTES
+STDERR_TRUNCATED
+STDOUT
+STDERR
+```
+
+`STDOUT` and `STDERR` are escaped scalar values, not raw streams.
 
 ## Development
 
