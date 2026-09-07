@@ -115,6 +115,14 @@ def require_text(value: str, field: str) -> str:
     return value
 
 
+def lease_is_active(row: Any, now: float) -> bool:
+    """Return whether a persisted lease is active at the supplied wall time."""
+
+    expires_at = float(row["expires_at"])
+    renewed_ttl = expires_at - float(row["heartbeat_at"])
+    return now < expires_at <= now + renewed_ttl
+
+
 def require_ttl(value: float) -> float:
     """Validate a bounded finite lease TTL without leaking non-JSON values."""
 
@@ -478,7 +486,7 @@ def bundle_claim_from_row(
         acquire_ttl=float(row["acquire_ttl"]),
         heartbeat_at=float(row["heartbeat_at"]),
         expires_at=float(row["expires_at"]),
-        active=now < float(row["expires_at"]),
+        active=lease_is_active(row, now),
     )
 
 
@@ -504,6 +512,6 @@ def claim_from_row(row: Any, now: float) -> Claim:
         acquire_ttl=float(row["acquire_ttl"]),
         heartbeat_at=float(row["heartbeat_at"]),
         expires_at=float(row["expires_at"]),
-        active=now < float(row["expires_at"]),
+        active=lease_is_active(row, now),
         checkpoint=checkpoint,
     )

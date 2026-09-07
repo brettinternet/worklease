@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .locking import resource_lock, resource_locks
-from .models import BundleMutationRequest, LeaseError, MutationRequest, require_ttl
+from .models import (
+    BundleMutationRequest,
+    LeaseError,
+    MutationRequest,
+    lease_is_active,
+    require_ttl,
+)
 from .sqlite import transaction
 
 _OperationRequest = MutationRequest | BundleMutationRequest
@@ -475,7 +481,7 @@ class OperationLedgerMixin:
                 expectedRevision=int(row["revision"]),
                 suppliedRevision=request.revision,
             )
-        if self.clock() >= float(row["expires_at"]):
+        if not lease_is_active(row, self.clock()):
             raise LeaseError(
                 "claim-expired",
                 resource=resource,

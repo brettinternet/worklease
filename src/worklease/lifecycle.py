@@ -16,6 +16,7 @@ from .models import (
     MutationRequest,
     TransferRequest,
     deserialize_checkpoint,
+    lease_is_active,
     require_text,
     require_ttl,
 )
@@ -194,7 +195,7 @@ class LifecycleMixin:
                     expectedRevision=int(row["revision"]),
                     suppliedRevision=request.revision,
                 )
-            if self.clock() >= float(row["expires_at"]):
+            if not lease_is_active(row, self.clock()):
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,
@@ -407,7 +408,7 @@ class LifecycleMixin:
                     expectedRevision=int(row["revision"]),
                     suppliedRevision=request.revision,
                 )
-            if self.clock() >= float(row["expires_at"]):
+            if not lease_is_active(row, self.clock()):
                 raise LeaseError(
                     "claim-expired",
                     resource=request.resource,

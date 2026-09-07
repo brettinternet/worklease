@@ -13,6 +13,7 @@ from .models import (
     BundleMutationRequest,
     LeaseError,
     MutationRequest,
+    lease_is_active,
     require_text,
     require_ttl,
     serialize_checkpoint,
@@ -112,7 +113,7 @@ class ReconciliationMixin:
             transaction(db),
         ):
             owner = self._require_claim_owner(db, request)
-            if self.clock() >= float(owner["expires_at"]):
+            if not lease_is_active(owner, self.clock()):
                 raise LeaseError(
                     "claim-expired",
                     resource=resource_label,

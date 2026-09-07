@@ -8,7 +8,12 @@ from contextlib import closing
 from typing import Any
 
 from .locking import resource_locks
-from .models import LeaseError, require_bundle_resources, require_resource
+from .models import (
+    LeaseError,
+    lease_is_active,
+    require_bundle_resources,
+    require_resource,
+)
 from .sqlite import connect_readonly, transaction
 
 
@@ -143,7 +148,7 @@ class ProjectionMixin:
                     "heartbeatAt": self._timestamp(float(claim_row["heartbeat_at"])),
                     "expiresAt": self._timestamp(float(claim_row["expires_at"])),
                 }
-                state = "active" if now < float(claim_row["expires_at"]) else "expired"
+                state = "active" if lease_is_active(claim_row, now) else "expired"
             else:
                 state = "free"
 

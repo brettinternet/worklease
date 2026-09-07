@@ -11,6 +11,7 @@ from .models import (
     BundleAcquireRequest,
     LeaseError,
     deserialize_checkpoint,
+    lease_is_active,
     require_bundle_resources,
     require_resource,
     require_ttl,
@@ -55,7 +56,7 @@ class AcquisitionMixin:
                         resource=",".join(resources),
                         claimId=request.claim_id,
                     )
-                if now >= float(bundle["expires_at"]):
+                if not lease_is_active(bundle, now):
                     raise LeaseError(
                         "claim-expired",
                         resource=",".join(resources),
@@ -76,7 +77,7 @@ class AcquisitionMixin:
                 resources,
             ).fetchall()
             for row in rows:
-                if now < float(row["expires_at"]):
+                if lease_is_active(row, now):
                     old_bundle = self._bundle_row(db, str(row["claim_id"]))
                     conflict = (
                         self._bundle_claim(db, old_bundle).to_dict(include_token=False)
@@ -97,7 +98,7 @@ class AcquisitionMixin:
                 ).fetchall()
             }:
                 old_bundle = self._bundle_row(db, old_bundle_id)
-                if old_bundle is not None and now >= float(old_bundle["expires_at"]):
+                if old_bundle is not None and not lease_is_active(old_bundle, now):
                     db.execute(
                         "DELETE FROM claims WHERE claim_id = ?", (old_bundle_id,)
                     )
@@ -271,7 +272,7 @@ class AcquisitionMixin:
                         resource=request.resource,
                         claimId=request.claim_id,
                     )
-                if now >= float(row["expires_at"]):
+                if not lease_is_active(row, now):
                     raise LeaseError(
                         "claim-expired",
                         resource=request.resource,
@@ -283,7 +284,7 @@ class AcquisitionMixin:
                     "idempotent": True,
                     "claim": self._claim(row).to_dict(),
                 }
-            if row is not None and now < float(row["expires_at"]):
+            if row is not None and lease_is_active(row, now):
                 raise LeaseError(
                     "already-claimed",
                     resource=request.resource,

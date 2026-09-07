@@ -15,6 +15,7 @@ from .models import (
     LeaseError,
     MutationRequest,
     bundle_claim_from_row,
+    lease_is_active,
 )
 from .sqlite import transaction
 
@@ -173,7 +174,7 @@ class ClaimStoreMixin:
                 expectedRevision=int(row["revision"]),
                 suppliedRevision=request.revision,
             )
-        if self.clock() >= float(row["expires_at"]):
+        if not lease_is_active(row, self.clock()):
             claim = (
                 self._bundle_claim(connection, row).to_dict(include_token=False)
                 if isinstance(request, BundleMutationRequest)

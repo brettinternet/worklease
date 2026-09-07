@@ -270,6 +270,49 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(first["claim"]["token"], second["claim"]["token"])
         self.assertGreater(second["claim"]["revision"], first["claim"]["revision"])
 
+    def test_backward_clock_regression_expires_claim(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("clock-regression", "first", ttl=10)
+        )
+
+        self.clock.advance(-10.1)
+
+        status = self.store.status("clock-regression")
+        self.assertEqual("expired", status["state"])
+        self.assertFalse(status["claim"]["active"])
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.heartbeat(
+                self.mutation(acquired, "clock-regression", "heartbeat", ttl=10)
+            )
+
+    def test_backward_clock_regression_uses_renewed_ttl(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("renewed-clock-regression", "first", ttl=3600)
+        )
+        renewed = self.store.heartbeat(
+            self.mutation(
+                acquired,
+                "renewed-clock-regression",
+                "short-heartbeat",
+                ttl=1,
+            )
+        )
+
+        self.clock.advance(-1.1)
+
+        self.assertEqual(
+            "expired", self.store.status("renewed-clock-regression")["state"]
+        )
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.heartbeat(
+                self.mutation(
+                    renewed,
+                    "renewed-clock-regression",
+                    "regressed-heartbeat",
+                    ttl=1,
+                )
+            )
+
     def test_checkpoint_renews_replays_and_rejects_stale_owner(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         request = self.mutation(acquired, "resource", "checkpoint-1")
@@ -2128,7 +2171,10 @@ else:
                 for result in results
             ),
         )
-        self.assertEqual("active", self.store.status("process-shared")["state"])
+        process_clock_store = LeaseStore(self.home)
+        self.assertEqual(
+            "active", process_clock_store.status("process-shared")["state"]
+        )
 
     def test_bundle_stale_owner_cannot_mutate_after_expiry_reclaim(self) -> None:
         resources = ("stale-a", "stale-b")

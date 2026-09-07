@@ -164,6 +164,11 @@ supported but exposes the bearer secret in argv. Never put a token in logs,
 comments, checkpoints, or handoffs.
 
 Heartbeat before half the lease elapses and around long operations. Every successful mutation advances the revision; the handle records the newest value.
+Lease expiry uses the system wall clock because timestamps persist across
+processes. If the clock moves backward and the apparent remaining lifetime
+exceeds the lease's current TTL, Worklease treats the lease as expired. A forward
+clock jump can expire a lease immediately; synchronize the host clock and stop
+and reacquire after significant clock adjustments.
 
 ```sh
 worklease heartbeat \
