@@ -2,7 +2,7 @@
 
 Provider-neutral same-host work leases for coordinating humans and agents on one machine.
 
-Worklease prevents duplicate local work. Your external backlog or provider remains authoritative. Worklease is not distributed locking and does not provide provider-side fencing.
+Worklease prevents duplicate local work. Your external backlog or provider remains authoritative.
 
 ![Two workers contending for one Worklease resource](docs/demo.gif)
 
