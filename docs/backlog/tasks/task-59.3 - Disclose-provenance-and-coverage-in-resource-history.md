@@ -1,11 +1,11 @@
 ---
 id: TASK-59.3
 title: Disclose provenance and coverage in resource history
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 17:17'
-updated_date: '2026-09-07 17:45'
+updated_date: '2026-09-07 18:32'
 labels:
   - cli
   - storage
@@ -25,6 +25,17 @@ references:
   - tests/test_schemas.py
   - tests/test_store.py
   - docs/claim-model.md
+modified_files:
+  - docs/claim-model.md
+  - docs/cli-reference.md
+  - src/worklease/cli.py
+  - src/worklease/projections.py
+  - src/worklease/schemas/v1/history.json
+  - src/worklease/sqlite.py
+  - tests/test_gc.py
+  - tests/test_history.py
+  - tests/test_schemas.py
+  - tests/test_store.py
 parent_task_id: TASK-59
 priority: medium
 type: enhancement
@@ -49,13 +60,13 @@ Non-goals: `--at`, `--since`, identity filters, all-resource output, JSON Lines 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every acquisition, operation, reconciliation, termination, and current-claim object in history --json has the matching source value from the fixed enum; facts from different source kinds remain in separate nested objects
-- [ ] #2 Each epoch reports exactly one of complete, open, or legacy-incomplete using the stated stored-field precedence, with no clock input; open is not treated as active, and repeated runs on an unchanged store are byte-identical
-- [ ] #3 Each resource reports nullable earliestRetainedAcquisitionRevision, nullable resourceRevisionWatermark, and retained legacyIncompleteCount; tests show never-seen, pre-GC, partial-GC, and all-epochs-collected values without synthesizing missing events
-- [ ] #4 The v1 history schema documents every source value, the limits of revision-based coverage, the distinction between open and active, and the held-at rules including an unknown legacy upper bound; schema tests validate the fields
-- [ ] #5 The epochs_by_resource_revision index is required schema state, is added to pre-existing v3 databases without data loss, and EXPLAIN QUERY PLAN for the singleton resource history lookup reports that index
-- [ ] #6 Text output shows source, completeness, and coverage using the documented grammar; docs/cli-reference.md and docs/claim-model.md describe all completeness states, nullable coverage, and the migration/GC caveat
-- [ ] #7 Tests cover all five source values, all three completeness states, singleton and bundle-member epochs, current singleton and bundle claims, a migrated current epoch with a null acquisition revision, a legacy epoch with no end bound, retained legacy plus known epochs, partial and complete epoch GC, deterministic output, index migration and query planning, and schema validation
+- [x] #1 Every acquisition, operation, reconciliation, termination, and current-claim object in history --json has the matching source value from the fixed enum; facts from different source kinds remain in separate nested objects
+- [x] #2 Each epoch reports exactly one of complete, open, or legacy-incomplete using the stated stored-field precedence, with no clock input; open is not treated as active, and repeated runs on an unchanged store are byte-identical
+- [x] #3 Each resource reports nullable earliestRetainedAcquisitionRevision, nullable resourceRevisionWatermark, and retained legacyIncompleteCount; tests show never-seen, pre-GC, partial-GC, and all-epochs-collected values without synthesizing missing events
+- [x] #4 The v1 history schema documents every source value, the limits of revision-based coverage, the distinction between open and active, and the held-at rules including an unknown legacy upper bound; schema tests validate the fields
+- [x] #5 The epochs_by_resource_revision index is required schema state, is added to pre-existing v3 databases without data loss, and EXPLAIN QUERY PLAN for the singleton resource history lookup reports that index
+- [x] #6 Text output shows source, completeness, and coverage using the documented grammar; docs/cli-reference.md and docs/claim-model.md describe all completeness states, nullable coverage, and the migration/GC caveat
+- [x] #7 Tests cover all five source values, all three completeness states, singleton and bundle-member epochs, current singleton and bundle claims, a migrated current epoch with a null acquisition revision, a legacy epoch with no end bound, retained legacy plus known epochs, partial and complete epoch GC, deterministic output, index migration and query planning, and schema validation
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -72,4 +83,12 @@ Non-goals: `--at`, `--since`, identity filters, all-resource output, JSON Lines 
 
 <!-- SECTION:NOTES:BEGIN -->
 Started implementation in an isolated worktree; TASK-59.2 dependency is complete.
+
+Implemented in 48348c7 and merged to main as d10f003. Added source-tagged projection objects, deterministic completeness and coverage, currentClaim semantics, required singleton lookup index with v3 self-healing, text/schema/docs updates, and acceptance-focused tests. Review found one missing exact-v3 index self-heal/data-preservation test; added it before commit. Validation passed: focused 113 tests; mise run lint; mise run format-check; mise run typecheck; mise run test (275 core + 19 SDK); mise run hooks (ruff format/check + full tests).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added provenance, completeness, coverage, held-at documentation, and indexed singleton lookup to retained resource history. Verified all seven criteria with focused history/GC/schema/store tests, exact-v3 self-heal and EXPLAIN QUERY PLAN coverage, deterministic CLI/schema checks, all repository quality gates, and pre-commit hooks. Implementation 48348c7; merged to main in d10f003.
+<!-- SECTION:FINAL_SUMMARY:END -->
