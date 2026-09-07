@@ -5,8 +5,6 @@ Persistence, locking, serialization, and provider implementation modules
 remain private implementation details.
 """
 
-from importlib.metadata import version
-
 from .adapters import ProviderAdapter, ResourceKey
 from .execution import GuardedExecutor, execute, execute_bundle
 from .models import (
@@ -24,7 +22,18 @@ from .models import (
 from .replacement import FileReplacer, replace_file
 from .store import LeaseStore
 
-__version__ = version("worklease")
+__version__: str
+
+
+def __getattr__(name: str) -> str:
+    """Resolve the package version lazily; importlib.metadata is slow to import."""
+
+    if name == "__version__":
+        from importlib.metadata import version
+
+        return version("worklease")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "__version__",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import os
 import subprocess
 import sys
@@ -316,7 +317,7 @@ class AdapterKeyTests(unittest.TestCase):
                 return self.values
 
         with patch.object(
-            policy_registry.metadata,
+            importlib.metadata,
             "entry_points",
             return_value=EntryPoints([EntryPoint(registration)]),
         ):
@@ -324,7 +325,7 @@ class AdapterKeyTests(unittest.TestCase):
 
         with (
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 return_value=EntryPoints(
                     [EntryPoint(registration), EntryPoint(registration)]
@@ -335,7 +336,7 @@ class AdapterKeyTests(unittest.TestCase):
             load_adapter("external")
         with (
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 return_value=EntryPoints([EntryPoint(registration, name="github")]),
             ),
@@ -354,7 +355,7 @@ class AdapterKeyTests(unittest.TestCase):
         )
         with (
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 return_value=EntryPoints([EntryPoint(incompatible)]),
             ),
@@ -370,7 +371,7 @@ class AdapterKeyTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(
                 patch.object(
-                    policy_registry.metadata,
+                    importlib.metadata,
                     "entry_points",
                     return_value=EntryPoints([EntryPoint(failing)]),
                 )
@@ -383,7 +384,7 @@ class AdapterKeyTests(unittest.TestCase):
 
         with (
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 return_value=EntryPoints([EntryPoint(RuntimeError("boom"))]),
             ),
@@ -393,7 +394,7 @@ class AdapterKeyTests(unittest.TestCase):
 
         with (
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 return_value=EntryPoints([EntryPoint(object())]),
             ),
@@ -405,7 +406,7 @@ class AdapterKeyTests(unittest.TestCase):
         with (
             patch.object(policy_registry.sys, "frozen", True, create=True),
             patch.object(
-                policy_registry.metadata,
+                importlib.metadata,
                 "entry_points",
                 side_effect=AssertionError("frozen runtime must not discover"),
             ),
