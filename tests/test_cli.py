@@ -283,6 +283,7 @@ class CliContractTests(unittest.TestCase):
             "worklease acquire-bundle",
             "worklease status-bundle",
             "worklease status",
+            "worklease history",
             "worklease inspect-operation",
             "worklease inspect-operation-bundle",
             "worklease gc",

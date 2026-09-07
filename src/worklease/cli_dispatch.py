@@ -172,6 +172,8 @@ def dispatch_store(
             else store.status(args.resource),
             0,
         )
+    if operation == "history":
+        return store.history(args.resource), 0
     if operation == "inspect-operation":
         return store.inspect_operation(args.resource, args.operation_id), 0
     if operation == "inspect-operation-bundle":

@@ -133,6 +133,7 @@ _COMMANDS = frozenset(
         "acquire-bundle",
         "bundle-acquire",
         "status",
+        "history",
         "status-bundle",
         "bundle-status",
         "inspect-bundle",
@@ -247,6 +248,7 @@ _TOP_LEVEL_EPILOG = f"""\
     {_help_command("release-bundle (bundle-release)")}
                         release every member of an active bundle
   {_help_heading("Inspection and reconciliation:")}
+    {_help_command("history")}             show retained local resource history
     {_help_command("inspect-operation")}   inspect one operation outcome
     {_help_command("reconcile-operation")}
                         record an observed operation outcome
@@ -292,6 +294,7 @@ _STATUS_BUNDLE_EPILOG = _single_line_epilog(
     "worklease status-bundle --resource local:formatter --resource local:linter"
 )
 _STATUS_EPILOG = _single_line_epilog("worklease status --resource local:formatter")
+_HISTORY_EPILOG = _single_line_epilog("worklease history --resource local:formatter")
 _INSPECT_OPERATION_EPILOG = _single_line_epilog(
     "worklease inspect-operation --resource local:formatter "
     "--operation-id test-TASK-42-001"
@@ -924,6 +927,19 @@ def _parser() -> _ArgumentParser:
         "--verbose",
         action="store_true",
         help="include redacted diagnostic metadata and unknown outcomes",
+    )
+
+    history_parser = commands.add_parser(
+        "history",
+        help="show retained local resource history",
+        epilog=_HISTORY_EPILOG,
+    )
+    _add_output_arguments(history_parser)
+    history_parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
     )
 
     inspect_operation_parser = commands.add_parser(
@@ -1870,6 +1886,127 @@ def _render_status_verbose(payload: dict[str, object]) -> None:
         _emit_error_details(payload)
 
 
+def _render_history(payload: dict[str, object]) -> None:
+    """Render the allowlisted retained-history projection without blobs."""
+
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
+    epochs = payload.get("epochs", [])
+    if not isinstance(epochs, list):
+        epochs = []
+    print(f"EPOCHS\t{len(epochs)}")
+    for epoch in epochs:
+        if not isinstance(epoch, dict):
+            continue
+        print("EPOCH")
+        for field in (
+            "resource",
+            "resources",
+            "kind",
+            "claimId",
+            "agentId",
+            "sessionId",
+            "ownerId",
+            "workKey",
+            "acquiredAt",
+            "acquisitionRevision",
+            "state",
+            "legacyIncomplete",
+        ):
+            if field in epoch:
+                print(f"{_text_label(field)}\t{_text_value(epoch[field])}")
+
+        operations = epoch.get("operations", [])
+        if not isinstance(operations, list):
+            operations = []
+        print(f"OPERATIONS\t{len(operations)}")
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            print(
+                "OPERATION\t"
+                + "\t".join(
+                    _text_value(operation.get(field))
+                    for field in (
+                        "operationId",
+                        "kind",
+                        "state",
+                        "expectedRevision",
+                        "createdAt",
+                        "outcome",
+                        "reconciliationOperationId",
+                        "reconciledAt",
+                    )
+                )
+            )
+
+        reconciliations = epoch.get("reconciliations", [])
+        if not isinstance(reconciliations, list):
+            reconciliations = []
+        print(f"RECONCILIATIONS\t{len(reconciliations)}")
+        for reconciliation in reconciliations:
+            if not isinstance(reconciliation, dict):
+                continue
+            print(
+                "RECONCILIATION\t"
+                + "\t".join(
+                    _text_value(reconciliation.get(field))
+                    for field in (
+                        "targetClaimId",
+                        "targetOperationId",
+                        "reconciliationOperationId",
+                        "kind",
+                        "outcome",
+                        "reconciledAt",
+                    )
+                )
+            )
+
+        termination = epoch.get("termination")
+        if isinstance(termination, dict):
+            print("TERMINATION")
+            for field in (
+                "reason",
+                "effectiveAt",
+                "recordedAt",
+                "finalRevision",
+                "heartbeatAt",
+                "expiresAt",
+                "checkpointPresent",
+                "successorClaimId",
+                "operationId",
+            ):
+                if field in termination:
+                    print(f"{_text_label(field)}\t{_text_value(termination[field])}")
+        else:
+            print("TERMINATION\t<none>")
+
+        current = epoch.get("current")
+        if isinstance(current, dict):
+            print("CURRENT")
+            for field in (
+                "claimId",
+                "revision",
+                "agentId",
+                "sessionId",
+                "ownerId",
+                "workKey",
+                "coordinationOnly",
+                "guarantee",
+                "acquiredAt",
+                "heartbeatAt",
+                "expiresAt",
+            ):
+                if field in current:
+                    print(f"{_text_label(field)}\t{_text_value(current[field])}")
+        else:
+            print("CURRENT\t<none>")
+
+
 def _render_inspect_operation(payload: dict[str, object]) -> None:
     if not payload.get("ok"):
         _text_header(payload)
@@ -1993,6 +2130,7 @@ _TEXT_RENDERERS = {
     "bundle-status": _render_status,
     "inspect-bundle": _render_status,
     "status-verbose": _render_status_verbose,
+    "history": _render_history,
     "inspect-operation": _render_inspect_operation,
     "inspect-operation-bundle": _render_inspect_operation,
     "gc": _render_gc,
@@ -2073,8 +2211,11 @@ def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
     )
     if expected_match:
         option = expected_match.group(1)
-        if command == "worklease status" and option == "--resource":
-            return "Example: worklease status --resource local:formatter"
+        if (
+            command in {"worklease status", "worklease history"}
+            and option == "--resource"
+        ):
+            return f"Example: {command} --resource local:formatter"
         return f"Provide a value for {option}; see {command} --help"
 
     required_match = re.search(
@@ -2084,8 +2225,11 @@ def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
     if required_match:
         options = re.findall(r"--[\w-]+", required_match.group(1))
         if options:
-            if command == "worklease status" and "--resource" in options:
-                return "Example: worklease status --resource local:formatter"
+            if (
+                command in {"worklease status", "worklease history"}
+                and "--resource" in options
+            ):
+                return f"Example: {command} --resource local:formatter"
             return "Required options: " + ", ".join(options) + f"; see {command} --help"
 
     if (
@@ -2108,8 +2252,8 @@ def _emit_parser_hint(argv: Sequence[str], message: str) -> None:
 def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) -> None:
     if output_format != "text":
         return
-    if operation == "status" and reason == "invalid-resource":
-        print("HINT\tExample: worklease status --resource local:formatter")
+    if operation in {"status", "history"} and reason == "invalid-resource":
+        print(f"HINT\tExample: worklease {operation} --resource local:formatter")
     elif reason == "storage-failure":
         print(
             "HINT\tThe state directory could not be created, opened, or written; "

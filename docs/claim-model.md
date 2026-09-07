@@ -230,10 +230,23 @@ Garbage collection retains an epoch and its associated rows through the
 termination's `recorded_at` retention window, then deletes the terminal and
 epoch records atomically.
 
-This data is retention-bounded diagnostics on one local Worklease database. It
-is not provider progress, provider evidence, an attestation, tamper evidence,
-or cross-host history. The work provider remains authoritative for item state
-and progress.
+This data is retention-bounded diagnostics on one local Worklease database. A
+read-only `worklease history --resource R` projection is scoped to the exact
+opaque resource: it includes singleton epochs and bundle-member epochs, keeps
+termination separate from the current snapshot, and does not derive active or
+expired state from the clock. `--json` is a sanitized per-resource diagnostic
+export, not the complete archive; it deliberately omits tokens, hashes,
+checkpoint bodies, request/receipt blobs, argv, process output, file contents,
+and reconciliation or provider evidence. Export it before `gc --apply` when a
+portable diagnostic is needed. A private SQLite backup of the mode-0600 local
+database, made before collection, is the complete archive and therefore must
+be handled as secret-bearing state.
+
+History is local coordination metadata rather than provider evidence. It is not
+provider progress, an attestation, tamper evidence, or cross-host history, and
+it cannot prove that a provider write occurred. The work provider remains
+authoritative for item state, progress, receipts, and eligibility; rows removed
+by local retention or `gc --apply` cannot be reconstructed.
 
 ## Three meanings of state
 

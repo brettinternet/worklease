@@ -23,6 +23,7 @@ READ_ONLY = {
     "policy-describe",
     "status",
     "status-verbose",
+    "history",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -44,6 +45,7 @@ RELEASED_OPERATIONS = {
     "acquire-bundle",
     "status",
     "status-verbose",
+    "history",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -83,6 +85,18 @@ class SchemaContractTests(unittest.TestCase):
         )
         self.lease_file = json.loads(
             schema_root.joinpath("lease-file.json").read_text()
+        )
+        self.history = json.loads(schema_root.joinpath("history.json").read_text())
+        self.history_validator = Draft202012Validator(
+            self.history,
+            resolver=RefResolver(
+                "https://worklease.dev/schemas/v1/history.json",
+                self.history,
+                store={
+                    "https://worklease.dev/schemas/v1/commands.json": self.commands,
+                    "https://worklease.dev/schemas/v1/common.json": self.common,
+                },
+            ),
         )
         self.index = json.loads(schema_root.joinpath("index.json").read_text())
         self.home = tempfile.TemporaryDirectory()
@@ -146,7 +160,9 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(
             "lease-file.json", self.index["properties"]["leaseFile"]["const"]
         )
+        self.assertEqual("history.json", self.index["properties"]["history"]["const"])
         Draft202012Validator.check_schema(self.lease_file)
+        Draft202012Validator.check_schema(self.history)
         commands = self.index["properties"]["commands"]["items"]["enum"]
         self.assertEqual(RELEASED_OPERATIONS, set(commands))
         for path in files("worklease").joinpath("schemas", "v1").iterdir():
@@ -200,6 +216,11 @@ class SchemaContractTests(unittest.TestCase):
         self.assert_matches_commands_schema(verbose)
         self.assertEqual("status-verbose", verbose["operation"])
         self.assertNotIn(token, json.dumps(verbose))
+
+        history = self.run_cli("history", "--resource", "schema:resource")
+        self.assert_matches_commands_schema(history)
+        self.assertEqual([], list(self.history_validator.iter_errors(history)))
+        self.assertNotIn(token, json.dumps(history))
 
         error = self.run_cli(
             "key", "--provider", "unknown", "--source", "team", "--item", "ITEM-1"

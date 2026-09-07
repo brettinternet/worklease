@@ -40,7 +40,7 @@ are the stable interface; short options are a convenience.
 | `-i` | `--item` | `key` |
 | `-C` | `--coordination-only` | `key`, `acquire`, `acquire-bundle` |
 | `-n` | `--name` | `policy describe` |
-| `-r` | `--resource` | claim, status, inspection, list, and bundle commands |
+| `-r` | `--resource` | claim, status, history, inspection, list, and bundle commands |
 | `-c` | `--claim-id` | claim lifecycle commands |
 | `-a` | `--agent-id` | `acquire`, `acquire-bundle` |
 | `-s` | `--session-id` | `acquire`, `acquire-bundle` |
@@ -84,7 +84,45 @@ semantic versioning. JSON responses use schema version 1; consumers must ignore
 unknown fields. Published schemas live in `worklease/schemas/v1/`, and every
 distribution includes those schemas and `worklease/py.typed`.
 
-## Retention and garbage collection
+## Local history, retention, and archival
+
+`history --resource R` is a read-only projection of the retained local epochs
+for exactly `R`. It includes singleton epochs and bundle epochs containing `R`,
+plus safe operation and reconciliation summaries. Acquisition is synthesized
+from the epoch row, not reported as an operation. The command does not provide
+all-resource output, provider lookups, pagination, or time filters. An open
+row remains open when its stored expiry is past; a read does not reclaim it or
+invent a termination. Legacy rows with missing acquisition or ending evidence
+are marked `legacy-incomplete` and cannot be reconstructed from this view.
+
+`--json` is a deterministic, positive-allowlist diagnostic export suitable for
+redirecting one resource before collection:
+
+```sh
+worklease history --resource local:formatter --json > formatter-history.json
+```
+
+The export is sanitized, not a complete archive. It never includes bearer
+tokens or token hashes, checkpoint bodies, request or receipt blobs,
+reconciliation or provider evidence, argv, stdout, stderr, or file contents;
+termination exposes only whether a checkpoint was present. JSON contains no
+export-time timestamp or clock-derived active state, and repeated reads of
+unchanged SQLite state are byte-identical. History is bounded by the same
+local retention policy as the underlying records; rows already removed by
+`gc --apply` cannot be recovered.
+
+For a complete local archive, make a private SQLite backup before collection
+(and preserve the private state-directory permissions):
+
+```sh
+sqlite3 "${WORKLEASE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/worklease}/leases.sqlite3" \
+  ".backup '$HOME/worklease-archive.sqlite3'"
+chmod 600 "$HOME/worklease-archive.sqlite3"
+```
+
+The backup contains the retained local coordination database, including
+secret-bearing lifecycle material. Treat it as private state; do not publish
+or redirect it as a history export.
 
 `gc` is a read-only dry run unless `--apply` is supplied. It uses a 30-day
 retention window by default and reports deterministic counts plus oldest and
@@ -159,6 +197,20 @@ The command grammars are:
   resource, identifiers, and absolute expiry timestamps. `--json` and
   `--format json` always preserve the complete underlying values. Tokens are
   never listed.
+- `history`: `OK history`, a `RESOURCE` line, an `EPOCHS` count, then one
+  `EPOCH` block per retained epoch. Each block contains identity, acquired time,
+  acquisition revision, `STATE`, and `LEGACY_INCOMPLETE` fields, followed by an
+  `OPERATIONS` count and fixed columns
+  (`OPERATION_ID`, `KIND`, `STATE`, `EXPECTED_REVISION`, `CREATED_AT`,
+  `OUTCOME`, `RECONCILIATION_OPERATION_ID`, `RECONCILED_AT`) for each safe
+  operation summary. `RECONCILIATIONS` rows contain target claim and operation
+  IDs, reconciliation operation ID, kind, outcome, and recorded time. A
+  `TERMINATION` block contains its reason and stored final snapshot, or
+  `TERMINATION <none>`; a `CURRENT` block contains the stored current snapshot,
+  or `CURRENT <none>`. Values use the same JSON-compatible escaping as other
+  text output. Epochs sort by acquisition revision, with acquired time and
+  stable IDs only for legacy rows; operations sort by expected revision,
+  created time, operation ID, kind, claim ID, and resource.
 - `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`:
   `OK <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
   block containing `RESOURCE`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`,
