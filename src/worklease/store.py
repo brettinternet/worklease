@@ -1661,6 +1661,9 @@ class LeaseStore:
                 old_bundle = self._bundle_row(db, old_bundle_id)
                 if old_bundle is not None and now >= float(old_bundle["expires_at"]):
                     db.execute(
+                        "DELETE FROM claims WHERE claim_id = ?", (old_bundle_id,)
+                    )
+                    db.execute(
                         "DELETE FROM bundle_members WHERE claim_id = ?",
                         (old_bundle_id,),
                     )
@@ -2494,33 +2497,62 @@ class LeaseStore:
                 )
             }
             row = self._current(db, resource) if "claims" in tables else None
+            bundle = (
+                self._bundle_for_resource(db, resource)
+                if {"bundles", "bundle_members"}.issubset(tables)
+                else None
+            )
             claim: dict[str, Any] | None = None
             if row is not None:
-                row_columns = set(row.keys())
+                claim_row = bundle if bundle is not None else row
+                row_columns = set(claim_row.keys())
                 claim = {
-                    "resource": resource,
-                    "claimId": str(row["claim_id"]),
-                    "agentId": str(row["agent_id"]),
-                    "sessionId": str(row["session_id"]),
-                    "ownerId": str(row["owner_id"]),
-                    "workKey": str(row["work_key"]),
+                    ("resources" if bundle is not None else "resource"): (
+                        list(self._bundle_resources(db, str(bundle["claim_id"])))
+                        if bundle is not None
+                        else resource
+                    ),
+                    "claimId": str(claim_row["claim_id"]),
+                    "agentId": str(claim_row["agent_id"]),
+                    "sessionId": str(claim_row["session_id"]),
+                    "ownerId": str(claim_row["owner_id"]),
+                    "workKey": str(claim_row["work_key"]),
                     "coordinationOnly": (
-                        bool(row["coordination_only"])
+                        bool(claim_row["coordination_only"])
                         if "coordination_only" in row_columns
                         else False
                     ),
-                    "revision": int(row["revision"]),
-                    "acquiredAt": self._timestamp(float(row["acquired_at"])),
-                    "heartbeatAt": self._timestamp(float(row["heartbeat_at"])),
-                    "expiresAt": self._timestamp(float(row["expires_at"])),
+                    "revision": int(claim_row["revision"]),
+                    "acquiredAt": self._timestamp(float(claim_row["acquired_at"])),
+                    "heartbeatAt": self._timestamp(float(claim_row["heartbeat_at"])),
+                    "expiresAt": self._timestamp(float(claim_row["expires_at"])),
                 }
-                state = "active" if now < float(row["expires_at"]) else "expired"
+                state = "active" if now < float(claim_row["expires_at"]) else "expired"
             else:
                 state = "free"
 
+            if "bundle_epochs" in tables:
+                operation_filter = """
+                    (
+                        o.resource = ?
+                        OR EXISTS (
+                            SELECT 1
+                            FROM bundle_epochs AS be
+                            JOIN json_each(be.resources) AS member
+                            WHERE be.claim_id = o.claim_id
+                              AND be.resources = o.resource
+                              AND member.value = ?
+                        )
+                    )
+                """
+                operation_parameters = (resource, resource)
+            else:
+                operation_filter = "o.resource = ?"
+                operation_parameters = (resource,)
+
             if "operations" in tables and "reconciliations" in tables:
                 operation_rows = db.execute(
-                    """
+                    f"""
                     SELECT
                         o.operation_id,
                         o.kind,
@@ -2532,22 +2564,22 @@ class LeaseStore:
                     FROM operations AS o
                     LEFT JOIN reconciliations AS r
                       ON r.resource = o.resource AND r.operation_id = o.operation_id
-                    WHERE o.resource = ? AND o.state = 'started'
+                    WHERE o.state = 'started' AND {operation_filter}
                     ORDER BY o.created_at, o.operation_id, o.claim_id, o.kind
                     """,
-                    (resource,),
+                    operation_parameters,
                 ).fetchall()
             elif "operations" in tables:
                 operation_rows = db.execute(
-                    """
-                    SELECT operation_id, kind, expected_revision, created_at,
-                           request, NULL AS request_sha256,
+                    f"""
+                    SELECT o.operation_id, o.kind, o.expected_revision, o.created_at,
+                           o.request, NULL AS request_sha256,
                            NULL AS reconciliation_kind
-                    FROM operations
-                    WHERE resource = ? AND state = 'started'
-                    ORDER BY created_at, operation_id, claim_id, kind
+                    FROM operations AS o
+                    WHERE o.state = 'started' AND {operation_filter}
+                    ORDER BY o.created_at, o.operation_id, o.claim_id, o.kind
                     """,
-                    (resource,),
+                    operation_parameters,
                 ).fetchall()
             else:
                 operation_rows = []
@@ -2561,7 +2593,7 @@ class LeaseStore:
                     operation_sha256 = hashlib.sha256(
                         str(operation["request"]).encode("utf-8")
                     ).hexdigest()
-                    if operation_sha256 == str(reconciliation_sha256):
+                    if operation_sha256 == str(reconciliation_sha256).lower():
                         continue
                 unknown_operations.append(
                     {

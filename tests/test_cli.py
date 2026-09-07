@@ -2431,6 +2431,68 @@ with resource_lock(resource):
         )
         self.assertEqual(text.stdout, repeated_text.stdout)
 
+    def test_verbose_status_cli_reports_bundle_resources_and_unknown_operation(
+        self,
+    ) -> None:
+        resources = ("repo:verbose-bundle-a", "repo:verbose-bundle-b")
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "verbose-bundle-cli",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "implement:verbose-bundle",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="verbose-bundle-cli-unknown",
+        )
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_bundle_operation(
+                request,
+                "exec-bundle",
+                request.request_dict(command=["printf", "bundle-cli-sentinel"]),
+            )
+        )
+
+        verbose = self.json_cli("status", "--resource", resources[1], "--verbose")
+        verbose_claim = verbose["claim"]
+        assert isinstance(verbose_claim, dict)
+        self.assertEqual(list(resources), verbose_claim["resources"])
+        unknown_operations = verbose["unknownOperations"]
+        assert isinstance(unknown_operations, list)
+        first_unknown = unknown_operations[0]
+        assert isinstance(first_unknown, dict)
+        self.assertEqual(
+            "verbose-bundle-cli-unknown",
+            first_unknown["operationId"],
+        )
+        self.assertNotIn(str(claim["token"]), json.dumps(verbose))
+        self.assertNotIn("bundle-cli-sentinel", json.dumps(verbose))
+
+        text = self.text_cli("status", "--resource", resources[1], "--verbose")
+        self.assertIn(
+            f"CLAIM\nRESOURCES\t{json.dumps(list(resources), separators=(',', ':'))}",
+            text,
+        )
+        self.assertIn('UNKNOWN\t"verbose-bundle-cli-unknown"\t"exec-bundle"', text)
+        self.assertNotIn(str(claim["token"]), text)
+
     def test_operation_inspection_and_reconciliation_cli(self) -> None:
         resource = "repo:reconcile"
         acquired = self.json_cli(*self.acquire_arguments(resource=resource))

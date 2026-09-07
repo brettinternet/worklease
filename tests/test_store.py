@@ -1048,6 +1048,7 @@ class StoreTests(unittest.TestCase):
                 "utf-8"
             )
         ).hexdigest()
+        uppercase_request_sha256 = request_sha256.upper()
         reconciliation_request = replace(target, operation_id="bundle-reconcile")
 
         inspected = self.store.inspect_bundle_operation(resources, "bundle-unknown")
@@ -1082,17 +1083,20 @@ class StoreTests(unittest.TestCase):
         reconciled = self.store.reconcile_bundle_operation(
             reconciliation_request,
             "bundle-unknown",
-            request_sha256,
+            uppercase_request_sha256,
             "observed-success",
             {"providerReceipt": "receipt"},
         )
         self.assertEqual("reconciled", reconciled["state"])
         self.assertEqual(list(resources), reconciled["resources"])
         self.assertNotIn(str(claim["token"]), json.dumps(reconciled))
+        self.assertEqual(
+            [], self.store.status_verbose(resources[0])["unknownOperations"]
+        )
         replay = self.store.reconcile_bundle_operation(
             reconciliation_request,
             "bundle-unknown",
-            request_sha256,
+            uppercase_request_sha256,
             "observed-success",
             {"providerReceipt": "receipt"},
         )
@@ -1108,7 +1112,7 @@ class StoreTests(unittest.TestCase):
                 self.store.reconcile_bundle_operation(
                     changed_request,
                     "bundle-unknown",
-                    request_sha256,
+                    uppercase_request_sha256,
                     "observed-success",
                     {"providerReceipt": "receipt"},
                 )
@@ -1800,6 +1804,33 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
         self.assertGreater(recovered["claim"]["revision"], first["claim"]["revision"])
         self.assertNotEqual(first["claim"]["token"], recovered["claim"]["token"])
 
+    def test_overlapping_expired_bundle_reclaim_removes_all_old_claim_rows(
+        self,
+    ) -> None:
+        first = self.store.acquire_bundle(
+            self.bundle_request(("resource-a", "resource-b"), "first", ttl=1)
+        )
+        self.clock.advance(1.1)
+
+        recovered = self.store.acquire_bundle(
+            self.bundle_request(("resource-b", "resource-c"), "second")
+        )
+
+        self.assertTrue(recovered["reclaimed"])
+        self.assertEqual("free", self.store.status("resource-a")["state"])
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            orphaned = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM claims AS c
+                LEFT JOIN bundles AS b ON b.claim_id = c.claim_id
+                WHERE c.claim_id = ? AND b.claim_id IS NULL
+                """,
+                (first["claim"]["claimId"],),
+            ).fetchone()
+        assert orphaned is not None
+        self.assertEqual(0, orphaned[0])
+
     def bundle_mutation(
         self,
         acquired: dict[str, object],
@@ -1817,6 +1848,60 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
             revision=int(claim["revision"]),
             operation_id=operation_id,
             ttl=ttl,
+        )
+
+    def test_verbose_status_projects_bundle_and_unknown_operation(self) -> None:
+        resources = ("verbose-bundle-a", "verbose-bundle-b")
+        acquired = self.store.acquire_bundle(
+            self.bundle_request(resources, "verbose-bundle")
+        )
+        request = self.bundle_mutation(acquired, resources, "unknown-verbose-bundle")
+        self.assertIsNone(
+            self.store.begin_bundle_operation(
+                request,
+                "exec-bundle",
+                request.request_dict(command=["printf", "bundle-sentinel"]),
+            )
+        )
+
+        operation_resource = json.dumps(list(resources), separators=(",", ":"))
+        singleton = self.store.acquire(
+            self.acquire_request(operation_resource, "literal-resource")
+        )
+        singleton_request = self.mutation(
+            singleton, operation_resource, "literal-resource-operation"
+        )
+        self.assertIsNone(
+            self.store.begin_operation(
+                singleton_request,
+                "exec",
+                singleton_request.request_dict(command=["printf", "literal"]),
+            )
+        )
+
+        diagnostic = self.store.status_verbose(resources[1])
+
+        self.assertEqual("active", diagnostic["state"])
+        self.assertEqual(list(resources), diagnostic["claim"]["resources"])
+        self.assertNotIn("resource", diagnostic["claim"])
+        self.assertEqual(
+            ["unknown-verbose-bundle"],
+            [operation["operationId"] for operation in diagnostic["unknownOperations"]],
+        )
+        self.assertEqual("exec-bundle", diagnostic["unknownOperations"][0]["kind"])
+        self.assertNotIn(str(acquired["claim"]["token"]), json.dumps(diagnostic))
+        self.assertNotIn("bundle-sentinel", json.dumps(diagnostic))
+
+        self.clock.advance(10.1)
+        replacement_resources = (resources[1], "verbose-bundle-c")
+        self.store.acquire_bundle(
+            self.bundle_request(replacement_resources, "replacement-bundle")
+        )
+        historical = self.store.status_verbose(resources[1])
+        self.assertEqual(list(replacement_resources), historical["claim"]["resources"])
+        self.assertEqual(
+            ["unknown-verbose-bundle"],
+            [operation["operationId"] for operation in historical["unknownOperations"]],
         )
 
     def test_bundle_status_heartbeat_and_release_are_atomic_and_idempotent(

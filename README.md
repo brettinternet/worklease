@@ -424,8 +424,12 @@ The command grammars are:
   emits `CLAIM <none>`.
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
   block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
-  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`. Field labels
-  use the same upper-snake convention as all other text renderers.
+  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`. For a bundle
+  member, the claim block uses `RESOURCES` with the ordered bundle resources
+  instead of `RESOURCE`, and unknown operations include started bundle
+  operations such as `exec-bundle`. JSON output likewise uses the claim's
+  `resources` array. Field labels use the same upper-snake convention as all
+  other text renderers.
 - `inspect-operation` and `inspect-operation-bundle`: `OK <operation>`, followed
   by singleton or ordered-bundle identity, kind, state, outcome, hashes, and
   reconciliation timestamps when present.
