@@ -1956,6 +1956,85 @@ with resource_lock(resource):
                     in_field = False
             self.assertEqual(header_starts, starts, line)
 
+    def test_text_list_aligns_wide_resources_and_claim_ids(self) -> None:
+        now = 1_750_000_000.0
+        wide_resource = "repo:项目/路径/" + ("界" * 30) + ":TASK-48"
+        wide_claim_id = "认领" * 10
+        ascii_resource = "repo:projects/path/" + ("x" * 48) + ":TASK-49"
+        ascii_claim_id = "claim-ascii-identifier-long"
+        payload = {
+            "ok": True,
+            "operation": "list",
+            "claims": [
+                {
+                    "resource": wide_resource,
+                    "claimId": wide_claim_id,
+                    "ownerId": "owner-wide",
+                    "expiresAt": "2025-06-15T22:14:20Z",
+                    "expiresAtEpoch": now + 60,
+                    "active": True,
+                },
+                {
+                    "resource": ascii_resource,
+                    "claimId": ascii_claim_id,
+                    "ownerId": "owner-ascii",
+                    "expiresAt": "2025-06-15T22:14:20Z",
+                    "expiresAtEpoch": now + 60,
+                    "active": True,
+                },
+            ],
+        }
+        headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+
+        def column_starts(line: str, cells: tuple[str, ...]) -> list[int]:
+            starts = []
+            search_start = 0
+            for cell in cells:
+                index = line.index(cell, search_start)
+                starts.append(cli_module._display_width(line[:index]))
+                search_start = index + len(cell)
+            return starts
+
+        for full in (False, True):
+            output = StringIO()
+            with redirect_stdout(output):
+                cli_module._render_list(payload, full=full, now=now)
+            lines = output.getvalue().rstrip("\n").splitlines()
+            expected_starts = column_starts(lines[0], headers)
+            expected_rows = (
+                (
+                    "active",
+                    wide_resource
+                    if full
+                    else cli_module._shorten_resource(wide_resource, 52),
+                    wide_claim_id
+                    if full
+                    else cli_module._shorten_text(wide_claim_id, 18),
+                    "owner-wide",
+                    "2025-06-15T22:14:20Z" if full else "1m",
+                ),
+                (
+                    "active",
+                    ascii_resource
+                    if full
+                    else cli_module._shorten_resource(ascii_resource, 52),
+                    ascii_claim_id
+                    if full
+                    else cli_module._shorten_text(ascii_claim_id, 18),
+                    "owner-ascii",
+                    "2025-06-15T22:14:20Z" if full else "1m",
+                ),
+            )
+            for line, cells in zip(lines[1:], expected_rows, strict=True):
+                self.assertEqual(expected_starts, column_starts(line, cells), line)
+
+            if full:
+                self.assertIn(wide_resource, output.getvalue())
+                self.assertIn(wide_claim_id, output.getvalue())
+            else:
+                self.assertLessEqual(cli_module._display_width(expected_rows[0][1]), 52)
+                self.assertLessEqual(cli_module._display_width(expected_rows[0][2]), 18)
+
     def test_resource_shortening_bounds_opaque_values(self) -> None:
         opaque = "opaque-resource-" + ("x" * 100)
         for width in (0, 1, 2, 17, 52):

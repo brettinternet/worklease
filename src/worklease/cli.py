@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import sys
 import time
+import unicodedata
 from collections.abc import Sequence
 from typing import Any, NoReturn, cast
 
@@ -1550,14 +1551,48 @@ def _render_policy_describe(payload: dict[str, object]) -> None:
             print(f"{field}: {_text_atom(payload[field])}")
 
 
+def _display_width(value: str) -> int:
+    """Return terminal columns, treating East Asian wide/fullwidth text as two."""
+
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in value)
+
+
+def _display_prefix(value: str, width: int) -> str:
+    """Return the longest prefix that fits within a display width."""
+
+    end = 0
+    used = 0
+    for end, character in enumerate(value, start=1):
+        character_width = _display_width(character)
+        if used + character_width > width:
+            return value[: end - 1]
+        used += character_width
+    return value[:end]
+
+
+def _display_suffix(value: str, width: int) -> str:
+    """Return the longest suffix that fits within a display width."""
+
+    start = len(value)
+    used = 0
+    for start in range(len(value) - 1, -1, -1):
+        character_width = _display_width(value[start])
+        if used + character_width > width:
+            return value[start + 1 :]
+        used += character_width
+    return value[start:]
+
+
 def _render_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
     all_rows = (headers, *rows)
     widths = tuple(
-        max(len(row[index]) for row in all_rows) for index in range(len(headers))
+        max(_display_width(row[index]) for row in all_rows)
+        for index in range(len(headers))
     )
     for row in all_rows:
         padded = [
-            cell.ljust(width) for cell, width in zip(row[:-1], widths[:-1], strict=True)
+            f"{cell}{' ' * (width - _display_width(cell))}"
+            for cell, width in zip(row[:-1], widths[:-1], strict=True)
         ]
         padded.append(row[-1])
         print("   ".join(padded))
@@ -1572,13 +1607,15 @@ _LIST_EXPIRY_WIDTH = 16
 def _shorten_text(value: str, width: int) -> str:
     """Keep a readable prefix and suffix within a fixed display width."""
 
-    if len(value) <= width:
+    if _display_width(value) <= width:
         return value
     if width <= 1:
-        return value[:width]
+        return _display_prefix(value, width)
     prefix_width = (width - 1) // 2
     suffix_width = width - 1 - prefix_width
-    return f"{value[:prefix_width]}…{value[-suffix_width:]}"
+    return (
+        f"{_display_prefix(value, prefix_width)}…{_display_suffix(value, suffix_width)}"
+    )
 
 
 _RESOURCE_BOUNDARIES = frozenset("/:#\\")
@@ -1587,10 +1624,10 @@ _RESOURCE_BOUNDARIES = frozenset("/:#\\")
 def _shorten_resource(value: str, width: int) -> str:
     """Keep a path component and the longest fitting resource suffix."""
 
-    if len(value) <= width:
+    if _display_width(value) <= width:
         return value
     if width <= 1:
-        return value[:width]
+        return _display_prefix(value, width)
 
     prefix_end: int | None = None
     saw_component = False
@@ -1601,12 +1638,14 @@ def _shorten_resource(value: str, width: int) -> str:
                 break
         else:
             saw_component = True
-    if prefix_end is None or prefix_end >= width - 1:
+    prefix_width = _display_width(value[:prefix_end]) if prefix_end is not None else 0
+    if prefix_end is None or prefix_width >= width - 1:
         return _shorten_text(value, width)
 
-    suffix_capacity = width - prefix_end - 1
+    suffix_capacity = width - prefix_width - 1
+    fitting_suffix_start = len(value) - len(_display_suffix(value, suffix_capacity))
     suffix_start: int | None = None
-    for index in range(len(value) - suffix_capacity, len(value)):
+    for index in range(fitting_suffix_start, len(value)):
         if value[index] in _RESOURCE_BOUNDARIES:
             suffix_start = index
             break
@@ -1637,7 +1676,7 @@ def _shorten_resource(value: str, width: int) -> str:
         and value[path_component_start] != "."
     ):
         visible_path_component = True
-    if len(shortened) <= width and visible_path_component:
+    if _display_width(shortened) <= width and visible_path_component:
         return shortened
 
     anchor: tuple[int, int] | None = None
@@ -1670,10 +1709,12 @@ def _shorten_resource(value: str, width: int) -> str:
         for index in range(suffix_start, len(value)):
             if value[index] in _RESOURCE_BOUNDARIES:
                 candidate = f"{prefix}…{anchor_text}{value[index:]}"
-                if len(candidate) <= width:
+                if _display_width(candidate) <= width:
                     return candidate
 
-    return shortened if len(shortened) <= width else _shorten_text(value, width)
+    return (
+        shortened if _display_width(shortened) <= width else _shorten_text(value, width)
+    )
 
 
 def _relative_duration(seconds: float) -> str:
