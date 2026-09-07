@@ -3,9 +3,11 @@ id: TASK-50
 title: >-
   Fix bundle projections in status --verbose and clean up overlapping bundle
   reclaim
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-task-50'
 created_date: '2026-09-07 03:28'
+updated_date: '2026-09-07 05:47'
 labels:
   - bundles
 dependencies: []
