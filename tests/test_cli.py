@@ -84,15 +84,13 @@ class CliContractTests(unittest.TestCase):
         expected_code: int = 0,
         pass_fds: tuple[int, ...] = (),
     ) -> dict[str, object]:
-        visible_arguments = (
-            arguments[: arguments.index("--")] if "--" in arguments else arguments
-        )
+        visible_arguments = cli_module._visible_output_options(arguments)
         output_arguments = (
             arguments
             if any(
                 value in {"--json", "-j", "--format", "-f"}
                 or value.startswith("--format=")
-                or value.startswith("-f=")
+                or (value.startswith("-f") and len(value) > 2)
                 for value in visible_arguments
             )
             else ("--json", *arguments)
@@ -2899,15 +2897,64 @@ with resource_lock(resource):
                 self.assertEqual("invalid-arguments", payload["error"])
 
     def test_child_arguments_do_not_select_or_conflict_output(self) -> None:
-        result = self.run_cli("exec", "--", "--json", "--format", "text")
-        self.assertEqual(64, result.returncode)
-        self.assertEqual(
-            "ERROR exec: invalid-arguments\n"
-            "HINT\tRequired options: --resource, --claim-id, --revision; "
-            "see worklease exec --help\n",
-            result.stdout,
+        for command in ("exec", "exec-bundle", "bundle-exec"):
+            for separator in ((), ("--",)):
+                with self.subTest(command=command, separator=separator):
+                    result = self.run_cli(
+                        command,
+                        *separator,
+                        "child",
+                        "--json",
+                        "--format",
+                        "json",
+                    )
+                    self.assertEqual(64, result.returncode)
+                    self.assertTrue(result.stdout.startswith("ERROR "))
+                    self.assertEqual("", result.stderr)
+
+            payload = self.json_cli(
+                command,
+                "child",
+                "--format=oneline",
+                expected_code=64,
+            )
+            self.assertEqual("invalid-arguments", payload["error"])
+
+        parser_error = self.run_cli(
+            "--format",
+            "text",
+            "exec",
+            "--revision",
+            "not-an-integer",
+            "child",
+            "--format=json",
         )
-        self.assertEqual("", result.stderr)
+        self.assertEqual(64, parser_error.returncode)
+        self.assertTrue(
+            parser_error.stdout.startswith("ERROR exec: invalid-arguments\n")
+        )
+        self.assertFalse(parser_error.stdout.startswith("{"))
+        self.assertEqual("", parser_error.stderr)
+
+    def test_exec_without_separator_preserves_child_output_options(self) -> None:
+        resource = "repo:exec-child-output-options"
+        claim = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="exec-child-output")
+        )["claim"]
+        assert isinstance(claim, dict)
+
+        payload = self.json_cli(
+            *self.mutation_arguments(
+                "exec", resource, claim, "exec-child-output-options"
+            ),
+            sys.executable,
+            "-c",
+            "import sys; print(sys.argv[1])",
+            "--format=oneline",
+        )
+        command = payload["command"]
+        assert isinstance(command, dict)
+        self.assertEqual("--format=oneline\n", command["stdout"])
 
     def test_stale_claim_errors_redact_current_token(self) -> None:
         resource = "repo:stale-error"

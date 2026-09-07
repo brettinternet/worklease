@@ -83,7 +83,11 @@ The CLI emits compact human-readable text by default. Use `--json` (or
 `--format json`) for the schema-versioned JSON automation contract; `--format
 text` is an explicit equivalent. Output selection may appear before the
 top-level command or after the command's final subcommand name, but `--json`
-cannot be combined with `--format`.
+cannot be combined with `--format`. For `exec`, `exec-bundle`, and
+`bundle-exec`, the `--` before the child command is optional when the executable
+is the first positional argument. Use the separator for clarity or when the
+executable begins with `-`; once the executable begins, all remaining options
+belong to the child and do not affect Worklease output formatting.
 
 ### 1. Derive one exact resource
 
