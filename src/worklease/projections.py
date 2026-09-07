@@ -313,6 +313,12 @@ class ProjectionMixin:
                 )
             }
 
+            def table_columns(table: str) -> set[str]:
+                return {
+                    str(column["name"])
+                    for column in db.execute(f"PRAGMA table_info({table})")
+                }
+
             def value(row: sqlite3.Row, name: str, default: Any = None) -> Any:
                 try:
                     return row[name]
@@ -373,10 +379,15 @@ class ProjectionMixin:
 
             epoch_rows: list[dict[str, Any]] = []
             if "epochs" in tables:
+                singleton_revision = (
+                    "acquisition_revision"
+                    if "acquisition_revision" in table_columns("epochs")
+                    else "NULL AS acquisition_revision"
+                )
                 singleton_rows = db.execute(
-                    """
+                    f"""
                     SELECT claim_id, resource, agent_id, session_id, owner_id,
-                           work_key, acquired_at, acquisition_revision
+                           work_key, acquired_at, {singleton_revision}
                     FROM epochs
                     WHERE resource = ?
                     """,
@@ -408,10 +419,15 @@ class ProjectionMixin:
                     )
 
             if "bundle_epochs" in tables:
+                bundle_revision = (
+                    "acquisition_revision"
+                    if "acquisition_revision" in table_columns("bundle_epochs")
+                    else "NULL AS acquisition_revision"
+                )
                 bundle_rows = db.execute(
-                    """
+                    f"""
                     SELECT claim_id, resources, agent_id, session_id, owner_id,
-                           work_key, acquired_at, acquisition_revision
+                           work_key, acquired_at, {bundle_revision}
                     FROM bundle_epochs AS bundle_epoch
                     WHERE EXISTS (
                         SELECT 1

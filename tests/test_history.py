@@ -656,6 +656,56 @@ class HistoryProjectionTests(unittest.TestCase):
         self.assertIsNone(legacy["termination"])
         self.assertIsNone(legacy["currentClaim"])
 
+    def test_pre_migration_history_projects_legacy_epochs_without_writing(self) -> None:
+        singleton = self._acquire("legacy-singleton", "legacy-singleton-claim")
+        bundle = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=("legacy-bundle", "legacy-bundle-peer"),
+                claim_id="legacy-bundle-claim",
+                agent_id="legacy-bundle-agent",
+                session_id="legacy-bundle-session",
+                owner_id="legacy-bundle-owner",
+                work_key="legacy-bundle-work",
+            )
+        )["claim"]
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute("DROP INDEX epoch_terminations_by_claim_time")
+            db.execute("DROP INDEX epoch_terminations_by_recorded_at")
+            db.execute("DROP INDEX epochs_by_resource_revision")
+            db.execute("DROP TABLE epoch_terminations")
+            db.execute("ALTER TABLE epochs DROP COLUMN acquisition_revision")
+            db.execute("ALTER TABLE bundle_epochs DROP COLUMN acquisition_revision")
+            db.execute("UPDATE schema_meta SET version = 2")
+
+        singleton_history = self.store.history("legacy-singleton")
+        bundle_history = self.store.history("legacy-bundle")
+        singleton_epoch = singleton_history["epochs"][0]
+        bundle_epoch = bundle_history["epochs"][0]
+        self.assertEqual(singleton["claimId"], singleton_epoch["claimId"])
+        self.assertEqual(bundle["claimId"], bundle_epoch["claimId"])
+        self.assertEqual("legacy-incomplete", singleton_epoch["completeness"])
+        self.assertEqual("legacy-incomplete", bundle_epoch["completeness"])
+        self.assertIsNone(singleton_epoch["acquisitionRevision"])
+        self.assertIsNone(bundle_epoch["acquisitionRevision"])
+        self.assertIsNone(singleton_epoch["termination"])
+        self.assertIsNone(bundle_epoch["termination"])
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                (2,), db.execute("SELECT version FROM schema_meta").fetchone()
+            )
+            self.assertNotIn(
+                "acquisition_revision",
+                {str(row[1]) for row in db.execute("PRAGMA table_info(epochs)")},
+            )
+            self.assertIsNone(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'epoch_terminations'"
+                ).fetchone()
+            )
+
     def test_singleton_history_lookup_uses_required_revision_index(self) -> None:
         self._ensure_database()
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:

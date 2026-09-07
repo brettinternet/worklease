@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-07 14:59'
-updated_date: '2026-09-07 18:36'
+updated_date: '2026-09-07 18:55'
 labels:
   - storage
   - cli
@@ -49,10 +49,14 @@ This history is local, retention-bounded diagnostic state. It is not authoritati
 1. Verify the integrated TASK-59.1 through TASK-59.3 implementation against the parent acceptance criteria.
 2. Run focused history checks and all repository quality gates in the isolated worktree.
 3. Record criterion-level evidence, finalize TASK-59, commit the backlog state, merge to main, validate, and clean the worktree.
+
+4. Fix the verified pre-v3 read-only history failure by projecting missing acquisition revisions as legacy-incomplete without migrating the database, and add singleton and bundle regression coverage.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Selected as the only open dependency-ready backlog item after all three subtasks completed; working in HWT workspace w5C on branch task-59-retained-history.
+
+Independent verification found that history on a valid unmigrated v2 database failed on missing acquisition_revision columns. Added a read-only schema-aware fallback and regression coverage that preserves schema v2 while projecting singleton and bundle epochs as legacy-incomplete.
 <!-- SECTION:NOTES:END -->
