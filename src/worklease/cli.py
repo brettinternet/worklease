@@ -7,12 +7,12 @@ import json
 import math
 import os
 import re
+import sqlite3
 import sys
 import time
 from collections.abc import Sequence
 from typing import Any, NoReturn, Protocol, cast
 
-from . import __version__
 from ._release_metadata import PUBLISHED_RELEASE_VERSION
 from .adapters import (
     describe_policy,
@@ -231,13 +231,14 @@ _ACQUIRE_BUNDLE_EPILOG = """\
 Example:
   worklease acquire-bundle \\
     --resource local:formatter \\
+    --resource local:linter \\
     --claim-id claim-formatter \\
     --agent-id agent-1 \\
     --session-id session-1 \\
     --owner-id attempt-1 \\
     --work-key format:repo"""
 _STATUS_BUNDLE_EPILOG = _single_line_epilog(
-    "worklease status-bundle --resource local:formatter"
+    "worklease status-bundle --resource local:formatter --resource local:linter"
 )
 _STATUS_EPILOG = _single_line_epilog("worklease status --resource local:formatter")
 _INSPECT_OPERATION_EPILOG = _single_line_epilog(
@@ -246,7 +247,7 @@ _INSPECT_OPERATION_EPILOG = _single_line_epilog(
 )
 _INSPECT_OPERATION_BUNDLE_EPILOG = _single_line_epilog(
     "worklease inspect-operation-bundle --resource local:formatter "
-    "--operation-id test-TASK-42-001"
+    "--resource local:linter --operation-id test-TASK-42-001"
 )
 _GC_EPILOG = _single_line_epilog("worklease gc")
 _RECONCILE_OPERATION_EPILOG = """\
@@ -265,6 +266,7 @@ _RECONCILE_OPERATION_BUNDLE_EPILOG = """\
 Example:
   worklease reconcile-operation-bundle \\
     --resource local:formatter \\
+    --resource local:linter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
@@ -308,6 +310,7 @@ _HEARTBEAT_BUNDLE_EPILOG = """\
 Example:
   worklease heartbeat-bundle \\
     --resource local:formatter \\
+    --resource local:linter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
@@ -316,6 +319,7 @@ _RELEASE_BUNDLE_EPILOG = """\
 Example:
   worklease release-bundle \\
     --resource local:formatter \\
+    --resource local:linter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
@@ -324,7 +328,8 @@ Example:
 _EXEC_BUNDLE_EPILOG = """\
 Example:
   worklease exec-bundle \\
-    --resource "$RESOURCE" \\
+    --resource "$RESOURCE_1" \\
+    --resource "$RESOURCE_2" \\
     --claim-id "$CLAIM_ID" \\
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
@@ -419,13 +424,46 @@ def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
 def _common_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
-    parser.add_argument("-r", "--resource", required=True)
-    parser.add_argument("-c", "--claim-id", required=True)
-    parser.add_argument("-t", "--token")
-    parser.add_argument("-F", "--token-file")
-    parser.add_argument("-D", "--token-fd")
-    parser.add_argument("-R", "--revision", required=True, type=int)
-    parser.add_argument("-o", "--operation-id", required=True)
+    parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
+    parser.add_argument(
+        "-c",
+        "--claim-id",
+        required=True,
+        help="fresh unique ID for this ownership epoch",
+    )
+    parser.add_argument(
+        "-t",
+        "--token",
+        help="bearer token from acquire (exposes the secret in argv; prefer --token-file)",
+    )
+    parser.add_argument(
+        "-F",
+        "--token-file",
+        help="path to a private file containing the bearer token",
+    )
+    parser.add_argument(
+        "-D",
+        "--token-fd",
+        help="inherited file descriptor number to read the bearer token from",
+    )
+    parser.add_argument(
+        "-R",
+        "--revision",
+        required=True,
+        type=int,
+        help="newest claim revision returned by the previous mutation",
+    )
+    parser.add_argument(
+        "-o",
+        "--operation-id",
+        required=True,
+        help="idempotency key; replay the identical request only to recover a lost response",
+    )
     if include_ttl:
         _add_ttl_argument(parser)
 
@@ -462,12 +500,40 @@ def _common_bundle_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
     _bundle_resources(parser)
-    parser.add_argument("-c", "--claim-id", required=True)
-    parser.add_argument("-t", "--token")
-    parser.add_argument("-F", "--token-file")
-    parser.add_argument("-D", "--token-fd")
-    parser.add_argument("-R", "--revision", required=True, type=int)
-    parser.add_argument("-o", "--operation-id", required=True)
+    parser.add_argument(
+        "-c",
+        "--claim-id",
+        required=True,
+        help="fresh unique ID for this ownership epoch",
+    )
+    parser.add_argument(
+        "-t",
+        "--token",
+        help="bearer token from acquire (exposes the secret in argv; prefer --token-file)",
+    )
+    parser.add_argument(
+        "-F",
+        "--token-file",
+        help="path to a private file containing the bearer token",
+    )
+    parser.add_argument(
+        "-D",
+        "--token-fd",
+        help="inherited file descriptor number to read the bearer token from",
+    )
+    parser.add_argument(
+        "-R",
+        "--revision",
+        required=True,
+        type=int,
+        help="newest claim revision returned by the previous mutation",
+    )
+    parser.add_argument(
+        "-o",
+        "--operation-id",
+        required=True,
+        help="idempotency key; replay the identical request only to recover a lost response",
+    )
     if include_ttl:
         _add_ttl_argument(parser)
 
@@ -570,9 +636,24 @@ def _parser() -> _ArgumentParser:
         "key", help="derive one stable resource key", epilog=_KEY_EPILOG
     )
     _add_output_arguments(key_parser)
-    key_parser.add_argument("-p", "--provider", required=True)
-    key_parser.add_argument("-s", "--source", required=True)
-    key_parser.add_argument("-i", "--item", required=True)
+    key_parser.add_argument(
+        "-p",
+        "--provider",
+        required=True,
+        help="resource policy name (see `worklease policy list`)",
+    )
+    key_parser.add_argument(
+        "-s",
+        "--source",
+        required=True,
+        help="provider-specific source such as a Backlog.md directory or repository",
+    )
+    key_parser.add_argument(
+        "-i",
+        "--item",
+        required=True,
+        help="provider-specific item identity such as TASK-42 or an issue number",
+    )
     key_parser.add_argument(
         "-C",
         "--coordination-only",
@@ -598,18 +679,53 @@ def _parser() -> _ArgumentParser:
         epilog=_POLICY_DESCRIBE_EPILOG,
     )
     _add_output_arguments(describe_parser)
-    describe_parser.add_argument("-n", "--name", required=True)
+    describe_parser.add_argument(
+        "-n",
+        "--name",
+        required=True,
+        help="resource policy name",
+    )
 
     acquire_parser = commands.add_parser(
         "acquire", help="atomically acquire or reclaim a lease", epilog=_ACQUIRE_EPILOG
     )
     _add_output_arguments(acquire_parser)
-    acquire_parser.add_argument("-r", "--resource", required=True)
-    acquire_parser.add_argument("-c", "--claim-id", required=True)
-    acquire_parser.add_argument("-a", "--agent-id", required=True)
-    acquire_parser.add_argument("-s", "--session-id", required=True)
-    acquire_parser.add_argument("-o", "--owner-id", required=True)
-    acquire_parser.add_argument("-w", "--work-key", required=True)
+    acquire_parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
+    acquire_parser.add_argument(
+        "-c",
+        "--claim-id",
+        required=True,
+        help="fresh unique ID for this ownership epoch",
+    )
+    acquire_parser.add_argument(
+        "-a",
+        "--agent-id",
+        required=True,
+        help="stable ID of the logical agent or human",
+    )
+    acquire_parser.add_argument(
+        "-s",
+        "--session-id",
+        required=True,
+        help="fresh ID for this agent session",
+    )
+    acquire_parser.add_argument(
+        "-o",
+        "--owner-id",
+        required=True,
+        help="fresh ID for this worker attempt",
+    )
+    acquire_parser.add_argument(
+        "-w",
+        "--work-key",
+        required=True,
+        help="caller-defined label for the work, such as implement:TASK-42",
+    )
     acquire_parser.add_argument(
         "-C",
         "--coordination-only",
@@ -647,12 +763,42 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(acquire_bundle_parser)
     _bundle_resources(acquire_bundle_parser)
-    acquire_bundle_parser.add_argument("-c", "--claim-id", required=True)
-    acquire_bundle_parser.add_argument("-a", "--agent-id", required=True)
-    acquire_bundle_parser.add_argument("-s", "--session-id", required=True)
-    acquire_bundle_parser.add_argument("-o", "--owner-id", required=True)
-    acquire_bundle_parser.add_argument("-w", "--work-key", required=True)
-    acquire_bundle_parser.add_argument("-C", "--coordination-only", action="store_true")
+    acquire_bundle_parser.add_argument(
+        "-c",
+        "--claim-id",
+        required=True,
+        help="fresh unique ID for this ownership epoch",
+    )
+    acquire_bundle_parser.add_argument(
+        "-a",
+        "--agent-id",
+        required=True,
+        help="stable ID of the logical agent or human",
+    )
+    acquire_bundle_parser.add_argument(
+        "-s",
+        "--session-id",
+        required=True,
+        help="fresh ID for this agent session",
+    )
+    acquire_bundle_parser.add_argument(
+        "-o",
+        "--owner-id",
+        required=True,
+        help="fresh ID for this worker attempt",
+    )
+    acquire_bundle_parser.add_argument(
+        "-w",
+        "--work-key",
+        required=True,
+        help="caller-defined label for the work, such as implement:TASK-42",
+    )
+    acquire_bundle_parser.add_argument(
+        "-C",
+        "--coordination-only",
+        action="store_true",
+        help="mark this ownership epoch as unable to fence provider writes",
+    )
     _add_ttl_argument(acquire_bundle_parser)
 
     status_bundle_parser = commands.add_parser(
@@ -668,7 +814,12 @@ def _parser() -> _ArgumentParser:
         "status", help="read current lease state", epilog=_STATUS_EPILOG
     )
     _add_output_arguments(status_parser)
-    status_parser.add_argument("-r", "--resource", required=True)
+    status_parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
     status_parser.add_argument(
         "-V",
         "--verbose",
@@ -682,8 +833,18 @@ def _parser() -> _ArgumentParser:
         epilog=_INSPECT_OPERATION_EPILOG,
     )
     _add_output_arguments(inspect_operation_parser)
-    inspect_operation_parser.add_argument("-r", "--resource", required=True)
-    inspect_operation_parser.add_argument("-o", "--operation-id", required=True)
+    inspect_operation_parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
+    inspect_operation_parser.add_argument(
+        "-o",
+        "--operation-id",
+        required=True,
+        help="idempotency key; replay the identical request only to recover a lost response",
+    )
     inspect_bundle_operation_parser = commands.add_parser(
         "inspect-operation-bundle",
         help="inspect one ordered bundle operation outcome",
@@ -691,7 +852,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(inspect_bundle_operation_parser)
     _bundle_resources(inspect_bundle_operation_parser)
-    inspect_bundle_operation_parser.add_argument("-o", "--operation-id", required=True)
+    inspect_bundle_operation_parser.add_argument(
+        "-o",
+        "--operation-id",
+        required=True,
+        help="idempotency key; replay the identical request only to recover a lost response",
+    )
     gc_parser = commands.add_parser(
         "gc",
         help="inspect or collect records eligible for garbage collection",
@@ -731,18 +897,30 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(reconcile_operation_parser)
     _common_claim_arguments(reconcile_operation_parser)
     reconcile_operation_parser.add_argument(
-        "-I", "--target-operation-id", required=True
+        "-I",
+        "--target-operation-id",
+        required=True,
+        help="ID of the started operation whose outcome was verified externally",
     )
     reconcile_operation_parser.add_argument(
-        "-x", "--expected-request-sha256", required=True
+        "-x",
+        "--expected-request-sha256",
+        required=True,
+        help="REQUEST_SHA256 reported by inspect-operation for the target",
     )
     reconcile_operation_parser.add_argument(
         "-O",
         "--outcome",
         required=True,
         choices=("observed-success", "observed-failure"),
+        help="verified external result of the target operation",
     )
-    reconcile_operation_parser.add_argument("-e", "--evidence", required=True)
+    reconcile_operation_parser.add_argument(
+        "-e",
+        "--evidence",
+        required=True,
+        help="short description of how the outcome was verified",
+    )
     reconcile_bundle_operation_parser = commands.add_parser(
         "reconcile-operation-bundle",
         help="record an observed ordered bundle operation outcome",
@@ -751,18 +929,30 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(reconcile_bundle_operation_parser)
     _common_bundle_claim_arguments(reconcile_bundle_operation_parser)
     reconcile_bundle_operation_parser.add_argument(
-        "-I", "--target-operation-id", required=True
+        "-I",
+        "--target-operation-id",
+        required=True,
+        help="ID of the started operation whose outcome was verified externally",
     )
     reconcile_bundle_operation_parser.add_argument(
-        "-x", "--expected-request-sha256", required=True
+        "-x",
+        "--expected-request-sha256",
+        required=True,
+        help="REQUEST_SHA256 reported by inspect-operation for the target",
     )
     reconcile_bundle_operation_parser.add_argument(
         "-O",
         "--outcome",
         required=True,
         choices=("observed-success", "observed-failure"),
+        help="verified external result of the target operation",
     )
-    reconcile_bundle_operation_parser.add_argument("-e", "--evidence", required=True)
+    reconcile_bundle_operation_parser.add_argument(
+        "-e",
+        "--evidence",
+        required=True,
+        help="short description of how the outcome was verified",
+    )
 
     checkpoint_parser = commands.add_parser(
         "checkpoint",
@@ -771,7 +961,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(checkpoint_parser)
     _common_claim_arguments(checkpoint_parser)
-    checkpoint_parser.add_argument("-k", "--checkpoint", required=True)
+    checkpoint_parser.add_argument(
+        "-k",
+        "--checkpoint",
+        required=True,
+        help="bounded JSON object to store as coordination metadata",
+    )
 
     transfer_parser = commands.add_parser(
         "transfer",
@@ -779,18 +974,76 @@ def _parser() -> _ArgumentParser:
         epilog=_TRANSFER_EPILOG,
     )
     _add_output_arguments(transfer_parser)
-    transfer_parser.add_argument("-r", "--resource", required=True)
-    transfer_parser.add_argument("-c", "--claim-id", required=True)
-    transfer_parser.add_argument("-t", "--token")
-    transfer_parser.add_argument("-F", "--token-file")
-    transfer_parser.add_argument("-D", "--token-fd")
-    transfer_parser.add_argument("-R", "--revision", required=True, type=int)
-    transfer_parser.add_argument("-o", "--operation-id", required=True)
-    transfer_parser.add_argument("-C", "--successor-claim-id", required=True)
-    transfer_parser.add_argument("-A", "--successor-agent-id", required=True)
-    transfer_parser.add_argument("-S", "--successor-session-id", required=True)
-    transfer_parser.add_argument("-O", "--successor-owner-id", required=True)
-    transfer_parser.add_argument("-W", "--successor-work-key", required=True)
+    transfer_parser.add_argument(
+        "-r",
+        "--resource",
+        required=True,
+        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
+    transfer_parser.add_argument(
+        "-c",
+        "--claim-id",
+        required=True,
+        help="fresh unique ID for this ownership epoch",
+    )
+    transfer_parser.add_argument(
+        "-t",
+        "--token",
+        help="bearer token from acquire (exposes the secret in argv; prefer --token-file)",
+    )
+    transfer_parser.add_argument(
+        "-F",
+        "--token-file",
+        help="path to a private file containing the bearer token",
+    )
+    transfer_parser.add_argument(
+        "-D",
+        "--token-fd",
+        help="inherited file descriptor number to read the bearer token from",
+    )
+    transfer_parser.add_argument(
+        "-R",
+        "--revision",
+        required=True,
+        type=int,
+        help="newest claim revision returned by the previous mutation",
+    )
+    transfer_parser.add_argument(
+        "-o",
+        "--operation-id",
+        required=True,
+        help="idempotency key; replay the identical request only to recover a lost response",
+    )
+    transfer_parser.add_argument(
+        "-C",
+        "--successor-claim-id",
+        required=True,
+        help="fresh claim ID for the successor epoch",
+    )
+    transfer_parser.add_argument(
+        "-A",
+        "--successor-agent-id",
+        required=True,
+        help="stable agent ID of the successor",
+    )
+    transfer_parser.add_argument(
+        "-S",
+        "--successor-session-id",
+        required=True,
+        help="fresh session ID of the successor",
+    )
+    transfer_parser.add_argument(
+        "-O",
+        "--successor-owner-id",
+        required=True,
+        help="fresh owner ID of the successor attempt",
+    )
+    transfer_parser.add_argument(
+        "-W",
+        "--successor-work-key",
+        required=True,
+        help="work label for the successor epoch",
+    )
     _add_ttl_argument(transfer_parser)
 
     list_parser = commands.add_parser(
@@ -820,7 +1073,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(release_parser)
     _common_claim_arguments(release_parser, include_ttl=False)
-    release_parser.add_argument("-m", "--reason", required=True)
+    release_parser.add_argument(
+        "-m",
+        "--reason",
+        required=True,
+        help="audit note recorded with the release",
+    )
 
     execute_parser = commands.add_parser(
         "exec", help="run one argv under a lease", epilog=_EXEC_EPILOG
@@ -847,7 +1105,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(release_bundle_parser)
     _common_bundle_claim_arguments(release_bundle_parser, include_ttl=False)
-    release_bundle_parser.add_argument("-m", "--reason", required=True)
+    release_bundle_parser.add_argument(
+        "-m",
+        "--reason",
+        required=True,
+        help="audit note recorded with the release",
+    )
 
     execute_bundle_parser = commands.add_parser(
         "exec-bundle",
@@ -866,9 +1129,24 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(replace_parser)
     _common_claim_arguments(replace_parser)
-    replace_parser.add_argument("-p", "--path", required=True)
-    replace_parser.add_argument("-e", "--expected-sha256", required=True)
-    replace_parser.add_argument("-C", "--content-file", required=True)
+    replace_parser.add_argument(
+        "-p",
+        "--path",
+        required=True,
+        help="file to replace atomically",
+    )
+    replace_parser.add_argument(
+        "-e",
+        "--expected-sha256",
+        required=True,
+        help="SHA-256 of the file's current content",
+    )
+    replace_parser.add_argument(
+        "-C",
+        "--content-file",
+        required=True,
+        help="file holding the complete replacement content",
+    )
     return parser
 
 
@@ -885,6 +1163,8 @@ def _text_value(value: object) -> str:
 def _text_atom(value: object) -> str:
     """Keep simple labels readable while escaping control characters."""
 
+    if isinstance(value, bool):
+        return "true" if value else "false"
     text = "" if value is None else str(value)
     if any(
         ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in text
@@ -1583,12 +1863,15 @@ def _emit_parser_hint(argv: Sequence[str], message: str) -> None:
 
 
 def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) -> None:
-    if (
-        output_format == "text"
-        and operation == "status"
-        and reason == "invalid-resource"
-    ):
+    if output_format != "text":
+        return
+    if operation == "status" and reason == "invalid-resource":
         print("HINT\tExample: worklease status --resource local:formatter")
+    elif reason == "storage-failure":
+        print(
+            "HINT\tThe state directory could not be created, opened, or written; "
+            "check --home, WORKLEASE_HOME, and filesystem permissions"
+        )
 
 
 def _request(args: argparse.Namespace) -> MutationRequest:
@@ -1943,6 +2226,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.operation = f"policy-{args.policy_operation}"
 
     if args.version:
+        from . import __version__
+
         _emit(
             _envelope(
                 "version",
@@ -1980,6 +2265,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(output, output_format, full=getattr(args, "full", False))
         _emit_runtime_error_hint(args.operation, error.reason, output_format)
         return error.code
+    except OSError, sqlite3.Error:
+        _emit(
+            _envelope(args.operation, {"ok": False, "error": "storage-failure"}),
+            output_format,
+        )
+        _emit_runtime_error_hint(args.operation, "storage-failure", output_format)
+        return 75
 
 
 if __name__ == "__main__":

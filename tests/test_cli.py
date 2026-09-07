@@ -36,6 +36,32 @@ class CliContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.home.cleanup()
 
+    def test_unusable_home_reports_storage_failure(self) -> None:
+        blocker = Path(self.home.name) / "not-a-directory"
+        blocker.write_text("")
+        for arguments, expected_prefix in (
+            (("status", "--resource", "local:x"), "ERROR status: storage-failure\n"),
+            (("--json", "list"), "{"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_cli("--home", str(blocker / "child"), *arguments)
+                self.assertEqual(75, result.returncode)
+                self.assertEqual("", result.stderr)
+                self.assertTrue(result.stdout.startswith(expected_prefix))
+                if expected_prefix == "{":
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(
+                        {
+                            "schemaVersion": 1,
+                            "ok": False,
+                            "operation": "list",
+                            "error": "storage-failure",
+                        },
+                        payload,
+                    )
+                else:
+                    self.assertIn("HINT\t", result.stdout)
+
     def run_cli(
         self,
         *arguments: str,
