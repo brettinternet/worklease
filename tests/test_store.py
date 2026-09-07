@@ -151,6 +151,25 @@ class StoreTests(unittest.TestCase):
                 ).fetchone()
             )
 
+    def test_empty_schema_marker_resumes_interrupted_migration(self) -> None:
+        self.home.mkdir(parents=True)
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute("CREATE TABLE schema_meta(version INTEGER PRIMARY KEY)")
+
+        self.assertEqual("free", self.store.status("resource")["state"])
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertEqual(
+                [(lease_sqlite.SCHEMA_VERSION,)],
+                db.execute("SELECT version FROM schema_meta").fetchall(),
+            )
+            self.assertIsNotNone(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'claims'"
+                ).fetchone()
+            )
+
     def test_schema_failure_closes_new_connection(self) -> None:
         opened: list[sqlite3.Connection] = []
         real_connect = sqlite3.connect
@@ -170,6 +189,34 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(1, len(opened))
         with self.assertRaises(sqlite3.ProgrammingError):
             opened[0].execute("SELECT 1")
+
+    def test_up_to_date_open_skips_schema_writes(self) -> None:
+        self.store.acquire(self.acquire_request("schema-fast-path", "claim"))
+        statements: list[str] = []
+        real_connect = sqlite3.connect
+
+        def capture_connection(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            connection = real_connect(*args, **kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with (
+            patch("worklease.sqlite.sqlite3.connect", side_effect=capture_connection),
+            closing(lease_sqlite.connect(self.home)),
+        ):
+            pass
+
+        writes = tuple(
+            statement.lstrip().upper()
+            for statement in statements
+            if statement.lstrip().upper().startswith(("CREATE", "ALTER", "UPDATE"))
+        )
+        self.assertEqual((), writes)
+
+    def test_acquire_uses_one_connection(self) -> None:
+        with patch.object(self.store, "_connect", wraps=self.store._connect) as connect:
+            self.store.acquire(self.acquire_request("single-connection", "claim"))
+        self.assertEqual(1, connect.call_count)
 
     def test_opaque_resource_is_preserved_and_lock_hash_is_internal(self) -> None:
         resource = "  opaque provider/value::?  "
@@ -733,7 +780,7 @@ class StoreTests(unittest.TestCase):
                 )
             )
 
-    def test_direct_heartbeat_marker_id_preserves_token_receipt(self) -> None:
+    def test_direct_heartbeat_marker_id_preserves_response_token(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         request = self.mutation(acquired, "resource", "caller:heartbeat:0")
 
@@ -749,7 +796,7 @@ class StoreTests(unittest.TestCase):
             ).fetchone()
         assert row is not None
         stored = json.loads(str(row[0]))
-        self.assertEqual(request.token, stored["claim"]["token"])
+        self.assertNotIn("token", stored["claim"])
 
     def test_inspect_operation_redacts_unknown_and_completed_receipts(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))

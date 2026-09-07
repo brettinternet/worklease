@@ -9,7 +9,6 @@ import time
 from typing import Protocol
 
 from .adapters import describe_policy, key_result, policy_descriptors
-from .execution import execute, execute_bundle
 from .models import (
     DEFAULT_TTL,
     AcquireRequest,
@@ -19,7 +18,6 @@ from .models import (
     MutationRequest,
     TransferRequest,
 )
-from .replacement import replace_file
 from .store import LeaseStore
 
 _DEFAULT_POLL_INTERVAL = 0.25
@@ -260,16 +258,22 @@ def dispatch_store(
     if operation == "release":
         return store.release(request_from_args(args), args.reason), 0
     if operation in {"exec-bundle", "bundle-exec"}:
+        from .execution import execute_bundle
+
         command = list(args.command)
         if command and command[0] == "--":
             command = command[1:]
         return execute_bundle(store, bundle_request_from_args(args), command)
     if operation == "exec":
+        from .execution import execute
+
         command = list(args.command)
         if command and command[0] == "--":
             command = command[1:]
         return execute(store, request_from_args(args), command)
     if operation == "replace-file":
+        from .replacement import replace_file
+
         return (
             replace_file(
                 store,

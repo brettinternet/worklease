@@ -196,7 +196,16 @@ class GarbageCollectionMixin:
             SELECT resource, operation_id, reconciled_at AS recorded_at
             FROM reconciliations AS r
             WHERE reconciled_at < ?
-              AND r.target_claim_id <> ''
+              AND (
+                  r.target_claim_id <> ''
+                  OR (
+                      SELECT COUNT(*)
+                      FROM operations AS target
+                      WHERE target.resource = r.resource
+                        AND target.operation_id = r.operation_id
+                        AND target.kind = r.kind
+                  ) = 1
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM claims AS c
                   WHERE c.claim_id = r.claim_id
@@ -206,9 +215,22 @@ class GarbageCollectionMixin:
                   FROM operations AS o
                   WHERE o.resource = r.resource
                     AND o.operation_id = r.operation_id
-                    AND o.claim_id = r.target_claim_id
                     AND o.kind = r.kind
                     AND o.created_at >= ?
+                    AND (
+                        o.claim_id = r.target_claim_id
+                        OR (
+                            r.target_claim_id = ''
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM operations AS duplicate
+                                WHERE duplicate.resource = o.resource
+                                  AND duplicate.operation_id = o.operation_id
+                                  AND duplicate.kind = o.kind
+                                  AND duplicate.claim_id != o.claim_id
+                            )
+                        )
+                    )
               )
             """,
             (cutoff_value, cutoff_value),

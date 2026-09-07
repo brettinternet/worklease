@@ -17,12 +17,6 @@ from . import cli_dispatch as _cli_dispatch
 from ._release_metadata import PUBLISHED_RELEASE_VERSION
 from .cli_dispatch import dispatch_stateless, dispatch_store
 from .credentials import resolve_credential
-from .lease_file import (
-    LeaseFileState,
-    clear_lease_file,
-    read_lease_file,
-    write_lease_file,
-)
 from .models import DEFAULT_TTL, LeaseError
 from .store import DEFAULT_GC_RETENTION_DAYS, LeaseStore
 
@@ -2046,6 +2040,8 @@ def _resolve_lease_file(args: argparse.Namespace) -> None:
     path = getattr(args, "lease_file", None)
     if path is None or args.operation not in _LEASE_FILE_INPUTS:
         return
+    from .lease_file import read_lease_file
+
     state = read_lease_file(path)
     args._lease_file_state = state
     is_bundle = args.operation in {
@@ -2116,6 +2112,8 @@ def _persist_lease_file(args: argparse.Namespace, payload: dict[str, object]) ->
     operation = args.operation
     if operation in {"release", "release-bundle"}:
         if path is not None and payload.get("ok") is True:
+            from .lease_file import clear_lease_file
+
             clear_lease_file(path)
         return
     if operation not in _LEASE_FILE_INPUTS | _LEASE_FILE_OUTPUTS:
@@ -2123,6 +2121,9 @@ def _persist_lease_file(args: argparse.Namespace, payload: dict[str, object]) ->
     claim = payload.get("claim")
     if not isinstance(claim, dict):
         return
+
+    from .lease_file import LeaseFileState, write_lease_file
+
     destination = path
     if operation == "transfer":
         destination = getattr(args, "successor_lease_file", None) or path

@@ -246,33 +246,12 @@ class AcquisitionMixin:
 
         require_resource(request.resource)
         ttl = require_ttl(request.ttl)
-        # Classify persisted bundle membership before a concurrent bundle
-        # mutation can hold the resource lock. The in-lock check below
-        # remains authoritative for the acquire transaction.
-        with closing(self._connect()) as preflight:
-            bundle = self._bundle_for_resource(preflight, request.resource)
-            if bundle is not None:
-                raise LeaseError(
-                    "bundle-operation-required",
-                    resource=request.resource,
-                    claim=self._bundle_claim(preflight, bundle).to_dict(
-                        include_token=False
-                    ),
-                )
         with (
-            self._resource_lock(request.resource),
             closing(self._connect()) as db,
-            transaction(db),
+            self._acquire_transaction(db, request.resource),
         ):
             now = self.clock()
             row = self._current(db, request.resource)
-            bundle = self._bundle_for_resource(db, request.resource)
-            if bundle is not None:
-                raise LeaseError(
-                    "bundle-operation-required",
-                    resource=request.resource,
-                    claim=self._bundle_claim(db, bundle).to_dict(include_token=False),
-                )
             if row is not None and row["claim_id"] == request.claim_id:
                 recorded = (
                     str(row["agent_id"]),

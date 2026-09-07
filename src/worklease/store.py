@@ -7,8 +7,9 @@ import json
 import secrets
 import sqlite3
 import time
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,12 @@ from .reconciliation import ReconciliationMixin
 from .sqlite import connect, lease_home, transaction
 
 DEFAULT_GC_RETENTION_DAYS = _garbage_collection.DEFAULT_GC_RETENTION_DAYS
+_ACTIVE_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "worklease_active_connection", default=None
+)
+_INTERNAL_HEARTBEATS: ContextVar[bool] = ContextVar(
+    "worklease_internal_heartbeats", default=False
+)
 
 
 class LeaseStore(
@@ -59,6 +66,42 @@ class LeaseStore(
 
     def _connect(self) -> sqlite3.Connection:
         return connect(self.home)
+
+    @contextmanager
+    def _acquire_transaction(
+        self, connection: sqlite3.Connection, resource: str
+    ) -> Iterator[None]:
+        bundle = self._bundle_for_resource(connection, resource)
+        if bundle is not None:
+            raise LeaseError(
+                "bundle-operation-required",
+                resource=resource,
+                claim=self._bundle_claim(connection, bundle).to_dict(
+                    include_token=False
+                ),
+            )
+        with resource_lock(resource, self.home), transaction(connection):
+            yield
+
+    @contextmanager
+    def _connection_context(
+        self, connection: sqlite3.Connection, *, internal_heartbeats: bool = False
+    ) -> Iterator[None]:
+        connection_token = _ACTIVE_CONNECTION.set(connection)
+        heartbeat_token = _INTERNAL_HEARTBEATS.set(internal_heartbeats)
+        try:
+            yield
+        finally:
+            _INTERNAL_HEARTBEATS.reset(heartbeat_token)
+            _ACTIVE_CONNECTION.reset(connection_token)
+
+    @staticmethod
+    def _active_connection() -> sqlite3.Connection | None:
+        return _ACTIVE_CONNECTION.get()
+
+    @staticmethod
+    def _internal_heartbeats_enabled() -> bool:
+        return _INTERNAL_HEARTBEATS.get()
 
     @staticmethod
     def _current(connection: sqlite3.Connection, resource: str) -> sqlite3.Row | None:

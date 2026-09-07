@@ -186,6 +186,14 @@ class AdapterKeyTests(unittest.TestCase):
         self.assertEqual(raised.exception.details["schemaVersion"], 1)
         self.assertIn("generic", raised.exception.details["available"])
 
+    def test_policy_list_discovers_entry_points_once(self) -> None:
+        with patch.object(
+            policy_registry, "_entry_points", return_value=()
+        ) as discover:
+            descriptors = policy_registry.policy_descriptors()
+        self.assertEqual(1, discover.call_count)
+        self.assertEqual(5, len(descriptors))
+
     def test_policy_descriptors_are_lazy_and_versioned(self) -> None:
         self.assertEqual(
             set(available_policy_names()),

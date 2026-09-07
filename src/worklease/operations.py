@@ -101,7 +101,10 @@ class OperationLedgerMixin:
     ) -> None:
         """Keep the established owner response while storing redacted receipts."""
 
-        if kind not in {"heartbeat", "heartbeat-bundle", "checkpoint"}:
+        if isinstance(request, BundleMutationRequest):
+            if kind in {"exec-bundle", "reconcile-operation-bundle"}:
+                return
+        elif kind not in {"heartbeat", "checkpoint"}:
             return
         claim = receipt.get("claim")
         if isinstance(claim, dict):
@@ -287,7 +290,11 @@ class OperationLedgerMixin:
         if not record_operation:
             return receipt
 
-        encoded_receipt = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        persisted_receipt = dict(receipt)
+        persisted_receipt["claim"] = behavior.claim(connection, current, False)
+        encoded_receipt = json.dumps(
+            persisted_receipt, sort_keys=True, separators=(",", ":")
+        )
         if complete_operation:
             changed = connection.execute(
                 """
@@ -340,9 +347,14 @@ class OperationLedgerMixin:
         operation_request: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         behavior = self._operation_resource(request, lock_held=lock_held)
-        with behavior.lock(), closing(self._connect()) as db, transaction(db):
+        connection = connection or self._active_connection()
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with behavior.lock(), db_context as db, transaction(db):
             behavior.owner(db)
             cached = self._cached_operation(db, request, kind, operation_request)
             if cached is not None:
@@ -385,9 +397,14 @@ class OperationLedgerMixin:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         behavior = self._operation_resource(request, lock_held=lock_held)
-        with behavior.lock(), closing(self._connect()) as db, transaction(db):
+        connection = connection or self._active_connection()
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with behavior.lock(), db_context as db, transaction(db):
             row = behavior.owner(db)
             if not behavior.bundle:
                 self._validate_current_row(row, request, behavior.label)
@@ -420,6 +437,7 @@ class OperationLedgerMixin:
                         suppliedRevision=request.revision,
                     )
                 result = json.loads(str(operation["receipt"]))
+                self._restore_owner_token(request, kind, result)
                 result["idempotent"] = True
                 return result
             if state != "started":
@@ -470,6 +488,8 @@ class OperationLedgerMixin:
         *,
         lock_held: bool = False,
         internal_renewal: bool = False,
+        record_operation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         kind = (
             "heartbeat-bundle"
@@ -478,12 +498,18 @@ class OperationLedgerMixin:
         )
         ttl = require_ttl(request.ttl)
         behavior = self._operation_resource(request, lock_held=lock_held)
-        with behavior.lock(), closing(self._connect()) as db, transaction(db):
+        connection = connection or self._active_connection()
+        record_operation = record_operation and not self._internal_heartbeats_enabled()
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with behavior.lock(), db_context as db, transaction(db):
             row = behavior.owner(db)
             operation_request = request.request_dict()
-            cached = self._cached_operation(db, request, kind, operation_request)
-            if cached is not None:
-                return cached
+            if record_operation:
+                cached = self._cached_operation(db, request, kind, operation_request)
+                if cached is not None:
+                    return cached
             behavior.current(db)
             receipt: dict[str, Any] = {
                 "ok": True,
@@ -502,6 +528,7 @@ class OperationLedgerMixin:
                 kind,
                 operation_request,
                 receipt,
+                record_operation=record_operation,
                 include_token=not internal_renewal,
             )
             self._restore_owner_token(request, kind, result)
@@ -514,11 +541,16 @@ class OperationLedgerMixin:
         operation_request: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         """Durably record a singleton operation intent before its side effect."""
 
         return self._begin_operation(
-            request, kind, operation_request, lock_held=lock_held
+            request,
+            kind,
+            operation_request,
+            lock_held=lock_held,
+            connection=connection,
         )
 
     def complete_operation(
@@ -529,6 +561,7 @@ class OperationLedgerMixin:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Persist a started singleton operation's receipt and advance its claim."""
 
@@ -538,6 +571,7 @@ class OperationLedgerMixin:
             operation_request,
             receipt,
             lock_held=lock_held,
+            connection=connection,
         )
 
     def begin_bundle_operation(
@@ -547,11 +581,16 @@ class OperationLedgerMixin:
         operation_request: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         """Durably record a bundle operation intent before its side effect."""
 
         return self._begin_operation(
-            request, kind, operation_request, lock_held=lock_held
+            request,
+            kind,
+            operation_request,
+            lock_held=lock_held,
+            connection=connection,
         )
 
     def complete_bundle_operation(
@@ -562,6 +601,7 @@ class OperationLedgerMixin:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Persist a started bundle operation's receipt and advance its claim."""
 
@@ -571,6 +611,7 @@ class OperationLedgerMixin:
             operation_request,
             receipt,
             lock_held=lock_held,
+            connection=connection,
         )
 
     def _heartbeat_for_exec(
@@ -588,18 +629,38 @@ class OperationLedgerMixin:
         )
 
     def heartbeat(
-        self: Any, request: MutationRequest, *, lock_held: bool = False
+        self: Any,
+        request: MutationRequest,
+        *,
+        lock_held: bool = False,
+        record_operation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Renew a singleton claim and advance its revision."""
 
-        return self._heartbeat_operation(request, lock_held=lock_held)
+        return self._heartbeat_operation(
+            request,
+            lock_held=lock_held,
+            record_operation=record_operation,
+            connection=connection,
+        )
 
     def heartbeat_bundle(
-        self: Any, request: BundleMutationRequest, *, lock_held: bool = False
+        self: Any,
+        request: BundleMutationRequest,
+        *,
+        lock_held: bool = False,
+        record_operation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Renew every member and advance one shared bundle revision."""
 
-        return self._heartbeat_operation(request, lock_held=lock_held)
+        return self._heartbeat_operation(
+            request,
+            lock_held=lock_held,
+            record_operation=record_operation,
+            connection=connection,
+        )
 
     def checkpoint(
         self: Any,

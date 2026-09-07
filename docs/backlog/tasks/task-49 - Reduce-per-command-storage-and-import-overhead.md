@@ -1,9 +1,11 @@
 ---
 id: TASK-49
 title: Reduce per-command storage and import overhead
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@codex-task-49'
 created_date: '2026-09-07 03:28'
+updated_date: '2026-09-07 06:26'
 labels:
   - performance
 dependencies: []
@@ -11,6 +13,17 @@ references:
   - src/worklease/sqlite.py
   - src/worklease/store.py
   - src/worklease/execution.py
+modified_files:
+  - src/worklease/__init__.py
+  - src/worklease/adapters/registry.py
+  - src/worklease/cli.py
+  - src/worklease/execution.py
+  - src/worklease/sqlite.py
+  - src/worklease/store.py
+  - tests/test_adapters.py
+  - tests/test_cli.py
+  - tests/test_execution.py
+  - tests/test_store.py
 priority: medium
 type: enhancement
 ordinal: 50000
@@ -33,9 +46,47 @@ Findings to address:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Opening an up-to-date database performs no CREATE, ALTER, or UPDATE statements; a test asserts the migration path runs only on version mismatch or first creation
-- [ ] #2 acquire uses a single connection; exec reuses one connection for its lifetime and no longer stores the bearer token in operation receipts
-- [ ] #3 status and list read within one deferred transaction; list issues a bounded number of queries independent of claim count
-- [ ] #4 policy list scans entry points once; importing worklease.cli no longer imports tempfile or shutil
-- [ ] #5 A before/after timing table for --version, status, acquire, heartbeat, and list at 0 and 5000 claims is recorded in the task
+- [x] #1 Opening an up-to-date database performs no CREATE, ALTER, or UPDATE statements; a test asserts the migration path runs only on version mismatch or first creation
+- [x] #2 acquire uses a single connection; exec reuses one connection for its lifetime and no longer stores the bearer token in operation receipts
+- [x] #3 status and list read within one deferred transaction; list issues a bounded number of queries independent of claim count
+- [x] #4 policy list scans entry points once; importing worklease.cli no longer imports tempfile or shutil
+- [x] #5 A before/after timing table for --version, status, acquire, heartbeat, and list at 0 and 5000 claims is recorded in the task
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a schema-version fast path so current databases avoid setup DDL/DML, while first creation and version mismatches run locked migrations once; retain FULL synchronous durability unless evidence supports weakening it.
+2. Reuse SQLite connections for acquire and guarded-exec renewals, omit bearer tokens and internal heartbeat operation rows, and make status/list transactional with set-based bundle projection queries.
+3. Scan policy entry points once per listing operation and lazily expose execution/replacement exports so importing worklease.cli avoids tempfile and shutil.
+4. Add focused regression/query-count/import tests, benchmark required commands before and after at 0 and 5000 claims, then run all quality gates and review the diff.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented schema fast-path/migrations, single-connection acquire and guarded execution, non-ledger internal renewals with redacted persisted receipts, transactional bounded-query projections, one-pass policy discovery, and lazy package exports. Retained `PRAGMA synchronous = FULL` because committed lease transitions require same-host crash durability.
+
+Benchmark: median wall-clock milliseconds across 15 fresh CLI subprocess samples per command; each fixture used a temporary database seeded with the stated active-claim count.
+
+| Claims | Command | Before (ms) | After (ms) |
+|---:|---|---:|---:|
+| 0 | `--version` | 73.0 | 73.4 |
+| 0 | `status` | 67.4 | 63.8 |
+| 0 | `acquire` | 70.3 | 66.7 |
+| 0 | `heartbeat` | 68.0 | 66.4 |
+| 0 | `list` | 67.4 | 64.7 |
+| 5000 | `--version` | 74.5 | 73.5 |
+| 5000 | `status` | 69.6 | 64.3 |
+| 5000 | `acquire` | 72.2 | 66.8 |
+| 5000 | `heartbeat` | 71.6 | 65.5 |
+| 5000 | `list` | 153.5 | 126.9 |
+
+Validation passed after review fix: `mise run lint`, `mise run format-check`, `mise run test` (219 core + 19 SDK tests), `mise run typecheck`, and staged-file `mise run hooks`. Review found interrupted migration recovery was not resumable; fixed by allowing an empty schema marker to migrate and added `test_empty_schema_marker_resumes_interrupted_migration`. No staged files remained after hook validation.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reduced command overhead with schema-version fast paths, connection reuse, token-safe internal exec renewals, transactional bounded-query reads, one-pass policy discovery, and lazy heavy imports. Added regression coverage and recorded 0/5000-claim benchmarks; all project quality gates and hooks pass after addressing review findings.
+<!-- SECTION:FINAL_SUMMARY:END -->

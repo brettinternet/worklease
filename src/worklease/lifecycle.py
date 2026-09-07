@@ -170,6 +170,10 @@ class LifecycleMixin:
                         operationId=request.operation_id,
                     )
                 receipt = json.loads(str(prior["receipt"]))
+                claim = receipt.get("claim")
+                current = self._current(db, request.resource)
+                if isinstance(claim, dict) and current is not None:
+                    claim["token"] = str(current["token"])
                 receipt["idempotent"] = True
                 return receipt
             row = self._current(db, request.resource)
@@ -300,6 +304,10 @@ class LifecycleMixin:
                 "previousRevision": request.revision,
                 "claim": self._claim(successor).to_dict(),
             }
+            persisted_receipt = dict(receipt)
+            persisted_receipt["claim"] = self._claim(successor).to_dict(
+                include_token=False
+            )
             db.execute(
                 """
                 INSERT INTO operations(
@@ -315,7 +323,11 @@ class LifecycleMixin:
                         operation_request, sort_keys=True, separators=(",", ":")
                     ),
                     request.revision,
-                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    json.dumps(
+                        persisted_receipt,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     now,
                 ),
             )

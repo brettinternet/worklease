@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from contextlib import closing
 from typing import Any
 
@@ -57,7 +58,7 @@ class ProjectionMixin:
         """Read one claim without exposing its bearer token."""
 
         require_resource(resource)
-        with closing(self._connect()) as db:
+        with closing(self._connect()) as db, transaction(db, immediate=False):
             row = self._current(db, resource)
             bundle = self._bundle_for_resource(db, resource)
             if row is None:
@@ -266,25 +267,36 @@ class ProjectionMixin:
         if resource is not None:
             require_resource(resource)
 
-        with closing(self._connect()) as db:
-            if resource is None:
-                rows = db.execute("SELECT * FROM claims ORDER BY resource").fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM claims WHERE resource = ? ORDER BY resource",
-                    (resource,),
-                ).fetchall()
+        query = """
+            SELECT c.*, be.resources AS bundle_resources
+            FROM claims AS c
+            LEFT JOIN bundles AS b ON b.claim_id = c.claim_id
+            LEFT JOIN bundle_epochs AS be ON be.claim_id = b.claim_id
+        """
+        parameters: tuple[str, ...] = ()
+        if resource is not None:
+            query += " WHERE c.resource = ?"
+            parameters = (resource,)
+        query += " ORDER BY c.resource"
+
+        with closing(self._connect()) as db, transaction(db, immediate=False):
+            rows = db.execute(query, parameters).fetchall()
             claims: list[dict[str, Any]] = []
             seen_bundles: set[str] = set()
             for row in rows:
-                bundle = self._bundle_row(db, str(row["claim_id"]))
-                if bundle is not None:
-                    claim_id = str(bundle["claim_id"])
+                bundle_resources = row["bundle_resources"]
+                if bundle_resources is not None:
+                    claim_id = str(row["claim_id"])
                     if claim_id in seen_bundles:
                         continue
                     seen_bundles.add(claim_id)
+                    resources = tuple(
+                        str(value) for value in json.loads(str(bundle_resources))
+                    )
                     claims.append(
-                        self._bundle_claim(db, bundle).to_dict(include_token=False)
+                        self._bundle_claim(db, row, resources=resources).to_dict(
+                            include_token=False
+                        )
                     )
                 else:
                     claims.append(self._claim(row).to_dict(include_token=False))

@@ -45,10 +45,15 @@ class ClaimStoreMixin:
         self: Any,
         connection: sqlite3.Connection,
         row: sqlite3.Row,
+        resources: tuple[str, ...] | None = None,
     ) -> BundleClaim:
         return bundle_claim_from_row(
             row,
-            self._bundle_resources(connection, str(row["claim_id"])),
+            (
+                self._bundle_resources(connection, str(row["claim_id"]))
+                if resources is None
+                else resources
+            ),
             self.clock(),
         )
 
