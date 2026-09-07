@@ -1,11 +1,11 @@
 ---
 id: TASK-59
 title: Add retained local claim lifecycle history
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 14:59'
-updated_date: '2026-09-07 18:55'
+updated_date: '2026-09-07 19:00'
 labels:
   - storage
   - cli
@@ -16,6 +16,9 @@ references:
   - docs/claim-model.md
   - src/worklease/sqlite.py
   - src/worklease/garbage_collection.py
+modified_files:
+  - src/worklease/projections.py
+  - tests/test_history.py
 priority: medium
 type: feature
 ordinal: 60000
@@ -38,9 +41,9 @@ This history is local, retention-bounded diagnostic state. It is not authoritati
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every ownership transition recorded after the schema migration persists a token-free terminal snapshot per affected resource; expired-but-unreclaimed and legacy-incomplete epochs are represented without inventing an end record.
-- [ ] #2 A read-only local CLI command projects retained singleton and bundle-member history for one exact resource using only explicitly safe fields, deterministic ordering, and schema-versioned JSON.
-- [ ] #3 Documentation defines local and provider-authority boundaries, post-migration completeness, legacy and prior-GC gaps, record-level retention, sanitized export, and complete database archival.
+- [x] #1 Every ownership transition recorded after the schema migration persists a token-free terminal snapshot per affected resource; expired-but-unreclaimed and legacy-incomplete epochs are represented without inventing an end record.
+- [x] #2 A read-only local CLI command projects retained singleton and bundle-member history for one exact resource using only explicitly safe fields, deterministic ordering, and schema-versioned JSON.
+- [x] #3 Documentation defines local and provider-authority boundaries, post-migration completeness, legacy and prior-GC gaps, record-level retention, sanitized export, and complete database archival.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -59,4 +62,12 @@ This history is local, retention-bounded diagnostic state. It is not authoritati
 Selected as the only open dependency-ready backlog item after all three subtasks completed; working in HWT workspace w5C on branch task-59-retained-history.
 
 Independent verification found that history on a valid unmigrated v2 database failed on missing acquisition_revision columns. Added a read-only schema-aware fallback and regression coverage that preserves schema v2 while projecting singleton and bundle epochs as legacy-incomplete.
+
+Verification passed: focused history/store/GC/schema tests (194), full suite (276 core + 19 SDK), lint, format-check, typecheck, hooks, and git diff --check. Independent verifier passed all three parent criteria after confirming the pre-v3 fallback through the public CLI and database non-mutation.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed retained local claim lifecycle history across TASK-59.1 through TASK-59.3. Added the final pre-v3 read-only fallback so unmigrated singleton and bundle epochs project as legacy-incomplete without schema mutation. Verified terminal snapshots, exact safe deterministic history, schema-v1 JSON, documentation boundaries, and all quality gates; independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
