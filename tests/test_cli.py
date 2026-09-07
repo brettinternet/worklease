@@ -2045,6 +2045,223 @@ with resource_lock(resource):
         self.assertEqual(claim["ownerId"], listed_claim["ownerId"])
         self.assertEqual(claim["expiresAt"], listed_claim["expiresAt"])
 
+    def test_lease_file_singleton_lifecycle_tracks_revision_and_clears(self) -> None:
+        resource = "repo:lease-file-cli"
+        lease_file = Path(self.home.name) / "lease.json"
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="lease-file-cli"),
+            "--lease-file",
+            str(lease_file),
+        )
+        self.assertNotIn('"token"', json.dumps(acquired))
+        text_acquired = self.text_cli(
+            *self.acquire_arguments(resource=resource, claim_id="lease-file-cli"),
+            "--lease-file",
+            str(lease_file),
+        )
+        self.assertNotIn("TOKEN\t", text_acquired)
+        stored = json.loads(lease_file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            {
+                "schemaVersion",
+                "resource",
+                "claimId",
+                "token",
+                "revision",
+                "expiresAt",
+                "guarantee",
+            },
+            set(stored),
+        )
+        self.assertEqual(resource, stored["resource"])
+        self.assertEqual(0o600, lease_file.stat().st_mode & 0o777)
+        revision = int(stored["revision"])
+
+        heartbeat = self.json_cli(
+            "heartbeat",
+            "--lease-file",
+            str(lease_file),
+        )
+        stored = json.loads(lease_file.read_text(encoding="utf-8"))
+        self.assertGreater(int(stored["revision"]), revision)
+        revision = int(stored["revision"])
+        self.assertNotIn('"token"', json.dumps(heartbeat))
+
+        executed = self.json_cli(
+            "exec",
+            "--lease-file",
+            str(lease_file),
+            "--",
+            sys.executable,
+            "-c",
+            "print('lease-file')",
+        )
+        stored = json.loads(lease_file.read_text(encoding="utf-8"))
+        self.assertGreater(int(stored["revision"]), revision)
+        revision = int(stored["revision"])
+        self.assertNotIn('"token"', json.dumps(executed))
+
+        checkpoint = self.json_cli(
+            "checkpoint",
+            "--lease-file",
+            str(lease_file),
+            "--checkpoint",
+            '{"step":1}',
+        )
+        stored = json.loads(lease_file.read_text(encoding="utf-8"))
+        self.assertGreater(int(stored["revision"]), revision)
+        self.assertNotIn('"token"', json.dumps(checkpoint))
+
+        failed_release = self.json_cli(
+            "release",
+            "--lease-file",
+            str(lease_file),
+            "--operation-id",
+            "lease-file-failed-release",
+            "--reason",
+            "",
+            expected_code=64,
+        )
+        self.assertEqual("invalid-release-reason", failed_release["error"])
+        self.assertTrue(lease_file.exists())
+        released = self.json_cli(
+            "release",
+            "--lease-file",
+            str(lease_file),
+            "--reason",
+            "done",
+        )
+        self.assertTrue(released["ok"])
+        self.assertFalse(lease_file.exists())
+
+    def test_lease_file_errors_are_reported_without_a_traceback(self) -> None:
+        missing = Path(self.home.name) / "missing-lease.json"
+        error = self.json_cli(
+            "heartbeat",
+            "--lease-file",
+            str(missing),
+            "--operation-id",
+            "lease-file-missing",
+            expected_code=64,
+        )
+        self.assertEqual("lease-file-not-found", error["error"])
+
+    def test_lease_file_stale_copy_preserves_stale_revision_error(self) -> None:
+        lease_file = Path(self.home.name) / "lease.json"
+        stale_file = Path(self.home.name) / "stale.json"
+        self.json_cli(
+            *self.acquire_arguments(
+                resource="repo:lease-file-stale", claim_id="lease-file-stale"
+            ),
+            "--lease-file",
+            str(lease_file),
+        )
+        stale_file.write_bytes(lease_file.read_bytes())
+        stale_file.chmod(0o600)
+        self.json_cli(
+            "heartbeat",
+            "--lease-file",
+            str(lease_file),
+            "--operation-id",
+            "lease-file-stale-heartbeat",
+        )
+        stale = self.json_cli(
+            "heartbeat",
+            "--lease-file",
+            str(stale_file),
+            "--operation-id",
+            "lease-file-stale-copy",
+            expected_code=2,
+        )
+        self.assertEqual("stale-revision", stale["error"])
+        self.assertEqual(
+            json.loads(stale_file.read_text(encoding="utf-8"))["revision"],
+            json.loads(lease_file.read_text(encoding="utf-8"))["revision"] - 1,
+        )
+
+    def test_lease_file_bundle_and_transfer_handoff(self) -> None:
+        resources = ("repo:lease-bundle-a", "repo:lease-bundle-b")
+        bundle_file = Path(self.home.name) / "bundle.json"
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "lease-bundle",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "lease-bundle",
+            "--lease-file",
+            str(bundle_file),
+        )
+        self.assertNotIn('"token"', json.dumps(acquired))
+        stored_bundle = json.loads(bundle_file.read_text(encoding="utf-8"))
+        self.assertEqual(list(resources), stored_bundle["resources"])
+        before = int(stored_bundle["revision"])
+        self.json_cli(
+            "heartbeat-bundle",
+            "--lease-file",
+            str(bundle_file),
+            "--operation-id",
+            "lease-bundle-heartbeat",
+        )
+        self.assertGreater(
+            int(json.loads(bundle_file.read_text(encoding="utf-8"))["revision"]), before
+        )
+        self.json_cli(
+            "release-bundle",
+            "--lease-file",
+            str(bundle_file),
+            "--operation-id",
+            "lease-bundle-release",
+            "--reason",
+            "done",
+        )
+        self.assertFalse(bundle_file.exists())
+
+        source = Path(self.home.name) / "source.json"
+        successor = Path(self.home.name) / "successor.json"
+        self.json_cli(
+            *self.acquire_arguments(
+                resource="repo:lease-transfer", claim_id="lease-transfer"
+            ),
+            "--lease-file",
+            str(source),
+        )
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-successor"
+        transferred = self.json_cli(
+            "transfer",
+            "--lease-file",
+            str(source),
+            "--successor-lease-file",
+            str(successor),
+        )
+        self.assertNotIn('"token"', json.dumps(transferred))
+        successor_state = json.loads(successor.read_text(encoding="utf-8"))
+        successor_claim = transferred["claim"]
+        assert isinstance(successor_claim, dict)
+        self.assertEqual(successor_claim["claimId"], successor_state["claimId"])
+        self.assertEqual("repo:lease-transfer", successor_claim["workKey"])
+        self.assertEqual("agent-successor", successor_claim["agentId"])
+        self.assertTrue(source.exists())
+        self.json_cli(
+            "release",
+            "--lease-file",
+            str(successor),
+            "--operation-id",
+            "lease-transfer-release",
+            "--reason",
+            "done",
+        )
+        self.assertFalse(successor.exists())
+
     def test_transfer_cli_returns_successor_claim_and_preserves_checkpoint(
         self,
     ) -> None:

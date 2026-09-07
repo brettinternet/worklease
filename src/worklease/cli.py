@@ -22,6 +22,12 @@ from .adapters import (
 )
 from .credentials import resolve_credential
 from .execution import execute, execute_bundle
+from .lease_file import (
+    LeaseFileState,
+    clear_lease_file,
+    read_lease_file,
+    write_lease_file,
+)
 from .models import (
     DEFAULT_TTL,
     AcquireRequest,
@@ -116,6 +122,23 @@ class _ExplicitValueAction(argparse.Action):
 
 
 _DEFAULT_POLL_INTERVAL = 0.25
+
+_LEASE_FILE_MUTATIONS = frozenset(
+    {
+        "heartbeat",
+        "checkpoint",
+        "exec",
+        "replace-file",
+        "reconcile-operation",
+        "release",
+        "heartbeat-bundle",
+        "exec-bundle",
+        "reconcile-operation-bundle",
+        "release-bundle",
+    }
+)
+_LEASE_FILE_OUTPUTS = frozenset({"acquire", "acquire-bundle", "transfer"})
+_LEASE_FILE_INPUTS = _LEASE_FILE_MUTATIONS | {"transfer"}
 
 _COMMANDS = frozenset(
     {
@@ -275,7 +298,8 @@ _ACQUIRE_BUNDLE_EPILOG = """\
 Example:
   worklease acquire-bundle \\
     --resource local:formatter \\
-    --resource local:linter
+    --resource local:linter \\
+    --lease-file "$LEASE_FILE"
 
 Omitted claim, session, and owner IDs are generated. The work key defaults to
 this ordered resource set; set WORKLEASE_AGENT_ID or pass --agent-id."""
@@ -295,10 +319,7 @@ _GC_EPILOG = _single_line_epilog("worklease gc")
 _RECONCILE_OPERATION_EPILOG = """\
 Example:
   worklease reconcile-operation \\
-    --resource local:formatter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
@@ -309,11 +330,7 @@ request."""
 _RECONCILE_OPERATION_BUNDLE_EPILOG = """\
 Example:
   worklease reconcile-operation-bundle \\
-    --resource local:formatter \\
-    --resource local:linter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
@@ -324,10 +341,7 @@ request."""
 _CHECKPOINT_EPILOG = """\
 Example:
   worklease checkpoint \\
-    --resource local:formatter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --checkpoint '{"step":1}'
 
 The operation ID is generated when omitted; replay it only with the identical
@@ -335,10 +349,8 @@ request."""
 _TRANSFER_EPILOG = """\
 Example:
   worklease transfer \\
-    --resource local:formatter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION"
+    --lease-file "$LEASE_FILE" \\
+    --successor-lease-file "$SUCCESSOR_LEASE_FILE"
 
 Successor claim, session, and owner IDs plus the operation ID are generated
 when omitted. The successor work key defaults to the resource; set
@@ -347,32 +359,21 @@ _LIST_EPILOG = _single_line_epilog("worklease list")
 _HEARTBEAT_EPILOG = """\
 Example:
   worklease heartbeat \\
-    --resource local:formatter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION"
+    --lease-file "$LEASE_FILE"
 
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _HEARTBEAT_BUNDLE_EPILOG = """\
 Example:
   worklease heartbeat-bundle \\
-    --resource local:formatter \\
-    --resource local:linter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION"
+    --lease-file "$LEASE_FILE"
 
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _RELEASE_BUNDLE_EPILOG = """\
 Example:
   worklease release-bundle \\
-    --resource local:formatter \\
-    --resource local:linter \\
-    --claim-id claim-formatter \\
-    --token "$TOKEN" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --reason 'provider checkpoint verified'
 
 The operation ID is generated when omitted; replay it only with the identical
@@ -380,11 +381,7 @@ request."""
 _EXEC_BUNDLE_EPILOG = """\
 Example:
   worklease exec-bundle \\
-    --resource "$RESOURCE_1" \\
-    --resource "$RESOURCE_2" \\
-    --claim-id "$CLAIM_ID" \\
-    --token-file "$TOKEN_FILE" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     -- python -m unittest discover -s tests -v
 
 The operation ID is generated when omitted; replay it only with the identical
@@ -395,6 +392,7 @@ _ACQUIRE_EPILOG = """\
 Example:
   worklease acquire \\
     --resource local:formatter \\
+    --lease-file "$LEASE_FILE" \\
     --ttl 900
 
 Claim, session, and owner IDs are generated when omitted. The work key
@@ -404,10 +402,7 @@ defaults to the resource; set WORKLEASE_AGENT_ID or pass --agent-id."""
 _EXEC_EPILOG = """\
 Example:
   worklease exec \\
-    --resource "$RESOURCE" \\
-    --claim-id "$CLAIM_ID" \\
-    --token-file "$TOKEN_FILE" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     -- python -m unittest discover -s tests -v
 
 The operation ID is generated when omitted; replay it only with the identical
@@ -417,10 +412,7 @@ request."""
 _RELEASE_EPILOG = """\
 Example:
   worklease release \\
-    --resource "$RESOURCE" \\
-    --claim-id "$CLAIM_ID" \\
-    --token-file "$TOKEN_FILE" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --reason 'provider checkpoint verified'
 
 The operation ID is generated when omitted; replay it only with the identical
@@ -430,10 +422,7 @@ request."""
 _REPLACE_FILE_EPILOG = """\
 Example:
   worklease replace-file \\
-    --resource "$RESOURCE" \\
-    --claim-id "$CLAIM_ID" \\
-    --token-file "$TOKEN_FILE" \\
-    --revision "$REVISION" \\
+    --lease-file "$LEASE_FILE" \\
     --path docs/backlog/TASK-42.md \\
     --expected-sha256 "$EXPECTED_SHA256" \\
     --content-file /tmp/TASK-42.md
@@ -469,6 +458,16 @@ def _add_output_arguments(
     )
 
 
+def _add_lease_file_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--lease-file",
+        help=(
+            "path to a private versioned JSON lease handle; mutation identity, "
+            "token, and revision are read from it and successful mutations rewrite it"
+        ),
+    )
+
+
 def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-T",
@@ -485,15 +484,22 @@ def _common_claim_arguments(
     parser.add_argument(
         "-r",
         "--resource",
-        required=True,
-        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+        required=False,
+        help=(
+            "exact opaque resource identity (from `worklease key` or a stable local name); "
+            "required unless --lease-file is used"
+        ),
     )
     parser.add_argument(
         "-c",
         "--claim-id",
-        required=True,
-        help="fresh unique ID for this ownership epoch",
+        required=False,
+        help=(
+            "fresh unique ID for this ownership epoch; "
+            "required unless --lease-file is used"
+        ),
     )
+    _add_lease_file_argument(parser)
     parser.add_argument(
         "-t",
         "--token",
@@ -512,9 +518,12 @@ def _common_claim_arguments(
     parser.add_argument(
         "-R",
         "--revision",
-        required=True,
+        required=False,
         type=int,
-        help="newest claim revision returned by the previous mutation",
+        help=(
+            "newest claim revision returned by the previous mutation; "
+            "required unless --lease-file is used"
+        ),
     )
     parser.add_argument(
         "-o",
@@ -545,28 +554,39 @@ def _execution_directory_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _bundle_resources(parser: argparse.ArgumentParser) -> None:
+def _bundle_resources(
+    parser: argparse.ArgumentParser, *, required: bool = True
+) -> None:
     parser.add_argument(
         "-r",
         "--resource",
         "--resources",
         dest="resources",
         action="append",
-        required=True,
-        help="one exact opaque bundle resource (repeat for each member)",
+        required=required,
+        help=(
+            "one exact opaque bundle resource (repeat for each member); "
+            "required unless --lease-file is used"
+            if not required
+            else "one exact opaque bundle resource (repeat for each member)"
+        ),
     )
 
 
 def _common_bundle_claim_arguments(
     parser: argparse.ArgumentParser, *, include_ttl: bool = True
 ) -> None:
-    _bundle_resources(parser)
+    _bundle_resources(parser, required=False)
     parser.add_argument(
         "-c",
         "--claim-id",
-        required=True,
-        help="fresh unique ID for this ownership epoch",
+        required=False,
+        help=(
+            "fresh unique ID for this ownership epoch; "
+            "required unless --lease-file is used"
+        ),
     )
+    _add_lease_file_argument(parser)
     parser.add_argument(
         "-t",
         "--token",
@@ -585,9 +605,12 @@ def _common_bundle_claim_arguments(
     parser.add_argument(
         "-R",
         "--revision",
-        required=True,
+        required=False,
         type=int,
-        help="newest claim revision returned by the previous mutation",
+        help=(
+            "newest claim revision returned by the previous mutation; "
+            "required unless --lease-file is used"
+        ),
     )
     parser.add_argument(
         "-o",
@@ -754,6 +777,7 @@ def _parser() -> _ArgumentParser:
         "acquire", help="atomically acquire or reclaim a lease", epilog=_ACQUIRE_EPILOG
     )
     _add_output_arguments(acquire_parser)
+    _add_lease_file_argument(acquire_parser)
     acquire_parser.add_argument(
         "-r",
         "--resource",
@@ -826,6 +850,7 @@ def _parser() -> _ArgumentParser:
         epilog=_ACQUIRE_BUNDLE_EPILOG,
     )
     _add_output_arguments(acquire_bundle_parser)
+    _add_lease_file_argument(acquire_bundle_parser)
     _bundle_resources(acquire_bundle_parser)
     acquire_bundle_parser.add_argument(
         "-c",
@@ -1038,17 +1063,28 @@ def _parser() -> _ArgumentParser:
         epilog=_TRANSFER_EPILOG,
     )
     _add_output_arguments(transfer_parser)
+    _add_lease_file_argument(transfer_parser)
+    transfer_parser.add_argument(
+        "--successor-lease-file",
+        help="write the successor claim handle to this private versioned JSON file",
+    )
     transfer_parser.add_argument(
         "-r",
         "--resource",
-        required=True,
-        help="exact opaque resource identity (from `worklease key` or a stable local name)",
+        required=False,
+        help=(
+            "exact opaque resource identity (from `worklease key` or a stable local name); "
+            "required unless --lease-file is used"
+        ),
     )
     transfer_parser.add_argument(
         "-c",
         "--claim-id",
-        required=True,
-        help="fresh unique ID for this ownership epoch",
+        required=False,
+        help=(
+            "fresh unique ID for this ownership epoch; "
+            "required unless --lease-file is used"
+        ),
     )
     transfer_parser.add_argument(
         "-t",
@@ -1068,9 +1104,12 @@ def _parser() -> _ArgumentParser:
     transfer_parser.add_argument(
         "-R",
         "--revision",
-        required=True,
+        required=False,
         type=int,
-        help="newest claim revision returned by the previous mutation",
+        help=(
+            "newest claim revision returned by the previous mutation; "
+            "required unless --lease-file is used"
+        ),
     )
     transfer_parser.add_argument(
         "-o",
@@ -1845,16 +1884,21 @@ def _render_mutation(payload: dict[str, object]) -> None:
         print(f"PROVIDER_FENCING\t{_text_value(payload['providerFencing'])}")
     if "command" in payload:
         _emit_command(payload["command"])
-    claim_token = payload.get("operation") in {
-        "acquire",
-        "acquire-bundle",
-        "bundle-acquire",
-        "heartbeat",
-        "checkpoint",
-        "heartbeat-bundle",
-        "bundle-heartbeat",
-        "transfer",
-    }
+    claim_token = (
+        payload.get("operation")
+        in {
+            "acquire",
+            "acquire-bundle",
+            "bundle-acquire",
+            "heartbeat",
+            "checkpoint",
+            "heartbeat-bundle",
+            "bundle-heartbeat",
+            "transfer",
+        }
+        and isinstance(payload.get("claim"), dict)
+        and "token" in cast(dict[str, object], payload["claim"])
+    )
     _emit_claim(payload.get("claim"), include_token=claim_token)
 
 
@@ -2086,6 +2130,118 @@ def _acquire_with_wait(
             sleeper(min(interval, remaining))
             if clock() >= deadline:
                 raise
+
+
+def _resolve_lease_file(args: argparse.Namespace) -> None:
+    """Load a lease handle and fill only identity fields omitted by the caller."""
+
+    path = getattr(args, "lease_file", None)
+    if path is None or args.operation not in _LEASE_FILE_INPUTS:
+        return
+    state = read_lease_file(path)
+    args._lease_file_state = state
+    is_bundle = args.operation in {
+        "heartbeat-bundle",
+        "exec-bundle",
+        "release-bundle",
+        "reconcile-operation-bundle",
+    }
+    if state.is_bundle != is_bundle:
+        raise LeaseError("lease-file-kind-mismatch", code=64)
+    if is_bundle:
+        if args.resources is None:
+            assert state.resources is not None
+            args.resources = list(state.resources)
+    elif args.resource is None:
+        assert state.resource is not None
+        args.resource = state.resource
+    if args.claim_id is None:
+        args.claim_id = state.claim_id
+    if args.revision is None:
+        args.revision = state.revision
+    if args.token is None and args.token_file is None and args.token_fd is None:
+        args.token = state.token
+
+
+def _validate_claim_arguments(args: argparse.Namespace) -> None:
+    """Retain legacy required-option diagnostics while allowing lease handles."""
+
+    if args.operation not in _LEASE_FILE_INPUTS:
+        return
+    missing: list[str] = []
+    if args.operation in {
+        "heartbeat-bundle",
+        "exec-bundle",
+        "release-bundle",
+        "reconcile-operation-bundle",
+    }:
+        if args.resources is None:
+            missing.append("--resource")
+    elif args.resource is None:
+        missing.append("--resource")
+    if args.claim_id is None:
+        missing.append("--claim-id")
+    if args.revision is None:
+        missing.append("--revision")
+    if args.operation_id is None:
+        missing.append("--operation-id")
+    if missing:
+        raise _ArgumentError(
+            "the following arguments are required: " + ", ".join(missing)
+        )
+
+
+def _lease_file_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "lease_file", None) is not None
+        or (
+            args.operation == "transfer"
+            and getattr(args, "successor_lease_file", None) is not None
+        )
+    )
+
+
+def _persist_lease_file(args: argparse.Namespace, payload: dict[str, object]) -> None:
+    """Persist the resulting claim only after a successful durable mutation."""
+
+    path = getattr(args, "lease_file", None)
+    operation = args.operation
+    if operation in {"release", "release-bundle"}:
+        if path is not None and payload.get("ok") is True:
+            clear_lease_file(path)
+        return
+    if operation not in _LEASE_FILE_INPUTS | _LEASE_FILE_OUTPUTS:
+        return
+    claim = payload.get("claim")
+    if not isinstance(claim, dict):
+        return
+    destination = path
+    if operation == "transfer":
+        destination = getattr(args, "successor_lease_file", None) or path
+    if destination is None:
+        return
+    prior = getattr(args, "_lease_file_state", None)
+    token = getattr(args, "token", None)
+    state = LeaseFileState.from_claim(
+        cast(dict[str, Any], claim),
+        prior=prior if isinstance(prior, LeaseFileState) else None,
+        token=token if isinstance(token, str) else None,
+    )
+    write_lease_file(destination, state)
+
+
+def _suppress_lease_file_token(
+    args: argparse.Namespace, payload: dict[str, object]
+) -> None:
+    """Keep bearer credentials out of output when a handle was requested."""
+
+    if not _lease_file_requested(args):
+        return
+    claim = payload.get("claim")
+    if isinstance(claim, dict) and "token" in claim:
+        payload["claim"] = {
+            key: value for key, value in claim.items() if key != "token"
+        }
 
 
 def _dispatch(
@@ -2344,7 +2500,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser = _parser()
         args = parser.parse_args(values)
         output_format = "json" if getattr(args, "json", False) else args.format
-        _apply_lifecycle_defaults(args)
     except _ArgumentError as error:
         _emit(
             _envelope(
@@ -2390,6 +2545,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 64
 
     try:
+        _resolve_lease_file(args)
+        _apply_lifecycle_defaults(args)
+        _validate_claim_arguments(args)
         _resolve_claim_credential(args)
         store = (
             None
@@ -2397,9 +2555,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             else LeaseStore(getattr(args, "home", None))
         )
         payload, child_code = _dispatch(args, store)
+        _persist_lease_file(args, payload)
+        _suppress_lease_file_token(args, payload)
         output = _envelope(args.operation, payload)
         _emit(output, output_format, full=getattr(args, "full", False))
         return child_code
+    except _ArgumentError as error:
+        _emit(
+            _envelope(
+                _operation_hint(values),
+                {"ok": False, "error": "invalid-arguments"},
+            ),
+            output_format,
+        )
+        if output_format == "text":
+            _emit_parser_hint(values, error.message)
+        return 64
     except LeaseError as error:
         output = _envelope(
             args.operation,

@@ -96,7 +96,7 @@ A caller may use Worklease or another local lease service, but it must report th
 4. Return `complete`, `blocked`, or `active-claims` when no item can be selected; do not skip a gate to manufacture work.
 5. Select one item or a dependency-ready wave.
 6. Accept one exact caller-supplied claim resource and acquire a fresh ownership epoch before handing off or editing.
-7. Retain the exact resource, claim ID, token, revision, expiry, and guarantee; record the caller-declared guarantee scope alongside the receipt.
+7. Retain the exact resource, claim ID, token, revision, expiry, and guarantee; record the caller-declared guarantee scope alongside the receipt. For the Worklease CLI, prefer a mode-0600 versioned JSON `--lease-file` handle so lifecycle commands read and advance that state without putting the bearer token or revision in argv.
 8. Revalidate dependencies, claim ownership, and provider state immediately before each durable write.
 9. Heartbeat before half the lease elapses and around long-running operations.
 10. Record and verify a durable checkpoint through the caller's provider write capability.
@@ -104,6 +104,28 @@ A caller may use Worklease or another local lease service, but it must report th
 12. Release only the exact current claim after the provider checkpoint succeeds.
 
 Checkpoint-before-release is caller policy; the release reason is audit metadata, not checkpoint proof.
+
+For a CLI-owned loop, acquire the handle with the fresh claim identity and then use only the handle for mutations:
+
+```sh
+worklease acquire --resource "$RESOURCE" --claim-id "$CLAIM_ID" \
+  --agent-id "$AGENT_ID" --session-id "$SESSION_ID" --owner-id "$OWNER_ID" \
+  --work-key "implement:TASK-42" --lease-file "$LEASE_FILE"
+worklease heartbeat --lease-file "$LEASE_FILE" --operation-id heartbeat-TASK-42
+worklease checkpoint --lease-file "$LEASE_FILE" --operation-id checkpoint-TASK-42 \
+  --checkpoint '{"phase":"tests"}'
+worklease release --lease-file "$LEASE_FILE" --operation-id release-TASK-42 \
+  --reason "provider checkpoint verified"
+```
+
+The handle contains `schemaVersion`, `resource` or ordered `resources`,
+`claimId`, `token`, `revision`, `expiresAt`, and `guarantee`. Explicit identity,
+credential, and revision flags override individual stored fields. Successful
+mutations rewrite the handle; release unlinks it only after the authority
+confirms release. Transfer may write a successor handle with
+`--successor-lease-file PATH`; a distinct source handle remains caller-owned
+until it is removed. This handle is convenience state, never a claim or a
+provider checkpoint.
 
 On interruption, let the bounded claim expire or perform an explicit coherent handoff. A resumed attempt receives a fresh claim ID and token; it never adopts an unexpired claim merely because the agent identity is unchanged.
 

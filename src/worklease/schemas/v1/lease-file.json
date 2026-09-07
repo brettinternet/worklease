@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/lease-file.json",
+  "title": "Worklease CLI lease handle",
+  "description": "A private caller-owned lease handle written by acquire and transfer.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schemaVersion", "resource", "claimId", "token", "revision",
+        "expiresAt", "guarantee"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "resource": {"type": "string", "minLength": 1},
+        "claimId": {"type": "string", "minLength": 1},
+        "token": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "expiresAt": {"type": "string", "minLength": 1},
+        "guarantee": {"enum": ["fenced", "local-coordination"]}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "schemaVersion", "resources", "claimId", "token", "revision",
+        "expiresAt", "guarantee"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "resources": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "claimId": {"type": "string", "minLength": 1},
+        "token": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "expiresAt": {"type": "string", "minLength": 1},
+        "guarantee": {"enum": ["fenced", "local-coordination"]}
+      },
+      "additionalProperties": false
+    }
+  ]
+}

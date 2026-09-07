@@ -4,11 +4,12 @@
   "title": "Worklease schema version 1",
   "description": "Published response schemas for the worklease Python and CLI compatibility surface.",
   "type": "object",
-  "required": ["version", "common", "cli", "commands"],
+  "required": ["version", "common", "cli", "commands", "leaseFile"],
   "properties": {
     "version": {"const": 1},
     "common": {"const": "common.json"},
     "cli": {"const": "commands.json"},
+    "leaseFile": {"const": "lease-file.json"},
     "commands": {
       "type": "array",
       "items": {

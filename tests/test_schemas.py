@@ -81,6 +81,9 @@ class SchemaContractTests(unittest.TestCase):
                 store={"https://worklease.dev/schemas/v1/common.json": self.common},
             ),
         )
+        self.lease_file = json.loads(
+            schema_root.joinpath("lease-file.json").read_text()
+        )
         self.index = json.loads(schema_root.joinpath("index.json").read_text())
         self.home = tempfile.TemporaryDirectory()
         self.environment = os.environ.copy()
@@ -135,11 +138,34 @@ class SchemaContractTests(unittest.TestCase):
         self,
     ) -> None:
         self.assertEqual(1, self.index["properties"]["version"]["const"])
+        self.assertEqual(
+            "lease-file.json", self.index["properties"]["leaseFile"]["const"]
+        )
+        Draft202012Validator.check_schema(self.lease_file)
         commands = self.index["properties"]["commands"]["items"]["enum"]
         self.assertEqual(RELEASED_OPERATIONS, set(commands))
         for path in files("worklease").joinpath("schemas", "v1").iterdir():
             if path.name.endswith(".json"):
                 json.loads(path.read_text())
+
+    def test_lease_file_schema_accepts_singleton_and_bundle_handles(self) -> None:
+        validator = Draft202012Validator(self.lease_file)
+        singleton = {
+            "schemaVersion": 1,
+            "resource": "schema:resource",
+            "claimId": "schema-claim",
+            "token": "secret",
+            "revision": 2,
+            "expiresAt": "2026-01-01T00:00:00Z",
+            "guarantee": "fenced",
+        }
+        bundle = {
+            **singleton,
+            "resources": ["schema:resource-a", "schema:resource-b"],
+        }
+        del bundle["resource"]
+        self.assertEqual([], list(validator.iter_errors(singleton)))
+        self.assertEqual([], list(validator.iter_errors(bundle)))
 
     def test_success_and_error_payloads_match_schema_and_redact_tokens(self) -> None:
         success = self.run_cli(

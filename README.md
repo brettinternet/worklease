@@ -108,7 +108,9 @@ resource:
 ```sh
 export WORKLEASE_AGENT_ID="$AGENT_ID"
 worklease acquire \
-  --resource "$RESOURCE"
+  --resource "$RESOURCE" \
+  --lease-file "$LEASE_FILE" \
+  --ttl 900
 ```
 
 The successful JSON `claim` (or text `CLAIM` block) echoes the generated
@@ -136,16 +138,32 @@ the last contention error with exit code `2` and never exposes a bearer token.
 Bundle members, including expired bundles, return
 `bundle-operation-required` immediately and must use the bundle lifecycle.
 
-Save the returned token and revision. The token appears only in successful mutation responses. Prefer a mode-0600 `--token-file` or inherited `--token-fd`; direct `--token` is supported but exposes the bearer secret in argv. Never put a token in logs, comments, checkpoints, or handoffs.
+Prefer a private lease handle for the lifecycle. `--lease-file` writes a
+versioned JSON file with mode `0600` containing `schemaVersion`, `resource` (or
+ordered `resources`), `claimId`, `token`, `revision`, `expiresAt`, and
+`guarantee`. It is caller convenience state, not a claim or a replacement for
+the lease authority. A singleton handle has this version-one shape (a bundle
+uses `resources` instead of `resource`):
 
-Heartbeat before half the lease elapses and around long operations. Every successful mutation advances the revision; always use the newest returned value.
+```json
+{"schemaVersion":1,"resource":"RESOURCE","claimId":"CLAIM_ID","token":"stored bearer token","revision":1,"expiresAt":"2026-01-01T00:00:00Z","guarantee":"fenced"}
+```
+
+The handle is rewritten after each successful mutation; `release` unlinks its
+source handle only after the release succeeds. Explicit
+`--resource`, `--claim-id`, `--token`/`--token-file`/`--token-fd`, and
+`--revision` options override their corresponding stored fields.
+
+The token is otherwise returned only by successful mutation responses. Prefer a
+mode-0600 `--token-file` or inherited `--token-fd`; direct `--token` is
+supported but exposes the bearer secret in argv. Never put a token in logs,
+comments, checkpoints, or handoffs.
+
+Heartbeat before half the lease elapses and around long operations. Every successful mutation advances the revision; the handle records the newest value.
 
 ```sh
 worklease heartbeat \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --token-file "$TOKEN_FILE" \
-  --revision "$REVISION" \
+  --lease-file "$LEASE_FILE" \
   --ttl 900
 ```
 
@@ -163,10 +181,7 @@ Run guarded commands as argv, without a shell string:
 
 ```sh
 worklease exec \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --token-file "$TOKEN_FILE" \
-  --revision "$REVISION" \
+  --lease-file "$LEASE_FILE" \
   --git-primary \
   -- python -m unittest discover -s tests -v
 ```
@@ -194,10 +209,7 @@ Do not automatically rerun an uncertain external command.
 
 ```sh
 worklease checkpoint \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --token-file "$TOKEN_FILE" \
-  --revision "$REVISION" \
+  --lease-file "$LEASE_FILE" \
   --checkpoint '{"phase":"tests","result":"passed"}'
 ```
 
@@ -205,10 +217,7 @@ Before release, update or reread the authoritative provider and verify its expec
 
 ```sh
 worklease release \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --token-file "$TOKEN_FILE" \
-  --revision "$REVISION" \
+  --lease-file "$LEASE_FILE" \
   --reason "provider checkpoint verified"
 ```
 
@@ -218,15 +227,13 @@ may need replay; reuse it only with the identical request. Caller-supplied
 identifiers remain supported and preserve exact idempotency and mismatch
 behavior.
 
-For an atomic handoff, keep the current claim ID, token, and revision and let
-the successor identity defaults apply (or provide explicit successor values):
+For an atomic handoff, use the current handle and let the successor identity
+defaults apply (or provide explicit successor values):
 
 ```sh
 worklease transfer \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --token-file "$TOKEN_FILE" \
-  --revision "$REVISION"
+  --lease-file "$LEASE_FILE" \
+  --successor-lease-file "$SUCCESSOR_LEASE_FILE"
 ```
 
 The transfer successor claim, session, and owner IDs are generated when
@@ -245,7 +252,9 @@ require the bundle lifecycle and are never waited on by singleton acquisition.
 
 Source-wide Markdown update: derive a `markdown` key for the file, acquire the source claim, and use `replace-file` with the current SHA-256. The expected hash and atomic replacement fence that one local file mutation. A coordination-only claim cannot call `replace-file`.
 
-Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`, and `release-bundle` for 1–32 exact ordered resources. Bundle acquisition defaults claim, session, and owner IDs to fresh random values, reads the agent ID from `WORKLEASE_AGENT_ID` when `--agent-id` is omitted, and uses the ordered resource set as its default work key. Bundle acquisition, reconciliation, and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
+Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`, and `release-bundle` for 1–32 exact ordered resources. Add `--lease-file "$LEASE_FILE"` to acquisition and use that handle for bundle mutations; its `resources` array preserves acquisition order. Bundle acquisition defaults claim, session, and owner IDs to fresh random values, reads the agent ID from `WORKLEASE_AGENT_ID` when `--agent-id` is omitted, and uses the ordered resource set as its default work key. Bundle acquisition, reconciliation, and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
+
+Transfer can hand the successor to a separate handle. Use `transfer --lease-file "$LEASE_FILE" --successor-lease-file "$SUCCESSOR_LEASE_FILE"`; generated successor identity defaults apply, the destination receives the successor token and revision, and the source remains a caller-owned stale handoff record until the caller removes it.
 
 Guarded commands continuously drain both output streams. Receipts retain at most 1 MiB of UTF-8 output per stream and report `stdoutBytes`/`stderrBytes` (total raw bytes observed) plus `stdoutTruncated`/`stderrTruncated`; small output is returned unchanged.
 

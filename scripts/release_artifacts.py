@@ -20,6 +20,7 @@ PACKAGE_DATA = (
     "worklease/py.typed",
     "worklease/schemas/v1/index.json",
     "worklease/schemas/v1/commands.json",
+    "worklease/schemas/v1/lease-file.json",
 )
 SDK_PACKAGE_DATA = ("worklease_source_sdk/py.typed",)
 NATIVE_ARCHIVE_MEMBER = "bin/worklease"
