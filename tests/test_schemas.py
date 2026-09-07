@@ -188,6 +188,89 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual([], list(validator.iter_errors(singleton)))
         self.assertEqual([], list(validator.iter_errors(bundle)))
 
+    def test_history_schema_documents_provenance_coverage_and_completeness(
+        self,
+    ) -> None:
+        description = self.history["description"]
+        for source in (
+            "epoch",
+            "operation",
+            "reconciliation",
+            "termination",
+            "current-claim",
+        ):
+            self.assertIn(source, description)
+        self.assertIn("retention-bounded", description)
+        coverage_description = self.history["$defs"]["Coverage"]["description"]
+        self.assertIn("missing events", coverage_description)
+        epoch_description = self.history["$defs"]["Epoch"]["description"]
+        self.assertIn("legacy-incomplete", epoch_description)
+        current_description = self.history["$defs"]["CurrentClaim"]["description"]
+        self.assertIn("active", current_description)
+
+        payload = {
+            "schemaVersion": 1,
+            "ok": True,
+            "operation": "history",
+            "resource": "schema:history",
+            "coverage": {
+                "earliestRetainedAcquisitionRevision": 2,
+                "resourceRevisionWatermark": 4,
+                "legacyIncompleteCount": 0,
+            },
+            "epochs": [
+                {
+                    "source": "epoch",
+                    "resource": "schema:history",
+                    "kind": "singleton",
+                    "claimId": "history-claim",
+                    "agentId": "agent",
+                    "sessionId": "session",
+                    "ownerId": "owner",
+                    "workKey": "work",
+                    "acquiredAt": "2026-01-01T00:00:00Z",
+                    "acquisitionRevision": 2,
+                    "completeness": "complete",
+                    "operations": [
+                        {
+                            "source": "operation",
+                            "operationId": "history-operation",
+                            "kind": "exec",
+                            "state": "completed",
+                            "expectedRevision": 2,
+                            "createdAt": "2026-01-01T00:00:01Z",
+                        }
+                    ],
+                    "reconciliations": [
+                        {
+                            "source": "reconciliation",
+                            "targetClaimId": "history-claim",
+                            "targetOperationId": "history-operation",
+                            "reconciliationOperationId": "history-reconcile",
+                            "kind": "exec",
+                            "outcome": "observed-success",
+                            "reconciledAt": "2026-01-01T00:00:02Z",
+                        }
+                    ],
+                    "termination": {
+                        "source": "termination",
+                        "reason": "released",
+                        "effectiveAt": "2026-01-01T00:00:03Z",
+                        "recordedAt": "2026-01-01T00:00:03Z",
+                        "finalRevision": 3,
+                        "heartbeatAt": "2026-01-01T00:00:01Z",
+                        "expiresAt": "2026-01-01T00:15:01Z",
+                        "checkpointPresent": False,
+                        "successorClaimId": None,
+                        "operationId": "history-release",
+                    },
+                    "currentClaim": None,
+                }
+            ],
+        }
+        self.assertEqual([], list(self.history_validator.iter_errors(payload)))
+        self.assertNotIn("outcome", payload["epochs"][0]["operations"][0])
+
     def test_success_and_error_payloads_match_schema_and_redact_tokens(self) -> None:
         success = self.run_cli(
             "key", "--provider", "linear", "--source", "team", "--item", "ITEM-1"

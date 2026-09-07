@@ -158,6 +158,7 @@ class StoreTests(unittest.TestCase):
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute("DROP INDEX epoch_terminations_by_claim_time")
             db.execute("DROP INDEX epoch_terminations_by_recorded_at")
+            db.execute("DROP INDEX epochs_by_resource_revision")
             db.execute("DROP TABLE epoch_terminations")
             db.execute("ALTER TABLE epochs DROP COLUMN acquisition_revision")
             db.execute("ALTER TABLE bundle_epochs DROP COLUMN acquisition_revision")
@@ -179,12 +180,45 @@ class StoreTests(unittest.TestCase):
                 0,
                 db.execute("SELECT COUNT(*) FROM epoch_terminations").fetchone()[0],
             )
+            self.assertIsNotNone(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'epochs_by_resource_revision'"
+                ).fetchone()
+            )
+
+    def test_current_schema_self_heals_history_index_without_data_loss(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("indexed", "indexed-claim"))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            self.assertEqual(
+                (lease_sqlite.SCHEMA_VERSION,),
+                db.execute("SELECT version FROM schema_meta").fetchone(),
+            )
+            db.execute("DROP INDEX epochs_by_resource_revision")
+
+        self.assertEqual("active", self.store.status("indexed")["state"])
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            self.assertIsNotNone(
+                db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'epochs_by_resource_revision'"
+                ).fetchone()
+            )
+            self.assertEqual(
+                [(acquired["claim"]["claimId"],)],
+                db.execute(
+                    "SELECT claim_id FROM epochs WHERE resource = ?",
+                    ("indexed",),
+                ).fetchall(),
+            )
 
     def test_epoch_schema_migration_rolls_back_atomically(self) -> None:
         self.store.acquire(self.acquire_request("legacy", "legacy-claim"))
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
             db.execute("DROP INDEX epoch_terminations_by_claim_time")
             db.execute("DROP INDEX epoch_terminations_by_recorded_at")
+            db.execute("DROP INDEX epochs_by_resource_revision")
             db.execute("DROP TABLE epoch_terminations")
             db.execute("ALTER TABLE epochs DROP COLUMN acquisition_revision")
             db.execute("ALTER TABLE bundle_epochs DROP COLUMN acquisition_revision")

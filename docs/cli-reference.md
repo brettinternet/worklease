@@ -88,12 +88,39 @@ distribution includes those schemas and `worklease/py.typed`.
 
 `history --resource R` is a read-only projection of the retained local epochs
 for exactly `R`. It includes singleton epochs and bundle epochs containing `R`,
-plus safe operation and reconciliation summaries. Acquisition is synthesized
-from the epoch row, not reported as an operation. The command does not provide
-all-resource output, provider lookups, pagination, or time filters. An open
-row remains open when its stored expiry is past; a read does not reclaim it or
-invent a termination. Legacy rows with missing acquisition or ending evidence
-are marked `legacy-incomplete` and cannot be reconstructed from this view.
+plus safe operation and reconciliation summaries. Each acquisition epoch has
+`SOURCE epoch`; operation, reconciliation, termination, and current claim
+objects have `SOURCE operation`, `SOURCE reconciliation`, `SOURCE termination`,
+and `SOURCE current-claim` respectively. Acquisition is synthesized from the
+epoch row, not reported as an operation, and reconciliation outcomes remain in
+the reconciliation object rather than being copied into an operation.
+
+Each epoch has exactly one derived `COMPLETENESS` value: `complete` means a
+stored termination is present; `open` means a matching current claim snapshot
+is present and no termination is stored; `legacy-incomplete` means the
+acquisition revision is null or neither ending source is retained. `open`
+describes retained epoch closure, not current-clock activity, so a past stored
+expiry does not make the epoch active or complete. The command does not provide
+all-resource output, provider lookups, pagination, or time filters.
+
+The `COVERAGE` block reports nullable `EARLIEST_RETAINED_ACQUISITION_REVISION`,
+nullable `RESOURCE_REVISION_WATERMARK`, and `LEGACY_INCOMPLETE_COUNT`. The
+earliest value is the minimum non-null acquisition revision among retained
+singleton and bundle-member epochs for `R`; the watermark is the monotonic
+`resources` revision, including its retained tombstone. Revision coverage can
+show that stamped acquisition history starts after earlier activity, but cannot
+identify missing events: garbage collection and pre-migration history are
+indistinguishable, and non-acquisition mutations also consume revisions. A
+never-seen resource has both revisions null and a zero count; after all epochs
+are collected, earliest is null while the watermark remains when its tombstone
+is retained.
+
+Where an end bound is stored, consumers may project the half-open held-at
+interval `acquiredAt <= T < termination.effectiveAt` for a terminated epoch or
+`acquiredAt <= T < currentClaim.expiresAt` for an open epoch. A
+legacy-incomplete epoch without either end source has an unknown upper bound.
+This is a consumer rule over retained local rows, not an audit fact. The
+command intentionally has no `--at` or current-clock input.
 
 `--json` is a deterministic, positive-allowlist diagnostic export suitable for
 redirecting one resource before collection:
@@ -240,14 +267,21 @@ use approximate durations such as `1h 2m`; expired values use labels such as
 emits its header only. An unclaimed status emits `CLAIM <none>`. Tokens are
 never listed.
 
-Each `history` epoch includes acquisition identity, acquired time, acquisition
-revision, `STATE`, and `LEGACY_INCOMPLETE`. It then emits an `OPERATIONS` count
-and ordered safe operation summaries; `RECONCILIATIONS` rows identify the
-target claim and operation, reconciliation operation, kind, outcome, and time.
-`TERMINATION` and `CURRENT` each contain their stored snapshot or `<none>`.
-Epochs sort by acquisition revision, with acquired time and stable IDs only for
-legacy fallback; operations sort by expected revision, created time, operation
-ID, kind, claim ID, and resource.
+`history` emits `OK history`, `RESOURCE`, a `COVERAGE` block, and `EPOCHS`.
+Each `EPOCH` includes `SOURCE`, acquisition identity, acquired time,
+acquisition revision, and `COMPLETENESS`. It then emits an `OPERATIONS` count
+and ordered safe operation summaries whose first column is `SOURCE operation`,
+followed by `RECONCILIATIONS` rows whose first column is `SOURCE
+reconciliation`. `TERMINATION` and `CURRENT_CLAIM` each contain their stored
+snapshot and source or `<none>`. Epochs sort by acquisition revision, with
+acquired time and stable IDs only for legacy fallback; operations sort by
+expected revision, created time, operation ID, kind, claim ID, and resource.
+
+`complete`, `open`, and `legacy-incomplete` are projection labels, not
+provider state. The current snapshot is not an active-state assertion. This
+history is retention-bounded local diagnostic state: migration-era nulls and
+`gc --apply` removal are not recoverable, and it is not append-only audit or
+provider history.
 
 For `status --verbose`, bundle claims use ordered `RESOURCES`, including the
 JSON claim's `resources` array. Unknown operations include started bundle
