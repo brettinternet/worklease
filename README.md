@@ -34,6 +34,12 @@ Or install the latest release with [mise](https://mise.jdx.dev/):
 
 Pin a release by replacing `latest` with a tag such as `vX.Y.Z`. See [GitHub Releases](https://github.com/brettinternet/worklease/releases).
 
+Acquire a lease with the defaults:
+
+```bash
+WORKLEASE_AGENT_ID=me worklease acquire --resource local:my-task
+```
+
 ## A complete lifecycle
 
 This example coordinates work for `TASK-42` using a private temporary lease handle. The lease file is mode `0600` and is updated after mutations.
