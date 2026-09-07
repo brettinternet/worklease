@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-codex'
 created_date: '2026-09-07 03:28'
-updated_date: '2026-09-07 09:20'
+updated_date: '2026-09-07 12:54'
 labels:
   - exec
 dependencies: []
@@ -55,6 +55,8 @@ Implemented finite exec/exec-bundle duration enforcement, process-group terminat
 Adversarial review found deadline races and uncancellable pipe-reader leaks. Replaced threaded pipe draining with selector-based nonblocking reads, added an independent watchdog for blocked heartbeats, and added regression coverage for escaped grandchildren, pre-timeout output capture, blocked renewal, and partial EOF. Full lint, format, test (229 core + 19 SDK), and typecheck gates pass after the refactor.
 
 Final verification: mise run lint, mise run format-check, mise run test (239 core and 19 SDK tests), and mise run typecheck all pass on current main integration. Reviewer findings were fixed and the final pass identified only an oversized-integer validation edge, which is now covered and resolved.
+
+Delivered in implementation commit b3b8445 after merge with current main; final adversarial review findings were all resolved.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
