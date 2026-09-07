@@ -1,9 +1,11 @@
 ---
 id: TASK-47
 title: Split store.py along singleton and bundle seams
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-task-47'
 created_date: '2026-09-07 03:27'
+updated_date: '2026-09-07 05:16'
 labels:
   - maintainability
 dependencies: []
