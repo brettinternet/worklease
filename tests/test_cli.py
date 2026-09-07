@@ -37,6 +37,25 @@ class CliContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.home.cleanup()
 
+    def test_importing_cli_does_not_load_heavy_file_modules(self) -> None:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+        }
+        probe = (
+            "import sys; import worklease.cli; "
+            "print(int('tempfile' in sys.modules), int('shutil' in sys.modules))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("0 0\n", result.stdout)
+
     def test_unusable_home_reports_storage_failure(self) -> None:
         blocker = Path(self.home.name) / "not-a-directory"
         blocker.write_text("")

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -104,6 +104,29 @@ class ExecutionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LeaseError, "operation-id-request-mismatch"):
             execute(self.store, request, [sys.executable, "-c", "print('changed')"])
+
+    def test_exec_reuses_one_connection_and_omits_heartbeat_receipts(self) -> None:
+        request = self.acquire("single-exec-connection", operation_id="exec-once")
+        with patch.object(self.store, "_connect", wraps=self.store._connect) as connect:
+            receipt, code = execute(
+                self.store,
+                request,
+                [sys.executable, "-c", "import time; time.sleep(2.1)"],
+            )
+        self.assertEqual(0, code)
+        self.assertEqual(1, connect.call_count)
+        self.assertNotIn(request.token, json.dumps(receipt))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            operations = db.execute(
+                """
+                SELECT kind, receipt FROM operations
+                WHERE resource = ? AND claim_id = ?
+                ORDER BY created_at
+                """,
+                (request.resource, request.claim_id),
+            ).fetchall()
+        self.assertEqual(["exec"], [str(row[0]) for row in operations])
+        self.assertNotIn(request.token, str(operations[0][1]))
 
     def test_exec_bounds_large_output_and_replays_exact_receipt(self) -> None:
         request = self.acquire("bounded-output", operation_id="bounded-exec")

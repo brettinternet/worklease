@@ -10,8 +10,9 @@ import math
 import secrets
 import sqlite3
 import time
-from collections.abc import Callable
-from contextlib import closing, nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,12 @@ from .models import (
 from .sqlite import connect, connect_readonly, lease_home, transaction
 
 DEFAULT_GC_RETENTION_DAYS = 30.0
+_ACTIVE_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "worklease_active_connection", default=None
+)
+_INTERNAL_HEARTBEATS: ContextVar[bool] = ContextVar(
+    "worklease_internal_heartbeats", default=False
+)
 
 
 class LeaseStore:
@@ -56,6 +63,34 @@ class LeaseStore:
 
     def _connect(self) -> sqlite3.Connection:
         return connect(self.home)
+
+    @contextmanager
+    def _acquire_transaction(
+        self, connection: sqlite3.Connection, resource: str
+    ) -> Iterator[None]:
+        bundle = self._bundle_for_resource(connection, resource)
+        if bundle is not None:
+            raise LeaseError(
+                "bundle-operation-required",
+                resource=resource,
+                claim=self._bundle_claim(connection, bundle).to_dict(
+                    include_token=False
+                ),
+            )
+        with resource_lock(resource, self.home), transaction(connection):
+            yield
+
+    @contextmanager
+    def _connection_context(
+        self, connection: sqlite3.Connection, *, internal_heartbeats: bool = False
+    ) -> Iterator[None]:
+        connection_token = _ACTIVE_CONNECTION.set(connection)
+        heartbeat_token = _INTERNAL_HEARTBEATS.set(internal_heartbeats)
+        try:
+            yield
+        finally:
+            _INTERNAL_HEARTBEATS.reset(heartbeat_token)
+            _ACTIVE_CONNECTION.reset(connection_token)
 
     @staticmethod
     def _current(connection: sqlite3.Connection, resource: str) -> sqlite3.Row | None:
@@ -761,6 +796,7 @@ class LeaseStore:
         receipt: dict[str, Any],
         *,
         checkpoint: str | None = None,
+        record_operation: bool = True,
     ) -> dict[str, Any]:
         now = self.clock()
         revision = int(row["revision"]) + 1
@@ -795,7 +831,12 @@ class LeaseStore:
         updated = self._current(connection, request.resource)
         if updated is None:
             raise LeaseError("claim-update-conflict", code=3, resource=request.resource)
-        receipt["claim"] = self._claim(updated).to_dict()
+        claim = self._claim(updated)
+        receipt["claim"] = claim.to_dict()
+        if not record_operation:
+            return receipt
+        persisted_receipt = dict(receipt)
+        persisted_receipt["claim"] = claim.to_dict(include_token=False)
         connection.execute(
             """
             INSERT INTO operations(
@@ -810,7 +851,7 @@ class LeaseStore:
                 kind,
                 json.dumps(operation_request, sort_keys=True, separators=(",", ":")),
                 request.revision,
-                json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                json.dumps(persisted_receipt, sort_keys=True, separators=(",", ":")),
                 now,
             ),
         )
@@ -823,13 +864,18 @@ class LeaseStore:
         operation_request: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         """Durably record an operation intent before an external side effect."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
         lock = (
             nullcontext() if lock_held else resource_lock(request.resource, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             self._require_owner(db, request)
             cached = self._cached_operation(db, request, kind, operation_request)
             if cached is not None:
@@ -875,13 +921,18 @@ class LeaseStore:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Persist a started operation's receipt and advance its claim."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
         lock = (
             nullcontext() if lock_held else resource_lock(request.resource, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             row = self._require_owner(db, request)
             if int(row["revision"]) != request.revision:
                 raise LeaseError(
@@ -1041,10 +1092,15 @@ class LeaseStore:
         self,
         connection: sqlite3.Connection,
         row: sqlite3.Row,
+        resources: tuple[str, ...] | None = None,
     ) -> BundleClaim:
         return bundle_claim_from_row(
             row,
-            self._bundle_resources(connection, str(row["claim_id"])),
+            (
+                self._bundle_resources(connection, str(row["claim_id"]))
+                if resources is None
+                else resources
+            ),
             self.clock(),
         )
 
@@ -1250,12 +1306,17 @@ class LeaseStore:
                 code=3,
                 resource=",".join(request.resources),
             )
-        receipt["claim"] = self._bundle_claim(connection, current).to_dict(
+        claim = self._bundle_claim(connection, current)
+        receipt["claim"] = claim.to_dict(
             include_token=kind not in {"exec-bundle", "reconcile-operation-bundle"}
         )
         if not record_operation:
             return receipt
-        encoded_receipt = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        persisted_receipt = dict(receipt)
+        persisted_receipt["claim"] = claim.to_dict(include_token=False)
+        encoded_receipt = json.dumps(
+            persisted_receipt, sort_keys=True, separators=(",", ":")
+        )
         operation_resource = self._bundle_operation_resource(request.resources)
         if complete_operation:
             changed = connection.execute(
@@ -1342,22 +1403,33 @@ class LeaseStore:
             }
 
     def heartbeat_bundle(
-        self, request: BundleMutationRequest, *, lock_held: bool = False
+        self,
+        request: BundleMutationRequest,
+        *,
+        lock_held: bool = False,
+        record_operation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Renew every member and advance one shared bundle revision."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
+        record_operation = record_operation and not _INTERNAL_HEARTBEATS.get()
         ttl = require_ttl(request.ttl)
         lock = (
             nullcontext() if lock_held else resource_locks(request.resources, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             row = self._require_bundle_owner(db, request)
             operation_request = request.request_dict()
-            cached = self._bundle_cached_operation(
-                db, request, "heartbeat-bundle", operation_request
-            )
-            if cached is not None:
-                return cached
+            if record_operation:
+                cached = self._bundle_cached_operation(
+                    db, request, "heartbeat-bundle", operation_request
+                )
+                if cached is not None:
+                    return cached
             self._require_bundle_current(db, request)
             receipt: dict[str, Any] = {
                 "ok": True,
@@ -1374,6 +1446,7 @@ class LeaseStore:
                 "heartbeat-bundle",
                 operation_request,
                 receipt,
+                record_operation=record_operation,
             )
             return result
 
@@ -1384,13 +1457,18 @@ class LeaseStore:
         operation_request: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         """Record a guarded bundle operation before its side effect."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
         lock = (
             nullcontext() if lock_held else resource_locks(request.resources, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             self._require_bundle_owner(db, request)
             cached = self._bundle_cached_operation(db, request, kind, operation_request)
             if cached is not None:
@@ -1433,13 +1511,18 @@ class LeaseStore:
         receipt: dict[str, Any],
         *,
         lock_held: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Complete one started guarded bundle operation atomically."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
         lock = (
             nullcontext() if lock_held else resource_locks(request.resources, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             row = self._require_bundle_owner(db, request)
             operation = db.execute(
                 """
@@ -1805,23 +1888,9 @@ class LeaseStore:
 
         require_resource(request.resource)
         ttl = require_ttl(request.ttl)
-        # Classify persisted bundle membership before a concurrent bundle
-        # mutation can hold the resource lock. The in-lock check below
-        # remains authoritative for the acquire transaction.
-        with closing(self._connect()) as preflight:
-            bundle = self._bundle_for_resource(preflight, request.resource)
-            if bundle is not None:
-                raise LeaseError(
-                    "bundle-operation-required",
-                    resource=request.resource,
-                    claim=self._bundle_claim(preflight, bundle).to_dict(
-                        include_token=False
-                    ),
-                )
         with (
-            resource_lock(request.resource, self.home),
             closing(self._connect()) as db,
-            transaction(db),
+            self._acquire_transaction(db, request.resource),
         ):
             now = self.clock()
             row = self._current(db, request.resource)
@@ -1996,20 +2065,33 @@ class LeaseStore:
             }
 
     def heartbeat(
-        self, request: MutationRequest, *, lock_held: bool = False
+        self,
+        request: MutationRequest,
+        *,
+        lock_held: bool = False,
+        record_operation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """Renew a claim and advance its revision."""
 
+        connection = connection or _ACTIVE_CONNECTION.get()
+        record_operation = record_operation and not _INTERNAL_HEARTBEATS.get()
         ttl = require_ttl(request.ttl)
         lock = (
             nullcontext() if lock_held else resource_lock(request.resource, self.home)
         )
-        with lock, closing(self._connect()) as db, transaction(db):
+        db_context = (
+            closing(self._connect()) if connection is None else nullcontext(connection)
+        )
+        with lock, db_context as db, transaction(db):
             row = self._require_owner(db, request)
             operation_request = self._receipt_request(request)
-            cached = self._cached_operation(db, request, "heartbeat", operation_request)
-            if cached is not None:
-                return cached
+            if record_operation:
+                cached = self._cached_operation(
+                    db, request, "heartbeat", operation_request
+                )
+                if cached is not None:
+                    return cached
             if int(row["revision"]) != request.revision:
                 raise LeaseError(
                     "stale-revision",
@@ -2037,6 +2119,7 @@ class LeaseStore:
                 "heartbeat",
                 operation_request,
                 receipt,
+                record_operation=record_operation,
             )
 
     def checkpoint(
@@ -2151,6 +2234,10 @@ class LeaseStore:
                         operationId=request.operation_id,
                     )
                 receipt = json.loads(str(prior["receipt"]))
+                claim = receipt.get("claim")
+                current = self._current(db, request.resource)
+                if isinstance(claim, dict) and current is not None:
+                    claim["token"] = str(current["token"])
                 receipt["idempotent"] = True
                 return receipt
             row = self._current(db, request.resource)
@@ -2281,6 +2368,10 @@ class LeaseStore:
                 "previousRevision": request.revision,
                 "claim": self._claim(successor).to_dict(),
             }
+            persisted_receipt = dict(receipt)
+            persisted_receipt["claim"] = self._claim(successor).to_dict(
+                include_token=False
+            )
             db.execute(
                 """
                 INSERT INTO operations(
@@ -2296,7 +2387,11 @@ class LeaseStore:
                         operation_request, sort_keys=True, separators=(",", ":")
                     ),
                     request.revision,
-                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    json.dumps(
+                        persisted_receipt,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     now,
                 ),
             )
@@ -2438,7 +2533,7 @@ class LeaseStore:
         """Read one claim without exposing its bearer token."""
 
         require_resource(resource)
-        with closing(self._connect()) as db:
+        with closing(self._connect()) as db, transaction(db, immediate=False):
             row = self._current(db, resource)
             bundle = self._bundle_for_resource(db, resource)
             if row is None:
@@ -2619,25 +2714,36 @@ class LeaseStore:
         if resource is not None:
             require_resource(resource)
 
-        with closing(self._connect()) as db:
-            if resource is None:
-                rows = db.execute("SELECT * FROM claims ORDER BY resource").fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM claims WHERE resource = ? ORDER BY resource",
-                    (resource,),
-                ).fetchall()
+        query = """
+            SELECT c.*, be.resources AS bundle_resources
+            FROM claims AS c
+            LEFT JOIN bundles AS b ON b.claim_id = c.claim_id
+            LEFT JOIN bundle_epochs AS be ON be.claim_id = b.claim_id
+        """
+        parameters: tuple[str, ...] = ()
+        if resource is not None:
+            query += " WHERE c.resource = ?"
+            parameters = (resource,)
+        query += " ORDER BY c.resource"
+
+        with closing(self._connect()) as db, transaction(db, immediate=False):
+            rows = db.execute(query, parameters).fetchall()
             claims: list[dict[str, Any]] = []
             seen_bundles: set[str] = set()
             for row in rows:
-                bundle = self._bundle_row(db, str(row["claim_id"]))
-                if bundle is not None:
-                    claim_id = str(bundle["claim_id"])
+                bundle_resources = row["bundle_resources"]
+                if bundle_resources is not None:
+                    claim_id = str(row["claim_id"])
                     if claim_id in seen_bundles:
                         continue
                     seen_bundles.add(claim_id)
+                    resources = tuple(
+                        str(value) for value in json.loads(str(bundle_resources))
+                    )
                     claims.append(
-                        self._bundle_claim(db, bundle).to_dict(include_token=False)
+                        self._bundle_claim(db, row, resources=resources).to_dict(
+                            include_token=False
+                        )
                     )
                 else:
                     claims.append(self._claim(row).to_dict(include_token=False))
@@ -2826,7 +2932,16 @@ class LeaseStore:
             SELECT resource, operation_id, reconciled_at AS recorded_at
             FROM reconciliations AS r
             WHERE reconciled_at < ?
-              AND r.target_claim_id <> ''
+              AND (
+                  r.target_claim_id <> ''
+                  OR (
+                      SELECT COUNT(*)
+                      FROM operations AS target
+                      WHERE target.resource = r.resource
+                        AND target.operation_id = r.operation_id
+                        AND target.kind = r.kind
+                  ) = 1
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM claims AS c
                   WHERE c.claim_id = r.claim_id
@@ -2836,9 +2951,22 @@ class LeaseStore:
                   FROM operations AS o
                   WHERE o.resource = r.resource
                     AND o.operation_id = r.operation_id
-                    AND o.claim_id = r.target_claim_id
                     AND o.kind = r.kind
                     AND o.created_at >= ?
+                    AND (
+                        o.claim_id = r.target_claim_id
+                        OR (
+                            r.target_claim_id = ''
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM operations AS duplicate
+                                WHERE duplicate.resource = o.resource
+                                  AND duplicate.operation_id = o.operation_id
+                                  AND duplicate.kind = o.kind
+                                  AND duplicate.claim_id != o.claim_id
+                            )
+                        )
+                    )
               )
             """,
             (cutoff_value, cutoff_value),

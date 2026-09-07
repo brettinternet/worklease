@@ -276,9 +276,11 @@ def _entry_points() -> tuple[Any, ...]:
     return tuple(selected)
 
 
-def _matching_entry_points(name: str) -> tuple[Any, ...]:
+def _matching_entry_points(
+    name: str, entries: tuple[Any, ...] | None = None
+) -> tuple[Any, ...]:
     matches: list[Any] = []
-    for entry_point in _entry_points():
+    for entry_point in _entry_points() if entries is None else entries:
         entry_name = getattr(entry_point, "name", None)
         if not isinstance(entry_name, str):
             continue
@@ -306,9 +308,32 @@ def available_policy_names() -> tuple[str, ...]:
 
 
 def policy_descriptors() -> tuple[ResourcePolicyDescriptor, ...]:
-    """Load and return deterministic metadata for every available policy."""
+    """Load deterministic metadata after one entry-point discovery scan."""
 
-    return tuple(load_policy(name).descriptor for name in available_policy_names())
+    entries = _entry_points()
+    names = set(_BUILTINS)
+    for entry_point in entries:
+        value = getattr(entry_point, "name", None)
+        if isinstance(value, str):
+            try:
+                names.add(normalize_provider(value))
+            except LeaseError:
+                continue
+
+    descriptors: list[ResourcePolicyDescriptor] = []
+    for name in sorted(names):
+        matches = _matching_entry_points(name, entries)
+        if name in _BUILTINS:
+            if matches:
+                raise _policy_error(
+                    "resource-policy-duplicate",
+                    provider=name,
+                    count=len(matches) + 1,
+                )
+            descriptors.append(_BUILTINS[name].descriptor)
+        else:
+            descriptors.append(_external_registration(name, matches).descriptor)
+    return tuple(descriptors)
 
 
 def describe_policy(provider: str) -> ResourcePolicyDescriptor:

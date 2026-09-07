@@ -12,7 +12,42 @@ from pathlib import Path
 
 from .models import LeaseError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+_SCHEMA_TABLES = frozenset(
+    {
+        "schema_meta",
+        "epochs",
+        "resources",
+        "claims",
+        "bundle_epochs",
+        "bundles",
+        "bundle_members",
+        "operations",
+        "releases",
+        "reconciliations",
+    }
+)
+_SCHEMA_INDEXES = frozenset(
+    {
+        "claims_by_claim_id",
+        "operations_by_claim_time",
+        "operations_by_claim_state",
+        "operations_by_resource_operation",
+        "operations_by_recorded_at",
+        "releases_by_claim_time",
+        "releases_by_recorded_at",
+        "reconciliations_by_claim_time",
+        "reconciliations_by_target",
+        "reconciliations_by_recorded_at",
+    }
+)
+_SCHEMA_REQUIRED_COLUMNS = {
+    "operations": frozenset({"state"}),
+    "claims": frozenset({"coordination_only", "acquire_ttl", "checkpoint"}),
+    "releases": frozenset({"checkpoint"}),
+    "reconciliations": frozenset({"receipt", "target_claim_id"}),
+}
 
 
 def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
@@ -60,36 +95,94 @@ def database_setup_lock(home: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _schema(connection: sqlite3.Connection, home: Path) -> None:
-    with database_setup_lock(home):
-        metadata_exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+def _schema_versions(connection: sqlite3.Connection) -> tuple[int, ...] | None:
+    """Read the schema marker without changing an existing database."""
+
+    metadata_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+    ).fetchone()
+    if metadata_exists is None:
+        return None
+    try:
+        return tuple(
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM schema_meta ORDER BY version"
+            )
+        )
+    except (sqlite3.Error, TypeError, ValueError) as error:
+        raise LeaseError("invalid-schema-version", code=3) from error
+
+
+def _schema_is_complete(connection: sqlite3.Connection) -> bool:
+    """Return whether the current marker has the layout this release needs."""
+
+    objects = {
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type IN ('table', 'index')
+            """
+        )
+    }
+    if not _SCHEMA_TABLES.issubset(objects) or not _SCHEMA_INDEXES.issubset(objects):
+        return False
+    for table, required in _SCHEMA_REQUIRED_COLUMNS.items():
+        columns = {
+            str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        if not required.issubset(columns):
+            return False
+    return True
+
+
+def _schema_has_known_table(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name IN (
+                'epochs', 'resources', 'claims', 'bundle_epochs', 'bundles',
+                'bundle_members', 'operations', 'releases', 'reconciliations'
+            )
+            LIMIT 1
+            """
         ).fetchone()
-        if metadata_exists is not None:
-            try:
-                versions = tuple(
-                    int(row[0])
-                    for row in connection.execute(
-                        "SELECT version FROM schema_meta ORDER BY version"
-                    )
-                )
-            except (sqlite3.Error, TypeError, ValueError) as error:
-                raise LeaseError("invalid-schema-version", code=3) from error
-            if versions != (SCHEMA_VERSION,):
-                raise LeaseError(
-                    "incompatible-schema-version",
-                    code=3,
-                    supportedVersion=SCHEMA_VERSION,
-                    foundVersions=list(versions),
-                )
+        is not None
+    )
+
+
+def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
+    with database_setup_lock(home):
+        versions = _schema_versions(connection)
+        if versions == (SCHEMA_VERSION,) and _schema_is_complete(connection):
+            return
+        if versions not in (None, ()) and (
+            len(versions) != 1 or versions[0] > SCHEMA_VERSION
+        ):
+            raise LeaseError(
+                "incompatible-schema-version",
+                code=3,
+                supportedVersion=SCHEMA_VERSION,
+                foundVersions=list(versions),
+            )
+        if versions == (SCHEMA_VERSION,) and not _schema_has_known_table(connection):
+            raise LeaseError(
+                "incompatible-schema-version",
+                code=3,
+                supportedVersion=SCHEMA_VERSION,
+                foundVersions=[SCHEMA_VERSION],
+            )
         connection.execute("PRAGMA journal_mode = WAL")
+        # FULL is intentional: worklease promises same-host durability for a
+        # committed lease transition, not merely WAL visibility.
         connection.execute("PRAGMA synchronous = FULL")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS schema_meta (
                 version INTEGER PRIMARY KEY
             );
-            INSERT OR IGNORE INTO schema_meta(version) VALUES (1);
 
             CREATE TABLE IF NOT EXISTS epochs (
                 claim_id TEXT PRIMARY KEY,
@@ -307,6 +400,19 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 ON reconciliations(reconciled_at);
             """
         )
+        connection.execute("DELETE FROM schema_meta")
+        connection.execute(
+            "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
+        )
+
+
+def _schema(connection: sqlite3.Connection, home: Path) -> None:
+    """Use the version marker to skip setup on an up-to-date database."""
+
+    versions = _schema_versions(connection)
+    if versions == (SCHEMA_VERSION,) and _schema_is_complete(connection):
+        return
+    _migrate_schema(connection, home)
 
 
 def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
@@ -326,6 +432,8 @@ def connect(home: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 30000")
+        # FULL is part of the same-host durability guarantee on every handle.
+        connection.execute("PRAGMA synchronous = FULL")
         _schema(connection, resolved_home)
         for state_file in (database, *sidecars):
             if state_file.exists() or state_file.is_symlink():
@@ -347,10 +455,12 @@ def connect_readonly(home: str | os.PathLike[str] | None = None) -> sqlite3.Conn
 
 
 @contextmanager
-def transaction(connection: sqlite3.Connection) -> Iterator[None]:
-    """Run one immediate SQLite transaction."""
+def transaction(
+    connection: sqlite3.Connection, *, immediate: bool = True
+) -> Iterator[None]:
+    """Run one SQLite transaction, immediate by default for mutations."""
 
-    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield
     except BaseException:

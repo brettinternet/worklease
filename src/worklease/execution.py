@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import threading
 from collections.abc import Callable, Sequence
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass, replace
 from typing import BinaryIO, cast
 
@@ -180,9 +180,17 @@ class GuardedExecutor:
         operation_request = request.request_dict(
             argv=argv, executionDirectory=execution_directory.request_value()
         )
-        with resource_lock(request.resource, self.store.home):
+        with (
+            resource_lock(request.resource, self.store.home),
+            closing(self.store._connect()) as db,
+            self.store._connection_context(db, internal_heartbeats=True),
+        ):
             cached = self.store.begin_operation(
-                request, "exec", operation_request, lock_held=True
+                request,
+                "exec",
+                operation_request,
+                lock_held=True,
+                connection=db,
             )
             if cached is not None:
                 command_result = cached.get("command")
@@ -202,7 +210,10 @@ class GuardedExecutor:
                         f"{request.operation_id}:heartbeat:{heartbeat_count}"
                     ),
                 )
-                heartbeat = self.store.heartbeat(heartbeat_request, lock_held=True)
+                heartbeat = self.store.heartbeat(
+                    heartbeat_request,
+                    lock_held=True,
+                )
                 claim = heartbeat.get("claim")
                 if not isinstance(claim, dict):
                     raise LeaseError(
@@ -305,6 +316,7 @@ class GuardedExecutor:
                 operation_request,
                 receipt,
                 lock_held=True,
+                connection=db,
             )
             return completed, returncode
 
@@ -323,12 +335,17 @@ class GuardedExecutor:
         operation_request["tokenHash"] = hashlib.sha256(
             request.token.encode("utf-8")
         ).hexdigest()
-        with resource_locks(request.resources, self.store.home):
+        with (
+            resource_locks(request.resources, self.store.home),
+            closing(self.store._connect()) as db,
+            self.store._connection_context(db, internal_heartbeats=True),
+        ):
             cached = self.store.begin_bundle_operation(
                 request,
                 "exec-bundle",
                 operation_request,
                 lock_held=True,
+                connection=db,
             )
             if cached is not None:
                 command_result = cached.get("command")
@@ -349,7 +366,8 @@ class GuardedExecutor:
                     ),
                 )
                 heartbeat = self.store.heartbeat_bundle(
-                    heartbeat_request, lock_held=True
+                    heartbeat_request,
+                    lock_held=True,
                 )
                 claim = heartbeat.get("claim")
                 if not isinstance(claim, dict):
@@ -454,6 +472,7 @@ class GuardedExecutor:
                 operation_request,
                 receipt,
                 lock_held=True,
+                connection=db,
             )
             return completed, returncode
 
