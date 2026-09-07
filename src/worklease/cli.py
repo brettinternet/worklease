@@ -126,6 +126,26 @@ _COMMANDS = frozenset(
 )
 
 
+_CANONICAL_COMMANDS = {
+    "bundle-acquire": "acquire-bundle",
+    "bundle-status": "status-bundle",
+    "inspect-bundle": "status-bundle",
+    "bundle-heartbeat": "heartbeat-bundle",
+    "bundle-release": "release-bundle",
+    "bundle-exec": "exec-bundle",
+}
+
+
+def _has_invalid_encoding(value: str) -> bool:
+    """Detect argv values that cannot be encoded as UTF-8 (surrogate escapes)."""
+
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
 class _ArgumentError(Exception):
     """A parser failure that can be represented by the JSON CLI contract."""
 
@@ -1155,7 +1175,11 @@ def _text_value(value: object) -> str:
 
     rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return "".join(
-        (f"\\u{ord(character):04x}" if 0x7F <= ord(character) <= 0x9F else character)
+        (
+            f"\\u{ord(character):04x}"
+            if 0x7F <= ord(character) <= 0x9F or 0xD800 <= ord(character) <= 0xDFFF
+            else character
+        )
         for character in rendered
     )
 
@@ -1339,6 +1363,9 @@ def _render_version(payload: dict[str, object]) -> None:
 
 def _render_key(payload: dict[str, object]) -> None:
     _text_header(payload)
+    if not payload.get("ok"):
+        _emit_error_details(payload)
+        return
     for field in (
         "provider",
         "resource",
@@ -1350,8 +1377,6 @@ def _render_key(payload: dict[str, object]) -> None:
     ):
         if field in payload:
             print(f"{_text_label(field)}\t{_text_value(payload[field])}")
-    if not payload.get("ok"):
-        _emit_error_details(payload)
 
 
 def _render_policy_list(payload: dict[str, object]) -> None:
@@ -1793,7 +1818,7 @@ def _emit(
 
 
 def _envelope(operation: str, payload: dict[str, object]) -> dict[str, object]:
-    return {"schemaVersion": 1, "operation": operation, **payload}
+    return {"operation": operation, **payload, "schemaVersion": 1}
 
 
 def _operation_hint(argv: Sequence[str]) -> str:
@@ -1853,6 +1878,8 @@ def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
         or "invalid float value" in message
     ):
         return f"See {command} --help for required options and examples"
+    if message == "invalid-argument-encoding":
+        return "Arguments must be valid UTF-8"
     return None
 
 
@@ -2157,7 +2184,7 @@ def _validate_output_arguments(argv: Sequence[str]) -> None:
     has_format = any(
         value in {"--format", "-f"}
         or value.startswith("--format=")
-        or value.startswith("-f=")
+        or (value.startswith("-f") and len(value) > 2)
         for value in options
     )
     if has_json and has_format:
@@ -2177,6 +2204,8 @@ def _fallback_output_format(argv: Sequence[str]) -> str:
             explicit_format = options[index + 1]
         elif value.startswith("--format=") or value.startswith("-f="):
             explicit_format = value.partition("=")[2]
+        elif value.startswith("-f") and len(value) > 2:
+            explicit_format = value[2:]
     if explicit_format in {"json", "text"}:
         return explicit_format
     if has_json:
@@ -2199,6 +2228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     output_format = _fallback_output_format(values)
     try:
+        if any(_has_invalid_encoding(value) for value in values):
+            raise _ArgumentError("invalid-argument-encoding")
         _validate_output_arguments(values)
         parser = _parser()
         args = parser.parse_args(values)
@@ -2224,6 +2255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.operation == "policy":
         args.operation = f"policy-{args.policy_operation}"
+    args.operation = _CANONICAL_COMMANDS.get(args.operation, args.operation)
 
     if args.version:
         from . import __version__

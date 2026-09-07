@@ -2527,6 +2527,72 @@ with resource_lock(resource):
         self.assertEqual("old\n", target.read_text())
         self.assertNotIn(str(claim["token"]), result.stdout)
 
+    def test_non_utf8_arguments_fail_as_invalid_arguments(self) -> None:
+        for arguments in (
+            ("--json", "status", "--resource", "local:\udcff"),
+            ("key", "--provider", "ge\udcffn", "--source", "s", "--item", "i"),
+        ):
+            with self.subTest(arguments=arguments):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    code = cli_module.main(list(arguments))
+                self.assertEqual(64, code)
+                output = stdout.getvalue()
+                self.assertIn("invalid-arguments", output)
+                if arguments[0] == "--json":
+                    payload = json.loads(output)
+                    self.assertEqual("status", payload["operation"])
+                else:
+                    self.assertTrue(output.startswith("ERROR key: invalid-arguments\n"))
+                    self.assertIn("HINT\tArguments must be valid UTF-8", output)
+
+    def test_blank_home_falls_back_to_environment(self) -> None:
+        payload = self.json_cli("--home", "", "status", "--resource", "local:blank")
+        self.assertEqual("free", payload["state"])
+        self.assertTrue((Path(self.home.name) / "leases.sqlite3").exists())
+        self.assertFalse((Path.cwd() / "database.lock").exists())
+
+    def test_key_failure_emits_each_diagnostic_once(self) -> None:
+        result = self.run_cli(
+            "key", "--provider", "nope", "--source", "s", "--item", "i"
+        )
+        self.assertEqual(2, result.returncode)
+        lines = result.stdout.splitlines()
+        self.assertEqual("ERROR key: resource-policy-not-found", lines[0])
+        self.assertEqual(1, sum(line.startswith("PROVIDER\t") for line in lines))
+        self.assertEqual(1, sum(line.startswith("AVAILABLE\t") for line in lines))
+
+    def test_attached_short_format_value_is_honored_for_parser_errors(self) -> None:
+        result = self.run_cli("-fjson", "status")
+        self.assertEqual(64, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("invalid-arguments", payload["error"])
+
+        conflicting = self.run_cli("-ftext", "--json", "status", "--resource", "x")
+        self.assertEqual(64, conflicting.returncode)
+        self.assertIn("invalid-arguments", conflicting.stdout)
+
+    def test_alias_failures_report_the_canonical_operation(self) -> None:
+        self.json_cli(*self.acquire_arguments(resource="repo:alias", claim_id="one"))
+        result = self.run_cli(
+            "--json",
+            "bundle-acquire",
+            "--resource",
+            "repo:alias",
+            "--claim-id",
+            "two",
+            "--agent-id",
+            "a",
+            "--session-id",
+            "s",
+            "--owner-id",
+            "o",
+            "--work-key",
+            "w",
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("acquire-bundle", json.loads(result.stdout)["operation"])
+
     def test_no_arguments_show_help_and_invalid_commands_fail(self) -> None:
         no_arguments = self.run_cli()
         help_result = self.run_cli("--help")

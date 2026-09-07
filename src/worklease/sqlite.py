@@ -18,7 +18,7 @@ SCHEMA_VERSION = 1
 def lease_home(home: str | os.PathLike[str] | None = None) -> Path:
     """Return the isolated state directory used by worklease."""
 
-    if home is not None:
+    if home is not None and str(home) != "":
         return Path(home).expanduser().resolve()
     override = os.environ.get("WORKLEASE_HOME")
     if override:
