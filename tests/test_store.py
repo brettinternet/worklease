@@ -1142,6 +1142,27 @@ class StoreTests(unittest.TestCase):
             self.store.inspect_bundle_operation(resources, "bundle-unknown")["state"],
         )
 
+    def test_reconcile_accepts_uppercase_request_sha256(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        target = self.mutation(acquired, "resource", "unknown-upper")
+        self.assertIsNone(
+            self.store.begin_operation(target, "exec", {"argv": ["publish"]})
+        )
+        inspected = self.store.inspect_operation("resource", "unknown-upper")
+        reconcile_request = self.mutation(acquired, "resource", "reconcile-upper")
+        result = self.store.reconcile_operation(
+            reconcile_request,
+            "unknown-upper",
+            str(inspected["requestSha256"]).upper(),
+            "observed-failure",
+            {"provider": "did-not-run"},
+        )
+        self.assertEqual(True, result["ok"])
+        self.assertEqual(
+            "reconciled",
+            self.store.inspect_operation("resource", "unknown-upper")["state"],
+        )
+
     def test_reconcile_rejects_fingerprint_and_malformed_evidence(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         target = self.mutation(acquired, "resource", "unknown-invalid")

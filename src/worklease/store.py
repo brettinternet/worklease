@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import json
 import math
 import secrets
@@ -419,7 +420,7 @@ class LeaseStore:
             actual_sha256 = hashlib.sha256(
                 str(target["request"]).encode("utf-8")
             ).hexdigest()
-            if actual_sha256 != expected_request_sha256:
+            if actual_sha256 != expected_request_sha256.lower():
                 raise LeaseError(
                     "request-fingerprint-mismatch",
                     code=3,
@@ -612,7 +613,7 @@ class LeaseStore:
             actual_sha256 = hashlib.sha256(
                 str(target["request"]).encode("utf-8")
             ).hexdigest()
-            if actual_sha256 != expected_request_sha256:
+            if actual_sha256 != expected_request_sha256.lower():
                 raise LeaseError(
                     "request-fingerprint-mismatch",
                     code=3,
@@ -721,7 +722,9 @@ class LeaseStore:
         row = self._current(connection, request.resource)
         if row is None:
             raise LeaseError("claim-not-found", resource=request.resource)
-        if row["claim_id"] != request.claim_id or row["token"] != request.token:
+        if row["claim_id"] != request.claim_id or not hmac.compare_digest(
+            str(row["token"]), request.token
+        ):
             raise LeaseError(
                 "stale-claim",
                 resource=request.resource,
@@ -1095,7 +1098,9 @@ class LeaseStore:
                 "claim-not-found",
                 resource=",".join(request.resources),
             )
-        if row["claim_id"] != request.claim_id or row["token"] != request.token:
+        if row["claim_id"] != request.claim_id or not hmac.compare_digest(
+            str(row["token"]), request.token
+        ):
             raise LeaseError(
                 "stale-claim",
                 resource=",".join(request.resources),
@@ -2151,7 +2156,9 @@ class LeaseStore:
             row = self._current(db, request.resource)
             if row is None:
                 raise LeaseError("claim-not-found", resource=request.resource)
-            if row["claim_id"] != request.claim_id or row["token"] != request.token:
+            if row["claim_id"] != request.claim_id or not hmac.compare_digest(
+                str(row["token"]), request.token
+            ):
                 raise LeaseError(
                     "stale-claim",
                     resource=request.resource,
@@ -2303,7 +2310,7 @@ class LeaseStore:
     ) -> dict[str, Any] | None:
         if prior is None:
             return None
-        if str(prior["token"]) != request.token:
+        if not hmac.compare_digest(str(prior["token"]), request.token):
             raise LeaseError("stale-claim", resource=request.resource)
         recorded = json.loads(str(prior["request"]))
         if {key: value for key, value in recorded.items() if key != "revision"} != {
@@ -2354,7 +2361,9 @@ class LeaseStore:
             row = self._current(db, request.resource)
             if row is None:
                 raise LeaseError("claim-not-found", resource=request.resource)
-            if row["claim_id"] != request.claim_id or row["token"] != request.token:
+            if row["claim_id"] != request.claim_id or not hmac.compare_digest(
+                str(row["token"]), request.token
+            ):
                 raise LeaseError(
                     "stale-claim",
                     resource=request.resource,
@@ -2740,6 +2749,7 @@ class LeaseStore:
                   SELECT 1
                   FROM claims AS c, json_each(e.resources) AS member
                   WHERE c.resource = member.value
+                    AND c.claim_id = e.claim_id
               )
               AND NOT EXISTS (
                   SELECT 1 FROM operations AS o

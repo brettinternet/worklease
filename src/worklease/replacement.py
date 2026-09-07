@@ -127,6 +127,10 @@ class FileReplacer:
                 )
             return receipt
 
+        if self.store.owner_claim(request).get("guarantee") != "fenced":
+            raise LeaseError(
+                "unsupported-coordination-replace-file", resource=request.resource
+            )
         try:
             target = _regular_file(raw_target, field="target")
             candidate = _regular_file(raw_candidate, field="content-file")

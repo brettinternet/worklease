@@ -2494,6 +2494,39 @@ with resource_lock(resource):
         self.assertEqual("new\n", target.read_text())
         self.assertNotIn(str(claim["token"]), json.dumps(payload))
 
+    def test_replace_file_rejects_coordination_only_claims(self) -> None:
+        directory = Path(self.home.name)
+        target = directory / "target.txt"
+        candidate = directory / "candidate.txt"
+        target.write_text("old\n")
+        candidate.write_text("new\n")
+        expected = hashlib.sha256(target.read_bytes()).hexdigest()
+        acquired = self.json_cli(
+            *self.acquire_arguments(resource="repo:coordination", claim_id="coord"),
+            "--coordination-only",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.assertEqual("local-coordination", claim["guarantee"])
+        result = self.run_cli(
+            "--json",
+            *self.mutation_arguments(
+                "replace-file", "repo:coordination", claim, "replace-coord"
+            ),
+            "--path",
+            str(target),
+            "--expected-sha256",
+            expected,
+            "--content-file",
+            str(candidate),
+        )
+        self.assertEqual(2, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual(False, payload["ok"])
+        self.assertEqual("unsupported-coordination-replace-file", payload["error"])
+        self.assertEqual("old\n", target.read_text())
+        self.assertNotIn(str(claim["token"]), result.stdout)
+
     def test_no_arguments_show_help_and_invalid_commands_fail(self) -> None:
         no_arguments = self.run_cli()
         help_result = self.run_cli("--help")

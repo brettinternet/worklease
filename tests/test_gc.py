@@ -494,6 +494,55 @@ class GarbageCollectionTests(unittest.TestCase):
             )
         self.assertEqual(0, eligible["resources"]["count"])
 
+    def test_released_bundle_epoch_is_collected_despite_unrelated_member_claim(
+        self,
+    ) -> None:
+        resources = ("repo:gc-bundle-shared-a", "repo:gc-bundle-shared-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-shared",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.store.release_bundle(
+            BundleMutationRequest(
+                resources=resources,
+                claim_id=str(claim["claimId"]),
+                token=str(claim["token"]),
+                revision=int(claim["revision"]),
+                operation_id="bundle-release-gc-shared",
+            ),
+            "done",
+        )
+        self.now = 31 * 86400
+        self.store.acquire(
+            AcquireRequest(
+                resource=resources[0],
+                claim_id="unrelated-singleton",
+                agent_id="agent-2",
+                session_id="session-2",
+                owner_id="owner-2",
+                work_key="implement:other",
+            )
+        )
+        self.now = 62 * 86400
+        eligible = self.store.garbage_collect()["eligible"]
+        self.assertEqual(1, eligible["bundleEpochs"]["count"])
+        self.store.garbage_collect(apply=True)
+        with closing(connect(self.home.name)) as db, db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM bundle_epochs WHERE claim_id = ?",
+                    ("bundle-gc-shared",),
+                ).fetchone()
+            )
+
     def test_reconciled_bundle_operation_can_be_released_and_collected(self) -> None:
         resources = ("repo:gc-reconciled-a", "repo:gc-reconciled-b")
         acquired = self.store.acquire_bundle(

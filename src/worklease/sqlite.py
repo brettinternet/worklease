@@ -289,6 +289,8 @@ def _schema(connection: sqlite3.Connection, home: Path) -> None:
                 ON operations(claim_id, created_at);
             CREATE INDEX IF NOT EXISTS operations_by_claim_state
                 ON operations(claim_id, state, resource, operation_id, kind);
+            CREATE INDEX IF NOT EXISTS operations_by_resource_operation
+                ON operations(resource, operation_id);
             CREATE INDEX IF NOT EXISTS operations_by_recorded_at
                 ON operations(created_at);
             CREATE INDEX IF NOT EXISTS releases_by_claim_time
