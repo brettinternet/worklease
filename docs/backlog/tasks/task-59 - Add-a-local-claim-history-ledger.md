@@ -1,10 +1,11 @@
 ---
 id: TASK-59
 title: Add retained local claim lifecycle history
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-07 14:59'
-updated_date: '2026-09-07 15:24'
+updated_date: '2026-09-07 18:36'
 labels:
   - storage
   - cli
@@ -41,3 +42,17 @@ This history is local, retention-bounded diagnostic state. It is not authoritati
 - [ ] #2 A read-only local CLI command projects retained singleton and bundle-member history for one exact resource using only explicitly safe fields, deterministic ordering, and schema-versioned JSON.
 - [ ] #3 Documentation defines local and provider-authority boundaries, post-migration completeness, legacy and prior-GC gaps, record-level retention, sanitized export, and complete database archival.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify the integrated TASK-59.1 through TASK-59.3 implementation against the parent acceptance criteria.
+2. Run focused history checks and all repository quality gates in the isolated worktree.
+3. Record criterion-level evidence, finalize TASK-59, commit the backlog state, merge to main, validate, and clean the worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Selected as the only open dependency-ready backlog item after all three subtasks completed; working in HWT workspace w5C on branch task-59-retained-history.
+<!-- SECTION:NOTES:END -->
