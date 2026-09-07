@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/history.json",
+  "title": "Worklease resource history",
+  "description": "Sanitized deterministic history for one exact local resource. It contains local coordination metadata only; provider evidence and secret-bearing durable payloads are not exported.",
+  "allOf": [
+    {"$ref": "commands.json"},
+    {
+      "type": "object",
+      "required": ["operation"],
+      "properties": {
+        "operation": {"const": "history"},
+        "resource": {"type": "string"},
+        "epochs": {
+          "type": "array",
+          "items": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Epoch"}
+        }
+      },
+      "if": {
+        "properties": {"ok": {"const": true}},
+        "required": ["ok"]
+      },
+      "then": {"required": ["resource", "epochs"]},
+      "additionalProperties": true
+    }
+  ],
+  "$defs": {
+    "NullableTimestamp": {
+      "type": ["string", "null"]
+    },
+    "Operation": {
+      "type": "object",
+      "required": [
+        "operationId", "kind", "state", "expectedRevision", "createdAt"
+      ],
+      "properties": {
+        "operationId": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "expectedRevision": {"type": ["integer", "null"], "minimum": 1},
+        "createdAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "outcome": {"type": "string", "minLength": 1},
+        "reconciliationOperationId": {"type": "string", "minLength": 1},
+        "reconciledAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"}
+      },
+      "additionalProperties": false
+    },
+    "Reconciliation": {
+      "type": "object",
+      "required": [
+        "targetClaimId", "targetOperationId", "reconciliationOperationId",
+        "kind", "outcome", "reconciledAt"
+      ],
+      "properties": {
+        "targetClaimId": {"type": ["string", "null"]},
+        "targetOperationId": {"type": "string", "minLength": 1},
+        "reconciliationOperationId": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "minLength": 1},
+        "reconciledAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"}
+      },
+      "additionalProperties": false
+    },
+    "Termination": {
+      "type": "object",
+      "required": [
+        "reason", "effectiveAt", "recordedAt", "finalRevision",
+        "heartbeatAt", "expiresAt", "checkpointPresent",
+        "successorClaimId", "operationId"
+      ],
+      "properties": {
+        "reason": {"type": "string", "minLength": 1},
+        "effectiveAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "recordedAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "finalRevision": {"type": ["integer", "null"], "minimum": 1},
+        "heartbeatAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "expiresAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "checkpointPresent": {"type": "boolean"},
+        "successorClaimId": {"type": ["string", "null"]},
+        "operationId": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "Current": {
+      "type": "object",
+      "required": [
+        "claimId", "revision", "agentId", "sessionId", "ownerId",
+        "workKey", "coordinationOnly", "guarantee", "acquiredAt",
+        "heartbeatAt", "expiresAt"
+      ],
+      "properties": {
+        "claimId": {"type": "string", "minLength": 1},
+        "revision": {"type": ["integer", "null"], "minimum": 1},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "coordinationOnly": {"type": "boolean"},
+        "guarantee": {"enum": ["fenced", "local-coordination"]},
+        "acquiredAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "heartbeatAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "expiresAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"}
+      },
+      "additionalProperties": false
+    },
+    "Epoch": {
+      "type": "object",
+      "required": [
+        "resource", "kind", "claimId", "agentId", "sessionId", "ownerId",
+        "workKey", "acquiredAt", "acquisitionRevision", "state",
+        "legacyIncomplete", "operations", "reconciliations", "termination",
+        "current"
+      ],
+      "properties": {
+        "resource": {"type": "string"},
+        "resources": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "kind": {"enum": ["singleton", "bundle"]},
+        "claimId": {"type": "string", "minLength": 1},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "acquiredAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
+        "acquisitionRevision": {"type": ["integer", "null"], "minimum": 1},
+        "state": {"enum": ["ended", "open", "legacy-incomplete"]},
+        "legacyIncomplete": {"type": "boolean"},
+        "operations": {
+          "type": "array",
+          "items": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Operation"}
+        },
+        "reconciliations": {
+          "type": "array",
+          "items": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Reconciliation"}
+        },
+        "termination": {
+          "anyOf": [
+            {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Termination"},
+            {"type": "null"}
+          ]
+        },
+        "current": {
+          "anyOf": [
+            {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Current"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "bundle"}}},
+          "then": {"required": ["resources"]}
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

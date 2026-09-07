@@ -12,7 +12,7 @@
           "enum": [
             "parse", "version", "key", "policy-list", "policy-describe",
             "acquire", "bundle-acquire", "acquire-bundle",
-            "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle",
+            "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle",
             "inspect-operation", "inspect-operation-bundle",
             "reconcile-operation", "reconcile-operation-bundle", "list", "heartbeat",
             "checkpoint", "transfer", "release", "bundle-heartbeat", "heartbeat-bundle",
@@ -110,7 +110,7 @@
       "if": {
         "properties": {
           "operation": {
-            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "inspect-operation-bundle", "reconcile-operation", "reconcile-operation-bundle", "list"]
+            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "inspect-operation-bundle", "reconcile-operation", "reconcile-operation-bundle", "list"]
           }
         },
         "required": ["operation"]

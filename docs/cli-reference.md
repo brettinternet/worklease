@@ -40,7 +40,7 @@ are the stable interface; short options are a convenience.
 | `-i` | `--item` | `key` |
 | `-C` | `--coordination-only` | `key`, `acquire`, `acquire-bundle` |
 | `-n` | `--name` | `policy describe` |
-| `-r` | `--resource` | claim, status, inspection, list, and bundle commands |
+| `-r` | `--resource` | claim, status, history, inspection, list, and bundle commands |
 | `-c` | `--claim-id` | claim lifecycle commands |
 | `-a` | `--agent-id` | `acquire`, `acquire-bundle` |
 | `-s` | `--session-id` | `acquire`, `acquire-bundle` |
@@ -84,7 +84,45 @@ semantic versioning. JSON responses use schema version 1; consumers must ignore
 unknown fields. Published schemas live in `worklease/schemas/v1/`, and every
 distribution includes those schemas and `worklease/py.typed`.
 
-## Retention and garbage collection
+## Local history, retention, and archival
+
+`history --resource R` is a read-only projection of the retained local epochs
+for exactly `R`. It includes singleton epochs and bundle epochs containing `R`,
+plus safe operation and reconciliation summaries. Acquisition is synthesized
+from the epoch row, not reported as an operation. The command does not provide
+all-resource output, provider lookups, pagination, or time filters. An open
+row remains open when its stored expiry is past; a read does not reclaim it or
+invent a termination. Legacy rows with missing acquisition or ending evidence
+are marked `legacy-incomplete` and cannot be reconstructed from this view.
+
+`--json` is a deterministic, positive-allowlist diagnostic export suitable for
+redirecting one resource before collection:
+
+```sh
+worklease history --resource local:formatter --json > formatter-history.json
+```
+
+The export is sanitized, not a complete archive. It never includes bearer
+tokens or token hashes, checkpoint bodies, request or receipt blobs,
+reconciliation or provider evidence, argv, stdout, stderr, or file contents;
+termination exposes only whether a checkpoint was present. JSON contains no
+export-time timestamp or clock-derived active state, and repeated reads of
+unchanged SQLite state are byte-identical. History is bounded by the same
+local retention policy as the underlying records; rows already removed by
+`gc --apply` cannot be recovered.
+
+For a complete local archive, make a private SQLite backup before collection
+(and preserve the private state-directory permissions):
+
+```sh
+sqlite3 "${WORKLEASE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/worklease}/leases.sqlite3" \
+  ".backup '$HOME/worklease-archive.sqlite3'"
+chmod 600 "$HOME/worklease-archive.sqlite3"
+```
+
+The backup contains the retained local coordination database, including
+secret-bearing lifecycle material. Treat it as private state; do not publish
+or redirect it as a history export.
 
 `gc` is a read-only dry run unless `--apply` is supplied. The default retention
 window is 30 days.
@@ -176,6 +214,7 @@ example or valid values. Hints never echo rejected argument values.
 | `policy list` | Header `NAME`, `ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`, then rows |
 | `policy describe` | One `FIELD: value` line per policy field |
 | `list` | Fixed-width `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, `EXPIRES_AT`, then rows |
+| `history` | `OK history`, `RESOURCE`, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, optional `RESOURCE` or `RESOURCES`, `STATE`, then `CLAIM` fields `RESOURCE` or `RESOURCES`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, `GUARANTEE` |
 | `status --verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
@@ -200,6 +239,15 @@ use approximate durations such as `1h 2m`; expired values use labels such as
 `worklease list --full` and JSON preserve complete values. An empty policy list
 emits its header only. An unclaimed status emits `CLAIM <none>`. Tokens are
 never listed.
+
+Each `history` epoch includes acquisition identity, acquired time, acquisition
+revision, `STATE`, and `LEGACY_INCOMPLETE`. It then emits an `OPERATIONS` count
+and ordered safe operation summaries; `RECONCILIATIONS` rows identify the
+target claim and operation, reconciliation operation, kind, outcome, and time.
+`TERMINATION` and `CURRENT` each contain their stored snapshot or `<none>`.
+Epochs sort by acquisition revision, with acquired time and stable IDs only for
+legacy fallback; operations sort by expected revision, created time, operation
+ID, kind, claim ID, and resource.
 
 For `status --verbose`, bundle claims use ordered `RESOURCES`, including the
 JSON claim's `resources` array. Unknown operations include started bundle
