@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-07 19:40'
-updated_date: '2026-09-07 19:41'
+updated_date: '2026-09-07 19:45'
 labels: []
 dependencies: []
 ordinal: 65000
@@ -36,3 +36,11 @@ Consolidate usable local branch work onto main, clean up obsolete local branches
 5. Push main, wait for green remote CI, tag and push v0.8.2, then verify tagged CI, release publication, and assets.
 6. Record objective evidence in TASK-61, finalize it, push the final task update, and clean local branches.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Branch audit: merged task-59-review-fixes into main. Every other task/chore branch is either already merged, patch-equivalent to main, or an obsolete pre-integration chain for a completed task; isolated plus patches are superseded by their completed task integrations. The untracked linked prototype predates and is superseded by completed TASK-18 and includes a stray file, so it is not usable.
+
+Prepared 0.8.2 metadata in the root package, source SDK package/facade, uv.lock, release workflow default, and changelog. Local lint and format-check pass; 276 core and 19 SDK tests pass; both Pyright projects report 0 errors; root and SDK builds pass. Rebuilt dist/release from the four 0.8.2 Python artifacts, generated checksums.txt, and release-validate passes.
+<!-- SECTION:NOTES:END -->

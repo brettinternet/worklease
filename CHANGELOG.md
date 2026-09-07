@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.8.2 - 2026-09-07
+
+### Added
+
+- Added durable local claim lifecycle history with ownership epoch boundaries, operation and reconciliation records, explicit termination reasons, current-state snapshots, and provenance/coverage metadata.
+- Added `worklease history --resource RESOURCE` with human-readable and exportable JSON output for one canonical resource.
+
+### Changed
+
+- Reorganized and tightened the README, CLI reference, claim model, source SDK compatibility guide, distributed authority guide, and reusable workflow skill for faster scanning and clearer operational guidance.
+
+### Fixed
+
+- Removed unused private history projection fields and documented the history command's required resource and text coverage output.
+
 ## 0.8.1 - 2026-09-07
 
 ### Fixed
