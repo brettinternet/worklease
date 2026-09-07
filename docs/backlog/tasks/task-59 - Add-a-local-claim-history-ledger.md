@@ -1,9 +1,10 @@
 ---
 id: TASK-59
-title: Add a local claim history ledger
+title: Add retained local claim lifecycle history
 status: To Do
 assignee: []
 created_date: '2026-09-07 14:59'
+updated_date: '2026-09-07 15:24'
 labels:
   - storage
   - cli
@@ -22,20 +23,21 @@ ordinal: 60000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Make the local SQLite store a readable ledger of who held each resource, when, and what they attested, so a human or another agent can answer "which agent worked on this resource, in what order, and how did each ownership epoch end" without a remote service.
+Add retained local diagnostics that answer which agent held a resource, in what recoverable order, which explicit lifecycle operations Worklease recorded, and how each ownership epoch closed or was superseded.
 
-The store already persists the pieces: `epochs` (identity at acquire), `operations` (every acquire, heartbeat, checkpoint, transfer, exec, and release receipt with a timestamp), `releases` (voluntary release with retained checkpoint), and `reconciliations`. Three gaps stop this from being a ledger:
+The store persists acquisition identity in `epochs` and `bundle_epochs`, current mutable state in `claims` and `bundles`, explicit mutation receipts in `operations`, singleton release replay state in `releases`, and reconciliations. Acquire is not an operation row, singleton release is not an operation row, and bundle release is recorded only as a bundle operation. Expiry replacement and transfer do not persist the complete final state of the predecessor.
 
-1. When an expired claim is replaced by a new acquire, the `claims` row is overwritten in place and nothing records how the prior epoch ended, its final heartbeat, or its final checkpoint. Only voluntary release writes a terminal record.
-2. No command joins these tables into an ordered timeline. `list` shows current and expired claims only; `inspect-operation` needs an operation ID; `gc` inventories what would be deleted.
-3. `gc` deletes operations, releases, and epochs after 30 days by default, so history must be exportable before retention removes it.
+Two gaps remain:
 
-This is the local precursor to the evidence-ledger framing in the distributed authority design. It uses only existing local records and adds no remote authority, no hash chaining, and no provider writes. Subtasks deliver the terminal record first, then the read and export surface.
+1. Release, transfer, and replacement of expired ownership need a uniform token-free terminal snapshot. Expiry itself is lazy: an expired but unreclaimed current row cannot gain a durable end record without a later write.
+2. No read-only command projects the retained rows as safe resource history. `list` shows current rows, `inspect-operation` requires an operation ID, and `gc` only inventories or explicitly removes retained state.
+
+This history is local, retention-bounded diagnostic state. It is not authoritative provider progress, an attestation, tamper evidence, cross-host history, or part of the future remote authority contract. The first subtask records truthful epoch boundaries for new transitions; the second adds the minimal local read surface. Legacy overwrites and records already removed by `gc --apply` cannot be reconstructed.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every ownership epoch, singleton or bundle member, has a durable terminal record whether it ended by release, transfer, or expiry replacement
-- [ ] #2 A single CLI command shows an ordered, token-redacted timeline of epochs and lifecycle events for a resource, with machine-readable JSON validated by a versioned schema
-- [ ] #3 Documentation explains the history model, its retention boundary under gc, and how to archive history before collection
+- [ ] #1 Every ownership transition recorded after the schema migration persists a token-free terminal snapshot per affected resource; expired-but-unreclaimed and legacy-incomplete epochs are represented without inventing an end record.
+- [ ] #2 A read-only local CLI command projects retained singleton and bundle-member history for one exact resource using only explicitly safe fields, deterministic ordering, and schema-versioned JSON.
+- [ ] #3 Documentation defines local and provider-authority boundaries, post-migration completeness, legacy and prior-GC gaps, record-level retention, sanitized export, and complete database archival.
 <!-- AC:END -->
