@@ -37,7 +37,7 @@ Pin a release by replacing `latest` with a tag such as `vX.Y.Z`. See [GitHub Rel
 Acquire a lease with the defaults:
 
 ```bash
-WORKLEASE_AGENT_ID=me worklease acquire --resource local:my-task
+worklease acquire -r my-task -a me
 ```
 
 ## A complete lifecycle
