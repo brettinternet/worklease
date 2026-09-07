@@ -202,7 +202,9 @@ class GuardedExecutor:
                         f"{request.operation_id}:heartbeat:{heartbeat_count}"
                     ),
                 )
-                heartbeat = self.store.heartbeat(heartbeat_request, lock_held=True)
+                heartbeat = self.store._heartbeat_for_exec(
+                    heartbeat_request, lock_held=True
+                )
                 claim = heartbeat.get("claim")
                 if not isinstance(claim, dict):
                     raise LeaseError(
@@ -348,7 +350,7 @@ class GuardedExecutor:
                         f"{request.operation_id}:heartbeat:{heartbeat_count}"
                     ),
                 )
-                heartbeat = self.store.heartbeat_bundle(
+                heartbeat = self.store._heartbeat_for_exec(
                     heartbeat_request, lock_held=True
                 )
                 claim = heartbeat.get("claim")

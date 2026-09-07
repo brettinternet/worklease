@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -276,6 +276,72 @@ class ExecutionTests(unittest.TestCase):
         assert isinstance(revision, int)
         self.assertGreater(revision, request.revision)
 
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            renewals = db.execute(
+                """
+                SELECT receipt FROM operations
+                WHERE resource = ? AND operation_id LIKE ?
+                ORDER BY created_at
+                """,
+                (request.resource, f"{request.operation_id}:heartbeat:%"),
+            ).fetchall()
+        self.assertGreaterEqual(len(renewals), 2)
+        for row in renewals:
+            stored_receipt = json.loads(str(row["receipt"]))
+            stored_claim = stored_receipt.get("claim")
+            self.assertIsInstance(stored_claim, dict)
+            self.assertNotIn("token", stored_claim)
+            self.assertNotIn(request.token, json.dumps(stored_receipt))
+
+    def test_exec_bundle_renewal_receipts_redact_tokens(self) -> None:
+        resources = ("exec-renewal-a", "exec-renewal-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="exec-renewal-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="exec-renewal",
+                ttl=0.5,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="exec-renewal-operation",
+            ttl=0.5,
+        )
+        _, code = execute_bundle(
+            self.store,
+            request,
+            [sys.executable, "-c", "import time; time.sleep(0.8)"],
+        )
+        self.assertEqual(0, code)
+
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            renewals = db.execute(
+                """
+                SELECT receipt FROM operations
+                WHERE resource = ? AND operation_id LIKE ?
+                ORDER BY created_at
+                """,
+                (request.resource, f"{request.operation_id}:heartbeat:%"),
+            ).fetchall()
+        self.assertGreaterEqual(len(renewals), 2)
+        for row in renewals:
+            stored_receipt = json.loads(str(row["receipt"]))
+            stored_claim = stored_receipt.get("claim")
+            self.assertIsInstance(stored_claim, dict)
+            self.assertNotIn("token", stored_claim)
+            self.assertNotIn(request.token, json.dumps(stored_receipt))
+
     def test_exec_storage_failure_terminates_child_as_unknown_outcome(self) -> None:
         request = self.acquire("heartbeat-storage-failure")
         request = MutationRequest(
@@ -294,7 +360,7 @@ class ExecutionTests(unittest.TestCase):
             "time.sleep(1); "
             f"Path({str(finished)!r}).write_text('finished')"
         )
-        original_heartbeat = self.store.heartbeat
+        original_heartbeat = self.store._heartbeat_for_exec
         calls = 0
 
         def heartbeat_then_fail(
@@ -307,7 +373,9 @@ class ExecutionTests(unittest.TestCase):
             raise sqlite3.OperationalError("database is unavailable")
 
         with (
-            patch.object(self.store, "heartbeat", side_effect=heartbeat_then_fail),
+            patch.object(
+                self.store, "_heartbeat_for_exec", side_effect=heartbeat_then_fail
+            ),
             self.assertRaisesRegex(LeaseError, "unknown-outcome"),
         ):
             execute(
@@ -371,7 +439,7 @@ class ExecutionTests(unittest.TestCase):
                 f"Path({str(marker)!r}).write_text('finished')"
             ),
         ]
-        original_heartbeat = self.store.heartbeat
+        original_heartbeat = self.store._heartbeat_for_exec
         calls = 0
 
         def heartbeat_then_fail(
@@ -386,7 +454,7 @@ class ExecutionTests(unittest.TestCase):
         with (
             patch.object(
                 self.store,
-                "heartbeat",
+                "_heartbeat_for_exec",
                 side_effect=heartbeat_then_fail,
             ),
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),
@@ -420,7 +488,7 @@ class ExecutionTests(unittest.TestCase):
             "import subprocess,sys; "
             f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
         )
-        original_heartbeat = self.store.heartbeat
+        original_heartbeat = self.store._heartbeat_for_exec
         calls = 0
 
         def heartbeat_then_fail(
@@ -435,7 +503,7 @@ class ExecutionTests(unittest.TestCase):
         with (
             patch.object(
                 self.store,
-                "heartbeat",
+                "_heartbeat_for_exec",
                 side_effect=heartbeat_then_fail,
             ),
             self.assertRaisesRegex(LeaseError, "claim-changed-during-guard"),

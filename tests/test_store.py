@@ -733,6 +733,24 @@ class StoreTests(unittest.TestCase):
                 )
             )
 
+    def test_direct_heartbeat_marker_id_preserves_token_receipt(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("resource", "claim"))
+        request = self.mutation(acquired, "resource", "caller:heartbeat:0")
+
+        heartbeat = self.store.heartbeat(request)
+        self.assertEqual(request.token, heartbeat["claim"]["token"])
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            row = db.execute(
+                """
+                SELECT receipt FROM operations
+                WHERE resource = ? AND operation_id = ?
+                """,
+                (request.resource, request.operation_id),
+            ).fetchone()
+        assert row is not None
+        stored = json.loads(str(row[0]))
+        self.assertEqual(request.token, stored["claim"]["token"])
+
     def test_inspect_operation_redacts_unknown_and_completed_receipts(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim"))
         unknown_request = self.mutation(acquired, "resource", "unknown-1")
@@ -897,6 +915,7 @@ class StoreTests(unittest.TestCase):
             {"providerReceipt": "receipt-1"},
         )
         self.assertFalse(reconcile["idempotent"])
+        self.assertEqual("resource", reconcile["resource"])
         self.assertEqual(2, reconcile["claim"]["revision"])
         self.assertNotIn("token", reconcile["claim"])
         self.assertEqual(
@@ -911,6 +930,7 @@ class StoreTests(unittest.TestCase):
             {"providerReceipt": "receipt-1"},
         )
         self.assertTrue(replay["idempotent"])
+        self.assertEqual("resource", replay["resource"])
         self.assertEqual(reconcile["claim"], replay["claim"])
         for changed_request in (
             replace(reconcile_request, revision=999),
@@ -1998,6 +2018,30 @@ else:
                 recovered_claim["claimId"],
                 self.store.status(resource)["claim"]["claimId"],
             )
+
+    def test_custom_bundle_completion_preserves_owner_token(self) -> None:
+        resources = ("custom-a", "custom-b")
+        acquired = self.store.acquire_bundle(self.bundle_request(resources, "custom"))
+        request = self.bundle_mutation(acquired, resources, "custom-operation")
+        operation_request = request.request_dict(value="custom")
+        self.assertIsNone(
+            self.store.begin_bundle_operation(request, "custom-kind", operation_request)
+        )
+
+        completed = self.store.complete_bundle_operation(
+            request,
+            "custom-kind",
+            operation_request,
+            {"ok": True, "operation": "custom-kind"},
+        )
+        self.assertEqual(request.token, completed["claim"]["token"])
+        replay = self.store.complete_bundle_operation(
+            request,
+            "custom-kind",
+            operation_request,
+            {"ok": True, "operation": "custom-kind"},
+        )
+        self.assertEqual(request.token, replay["claim"]["token"])
 
     def test_bundle_changed_operation_replay_is_rejected_without_revision_change(
         self,
