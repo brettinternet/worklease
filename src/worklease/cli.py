@@ -707,7 +707,6 @@ def _parser() -> _ArgumentParser:
         help="print the packaged worklease version",
     )
     parser.add_argument(
-        "-a",
         "--help-all",
         action="store_true",
         help="show help for every canonical command",
@@ -730,7 +729,6 @@ def _parser() -> _ArgumentParser:
         help="resource policy name (see `worklease policy list`)",
     )
     key_parser.add_argument(
-        "-s",
         "--source",
         required=True,
         help="provider-specific source such as a Backlog.md directory or repository",
@@ -803,7 +801,6 @@ def _parser() -> _ArgumentParser:
         help="fresh ID for this agent session (generated when omitted)",
     )
     acquire_parser.add_argument(
-        "-o",
         "--owner-id",
         default=None,
         help="fresh ID for this worker attempt (generated when omitted)",
@@ -871,7 +868,6 @@ def _parser() -> _ArgumentParser:
         help="fresh ID for this agent session (generated when omitted)",
     )
     acquire_bundle_parser.add_argument(
-        "-o",
         "--owner-id",
         default=None,
         help="fresh ID for this worker attempt (generated when omitted)",
@@ -954,7 +950,6 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(gc_parser)
     gc_parser.add_argument(
-        "-r",
         "--retention-days",
         action=_ExplicitValueAction,
         default=DEFAULT_GC_RETENTION_DAYS,
@@ -965,12 +960,10 @@ def _parser() -> _ArgumentParser:
         ),
     )
     gc_parser.add_argument(
-        "-c",
         "--cutoff",
         help=f"explicit UTC cutoff timestamp (ISO-8601; {_DEFAULT_CUTOFF_HELP})",
     )
     gc_parser.add_argument(
-        "-a",
         "--apply",
         action="store_true",
         help=(
@@ -1121,7 +1114,6 @@ def _parser() -> _ArgumentParser:
         ),
     )
     transfer_parser.add_argument(
-        "-C",
         "--successor-claim-id",
         default=None,
         help="fresh claim ID for the successor epoch (generated when omitted)",
@@ -1139,13 +1131,11 @@ def _parser() -> _ArgumentParser:
         help="fresh session ID of the successor (generated when omitted)",
     )
     transfer_parser.add_argument(
-        "-O",
         "--successor-owner-id",
         default=None,
         help="fresh owner ID of the successor attempt (generated when omitted)",
     )
     transfer_parser.add_argument(
-        "-W",
         "--successor-work-key",
         default=None,
         help="work label for the successor epoch (default: resource)",
@@ -1162,7 +1152,6 @@ def _parser() -> _ArgumentParser:
         help="filter claims to one exact resource (default: all resources)",
     )
     list_parser.add_argument(
-        "-F",
         "--full",
         action="store_true",
         help="show full resources, identifiers, and absolute expiry timestamps",
@@ -1236,19 +1225,16 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(replace_parser)
     _common_claim_arguments(replace_parser)
     replace_parser.add_argument(
-        "-p",
         "--path",
         required=True,
         help="file to replace atomically",
     )
     replace_parser.add_argument(
-        "-e",
         "--expected-sha256",
         required=True,
         help="SHA-256 of the file's current content",
     )
     replace_parser.add_argument(
-        "-C",
         "--content-file",
         required=True,
         help="file holding the complete replacement content",
@@ -1463,7 +1449,7 @@ def _emit_verbose_status(payload: dict[str, object]) -> None:
             "heartbeatAt",
             "expiresAt",
         ):
-            print(f"{field}\t{_text_value(claim.get(field))}")
+            print(f"{_text_label(field)}\t{_text_value(claim.get(field))}")
     else:
         print("CLAIM\t<none>")
 
@@ -1490,7 +1476,7 @@ def _emit_verbose_status(payload: dict[str, object]) -> None:
     if isinstance(release, dict):
         print("RELEASE")
         for field in ("claimId", "operationId", "revision", "releasedAt"):
-            print(f"{field}\t{_text_value(release.get(field))}")
+            print(f"{_text_label(field)}\t{_text_value(release.get(field))}")
     else:
         print("RELEASE\t<none>")
 

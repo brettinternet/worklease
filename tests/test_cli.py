@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -755,7 +756,7 @@ with resource_lock(resource):
 
         parser = cli_module._parser()
         top_level = parser.parse_args(
-            ["-f", "json", "-j", "-H", "/tmp/worklease", "-a"]
+            ["-f", "json", "-j", "-H", "/tmp/worklease", "--help-all"]
         )
         self.assertEqual("json", top_level.format)
         self.assertTrue(top_level.json)
@@ -763,7 +764,18 @@ with resource_lock(resource):
         self.assertTrue(top_level.help_all)
 
         key = parser.parse_args(
-            ["key", "-f", "json", "-p", "provider", "-s", "source", "-i", "item", "-C"]
+            [
+                "key",
+                "-f",
+                "json",
+                "-p",
+                "provider",
+                "--source",
+                "source",
+                "-i",
+                "item",
+                "-C",
+            ]
         )
         self.assertEqual(
             ("provider", "source", "item", True),
@@ -784,7 +796,7 @@ with resource_lock(resource):
                 "agent",
                 "-s",
                 "session",
-                "-o",
+                "--owner-id",
                 "owner",
                 "-w",
                 "work-key",
@@ -834,7 +846,9 @@ with resource_lock(resource):
             ("resource", "operation"), (inspect.resource, inspect.operation_id)
         )
 
-        gc = parser.parse_args(["gc", "-r", "7", "-c", "cutoff", "-a"])
+        gc = parser.parse_args(
+            ["gc", "--retention-days", "7", "--cutoff", "cutoff", "--apply"]
+        )
         self.assertEqual(
             (7.0, "cutoff", True), (gc.retention_days, gc.cutoff, gc.apply)
         )
@@ -1009,15 +1023,15 @@ with resource_lock(resource):
                 "3",
                 "-o",
                 "operation",
-                "-C",
+                "--successor-claim-id",
                 "successor-claim",
                 "-A",
                 "successor-agent",
                 "-S",
                 "successor-session",
-                "-O",
+                "--successor-owner-id",
                 "successor-owner",
-                "-W",
+                "--successor-work-key",
                 "successor-work-key",
                 "-T",
                 "60",
@@ -1044,7 +1058,7 @@ with resource_lock(resource):
             ),
         )
 
-        listed = parser.parse_args(["list", "-r", "resource", "-F"])
+        listed = parser.parse_args(["list", "-r", "resource", "--full"])
         self.assertEqual(("resource", True), (listed.resource, listed.full))
 
         released = parser.parse_args(
@@ -1106,11 +1120,11 @@ with resource_lock(resource):
                 "operation",
                 "-T",
                 "60",
-                "-p",
+                "--path",
                 "path",
-                "-e",
+                "--expected-sha256",
                 "file-hash",
-                "-C",
+                "--content-file",
                 "content-file",
             ]
         )
@@ -1118,6 +1132,41 @@ with resource_lock(resource):
             ("path", "file-hash", "content-file"),
             (replaced.path, replaced.expected_sha256, replaced.content_file),
         )
+
+    def test_short_flags_have_one_meaning_across_parser_tree(self) -> None:
+        meanings: dict[str, set[str]] = {}
+        pending = [cli_module._parser()]
+        visited: set[int] = set()
+
+        while pending:
+            parser = pending.pop()
+            if id(parser) in visited:
+                continue
+            visited.add(id(parser))
+            for action in parser._actions:
+                long_options = [
+                    option
+                    for option in action.option_strings
+                    if option.startswith("--")
+                ]
+                for option in action.option_strings:
+                    if option.startswith("-") and not option.startswith("--"):
+                        self.assertTrue(long_options, option)
+                        meanings.setdefault(option, set()).add(long_options[0])
+                if isinstance(action, argparse._SubParsersAction):
+                    pending.extend(action.choices.values())
+
+        collisions = {
+            option: sorted(destinations)
+            for option, destinations in meanings.items()
+            if len(destinations) > 1
+        }
+        self.assertEqual({}, collisions)
+
+        readme = (Path(__file__).parents[1] / "README.md").read_text()
+        for option, destinations in meanings.items():
+            destination = next(iter(destinations))
+            self.assertIn(f"| `{option}` | `{destination}` |", readme)
 
     def test_help_group_colors_follow_argparse_color_setting(self) -> None:
         color_environment = self.environment.copy()
@@ -3336,6 +3385,11 @@ with resource_lock(resource):
         self.assertNotIn(token, status)
         verbose = self.text_cli("status", "--resource", "repo:text-read", "--verbose")
         self.assertIn('RESOURCE\t"repo:text-read"\nSTATE\tactive\n', verbose)
+        self.assertIn("CLAIM_ID\t", verbose)
+        self.assertIn("AGENT_ID\t", verbose)
+        self.assertIn("COORDINATION_ONLY\t", verbose)
+        self.assertIn("ACQUIRED_AT\t", verbose)
+        self.assertNotIn("claimId\t", verbose)
         self.assertNotIn(token, verbose)
         listed = self.text_cli("list", "--resource", "repo:text-read")
         self.assertIn("STATE", listed)

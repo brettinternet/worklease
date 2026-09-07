@@ -287,7 +287,47 @@ adapter and receipt requirements.
 
 ## CLI and compatibility
 
-Run `worklease COMMAND --help` for the complete command surface. Singleton lifecycle commands include `key`, `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `exec`, `replace-file`, and `release`; uncertain-operation handling uses `inspect-operation` and `reconcile-operation`; ordered multi-resource equivalents use `inspect-operation-bundle` and `reconcile-operation-bundle` with the other `*-bundle` commands.
+Run `worklease COMMAND --help` for the complete command surface. Singleton lifecycle commands include `key`, `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `exec`, `replace-file`, and `release`; uncertain-operation handling uses `inspect-operation` and `reconcile-operation`; ordered multi-resource equivalents use `inspect-operation-bundle` and `reconcile-operation-bundle` with the other `*-bundle` commands. Help output is always human-readable text, including when `--json` precedes `--help` or `--help-all`.
+
+Each short option has exactly one meaning across the command tree:
+
+| Short | Long option | Commands |
+| --- | --- | --- |
+| `-h` | `--help` | all commands |
+| `-f` | `--format` | global and output-producing commands |
+| `-j` | `--json` | global and output-producing commands |
+| `-H` | `--home` | global and commands that access configuration or state |
+| `-v` | `--version` | global |
+| `-p` | `--provider` | `key` |
+| `-i` | `--item` | `key` |
+| `-C` | `--coordination-only` | `key`, `acquire`, `acquire-bundle` |
+| `-n` | `--name` | `policy describe` |
+| `-r` | `--resource` | claim, status, inspection, list, and bundle commands |
+| `-c` | `--claim-id` | claim lifecycle commands |
+| `-a` | `--agent-id` | `acquire`, `acquire-bundle` |
+| `-s` | `--session-id` | `acquire`, `acquire-bundle` |
+| `-w` | `--work-key` | `acquire`, `acquire-bundle` |
+| `-W` | `--wait-timeout` | `acquire` |
+| `-P` | `--poll-interval` | `acquire` |
+| `-t` | `--token` | authenticated lifecycle commands |
+| `-F` | `--token-file` | authenticated lifecycle commands |
+| `-D` | `--token-fd` | authenticated lifecycle commands |
+| `-R` | `--revision` | authenticated lifecycle commands |
+| `-o` | `--operation-id` | inspection and mutating lifecycle commands |
+| `-T` | `--ttl` | acquire and renewable lifecycle commands |
+| `-V` | `--verbose` | `status` |
+| `-I` | `--target-operation-id` | reconciliation commands |
+| `-x` | `--expected-request-sha256` | reconciliation commands |
+| `-O` | `--outcome` | reconciliation commands |
+| `-e` | `--evidence` | reconciliation commands |
+| `-k` | `--checkpoint` | `checkpoint` |
+| `-A` | `--successor-agent-id` | `transfer` |
+| `-S` | `--successor-session-id` | `transfer` |
+| `-m` | `--reason` | release commands |
+| `-d` | `--provider-directory` | exec commands |
+| `-g` | `--git-primary` | exec commands |
+
+Removed aliases and their long-form replacements are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 Exit codes are `0` for success, `2` for lease or capability conflicts, `3` for idempotency/version or unknown-outcome failures, `64` for invalid input, and `75` for storage failure. `exec` returns the child status after the child starts.
 
@@ -380,7 +420,8 @@ The command grammars are:
   emits `CLAIM <none>`.
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
   block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
-  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`.
+  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`. Field labels
+  use the same upper-snake convention as all other text renderers.
 - `inspect-operation` and `inspect-operation-bundle`: `OK <operation>`, followed
   by singleton or ordered-bundle identity, kind, state, outcome, hashes, and
   reconciliation timestamps when present.
