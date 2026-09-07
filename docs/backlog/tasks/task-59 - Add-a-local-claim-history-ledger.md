@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 14:59'
-updated_date: '2026-09-07 19:00'
+updated_date: '2026-09-07 19:34'
 labels:
   - storage
   - cli
@@ -65,6 +65,16 @@ Independent verification found that history on a valid unmigrated v2 database fa
 
 Verification passed: focused history/store/GC/schema tests (194), full suite (276 core + 19 SDK), lint, format-check, typecheck, hooks, and git diff --check. Independent verifier passed all three parent criteria after confirming the pre-v3 fallback through the public CLI and database non-mutation.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @brett
+created: 2026-09-07 19:34
+---
+Post-completion review of TASK-59 and subtasks 59.1-59.3. No correctness defects found: every claims delete/replace site (acquisition.py:120, lifecycle.py:106/303/507) records a termination; singleton acquire over a bundle member is rejected with bundle-operation-required so partial bundle retirement cannot bypass it; claim-id-reused blocks epoch_terminations PK reuse; EXPLAIN QUERY PLAN confirms epochs_by_resource_revision; a v2 database projects legacy-incomplete without mutation (schema_meta stays 2); JSON is byte-identical across runs. Fixed in e2cbbc8: removed write-only private keys (_resource_key, reconciliation _target_claim_id/_target_operation_id/_kind/_resource) and the unused bundle_key helper plus the operation_bundle_key alias from projections.history; added history to the claim-model required-values table; added COVERAGE to the cli-reference history output grammar row. Verified: mise run lint, format-check, typecheck, test (276 core + 19 SDK), hooks.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

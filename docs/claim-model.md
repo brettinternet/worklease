@@ -120,6 +120,7 @@ as `bundle-acquire` accept the same inputs as the displayed command name.
 | `acquire` | `resource`; fresh `claim ID`, `agent ID`, `session ID`, and `owner ID` may be omitted by the CLI; `work key` defaults to the resource | Omitted IDs are generated; omitted agent ID comes from `WORKLEASE_AGENT_ID`; TTL defaults to 900 seconds; optional `--coordination-only` |
 | `status` | `resource` | No token; read-only output is redacted |
 | `list` | None | Optional resource filter |
+| `history` | `resource` | No token; read-only retained local history for exactly that resource |
 | `heartbeat` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
 | `checkpoint` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; JSON checkpoint; renewal TTL defaults to 900 seconds |
 | `exec` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; command argv; optional execution-directory selection |
