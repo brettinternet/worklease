@@ -1,11 +1,11 @@
 ---
 id: TASK-55
 title: Fix macOS Intel guarded execution CI failures
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 13:21'
-updated_date: '2026-09-07 13:53'
+updated_date: '2026-09-07 14:04'
 labels: []
 dependencies: []
 ordinal: 56000
@@ -19,8 +19,8 @@ The v0.8.0 CI run fails guarded execution timeout/watchdog tests on macOS Intel.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Guarded execution timeout and watchdog behavior passes on macOS Intel without weakening assertions
-- [ ] #2 Lint, format-check, tests, and typecheck remain independently runnable and pass
+- [x] #1 Guarded execution timeout and watchdog behavior passes on macOS Intel without weakening assertions
+- [x] #2 Lint, format-check, tests, and typecheck remain independently runnable and pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -36,4 +36,12 @@ The v0.8.0 CI run fails guarded execution timeout/watchdog tests on macOS Intel.
 
 <!-- SECTION:NOTES:BEGIN -->
 CI run 34125927025 failed three guarded-execution tests only on macOS Intel. The timeout fixtures allowed 50-80ms for nested interpreter startup and watchdog scheduling, so the child could miss its output/termination checkpoints before the deadline. The implementation also published deadline_reached before process termination completed and cancelled timers without joining an already-running callback. The fix publishes expiry after termination, joins cancelled watchdogs in singleton and bundle execution, and gives the same strict test assertions realistic scheduling margins. Validation: the three affected tests passed 10 consecutive runs; mise run lint, format-check, test (239 core + 19 SDK), typecheck, and hooks all passed.
+
+Remote CI run 34130578357 passed all six jobs, including Quality (macos-15-intel) with its full tests, typecheck, lint, formatting, builds, and package smoke tests.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed the macOS Intel guarded-execution CI race by completing watchdog termination before publishing expiry, joining watchdog callbacks before teardown, and widening timing margins while preserving timeout, output, and termination assertions. Verified with 10 focused stress runs, all local quality gates, independent review, and green remote CI run 34130578357.
+<!-- SECTION:FINAL_SUMMARY:END -->
