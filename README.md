@@ -52,11 +52,14 @@ export WORKLEASE_AGENT_ID="agent-local-1"
 
 LEASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/worklease.XXXXXX")"
 LEASE_FILE="$LEASE_DIR/task-42.lease"
+# Release the lease even if a step below fails, so the resource is not held
+# for its full TTL.
+trap 'worklease release --lease-file "$LEASE_FILE" --reason aborted 2>/dev/null || true' EXIT
 RESOURCE="$(worklease --json key \
   --provider backlog-md \
   --source docs/backlog \
   --item TASK-42 \
-  | python -c 'import json, sys; print(json.load(sys.stdin)["resource"])')"
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["resource"])')"
 
 worklease acquire \
   --resource "$RESOURCE" \
@@ -69,7 +72,7 @@ worklease exec \
   --lease-file "$LEASE_FILE" \
   --git-primary \
   --max-duration 3600 \
-  -- python -m unittest discover -s tests -v
+  -- python3 -c 'print("guarded work")'
 
 worklease checkpoint \
   --lease-file "$LEASE_FILE" \
@@ -79,6 +82,7 @@ worklease checkpoint \
 worklease release \
   --lease-file "$LEASE_FILE" \
   --reason "provider checkpoint verified"
+trap - EXIT
 ```
 
 Keep the lease handle private. Do not place Worklease state in a repository path shared by linked worktrees.
@@ -104,10 +108,15 @@ worklease heartbeat --lease-file "$LEASE_FILE" --ttl 900
 ```
 
 Lease expiry uses the system wall clock because timestamps persist across
-processes. If the clock moves backward and the apparent remaining lifetime
-exceeds the lease's current TTL, Worklease treats the lease as expired. A forward
+processes. A lease is expired once the clock passes its expiry, so a forward
 clock jump can expire a lease immediately; synchronize the host clock and stop
 and reacquire after significant clock adjustments.
+
+A backward clock step never strips a live lease from its holder. It does inflate
+the stored expiry, so the next contender re-anchors the lease to the corrected
+clock instead of waiting for the clock to catch up. An abandoned lease is
+therefore reclaimable within one TTL of the first contention rather than after
+the full size of the clock step.
 
 For contention, wait briefly instead of failing immediately:
 
@@ -137,7 +146,7 @@ Use `--coordination-only` when provider writes happen outside a Worklease-guarde
 
 If a command has an unknown outcome, inspect it with `inspect-operation`, verify the authoritative external result, then use `reconcile-operation`. Do not automatically rerun it.
 
-See the [claim model](docs/claim-model.md) for the coordination model and failure semantics.
+See the [claim model](docs/claim-model.md) for the coordination model and failure semantics, and the [CLI reference](docs/cli-reference.md) for exit codes, the short option namespace, state selection, garbage-collection semantics, and the text output grammar.
 
 ## Providers and resources
 

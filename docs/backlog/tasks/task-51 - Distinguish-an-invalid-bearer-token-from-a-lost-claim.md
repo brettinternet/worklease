@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex-task-51'
 created_date: '2026-09-07 03:28'
-updated_date: '2026-09-07 08:28'
+updated_date: '2026-09-07 14:13'
 labels:
   - cli
   - api
@@ -44,6 +44,8 @@ Ownership checks raise `stale-claim` when either the claim ID or the token misma
 Implemented invalid-token across singleton, bundle, transfer, and release/replay ownership checks; wrong claim IDs remain stale-claim. Added CLI/schema regression coverage and updated README, changelog compatibility notes, and workflow safe-failure guidance. Quality gates passed: mise run lint, format-check, test (218 core + 19 SDK), and typecheck (core + SDK).
 
 Adversarial review found and resolved two edge cases before integration: historical release replays with bad credentials remain stale-claim, and UTF-8 invalid credentials are compared as bytes rather than raising TypeError. Rebased onto current main after TASK-47/TASK-49/TASK-48 integration; post-rebase gates passed with 228 core and 19 SDK tests.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 03:28'
-updated_date: '2026-09-07 08:39'
+updated_date: '2026-09-07 14:13'
 labels:
   - store
 dependencies: []
@@ -55,6 +55,8 @@ Implemented a shared lease-active predicate based on persisted acquire_ttl, appl
 Validation passed: focused injected-clock tests; mise run lint; mise run format-check; mise run test (228 core and 19 SDK tests); mise run typecheck; mise run hooks. Reviewer found one shortened-renewal defect, which was fixed and re-reviewed PASS.
 
 Final implementation derives the current TTL from persisted heartbeat_at/expires_at so TTL-changing renewals are bounded correctly; acquire_ttl remains unchanged for acquire retry semantics.
+
+Superseded by TASK-56. AC #1 as written ('a backward wall-clock step larger than the TTL causes the claim to report expired') encoded the wrong remedy: the shipped predicate reduced to 'now >= heartbeat_at', so any backward step past the last renewal expired the lease, and because the same predicate gated the contention paths a 50ms step let a second agent acquire a resource whose holder was still working. That is the exact double-ownership hazard this task's own description flagged for forward steps. The unbounded over-hold this task set out to fix is still fixed, now by re-anchoring an implausible expiry at the next contention rather than by expiring a live holder.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

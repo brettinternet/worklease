@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex-task-49'
 created_date: '2026-09-07 03:28'
-updated_date: '2026-09-07 06:26'
+updated_date: '2026-09-07 14:13'
 labels:
   - performance
 dependencies: []
@@ -83,6 +83,8 @@ Benchmark: median wall-clock milliseconds across 15 fresh CLI subprocess samples
 | 5000 | `list` | 153.5 | 126.9 |
 
 Validation passed after review fix: `mise run lint`, `mise run format-check`, `mise run test` (219 core + 19 SDK tests), `mise run typecheck`, and staged-file `mise run hooks`. Review found interrupted migration recovery was not resumable; fixed by allowing an empty schema marker to migrate and added `test_empty_schema_marker_resumes_interrupted_migration`. No staged files remained after hook validation.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex-task-45'
 created_date: '2026-09-07 03:27'
-updated_date: '2026-09-07 05:51'
+updated_date: '2026-09-07 14:13'
 labels:
   - cli
 dependencies: []
@@ -43,6 +43,8 @@ ordinal: 46000
 Implemented child-argv boundary detection for output-format scanning, documented optional `--` behavior, and added regressions for singleton/bundle aliases plus an executing child with `--format=oneline`. Repository gates pass: lint, format-check, test (232 tests), and typecheck.
 
 Post-rebase validation on main base passed: lint, format-check, 233 tests (214 core + 19 SDK), and typecheck. Direct acceptance script ran `git log --format=oneline -1` through separator-free JSON exec and verified text parser-error isolation plus exec help. Adversarial review found the JSON test helper still used the old boundary rule; fixed it to reuse `_visible_output_options` and added no-separator coverage for exec and bundle aliases.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

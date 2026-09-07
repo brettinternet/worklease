@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -1956,9 +1957,198 @@ with resource_lock(resource):
                     in_field = False
             self.assertEqual(header_starts, starts, line)
 
+    def test_grouped_short_flags_do_not_consume_child_arguments(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        # -jH DIR is one cluster of two worklease flags; argparse splits it,
+        # so the scanner must too or it mistakes the child for a positional.
+        lease = Path(self.home.name) / "grouped.lease"
+        self.run_cli(
+            "acquire", "--resource", "local:grouped", "--lease-file", str(lease)
+        )
+        result = self.run_cli(
+            "-jH",
+            self.home.name,
+            "exec",
+            "--lease-file",
+            str(lease),
+            "/bin/echo",
+            "--json",
+            "--format",
+            "text",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        command = payload["command"]
+        self.assertEqual(["/bin/echo", "--json", "--format", "text"], command["argv"])
+        self.assertEqual("--json --format text\n", command["stdout"])
+
+    def test_unrecognized_option_keeps_the_json_error_envelope(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        lease = Path(self.home.name) / "unrecognized.lease"
+        self.run_cli(
+            "acquire", "--resource", "local:unrecognized", "--lease-file", str(lease)
+        )
+        result = self.run_cli(
+            "exec",
+            "--lease-file",
+            str(lease),
+            "--timeout",
+            "30",
+            "--json",
+            "/bin/echo",
+            "hi",
+        )
+
+        self.assertEqual(64, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("invalid-arguments", payload["error"])
+
+    def test_unwritable_lease_file_fails_before_the_claim_commits(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        unwritable = Path(self.home.name) / "missing-directory" / "handle.lease"
+        result = self.run_cli(
+            "--json",
+            "acquire",
+            "--resource",
+            "local:unwritable",
+            "--lease-file",
+            str(unwritable),
+        )
+
+        self.assertEqual(64, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("lease-file-unwritable", payload["error"])
+        # Nothing was committed, so the resource is still free.
+        self.assertEqual(
+            "free",
+            self.json_cli("status", "--resource", "local:unwritable")["state"],
+        )
+
+    def test_late_lease_file_failure_still_returns_the_claim_token(self) -> None:
+        # The claim is durable by the time the handle is written, and its token
+        # exists nowhere else, so the payload must survive the write failure.
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        lease = Path(self.home.name) / "late-failure.lease"
+        environment = dict(self.environment)
+
+        def fail_after_commit(*_: object, **__: object) -> None:
+            raise OSError("handle write failed")
+
+        output = StringIO()
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(cli_module, "_persist_lease_file", fail_after_commit),
+            redirect_stdout(output),
+        ):
+            code = cli_module.main(
+                [
+                    "--json",
+                    "acquire",
+                    "--resource",
+                    "local:late",
+                    "--lease-file",
+                    str(lease),
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(75, code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("lease-file-unwritable", payload["leaseFileError"])
+        claim = payload["claim"]
+        self.assertIn("token", claim)
+
+        released = self.json_cli(
+            "release",
+            "--resource",
+            "local:late",
+            "--claim-id",
+            claim["claimId"],
+            "--token",
+            claim["token"],
+            "--revision",
+            str(claim["revision"]),
+            "--operation-id",
+            "release-late",
+            "--reason",
+            "recovered",
+        )
+        self.assertTrue(released["ok"])
+
+    def test_acquire_refuses_to_clobber_a_handle_holding_a_live_claim(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        lease = Path(self.home.name) / "shared.lease"
+        first = self.json_cli(
+            "acquire", "--resource", "local:first", "--lease-file", str(lease)
+        )
+        self.assertTrue(first["ok"])
+
+        result = self.run_cli(
+            "--json",
+            "acquire",
+            "--resource",
+            "local:second",
+            "--lease-file",
+            str(lease),
+        )
+
+        self.assertEqual(64, result.returncode)
+        self.assertEqual("lease-file-in-use", json.loads(result.stdout)["error"])
+        # The first claim is still reachable through its untouched handle.
+        released = self.json_cli(
+            "release", "--lease-file", str(lease), "--reason", "done"
+        )
+        self.assertTrue(released["ok"])
+
+    def test_idempotent_replay_does_not_rewind_the_lease_handle(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
+        lease = Path(self.home.name) / "replay.lease"
+        self.json_cli(
+            "acquire", "--resource", "local:replay", "--lease-file", str(lease)
+        )
+        self.json_cli("heartbeat", "--lease-file", str(lease), "--operation-id", "op-1")
+        self.json_cli("heartbeat", "--lease-file", str(lease))
+        advanced = json.loads(lease.read_text())["revision"]
+
+        # Replay the first operation, whose recorded receipt is older.
+        self.json_cli(
+            "heartbeat",
+            "--lease-file",
+            str(lease),
+            "--operation-id",
+            "op-1",
+            "--revision",
+            "1",
+        )
+
+        self.assertEqual(advanced, json.loads(lease.read_text())["revision"])
+        self.assertTrue(self.json_cli("heartbeat", "--lease-file", str(lease))["ok"])
+
+    def test_display_width_counts_terminal_columns(self) -> None:
+        # Concrete expectations, so the width model is pinned independently of
+        # the renderer that consumes it.
+        for value, expected in (
+            ("", 0),
+            ("abc", 3),
+            ("界", 2),
+            ("认领", 4),
+            ("Ａ", 2),  # fullwidth A
+            ("é", 1),  # precomposed e-acute
+            ("é", 1),  # decomposed e-acute
+            ("バス", 4),  # decomposed katakana "basu"
+            ("バス", 4),  # precomposed katakana "basu"
+            ("\U0001f600", 2),
+            ("​", 0),  # zero-width space
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(expected, cli_module._display_width(value))
+
     def test_text_list_aligns_wide_resources_and_claim_ids(self) -> None:
         now = 1_750_000_000.0
-        wide_resource = "repo:项目/路径/" + ("界" * 30) + ":TASK-48"
+        wide_resource = "repo:项目/バス/" + ("界" * 28) + ":TASK-48"
         wide_claim_id = "认领" * 10
         ascii_resource = "repo:projects/path/" + ("x" * 48) + ":TASK-49"
         ascii_claim_id = "claim-ascii-identifier-long"
@@ -1986,12 +2176,23 @@ with resource_lock(resource):
         }
         headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
 
+        def measured_width(value: str) -> int:
+            # Deliberately independent of cli._display_width: asserting
+            # alignment with the renderer's own width model only proves the
+            # model is self-consistent, not that columns line up.
+            columns = 0
+            for character in value:
+                if unicodedata.category(character) in ("Mn", "Me", "Cf"):
+                    continue
+                columns += 2 if unicodedata.east_asian_width(character) in "WF" else 1
+            return columns
+
         def column_starts(line: str, cells: tuple[str, ...]) -> list[int]:
             starts = []
             search_start = 0
             for cell in cells:
                 index = line.index(cell, search_start)
-                starts.append(cli_module._display_width(line[:index]))
+                starts.append(measured_width(line[:index]))
                 search_start = index + len(cell)
             return starts
 

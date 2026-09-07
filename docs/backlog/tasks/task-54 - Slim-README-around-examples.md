@@ -4,7 +4,7 @@ title: Slim README around examples
 status: Done
 assignee: []
 created_date: '2026-09-07 08:06'
-updated_date: '2026-09-07 08:15'
+updated_date: '2026-09-07 14:13'
 labels: []
 dependencies: []
 modified_files:
@@ -41,6 +41,8 @@ Audit the current README and CLI surface, rewrite the README around a visual ove
 Replaced the 469-line reference-style README with a 197-line visual, example-led guide. Corrected the README/CLI test so short-option stability remains tested without requiring the removed exhaustive option table. README lifecycle smoke test and local-link validation passed.
 
 Verification passed: singleton lifecycle smoke test against the documented key/acquire/status/exec/checkpoint/heartbeat/release commands; 10 local Markdown links resolved; README reduced from 469 lines and 3,137 words to 197 lines and 764 words; mise run lint, format-check, test (223 core and 19 SDK), typecheck, and build all passed.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-codex'
 created_date: '2026-09-07 03:27'
-updated_date: '2026-09-07 08:23'
+updated_date: '2026-09-07 14:13'
 labels:
   - cli
 dependencies: []
@@ -45,6 +45,8 @@ ordinal: 49000
 Claimed resource backlog-md:/Users/brett/dev/me/worklease/.git:.:TASK-48 for local coordination; provider mutations are not fenced.
 
 Implemented display-column measurement and width-aware prefix/suffix truncation. CJK compact/full rendering coverage verifies aligned column starts and 52/18-column resource/claim bounds. Review found no actionable defects. Validation on integrated main: mise run lint, format-check, typecheck, test (227 core + 19 SDK tests), and staged pre-commit hooks passed. Implementation commit: 9f82e86.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

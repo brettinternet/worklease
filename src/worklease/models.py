@@ -119,9 +119,23 @@ def require_text(value: str, field: str) -> str:
 def lease_is_active(row: Any, now: float) -> bool:
     """Return whether a persisted lease is active at the supplied wall time."""
 
+    return now < float(row["expires_at"])
+
+
+def clock_regression(row: Any, now: float) -> float:
+    """Return how far a persisted expiry exceeds the TTL it was granted for.
+
+    A lease can never legitimately have more time remaining than the TTL its
+    last renewal granted, so any excess means the wall clock moved backward
+    since that renewal. Expiring the lease would dispossess a holder that is
+    still working, so callers re-anchor the row instead.
+    """
+
     expires_at = float(row["expires_at"])
-    renewed_ttl = expires_at - float(row["heartbeat_at"])
-    return now < expires_at <= now + renewed_ttl
+    granted_ttl = expires_at - float(row["heartbeat_at"])
+    if not math.isfinite(expires_at) or not math.isfinite(granted_ttl):
+        return 0.0
+    return max(0.0, expires_at - now - min(granted_ttl, MAX_TTL))
 
 
 def require_ttl(value: float) -> float:

@@ -111,12 +111,16 @@ For a CLI-owned loop, acquire the handle with the fresh claim identity and then 
 worklease acquire --resource "$RESOURCE" --claim-id "$CLAIM_ID" \
   --agent-id "$AGENT_ID" --session-id "$SESSION_ID" --owner-id "$OWNER_ID" \
   --work-key "implement:TASK-42" --lease-file "$LEASE_FILE"
-worklease heartbeat --lease-file "$LEASE_FILE" --operation-id heartbeat-TASK-42
-worklease checkpoint --lease-file "$LEASE_FILE" --operation-id checkpoint-TASK-42 \
-  --checkpoint '{"phase":"tests"}'
-worklease release --lease-file "$LEASE_FILE" --operation-id release-TASK-42 \
+worklease heartbeat --lease-file "$LEASE_FILE"
+worklease checkpoint --lease-file "$LEASE_FILE" --checkpoint '{"phase":"tests"}'
+worklease release --lease-file "$LEASE_FILE" \
   --reason "provider checkpoint verified"
 ```
+
+Omit `--operation-id` in a repeating loop. Each mutation then gets a fresh
+generated identifier; a pinned one replays the first operation and fails
+`stale-revision` on the second heartbeat. Supply an explicit `--operation-id`
+only to replay one specific request to recover a lost response.
 
 The handle contains `schemaVersion`, `resource` or ordered `resources`,
 `claimId`, `token`, `revision`, `expiresAt`, and `guarantee`. Explicit identity,

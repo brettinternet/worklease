@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-codex'
 created_date: '2026-09-07 03:28'
-updated_date: '2026-09-07 12:54'
+updated_date: '2026-09-07 14:13'
 labels:
   - exec
 dependencies: []
@@ -57,6 +57,8 @@ Adversarial review found deadline races and uncancellable pipe-reader leaks. Rep
 Final verification: mise run lint, mise run format-check, mise run test (239 core and 19 SDK tests), and mise run typecheck all pass on current main integration. Reviewer findings were fixed and the final pass identified only an oversized-integer validation edge, which is now covered and resolved.
 
 Delivered in implementation commit b3b8445 after merge with current main; final adversarial review findings were all resolved.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

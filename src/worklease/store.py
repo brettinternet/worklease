@@ -71,6 +71,21 @@ class LeaseStore(
     def _acquire_transaction(
         self, connection: sqlite3.Connection, resource: str
     ) -> Iterator[None]:
+        self._reject_bundle_member(connection, resource)
+        with resource_lock(resource, self.home):
+            self._repair_clock_regression(connection, (resource,))
+            with transaction(connection):
+                # The preflight above runs unsynchronized, so a bundle can be
+                # created in the gap before this lock. This re-check is the
+                # authoritative one for the acquire transaction; without it a
+                # singleton claim can be written over a bundle member and
+                # wedge the resource beyond the reach of acquire and GC.
+                self._reject_bundle_member(connection, resource)
+                yield
+
+    def _reject_bundle_member(
+        self, connection: sqlite3.Connection, resource: str
+    ) -> None:
         bundle = self._bundle_for_resource(connection, resource)
         if bundle is not None:
             raise LeaseError(
@@ -80,7 +95,13 @@ class LeaseStore(
                     include_token=False
                 ),
             )
-        with resource_lock(resource, self.home), transaction(connection):
+
+    @contextmanager
+    def _bundle_acquire_transaction(
+        self, connection: sqlite3.Connection, resources: tuple[str, ...]
+    ) -> Iterator[None]:
+        self._repair_clock_regression(connection, resources)
+        with transaction(connection):
             yield
 
     @contextmanager

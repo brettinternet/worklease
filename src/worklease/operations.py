@@ -82,9 +82,19 @@ class OperationLedgerMixin:
             ),
         )
 
-    @staticmethod
-    def _without_revision(value: dict[str, Any]) -> dict[str, Any]:
-        return {key: item for key, item in value.items() if key != "revision"}
+    # `revision` advances between a request and its replay. `maxDuration` is
+    # recorded for audit but is a property of the guard, not of the work being
+    # replayed, and excluding it keeps operation rows written before the bound
+    # existed replayable.
+    _UNFINGERPRINTED_REQUEST_FIELDS = frozenset({"revision", "maxDuration"})
+
+    @classmethod
+    def _request_fingerprint(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in cls._UNFINGERPRINTED_REQUEST_FIELDS
+        }
 
     def _operation_row(
         self: Any, connection: sqlite3.Connection, request: _OperationRequest
@@ -127,9 +137,9 @@ class OperationLedgerMixin:
         if row is None:
             return None
         recorded = json.loads(str(row["request"]))
-        if str(row["kind"]) != kind or self._without_revision(
+        if str(row["kind"]) != kind or self._request_fingerprint(
             recorded
-        ) != self._without_revision(expected):
+        ) != self._request_fingerprint(expected):
             raise LeaseError(
                 "operation-id-request-mismatch",
                 code=3,
@@ -424,7 +434,7 @@ class OperationLedgerMixin:
                     "operation-not-found", code=3, operationId=request.operation_id
                 )
             recorded = json.loads(str(operation["request"]))
-            if self._without_revision(recorded) != self._without_revision(
+            if self._request_fingerprint(recorded) != self._request_fingerprint(
                 operation_request
             ):
                 raise LeaseError(

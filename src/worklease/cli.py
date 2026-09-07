@@ -16,7 +16,11 @@ from typing import Any, NoReturn, cast
 
 from . import cli_dispatch as _cli_dispatch
 from ._release_metadata import PUBLISHED_RELEASE_VERSION
-from .cli_dispatch import dispatch_stateless, dispatch_store
+from .cli_dispatch import (
+    _DEFAULT_POLL_INTERVAL,
+    dispatch_stateless,
+    dispatch_store,
+)
 from .credentials import resolve_credential
 from .models import DEFAULT_EXEC_MAX_DURATION, DEFAULT_TTL, LeaseError
 from .store import DEFAULT_GC_RETENTION_DAYS, LeaseStore
@@ -103,8 +107,6 @@ class _ExplicitValueAction(argparse.Action):
         setattr(namespace, self.dest, values)
         setattr(namespace, f"_{self.dest}_provided", True)
 
-
-_DEFAULT_POLL_INTERVAL = 0.25
 
 _LEASE_FILE_MUTATIONS = frozenset(
     {
@@ -1574,10 +1576,26 @@ def _render_policy_describe(payload: dict[str, object]) -> None:
             print(f"{field}: {_text_atom(payload[field])}")
 
 
+def _character_width(character: str) -> int:
+    """Return terminal columns for one character."""
+
+    # Combining marks and format controls occupy no column of their own, and a
+    # few of them (U+3099, U+302A) are also East Asian Wide, so the category
+    # test has to come first. Decomposed text reaches here routinely because
+    # resources embed macOS filesystem paths.
+    if unicodedata.combining(character) or unicodedata.category(character) in (
+        "Mn",
+        "Me",
+        "Cf",
+    ):
+        return 0
+    return 2 if unicodedata.east_asian_width(character) in "WF" else 1
+
+
 def _display_width(value: str) -> int:
     """Return terminal columns, treating East Asian wide/fullwidth text as two."""
 
-    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in value)
+    return sum(_character_width(character) for character in value)
 
 
 def _display_prefix(value: str, width: int) -> str:
@@ -1586,7 +1604,7 @@ def _display_prefix(value: str, width: int) -> str:
     end = 0
     used = 0
     for end, character in enumerate(value, start=1):
-        character_width = _display_width(character)
+        character_width = _character_width(character)
         if used + character_width > width:
             return value[: end - 1]
         used += character_width
@@ -1599,10 +1617,14 @@ def _display_suffix(value: str, width: int) -> str:
     start = len(value)
     used = 0
     for start in range(len(value) - 1, -1, -1):
-        character_width = _display_width(value[start])
+        character_width = _character_width(value[start])
         if used + character_width > width:
-            return value[start + 1 :]
+            start += 1
+            break
         used += character_width
+    # Never begin a suffix with marks whose base character was cut away.
+    while start < len(value) and _character_width(value[start]) == 0:
+        start += 1
     return value[start:]
 
 
@@ -2095,9 +2117,6 @@ def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) ->
         )
 
 
-_RETRYABLE_ACQUIRE_ERRORS = frozenset({"already-claimed", "resource-guarded"})
-
-
 def _resolve_lease_file(args: argparse.Namespace) -> None:
     """Load a lease handle and fill only identity fields omitted by the caller."""
 
@@ -2129,6 +2148,81 @@ def _resolve_lease_file(args: argparse.Namespace) -> None:
         args.revision = state.revision
     if args.token is None and args.token_file is None and args.token_fd is None:
         args.token = state.token
+
+
+def _lease_file_error_reason(error: BaseException) -> str:
+    """Name a handle-write failure without leaking a path or errno text."""
+
+    if isinstance(error, LeaseError):
+        return error.reason
+    return "lease-file-unwritable"
+
+
+def _lease_file_destination(args: argparse.Namespace) -> str | None:
+    """Return the handle path this command will write, if any."""
+
+    if args.operation in {"release", "release-bundle"}:
+        return None
+    if args.operation not in _LEASE_FILE_INPUTS | _LEASE_FILE_OUTPUTS:
+        return None
+    if args.operation == "transfer":
+        return getattr(args, "successor_lease_file", None) or getattr(
+            args, "lease_file", None
+        )
+    return getattr(args, "lease_file", None)
+
+
+def _validate_lease_file_destination(args: argparse.Namespace) -> None:
+    """Fail before the store commits when the handle could not be written.
+
+    For acquire and transfer the emitted payload holds the only copy of the
+    new bearer token, so a write that fails after the mutation commits would
+    strand the resource for its full TTL.
+    """
+
+    destination = _lease_file_destination(args)
+    if destination is None:
+        return
+    from .lease_file import check_lease_file_writable
+
+    check_lease_file_writable(destination)
+    if args.operation not in _LEASE_FILE_OUTPUTS:
+        return
+    from .lease_file import LeaseFileState, read_lease_file
+
+    try:
+        existing = read_lease_file(destination)
+    except LeaseError:
+        # An absent or unreadable handle is replaced, as before. Only a handle
+        # that still names a live claim is protected.
+        return
+    if not isinstance(existing, LeaseFileState):
+        return
+    if existing.claim_id == getattr(args, "claim_id", None):
+        return
+    # status() projects the bundle claim for any member resource.
+    resource = (
+        existing.resources[0]
+        if existing.is_bundle and existing.resources
+        else existing.resource
+    )
+    if resource is None:
+        return
+    try:
+        status = LeaseStore(getattr(args, "home", None)).status(resource)
+    except LeaseError:
+        return
+    claim = status.get("claim")
+    if (
+        isinstance(claim, dict)
+        and claim.get("claimId") == existing.claim_id
+        and claim.get("active") is True
+    ):
+        raise LeaseError(
+            "lease-file-in-use",
+            code=64,
+            claimId=existing.claim_id,
+        )
 
 
 def _validate_claim_arguments(args: argparse.Namespace) -> None:
@@ -2200,6 +2294,15 @@ def _persist_lease_file(args: argparse.Namespace, payload: dict[str, object]) ->
         prior=prior if isinstance(prior, LeaseFileState) else None,
         token=token if isinstance(token, str) else None,
     )
+    if (
+        isinstance(prior, LeaseFileState)
+        and prior.claim_id == state.claim_id
+        and state.revision < prior.revision
+    ):
+        # An idempotent replay returns the receipt recorded when the operation
+        # first ran, so its claim carries an older revision. Writing it back
+        # would leave the handle behind the store and brick the next mutation.
+        return
     write_lease_file(destination, state)
 
 
@@ -2230,23 +2333,49 @@ def _dispatch(
         raise _ArgumentError("missing-command") from error
 
 
+def _expand_option_token(
+    parser: argparse.ArgumentParser, value: str
+) -> tuple[list[str], bool] | None:
+    """Expand one token into the option strings argparse would see.
+
+    Returns those option strings and whether the token also consumes the next
+    one, or None when the token is not a recognized option. Grouped short flags
+    (``-jg``) have to be expanded character by character, because treating the
+    token as one option plus an attached value misplaces the boundary between
+    worklease's own arguments and a guarded child's.
+    """
+
+    if value.startswith("--"):
+        option = value.partition("=")[0]
+        action = parser._option_string_actions.get(option)
+        if action is None:
+            return None
+        return [option], action.nargs != 0 and "=" not in value
+    if not value.startswith("-") or value == "-":
+        return None
+    expanded: list[str] = []
+    last = len(value) - 1
+    for position, character in enumerate(value[1:], start=1):
+        option = f"-{character}"
+        action = parser._option_string_actions.get(option)
+        if action is None:
+            return None
+        expanded.append(option)
+        if action.nargs != 0:
+            # Any remaining characters are this option's attached value.
+            return expanded, position == last
+    return expanded, False
+
+
 def _option_consumes_next(
     parser: argparse.ArgumentParser, value: str
 ) -> tuple[bool, bool]:
     """Return whether an option is recognized and consumes the next token."""
 
-    option = value
-    has_attached_value = False
-    if value.startswith("--") and "=" in value:
-        option = value.partition("=")[0]
-        has_attached_value = True
-    elif value.startswith("-") and not value.startswith("--") and len(value) > 2:
-        option = value[:2]
-        has_attached_value = True
-    action = parser._option_string_actions.get(option)
-    if action is None:
+    expanded = _expand_option_token(parser, value)
+    if expanded is None:
         return False, False
-    return True, action.nargs != 0 and not has_attached_value
+    return True, expanded[1]
 
 
 def _visible_output_options(
@@ -2285,30 +2414,63 @@ def _visible_output_options(
     )
     command_parser = subparsers.choices[options[command_index]]
     index = command_index + 1
+    unrecognized = False
     while index < len(options):
         value = options[index]
         recognized, consumes_next = _option_consumes_next(command_parser, value)
         if recognized:
             index += 2 if consumes_next else 1
         elif value.startswith("-"):
+            # The boundary is unknowable once an option is unrecognized: the
+            # next token may be its value or the child command. The invocation
+            # cannot succeed, so keep reading rather than mistake that token for
+            # the child and truncate the caller's own output options away.
+            unrecognized = True
             index += 1
+        elif unrecognized:
+            return options
         else:
             return options[:index]
     return options
 
 
+def _output_option_values(
+    argv: Sequence[str], parser: argparse.ArgumentParser | None = None
+) -> tuple[bool, str | None]:
+    """Return whether --json was given and the last explicit --format value."""
+
+    root = _parser() if parser is None else parser
+    options = _visible_output_options(argv, parser)
+    has_json = False
+    explicit_format: str | None = None
+    index = 0
+    while index < len(options):
+        value = options[index]
+        expanded = _expand_option_token(root, value)
+        if expanded is None:
+            index += 1
+            continue
+        flags, consumes_next = expanded
+        if "-j" in flags or "--json" in flags:
+            has_json = True
+        if "-f" in flags or "--format" in flags:
+            if consumes_next and index + 1 < len(options):
+                explicit_format = options[index + 1]
+            elif value.startswith("--format="):
+                explicit_format = value.partition("=")[2]
+            elif not value.startswith("--"):
+                attached = value.partition("f")[2]
+                if attached:
+                    explicit_format = attached
+        index += 2 if consumes_next else 1
+    return has_json, explicit_format
+
+
 def _validate_output_arguments(
     argv: Sequence[str], parser: argparse.ArgumentParser | None = None
 ) -> None:
-    options = _visible_output_options(argv, parser)
-    has_json = "--json" in options or "-j" in options
-    has_format = any(
-        value in {"--format", "-f"}
-        or value.startswith("--format=")
-        or (value.startswith("-f") and len(value) > 2)
-        for value in options
-    )
-    if has_json and has_format:
+    has_json, explicit_format = _output_option_values(argv, parser)
+    if has_json and explicit_format is not None:
         raise _ArgumentError("conflicting-output-format")
 
 
@@ -2317,18 +2479,7 @@ def _fallback_output_format(
 ) -> str:
     """Choose a safe format for parser errors without reading child argv."""
 
-    options = _visible_output_options(argv, parser)
-    explicit_format: str | None = None
-    has_json = False
-    for index, value in enumerate(options):
-        if value in {"--json", "-j"}:
-            has_json = True
-        elif value in {"--format", "-f"} and index + 1 < len(options):
-            explicit_format = options[index + 1]
-        elif value.startswith("--format=") or value.startswith("-f="):
-            explicit_format = value.partition("=")[2]
-        elif value.startswith("-f") and len(value) > 2:
-            explicit_format = value[2:]
+    has_json, explicit_format = _output_option_values(argv, parser)
     if explicit_format in {"json", "text"}:
         return explicit_format
     if has_json:
@@ -2406,13 +2557,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         _apply_lifecycle_defaults(args)
         _validate_claim_arguments(args)
         _resolve_claim_credential(args)
+        _validate_lease_file_destination(args)
         store = (
             None
             if args.operation in {"key", "policy-list", "policy-describe"}
             else LeaseStore(getattr(args, "home", None))
         )
         payload, child_code = _dispatch(args, store)
-        _persist_lease_file(args, payload)
+        try:
+            _persist_lease_file(args, payload)
+        except (LeaseError, OSError) as error:
+            # The mutation is already durable. Reporting it as a failure would
+            # discard the payload, which for acquire and transfer holds the only
+            # copy of the new bearer token, so emit the claim with its token and
+            # report the handle failure through the exit code instead.
+            payload["leaseFileError"] = _lease_file_error_reason(error)
+            _emit(
+                _envelope(args.operation, payload),
+                output_format,
+                full=getattr(args, "full", False),
+            )
+            return 75
         _suppress_lease_file_token(args, payload)
         output = _envelope(args.operation, payload)
         _emit(output, output_format, full=getattr(args, "full", False))

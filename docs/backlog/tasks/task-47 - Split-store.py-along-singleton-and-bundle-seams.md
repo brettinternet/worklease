@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex-task-47'
 created_date: '2026-09-07 03:27'
-updated_date: '2026-09-07 06:28'
+updated_date: '2026-09-07 14:13'
 labels:
   - maintainability
 dependencies: []
@@ -63,6 +63,8 @@ Implemented commit de85a26: reduced store.py from 3,044 to 224 lines by extracti
 Review found and fixed singleton reconciliation resource omission, duplicate singleton expiry validation, opaque operation-ID token behavior, and custom bundle completion token drift. The remaining child-argv output scan finding is pre-existing TASK-45 scope and was not changed here.
 
 Validation: mise run lint; mise run format-check; mise run typecheck; mise run test (216 core + 19 SDK); mise run hooks; independent verifier PASS for all acceptance criteria.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

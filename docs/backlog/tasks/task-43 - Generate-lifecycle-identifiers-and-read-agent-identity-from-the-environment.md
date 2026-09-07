@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-07 03:26'
-updated_date: '2026-09-07 04:40'
+updated_date: '2026-09-07 14:13'
 labels:
   - cli
   - devex
@@ -59,6 +59,8 @@ Scope: default `--claim-id`, `--session-id`, `--owner-id`, and `--operation-id` 
 Implemented centralized CLI lifecycle defaults using cryptographically random 128-bit identifiers, WORKLEASE_AGENT_ID fallback validation, resource-derived work keys, and expanded text claim fields. Preserved caller-supplied values unchanged through dispatch.
 
 Validation: focused generated/default-path CLI tests passed (5/5); mise run lint, format-check, test (207 core + 19 SDK), and typecheck passed. Independent verifier passed acceptance criteria 1-5. Adversarial review found one misleading transfer hint, which was corrected and covered by a regression assertion.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

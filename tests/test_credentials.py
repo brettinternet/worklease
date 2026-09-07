@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from worklease.credentials import MAX_CREDENTIAL_BYTES, resolve_credential
+from worklease.credentials import (
+    MAX_CREDENTIAL_BYTES,
+    credentials_match,
+    resolve_credential,
+)
 from worklease.models import LeaseError
 
 
@@ -16,6 +20,14 @@ class CredentialResolverTests(unittest.TestCase):
             resolve_credential(**sources)
         self.assertEqual(expected, context.exception.reason)
         self.assertEqual({}, context.exception.details)
+
+    def test_credential_comparison_is_total_for_unencodable_tokens(self) -> None:
+        # A library caller can supply a lone surrogate; comparison must fail
+        # the authentication rather than raise out of the ownership guard.
+        self.assertFalse(credentials_match("a" * 64, "\udcff" + "a" * 63))
+        self.assertFalse(credentials_match("\udcff" + "a" * 63, "a" * 64))
+        self.assertTrue(credentials_match("\udcff" + "a" * 63, "\udcff" + "a" * 63))
+        self.assertFalse(credentials_match("é" * 64, "e" * 64))
 
     def test_direct_credential_is_supported_and_newline_is_removed(self) -> None:
         self.assertEqual("secret", resolve_credential(token="secret\n"))

@@ -180,14 +180,11 @@ class ReconciliationMixin:
                 )
             target = target_rows[0]
             if str(target["state"]) != "started":
-                state = str(target["state"])
-                if isinstance(request, MutationRequest) and state == "started":
-                    state = "unknown-outcome"
                 raise LeaseError(
                     "operation-not-unknown",
                     code=3,
                     operationId=target_operation_id,
-                    state=state,
+                    state=str(target["state"]),
                 )
             actual_sha256 = hashlib.sha256(
                 str(target["request"]).encode("utf-8")

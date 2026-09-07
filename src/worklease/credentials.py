@@ -16,7 +16,13 @@ MAX_CREDENTIAL_BYTES = 4096
 def credentials_match(stored: str, supplied: str) -> bool:
     """Compare UTF-8 credentials without exposing content or length shortcuts."""
 
-    return hmac.compare_digest(stored.encode("utf-8"), supplied.encode("utf-8"))
+    # surrogatepass keeps the comparison total: a library caller can hand in a
+    # lone surrogate, which plain UTF-8 encoding would raise on, turning a
+    # failed authentication into a traceback.
+    return hmac.compare_digest(
+        stored.encode("utf-8", "surrogatepass"),
+        supplied.encode("utf-8", "surrogatepass"),
+    )
 
 
 def _error(reason: str) -> LeaseError:

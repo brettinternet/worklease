@@ -173,8 +173,17 @@ class LifecycleMixin:
                 receipt = json.loads(str(prior["receipt"]))
                 claim = receipt.get("claim")
                 current = self._current(db, request.resource)
-                if isinstance(claim, dict) and current is not None:
-                    claim["token"] = str(current["token"])
+                if isinstance(claim, dict):
+                    # Only the recorded successor may be handed its token back.
+                    # The resource can have turned over since the transfer, and
+                    # the replaying predecessor must not receive a stranger's
+                    # bearer token.
+                    if current is not None and str(current["claim_id"]) == str(
+                        claim.get("claimId")
+                    ):
+                        claim["token"] = str(current["token"])
+                    else:
+                        claim.pop("token", None)
                 receipt["idempotent"] = True
                 return receipt
             row = self._current(db, request.resource)

@@ -10,11 +10,13 @@ from typing import Any
 from .credentials import credentials_match
 from .locking import resource_lock
 from .models import (
+    MAX_TTL,
     BundleClaim,
     BundleMutationRequest,
     LeaseError,
     MutationRequest,
     bundle_claim_from_row,
+    clock_regression,
     lease_is_active,
 )
 from .sqlite import transaction
@@ -22,6 +24,45 @@ from .sqlite import transaction
 
 class ClaimStoreMixin:
     """Claim lookup, ownership guards, and bundle projections used by the store."""
+
+    def _repair_clock_regression(
+        self: Any, connection: sqlite3.Connection, resources: tuple[str, ...]
+    ) -> None:
+        """Re-anchor persisted expiries that outlived the TTL they were granted.
+
+        A backward wall-clock step inflates every stored lease's apparent
+        remaining lifetime, which would otherwise pin a resource until the clock
+        caught up. Expiring the lease instead would hand the resource to a
+        contender while its holder is still working, so the rows are re-anchored
+        to the current clock: over-hold is bounded at one TTL from the first
+        contention and no live holder is dispossessed.
+
+        A heartbeating holder never reaches here, because its own renewal
+        rewrites both timestamps from a single clock reading. This runs in its
+        own transaction so the repair survives the caller's contention error.
+        """
+
+        placeholders = ",".join("?" for _ in resources)
+        rows = connection.execute(
+            f"SELECT * FROM claims WHERE resource IN ({placeholders})", resources
+        ).fetchall()
+        now = self.clock()
+        regressed = [row for row in rows if clock_regression(row, now) > 0]
+        if not regressed:
+            return
+        with transaction(connection):
+            for row in regressed:
+                granted_ttl = min(
+                    float(row["expires_at"]) - float(row["heartbeat_at"]), MAX_TTL
+                )
+                # Bundle members share one claim ID, so both statements
+                # re-anchor the whole claim together.
+                for table in ("claims", "bundles"):
+                    connection.execute(
+                        f"UPDATE {table} SET heartbeat_at = ?, expires_at = ? "
+                        "WHERE claim_id = ?",
+                        (now, now + granted_ttl, str(row["claim_id"])),
+                    )
 
     @staticmethod
     def _bundle_row(

@@ -16,7 +16,6 @@ from .models import (
     require_resource,
     require_ttl,
 )
-from .sqlite import transaction
 
 
 class AcquisitionMixin:
@@ -30,7 +29,7 @@ class AcquisitionMixin:
         with (
             self._resource_locks(resources),
             closing(self._connect()) as db,
-            transaction(db),
+            self._bundle_acquire_transaction(db, resources),
         ):
             now = self.clock()
             bundle = self._bundle_row(db, request.claim_id)

@@ -278,6 +278,20 @@ def read_lease_file(path: str | os.PathLike[str]) -> LeaseFileState:
     return _parse(_read_bytes(lease_path))
 
 
+def check_lease_file_writable(path: str | os.PathLike[str]) -> None:
+    """Reject a destination that write_lease_file could not replace.
+
+    Called before a mutation commits, because a handle write that fails
+    afterwards has no way to return the claim's only copy of its token.
+    """
+
+    lease_path = _path(path)
+    _check_existing(lease_path, require_private=False)
+    parent = lease_path.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        raise _error("lease-file-unwritable")
+
+
 def write_lease_file(path: str | os.PathLike[str], state: LeaseFileState) -> None:
     """Atomically write one mode-0600 lease handle and fsync its directory."""
 

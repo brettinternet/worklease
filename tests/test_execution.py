@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import closing, redirect_stdout, suppress
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -43,12 +44,43 @@ class MutableClock:
         self.value += seconds
 
 
+# A guarded child's deadline starts at Popen, so these budgets must absorb one
+# or two nested CPython interpreter startups before the child does anything
+# observable. Startup is ~20ms on a fast developer machine but several times
+# that on a slow, loaded CI runner, so the bounds are sized for the slow case:
+# these tests assert ordering, not how tight the bound can be.
+GUARD_BUDGET = 1.0
+# Comfortably longer than GUARD_BUDGET, so reaching the end of the child proves
+# the deadline failed to stop it.
+OUTLIVING_CHILD = 30.0
+
+
 class ExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name) / "state"
         self.store = LeaseStore(self.home)
+
+    def kill_escaped(self, pid_file: Path) -> None:
+        """Reap a grandchild the guard deliberately cannot kill."""
+
+        if not pid_file.exists():
+            return
+        with suppress(ValueError, OSError):
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+    def assert_process_reaped(self, pid: int, timeout: float = 15.0) -> None:
+        """Fail unless the guard's process-group kill has taken effect."""
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError, PermissionError:
+                return
+            time.sleep(0.01)
+        self.fail(f"process {pid} survived the guard deadline")
 
     def acquire(
         self,
@@ -534,10 +566,10 @@ class ExecutionTests(unittest.TestCase):
         started = self.home / "timeout-descendant-started"
         marker = self.home / "timeout-descendant-must-not-finish"
         child_code = (
-            "import signal,time; from pathlib import Path; "
+            "import os,signal,time; from pathlib import Path; "
             "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            f"Path({str(started)!r}).write_text('started'); "
-            "time.sleep(1); "
+            f"Path({str(started)!r}).write_text(str(os.getpid())); "
+            f"time.sleep({OUTLIVING_CHILD!r}); "
             f"Path({str(marker)!r}).write_text('finished')"
         )
         parent_code = (
@@ -549,18 +581,20 @@ class ExecutionTests(unittest.TestCase):
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.1,
+            maximum_duration=GUARD_BUDGET,
         )
 
         self.assertEqual(124, code)
         self.assertFalse(receipt["ok"])
         self.assertEqual("child-process-timeout", receipt["error"])
-        self.assertEqual(0.1, receipt["maxDuration"])
+        self.assertEqual(GUARD_BUDGET, receipt["maxDuration"])
         command = cast(dict[str, object], receipt["command"])
         self.assertEqual(124, command["returncode"])
         self.assertTrue(command["timedOut"])
         self.assertTrue(started.exists())
-        time.sleep(1.1)
+        # The descendant ignores SIGTERM, so its death proves the escalation to
+        # the process group landed.
+        self.assert_process_reaped(int(started.read_text()))
         self.assertFalse(marker.exists())
         inspected = self.store.inspect_operation(request.resource, request.operation_id)
         self.assertEqual("completed", inspected["state"])
@@ -568,7 +602,7 @@ class ExecutionTests(unittest.TestCase):
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.1,
+            maximum_duration=GUARD_BUDGET,
         )
         self.assertEqual(124, replay_code)
         self.assertTrue(replay["idempotent"])
@@ -579,24 +613,30 @@ class ExecutionTests(unittest.TestCase):
         request = self.acquire(
             "escaped-timeout-resource", operation_id="escaped-timeout-exec"
         )
+        escaped = self.home / "escaped-pid"
         child_code = (
             "import os,time; os.setsid(); "
-            "os.write(1, b'before-timeout\\n'); time.sleep(1)"
+            f"open({str(escaped)!r}, 'w').write(str(os.getpid())); "
+            "os.write(1, b'before-timeout\\n'); "
+            f"time.sleep({OUTLIVING_CHILD!r})"
         )
         parent_code = (
             "import subprocess,sys; "
             f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
         )
+        self.addCleanup(self.kill_escaped, escaped)
 
         started_at = time.monotonic()
         receipt, code = execute(
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.2,
+            maximum_duration=GUARD_BUDGET,
         )
 
-        self.assertLess(time.monotonic() - started_at, 0.7)
+        # The escaped grandchild outlives the guard by design; the guard must
+        # return at its own deadline rather than wait for the inherited pipe.
+        self.assertLess(time.monotonic() - started_at, OUTLIVING_CHILD / 2)
         self.assertEqual(124, code)
         self.assertEqual("child-process-timeout", receipt["error"])
         command = cast(dict[str, object], receipt["command"])
@@ -608,24 +648,28 @@ class ExecutionTests(unittest.TestCase):
         request = self.acquire(
             "escaped-writer-timeout", operation_id="escaped-writer-timeout-exec"
         )
+        escaped = self.home / "escaped-writer-pid"
         child_code = (
-            "import os; os.setsid(); chunk=b'x'*65536; "
+            "import os; os.setsid(); "
+            f"open({str(escaped)!r}, 'w').write(str(os.getpid())); "
+            "chunk=b'x'*65536; "
             "\nwhile True:\n os.write(1, chunk)"
         )
         parent_code = (
             "import subprocess,sys; "
             f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
         )
+        self.addCleanup(self.kill_escaped, escaped)
 
         started_at = time.monotonic()
         receipt, code = execute(
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.2,
+            maximum_duration=GUARD_BUDGET,
         )
 
-        self.assertLess(time.monotonic() - started_at, 0.7)
+        self.assertLess(time.monotonic() - started_at, OUTLIVING_CHILD / 2)
         self.assertEqual(124, code)
         command = cast(dict[str, object], receipt["command"])
         self.assertGreater(cast(int, command["stdoutBytes"]), 0)
@@ -680,6 +724,7 @@ class ExecutionTests(unittest.TestCase):
             operation_id=request.operation_id,
             ttl=0.03,
         )
+        started = self.home / "blocked-heartbeat-started"
         marker = self.home / "blocked-heartbeat-must-not-finish"
         original_heartbeat = self.store._heartbeat_for_exec
         calls = 0
@@ -690,7 +735,9 @@ class ExecutionTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls > 1:
-                time.sleep(1)
+                # Outlast the guard budget so the renewal thread is provably
+                # still blocked when the independent watchdog fires.
+                time.sleep(GUARD_BUDGET * 2)
                 raise sqlite3.OperationalError("blocked writer")
             return original_heartbeat(heartbeat_request, lock_held=lock_held)
 
@@ -707,14 +754,18 @@ class ExecutionTests(unittest.TestCase):
                     sys.executable,
                     "-c",
                     (
-                        "import time; from pathlib import Path; time.sleep(0.6); "
+                        "import os,time; from pathlib import Path; "
+                        f"Path({str(started)!r}).write_text(str(os.getpid())); "
+                        f"time.sleep({OUTLIVING_CHILD!r}); "
                         f"Path({str(marker)!r}).write_text('finished')"
                     ),
                 ],
-                maximum_duration=0.2,
+                maximum_duration=GUARD_BUDGET,
             )
 
         self.assertGreaterEqual(calls, 2)
+        self.assertTrue(started.exists())
+        self.assert_process_reaped(int(started.read_text()))
         self.assertFalse(marker.exists())
 
     def test_exec_bundle_timeout_is_completed_failure(self) -> None:
@@ -793,6 +844,42 @@ class ExecutionTests(unittest.TestCase):
                 request,
                 [sys.executable, "-c", "print('must not run')"],
             )
+
+    def test_operation_recorded_before_max_duration_still_replays(self) -> None:
+        # Operation rows written by a release that predates --max-duration have
+        # no maxDuration in their recorded request. Upgrading must not turn
+        # their documented replay recovery into operation-id-request-mismatch.
+        request = self.acquire("legacy-exec", operation_id="legacy-exec-op")
+        argv = [sys.executable, "-c", "print('recovered')"]
+        legacy_request = request.request_dict(
+            argv=argv,
+            executionDirectory={"mode": "caller"},
+        )
+        self.assertNotIn("maxDuration", legacy_request)
+        self.assertIsNone(self.store.begin_operation(request, "exec", legacy_request))
+        self.store.complete_operation(
+            request,
+            "exec",
+            legacy_request,
+            {"ok": True, "operation": "exec", "command": {"returncode": 0}},
+        )
+
+        receipt, code = execute(self.store, request, argv)
+
+        self.assertEqual(0, code)
+        self.assertTrue(receipt["idempotent"])
+
+    def test_replaying_exec_with_a_different_bound_is_idempotent(self) -> None:
+        request = self.acquire("rebound-exec", operation_id="rebound-exec-op")
+        argv = [sys.executable, "-c", "print('once')"]
+
+        first, first_code = execute(self.store, request, argv, maximum_duration=30)
+        replay, replay_code = execute(self.store, request, argv, maximum_duration=300)
+
+        self.assertEqual(0, first_code)
+        self.assertEqual(0, replay_code)
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(replay["idempotent"])
 
     def test_replacement_is_atomic_preserves_mode_and_replays(self) -> None:
         request = self.acquire("markdown-source")

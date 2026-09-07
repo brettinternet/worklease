@@ -270,47 +270,90 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(first["claim"]["token"], second["claim"]["token"])
         self.assertGreater(second["claim"]["revision"], first["claim"]["revision"])
 
-    def test_backward_clock_regression_expires_claim(self) -> None:
+    def test_small_backward_clock_step_keeps_a_live_lease(self) -> None:
+        # A routine NTP correction must not dispossess a working holder.
         acquired = self.store.acquire(
-            self.acquire_request("clock-regression", "first", ttl=10)
+            self.acquire_request("clock-jitter", "first", ttl=900)
         )
 
-        self.clock.advance(-10.1)
+        self.clock.advance(-0.05)
 
-        status = self.store.status("clock-regression")
-        self.assertEqual("expired", status["state"])
-        self.assertFalse(status["claim"]["active"])
-        with self.assertRaisesRegex(LeaseError, "claim-expired"):
-            self.store.heartbeat(
-                self.mutation(acquired, "clock-regression", "heartbeat", ttl=10)
+        self.assertEqual("active", self.store.status("clock-jitter")["state"])
+        self.store.heartbeat(self.mutation(acquired, "clock-jitter", "hb", ttl=900))
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            self.store.acquire(self.acquire_request("clock-jitter", "second", ttl=900))
+
+    def test_backward_clock_regression_is_reanchored_by_a_contender(self) -> None:
+        # An abandoned lease acquired while the clock was far ahead must not
+        # pin its resource until the clock catches up.
+        self.store.acquire(self.acquire_request("clock-regression", "first", ttl=10))
+        self.clock.advance(-10_000)
+
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            self.store.acquire(
+                self.acquire_request("clock-regression", "second", ttl=10)
             )
 
-    def test_backward_clock_regression_uses_renewed_ttl(self) -> None:
-        acquired = self.store.acquire(
-            self.acquire_request("renewed-clock-regression", "first", ttl=3600)
+        # Re-anchored to the corrected clock, so it now expires one TTL later
+        # instead of 10_000 seconds later.
+        self.clock.advance(9)
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            self.store.acquire(
+                self.acquire_request("clock-regression", "second", ttl=10)
+            )
+        self.clock.advance(2)
+        reclaimed = self.store.acquire(
+            self.acquire_request("clock-regression", "second", ttl=10)
         )
-        renewed = self.store.heartbeat(
-            self.mutation(
-                acquired,
-                "renewed-clock-regression",
-                "short-heartbeat",
-                ttl=1,
+        self.assertEqual("second", reclaimed["claim"]["claimId"])
+
+    def test_backward_clock_regression_reanchors_a_bundle(self) -> None:
+        resources = ("clock-bundle-a", "clock-bundle-b")
+        self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-first",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="clock-bundle",
+                ttl=10,
             )
         )
+        self.clock.advance(-10_000)
 
-        self.clock.advance(-1.1)
-
-        self.assertEqual(
-            "expired", self.store.status("renewed-clock-regression")["state"]
-        )
-        with self.assertRaisesRegex(LeaseError, "claim-expired"):
-            self.store.heartbeat(
-                self.mutation(
-                    renewed,
-                    "renewed-clock-regression",
-                    "regressed-heartbeat",
-                    ttl=1,
+        def contend() -> dict[str, object]:
+            return self.store.acquire_bundle(
+                BundleAcquireRequest(
+                    resources=resources,
+                    claim_id="bundle-second",
+                    agent_id="agent",
+                    session_id="session",
+                    owner_id="owner",
+                    work_key="clock-bundle",
+                    ttl=10,
                 )
+            )
+
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            contend()
+
+        self.clock.advance(11)
+        reclaimed_claim = contend()["claim"]
+        assert isinstance(reclaimed_claim, dict)
+        self.assertEqual("bundle-second", reclaimed_claim["claimId"])
+
+    def test_forward_clock_step_past_expiry_still_expires(self) -> None:
+        acquired = self.store.acquire(
+            self.acquire_request("clock-forward", "first", ttl=10)
+        )
+
+        self.clock.advance(11)
+
+        self.assertEqual("expired", self.store.status("clock-forward")["state"])
+        with self.assertRaisesRegex(LeaseError, "claim-expired"):
+            self.store.heartbeat(
+                self.mutation(acquired, "clock-forward", "heartbeat", ttl=10)
             )
 
     def test_checkpoint_renews_replays_and_rejects_stale_owner(self) -> None:
@@ -361,6 +404,93 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(successor["token"], replay["claim"]["token"])
         with self.assertRaisesRegex(LeaseError, "already-claimed"):
             self.store.acquire(self.acquire_request("resource", "contender"))
+
+    def test_transfer_replay_withholds_an_unrelated_owners_token(self) -> None:
+        acquired = self.store.acquire(self.acquire_request("handover", "first"))
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = TransferRequest(
+            resource="handover",
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="transfer-handover",
+            successor_claim_id="second",
+            successor_agent_id="agent-second",
+            successor_session_id="session-second",
+            successor_owner_id="owner-second",
+            successor_work_key="implement:item:next",
+        )
+        transferred = self.store.transfer(request)
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+
+        # The successor finishes and an unrelated agent takes the resource.
+        self.store.release(
+            self.mutation(transferred, "handover", "release-second"), reason="done"
+        )
+        third = self.store.acquire(self.acquire_request("handover", "third"))
+        third_claim = third["claim"]
+        assert isinstance(third_claim, dict)
+
+        # The original transferor replays with the token it still holds.
+        replay = self.store.transfer(request)
+
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual("second", replay["claim"]["claimId"])
+        self.assertNotIn("token", replay["claim"])
+        status_claim = self.store.status("handover")["claim"]
+        assert isinstance(status_claim, dict)
+        self.assertEqual("third", status_claim["claimId"])
+
+    def test_acquire_rejects_a_bundle_created_after_the_preflight(self) -> None:
+        import worklease.store as store_module
+
+        resources = ("wedge-a", "wedge-b")
+        original_lock = store_module.resource_lock
+        created = False
+
+        def lock_then_create_bundle(resource: str, home: Path) -> Any:
+            # Stand in for a bundle that commits between the unsynchronized
+            # preflight and the acquire transaction.
+            nonlocal created
+            if not created:
+                created = True
+                self.store.acquire_bundle(
+                    BundleAcquireRequest(
+                        resources=resources,
+                        claim_id="wedge-bundle",
+                        agent_id="agent",
+                        session_id="session",
+                        owner_id="owner",
+                        work_key="wedge",
+                        ttl=60,
+                    )
+                )
+            return original_lock(resource, home)
+
+        with (
+            patch.object(store_module, "resource_lock", lock_then_create_bundle),
+            self.assertRaisesRegex(LeaseError, "bundle-operation-required"),
+        ):
+            self.store.acquire(self.acquire_request("wedge-a", "singleton"))
+
+        # The bundle still owns both resources and remains operable.
+        self.assertEqual(
+            "wedge-bundle", self.store.status("wedge-a")["claim"]["claimId"]
+        )
+        with self.assertRaisesRegex(LeaseError, "already-claimed"):
+            self.store.acquire_bundle(
+                BundleAcquireRequest(
+                    resources=resources,
+                    claim_id="other-bundle",
+                    agent_id="agent",
+                    session_id="session",
+                    owner_id="owner",
+                    work_key="wedge",
+                    ttl=60,
+                )
+            )
 
     def test_transfer_rejects_reuse_of_other_operation_kind(self) -> None:
         acquired = self.store.acquire(
