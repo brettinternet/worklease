@@ -1,9 +1,11 @@
 ---
 id: TASK-43
 title: Generate lifecycle identifiers and read agent identity from the environment
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-07 03:26'
+updated_date: '2026-09-07 03:41'
 labels:
   - cli
   - devex
@@ -32,3 +34,12 @@ Scope: default `--claim-id`, `--session-id`, `--owner-id`, and `--operation-id` 
 - [ ] #4 Caller-supplied identifiers behave exactly as before, including idempotent replay and operation-id-request-mismatch
 - [ ] #5 JSON schemas, README lifecycle examples, help epilogs, and skills/worklease-workflow reflect the new defaults; tests cover generated and explicit paths
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Trace lifecycle and bundle CLI identifier parsing, outputs, schemas, help, and documentation.
+2. Add centralized defaults for generated IDs, environment-derived agent identity, and resource-derived work keys while preserving explicit replay semantics.
+3. Add generated and explicit-path tests across lifecycle, transfer, and bundle commands; update schemas, README, help epilogs, and workflow skill.
+4. Run focused and full quality gates, review the diff, merge to main, and clean up the worktree.
+<!-- SECTION:PLAN:END -->
