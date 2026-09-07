@@ -1,9 +1,11 @@
 ---
 id: TASK-46
 title: Make CLI short flags and text labels consistent across commands
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-task-46'
 created_date: '2026-09-07 03:27'
+updated_date: '2026-09-07 05:03'
 labels:
   - cli
   - devex
