@@ -31,3 +31,12 @@ Refactor without behavior change: parameterize each singleton/bundle pair by the
 - [ ] #2 Each singleton/bundle behavior pair is implemented once; no module exceeds ~800 lines
 - [ ] #3 Operation receipts for internal exec renewals no longer include the bearer token
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extract store operation-ledger behavior into focused modules while preserving LeaseStore's public methods, and parameterize singleton/bundle paths by operation resource.
+2. Extract reconciliation, read projections, and garbage collection into focused modules, consolidating duplicated singleton/bundle behavior and keeping each extracted module near or below 800 lines.
+3. Split CLI dispatch into stateless and store-backed paths, and add regression coverage proving internal exec-renewal receipts omit bearer tokens without changing public JSON.
+4. Run focused tests, full project quality gates, adversarial review, and acceptance verification; fix item-scoped findings before finalizing.
+<!-- SECTION:PLAN:END -->
