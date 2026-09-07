@@ -349,9 +349,6 @@ class ProjectionMixin:
                 except TypeError, ValueError, OverflowError:
                     return None
 
-            def bundle_key(values: tuple[str, ...]) -> str:
-                return json.dumps(list(values), separators=(",", ":"))
-
             def decoded_bundle(value_to_decode: Any) -> tuple[str, ...] | None:
                 try:
                     decoded = json.loads(str(value_to_decode))
@@ -362,9 +359,6 @@ class ProjectionMixin:
                 if not all(isinstance(member, str) for member in decoded):
                     return None
                 return tuple(decoded)
-
-            def operation_bundle_key(value_to_decode: Any) -> tuple[str, ...] | None:
-                return decoded_bundle(value_to_decode)
 
             resource_revision_watermark: int | None = None
             if "resources" in tables:
@@ -409,7 +403,6 @@ class ProjectionMixin:
                             "acquiredAt": timestamp(value(row, "acquired_at")),
                             "acquisitionRevision": acquisition_revision,
                             "_acquired_number": acquired_number,
-                            "_resource_key": resource,
                             "_resources": None,
                             "_operations": [],
                             "_reconciliations": [],
@@ -460,7 +453,6 @@ class ProjectionMixin:
                             "acquiredAt": timestamp(value(row, "acquired_at")),
                             "acquisitionRevision": acquisition_revision,
                             "_acquired_number": acquired_number,
-                            "_resource_key": bundle_key(resources),
                             "_resources": resources,
                             "_operations": [],
                             "_reconciliations": [],
@@ -556,8 +548,7 @@ class ProjectionMixin:
                     "createdAt": timestamp(value(row, "created_at")),
                     "_claim_id": claim_id,
                     "_resource": operation_resource,
-                    "_resource_key": operation_resource,
-                    "_bundle_key": operation_bundle_key(operation_resource),
+                    "_bundle_key": decoded_bundle(operation_resource),
                     "_expected_number": expected_revision,
                     "_created_number": created_number,
                 }
@@ -588,7 +579,7 @@ class ProjectionMixin:
             )
             for row in reconciliation_rows:
                 reconciliation_resource = str(value(row, "resource", ""))
-                reconciliation_key = operation_bundle_key(reconciliation_resource)
+                reconciliation_key = decoded_bundle(reconciliation_resource)
                 resolver_claim_id = str(value(row, "claim_id", ""))
                 target_claim_id_value = value(row, "target_claim_id")
                 target_claim_id = (
@@ -612,11 +603,6 @@ class ProjectionMixin:
                     "outcome": str(value(row, "outcome", "")),
                     "reconciledAt": recorded_at,
                     "_recorded_number": recorded_number,
-                    "_target_claim_id": target_claim_id,
-                    "_target_operation_id": target_operation_id,
-                    "_kind": reconciliation_kind,
-                    "_resource": reconciliation_resource,
-                    "_resource_key": reconciliation_key,
                 }
                 for epoch in epoch_rows:
                     if resolver_claim_id != epoch["claimId"]:
