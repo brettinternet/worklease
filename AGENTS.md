@@ -10,15 +10,22 @@ The CLI is installed through `mise`. Prefer the explicit form below when the com
 backlog <command>
 ```
 
-Before deciding how to handle a request, read the overview and inspect existing work:
+Before deciding how to handle a request, read the overview:
 
 ```bash
 backlog instructions overview
+```
+
+A backlog item is not a prerequisite for doing work. Do not search for or create one for small, ephemeral, exploratory, or obvious mechanical requests; handle those directly. Questions and explanations also need no item.
+
+For committed, non-trivial work that needs planning, decisions, review, or handoff notes, inspect existing work before starting:
+
+```bash
 backlog search "<terms>" --plain
 backlog task list --plain
 ```
 
-Use an existing task when it covers the request. If no task covers planned work, create one through `backlog task create`; do not create duplicate tasks. Questions, explanations, and obvious mechanical edits do not need a new task.
+Use an existing task when it covers that work. Otherwise create one through `backlog task create`; do not create duplicate tasks.
 
 ## Working on backlog tasks
 
