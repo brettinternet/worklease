@@ -3,9 +3,11 @@ id: TASK-44
 title: >-
   Add a lease handle file that tracks token and revision across lifecycle
   commands
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-task-44'
 created_date: '2026-09-07 03:26'
+updated_date: '2026-09-07 03:44'
 labels:
   - cli
   - devex
@@ -35,3 +37,12 @@ Add `--lease-file PATH` (mode 0600, JSON). `acquire`, `acquire-bundle`, and `tra
 - [ ] #4 Bundle commands and transfer support the lease file, including successor handoff to a new file
 - [ ] #5 README, help epilogs, and skills/worklease-workflow show the lease-file form as the primary example; schemas and tests updated
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Trace lifecycle and bundle command parsing, credential flow, outputs, schemas, help, documentation, and existing atomic file patterns.
+2. Add a versioned 0600 lease-file abstraction and resolve explicit CLI fields over stored fields for lifecycle, bundle, and transfer operations.
+3. Persist lease state after successful acquisition/mutations, clear it after release, suppress token output when a lease file is used, and cover stale/concurrent behavior.
+4. Update schemas, README, help epilogs, and workflow skill; run focused and full quality gates, review, commit, merge to main, and clean up the worktree.
+<!-- SECTION:PLAN:END -->
