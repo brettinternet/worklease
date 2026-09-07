@@ -1895,6 +1895,17 @@ def _render_history(payload: dict[str, object]) -> None:
         return
     _text_header(payload)
     print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
+    coverage = payload.get("coverage", {})
+    if not isinstance(coverage, dict):
+        coverage = {}
+    print("COVERAGE")
+    for field in (
+        "earliestRetainedAcquisitionRevision",
+        "resourceRevisionWatermark",
+        "legacyIncompleteCount",
+    ):
+        if field in coverage:
+            print(f"{_text_label(field)}\t{_text_value(coverage[field])}")
     epochs = payload.get("epochs", [])
     if not isinstance(epochs, list):
         epochs = []
@@ -1904,6 +1915,7 @@ def _render_history(payload: dict[str, object]) -> None:
             continue
         print("EPOCH")
         for field in (
+            "source",
             "resource",
             "resources",
             "kind",
@@ -1914,8 +1926,7 @@ def _render_history(payload: dict[str, object]) -> None:
             "workKey",
             "acquiredAt",
             "acquisitionRevision",
-            "state",
-            "legacyIncomplete",
+            "completeness",
         ):
             if field in epoch:
                 print(f"{_text_label(field)}\t{_text_value(epoch[field])}")
@@ -1932,14 +1943,12 @@ def _render_history(payload: dict[str, object]) -> None:
                 + "\t".join(
                     _text_value(operation.get(field))
                     for field in (
+                        "source",
                         "operationId",
                         "kind",
                         "state",
                         "expectedRevision",
                         "createdAt",
-                        "outcome",
-                        "reconciliationOperationId",
-                        "reconciledAt",
                     )
                 )
             )
@@ -1956,6 +1965,7 @@ def _render_history(payload: dict[str, object]) -> None:
                 + "\t".join(
                     _text_value(reconciliation.get(field))
                     for field in (
+                        "source",
                         "targetClaimId",
                         "targetOperationId",
                         "reconciliationOperationId",
@@ -1970,6 +1980,7 @@ def _render_history(payload: dict[str, object]) -> None:
         if isinstance(termination, dict):
             print("TERMINATION")
             for field in (
+                "source",
                 "reason",
                 "effectiveAt",
                 "recordedAt",
@@ -1985,10 +1996,12 @@ def _render_history(payload: dict[str, object]) -> None:
         else:
             print("TERMINATION\t<none>")
 
-        current = epoch.get("current")
+        current = epoch.get("currentClaim")
         if isinstance(current, dict):
-            print("CURRENT")
+            print("CURRENT_CLAIM")
             for field in (
+                "source",
+                "resources",
                 "claimId",
                 "revision",
                 "agentId",
@@ -2004,7 +2017,7 @@ def _render_history(payload: dict[str, object]) -> None:
                 if field in current:
                     print(f"{_text_label(field)}\t{_text_value(current[field])}")
         else:
-            print("CURRENT\t<none>")
+            print("CURRENT_CLAIM\t<none>")
 
 
 def _render_inspect_operation(payload: dict[str, object]) -> None:

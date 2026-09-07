@@ -236,19 +236,37 @@ This data is retention-bounded diagnostics on one local Worklease database. A
 read-only `worklease history --resource R` projection is scoped to the exact
 opaque resource: it includes singleton epochs and bundle-member epochs, keeps
 termination separate from the current snapshot, and does not derive active or
-expired state from the clock. `--json` is a sanitized per-resource diagnostic
-export, not the complete archive; it deliberately omits tokens, hashes,
-checkpoint bodies, request/receipt blobs, argv, process output, file contents,
-and reconciliation or provider evidence. Export it before `gc --apply` when a
-portable diagnostic is needed. A private SQLite backup of the mode-0600 local
-database, made before collection, is the complete archive and therefore must
-be handled as secret-bearing state.
+expired state from the clock. JSON provenance labels distinguish the retained
+record categories: `epoch`, `operation`, `reconciliation`, `termination`, and
+`current-claim`. Each epoch is `complete`, `open`, or `legacy-incomplete` under
+stored-field rules; `open` is not the same as active. The coverage summary has
+nullable earliest acquisition and resource-watermark revisions plus a retained
+legacy count. A revision watermark is not an event count and cannot identify
+exact missing events because GC and pre-migration history are indistinguishable
+and non-acquisition mutations also consume revisions.
+
+Where an end bound is stored, a consumer may project `acquiredAt <= T <
+termination.effectiveAt` for a terminated epoch or `acquiredAt <= T <
+currentClaim.expiresAt` for an open epoch. A legacy-incomplete epoch without
+termination or current-claim evidence has an unknown upper bound. This is a
+consumer rule over retained local rows, not an audit fact; history has no
+`--at` filter and does not read the current clock. A migrated current epoch may
+therefore have a null acquisition revision, while GC may remove all epochs and
+leave only the resource tombstone watermark. Rows removed by `gc --apply` and
+pre-migration facts cannot be reconstructed.
+
+`--json` is a sanitized per-resource diagnostic export, not the complete
+archive; it deliberately omits tokens, hashes, checkpoint bodies,
+request/receipt blobs, argv, process output, file contents, and reconciliation
+or provider evidence. Export it before `gc --apply` when a portable diagnostic
+is needed. A private SQLite backup of the mode-0600 local database, made before
+collection, is the complete archive and therefore must be handled as
+secret-bearing state.
 
 History is local coordination metadata rather than provider evidence. It is not
 provider progress, an attestation, tamper evidence, or cross-host history, and
 it cannot prove that a provider write occurred. The work provider remains
-authoritative for item state, progress, receipts, and eligibility; rows removed
-by local retention or `gc --apply` cannot be reconstructed.
+authoritative for item state, progress, receipts, and eligibility.
 
 ## Three meanings of state
 

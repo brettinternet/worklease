@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://worklease.dev/schemas/v1/history.json",
   "title": "Worklease resource history",
-  "description": "Sanitized deterministic history for one exact local resource. It contains local coordination metadata only; provider evidence and secret-bearing durable payloads are not exported.",
+  "description": "Sanitized deterministic history for one exact local resource. Each retained acquisition epoch has source=epoch, operation summaries have source=operation, reconciliation summaries have source=reconciliation, termination snapshots have source=termination, and current claim snapshots have source=current-claim. These are retention-bounded local diagnostic records, not an audit log, attestation, provider evidence, or complete event archive. The completeness and coverage objects are derived projection metadata and have no source.",
   "allOf": [
     {"$ref": "commands.json"},
     {
@@ -11,6 +11,7 @@
       "properties": {
         "operation": {"const": "history"},
         "resource": {"type": "string"},
+        "coverage": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Coverage"},
         "epochs": {
           "type": "array",
           "items": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Epoch"}
@@ -20,38 +21,71 @@
         "properties": {"ok": {"const": true}},
         "required": ["ok"]
       },
-      "then": {"required": ["resource", "epochs"]},
+      "then": {"required": ["resource", "coverage", "epochs"]},
       "additionalProperties": true
     }
   ],
   "$defs": {
+    "Source": {
+      "type": "string",
+      "enum": ["epoch", "operation", "reconciliation", "termination", "current-claim"],
+      "description": "Fixed retained-record category: epoch is the acquisition row (including a bundle epoch), operation is an operation row, reconciliation is a reconciliation row, termination is an epoch termination row, and current-claim is the current singleton or bundle claim snapshot."
+    },
     "NullableTimestamp": {
       "type": ["string", "null"]
     },
-    "Operation": {
+    "Coverage": {
       "type": "object",
+      "description": "Derived retained-window metadata. Revision coverage cannot identify exact missing events: GC and pre-migration history are indistinguishable, and non-acquisition mutations also consume resource revisions. A null earliest revision means no retained epoch has a stamped acquisition revision; the resource watermark is independent and may remain present in a retained tombstone. A never-seen resource has both revisions null and a zero legacy-incomplete count.",
       "required": [
-        "operationId", "kind", "state", "expectedRevision", "createdAt"
+        "earliestRetainedAcquisitionRevision",
+        "resourceRevisionWatermark",
+        "legacyIncompleteCount"
       ],
       "properties": {
+        "earliestRetainedAcquisitionRevision": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Minimum non-null acquisition revision among retained singleton and bundle-member epochs for the requested resource, or null when none is retained."
+        },
+        "resourceRevisionWatermark": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Monotonic revision watermark from resources, including its retained tombstone; it is not an acquisition-event count."
+        },
+        "legacyIncompleteCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of retained epochs whose completeness is legacy-incomplete."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "description": "A safe summary of one retained operation row. Reconciliation-derived outcomes remain in the separate reconciliation object.",
+      "required": [
+        "source", "operationId", "kind", "state", "expectedRevision", "createdAt"
+      ],
+      "properties": {
+        "source": {"const": "operation"},
         "operationId": {"type": "string", "minLength": 1},
         "kind": {"type": "string", "minLength": 1},
         "state": {"type": "string", "minLength": 1},
         "expectedRevision": {"type": ["integer", "null"], "minimum": 1},
-        "createdAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
-        "outcome": {"type": "string", "minLength": 1},
-        "reconciliationOperationId": {"type": "string", "minLength": 1},
-        "reconciledAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"}
+        "createdAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"}
       },
       "additionalProperties": false
     },
     "Reconciliation": {
       "type": "object",
+      "description": "A safe summary of one retained reconciliation row. Its observed outcome is not folded into the target operation summary.",
       "required": [
-        "targetClaimId", "targetOperationId", "reconciliationOperationId",
+        "source", "targetClaimId", "targetOperationId", "reconciliationOperationId",
         "kind", "outcome", "reconciledAt"
       ],
       "properties": {
+        "source": {"const": "reconciliation"},
         "targetClaimId": {"type": ["string", "null"]},
         "targetOperationId": {"type": "string", "minLength": 1},
         "reconciliationOperationId": {"type": "string", "minLength": 1},
@@ -63,12 +97,13 @@
     },
     "Termination": {
       "type": "object",
+      "description": "The retained terminal snapshot. When present, consumers may project the half-open held-at interval acquiredAt <= T < termination.effectiveAt; this is a rule over retained local rows, not an audit fact.",
       "required": [
-        "reason", "effectiveAt", "recordedAt", "finalRevision",
-        "heartbeatAt", "expiresAt", "checkpointPresent",
-        "successorClaimId", "operationId"
+        "source", "reason", "effectiveAt", "recordedAt", "finalRevision",
+        "heartbeatAt", "expiresAt", "checkpointPresent", "successorClaimId", "operationId"
       ],
       "properties": {
+        "source": {"const": "termination"},
         "reason": {"type": "string", "minLength": 1},
         "effectiveAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
         "recordedAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
@@ -81,14 +116,21 @@
       },
       "additionalProperties": false
     },
-    "Current": {
+    "CurrentClaim": {
       "type": "object",
+      "description": "The current singleton or bundle claim snapshot. When present on an open epoch, consumers may project acquiredAt <= T < currentClaim.expiresAt. Open describes retained epoch closure, not active or current-clock activity; this interval rule is not an audit fact.",
       "required": [
-        "claimId", "revision", "agentId", "sessionId", "ownerId",
+        "source", "claimId", "revision", "agentId", "sessionId", "ownerId",
         "workKey", "coordinationOnly", "guarantee", "acquiredAt",
         "heartbeatAt", "expiresAt"
       ],
       "properties": {
+        "source": {"const": "current-claim"},
+        "resources": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
         "claimId": {"type": "string", "minLength": 1},
         "revision": {"type": ["integer", "null"], "minimum": 1},
         "agentId": {"type": "string"},
@@ -105,13 +147,14 @@
     },
     "Epoch": {
       "type": "object",
+      "description": "The acquisition object and its retained related records. source=epoch identifies the acquisition row; completeness is derived metadata and has exactly one of complete, open, or legacy-incomplete. A legacy-incomplete epoch without a termination or currentClaim end source has an unknown upper bound.",
       "required": [
-        "resource", "kind", "claimId", "agentId", "sessionId", "ownerId",
-        "workKey", "acquiredAt", "acquisitionRevision", "state",
-        "legacyIncomplete", "operations", "reconciliations", "termination",
-        "current"
+        "source", "resource", "kind", "claimId", "agentId", "sessionId", "ownerId",
+        "workKey", "acquiredAt", "acquisitionRevision", "completeness",
+        "operations", "reconciliations", "termination", "currentClaim"
       ],
       "properties": {
+        "source": {"const": "epoch"},
         "resource": {"type": "string"},
         "resources": {
           "type": "array",
@@ -126,8 +169,10 @@
         "workKey": {"type": "string"},
         "acquiredAt": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/NullableTimestamp"},
         "acquisitionRevision": {"type": ["integer", "null"], "minimum": 1},
-        "state": {"enum": ["ended", "open", "legacy-incomplete"]},
-        "legacyIncomplete": {"type": "boolean"},
+        "completeness": {
+          "enum": ["complete", "open", "legacy-incomplete"],
+          "description": "Derived in precedence order without a clock: legacy-incomplete when acquisitionRevision is null or both termination and matching currentClaim are absent; otherwise open when currentClaim is present and termination is null; otherwise complete when termination is present. open is not active."
+        },
         "operations": {
           "type": "array",
           "items": {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Operation"}
@@ -142,9 +187,9 @@
             {"type": "null"}
           ]
         },
-        "current": {
+        "currentClaim": {
           "anyOf": [
-            {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/Current"},
+            {"$ref": "https://worklease.dev/schemas/v1/history.json#/$defs/CurrentClaim"},
             {"type": "null"}
           ]
         }

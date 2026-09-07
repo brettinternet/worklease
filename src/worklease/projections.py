@@ -290,6 +290,11 @@ class ProjectionMixin:
             "ok": True,
             "operation": "history",
             "resource": resource,
+            "coverage": {
+                "earliestRetainedAcquisitionRevision": None,
+                "resourceRevisionWatermark": None,
+                "legacyIncompleteCount": 0,
+            },
             "epochs": [],
         }
         if not database.exists():
@@ -355,6 +360,17 @@ class ProjectionMixin:
             def operation_bundle_key(value_to_decode: Any) -> tuple[str, ...] | None:
                 return decoded_bundle(value_to_decode)
 
+            resource_revision_watermark: int | None = None
+            if "resources" in tables:
+                watermark_row = db.execute(
+                    "SELECT revision FROM resources WHERE resource = ?",
+                    (resource,),
+                ).fetchone()
+                if watermark_row is not None:
+                    resource_revision_watermark = number(
+                        value(watermark_row, "revision")
+                    )
+
             epoch_rows: list[dict[str, Any]] = []
             if "epochs" in tables:
                 singleton_rows = db.execute(
@@ -371,6 +387,7 @@ class ProjectionMixin:
                     acquisition_revision = number(value(row, "acquisition_revision"))
                     epoch_rows.append(
                         {
+                            "source": "epoch",
                             "resource": resource,
                             "kind": "singleton",
                             "claimId": str(value(row, "claim_id", "")),
@@ -415,6 +432,7 @@ class ProjectionMixin:
                     acquisition_revision = number(value(row, "acquisition_revision"))
                     epoch_rows.append(
                         {
+                            "source": "epoch",
                             "resource": resource,
                             "resources": list(resources),
                             "kind": "bundle",
@@ -458,6 +476,7 @@ class ProjectionMixin:
             if current_row is not None and current_claim_id is not None:
                 coordination_only = bool(value(current_row, "coordination_only", 0))
                 current_snapshot = {
+                    "source": "current-claim",
                     "claimId": current_claim_id,
                     "revision": number(value(current_row, "revision")),
                     "agentId": str(value(current_row, "agent_id", "")),
@@ -504,7 +523,6 @@ class ProjectionMixin:
                 if "operations" in tables and relevant_claim_ids
                 else []
             )
-            operation_refs: list[dict[str, Any]] = []
             for row in operation_rows:
                 operation_resource = str(value(row, "resource", ""))
                 claim_id = str(value(row, "claim_id", ""))
@@ -514,6 +532,7 @@ class ProjectionMixin:
                 expected_revision = number(value(row, "expected_revision"))
                 created_number = timestamp_number(value(row, "created_at"))
                 operation = {
+                    "source": "operation",
                     "operationId": operation_id,
                     "kind": kind,
                     "state": state,
@@ -535,7 +554,6 @@ class ProjectionMixin:
                         matches = operation["_bundle_key"] == epoch["_resources"]
                     if matches:
                         epoch["_operations"].append(operation)
-                        operation_refs.append(operation)
                         break
 
             reconciliation_rows = (
@@ -570,6 +588,7 @@ class ProjectionMixin:
                 recorded_at = timestamp(value(row, "reconciled_at"))
                 recorded_number = timestamp_number(value(row, "reconciled_at"))
                 event = {
+                    "source": "reconciliation",
                     "targetClaimId": target_claim_id,
                     "targetOperationId": target_operation_id,
                     "reconciliationOperationId": reconciliation_operation_id,
@@ -594,35 +613,11 @@ class ProjectionMixin:
                         epoch["_reconciliations"].append(event)
                         break
 
-                matching_operations = [
-                    operation
-                    for operation in operation_refs
-                    if operation["_resource"] == reconciliation_resource
-                    or (
-                        reconciliation_key is not None
-                        and operation["_bundle_key"] == reconciliation_key
-                    )
-                ]
-                matching_operations = [
-                    operation
-                    for operation in matching_operations
-                    if operation["operationId"] == target_operation_id
-                    and operation["kind"] == reconciliation_kind
-                    and (
-                        target_claim_id is None
-                        or operation["_claim_id"] == target_claim_id
-                    )
-                ]
-                if len(matching_operations) == 1:
-                    operation = matching_operations[0]
-                    operation["outcome"] = event["outcome"]
-                    operation["reconciliationOperationId"] = reconciliation_operation_id
-                    operation["reconciledAt"] = recorded_at
-
             for epoch in epoch_rows:
                 termination_row = termination_rows.get(epoch["claimId"])
                 if termination_row is not None:
                     epoch["_termination"] = {
+                        "source": "termination",
                         "reason": str(value(termination_row, "reason", "")),
                         "effectiveAt": timestamp(
                             value(termination_row, "effective_at")
@@ -654,7 +649,13 @@ class ProjectionMixin:
                     and current_claim_id == epoch["claimId"]
                     and epoch["_termination"] is None
                 ):
-                    epoch["_current"] = current_snapshot
+                    if epoch["kind"] == "bundle":
+                        epoch["_current"] = {
+                            **current_snapshot,
+                            "resources": list(epoch["resources"]),
+                        }
+                    else:
+                        epoch["_current"] = current_snapshot
 
             def epoch_sort_key(epoch: dict[str, Any]) -> tuple[Any, ...]:
                 revision = epoch["acquisitionRevision"]
@@ -712,22 +713,16 @@ class ProjectionMixin:
                 )
                 current = epoch["_current"]
                 termination = epoch["_termination"]
-                legacy_incomplete = (
-                    epoch["acquisitionRevision"] is None
-                    or any(
-                        operation["_expected_number"] is None
-                        for operation in operations
-                    )
-                    or (termination is None and current is None)
-                )
-                state = (
-                    "ended"
-                    if termination is not None
-                    else "open"
-                    if current is not None
-                    else "legacy-incomplete"
-                )
+                if epoch["acquisitionRevision"] is None or (
+                    termination is None and current is None
+                ):
+                    completeness = "legacy-incomplete"
+                elif current is not None and termination is None:
+                    completeness = "open"
+                else:
+                    completeness = "complete"
                 projected: dict[str, Any] = {
+                    "source": "epoch",
                     "resource": resource,
                     "kind": epoch["kind"],
                     "claimId": epoch["claimId"],
@@ -737,8 +732,7 @@ class ProjectionMixin:
                     "workKey": epoch["workKey"],
                     "acquiredAt": epoch["acquiredAt"],
                     "acquisitionRevision": epoch["acquisitionRevision"],
-                    "state": state,
-                    "legacyIncomplete": legacy_incomplete,
+                    "completeness": completeness,
                     "operations": [
                         {
                             key: value_to_render
@@ -756,16 +750,34 @@ class ProjectionMixin:
                         for event in reconciliations
                     ],
                     "termination": termination,
-                    "current": current,
+                    "currentClaim": current,
                 }
                 if epoch["kind"] == "bundle":
                     projected["resources"] = list(epoch["resources"])
                 projected_epochs.append(projected)
 
+            acquisition_revisions = [
+                epoch["acquisitionRevision"]
+                for epoch in epoch_rows
+                if epoch["acquisitionRevision"] is not None
+            ]
+            legacy_incomplete_count = sum(
+                epoch["completeness"] == "legacy-incomplete"
+                for epoch in projected_epochs
+            )
+            coverage = {
+                "earliestRetainedAcquisitionRevision": (
+                    min(acquisition_revisions) if acquisition_revisions else None
+                ),
+                "resourceRevisionWatermark": resource_revision_watermark,
+                "legacyIncompleteCount": legacy_incomplete_count,
+            }
+
         return {
             "ok": True,
             "operation": "history",
             "resource": resource,
+            "coverage": coverage,
             "epochs": projected_epochs,
         }
 

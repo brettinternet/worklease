@@ -166,9 +166,9 @@ class HistoryProjectionTests(unittest.TestCase):
         # Reading an expired row does not reclaim it or synthesize a termination.
         expired = self.store.history("exact")
         expired_epoch = expired["epochs"][0]
-        self.assertEqual("open", expired_epoch["state"])
+        self.assertEqual("open", expired_epoch["completeness"])
         self.assertIsNone(expired_epoch["termination"])
-        self.assertEqual("singleton-first", expired_epoch["current"]["claimId"])
+        self.assertEqual("singleton-first", expired_epoch["currentClaim"]["claimId"])
         with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
             self.assertEqual(
                 0,
@@ -212,8 +212,12 @@ class HistoryProjectionTests(unittest.TestCase):
         self.assertEqual(["exact", "other"], bundle_epoch["resources"])
         self.assertEqual([], bundle_epoch["operations"])
         self.assertNotIn("acquire", [op["kind"] for op in bundle_epoch["operations"]])
-        self.assertEqual("open", bundle_epoch["state"])
-        self.assertEqual(bundle_claim["claimId"], bundle_epoch["current"]["claimId"])
+        self.assertEqual("open", bundle_epoch["completeness"])
+        self.assertEqual(
+            bundle_claim["claimId"], bundle_epoch["currentClaim"]["claimId"]
+        )
+        self.assertEqual("current-claim", bundle_epoch["currentClaim"]["source"])
+        self.assertEqual(["exact", "other"], bundle_epoch["currentClaim"]["resources"])
 
     def test_termination_reasons_and_stored_snapshots(self) -> None:
         first = self._acquire("reasons", "first")
@@ -244,15 +248,18 @@ class HistoryProjectionTests(unittest.TestCase):
             ["transferred", "released", "expired"],
             [epoch["termination"]["reason"] for epoch in epochs[:3]],
         )
+        self.assertTrue(
+            all(epoch["termination"]["source"] == "termination" for epoch in epochs[:3])
+        )
         self.assertEqual(
             ["second", None, "fourth"],
             [epoch["termination"]["successorClaimId"] for epoch in epochs[:3]],
         )
         self.assertEqual("transfer-first", epochs[0]["termination"]["operationId"])
         self.assertEqual("release-second", epochs[1]["termination"]["operationId"])
-        self.assertEqual("open", epochs[3]["state"])
+        self.assertEqual("open", epochs[3]["completeness"])
         self.assertIsNone(epochs[3]["termination"])
-        self.assertEqual(fourth["claimId"], epochs[3]["current"]["claimId"])
+        self.assertEqual(fourth["claimId"], epochs[3]["currentClaim"]["claimId"])
         self.assertEqual("1970-01-01T00:16:41Z", epochs[2]["termination"]["expiresAt"])
 
     def test_all_explicit_operation_kinds_and_states_are_projected_for_bundle_members(
@@ -328,6 +335,12 @@ class HistoryProjectionTests(unittest.TestCase):
         self.assertEqual(
             [(kind, state) for kind, state in singleton_operation_rows],
             [(op["kind"], op["state"]) for op in singleton["epochs"][0]["operations"]],
+        )
+        self.assertTrue(
+            all(
+                operation["source"] == "operation"
+                for operation in singleton["epochs"][0]["operations"]
+            )
         )
         first = self.store.history("member-a")
         second = self.store.history("member-b")
@@ -408,6 +421,9 @@ class HistoryProjectionTests(unittest.TestCase):
         history = self.store.history("reconcile")
         old_epoch, resolver_epoch = history["epochs"]
         self.assertEqual([], old_epoch["reconciliations"])
+        self.assertEqual(
+            "reconciliation", resolver_epoch["reconciliations"][0]["source"]
+        )
         self.assertEqual("old", resolver_epoch["reconciliations"][0]["targetClaimId"])
         self.assertEqual(
             "target-op", resolver_epoch["reconciliations"][0]["targetOperationId"]
@@ -416,8 +432,11 @@ class HistoryProjectionTests(unittest.TestCase):
             "resolve-op",
             resolver_epoch["reconciliations"][0]["reconciliationOperationId"],
         )
-        self.assertEqual("observed-success", old_epoch["operations"][1]["outcome"])
-        self.assertEqual("ended", old_epoch["state"])
+        self.assertEqual(
+            "observed-success", resolver_epoch["reconciliations"][0]["outcome"]
+        )
+        self.assertNotIn("outcome", old_epoch["operations"][1])
+        self.assertEqual("complete", old_epoch["completeness"])
         self.assertTrue(old_epoch["termination"]["checkpointPresent"])
 
         rendered = json.dumps(history, sort_keys=True)
@@ -512,13 +531,16 @@ class HistoryProjectionTests(unittest.TestCase):
             [op["operationId"] for op in history["epochs"][0]["operations"]],
         )
         self.assertEqual(
-            ["ended", "ended", "legacy-incomplete", "legacy-incomplete"],
-            [epoch["state"] for epoch in history["epochs"]],
+            ["complete", "complete", "legacy-incomplete", "legacy-incomplete"],
+            [epoch["completeness"] for epoch in history["epochs"]],
         )
         self.assertEqual(
-            [False, False, True, True],
-            [epoch["legacyIncomplete"] for epoch in history["epochs"]],
+            ["epoch"] * 4,
+            [epoch["source"] for epoch in history["epochs"]],
         )
+        self.assertEqual(2, history["coverage"]["legacyIncompleteCount"])
+        self.assertEqual(1, history["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertIsNone(history["coverage"]["resourceRevisionWatermark"])
 
     def test_projection_never_reads_secret_blob_columns_or_unrelated_rows(self) -> None:
         claim = self._acquire("guarded", "guarded-claim")
@@ -578,6 +600,84 @@ class HistoryProjectionTests(unittest.TestCase):
             "guarded-op", history["epochs"][0]["operations"][0]["operationId"]
         )
 
+    def test_history_provenance_completeness_and_coverage_metadata(self) -> None:
+        self._insert_epoch("legacy", "coverage", 10, None)
+        self._insert_epoch("known", "coverage", 20, 5)
+        self._insert_termination("coverage", "known", recorded_at=30)
+        self._ensure_database()
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute(
+                "INSERT INTO resources(resource, revision) VALUES (?, ?)",
+                ("coverage", 9),
+            )
+
+        history = self.store.history("coverage")
+        self.assertEqual(5, history["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertEqual(9, history["coverage"]["resourceRevisionWatermark"])
+        self.assertEqual(1, history["coverage"]["legacyIncompleteCount"])
+        epochs_by_claim = {epoch["claimId"]: epoch for epoch in history["epochs"]}
+        legacy = epochs_by_claim["legacy"]
+        complete = epochs_by_claim["known"]
+        self.assertEqual("epoch", legacy["source"])
+        self.assertEqual("legacy-incomplete", legacy["completeness"])
+        self.assertIsNone(legacy["termination"])
+        self.assertIsNone(legacy["currentClaim"])
+        self.assertEqual("complete", complete["completeness"])
+        self.assertEqual("termination", complete["termination"]["source"])
+
+        current = self._acquire("current-source", "current-claim")
+        current_history = self.store.history("current-source")
+        current_epoch = current_history["epochs"][0]
+        self.assertEqual("open", current_epoch["completeness"])
+        self.assertEqual("current-claim", current_epoch["currentClaim"]["source"])
+        self.assertEqual(current["claimId"], current_epoch["currentClaim"]["claimId"])
+
+    def test_migrated_current_and_legacy_without_end_have_unknown_upper_bound(
+        self,
+    ) -> None:
+        current = self._acquire("migrated-current", "migrated-claim")
+        self._ensure_database()
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute(
+                "UPDATE epochs SET acquisition_revision = NULL WHERE claim_id = ?",
+                (current["claimId"],),
+            )
+        migrated = self.store.history("migrated-current")
+        migrated_epoch = migrated["epochs"][0]
+        self.assertEqual("legacy-incomplete", migrated_epoch["completeness"])
+        self.assertIsNone(migrated_epoch["acquisitionRevision"])
+        self.assertEqual("current-claim", migrated_epoch["currentClaim"]["source"])
+        self.assertIsNone(migrated["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertEqual(1, migrated["coverage"]["resourceRevisionWatermark"])
+
+        self._insert_epoch("legacy-no-end", "legacy-no-end", 10, None)
+        legacy = self.store.history("legacy-no-end")["epochs"][0]
+        self.assertEqual("legacy-incomplete", legacy["completeness"])
+        self.assertIsNone(legacy["termination"])
+        self.assertIsNone(legacy["currentClaim"])
+
+    def test_singleton_history_lookup_uses_required_revision_index(self) -> None:
+        self._ensure_database()
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            indexes = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+            self.assertIn("epochs_by_resource_revision", indexes)
+            plan = db.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT claim_id, resource, agent_id, session_id, owner_id, "
+                "work_key, acquired_at, acquisition_revision "
+                "FROM epochs WHERE resource = ?",
+                ("indexed",),
+            ).fetchall()
+        self.assertTrue(
+            any("epochs_by_resource_revision" in str(row[-1]) for row in plan),
+            plan,
+        )
+
     def test_json_is_byte_identical_and_text_and_errors_follow_cli_conventions(
         self,
     ) -> None:
@@ -604,6 +704,10 @@ class HistoryProjectionTests(unittest.TestCase):
         text = run("history", "--resource", resource)
         self.assertEqual(0, text.returncode, text.stderr)
         self.assertIn('OK history\nRESOURCE\t"cli-history"', text.stdout)
+        self.assertIn("COVERAGE\n", text.stdout)
+        self.assertIn('SOURCE\t"epoch"', text.stdout)
+        self.assertIn('COMPLETENESS\t"open"', text.stdout)
+        self.assertIn("CURRENT_CLAIM\n", text.stdout)
         self.assertNotIn("\\\\t", text.stdout)
 
         missing = run("history")

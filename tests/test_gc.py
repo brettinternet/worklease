@@ -1196,6 +1196,7 @@ class GarbageCollectionTests(unittest.TestCase):
         self.store.garbage_collect()
         expected = {
             "claims_by_claim_id",
+            "epochs_by_resource_revision",
             "operations_by_claim_time",
             "operations_by_claim_state",
             "operations_by_recorded_at",
@@ -1214,6 +1215,94 @@ class GarbageCollectionTests(unittest.TestCase):
                 )
             }
         self.assertTrue(expected <= actual)
+
+    def test_history_coverage_tracks_partial_and_complete_epoch_gc(self) -> None:
+        resource = "repo:gc-history-coverage"
+        first = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-history-first",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc-history",
+            )
+        )
+        first_claim = first["claim"]
+        assert isinstance(first_claim, dict)
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=str(first_claim["claimId"]),
+                token=str(first_claim["token"]),
+                revision=int(first_claim["revision"]),
+                operation_id="release-gc-history-first",
+            ),
+            "done",
+        )
+        self.now = 100.0
+        second = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-history-second",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc-history",
+            )
+        )
+        second_claim = second["claim"]
+        assert isinstance(second_claim, dict)
+        self.store.release(
+            MutationRequest(
+                resource=resource,
+                claim_id=str(second_claim["claimId"]),
+                token=str(second_claim["token"]),
+                revision=int(second_claim["revision"]),
+                operation_id="release-gc-history-second",
+            ),
+            "done",
+        )
+
+        self.now = 300.0
+        before = self.store.history(resource)
+        self.assertEqual(1, before["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertEqual(2, before["coverage"]["resourceRevisionWatermark"])
+        self.assertEqual(0, before["coverage"]["legacyIncompleteCount"])
+
+        self.store.garbage_collect(
+            cutoff="1970-01-01T00:00:50Z",
+            apply=True,
+        )
+        partial = self.store.history(resource)
+        self.assertEqual(2, partial["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertEqual(2, partial["coverage"]["resourceRevisionWatermark"])
+        self.assertEqual(0, partial["coverage"]["legacyIncompleteCount"])
+        self.assertEqual(
+            ["claim-gc-history-second"],
+            [epoch["claimId"] for epoch in partial["epochs"]],
+        )
+
+        self.store.garbage_collect(
+            cutoff="1970-01-01T00:03:20Z",
+            apply=True,
+        )
+        collected = self.store.history(resource)
+        self.assertEqual([], collected["epochs"])
+        self.assertIsNone(collected["coverage"]["earliestRetainedAcquisitionRevision"])
+        self.assertEqual(2, collected["coverage"]["resourceRevisionWatermark"])
+        self.assertEqual(0, collected["coverage"]["legacyIncompleteCount"])
+
+    def test_history_coverage_for_never_seen_resource_is_nullable(self) -> None:
+        coverage = self.store.history("repo:never-seen")["coverage"]
+        self.assertEqual(
+            {
+                "earliestRetainedAcquisitionRevision": None,
+                "resourceRevisionWatermark": None,
+                "legacyIncompleteCount": 0,
+            },
+            coverage,
+        )
 
     def test_cli_returns_schema_versioned_dry_run(self) -> None:
         environment = os.environ.copy()

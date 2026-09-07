@@ -32,6 +32,7 @@ _SCHEMA_TABLES = frozenset(
 _SCHEMA_INDEXES = frozenset(
     {
         "claims_by_claim_id",
+        "epochs_by_resource_revision",
         "operations_by_claim_time",
         "operations_by_claim_state",
         "operations_by_resource_operation",
@@ -433,6 +434,8 @@ def _migrate_schema(connection: sqlite3.Connection, home: Path) -> None:
         )
         for statement in (
             "CREATE INDEX IF NOT EXISTS claims_by_claim_id ON claims(claim_id)",
+            "CREATE INDEX IF NOT EXISTS epochs_by_resource_revision "
+            "ON epochs(resource, acquisition_revision)",
             "CREATE INDEX IF NOT EXISTS operations_by_claim_time "
             "ON operations(claim_id, created_at)",
             "CREATE INDEX IF NOT EXISTS operations_by_claim_state "
