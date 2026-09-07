@@ -32,7 +32,7 @@ flowchart LR
     I --- PS
     K --> R["resource<br/>exact contention identity"]
 
-    subgraph Caller["Caller-generated identity"]
+    subgraph Caller["Caller/CLI-generated identity"]
         A["agent ID<br/>stable logical agent"]
         SE["session ID<br/>current invocation"]
         O["owner ID<br/>current worker attempt"]
@@ -118,24 +118,24 @@ as `bundle-acquire` accept the same inputs as the displayed command name.
 | Operation | Required identity and authorization | Additional input |
 | --- | --- | --- |
 | `key` | `provider`, `source`, `item` | Optional `--coordination-only` |
-| `acquire` | `resource`, fresh `claim ID`, `agent ID`, fresh `session ID`, fresh `owner ID`, `work key` | TTL defaults to 900 seconds; optional `--coordination-only` |
+| `acquire` | `resource`; fresh `claim ID`, `agent ID`, `session ID`, and `owner ID` may be omitted by the CLI; `work key` defaults to the resource | Omitted IDs are generated; omitted agent ID comes from `WORKLEASE_AGENT_ID`; TTL defaults to 900 seconds; optional `--coordination-only` |
 | `status` | `resource` | No token; read-only output is redacted |
 | `list` | None | Optional resource filter |
-| `heartbeat` | `resource`, `claim ID`, token credential, current `revision`, fresh `operation ID` | Renewal TTL defaults to 900 seconds |
-| `checkpoint` | Same claim mutation fields as heartbeat | JSON checkpoint; renewal TTL defaults to 900 seconds |
-| `exec` | Same claim mutation fields as heartbeat | Command argv; optional execution-directory selection |
-| `replace-file` | Same claim mutation fields as heartbeat | Path, content file, and expected SHA-256 are always required |
-| `transfer` | Same claim mutation fields as heartbeat | Fresh successor claim, agent, session, owner, and work-key identities |
-| `release` | `resource`, `claim ID`, token credential, current `revision`, fresh `operation ID` | Nonblank audit reason; no renewal TTL |
+| `heartbeat` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
+| `checkpoint` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; JSON checkpoint; renewal TTL defaults to 900 seconds |
+| `exec` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; command argv; optional execution-directory selection |
+| `replace-file` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; path, content file, and expected SHA-256 are always required |
+| `transfer` | Same claim mutation fields as heartbeat | Omitted operation and successor claim/session/owner IDs are generated; successor agent defaults to `WORKLEASE_AGENT_ID`; successor work key defaults to the resource |
+| `release` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; nonblank audit reason; no renewal TTL |
 | `inspect-operation` | `resource`, `operation ID` | No token; read-only inspection |
-| `reconcile-operation` | Same claim mutation fields as heartbeat | Target operation ID, expected request SHA-256, observed outcome, and evidence |
-| `acquire-bundle` | Ordered `resource` values, fresh `claim ID`, `agent ID`, fresh `session ID`, fresh `owner ID`, `work key` | 1–32 unique resources; TTL defaults to 900 seconds; optional `--coordination-only` |
+| `reconcile-operation` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; target operation ID, expected request SHA-256, observed outcome, and evidence |
+| `acquire-bundle` | Ordered `resource` values; fresh `claim ID`, `agent ID`, `session ID`, and `owner ID` may be omitted by the CLI; `work key` defaults to the ordered resource set | Omitted IDs are generated; omitted agent ID comes from `WORKLEASE_AGENT_ID`; 1–32 unique resources; TTL defaults to 900 seconds; optional `--coordination-only` |
 | `status-bundle` | Exact ordered `resource` values | No token; order must match acquisition |
-| `heartbeat-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`, fresh `operation ID` | Renewal TTL defaults to 900 seconds |
-| `exec-bundle` | Same bundle mutation fields as heartbeat-bundle | Command argv; optional execution-directory selection |
-| `release-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`, fresh `operation ID` | Nonblank audit reason; no renewal TTL |
+| `heartbeat-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
+| `exec-bundle` | Same bundle mutation fields as heartbeat-bundle | Omitted operation IDs are generated; command argv; optional execution-directory selection |
+| `release-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; nonblank audit reason; no renewal TTL |
 | `inspect-operation-bundle` | Exact ordered `resource` values, `operation ID` | No token; read-only inspection |
-| `reconcile-operation-bundle` | Same bundle mutation fields as heartbeat-bundle | Target operation ID, expected request SHA-256, observed outcome, and evidence |
+| `reconcile-operation-bundle` | Same bundle mutation fields as heartbeat-bundle | Omitted operation IDs are generated; target operation ID, expected request SHA-256, observed outcome, and evidence |
 
 A token credential is required for each claim mutation, but `--token-file` is
 only one transport. Supply exactly one of `--token`, `--token-file`, or

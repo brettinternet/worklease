@@ -155,10 +155,10 @@ The generic workflow, not a provider adapter, builds and validates the dependenc
 
 - Acquire with one compare-and-set operation, never a read-then-write marker.
 - Treat the caller-derived resource as opaque after derivation. Never derive it from transient session, agent, worktree, checkout, or process identity.
-- Generate globally unique claim, session, worker-attempt, and operation IDs.
-- Retry the same operation ID only to recover the exact same request's lost response; changed inputs, including TTL or release reason, conflict.
+- Generate globally unique claim, session, worker-attempt, and operation IDs. The bundled CLI generates omitted lifecycle IDs with fresh random values; its `acquire` commands read an omitted agent ID from `WORKLEASE_AGENT_ID` and default the work key to the resource (or ordered resource set for bundles).
+- Retry the same operation ID only to recover the exact same request's lost response; changed inputs, including TTL or release reason, conflict. CLI mutations echo an automatically generated operation ID so callers can retain it for exact replay.
 - Every new ownership epoch uses a new claim ID and token. Retain the revision returned by the authority.
-- Heartbeat requires the exact current claim ID, token, revision, an operation ID for that renewal request, and a bounded renewal TTL. Release requires the exact current claim ID, token, revision, an operation ID for that release request, and a non-blank reason. An idempotent retry reuses the original operation ID and exact inputs.
+- Heartbeat requires the exact current claim ID, token, revision, an operation ID for that renewal request, and a bounded renewal TTL. Release requires the exact current claim ID, token, revision, an operation ID for that release request, and a non-blank reason. The bundled CLI generates an omitted operation ID before dispatch; an idempotent retry reuses the original operation ID and exact inputs.
 - Replace the held revision with the revision returned by every successful heartbeat or guarded operation.
 - Heartbeat before half the lease elapses and around long work.
 - Re-read eligibility, the exact claim, and provider state immediately before durable mutation. After the mutation, re-read the claim and source/version when the caller can do so.

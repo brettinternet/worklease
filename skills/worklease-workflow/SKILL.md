@@ -27,6 +27,16 @@ This skill does not discover, name, select, or configure providers. It does not 
 When the caller uses this repository's `worklease` package, map only the capabilities the tool actually supplies. `LeaseStore` can acquire, inspect, heartbeat, and release a bounded claim for one exact opaque `resource`; `worklease exec` and `worklease replace-file` can guard one local operation under that claim. The core lease service does not discover provider items, interpret statuses or dependencies, select work, authenticate to a provider, write provider progress, establish review boundaries, or archive provider data.
 `LeaseStore.checkpoint` and the `worklease checkpoint` command can persist a bounded coordination checkpoint and renew the active claim. That value is local recovery metadata, not provider progress; the caller still verifies its authoritative provider checkpoint before release.
 
+When using this repository's CLI, `acquire` and `acquire-bundle` generate fresh
+claim, session, and owner IDs when those flags are omitted. `--agent-id` falls
+back to `WORKLEASE_AGENT_ID`, and `--work-key` falls back to the exact resource
+(or ordered resource set for a bundle). If neither agent source is available,
+the CLI exits 64 with a hint naming `WORKLEASE_AGENT_ID` and `--agent-id`.
+Mutating lifecycle commands generate an operation ID when omitted and echo it in
+their response; retain it only to replay that identical request. `transfer`
+applies the same defaults to its successor identity, including
+`WORKLEASE_AGENT_ID` and the resource work key.
+
 The bundled `worklease.adapters` are deterministic resource-identity and local-capability policies for a caller-selected provider, source, and item. They may supply the exact opaque resource and declared local scope. They do not discover provider work, execute provider writes, or establish provider-side fencing.
 
 For work spanning several exact resources, use the bundle lifecycle when the caller

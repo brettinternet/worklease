@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import time
@@ -75,6 +76,29 @@ _DEFAULT_HOME_HELP = (
 )
 
 _DEFAULT_CUTOFF_HELP = "default: derived from --retention-days"
+_AGENT_ID_ENV = "WORKLEASE_AGENT_ID"
+_IDENTIFIER_BYTES = 16
+_OPERATION_ID_COMMANDS = frozenset(
+    {
+        "heartbeat",
+        "checkpoint",
+        "exec",
+        "release",
+        "replace-file",
+        "reconcile-operation",
+        "heartbeat-bundle",
+        "exec-bundle",
+        "release-bundle",
+        "reconcile-operation-bundle",
+        "transfer",
+    }
+)
+
+
+def _fresh_identifier() -> str:
+    """Generate one cryptographically random lifecycle identifier."""
+
+    return secrets.token_hex(_IDENTIFIER_BYTES)
 
 
 class _ExplicitValueAction(argparse.Action):
@@ -251,12 +275,10 @@ _ACQUIRE_BUNDLE_EPILOG = """\
 Example:
   worklease acquire-bundle \\
     --resource local:formatter \\
-    --resource local:linter \\
-    --claim-id claim-formatter \\
-    --agent-id agent-1 \\
-    --session-id session-1 \\
-    --owner-id attempt-1 \\
-    --work-key format:repo"""
+    --resource local:linter
+
+Omitted claim, session, and owner IDs are generated. The work key defaults to
+this ordered resource set; set WORKLEASE_AGENT_ID or pass --agent-id."""
 _STATUS_BUNDLE_EPILOG = _single_line_epilog(
     "worklease status-bundle --resource local:formatter --resource local:linter"
 )
@@ -277,11 +299,13 @@ Example:
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
-    --operation-id "reconcile-TASK-42-001" \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
-    --evidence '{}'"""
+    --evidence '{}'
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _RECONCILE_OPERATION_BUNDLE_EPILOG = """\
 Example:
   worklease reconcile-operation-bundle \\
@@ -290,11 +314,13 @@ Example:
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
-    --operation-id "reconcile-TASK-42-001" \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
-    --evidence '{}'"""
+    --evidence '{}'
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _CHECKPOINT_EPILOG = """\
 Example:
   worklease checkpoint \\
@@ -302,21 +328,21 @@ Example:
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
-    --operation-id "checkpoint-TASK-42-001" \\
-    --checkpoint '{"step":1}'"""
+    --checkpoint '{"step":1}'
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _TRANSFER_EPILOG = """\
 Example:
   worklease transfer \\
     --resource local:formatter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
-    --revision "$REVISION" \\
-    --operation-id "transfer-TASK-42-001" \\
-    --successor-claim-id claim-successor \\
-    --successor-agent-id agent-2 \\
-    --successor-session-id session-2 \\
-    --successor-owner-id attempt-2 \\
-    --successor-work-key format:repo"""
+    --revision "$REVISION"
+
+Successor claim, session, and owner IDs plus the operation ID are generated
+when omitted. The successor work key defaults to the resource; set
+WORKLEASE_AGENT_ID or pass --successor-agent-id."""
 _LIST_EPILOG = _single_line_epilog("worklease list")
 _HEARTBEAT_EPILOG = """\
 Example:
@@ -324,8 +350,10 @@ Example:
     --resource local:formatter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
-    --revision "$REVISION" \\
-    --operation-id 'heartbeat-TASK-42-001'"""
+    --revision "$REVISION"
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _HEARTBEAT_BUNDLE_EPILOG = """\
 Example:
   worklease heartbeat-bundle \\
@@ -333,8 +361,10 @@ Example:
     --resource local:linter \\
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
-    --revision "$REVISION" \\
-    --operation-id 'heartbeat-TASK-42-001'"""
+    --revision "$REVISION"
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _RELEASE_BUNDLE_EPILOG = """\
 Example:
   worklease release-bundle \\
@@ -343,8 +373,10 @@ Example:
     --claim-id claim-formatter \\
     --token "$TOKEN" \\
     --revision "$REVISION" \\
-    --operation-id "release-TASK-42-001" \\
-    --reason 'provider checkpoint verified'"""
+    --reason 'provider checkpoint verified'
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 _EXEC_BUNDLE_EPILOG = """\
 Example:
   worklease exec-bundle \\
@@ -353,20 +385,20 @@ Example:
     --claim-id "$CLAIM_ID" \\
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
-    --operation-id "test-TASK-42-001" \\
-    -- python -m unittest discover -s tests -v"""
+    -- python -m unittest discover -s tests -v
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 
 
 _ACQUIRE_EPILOG = """\
 Example:
   worklease acquire \\
     --resource local:formatter \\
-    --claim-id claim-formatter \\
-    --agent-id agent-1 \\
-    --session-id session-1 \\
-    --owner-id attempt-1 \\
-    --work-key format:repo \\
-    --ttl 900"""
+    --ttl 900
+
+Claim, session, and owner IDs are generated when omitted. The work key
+defaults to the resource; set WORKLEASE_AGENT_ID or pass --agent-id."""
 
 
 _EXEC_EPILOG = """\
@@ -376,8 +408,10 @@ Example:
     --claim-id "$CLAIM_ID" \\
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
-    --operation-id "test-TASK-42-001" \\
-    -- python -m unittest discover -s tests -v"""
+    -- python -m unittest discover -s tests -v
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 
 
 _RELEASE_EPILOG = """\
@@ -387,8 +421,10 @@ Example:
     --claim-id "$CLAIM_ID" \\
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
-    --operation-id "release-TASK-42-001" \\
-    --reason 'provider checkpoint verified'"""
+    --reason 'provider checkpoint verified'
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 
 
 _REPLACE_FILE_EPILOG = """\
@@ -398,10 +434,12 @@ Example:
     --claim-id "$CLAIM_ID" \\
     --token-file "$TOKEN_FILE" \\
     --revision "$REVISION" \\
-    --operation-id "replace-TASK-42-001" \\
     --path docs/backlog/TASK-42.md \\
     --expected-sha256 "$EXPECTED_SHA256" \\
-    --content-file /tmp/TASK-42.md"""
+    --content-file /tmp/TASK-42.md
+
+The operation ID is generated when omitted; replay it only with the identical
+request."""
 
 
 def _add_output_arguments(
@@ -481,8 +519,11 @@ def _common_claim_arguments(
     parser.add_argument(
         "-o",
         "--operation-id",
-        required=True,
-        help="idempotency key; replay the identical request only to recover a lost response",
+        default=None,
+        help=(
+            "idempotency key (generated when omitted); replay the identical request "
+            "only to recover a lost response"
+        ),
     )
     if include_ttl:
         _add_ttl_argument(parser)
@@ -551,8 +592,11 @@ def _common_bundle_claim_arguments(
     parser.add_argument(
         "-o",
         "--operation-id",
-        required=True,
-        help="idempotency key; replay the identical request only to recover a lost response",
+        default=None,
+        help=(
+            "idempotency key (generated when omitted); replay the identical request "
+            "only to recover a lost response"
+        ),
     )
     if include_ttl:
         _add_ttl_argument(parser)
@@ -719,32 +763,32 @@ def _parser() -> _ArgumentParser:
     acquire_parser.add_argument(
         "-c",
         "--claim-id",
-        required=True,
-        help="fresh unique ID for this ownership epoch",
+        default=None,
+        help="fresh unique ID for this ownership epoch (generated when omitted)",
     )
     acquire_parser.add_argument(
         "-a",
         "--agent-id",
-        required=True,
-        help="stable ID of the logical agent or human",
+        default=None,
+        help=f"stable ID of the logical agent or human (default: {_AGENT_ID_ENV})",
     )
     acquire_parser.add_argument(
         "-s",
         "--session-id",
-        required=True,
-        help="fresh ID for this agent session",
+        default=None,
+        help="fresh ID for this agent session (generated when omitted)",
     )
     acquire_parser.add_argument(
         "-o",
         "--owner-id",
-        required=True,
-        help="fresh ID for this worker attempt",
+        default=None,
+        help="fresh ID for this worker attempt (generated when omitted)",
     )
     acquire_parser.add_argument(
         "-w",
         "--work-key",
-        required=True,
-        help="caller-defined label for the work, such as implement:TASK-42",
+        default=None,
+        help="caller-defined work label (default: resource)",
     )
     acquire_parser.add_argument(
         "-C",
@@ -786,32 +830,32 @@ def _parser() -> _ArgumentParser:
     acquire_bundle_parser.add_argument(
         "-c",
         "--claim-id",
-        required=True,
-        help="fresh unique ID for this ownership epoch",
+        default=None,
+        help="fresh unique ID for this ownership epoch (generated when omitted)",
     )
     acquire_bundle_parser.add_argument(
         "-a",
         "--agent-id",
-        required=True,
-        help="stable ID of the logical agent or human",
+        default=None,
+        help=f"stable ID of the logical agent or human (default: {_AGENT_ID_ENV})",
     )
     acquire_bundle_parser.add_argument(
         "-s",
         "--session-id",
-        required=True,
-        help="fresh ID for this agent session",
+        default=None,
+        help="fresh ID for this agent session (generated when omitted)",
     )
     acquire_bundle_parser.add_argument(
         "-o",
         "--owner-id",
-        required=True,
-        help="fresh ID for this worker attempt",
+        default=None,
+        help="fresh ID for this worker attempt (generated when omitted)",
     )
     acquire_bundle_parser.add_argument(
         "-w",
         "--work-key",
-        required=True,
-        help="caller-defined label for the work, such as implement:TASK-42",
+        default=None,
+        help="caller-defined work label (default: ordered resource set)",
     )
     acquire_bundle_parser.add_argument(
         "-C",
@@ -1031,38 +1075,41 @@ def _parser() -> _ArgumentParser:
     transfer_parser.add_argument(
         "-o",
         "--operation-id",
-        required=True,
-        help="idempotency key; replay the identical request only to recover a lost response",
+        default=None,
+        help=(
+            "idempotency key (generated when omitted); replay the identical request "
+            "only to recover a lost response"
+        ),
     )
     transfer_parser.add_argument(
         "-C",
         "--successor-claim-id",
-        required=True,
-        help="fresh claim ID for the successor epoch",
+        default=None,
+        help="fresh claim ID for the successor epoch (generated when omitted)",
     )
     transfer_parser.add_argument(
         "-A",
         "--successor-agent-id",
-        required=True,
-        help="stable agent ID of the successor",
+        default=None,
+        help=f"stable agent ID of the successor (default: {_AGENT_ID_ENV})",
     )
     transfer_parser.add_argument(
         "-S",
         "--successor-session-id",
-        required=True,
-        help="fresh session ID of the successor",
+        default=None,
+        help="fresh session ID of the successor (generated when omitted)",
     )
     transfer_parser.add_argument(
         "-O",
         "--successor-owner-id",
-        required=True,
-        help="fresh owner ID of the successor attempt",
+        default=None,
+        help="fresh owner ID of the successor attempt (generated when omitted)",
     )
     transfer_parser.add_argument(
         "-W",
         "--successor-work-key",
-        required=True,
-        help="work label for the successor epoch",
+        default=None,
+        help="work label for the successor epoch (default: resource)",
     )
     _add_ttl_argument(transfer_parser)
 
@@ -1170,6 +1217,62 @@ def _parser() -> _ArgumentParser:
     return parser
 
 
+def _bundle_resource_identity(resources: Sequence[str]) -> str:
+    """Render an ordered bundle as the default work-key resource identity."""
+
+    return json.dumps(list(resources), separators=(",", ":"))
+
+
+def _default_agent_id(option: str) -> str:
+    value = os.environ.get(_AGENT_ID_ENV)
+    if value is None or not value.strip():
+        raise _ArgumentError(f"missing-agent-id:{option}")
+    return value
+
+
+def _apply_lifecycle_defaults(args: argparse.Namespace) -> None:
+    """Fill omitted CLI lifecycle identities immediately before dispatch."""
+
+    operation = _CANONICAL_COMMANDS.get(args.operation, args.operation)
+    if operation == "acquire":
+        if args.claim_id is None:
+            args.claim_id = _fresh_identifier()
+        if args.agent_id is None:
+            args.agent_id = _default_agent_id("--agent-id")
+        if args.session_id is None:
+            args.session_id = _fresh_identifier()
+        if args.owner_id is None:
+            args.owner_id = _fresh_identifier()
+        if args.work_key is None:
+            args.work_key = args.resource
+    elif operation == "acquire-bundle":
+        if args.claim_id is None:
+            args.claim_id = _fresh_identifier()
+        if args.agent_id is None:
+            args.agent_id = _default_agent_id("--agent-id")
+        if args.session_id is None:
+            args.session_id = _fresh_identifier()
+        if args.owner_id is None:
+            args.owner_id = _fresh_identifier()
+        if args.work_key is None:
+            args.work_key = _bundle_resource_identity(args.resources)
+    elif operation == "transfer":
+        if args.operation_id is None:
+            args.operation_id = _fresh_identifier()
+        if args.successor_claim_id is None:
+            args.successor_claim_id = _fresh_identifier()
+        if args.successor_agent_id is None:
+            args.successor_agent_id = _default_agent_id("--successor-agent-id")
+        if args.successor_session_id is None:
+            args.successor_session_id = _fresh_identifier()
+        if args.successor_owner_id is None:
+            args.successor_owner_id = _fresh_identifier()
+        if args.successor_work_key is None:
+            args.successor_work_key = args.resource
+    elif operation in _OPERATION_ID_COMMANDS and args.operation_id is None:
+        args.operation_id = _fresh_identifier()
+
+
 def _text_value(value: object) -> str:
     """Render one text-mode scalar without allowing control-character injection."""
 
@@ -1256,6 +1359,10 @@ def _claim_fields(
     fields.extend(
         (
             ("CLAIM_ID", claim.get("claimId")),
+            ("AGENT_ID", claim.get("agentId")),
+            ("SESSION_ID", claim.get("sessionId")),
+            ("OWNER_ID", claim.get("ownerId")),
+            ("WORK_KEY", claim.get("workKey")),
             ("REVISION", claim.get("revision")),
             ("EXPIRES_AT", claim.get("expiresAt")),
             ("GUARANTEE", claim.get("guarantee")),
@@ -1842,6 +1949,9 @@ def _command_help_path(argv: Sequence[str]) -> str:
 
 def _parser_error_hint(argv: Sequence[str], message: str) -> str | None:
     command = _command_help_path(argv)
+    if message.startswith("missing-agent-id"):
+        option = message.partition(":")[2] or "--agent-id"
+        return f"Set {_AGENT_ID_ENV} or provide {option}"
     choice_match = re.search(
         r"argument (?:-[\w-]+/)?(--[\w-]+): invalid choice: .* \(choose from (.+)\)",
         message,
@@ -2234,6 +2344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser = _parser()
         args = parser.parse_args(values)
         output_format = "json" if getattr(args, "json", False) else args.format
+        _apply_lifecycle_defaults(args)
     except _ArgumentError as error:
         _emit(
             _envelope(

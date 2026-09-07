@@ -1197,12 +1197,12 @@ with resource_lock(resource):
                 self.assertIn(example, result.stdout)
 
         for command in (("heartbeat",), ("heartbeat-bundle",)):
-            with self.subTest(quoted_operation_id=command):
+            with self.subTest(generated_operation_id=command):
                 result = self.run_cli(*command, "--help")
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual("", result.stderr)
                 self.assertIn(
-                    "--operation-id 'heartbeat-TASK-42-001'",
+                    "The operation ID is generated when omitted",
                     result.stdout,
                 )
 
@@ -1299,6 +1299,413 @@ with resource_lock(resource):
         list_help = self.run_cli("list", "--help")
         self.assertEqual(0, list_help.returncode)
         self.assertIn("default: all resources", " ".join(list_help.stdout.split()))
+
+    def test_acquire_defaults_generate_and_echo_identifiers(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-from-environment"
+        resource = "repo:generated-acquire"
+        payload = self.json_cli("acquire", "--resource", resource)
+        claim = payload["claim"]
+        assert isinstance(claim, dict)
+        generated = tuple(
+            str(claim[field]) for field in ("claimId", "sessionId", "ownerId")
+        )
+        for identifier in generated:
+            self.assertRegex(identifier, r"^[0-9a-f]{32}$")
+        self.assertEqual(len(generated), len(set(generated)))
+        self.assertEqual("agent-from-environment", claim["agentId"])
+        self.assertEqual(resource, claim["workKey"])
+
+        text_resource = "repo:generated-acquire-text"
+        text = self.run_cli(
+            "--format",
+            "text",
+            "acquire",
+            "--resource",
+            text_resource,
+        )
+        self.assertEqual(0, text.returncode, text.stderr)
+        self.assertIn('CLAIM_ID\t"', text.stdout)
+        self.assertIn('AGENT_ID\t"agent-from-environment"\n', text.stdout)
+        self.assertIn('SESSION_ID\t"', text.stdout)
+        self.assertIn('OWNER_ID\t"', text.stdout)
+        self.assertIn(f'WORK_KEY\t"{text_resource}"\n', text.stdout)
+
+        operation_resource = "repo:generated-operation-text"
+        operation = self.json_cli(
+            "acquire",
+            "--resource",
+            operation_resource,
+            "--claim-id",
+            "operation-text",
+            "--agent-id",
+            "agent-text",
+            "--session-id",
+            "session-text",
+            "--owner-id",
+            "owner-text",
+            "--work-key",
+            operation_resource,
+        )
+        operation_claim = operation["claim"]
+        assert isinstance(operation_claim, dict)
+        heartbeat = self.run_cli(
+            "--format",
+            "text",
+            "heartbeat",
+            "--resource",
+            operation_resource,
+            "--claim-id",
+            str(operation_claim["claimId"]),
+            "--token",
+            str(operation_claim["token"]),
+            "--revision",
+            str(operation_claim["revision"]),
+        )
+        self.assertEqual(0, heartbeat.returncode, heartbeat.stderr)
+        self.assertRegex(heartbeat.stdout, r'(?m)^OPERATION_ID\t"[0-9a-f]{32}"$')
+
+    def test_omitted_agent_id_reports_environment_and_flag_hint(self) -> None:
+        environment = self.environment.copy()
+        environment.pop("WORKLEASE_AGENT_ID", None)
+        text = self.run_cli(
+            "acquire",
+            "--resource",
+            "repo:missing-agent",
+            environment=environment,
+        )
+        self.assertEqual(64, text.returncode)
+        self.assertEqual("", text.stderr)
+        self.assertIn("ERROR acquire: invalid-arguments\n", text.stdout)
+        self.assertIn(
+            "HINT\tSet WORKLEASE_AGENT_ID or provide --agent-id\n", text.stdout
+        )
+
+        json_result = self.run_cli(
+            "--json",
+            "acquire",
+            "--resource",
+            "repo:missing-agent-json",
+            environment=environment,
+        )
+        self.assertEqual(64, json_result.returncode)
+        self.assertEqual("invalid-arguments", json.loads(json_result.stdout)["error"])
+
+        transfer_resource = "repo:missing-successor-agent"
+        acquired = self.json_cli(
+            "acquire",
+            "--resource",
+            transfer_resource,
+            "--claim-id",
+            "missing-successor-agent",
+            "--agent-id",
+            "current-agent",
+            "--session-id",
+            "current-session",
+            "--owner-id",
+            "current-owner",
+            "--work-key",
+            transfer_resource,
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        transfer = self.run_cli(
+            "transfer",
+            "--resource",
+            transfer_resource,
+            "--claim-id",
+            str(claim["claimId"]),
+            "--token",
+            str(claim["token"]),
+            "--revision",
+            str(claim["revision"]),
+            environment=environment,
+        )
+        self.assertEqual(64, transfer.returncode)
+        self.assertIn(
+            "HINT\tSet WORKLEASE_AGENT_ID or provide --successor-agent-id\n",
+            transfer.stdout,
+        )
+
+    def test_bundle_and_transfer_defaults_use_resource_and_environment(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "agent-default"
+        resources = ("repo:generated-bundle-a", "repo:generated-bundle-b")
+        bundle = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )
+        bundle_claim = bundle["claim"]
+        assert isinstance(bundle_claim, dict)
+        for field in ("claimId", "sessionId", "ownerId"):
+            self.assertRegex(str(bundle_claim[field]), r"^[0-9a-f]{32}$")
+        self.assertEqual("agent-default", bundle_claim["agentId"])
+        self.assertEqual(
+            json.dumps(list(resources), separators=(",", ":")),
+            bundle_claim["workKey"],
+        )
+
+        resource = "repo:generated-transfer"
+        acquired = self.json_cli(
+            "acquire",
+            "--resource",
+            resource,
+            "--claim-id",
+            "generated-transfer-current",
+            "--agent-id",
+            "agent-current",
+            "--session-id",
+            "session-current",
+            "--owner-id",
+            "owner-current",
+            "--work-key",
+            "work-current",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        transferred = self.json_cli(
+            "transfer",
+            "--resource",
+            resource,
+            "--claim-id",
+            str(claim["claimId"]),
+            "--token",
+            str(claim["token"]),
+            "--revision",
+            str(claim["revision"]),
+        )
+        successor = transferred["claim"]
+        assert isinstance(successor, dict)
+        self.assertRegex(str(transferred["operationId"]), r"^[0-9a-f]{32}$")
+        for field in ("claimId", "sessionId", "ownerId"):
+            self.assertRegex(str(successor[field]), r"^[0-9a-f]{32}$")
+        self.assertEqual("agent-default", successor["agentId"])
+        self.assertEqual(resource, successor["workKey"])
+
+    def test_omitted_operation_ids_cover_singleton_mutations(self) -> None:
+        resource = "repo:generated-operations"
+        acquired = self.json_cli(
+            "acquire",
+            "--resource",
+            resource,
+            "--claim-id",
+            "generated-operations",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            resource,
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+
+        def mutation_arguments(current: dict[str, object]) -> tuple[str, ...]:
+            return (
+                "--resource",
+                resource,
+                "--claim-id",
+                str(current["claimId"]),
+                "--token",
+                token,
+                "--revision",
+                str(current["revision"]),
+            )
+
+        heartbeat = self.json_cli("heartbeat", *mutation_arguments(claim))
+        self.assertRegex(str(heartbeat["operationId"]), r"^[0-9a-f]{32}$")
+        current = heartbeat["claim"]
+        assert isinstance(current, dict)
+
+        checkpoint = self.json_cli(
+            "checkpoint",
+            *mutation_arguments(current),
+            "--checkpoint",
+            '{"phase":"generated"}',
+        )
+        self.assertRegex(str(checkpoint["operationId"]), r"^[0-9a-f]{32}$")
+        current = checkpoint["claim"]
+        assert isinstance(current, dict)
+
+        executed = self.json_cli(
+            "exec",
+            *mutation_arguments(current),
+            "--",
+            sys.executable,
+            "-c",
+            "print('generated')",
+        )
+        self.assertRegex(str(executed["operationId"]), r"^[0-9a-f]{32}$")
+        current = self.json_cli("status", "--resource", resource)["claim"]
+        assert isinstance(current, dict)
+
+        directory = Path(self.home.name)
+        target = directory / "generated-target"
+        candidate = directory / "generated-candidate"
+        target.write_text("old\n")
+        candidate.write_text("new\n")
+        replaced = self.json_cli(
+            "replace-file",
+            *mutation_arguments(current),
+            "--path",
+            str(target),
+            "--expected-sha256",
+            hashlib.sha256(target.read_bytes()).hexdigest(),
+            "--content-file",
+            str(candidate),
+        )
+        self.assertRegex(str(replaced["operationId"]), r"^[0-9a-f]{32}$")
+        current = self.json_cli("status", "--resource", resource)["claim"]
+        assert isinstance(current, dict)
+
+        target_request = MutationRequest(
+            resource=resource,
+            claim_id=str(current["claimId"]),
+            token=token,
+            revision=int(current["revision"]),
+            operation_id="generated-target",
+        )
+        operation_request = target_request.request_dict(argv=["generated"])
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_operation(target_request, "exec", operation_request)
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        reconciled = self.json_cli(
+            "reconcile-operation",
+            *mutation_arguments(current),
+            "--target-operation-id",
+            "generated-target",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-success",
+            "--evidence",
+            "{}",
+        )
+        self.assertRegex(str(reconciled["operationId"]), r"^[0-9a-f]{32}$")
+        current = reconciled["claim"]
+        assert isinstance(current, dict)
+
+        released = self.json_cli(
+            "release",
+            *mutation_arguments(current),
+            "--reason",
+            "generated complete",
+        )
+        self.assertRegex(str(released["operationId"]), r"^[0-9a-f]{32}$")
+
+    def test_omitted_operation_ids_cover_bundle_mutations(self) -> None:
+        resources = (
+            "repo:generated-bundle-operations-a",
+            "repo:generated-bundle-operations-b",
+        )
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--claim-id",
+            "generated-bundle-operations",
+            "--agent-id",
+            "agent",
+            "--session-id",
+            "session",
+            "--owner-id",
+            "owner",
+            "--work-key",
+            "bundle-generated",
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        token = str(claim["token"])
+
+        def mutation_arguments(current: dict[str, object]) -> tuple[str, ...]:
+            return (
+                "--resource",
+                resources[0],
+                "--resource",
+                resources[1],
+                "--claim-id",
+                str(current["claimId"]),
+                "--token",
+                token,
+                "--revision",
+                str(current["revision"]),
+            )
+
+        heartbeat = self.json_cli("heartbeat-bundle", *mutation_arguments(claim))
+        self.assertRegex(str(heartbeat["operationId"]), r"^[0-9a-f]{32}$")
+        current = heartbeat["claim"]
+        assert isinstance(current, dict)
+        executed = self.json_cli(
+            "exec-bundle",
+            *mutation_arguments(current),
+            "--",
+            sys.executable,
+            "-c",
+            "print('generated bundle')",
+        )
+        self.assertRegex(str(executed["operationId"]), r"^[0-9a-f]{32}$")
+        current = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+        )["claim"]
+        assert isinstance(current, dict)
+
+        target_request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(current["claimId"]),
+            token=token,
+            revision=int(current["revision"]),
+            operation_id="generated-bundle-target",
+        )
+        operation_request = target_request.request_dict(argv=["generated-bundle"])
+        store = LeaseStore(self.home.name)
+        self.assertIsNone(
+            store.begin_bundle_operation(
+                target_request, "exec-bundle", operation_request
+            )
+        )
+        request_sha256 = hashlib.sha256(
+            json.dumps(operation_request, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        reconciled = self.json_cli(
+            "reconcile-operation-bundle",
+            *mutation_arguments(current),
+            "--target-operation-id",
+            "generated-bundle-target",
+            "--expected-request-sha256",
+            request_sha256,
+            "--outcome",
+            "observed-success",
+            "--evidence",
+            "{}",
+        )
+        self.assertRegex(str(reconciled["operationId"]), r"^[0-9a-f]{32}$")
+        current = reconciled["claim"]
+        assert isinstance(current, dict)
+        released = self.json_cli(
+            "release-bundle",
+            *mutation_arguments(current),
+            "--reason",
+            "generated bundle complete",
+        )
+        self.assertRegex(str(released["operationId"]), r"^[0-9a-f]{32}$")
 
     def test_gc_cutoff_uses_default_retention_without_creating_conflict(self) -> None:
         cutoff = self.json_cli("gc", "--cutoff", "2000-01-01T00:00:00Z")
@@ -2230,8 +2637,8 @@ with resource_lock(resource):
         self.assertEqual(64, result.returncode)
         self.assertEqual(
             "ERROR exec: invalid-arguments\n"
-            "HINT\tRequired options: --resource, --claim-id, --revision, "
-            "--operation-id; see worklease exec --help\n",
+            "HINT\tRequired options: --resource, --claim-id, --revision; "
+            "see worklease exec --help\n",
             result.stdout,
         )
         self.assertEqual("", result.stderr)

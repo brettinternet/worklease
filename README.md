@@ -100,19 +100,22 @@ The response declares the claim scope and guarantee. Use `--coordination-only` w
 
 ### 2. Acquire a fresh ownership epoch
 
-Keep the agent ID stable for the logical agent. Generate fresh claim, session,
-owner/worker-attempt, and operation IDs for each attempt:
+Keep the agent ID stable for the logical agent. Set `WORKLEASE_AGENT_ID` once,
+or pass `--agent-id` explicitly. The CLI generates fresh claim, session, and
+owner/worker-attempt IDs when omitted, and defaults `--work-key` to the exact
+resource:
 
 ```sh
+export WORKLEASE_AGENT_ID="$AGENT_ID"
 worklease acquire \
-  --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --agent-id "$AGENT_ID" \
-  --session-id "$SESSION_ID" \
-  --owner-id "$OWNER_ID" \
-  --work-key "implement:TASK-42" \
-  --ttl 900
+  --resource "$RESOURCE"
 ```
+
+The successful JSON `claim` (or text `CLAIM` block) echoes the generated
+`claimId`, `sessionId`, `ownerId`, and `workKey`; retain them with the returned
+token and revision. `WORKLEASE_AGENT_ID` or `--agent-id` is required when no
+agent identity is already available. Bundle acquisition uses the same defaults
+for one shared claim over its exact ordered resources.
 
 To wait for a singleton resource without a check-then-acquire race, add a
 finite timeout. Acquisition retries the same atomic operation only for active
@@ -122,11 +125,6 @@ singleton contention (`already-claimed`) or a transient local resource guard
 ```sh
 worklease acquire \
   --resource "$RESOURCE" \
-  --claim-id "$CLAIM_ID" \
-  --agent-id "$AGENT_ID" \
-  --session-id "$SESSION_ID" \
-  --owner-id "$OWNER_ID" \
-  --work-key "implement:TASK-42" \
   --wait-timeout 30 \
   --poll-interval 0.25
 ```
@@ -148,7 +146,6 @@ worklease heartbeat \
   --claim-id "$CLAIM_ID" \
   --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
-  --operation-id "heartbeat-TASK-42-001" \
   --ttl 900
 ```
 
@@ -170,7 +167,6 @@ worklease exec \
   --claim-id "$CLAIM_ID" \
   --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
-  --operation-id "test-TASK-42-001" \
   --git-primary \
   -- python -m unittest discover -s tests -v
 ```
@@ -202,7 +198,6 @@ worklease checkpoint \
   --claim-id "$CLAIM_ID" \
   --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
-  --operation-id "checkpoint-TASK-42-001" \
   --checkpoint '{"phase":"tests","result":"passed"}'
 ```
 
@@ -214,9 +209,29 @@ worklease release \
   --claim-id "$CLAIM_ID" \
   --token-file "$TOKEN_FILE" \
   --revision "$REVISION" \
-  --operation-id "release-TASK-42-001" \
   --reason "provider checkpoint verified"
 ```
+
+Mutation operation IDs are generated when omitted and are echoed as
+`operationId` in JSON or `OPERATION_ID` in text. Save each one when a response
+may need replay; reuse it only with the identical request. Caller-supplied
+identifiers remain supported and preserve exact idempotency and mismatch
+behavior.
+
+For an atomic handoff, keep the current claim ID, token, and revision and let
+the successor identity defaults apply (or provide explicit successor values):
+
+```sh
+worklease transfer \
+  --resource "$RESOURCE" \
+  --claim-id "$CLAIM_ID" \
+  --token-file "$TOKEN_FILE" \
+  --revision "$REVISION"
+```
+
+The transfer successor claim, session, and owner IDs are generated when
+omitted; its work key defaults to the resource and its agent ID uses
+`WORKLEASE_AGENT_ID` unless `--successor-agent-id` is supplied.
 
 Stop on ownership loss, provider-version conflict, missing receipts, or unknown outcomes. An assignee, status, comment, branch, worktree, lock file, local cache, or command exit status is not a claim or a verified provider checkpoint.
 
@@ -230,7 +245,7 @@ require the bundle lifecycle and are never waited on by singleton acquisition.
 
 Source-wide Markdown update: derive a `markdown` key for the file, acquire the source claim, and use `replace-file` with the current SHA-256. The expected hash and atomic replacement fence that one local file mutation. A coordination-only claim cannot call `replace-file`.
 
-Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`, and `release-bundle` for 1–32 exact ordered resources. Bundle acquisition, reconciliation, and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
+Multi-resource operation: use `acquire-bundle`, `heartbeat-bundle`, `exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`, and `release-bundle` for 1–32 exact ordered resources. Bundle acquisition defaults claim, session, and owner IDs to fresh random values, reads the agent ID from `WORKLEASE_AGENT_ID` when `--agent-id` is omitted, and uses the ordered resource set as its default work key. Bundle acquisition, reconciliation, and revision changes are all-or-nothing, but retain the same same-host boundary as singleton claims.
 
 Guarded commands continuously drain both output streams. Receipts retain at most 1 MiB of UTF-8 output per stream and report `stdoutBytes`/`stderrBytes` (total raw bytes observed) plus `stdoutTruncated`/`stderrTruncated`; small output is returned unchanged.
 
@@ -351,8 +366,9 @@ The command grammars are:
   the complete underlying values. Tokens are never listed.
 - `status`, `status-bundle`, `bundle-status`, and `inspect-bundle`: `OK
 <operation>`, optional `RESOURCE` or `RESOURCES`, `STATE`, then a `CLAIM`
-  block containing `RESOURCE`, `CLAIM_ID`, `REVISION`, `EXPIRES_AT`, and
-  `GUARANTEE`; an unclaimed resource emits `CLAIM <none>`.
+  block containing `RESOURCE`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`,
+  `WORK_KEY`, `REVISION`, `EXPIRES_AT`, and `GUARANTEE`; an unclaimed resource
+  emits `CLAIM <none>`.
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
   block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
   `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`.
@@ -365,7 +381,9 @@ The command grammars are:
   `heartbeat-bundle`, `bundle-heartbeat`, `transfer`, `release`,
   `release-bundle`, `bundle-release`, `exec`, `exec-bundle`, `bundle-exec`,
   `replace-file`, `reconcile-operation`, and `reconcile-operation-bundle`:
-  `OK <operation>`, operation and mutation fields, then a `CLAIM` block. A
+  `OK <operation>`, operation and mutation fields, then a `CLAIM` block. The
+  block includes `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, and
+  `WORK_KEY` along with the resource, revision, expiry, and guarantee. A
   successful acquire, heartbeat,
   checkpoint, or transfer may include `TOKEN` because the current or successor
   owner needs it for the next lifecycle step; other mutation and all failure

@@ -50,6 +50,7 @@
     },
     "Claim": {
       "type": "object",
+      "description": "Claim identifiers are echoed in mutation responses; the CLI generates omitted claim, session, and owner IDs during acquisition and defaults the work key to the resource.",
       "required": [
         "resource", "claimId", "revision", "agentId", "sessionId",
         "ownerId", "workKey", "guarantee", "acquiredAt", "acquireTtl",
@@ -133,6 +134,7 @@
     },
     "BundleClaim": {
       "type": "object",
+      "description": "Bundle claim identifiers are echoed in mutation responses; the CLI generates omitted claim, session, and owner IDs during acquisition and defaults the work key to the ordered resource set.",
       "required": [
         "resources", "claimId", "revision", "agentId", "sessionId",
         "ownerId", "workKey", "guarantee", "acquiredAt", "acquireTtl",
