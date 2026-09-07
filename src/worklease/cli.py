@@ -372,6 +372,10 @@ Example:
     --lease-file "$LEASE_FILE" \\
     -- python -m unittest discover -s tests -v
 
+The `--` separator is optional when the child executable is the first positional
+argument. Use it for clarity or when the executable begins with `-`; after the
+executable, every argument is passed to the child unchanged.
+
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 
@@ -392,6 +396,10 @@ Example:
   worklease exec \\
     --lease-file "$LEASE_FILE" \\
     -- python -m unittest discover -s tests -v
+
+The `--` separator is optional when the child executable is the first positional
+argument. Use it for clarity or when the executable begins with `-`; after the
+executable, every argument is passed to the child unchanged.
 
 The operation ID is generated when omitted; replay it only with the identical
 request."""
@@ -1425,7 +1433,7 @@ def _emit_verbose_status(payload: dict[str, object]) -> None:
     if isinstance(claim, dict):
         print("CLAIM")
         for field in (
-            "resource",
+            "resources" if "resources" in claim else "resource",
             "claimId",
             "agentId",
             "sessionId",
@@ -2157,15 +2165,77 @@ def _dispatch(
         raise _ArgumentError("missing-command") from error
 
 
-def _visible_output_options(argv: Sequence[str]) -> list[str]:
+def _option_consumes_next(
+    parser: argparse.ArgumentParser, value: str
+) -> tuple[bool, bool]:
+    """Return whether an option is recognized and consumes the next token."""
+
+    option = value
+    has_attached_value = False
+    if value.startswith("--") and "=" in value:
+        option = value.partition("=")[0]
+        has_attached_value = True
+    elif value.startswith("-") and not value.startswith("--") and len(value) > 2:
+        option = value[:2]
+        has_attached_value = True
+    action = parser._option_string_actions.get(option)
+    if action is None:
+        return False, False
+    return True, action.nargs != 0 and not has_attached_value
+
+
+def _visible_output_options(
+    argv: Sequence[str], parser: argparse.ArgumentParser | None = None
+) -> list[str]:
+    """Return worklease argv, excluding the guarded child command."""
+
     options = list(argv)
     if "--" in options:
         options = options[: options.index("--")]
+
+    root = _parser() if parser is None else parser
+    command_index: int | None = None
+    index = 0
+    while index < len(options):
+        value = options[index]
+        recognized, consumes_next = _option_consumes_next(root, value)
+        if recognized:
+            index += 2 if consumes_next else 1
+        elif value.startswith("-"):
+            index += 1
+        else:
+            command_index = index
+            break
+    if command_index is None or options[command_index] not in {
+        "exec",
+        "exec-bundle",
+        "bundle-exec",
+    }:
+        return options
+
+    subparsers = next(
+        action
+        for action in root._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    command_parser = subparsers.choices[options[command_index]]
+    index = command_index + 1
+    while index < len(options):
+        value = options[index]
+        recognized, consumes_next = _option_consumes_next(command_parser, value)
+        if recognized:
+            index += 2 if consumes_next else 1
+        elif value.startswith("-"):
+            index += 1
+        else:
+            return options[:index]
     return options
 
 
-def _validate_output_arguments(argv: Sequence[str]) -> None:
-    options = _visible_output_options(argv)
+def _validate_output_arguments(
+    argv: Sequence[str], parser: argparse.ArgumentParser | None = None
+) -> None:
+    options = _visible_output_options(argv, parser)
     has_json = "--json" in options or "-j" in options
     has_format = any(
         value in {"--format", "-f"}
@@ -2177,10 +2247,12 @@ def _validate_output_arguments(argv: Sequence[str]) -> None:
         raise _ArgumentError("conflicting-output-format")
 
 
-def _fallback_output_format(argv: Sequence[str]) -> str:
+def _fallback_output_format(
+    argv: Sequence[str], parser: argparse.ArgumentParser | None = None
+) -> str:
     """Choose a safe format for parser errors without reading child argv."""
 
-    options = _visible_output_options(argv)
+    options = _visible_output_options(argv, parser)
     explicit_format: str | None = None
     has_json = False
     for index, value in enumerate(options):
@@ -2212,12 +2284,12 @@ def _resolve_claim_credential(args: argparse.Namespace) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    output_format = _fallback_output_format(values)
+    parser = _parser()
+    output_format = _fallback_output_format(values, parser)
     try:
         if any(_has_invalid_encoding(value) for value in values):
             raise _ArgumentError("invalid-argument-encoding")
-        _validate_output_arguments(values)
-        parser = _parser()
+        _validate_output_arguments(values, parser)
         args = parser.parse_args(values)
         output_format = "json" if getattr(args, "json", False) else args.format
     except _ArgumentError as error:

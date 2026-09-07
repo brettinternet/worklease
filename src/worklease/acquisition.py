@@ -99,6 +99,9 @@ class AcquisitionMixin:
                 old_bundle = self._bundle_row(db, old_bundle_id)
                 if old_bundle is not None and now >= float(old_bundle["expires_at"]):
                     db.execute(
+                        "DELETE FROM claims WHERE claim_id = ?", (old_bundle_id,)
+                    )
+                    db.execute(
                         "DELETE FROM bundle_members WHERE claim_id = ?",
                         (old_bundle_id,),
                     )
