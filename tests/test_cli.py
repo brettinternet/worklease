@@ -3342,6 +3342,72 @@ with resource_lock(resource):
         self.assertEqual(7, failed_payload["command"]["returncode"])
         self.assertNotIn(str(failed_claim["token"]), json.dumps(failed_payload))
 
+    def test_exec_max_duration_help_validation_and_timeout(self) -> None:
+        for operation in ("exec", "exec-bundle"):
+            with self.subTest(operation=operation):
+                help_result = self.run_cli(operation, "--help")
+                self.assertEqual(0, help_result.returncode)
+                self.assertIn("--max-duration", help_result.stdout)
+                self.assertIn("default: 3600; timeout exits 124", help_result.stdout)
+                self.assertIn("grandchild", help_result.stdout)
+
+        resource = "repo:exec-timeout"
+        claim = self.json_cli(
+            *self.acquire_arguments(resource=resource, claim_id="exec-timeout")
+        )["claim"]
+        assert isinstance(claim, dict)
+        operation_id = "exec-timeout-cli"
+        result = self.run_cli(
+            "--json",
+            *self.mutation_arguments("exec", resource, claim, operation_id),
+            "--max-duration",
+            "0.05",
+            "--",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(1)",
+        )
+        self.assertEqual(124, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("child-process-timeout", payload["error"])
+        self.assertEqual(0.05, payload["maxDuration"])
+        self.assertEqual(124, payload["command"]["returncode"])
+        self.assertTrue(payload["command"]["timedOut"])
+        inspected = self.json_cli(
+            "inspect-operation",
+            "--resource",
+            resource,
+            "--operation-id",
+            operation_id,
+        )
+        self.assertEqual("completed", inspected["state"])
+
+        invalid_resource = "repo:exec-invalid-duration"
+        invalid_claim = self.json_cli(
+            *self.acquire_arguments(
+                resource=invalid_resource, claim_id="exec-invalid-duration"
+            )
+        )["claim"]
+        assert isinstance(invalid_claim, dict)
+        for value in ("0", "-1", "inf", "nan", "1e100"):
+            with self.subTest(value=value):
+                invalid = self.json_cli(
+                    *self.mutation_arguments(
+                        "exec",
+                        invalid_resource,
+                        invalid_claim,
+                        f"exec-invalid-duration-{value}",
+                    ),
+                    "--max-duration",
+                    value,
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "pass",
+                    expected_code=64,
+                )
+                self.assertEqual("invalid-max-duration", invalid["error"])
+
     def test_replace_file_is_wired_through_the_cli(self) -> None:
         directory = Path(self.home.name)
         target = directory / "target.txt"

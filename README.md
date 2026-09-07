@@ -62,6 +62,7 @@ worklease status --resource "$RESOURCE"
 worklease exec \
   --lease-file "$LEASE_FILE" \
   --git-primary \
+  --max-duration 3600 \
   -- python -m unittest discover -s tests -v
 
 worklease checkpoint \
@@ -75,6 +76,18 @@ worklease release \
 ```
 
 Keep the lease handle private. Do not place Worklease state in a repository path shared by linked worktrees.
+
+## Guarded execution duration
+
+`exec` and `exec-bundle` bound child runtime and inherited-pipe draining with
+`--max-duration`, which defaults to `3600` seconds and must be finite, greater
+than zero, and representable by the host timer. On expiry Worklease terminates the child's process group, records the
+operation as completed with reason `child-process-timeout`, and exits `124`.
+
+A grandchild that inherits stdout or stderr can keep pipe draining active after
+the direct child exits. The same deadline still applies. A grandchild that
+escapes the process group may survive; Worklease stops draining at the deadline,
+so captured output may be truncated.
 
 ## Heartbeats and contention
 
@@ -177,7 +190,7 @@ worklease status --resource "$RESOURCE" --format json
 
 `--json` and `--format json` provide the schema-versioned JSON contract. Default output is human-readable text. Run `worklease COMMAND --help` or `worklease --help-all` for complete command details.
 
-Exit code `2` reports lease or capability conflicts. `stale-claim` means the claim ID no longer owns the resource; `invalid-token` means the claim ID is current but its supplied bearer token is invalid. Reload the credential and revalidate ownership before retrying `invalid-token`; stop mutating under `stale-claim`. Neither response exposes token material.
+Exit code `2` reports lease or capability conflicts. Guarded commands otherwise return the child status; `child-process-timeout` returns `124`. `stale-claim` means the claim ID no longer owns the resource; `invalid-token` means the claim ID is current but its supplied bearer token is invalid. Reload the credential and revalidate ownership before retrying `invalid-token`; stop mutating under `stale-claim`. Neither response exposes token material.
 
 Prefer lease files, token files, or file descriptors for bearer tokens. Never log tokens. Passing `--token` exposes the token in process arguments.
 

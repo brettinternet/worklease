@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_TTL = 900.0
+DEFAULT_EXEC_MAX_DURATION = 3600.0
 MAX_TTL = 3600.0
 MAX_CHECKPOINT_BYTES = 8 * 1024
 MAX_BUNDLE_RESOURCES = 32

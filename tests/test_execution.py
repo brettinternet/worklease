@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing, redirect_stdout
@@ -20,6 +21,7 @@ from worklease import replacement as replacement_module
 from worklease.cli import main as cli_main
 from worklease.execution import MAX_CAPTURE_BYTES, execute, execute_bundle
 from worklease.models import (
+    DEFAULT_EXEC_MAX_DURATION,
     AcquireRequest,
     BundleAcquireRequest,
     BundleMutationRequest,
@@ -525,11 +527,262 @@ class ExecutionTests(unittest.TestCase):
         time.sleep(1.2)
         self.assertFalse(marker.exists())
 
+    def test_exec_timeout_kills_inherited_pipe_descendant_and_is_inspectable(
+        self,
+    ) -> None:
+        request = self.acquire("timeout-resource", operation_id="timeout-exec")
+        started = self.home / "timeout-descendant-started"
+        marker = self.home / "timeout-descendant-must-not-finish"
+        child_code = (
+            "import signal,time; from pathlib import Path; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"Path({str(started)!r}).write_text('started'); "
+            "time.sleep(1); "
+            f"Path({str(marker)!r}).write_text('finished')"
+        )
+        parent_code = (
+            "import subprocess,sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        )
+
+        receipt, code = execute(
+            self.store,
+            request,
+            [sys.executable, "-c", parent_code],
+            maximum_duration=0.1,
+        )
+
+        self.assertEqual(124, code)
+        self.assertFalse(receipt["ok"])
+        self.assertEqual("child-process-timeout", receipt["error"])
+        self.assertEqual(0.1, receipt["maxDuration"])
+        command = cast(dict[str, object], receipt["command"])
+        self.assertEqual(124, command["returncode"])
+        self.assertTrue(command["timedOut"])
+        self.assertTrue(started.exists())
+        time.sleep(1.1)
+        self.assertFalse(marker.exists())
+        inspected = self.store.inspect_operation(request.resource, request.operation_id)
+        self.assertEqual("completed", inspected["state"])
+        replay, replay_code = execute(
+            self.store,
+            request,
+            [sys.executable, "-c", parent_code],
+            maximum_duration=0.1,
+        )
+        self.assertEqual(124, replay_code)
+        self.assertTrue(replay["idempotent"])
+
+    def test_exec_timeout_does_not_wait_for_escaped_grandchild_pipes(self) -> None:
+        if os.name != "posix":
+            self.skipTest("process-group escape requires POSIX sessions")
+        request = self.acquire(
+            "escaped-timeout-resource", operation_id="escaped-timeout-exec"
+        )
+        child_code = (
+            "import os,time; os.setsid(); "
+            "os.write(1, b'before-timeout\\n'); time.sleep(1)"
+        )
+        parent_code = (
+            "import subprocess,sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        )
+
+        started_at = time.monotonic()
+        receipt, code = execute(
+            self.store,
+            request,
+            [sys.executable, "-c", parent_code],
+            maximum_duration=0.05,
+        )
+
+        self.assertLess(time.monotonic() - started_at, 0.5)
+        self.assertEqual(124, code)
+        self.assertEqual("child-process-timeout", receipt["error"])
+        command = cast(dict[str, object], receipt["command"])
+        self.assertEqual("before-timeout\n", command["stdout"])
+
+    def test_exec_timeout_interrupts_escaped_continuous_pipe_writer(self) -> None:
+        if os.name != "posix":
+            self.skipTest("process-group escape requires POSIX sessions")
+        request = self.acquire(
+            "escaped-writer-timeout", operation_id="escaped-writer-timeout-exec"
+        )
+        child_code = (
+            "import os; os.setsid(); chunk=b'x'*65536; "
+            "\nwhile True:\n os.write(1, chunk)"
+        )
+        parent_code = (
+            "import subprocess,sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        )
+
+        started_at = time.monotonic()
+        receipt, code = execute(
+            self.store,
+            request,
+            [sys.executable, "-c", parent_code],
+            maximum_duration=0.05,
+        )
+
+        self.assertLess(time.monotonic() - started_at, 0.5)
+        self.assertEqual(124, code)
+        command = cast(dict[str, object], receipt["command"])
+        self.assertGreater(cast(int, command["stdoutBytes"]), 0)
+
+    def test_exec_timeout_handles_one_pipe_reaching_eof_first(self) -> None:
+        request = self.acquire(
+            "partial-eof-timeout", operation_id="partial-eof-timeout-exec"
+        )
+
+        receipt, code = execute(
+            self.store,
+            request,
+            [
+                sys.executable,
+                "-c",
+                "import os,time; os.close(1); time.sleep(1)",
+            ],
+            maximum_duration=0.05,
+        )
+
+        self.assertEqual(124, code)
+        self.assertEqual("child-process-timeout", receipt["error"])
+        command = cast(dict[str, object], receipt["command"])
+        self.assertTrue(command["timedOut"])
+
+    def test_exec_timeout_wins_when_both_pipes_reach_eof_before_child(self) -> None:
+        request = self.acquire("both-eof-timeout", operation_id="both-eof-timeout-exec")
+
+        receipt, code = execute(
+            self.store,
+            request,
+            [
+                sys.executable,
+                "-c",
+                "import os,time; os.close(1); os.close(2); time.sleep(1)",
+            ],
+            maximum_duration=0.05,
+        )
+
+        self.assertEqual(124, code)
+        self.assertEqual("child-process-timeout", receipt["error"])
+
+    def test_exec_watchdog_kills_child_while_heartbeat_is_blocked(self) -> None:
+        request = self.acquire(
+            "blocked-heartbeat-timeout", operation_id="blocked-heartbeat-exec"
+        )
+        request = MutationRequest(
+            resource=request.resource,
+            claim_id=request.claim_id,
+            token=request.token,
+            revision=request.revision,
+            operation_id=request.operation_id,
+            ttl=0.03,
+        )
+        marker = self.home / "blocked-heartbeat-must-not-finish"
+        original_heartbeat = self.store._heartbeat_for_exec
+        calls = 0
+
+        def blocking_heartbeat(
+            heartbeat_request: MutationRequest, *, lock_held: bool = False
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                time.sleep(0.25)
+                raise sqlite3.OperationalError("blocked writer")
+            return original_heartbeat(heartbeat_request, lock_held=lock_held)
+
+        with (
+            patch.object(
+                self.store, "_heartbeat_for_exec", side_effect=blocking_heartbeat
+            ),
+            self.assertRaisesRegex(LeaseError, "unknown-outcome"),
+        ):
+            execute(
+                self.store,
+                request,
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import time; from pathlib import Path; time.sleep(0.15); "
+                        f"Path({str(marker)!r}).write_text('finished')"
+                    ),
+                ],
+                maximum_duration=0.08,
+            )
+
+        self.assertGreaterEqual(calls, 2)
+        self.assertFalse(marker.exists())
+
+    def test_exec_bundle_timeout_is_completed_failure(self) -> None:
+        resources = ("timeout-bundle-a", "timeout-bundle-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="timeout-bundle-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="timeout-bundle",
+                ttl=5,
+            )
+        )
+        claim = cast(dict[str, object], acquired["claim"])
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=cast(int, claim["revision"]),
+            operation_id="timeout-bundle-exec",
+            ttl=5,
+        )
+
+        receipt, code = execute_bundle(
+            self.store,
+            request,
+            [sys.executable, "-c", "import time; time.sleep(1)"],
+            maximum_duration=0.05,
+        )
+
+        self.assertEqual(124, code)
+        self.assertEqual("child-process-timeout", receipt["error"])
+        command = cast(dict[str, object], receipt["command"])
+        self.assertTrue(command["timedOut"])
+        inspected = self.store.inspect_bundle_operation(resources, request.operation_id)
+        self.assertEqual("completed", inspected["state"])
+
+    def test_exec_rejects_invalid_maximum_duration_before_ledger_write(self) -> None:
+        request = self.acquire("invalid-duration", operation_id="invalid-duration-exec")
+        for value in (
+            0,
+            -1,
+            float("inf"),
+            float("nan"),
+            threading.TIMEOUT_MAX * 2,
+            10**10000,
+        ):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(LeaseError, "invalid-max-duration"),
+            ):
+                execute(
+                    self.store,
+                    request,
+                    [sys.executable, "-c", "pass"],
+                    maximum_duration=value,
+                )
+        with self.assertRaisesRegex(LeaseError, "operation-not-found"):
+            self.store.inspect_operation(request.resource, request.operation_id)
+
     def test_started_intent_is_unknown_outcome_and_never_reruns(self) -> None:
         request = self.acquire()
         operation_request = request.request_dict(
             argv=[sys.executable, "-c", "print('must not run')"],
             executionDirectory={"mode": "caller"},
+            maxDuration=DEFAULT_EXEC_MAX_DURATION,
         )
         self.assertIsNone(
             self.store.begin_operation(request, "exec", operation_request)
@@ -716,7 +969,8 @@ from worklease.store import LeaseStore
 store = LeaseStore({str(self.home)!r})
 request = MutationRequest({request.resource!r}, {request.claim_id!r}, {request.token!r}, {request.revision}, {request.operation_id!r}, ttl=5)
 store.begin_operation(request, 'exec', request.request_dict(
-    argv=['echo', 'crash'], executionDirectory={{'mode': 'caller'}}
+    argv=['echo', 'crash'], executionDirectory={{'mode': 'caller'}},
+    maxDuration={DEFAULT_EXEC_MAX_DURATION!r}
 ))
 """
         environment = {

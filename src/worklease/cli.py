@@ -18,7 +18,7 @@ from . import cli_dispatch as _cli_dispatch
 from ._release_metadata import PUBLISHED_RELEASE_VERSION
 from .cli_dispatch import dispatch_stateless, dispatch_store
 from .credentials import resolve_credential
-from .models import DEFAULT_TTL, LeaseError
+from .models import DEFAULT_EXEC_MAX_DURATION, DEFAULT_TTL, LeaseError
 from .store import DEFAULT_GC_RETENTION_DAYS, LeaseStore
 
 _acquire_with_wait = _cli_dispatch._acquire_with_wait
@@ -371,6 +371,10 @@ The `--` separator is optional when the child executable is the first positional
 argument. Use it for clarity or when the executable begins with `-`; after the
 executable, every argument is passed to the child unchanged.
 
+Execution and inherited-pipe draining are bounded by --max-duration. On expiry,
+the process group is terminated and child-process-timeout exits 124. A grandchild
+outside that process group can retain inherited pipes until the bound expires.
+
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 
@@ -395,6 +399,10 @@ Example:
 The `--` separator is optional when the child executable is the first positional
 argument. Use it for clarity or when the executable begins with `-`; after the
 executable, every argument is passed to the child unchanged.
+
+Execution and inherited-pipe draining are bounded by --max-duration. On expiry,
+the process group is terminated and child-process-timeout exits 124. A grandchild
+outside that process group can retain inherited pipes until the bound expires.
 
 The operation ID is generated when omitted; replay it only with the identical
 request."""
@@ -466,6 +474,19 @@ def _add_ttl_argument(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_TTL,
         type=float,
         help=f"lease lifetime in seconds (default: {DEFAULT_TTL:g})",
+    )
+
+
+def _add_max_duration_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-M",
+        "--max-duration",
+        default=DEFAULT_EXEC_MAX_DURATION,
+        type=float,
+        help=(
+            "maximum child runtime and pipe-drain duration in seconds "
+            f"(default: {DEFAULT_EXEC_MAX_DURATION:g}; timeout exits 124)"
+        ),
     )
 
 
@@ -1172,6 +1193,7 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(execute_parser)
     _common_claim_arguments(execute_parser)
     _execution_directory_arguments(execute_parser)
+    _add_max_duration_argument(execute_parser)
     execute_parser.add_argument("command", nargs=argparse.REMAINDER)
 
     heartbeat_bundle_parser = commands.add_parser(
@@ -1207,6 +1229,7 @@ def _parser() -> _ArgumentParser:
     _add_output_arguments(execute_bundle_parser)
     _common_bundle_claim_arguments(execute_bundle_parser)
     _execution_directory_arguments(execute_bundle_parser)
+    _add_max_duration_argument(execute_bundle_parser)
     execute_bundle_parser.add_argument("command", nargs=argparse.REMAINDER)
     replace_parser = commands.add_parser(
         "replace-file",

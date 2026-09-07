@@ -263,14 +263,16 @@ def dispatch_store(
         command = list(args.command)
         if command and command[0] == "--":
             command = command[1:]
-        return execute_bundle(store, bundle_request_from_args(args), command)
+        return execute_bundle(
+            store, bundle_request_from_args(args), command, args.max_duration
+        )
     if operation == "exec":
         from .execution import execute
 
         command = list(args.command)
         if command and command[0] == "--":
             command = command[1:]
-        return execute(store, request_from_args(args), command)
+        return execute(store, request_from_args(args), command, args.max_duration)
     if operation == "replace-file":
         from .replacement import replace_file
 

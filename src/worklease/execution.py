@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import selectors
 import signal
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Sequence
 from contextlib import closing, suppress
 from dataclasses import dataclass, replace
@@ -15,31 +17,41 @@ from typing import BinaryIO, cast
 
 from .execution_context import provider_environment, resolve_execution_directory
 from .locking import resource_lock, resource_locks
-from .models import BundleMutationRequest, LeaseError, MutationRequest, require_text
+from .models import (
+    DEFAULT_EXEC_MAX_DURATION,
+    BundleMutationRequest,
+    LeaseError,
+    MutationRequest,
+    require_text,
+)
 from .store import LeaseStore
 
 MAX_CAPTURE_BYTES = 1024 * 1024
+EXEC_TIMEOUT_EXIT_CODE = 124
 _READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(slots=True)
 class _BoundedCapture:
-    """Continuously drain one pipe while retaining bounded receipt output."""
+    """Drain one nonblocking pipe while retaining bounded receipt output."""
 
     stream: BinaryIO
     content: bytearray
     total_bytes: int = 0
-    error: BaseException | None = None
+    eof: bool = False
 
-    def drain(self) -> None:
+    def read_ready(self) -> None:
         try:
-            while chunk := self.stream.read(_READ_CHUNK_BYTES):
-                self.total_bytes += len(chunk)
-                remaining = MAX_CAPTURE_BYTES - len(self.content)
-                if remaining > 0:
-                    self.content.extend(chunk[:remaining])
-        except (OSError, ValueError) as error:
-            self.error = error
+            chunk = os.read(self.stream.fileno(), _READ_CHUNK_BYTES)
+        except BlockingIOError:
+            return
+        if not chunk:
+            self.eof = True
+            return
+        self.total_bytes += len(chunk)
+        remaining = MAX_CAPTURE_BYTES - len(self.content)
+        if remaining > 0:
+            self.content.extend(chunk[:remaining])
 
     def result(self) -> tuple[str, int, bool]:
         text = bytes(self.content).decode("utf-8", errors="replace")
@@ -57,9 +69,12 @@ class _BoundedCapture:
 def _capture_output(
     process: subprocess.Popen[bytes],
     renew: Callable[[], None],
+    terminate: Callable[[subprocess.Popen[bytes]], None],
     interval: float,
-) -> tuple[tuple[str, int, bool], tuple[str, int, bool]]:
-    """Drain both child pipes concurrently while ownership is renewed."""
+    deadline: float,
+    deadline_reached: threading.Event,
+) -> tuple[tuple[str, int, bool], tuple[str, int, bool], bool]:
+    """Drain child pipes without blocking past the execution deadline."""
 
     assert process.stdout is not None
     assert process.stderr is not None
@@ -67,29 +82,55 @@ def _capture_output(
         _BoundedCapture(cast(BinaryIO, process.stdout), bytearray()),
         _BoundedCapture(cast(BinaryIO, process.stderr), bytearray()),
     )
-    readers = tuple(
-        threading.Thread(target=capture.drain, daemon=True) for capture in captures
-    )
-    for reader in readers:
-        reader.start()
-
-    while process.poll() is None or any(reader.is_alive() for reader in readers):
-        for capture in captures:
-            if capture.error is not None:
-                raise OSError("child output capture failed") from capture.error
-        if process.poll() is None:
-            with suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=interval)
-        else:
-            for reader in readers:
-                reader.join(timeout=interval / len(readers))
-        if process.poll() is None or any(reader.is_alive() for reader in readers):
-            renew()
-
     for capture in captures:
-        if capture.error is not None:
-            raise OSError("child output capture failed") from capture.error
-    return captures[0].result(), captures[1].result()
+        os.set_blocking(capture.stream.fileno(), False)
+
+    timed_out = False
+    next_renewal = time.monotonic() + interval
+    with selectors.DefaultSelector() as selector:
+        for capture in captures:
+            selector.register(capture.stream, selectors.EVENT_READ, capture)
+
+        while process.poll() is None or any(not capture.eof for capture in captures):
+            if deadline_reached.is_set():
+                timed_out = True
+                break
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                deadline_reached.set()
+                timed_out = True
+                terminate(process)
+                break
+            wait_interval = min(remaining, max(0, next_renewal - now))
+            for key, _ in selector.select(wait_interval):
+                capture = cast(_BoundedCapture, key.data)
+                capture.read_ready()
+                if capture.eof:
+                    selector.unregister(capture.stream)
+                    capture.stream.close()
+            if deadline_reached.is_set() or time.monotonic() >= deadline:
+                if not deadline_reached.is_set():
+                    deadline_reached.set()
+                    terminate(process)
+                timed_out = True
+                break
+            if (
+                process.poll() is None or any(not capture.eof for capture in captures)
+            ) and time.monotonic() >= next_renewal:
+                renew()
+                next_renewal = time.monotonic() + interval
+
+        if timed_out:
+            for capture in captures:
+                if capture.eof:
+                    continue
+                capture.read_ready()
+                with suppress(KeyError):
+                    selector.unregister(capture.stream)
+                capture.stream.close()
+
+    return captures[0].result(), captures[1].result(), timed_out
 
 
 def _command_receipt(
@@ -128,6 +169,16 @@ class GuardedExecutor:
         return values
 
     @staticmethod
+    def _validate_maximum_duration(maximum_duration: float) -> float:
+        try:
+            value = float(maximum_duration)
+        except (OverflowError, TypeError, ValueError) as error:
+            raise LeaseError("invalid-max-duration", code=64) from error
+        if not 0 < value <= threading.TIMEOUT_MAX:
+            raise LeaseError("invalid-max-duration", code=64)
+        return value
+
+    @staticmethod
     def _close_pipes(process: subprocess.Popen[bytes]) -> None:
         for stream in (process.stdout, process.stderr):
             if stream is not None:
@@ -135,7 +186,13 @@ class GuardedExecutor:
                     stream.close()
 
     @classmethod
-    def _terminate(cls, process: subprocess.Popen[bytes]) -> None:
+    def _terminate(
+        cls,
+        process: subprocess.Popen[bytes],
+        *,
+        grace_period: float = 2,
+        close_pipes: bool = True,
+    ) -> None:
         # A completed parent can still have descendants holding our pipes open.
         # On POSIX the dedicated process group is the ownership boundary.
         try:
@@ -145,8 +202,8 @@ class GuardedExecutor:
                 except ProcessLookupError, PermissionError:
                     return
                 try:
-                    if process.poll() is None:
-                        process.wait(timeout=2)
+                    if process.poll() is None and grace_period > 0:
+                        process.wait(timeout=grace_period)
                 except subprocess.TimeoutExpired:
                     pass
                 with suppress(ProcessLookupError, PermissionError):
@@ -160,25 +217,48 @@ class GuardedExecutor:
             if process.poll() is None:
                 process.terminate()
                 try:
-                    process.wait(timeout=2)
+                    if grace_period > 0:
+                        process.wait(timeout=grace_period)
                 except subprocess.TimeoutExpired:
+                    pass
+                if process.poll() is None:
                     process.kill()
                     process.wait()
         finally:
-            cls._close_pipes(process)
+            if close_pipes:
+                cls._close_pipes(process)
+
+    @classmethod
+    def _terminate_at_deadline(cls, process: subprocess.Popen[bytes]) -> None:
+        # Buffered pipe close can block behind a reader when a descendant escaped
+        # the process group. Daemon drains may finish later, but the guard returns.
+        cls._terminate(process, grace_period=0, close_pipes=False)
+
+    @classmethod
+    def _expire(
+        cls, process: subprocess.Popen[bytes], deadline_reached: threading.Event
+    ) -> None:
+        deadline_reached.set()
+        cls._terminate_at_deadline(process)
 
     def execute(
-        self, request: MutationRequest, command: Sequence[str]
+        self,
+        request: MutationRequest,
+        command: Sequence[str],
+        maximum_duration: float = DEFAULT_EXEC_MAX_DURATION,
     ) -> tuple[dict[str, object], int]:
         """Execute an argv without a shell and persist an idempotent receipt."""
 
         argv = self._validate_command(command)
+        maximum_duration = self._validate_maximum_duration(maximum_duration)
         execution_directory = resolve_execution_directory(
             request.provider_directory, git_primary=request.git_primary
         )
         ttl = request.ttl
         operation_request = request.request_dict(
-            argv=argv, executionDirectory=execution_directory.request_value()
+            argv=argv,
+            executionDirectory=execution_directory.request_value(),
+            maxDuration=maximum_duration,
         )
         with (
             resource_lock(request.resource, self.store.home),
@@ -201,6 +281,8 @@ class GuardedExecutor:
             current_request = request
             heartbeat_count = 0
             process: subprocess.Popen[bytes] | None = None
+            timed_out = False
+            deadline_reached = threading.Event()
 
             def renew() -> None:
                 nonlocal current_request, heartbeat_count
@@ -245,12 +327,29 @@ class GuardedExecutor:
                 )
                 interval = max(float(ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
-                stdout, stderr = _capture_output(process, renew, interval)
-                self._close_pipes(process)
+                deadline = time.monotonic() + maximum_duration
+                watchdog = threading.Timer(
+                    maximum_duration, self._expire, (process, deadline_reached)
+                )
+                watchdog.daemon = True
+                watchdog.start()
+                try:
+                    stdout, stderr, timed_out = _capture_output(
+                        process,
+                        renew,
+                        self._terminate_at_deadline,
+                        interval,
+                        deadline,
+                        deadline_reached,
+                    )
+                finally:
+                    watchdog.cancel()
+                if not timed_out:
+                    self._close_pipes(process)
                 renew()
             except LeaseError:
                 if process is not None:
-                    self._terminate(process)
+                    self._terminate(process, close_pipes=not timed_out)
                 raise
             except OSError as error:
                 if process is not None:
@@ -286,9 +385,12 @@ class GuardedExecutor:
                 raise
             else:
                 assert process is not None
-                returncode = int(process.returncode)
-                if returncode < 0:
-                    returncode = 128 + (-returncode)
+                if timed_out:
+                    returncode = EXEC_TIMEOUT_EXIT_CODE
+                else:
+                    returncode = int(process.returncode)
+                    if returncode < 0:
+                        returncode = 128 + (-returncode)
 
             command_receipt = _command_receipt(
                 argv,
@@ -304,10 +406,14 @@ class GuardedExecutor:
                 "idempotent": False,
                 "command": command_receipt,
                 "ttl": float(ttl),
+                "maxDuration": maximum_duration,
                 "guarantee": "local-coordination",
                 "providerFencing": False,
             }
-            if returncode != 0:
+            if timed_out:
+                receipt["error"] = "child-process-timeout"
+                command_receipt["timedOut"] = True
+            elif returncode != 0:
                 receipt["error"] = "child-process-failed"
             completed = self.store.complete_operation(
                 current_request,
@@ -320,16 +426,22 @@ class GuardedExecutor:
             return completed, returncode
 
     def execute_bundle(
-        self, request: BundleMutationRequest, command: Sequence[str]
+        self,
+        request: BundleMutationRequest,
+        command: Sequence[str],
+        maximum_duration: float = DEFAULT_EXEC_MAX_DURATION,
     ) -> tuple[dict[str, object], int]:
         """Execute one argv while renewing an all-member bundle claim."""
 
         argv = self._validate_command(command)
+        maximum_duration = self._validate_maximum_duration(maximum_duration)
         execution_directory = resolve_execution_directory(
             request.provider_directory, git_primary=request.git_primary
         )
         operation_request = request.request_dict(
-            argv=argv, executionDirectory=execution_directory.request_value()
+            argv=argv,
+            executionDirectory=execution_directory.request_value(),
+            maxDuration=maximum_duration,
         )
         operation_request["tokenHash"] = hashlib.sha256(
             request.token.encode("utf-8")
@@ -355,6 +467,8 @@ class GuardedExecutor:
             current_request = request
             heartbeat_count = 0
             process: subprocess.Popen[bytes] | None = None
+            timed_out = False
+            deadline_reached = threading.Event()
 
             def renew() -> None:
                 nonlocal current_request, heartbeat_count
@@ -399,12 +513,29 @@ class GuardedExecutor:
                 )
                 interval = max(float(request.ttl) / 3, 1e-6)
                 interval = min(interval, 5.0)
-                stdout, stderr = _capture_output(process, renew, interval)
-                self._close_pipes(process)
+                deadline = time.monotonic() + maximum_duration
+                watchdog = threading.Timer(
+                    maximum_duration, self._expire, (process, deadline_reached)
+                )
+                watchdog.daemon = True
+                watchdog.start()
+                try:
+                    stdout, stderr, timed_out = _capture_output(
+                        process,
+                        renew,
+                        self._terminate_at_deadline,
+                        interval,
+                        deadline,
+                        deadline_reached,
+                    )
+                finally:
+                    watchdog.cancel()
+                if not timed_out:
+                    self._close_pipes(process)
                 renew()
             except LeaseError:
                 if process is not None:
-                    self._terminate(process)
+                    self._terminate(process, close_pipes=not timed_out)
                 raise
             except OSError as error:
                 if process is not None:
@@ -440,9 +571,12 @@ class GuardedExecutor:
                 raise
             else:
                 assert process is not None
-                returncode = int(process.returncode)
-                if returncode < 0:
-                    returncode = 128 + (-returncode)
+                if timed_out:
+                    returncode = EXEC_TIMEOUT_EXIT_CODE
+                else:
+                    returncode = int(process.returncode)
+                    if returncode < 0:
+                        returncode = 128 + (-returncode)
 
             command_receipt = _command_receipt(
                 argv,
@@ -459,10 +593,14 @@ class GuardedExecutor:
                 "resources": list(request.resources),
                 "command": command_receipt,
                 "ttl": float(request.ttl),
+                "maxDuration": maximum_duration,
                 "guarantee": "local-coordination",
                 "providerFencing": False,
             }
-            if returncode != 0:
+            if timed_out:
+                receipt["error"] = "child-process-timeout"
+                command_receipt["timedOut"] = True
+            elif returncode != 0:
                 receipt["error"] = "child-process-failed"
             completed = self.store.complete_bundle_operation(
                 current_request,
@@ -476,18 +614,24 @@ class GuardedExecutor:
 
 
 def execute(
-    store: LeaseStore, request: MutationRequest, command: Sequence[str]
+    store: LeaseStore,
+    request: MutationRequest,
+    command: Sequence[str],
+    maximum_duration: float = DEFAULT_EXEC_MAX_DURATION,
 ) -> tuple[dict[str, object], int]:
     """Convenience wrapper around :class:`GuardedExecutor`."""
 
     require_text(request.operation_id, "operation-id")
-    return GuardedExecutor(store).execute(request, command)
+    return GuardedExecutor(store).execute(request, command, maximum_duration)
 
 
 def execute_bundle(
-    store: LeaseStore, request: BundleMutationRequest, command: Sequence[str]
+    store: LeaseStore,
+    request: BundleMutationRequest,
+    command: Sequence[str],
+    maximum_duration: float = DEFAULT_EXEC_MAX_DURATION,
 ) -> tuple[dict[str, object], int]:
     """Convenience wrapper for guarded execution over a bundle."""
 
     require_text(request.operation_id, "operation-id")
-    return GuardedExecutor(store).execute_bundle(request, command)
+    return GuardedExecutor(store).execute_bundle(request, command, maximum_duration)

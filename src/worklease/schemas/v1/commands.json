@@ -91,12 +91,14 @@
             "stderrBytes": {"type": "integer", "minimum": 0},
             "stdoutTruncated": {"type": "boolean"},
             "stderrTruncated": {"type": "boolean"},
+            "timedOut": {"type": "boolean"},
             "executionDirectory": {"$ref": "common.json#/$defs/ExecutionDirectory"}
           },
           "additionalProperties": true
         },
         "guarantee": {"enum": ["fenced", "local-coordination"]},
         "ttl": {"type": "number"},
+        "maxDuration": {"type": "number", "exclusiveMinimum": 0},
         "path": {"type": "string"},
         "previousSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
         "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
