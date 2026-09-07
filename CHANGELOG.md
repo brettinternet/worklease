@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-09-07
+
 ### Fixed
 
 - **Mutual exclusion under a backward clock step.** 0.8.0 treated any lease whose stored expiry outlived its granted TTL as expired, so a backward clock step as small as 50 ms dispossessed a live holder and let a second agent acquire the same resource. A live holder is now never expired by a clock step; instead the next contender re-anchors an implausible stored expiry to the corrected clock, so an abandoned lease is reclaimable within one TTL rather than after the full size of the step.
