@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hmac
 import json
 import sqlite3
 from contextlib import closing, nullcontext
 from typing import Any
 
+from .credentials import credentials_match
 from .locking import resource_lock
 from .models import (
     BundleClaim,
@@ -122,11 +122,17 @@ class ClaimStoreMixin:
             row = self._bundle_current(connection, request.resources)
             if row is None:
                 raise LeaseError("claim-not-found", resource=resource)
-            if row["claim_id"] != request.claim_id or not hmac.compare_digest(
-                str(row["token"]), request.token
-            ):
+            if row["claim_id"] != request.claim_id:
                 raise LeaseError(
                     "stale-claim",
+                    resource=resource,
+                    claim=self._bundle_claim(connection, row).to_dict(
+                        include_token=False
+                    ),
+                )
+            if not credentials_match(str(row["token"]), request.token):
+                raise LeaseError(
+                    "invalid-token",
                     resource=resource,
                     claim=self._bundle_claim(connection, row).to_dict(
                         include_token=False
@@ -146,11 +152,15 @@ class ClaimStoreMixin:
         row = self._current(connection, request.resource)
         if row is None:
             raise LeaseError("claim-not-found", resource=request.resource)
-        if row["claim_id"] != request.claim_id or not hmac.compare_digest(
-            str(row["token"]), request.token
-        ):
+        if row["claim_id"] != request.claim_id:
             raise LeaseError(
                 "stale-claim",
+                resource=request.resource,
+                claim=self._claim(row).to_dict(include_token=False),
+            )
+        if not credentials_match(str(row["token"]), request.token):
+            raise LeaseError(
+                "invalid-token",
                 resource=request.resource,
                 claim=self._claim(row).to_dict(include_token=False),
             )

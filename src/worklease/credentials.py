@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import stat
 from collections.abc import Callable
@@ -10,6 +11,12 @@ from typing import Any
 from .models import LeaseError
 
 MAX_CREDENTIAL_BYTES = 4096
+
+
+def credentials_match(stored: str, supplied: str) -> bool:
+    """Compare UTF-8 credentials without exposing content or length shortcuts."""
+
+    return hmac.compare_digest(stored.encode("utf-8"), supplied.encode("utf-8"))
 
 
 def _error(reason: str) -> LeaseError:

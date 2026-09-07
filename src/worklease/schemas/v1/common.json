@@ -12,6 +12,12 @@
       },
       "additionalProperties": true
     },
+    "ErrorReason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable machine-readable failure reason. invalid-token means the claim ID is current but the supplied bearer token is not valid; consumers must accept other reason values.",
+      "examples": ["invalid-token"]
+    },
     "ExecutionDirectory": {
       "type": "object",
       "required": ["mode"],
@@ -43,7 +49,7 @@
           "required": ["error"],
           "properties": {
             "ok": {"const": false},
-            "error": {"type": "string", "minLength": 1}
+            "error": {"$ref": "#/$defs/ErrorReason"}
           }
         }
       ]

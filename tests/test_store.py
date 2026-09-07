@@ -498,7 +498,7 @@ class StoreTests(unittest.TestCase):
             operation_id="wrong-token",
             successor_claim_id="wrong-token-successor",
         )
-        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+        with self.assertRaisesRegex(LeaseError, "invalid-token"):
             self.store.transfer(wrong_token)
         self.assertEqual(
             str(claim["claimId"]),
@@ -1170,7 +1170,7 @@ class StoreTests(unittest.TestCase):
                 tuple(reversed(resources)), "bundle-unknown"
             )
 
-        with self.assertRaisesRegex(LeaseError, "stale-claim"):
+        with self.assertRaisesRegex(LeaseError, "invalid-token"):
             self.store.reconcile_bundle_operation(
                 replace(reconciliation_request, token="wrong"),
                 "bundle-unknown",
@@ -1409,6 +1409,15 @@ class StoreTests(unittest.TestCase):
         self.assertGreater(next_claim["claim"]["revision"], request.revision)
         replay_after_reclaim = self.store.release(request, "checkpoint complete")
         self.assertTrue(replay_after_reclaim["idempotent"])
+
+        wrong_historical_token = replace(request, token="wrong-historical-token")
+        with self.assertRaises(LeaseError) as raised:
+            self.store.release(wrong_historical_token, "checkpoint complete")
+        self.assertEqual("stale-claim", raised.exception.reason)
+        self.assertEqual(2, raised.exception.code)
+        serialized_error = json.dumps(raised.exception.as_dict())
+        self.assertNotIn(str(request.token), serialized_error)
+        self.assertNotIn("wrong-historical-token", serialized_error)
 
     def test_list_and_status_redact_tokens(self) -> None:
         acquired = self.store.acquire(self.acquire_request("resource", "claim", ttl=1))

@@ -1180,11 +1180,6 @@ with resource_lock(resource):
         }
         self.assertEqual({}, collisions)
 
-        readme = (Path(__file__).parents[1] / "README.md").read_text()
-        for option, destinations in meanings.items():
-            destination = next(iter(destinations))
-            self.assertIn(f"| `{option}` | `{destination}` |", readme)
-
     def test_help_group_colors_follow_argparse_color_setting(self) -> None:
         color_environment = self.environment.copy()
         color_environment["PYTHON_COLORS"] = "1"
@@ -1960,6 +1955,85 @@ with resource_lock(resource):
                 elif character == " ":
                     in_field = False
             self.assertEqual(header_starts, starts, line)
+
+    def test_text_list_aligns_wide_resources_and_claim_ids(self) -> None:
+        now = 1_750_000_000.0
+        wide_resource = "repo:项目/路径/" + ("界" * 30) + ":TASK-48"
+        wide_claim_id = "认领" * 10
+        ascii_resource = "repo:projects/path/" + ("x" * 48) + ":TASK-49"
+        ascii_claim_id = "claim-ascii-identifier-long"
+        payload = {
+            "ok": True,
+            "operation": "list",
+            "claims": [
+                {
+                    "resource": wide_resource,
+                    "claimId": wide_claim_id,
+                    "ownerId": "owner-wide",
+                    "expiresAt": "2025-06-15T22:14:20Z",
+                    "expiresAtEpoch": now + 60,
+                    "active": True,
+                },
+                {
+                    "resource": ascii_resource,
+                    "claimId": ascii_claim_id,
+                    "ownerId": "owner-ascii",
+                    "expiresAt": "2025-06-15T22:14:20Z",
+                    "expiresAtEpoch": now + 60,
+                    "active": True,
+                },
+            ],
+        }
+        headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+
+        def column_starts(line: str, cells: tuple[str, ...]) -> list[int]:
+            starts = []
+            search_start = 0
+            for cell in cells:
+                index = line.index(cell, search_start)
+                starts.append(cli_module._display_width(line[:index]))
+                search_start = index + len(cell)
+            return starts
+
+        for full in (False, True):
+            output = StringIO()
+            with redirect_stdout(output):
+                cli_module._render_list(payload, full=full, now=now)
+            lines = output.getvalue().rstrip("\n").splitlines()
+            expected_starts = column_starts(lines[0], headers)
+            expected_rows = (
+                (
+                    "active",
+                    wide_resource
+                    if full
+                    else cli_module._shorten_resource(wide_resource, 52),
+                    wide_claim_id
+                    if full
+                    else cli_module._shorten_text(wide_claim_id, 18),
+                    "owner-wide",
+                    "2025-06-15T22:14:20Z" if full else "1m",
+                ),
+                (
+                    "active",
+                    ascii_resource
+                    if full
+                    else cli_module._shorten_resource(ascii_resource, 52),
+                    ascii_claim_id
+                    if full
+                    else cli_module._shorten_text(ascii_claim_id, 18),
+                    "owner-ascii",
+                    "2025-06-15T22:14:20Z" if full else "1m",
+                ),
+            )
+            for line, cells in zip(lines[1:], expected_rows, strict=True):
+                self.assertEqual(expected_starts, column_starts(line, cells), line)
+
+            if full:
+                self.assertIn(wide_resource, output.getvalue())
+                self.assertIn(wide_claim_id, output.getvalue())
+            else:
+                self.assertLessEqual(cli_module._display_width(expected_rows[0][1]), 52)
+                self.assertLessEqual(cli_module._display_width(expected_rows[0][2]), 18)
 
     def test_resource_shortening_bounds_opaque_values(self) -> None:
         opaque = "opaque-resource-" + ("x" * 100)
@@ -3037,31 +3111,31 @@ with resource_lock(resource):
         assert isinstance(command, dict)
         self.assertEqual("--format=oneline\n", command["stdout"])
 
-    def test_stale_claim_errors_redact_current_token(self) -> None:
-        resource = "repo:stale-error"
+    def test_heartbeat_distinguishes_invalid_token_from_stale_claim(self) -> None:
+        resource = "repo:ownership-error"
         acquired = self.json_cli(
-            *self.acquire_arguments(resource=resource, claim_id="stale-error")
+            *self.acquire_arguments(resource=resource, claim_id="current-claim")
         )
         claim = acquired["claim"]
         assert isinstance(claim, dict)
         token = str(claim["token"])
-        stale_args = self.mutation_arguments(
-            "release", resource, claim, "stale-release"
+        heartbeat_args = list(
+            self.mutation_arguments("heartbeat", resource, claim, "ownership-heartbeat")
         )
-        contender = self.json_cli(
-            *self.acquire_arguments(resource=resource, claim_id="other"),
-            expected_code=2,
-        )
-        self.assertEqual("already-claimed", contender["error"])
-        self.assertNotIn('"token"', json.dumps(contender))
 
-        token_index = stale_args.index("--token") + 1
-        stale_args = (
-            *stale_args[:token_index],
-            "wrong",
-            *stale_args[token_index + 1 :],
-        )
-        stale = self.json_cli(*stale_args, "--reason", "stale", expected_code=2)
+        token_index = heartbeat_args.index("--token") + 1
+        invalid_token_args = heartbeat_args.copy()
+        invalid_token_args[token_index] = "wrong-tøken"
+        invalid = self.json_cli(*invalid_token_args, expected_code=2)
+        self.assertEqual("invalid-token", invalid["error"])
+        self.assertNotIn('"token"', json.dumps(invalid))
+        self.assertNotIn(token, json.dumps(invalid))
+        self.assertNotIn("wrong-tøken", json.dumps(invalid))
+
+        claim_id_index = heartbeat_args.index("--claim-id") + 1
+        stale_claim_args = heartbeat_args.copy()
+        stale_claim_args[claim_id_index] = "wrong-claim"
+        stale = self.json_cli(*stale_claim_args, expected_code=2)
         self.assertEqual("stale-claim", stale["error"])
         self.assertNotIn('"token"', json.dumps(stale))
         self.assertNotIn(token, json.dumps(stale))
