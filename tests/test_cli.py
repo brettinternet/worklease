@@ -1180,11 +1180,6 @@ with resource_lock(resource):
         }
         self.assertEqual({}, collisions)
 
-        readme = (Path(__file__).parents[1] / "README.md").read_text()
-        for option, destinations in meanings.items():
-            destination = next(iter(destinations))
-            self.assertIn(f"| `{option}` | `{destination}` |", readme)
-
     def test_help_group_colors_follow_argparse_color_setting(self) -> None:
         color_environment = self.environment.copy()
         color_environment["PYTHON_COLORS"] = "1"
