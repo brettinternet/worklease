@@ -593,10 +593,10 @@ class ExecutionTests(unittest.TestCase):
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.05,
+            maximum_duration=0.2,
         )
 
-        self.assertLess(time.monotonic() - started_at, 0.5)
+        self.assertLess(time.monotonic() - started_at, 0.7)
         self.assertEqual(124, code)
         self.assertEqual("child-process-timeout", receipt["error"])
         command = cast(dict[str, object], receipt["command"])
@@ -622,10 +622,10 @@ class ExecutionTests(unittest.TestCase):
             self.store,
             request,
             [sys.executable, "-c", parent_code],
-            maximum_duration=0.05,
+            maximum_duration=0.2,
         )
 
-        self.assertLess(time.monotonic() - started_at, 0.5)
+        self.assertLess(time.monotonic() - started_at, 0.7)
         self.assertEqual(124, code)
         command = cast(dict[str, object], receipt["command"])
         self.assertGreater(cast(int, command["stdoutBytes"]), 0)
@@ -690,7 +690,7 @@ class ExecutionTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls > 1:
-                time.sleep(0.25)
+                time.sleep(1)
                 raise sqlite3.OperationalError("blocked writer")
             return original_heartbeat(heartbeat_request, lock_held=lock_held)
 
@@ -707,11 +707,11 @@ class ExecutionTests(unittest.TestCase):
                     sys.executable,
                     "-c",
                     (
-                        "import time; from pathlib import Path; time.sleep(0.15); "
+                        "import time; from pathlib import Path; time.sleep(0.6); "
                         f"Path({str(marker)!r}).write_text('finished')"
                     ),
                 ],
-                maximum_duration=0.08,
+                maximum_duration=0.2,
             )
 
         self.assertGreaterEqual(calls, 2)

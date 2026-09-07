@@ -238,8 +238,10 @@ class GuardedExecutor:
     def _expire(
         cls, process: subprocess.Popen[bytes], deadline_reached: threading.Event
     ) -> None:
-        deadline_reached.set()
-        cls._terminate_at_deadline(process)
+        try:
+            cls._terminate_at_deadline(process)
+        finally:
+            deadline_reached.set()
 
     def execute(
         self,
@@ -344,6 +346,7 @@ class GuardedExecutor:
                     )
                 finally:
                     watchdog.cancel()
+                    watchdog.join()
                 if not timed_out:
                     self._close_pipes(process)
                 renew()
@@ -530,6 +533,7 @@ class GuardedExecutor:
                     )
                 finally:
                     watchdog.cancel()
+                    watchdog.join()
                 if not timed_out:
                     self._close_pipes(process)
                 renew()
