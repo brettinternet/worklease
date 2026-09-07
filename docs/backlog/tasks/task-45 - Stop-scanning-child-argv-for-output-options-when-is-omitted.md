@@ -1,9 +1,11 @@
 ---
 id: TASK-45
 title: Stop scanning child argv for output options when -- is omitted
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@codex-task-45'
 created_date: '2026-09-07 03:27'
+updated_date: '2026-09-07 04:52'
 labels:
   - cli
 dependencies: []
