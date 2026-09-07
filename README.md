@@ -83,7 +83,11 @@ The CLI emits compact human-readable text by default. Use `--json` (or
 `--format json`) for the schema-versioned JSON automation contract; `--format
 text` is an explicit equivalent. Output selection may appear before the
 top-level command or after the command's final subcommand name, but `--json`
-cannot be combined with `--format`.
+cannot be combined with `--format`. For `exec`, `exec-bundle`, and
+`bundle-exec`, the `--` before the child command is optional when the executable
+is the first positional argument. Use the separator for clarity or when the
+executable begins with `-`; once the executable begins, all remaining options
+belong to the child and do not affect Worklease output formatting.
 
 ### 1. Derive one exact resource
 
@@ -420,8 +424,12 @@ The command grammars are:
   emits `CLAIM <none>`.
 - `status --verbose`: resource and state lines, a full diagnostic `CLAIM`
   block without its token, `UNKNOWN_OPERATIONS` and `UNKNOWN` rows, a
-  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`. Field labels
-  use the same upper-snake convention as all other text renderers.
+  `RELEASE` block or `RELEASE <none>`, and optional `GUIDANCE`. For a bundle
+  member, the claim block uses `RESOURCES` with the ordered bundle resources
+  instead of `RESOURCE`, and unknown operations include started bundle
+  operations such as `exec-bundle`. JSON output likewise uses the claim's
+  `resources` array. Field labels use the same upper-snake convention as all
+  other text renderers.
 - `inspect-operation` and `inspect-operation-bundle`: `OK <operation>`, followed
   by singleton or ordered-bundle identity, kind, state, outcome, hashes, and
   reconciliation timestamps when present.

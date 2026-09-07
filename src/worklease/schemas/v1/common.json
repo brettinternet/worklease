@@ -91,12 +91,22 @@
     "StatusVerboseClaim": {
       "type": "object",
       "required": [
-        "resource", "claimId", "agentId", "sessionId", "ownerId",
-        "workKey", "coordinationOnly", "revision", "acquiredAt",
-        "heartbeatAt", "expiresAt"
+        "claimId", "agentId", "sessionId", "ownerId", "workKey",
+        "coordinationOnly", "revision", "acquiredAt", "heartbeatAt",
+        "expiresAt"
+      ],
+      "oneOf": [
+        {"required": ["resource"]},
+        {"required": ["resources"]}
       ],
       "properties": {
         "resource": {"type": "string"},
+        "resources": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "maxItems": 32
+        },
         "claimId": {"type": "string"},
         "agentId": {"type": "string"},
         "sessionId": {"type": "string"},
