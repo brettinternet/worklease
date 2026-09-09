@@ -237,6 +237,7 @@ example or valid values. Hints never echo rejected argument values.
 | Commands | Ordered output |
 | --- | --- |
 | `version` | Version only |
+| `instructions loop`, `instructions safety` | One concise instruction per line |
 | `key` | `OK key`, `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, `PROVIDER_FENCING` |
 | `policy list` | Header `NAME`, `ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`, then rows |
 | `policy describe` | One `FIELD: value` line per policy field |

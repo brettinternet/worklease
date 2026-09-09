@@ -10,7 +10,7 @@
       "properties": {
         "operation": {
           "enum": [
-            "parse", "version", "key", "policy-list", "policy-describe",
+            "parse", "version", "instructions", "key", "policy-list", "policy-describe",
             "acquire", "bundle-acquire", "acquire-bundle",
             "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle",
             "inspect-operation", "inspect-operation-bundle",
@@ -68,6 +68,12 @@
         },
         "kind": {"type": "string"},
         "version": {"type": "string"},
+        "topic": {"enum": ["loop", "safety"]},
+        "instructions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
         "provider": {"type": "string"},
         "capability": {"type": "string"},
         "scope": {"type": "string"},
@@ -110,7 +116,7 @@
       "if": {
         "properties": {
           "operation": {
-            "enum": ["parse", "version", "key", "policy-list", "policy-describe", "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "inspect-operation-bundle", "reconcile-operation", "reconcile-operation-bundle", "list"]
+            "enum": ["parse", "version", "instructions", "key", "policy-list", "policy-describe", "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle", "inspect-operation", "inspect-operation-bundle", "reconcile-operation", "reconcile-operation-bundle", "list"]
           }
         },
         "required": ["operation"]

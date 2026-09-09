@@ -190,18 +190,57 @@ class CliContractTests(unittest.TestCase):
             "Singleton:",
             "Bundles:",
             "Inspection and reconciliation:",
+            "Guidance:",
             "Maintenance:",
             "acquire-bundle (bundle-acquire)",
             "status-bundle (bundle-status, inspect-bundle)",
         ):
             with self.subTest(section=section):
                 self.assertIn(section, result.stdout)
+        self.assertIn("worklease instructions loop", result.stdout)
         self.assertIn(
             "worklease key --provider backlog-md --source docs/backlog --item TASK-42",
             result.stdout,
         )
         self.assertIn("worklease status --resource local:formatter", result.stdout)
         self.assertEqual(1, result.stdout.count("derive one stable resource key"))
+
+    def test_instructions_cover_agent_loop_and_safety_boundaries(self) -> None:
+        loop = self.run_cli("instructions", "loop")
+        self.assertEqual(0, loop.returncode, loop.stderr)
+        self.assertEqual("", loop.stderr)
+        for phrase in (
+            "same exact canonical resource",
+            "private --lease-file",
+            "on conflict",
+            "Heartbeat before half the TTL",
+            "Revalidate claim ownership",
+            "provider-visible progress",
+            "checkpoint local recovery metadata",
+            "then release",
+            "Stop immediately on stale-claim",
+            "Never log",
+        ):
+            with self.subTest(loop_phrase=phrase):
+                self.assertIn(phrase, loop.stdout)
+
+        safety = self.run_cli("--json", "instructions", "safety")
+        self.assertEqual(0, safety.returncode, safety.stderr)
+        self.assertEqual("", safety.stderr)
+        payload = json.loads(safety.stdout)
+        self.assertEqual("instructions", payload["operation"])
+        self.assertEqual("safety", payload["topic"])
+        guidance = " ".join(payload["instructions"])
+        for phrase in (
+            "provider remains authoritative",
+            "same authority and exact resource",
+            "not provider-fenced",
+            "bearer tokens private",
+            "acquire a fresh claim",
+            "unknown operation outcome",
+        ):
+            with self.subTest(safety_phrase=phrase):
+                self.assertIn(phrase, guidance)
 
     def test_help_exposes_agent_workflow_and_docs_refs(self) -> None:
         self.assertIsNone(PUBLISHED_RELEASE_VERSION)
@@ -219,8 +258,10 @@ class CliContractTests(unittest.TestCase):
             "https://github.com/brettinternet/worklease/blob/main/README.md",
             source_result.stdout,
         )
+        self.assertIn("worklease instructions loop", source_result.stdout)
         self.assertIn(
-            "Workflow semantics and source/provider coordination", source_result.stdout
+            "Advanced workflow semantics and source/provider coordination",
+            source_result.stdout,
         )
         self.assertIn("worklease COMMAND --help", source_result.stdout)
         self.assertIn("schema-versioned JSON with `--json`", source_result.stdout)
@@ -275,6 +316,7 @@ class CliContractTests(unittest.TestCase):
         ]
         expected_headers = [
             "worklease",
+            "worklease instructions",
             "worklease key",
             "worklease policy",
             "worklease policy list",
@@ -1223,6 +1265,7 @@ with resource_lock(resource):
 
     def test_help_examples_cover_every_canonical_command(self) -> None:
         examples = {
+            ("instructions",): "worklease instructions loop",
             (
                 "key",
             ): "worklease key --provider backlog-md --source docs/backlog --item TASK-42",

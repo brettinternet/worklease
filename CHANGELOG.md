@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.3 - 2026-09-09
+
+### Added
+
+- Added `worklease instructions loop` and `worklease instructions safety` for concise, version-matched agent coordination guidance without loading the full workflow skill.
+- Added minimal `AGENTS.md` and Ralph-loop integration examples to the README, with the full skill reserved for advanced workflows.
+
 ## 0.8.2 - 2026-09-07
 
 ### Added

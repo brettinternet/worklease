@@ -18,6 +18,7 @@ from worklease.store import LeaseStore
 READ_ONLY = {
     "parse",
     "version",
+    "instructions",
     "key",
     "policy-list",
     "policy-describe",
@@ -37,6 +38,7 @@ READ_ONLY = {
 RELEASED_OPERATIONS = {
     "parse",
     "version",
+    "instructions",
     "key",
     "policy-list",
     "policy-describe",
@@ -276,6 +278,8 @@ class SchemaContractTests(unittest.TestCase):
             "key", "--provider", "linear", "--source", "team", "--item", "ITEM-1"
         )
         self.assert_matches_commands_schema(success)
+        instructions = self.run_cli("instructions", "loop")
+        self.assert_matches_commands_schema(instructions)
 
         acquired = self.run_cli(
             "acquire",

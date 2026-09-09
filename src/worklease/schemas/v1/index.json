@@ -16,7 +16,7 @@
       "items": {
         "type": "string",
         "enum": [
-          "parse", "version", "key", "policy-list", "policy-describe",
+          "parse", "version", "instructions", "key", "policy-list", "policy-describe",
           "acquire", "bundle-acquire", "acquire-bundle",
           "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle",
           "inspect-operation", "inspect-operation-bundle",

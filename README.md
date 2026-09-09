@@ -194,18 +194,28 @@ worklease release-bundle \
 
 Use the same exact resource order throughout the bundle lifecycle. Bundles coordinate local work only. They do not fence provider writes.
 
-## Agent workflow
+## Agent discovery
 
-Tell your agent to read [skills/AGENTS.md](skills/AGENTS.md) and install the complete [`skills/worklease-workflow`](skills/worklease-workflow/SKILL.md) directory from the same Git tag as the CLI. Installing the skill does not install the CLI.
+For lightweight use, add this to the project's `AGENTS.md` or equivalent:
 
-For example:
-
-```text
-Read https://github.com/brettinternet/worklease/blob/vX.Y.Z/skills/AGENTS.md
-and install the complete Worklease skill for this agent at tag vX.Y.Z.
+```md
+## Multi-agent coordination
+When agents may touch the same work item, use `worklease`.
+Run `worklease instructions loop` before coordinating.
+Claims coordinate cooperating workers only; the backing task system remains authoritative.
 ```
 
-The workflow contract is in [skills/worklease-workflow/SKILL.md](skills/worklease-workflow/SKILL.md). Provider-specific compatibility notes are in [docs/source-provider-sdk-compatibility.md](docs/source-provider-sdk-compatibility.md).
+For a Ralph loop or other multi-agent worker prompt, the CLI supplies concise, version-matched instructions:
+
+```text
+Before editing, run `worklease instructions loop` and follow it.
+All workers must use the same Worklease authority and derive the same exact resource.
+On claim conflict, wait or select other ready work; never edit without the claim.
+```
+
+Use `worklease instructions safety` for the trust, fencing, credential, and recovery boundaries. These commands are the smallest useful integration and can be loaded only when coordination is needed.
+
+Install the complete [`skills/worklease-workflow`](skills/worklease-workflow/SKILL.md) directory only for dependency-aware selection, provider mappings, handoffs, review, or archive workflows. Tell an agent to read [skills/AGENTS.md](skills/AGENTS.md) and install the skill from the same Git tag as the CLI; installing the skill does not install the CLI. Provider compatibility notes are in [docs/source-provider-sdk-compatibility.md](docs/source-provider-sdk-compatibility.md).
 
 ## Automation and safety
 

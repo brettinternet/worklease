@@ -55,9 +55,10 @@ def _agent_workflow_guidance() -> str:
     )
     return f"""\
 {_help_heading("Agent workflow:")}
-  Workflow semantics and source/provider coordination:
+  Start with `worklease instructions loop`; add `instructions safety` for boundaries.
+  Advanced workflow semantics and source/provider coordination:
     {_documentation_url("skills/worklease-workflow/SKILL.md", release_version=release_version)}
-  Project documentation and installation:
+  Project integration and installation:
     {_documentation_url("README.md", release_version=release_version)}
   Use `worklease COMMAND --help` for command syntax and options.
   Automation must request schema-versioned JSON with `--json` (or `--format json`)."""
@@ -127,6 +128,7 @@ _LEASE_FILE_INPUTS = _LEASE_FILE_MUTATIONS | {"transfer"}
 
 _COMMANDS = frozenset(
     {
+        "instructions",
         "key",
         "policy",
         "acquire",
@@ -256,11 +258,14 @@ _TOP_LEVEL_EPILOG = f"""\
                         inspect one ordered bundle operation outcome
     {_help_command("reconcile-operation-bundle")}
                         record an observed ordered bundle operation outcome
+  {_help_heading("Guidance:")}
+    {_help_command("instructions")}        print concise agent coordination instructions
   {_help_heading("Maintenance:")}
     {_help_command("policy")}              inspect available resource-key policies
     {_help_command("gc")}                  inspect or collect records eligible for garbage collection
 
 {_help_heading("Examples:")}
+  worklease instructions loop
   worklease key --provider backlog-md --source docs/backlog --item TASK-42
   worklease status --resource local:formatter
 
@@ -273,6 +278,7 @@ Example:
   {example}"""
 
 
+_INSTRUCTIONS_EPILOG = _single_line_epilog("worklease instructions loop")
 _KEY_EPILOG = _single_line_epilog(
     "worklease key --provider backlog-md --source docs/backlog --item TASK-42"
 )
@@ -733,6 +739,18 @@ def _parser() -> _ArgumentParser:
         parser_class=_ArgumentParser,
         metavar="COMMAND",
         action=_GroupedSubparsers,
+    )
+
+    instructions_parser = commands.add_parser(
+        "instructions",
+        help="print concise agent coordination instructions",
+        epilog=_INSTRUCTIONS_EPILOG,
+    )
+    _add_output_arguments(instructions_parser)
+    instructions_parser.add_argument(
+        "topic",
+        choices=("loop", "safety"),
+        help="instruction set to print",
     )
 
     key_parser = commands.add_parser(
@@ -2114,6 +2132,13 @@ def _render_mutation(payload: dict[str, object]) -> None:
     _emit_claim(payload.get("claim"), include_token=claim_token)
 
 
+def _render_instructions(payload: dict[str, object]) -> None:
+    instructions = payload.get("instructions", [])
+    if isinstance(instructions, list):
+        for instruction in instructions:
+            print(_text_atom(instruction))
+
+
 def _render_generic(payload: dict[str, object]) -> None:
     _text_header(payload)
     if not payload.get("ok"):
@@ -2134,6 +2159,7 @@ def _render_generic(payload: dict[str, object]) -> None:
 
 _TEXT_RENDERERS = {
     "version": _render_version,
+    "instructions": _render_instructions,
     "key": _render_key,
     "policy-list": _render_policy_list,
     "policy-describe": _render_policy_describe,
@@ -2717,7 +2743,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _validate_lease_file_destination(args)
         store = (
             None
-            if args.operation in {"key", "policy-list", "policy-describe"}
+            if args.operation
+            in {"instructions", "key", "policy-list", "policy-describe"}
             else LeaseStore(getattr(args, "home", None))
         )
         payload, child_code = _dispatch(args, store)
