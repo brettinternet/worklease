@@ -1,11 +1,11 @@
 ---
 id: TASK-62
 title: Add concise agent loop instructions and release v0.8.3
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-09 17:27'
-updated_date: '2026-09-09 17:40'
+updated_date: '2026-09-09 17:51'
 labels: []
 dependencies: []
 ordinal: 66000
@@ -19,11 +19,11 @@ Make Worklease useful without loading the full workflow skill by exposing concis
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 worklease instructions loop prints a concise multi-agent operating contract covering canonical resources, acquisition, conflicts, heartbeats, revalidation, durable checkpoints, release, stale claims, and secret handling
-- [ ] #2 worklease instructions safety concisely states the authority, fencing, credential, and recovery boundaries
-- [ ] #3 Top-level CLI help and README make the lightweight instructions discoverable and reserve the full skill for advanced workflows
-- [ ] #4 Automated tests cover instruction output and existing CLI behavior remains valid
-- [ ] #5 Version 0.8.3 is published with passing local and remote release checks
+- [x] #1 worklease instructions loop prints a concise multi-agent operating contract covering canonical resources, acquisition, conflicts, heartbeats, revalidation, durable checkpoints, release, stale claims, and secret handling
+- [x] #2 worklease instructions safety concisely states the authority, fencing, credential, and recovery boundaries
+- [x] #3 Top-level CLI help and README make the lightweight instructions discoverable and reserve the full skill for advanced workflows
+- [x] #4 Automated tests cover instruction output and existing CLI behavior remains valid
+- [x] #5 Version 0.8.3 is published with passing local and remote release checks
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -36,4 +36,12 @@ Make Worklease useful without loading the full workflow skill by exposing concis
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented concise text and schema-versioned JSON output for instructions loop/safety, added top-level help and README discovery, updated CLI reference and schemas, and prepared version 0.8.3 metadata/changelog. Local lint, format-check, 277 core tests, 19 SDK tests, typechecks, root/SDK builds, wheel smoke test, and pre-commit hooks pass. Independent verifier passed acceptance criteria 1-4 with no release blocker.
+
+Remote main CI 34384490208 passed. Non-publishing release validation 34384882523 passed. Tagged CI 34385059443 and tagged Release 34385059399 passed for ecb4d70. GitHub release v0.8.3 is public with nine expected assets; all downloaded assets passed checksum validation.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added lightweight, version-matched Worklease instructions for agent loops and safety boundaries, plus concise AGENTS.md and Ralph-loop discovery guidance in the README. Published v0.8.3 from ecb4d70 after full local gates, independent verification, green main/tagged CI and release workflows, and checksum verification of all nine release assets.
+<!-- SECTION:FINAL_SUMMARY:END -->
