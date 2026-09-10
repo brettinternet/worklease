@@ -3985,8 +3985,58 @@ with resource_lock(resource):
 
         gc = self.text_cli("gc")
         self.assertIn("OK gc\nDRY_RUN\ttrue\n", gc)
+        self.assertNotIn("HINT\t", gc)
         gc_error = self.text_cli("gc", "--cutoff", "not-a-timestamp", expected_code=64)
         self.assertIn("ERROR gc: invalid-gc-cutoff\n", gc_error)
+
+    def test_gc_text_dry_run_hints_when_records_are_eligible(self) -> None:
+        payload: dict[str, object] = {
+            "ok": True,
+            "operation": "gc",
+            "dryRun": True,
+            "capturedAt": "2026-02-01T00:00:00Z",
+            "cutoff": "2026-01-01T00:00:00Z",
+            "retentionDays": 30.0,
+            "eligible": {
+                "epochs": {
+                    "count": 1,
+                    "oldest": "2025-12-01T00:00:00Z",
+                    "newest": "2025-12-01T00:00:00Z",
+                },
+                "operations": {"count": 0, "oldest": None, "newest": None},
+            },
+            "protected": {
+                "expiredClaims": {
+                    "count": 1,
+                    "oldest": "2025-11-01T00:00:00Z",
+                    "newest": "2025-11-01T00:00:00Z",
+                },
+                "expiredBundleClaims": {
+                    "count": 0,
+                    "oldest": None,
+                    "newest": None,
+                },
+            },
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_gc(payload)
+        self.assertIn(
+            "HINT\tRun worklease gc --cutoff 2026-01-01T00:00:00Z "
+            "--apply to collect eligible records\n",
+            output.getvalue(),
+        )
+        self.assertIn(
+            "PROTECTED\nexpiredClaims\tunresolved-operations\t1\t"
+            '"2025-11-01T00:00:00Z"\t"2025-11-01T00:00:00Z"\n',
+            output.getvalue(),
+        )
+
+        payload["dryRun"] = False
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_gc(payload)
+        self.assertNotIn("HINT\t", output.getvalue())
 
     def test_text_renderers_cover_mutations_aliases_and_child_failures(self) -> None:
         acquired_text = self.text_cli(

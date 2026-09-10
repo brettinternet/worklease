@@ -478,10 +478,11 @@ class GarbageCollectionTests(unittest.TestCase):
             eligible["epochs"]["newest"],
         )
 
-    def test_expired_claim_protects_old_records(self) -> None:
-        expired = self.store.acquire(
+    def test_expired_claim_is_retired_only_after_strict_cutoff(self) -> None:
+        resource = "repo:gc-expired"
+        acquired = self.store.acquire(
             AcquireRequest(
-                resource="repo:gc-expired",
+                resource=resource,
                 claim_id="claim-gc-expired",
                 agent_id="agent",
                 session_id="session",
@@ -490,11 +491,222 @@ class GarbageCollectionTests(unittest.TestCase):
                 ttl=1.0,
             )
         )
-        self.assertTrue(expired["ok"])
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        checkpointed = self.store.checkpoint(
+            MutationRequest(
+                resource=resource,
+                claim_id=str(claim["claimId"]),
+                token=str(claim["token"]),
+                revision=int(claim["revision"]),
+                operation_id="checkpoint-gc-expired",
+                ttl=1.0,
+            ),
+            {"offset": 4},
+        )
+        checkpointed_claim = checkpointed["claim"]
+        assert isinstance(checkpointed_claim, dict)
         self.now = 10.0
-        result = self.store.garbage_collect(cutoff="1970-01-01T00:00:10Z")
-        self.assertEqual(0, result["eligible"]["epochs"]["count"])
-        self.assertEqual(0, result["eligible"]["resources"]["count"])
+
+        boundary = self.store.garbage_collect(cutoff="1970-01-01T00:00:01Z")
+        self.assertEqual(0, boundary["eligible"]["expiredClaims"]["count"])
+        self.assertEqual("expired", self.store.status(resource)["state"])
+
+        preview = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z")
+        self.assertEqual(1, preview["eligible"]["expiredClaims"]["count"])
+        self.assertEqual(0, preview["eligible"]["epochs"]["count"])
+        self.assertEqual(0, preview["eligible"]["resources"]["count"])
+        self.assertEqual("expired", self.store.status(resource)["state"])
+
+        applied = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z", apply=True)
+        self.assertEqual(preview["eligible"], applied["collected"])
+        self.assertEqual("free", self.store.status(resource)["state"])
+        with closing(connect(self.home.name)) as db:
+            termination = db.execute(
+                "SELECT reason, effective_at, recorded_at, checkpoint "
+                "FROM epoch_terminations WHERE resource = ?",
+                (resource,),
+            ).fetchone()
+            revision = db.execute(
+                "SELECT revision FROM resources WHERE resource = ?", (resource,)
+            ).fetchone()[0]
+        assert termination is not None
+        self.assertEqual(("expired", 1.0, 10.0), tuple(termination[:3]))
+        self.assertIsNotNone(termination["checkpoint"])
+        self.assertEqual(checkpointed_claim["revision"], revision)
+        retained_epoch = self.store.history(resource)["epochs"][0]
+        self.assertEqual("complete", retained_epoch["completeness"])
+        self.assertEqual("expired", retained_epoch["termination"]["reason"])
+        self.assertIsNone(retained_epoch["currentClaim"])
+
+        reacquired = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-after-gc",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+            )
+        )
+        self.assertIsNone(reacquired["recovery"])
+        self.assertIsNone(reacquired["checkpoint"])
+        self.assertEqual(
+            int(checkpointed_claim["revision"]) + 1, reacquired["claim"]["revision"]
+        )
+
+    def test_expired_claim_retirement_rolls_back_on_interruption(self) -> None:
+        resource = "repo:gc-expired-interrupted"
+        self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-expired-interrupted",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=1.0,
+            )
+        )
+        self.now = 10.0
+        with closing(connect(self.home.name)) as db, db:
+            db.execute(
+                """
+                CREATE TRIGGER fail_expired_claim_gc
+                AFTER DELETE ON claims
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected-expired-claim-interruption');
+                END
+                """
+            )
+
+        with self.assertRaisesRegex(LeaseError, "gc-storage-conflict"):
+            self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z", apply=True)
+        self.assertEqual("expired", self.store.status(resource)["state"])
+        with closing(connect(self.home.name)) as db:
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM epoch_terminations WHERE resource = ?",
+                    (resource,),
+                ).fetchone()[0],
+            )
+
+    def test_old_expired_claim_with_unresolved_operation_is_explained(self) -> None:
+        resource = "repo:gc-expired-unknown"
+        acquired = self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-expired-unknown",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=1.0,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = MutationRequest(
+            resource=resource,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="unknown-gc-expired",
+        )
+        self.assertIsNone(
+            self.store.begin_operation(request, "exec", {"argv": ["sentinel"]})
+        )
+        self.now = 10.0
+
+        preview = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z")
+        self.assertEqual(0, preview["eligible"]["expiredClaims"]["count"])
+        self.assertEqual(1, preview["protected"]["expiredClaims"]["count"])
+        applied = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z", apply=True)
+        self.assertEqual(preview["protected"], applied["protected"])
+        self.assertEqual("expired", self.store.status(resource)["state"])
+
+    def test_old_expired_bundle_is_retired_atomically(self) -> None:
+        resources = ("repo:gc-expired-bundle-a", "repo:gc-expired-bundle-b")
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-expired",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=1.0,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.now = 10.0
+
+        preview = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z")
+        self.assertEqual(1, preview["eligible"]["expiredBundleClaims"]["count"])
+        applied = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z", apply=True)
+        self.assertEqual(preview["eligible"], applied["collected"])
+        self.assertEqual([], self.store.list_claims()["claims"])
+        with closing(connect(self.home.name)) as db:
+            self.assertEqual(
+                2,
+                db.execute(
+                    "SELECT COUNT(*) FROM epoch_terminations WHERE claim_id = ?",
+                    (claim["claimId"],),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                db.execute(
+                    "SELECT COUNT(*) FROM bundles WHERE claim_id = ?",
+                    (claim["claimId"],),
+                ).fetchone()[0],
+            )
+            revisions = db.execute(
+                "SELECT resource, revision FROM resources ORDER BY resource"
+            ).fetchall()
+        self.assertEqual(
+            [(resource, claim["revision"]) for resource in resources],
+            [tuple(row) for row in revisions],
+        )
+
+    def test_old_expired_bundle_with_unresolved_operation_is_protected(self) -> None:
+        resources = (
+            "repo:gc-expired-bundle-unknown-a",
+            "repo:gc-expired-bundle-unknown-b",
+        )
+        acquired = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=resources,
+                claim_id="bundle-gc-expired-unknown",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=1.0,
+            )
+        )
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        request = BundleMutationRequest(
+            resources=resources,
+            claim_id=str(claim["claimId"]),
+            token=str(claim["token"]),
+            revision=int(claim["revision"]),
+            operation_id="unknown-gc-expired-bundle",
+        )
+        self.assertIsNone(
+            self.store.begin_bundle_operation(
+                request, "exec-bundle", {"argv": ["sentinel"]}
+            )
+        )
+        self.now = 10.0
+
+        result = self.store.garbage_collect(cutoff="1970-01-01T00:00:02Z", apply=True)
+        self.assertEqual(0, result["eligible"]["expiredBundleClaims"]["count"])
+        self.assertEqual(1, result["protected"]["expiredBundleClaims"]["count"])
+        self.assertEqual(1, len(self.store.list_claims()["claims"]))
 
     def test_active_claim_protects_old_records(self) -> None:
         active = self.store.acquire(
@@ -675,9 +887,19 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertEqual(1, eligible["reconciliations"]["count"])
         self.assertEqual(2, eligible["resources"]["count"])
 
-    def test_gc_serializes_concurrent_acquire_and_heartbeat(self) -> None:
+    def test_gc_serializes_expired_retirement_acquire_and_heartbeat(self) -> None:
         resource = "repo:gc-concurrent"
-        self._seed_released(resource)
+        self.store.acquire(
+            AcquireRequest(
+                resource=resource,
+                claim_id="claim-gc-concurrent-expired",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="implement:gc",
+                ttl=1.0,
+            )
+        )
         active = self.store.acquire(
             AcquireRequest(
                 resource="repo:gc-concurrent-active",
@@ -736,6 +958,7 @@ class GarbageCollectionTests(unittest.TestCase):
                 self.store.heartbeat,
                 heartbeat_request,
             )
+            self.now = 200.0
             continue_collection.set()
             applied = collection.result(timeout=5)
             reacquired = reacquire.result(timeout=5)
@@ -744,6 +967,12 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertFalse(applied["dryRun"])
         self.assertEqual(2, reacquired["claim"]["revision"])
         self.assertEqual(2, renewed["claim"]["revision"])
+        with closing(connect(self.home.name)) as db:
+            recorded_at = db.execute(
+                "SELECT recorded_at FROM epoch_terminations WHERE claim_id = ?",
+                ("claim-gc-concurrent-expired",),
+            ).fetchone()[0]
+        self.assertEqual(200.0, recorded_at)
 
     def test_gc_runs_after_legacy_claim_schema_migration(self) -> None:
         database = Path(self.home.name) / "leases.sqlite3"
@@ -772,10 +1001,33 @@ class GarbageCollectionTests(unittest.TestCase):
                 """
             )
 
-        migrated = LeaseStore(self.home.name, clock=lambda: 31 * 86400)
-        result = migrated.garbage_collect()
-        self.assertEqual(0, result["eligible"]["epochs"]["count"])
-        self.assertEqual("expired", migrated.status("legacy-gc")["state"])
+        migrated = LeaseStore(self.home.name, clock=lambda: 31 * 86400 + 2)
+        preview = migrated.garbage_collect()
+        self.assertEqual(0, preview["eligible"]["epochs"]["count"])
+        self.assertEqual(1, preview["eligible"]["expiredClaims"]["count"])
+        migrated.garbage_collect(apply=True)
+        self.assertEqual("free", migrated.status("legacy-gc")["state"])
+        with closing(connect(self.home.name)) as db:
+            self.assertEqual(
+                0, db.execute("SELECT COUNT(*) FROM epoch_terminations").fetchone()[0]
+            )
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT revision FROM resources WHERE resource = 'legacy-gc'"
+                ).fetchone()[0],
+            )
+        reacquired = migrated.acquire(
+            AcquireRequest(
+                resource="legacy-gc",
+                claim_id="legacy-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="work",
+            )
+        )
+        self.assertEqual(2, reacquired["claim"]["revision"])
 
     def test_gc_serializes_operation_reconciliation_and_release(self) -> None:
         operation_resource = "repo:gc-operation"
@@ -1321,6 +1573,10 @@ class GarbageCollectionTests(unittest.TestCase):
         self.assertEqual("gc", payload["operation"])
         self.assertTrue(payload["dryRun"])
         self.assertEqual(30.0, payload["retentionDays"])
+        self.assertIn("expiredClaims", payload["eligible"])
+        self.assertIn("expiredBundleClaims", payload["eligible"])
+        self.assertIn("expiredClaims", payload["protected"])
+        self.assertIn("expiredBundleClaims", payload["protected"])
 
 
 if __name__ == "__main__":

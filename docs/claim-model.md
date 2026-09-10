@@ -226,12 +226,20 @@ recorded when the successor transaction observes and replaces it.
 
 Expiry remains lazy. Reading an expired current claim does not mutate storage,
 so an expired-but-unreclaimed epoch remains open in retained history until a
-later replacement records its end. Pre-migration epochs keep a null acquisition
-revision and no fabricated termination when the database cannot prove those
-values. History already removed by `gc --apply` cannot be reconstructed.
-Garbage collection retains an epoch and its associated rows through the
-termination's `recorded_at` retention window, then deletes the terminal and
-epoch records atomically.
+later replacement or explicit garbage collection records its end. `gc --apply`
+retires a current claim only when its stored expiry is strictly older than the
+retention cutoff and no unresolved started operation protects it. It records an
+expired termination effective at the stored expiry and recorded at collection
+time, then removes the current projection. This intentionally forfeits
+checkpoint recovery from that abandoned claim; active claims and recently
+expired claims remain recoverable. Bundles retire atomically as one ownership
+unit.
+
+Pre-migration epochs keep a null acquisition revision and no fabricated
+termination when the database cannot prove those values. History already
+removed by `gc --apply` cannot be reconstructed. Garbage collection retains an
+epoch and its associated rows through the termination's `recorded_at` retention
+window, then deletes the terminal and epoch records atomically.
 
 This data is retention-bounded diagnostics on one local Worklease database. A
 read-only `worklease history --resource R` projection is scoped to the exact

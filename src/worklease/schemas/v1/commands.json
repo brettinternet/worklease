@@ -3,6 +3,22 @@
   "$id": "https://worklease.dev/schemas/v1/commands.json",
   "title": "Worklease CLI response",
   "description": "Schema for every released worklease CLI response. Human-readable text is the default; JSON is an explicit output format. Lifecycle acquire and mutation commands generate omitted identifiers and echo them in their responses; caller-supplied identifiers retain exact replay semantics.",
+  "$defs": {
+    "GcSummary": {
+      "type": "object",
+      "required": ["count", "oldest", "newest"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "oldest": {"type": ["string", "null"]},
+        "newest": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "GcInventory": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/GcSummary"}
+    }
+  },
   "allOf": [
     {"$ref": "common.json#/$defs/Envelope"},
     {
@@ -111,7 +127,14 @@
         "actualSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
         "request": {"type": "object"},
         "receipt": {"$ref": "common.json#/$defs/Receipt"},
-        "reconciliation": {"type": ["object", "null"]}
+        "reconciliation": {"type": ["object", "null"]},
+        "dryRun": {"type": "boolean"},
+        "capturedAt": {"type": "string"},
+        "cutoff": {"type": "string"},
+        "retentionDays": {"type": ["number", "null"]},
+        "eligible": {"$ref": "#/$defs/GcInventory"},
+        "collected": {"$ref": "#/$defs/GcInventory"},
+        "protected": {"$ref": "#/$defs/GcInventory"}
       },
       "if": {
         "properties": {

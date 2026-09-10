@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.8.4 - 2026-09-10
+
+### Changed
+
+- `worklease gc --apply` now retires expired singleton and bundle claims whose stored expiry is older than the retention cutoff, so abandoned claims no longer remain in `worklease list` indefinitely.
+- GC preserves active and recently expired claims, reports old expired claims protected by unresolved operations, records truthful expired terminations, and keeps resource revisions monotonic.
+- Text-mode GC dry runs with eligible records now print a copyable apply hint using the captured cutoff.
+
 ## 0.8.3 - 2026-09-09
 
 ### Added

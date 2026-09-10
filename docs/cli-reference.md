@@ -165,6 +165,8 @@ eligible timestamp for each category:
 
 | Category |
 | --- |
+| expired singleton claims |
+| expired bundle claims |
 | epochs |
 | bundle epochs |
 | operations |
@@ -172,19 +174,26 @@ eligible timestamp for each category:
 | reconciliations |
 | resource metadata |
 
-Records strictly older than the captured cutoff are eligible. GC always
-protects:
+Records strictly older than the captured cutoff are eligible. For current
+claims, age is measured from `expiresAt`; an expiry exactly at the cutoff is
+retained. When a text-mode dry run finds eligible records, it prints a copyable
+`HINT` that reuses the captured cutoff with `--apply`; JSON output remains
+unchanged.
 
-- active claims;
-- expired but unreclaimed claims;
-- current ownership;
-- unresolved started operations;
-- records inside the retention window.
+GC always protects active claims, expired claims inside the retention window,
+and claims with unresolved started operations. The `protected` JSON object and
+text `PROTECTED` block report old expired singleton or bundle claims retained
+because of those unknown outcomes. Reconcile the operation before collecting
+them; GC never guesses whether external work succeeded.
 
-Applying GC uses one immediate SQLite transaction. Interruption leaves either
-the state from before collection or the committed state after collection.
-Resource revision tombstones preserve monotonic revisions after old metadata is
-removed.
+Applying GC uses one immediate SQLite transaction. Eligible expired bundles are
+retired as whole ownership units. Collection records an `expired` termination
+at the maintenance transaction time, removes the current claim projection so it
+no longer appears in `list`, and intentionally ends checkpoint recovery from
+that abandoned claim. The newly recorded termination and its epoch remain for a
+fresh retention window. Interruption leaves either the state from before
+collection or the committed state after collection. Resource revision
+tombstones preserve monotonic revisions after old metadata is removed.
 
 Use an explicit cutoff for repeatable maintenance. Back up the normal state
 database before applying a destructive collection.
@@ -246,7 +255,7 @@ example or valid values. Hints never echo rejected argument values.
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, optional `RESOURCE` or `RESOURCES`, `STATE`, then `CLAIM` fields `RESOURCE` or `RESOURCES`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, `GUARANTEE` |
 | `status --verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
-| `gc` | `OK gc`, retention fields, then sorted `ELIGIBLE` rows with count, oldest, and newest timestamps |
+| `gc` | `OK gc`, retention fields, sorted `ELIGIBLE` rows, an apply `HINT` when useful, then nonzero unresolved-operation `PROTECTED` rows |
 | Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
 
 `list` uses a fixed-width, space-padded table. Widths follow terminal columns:

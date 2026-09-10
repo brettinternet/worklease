@@ -1015,7 +1015,7 @@ def _parser() -> _ArgumentParser:
         "--apply",
         action="store_true",
         help=(
-            "atomically delete records eligible under the selected cutoff "
+            "atomically collect eligible records and retire old expired claims "
             "(default: dry run)"
         ),
     )
@@ -2078,6 +2078,31 @@ def _render_gc(payload: dict[str, object]) -> None:
             if isinstance(summary, dict):
                 print(
                     f"{record_type}\t{summary.get('count', 0)}\t"
+                    f"{_text_value(summary.get('oldest'))}\t"
+                    f"{_text_value(summary.get('newest'))}"
+                )
+        has_eligible_records = any(
+            isinstance(summary, dict) and int(summary.get("count", 0)) > 0
+            for summary in eligible.values()
+        )
+        if payload.get("dryRun") and has_eligible_records:
+            print(
+                "HINT\tRun worklease gc --cutoff "
+                f"{_text_atom(payload.get('cutoff', ''))} --apply to collect "
+                "eligible records"
+            )
+    protected = payload.get("protected", {})
+    if isinstance(protected, dict) and any(
+        isinstance(summary, dict) and int(summary.get("count", 0)) > 0
+        for summary in protected.values()
+    ):
+        print("PROTECTED")
+        for record_type in sorted(protected):
+            summary = protected[record_type]
+            if isinstance(summary, dict) and int(summary.get("count", 0)) > 0:
+                print(
+                    f"{record_type}\tunresolved-operations\t"
+                    f"{summary.get('count', 0)}\t"
                     f"{_text_value(summary.get('oldest'))}\t"
                     f"{_text_value(summary.get('newest'))}"
                 )

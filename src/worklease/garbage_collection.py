@@ -61,10 +61,72 @@ class GarbageCollectionMixin:
         return now - days * 86400, days
 
     @staticmethod
+    def _expired_claim_inventory(
+        db: sqlite3.Connection, cutoff_value: float
+    ) -> tuple[dict[str, list[sqlite3.Row]], dict[str, list[sqlite3.Row]]]:
+        """Separate old expired claims from claims protected by unknown work."""
+
+        unresolved = """
+            EXISTS (
+                SELECT 1 FROM operations AS o
+                WHERE o.claim_id = {claim_id}
+                  AND o.state = 'started'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM reconciliations AS rec
+                      WHERE rec.resource = o.resource
+                        AND rec.operation_id = o.operation_id
+                        AND rec.target_claim_id = o.claim_id
+                        AND rec.kind = o.kind
+                  )
+            )
+        """
+        singleton_base = """
+            SELECT c.*, c.expires_at AS recorded_at
+            FROM claims AS c
+            WHERE c.expires_at < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM bundle_members AS member
+                  WHERE member.claim_id = c.claim_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM bundles AS bundle
+                  WHERE bundle.claim_id = c.claim_id
+              )
+              AND {protection}
+            ORDER BY c.resource, c.claim_id
+        """
+        bundle_base = """
+            SELECT b.*, b.expires_at AS recorded_at
+            FROM bundles AS b
+            WHERE b.expires_at < ?
+              AND {protection}
+            ORDER BY b.claim_id
+        """
+
+        def rows(
+            statement: str, claim_id: str, *, protected: bool
+        ) -> list[sqlite3.Row]:
+            predicate = unresolved.format(claim_id=claim_id)
+            protection = predicate if protected else f"NOT ({predicate})"
+            return db.execute(
+                statement.format(protection=protection), (cutoff_value,)
+            ).fetchall()
+
+        eligible = {
+            "expiredClaims": rows(singleton_base, "c.claim_id", protected=False),
+            "expiredBundleClaims": rows(bundle_base, "b.claim_id", protected=False),
+        }
+        protected = {
+            "expiredClaims": rows(singleton_base, "c.claim_id", protected=True),
+            "expiredBundleClaims": rows(bundle_base, "b.claim_id", protected=True),
+        }
+        return eligible, protected
+
+    @staticmethod
     def _gc_candidates(
         db: sqlite3.Connection, cutoff_value: float
     ) -> dict[str, list[sqlite3.Row]]:
-        """Capture one atomic set of records eligible for collection."""
+        """Capture one atomic set of historical records eligible for collection."""
 
         epoch_rows = db.execute(
             """
@@ -359,10 +421,122 @@ class GarbageCollectionMixin:
             "resources": resource_rows,
         }
 
-    @staticmethod
     def _delete_gc_candidates(
-        db: sqlite3.Connection, candidates: dict[str, list[sqlite3.Row]]
+        self: Any,
+        db: sqlite3.Connection,
+        candidates: dict[str, list[sqlite3.Row]],
+        *,
+        recorded_at: float,
     ) -> None:
+        for claim in candidates["expiredClaims"]:
+            db.execute(
+                """
+                INSERT INTO resources(resource, revision) VALUES (?, ?)
+                ON CONFLICT(resource) DO UPDATE SET
+                    revision = MAX(resources.revision, excluded.revision)
+                """,
+                (str(claim["resource"]), int(claim["revision"])),
+            )
+            if (
+                db.execute(
+                    "SELECT 1 FROM epochs WHERE claim_id = ?",
+                    (str(claim["claim_id"]),),
+                ).fetchone()
+                is not None
+            ):
+                self._record_epoch_termination(
+                    db,
+                    claim,
+                    reason="expired",
+                    effective_at=float(claim["expires_at"]),
+                    recorded_at=recorded_at,
+                )
+            deleted = db.execute(
+                "DELETE FROM claims WHERE resource = ? AND claim_id = ?",
+                (str(claim["resource"]), str(claim["claim_id"])),
+            ).rowcount
+            if deleted != 1:
+                raise LeaseError(
+                    "gc-protected-record", code=3, recordClass="expiredClaims"
+                )
+
+        for bundle in candidates["expiredBundleClaims"]:
+            claim_id = str(bundle["claim_id"])
+            members = db.execute(
+                "SELECT resource FROM bundle_members WHERE claim_id = ? "
+                "ORDER BY resource",
+                (claim_id,),
+            ).fetchall()
+            claims = db.execute(
+                "SELECT * FROM claims WHERE claim_id = ? ORDER BY resource",
+                (claim_id,),
+            ).fetchall()
+            if (
+                not members
+                or [row["resource"] for row in members]
+                != [row["resource"] for row in claims]
+                or any(
+                    int(claim["revision"]) != int(bundle["revision"])
+                    or float(claim["expires_at"]) != float(bundle["expires_at"])
+                    for claim in claims
+                )
+            ):
+                raise LeaseError(
+                    "gc-protected-record",
+                    code=3,
+                    recordClass="expiredBundleClaims",
+                )
+            has_epoch = (
+                db.execute(
+                    "SELECT 1 FROM bundle_epochs WHERE claim_id = ?", (claim_id,)
+                ).fetchone()
+                is not None
+            )
+            for claim in claims:
+                db.execute(
+                    """
+                    INSERT INTO resources(resource, revision) VALUES (?, ?)
+                    ON CONFLICT(resource) DO UPDATE SET
+                        revision = MAX(resources.revision, excluded.revision)
+                    """,
+                    (str(claim["resource"]), int(claim["revision"])),
+                )
+                if has_epoch:
+                    self._record_epoch_termination(
+                        db,
+                        claim,
+                        reason="expired",
+                        effective_at=float(claim["expires_at"]),
+                        recorded_at=recorded_at,
+                    )
+            if db.execute(
+                "DELETE FROM claims WHERE claim_id = ?", (claim_id,)
+            ).rowcount != len(claims):
+                raise LeaseError(
+                    "gc-protected-record",
+                    code=3,
+                    recordClass="expiredBundleClaims",
+                )
+            if db.execute(
+                "DELETE FROM bundle_members WHERE claim_id = ?", (claim_id,)
+            ).rowcount != len(members):
+                raise LeaseError(
+                    "gc-protected-record",
+                    code=3,
+                    recordClass="expiredBundleClaims",
+                )
+            if (
+                db.execute(
+                    "DELETE FROM bundles WHERE claim_id = ?", (claim_id,)
+                ).rowcount
+                != 1
+            ):
+                raise LeaseError(
+                    "gc-protected-record",
+                    code=3,
+                    recordClass="expiredBundleClaims",
+                )
+
         statements = (
             (
                 "reconciliations",
@@ -447,12 +621,27 @@ class GarbageCollectionMixin:
             with closing(self._connect()) as db:
                 if apply:
                     with transaction(db):
-                        candidates = self._gc_candidates(db, cutoff_value)
-                        self._delete_gc_candidates(db, candidates)
+                        expired, protected = self._expired_claim_inventory(
+                            db, cutoff_value
+                        )
+                        candidates = {
+                            **self._gc_candidates(db, cutoff_value),
+                            **expired,
+                        }
+                        retirement_recorded_at = max(now, float(self.clock()))
+                        self._delete_gc_candidates(
+                            db, candidates, recorded_at=retirement_recorded_at
+                        )
                 else:
                     db.execute("BEGIN")
                     try:
-                        candidates = self._gc_candidates(db, cutoff_value)
+                        expired, protected = self._expired_claim_inventory(
+                            db, cutoff_value
+                        )
+                        candidates = {
+                            **self._gc_candidates(db, cutoff_value),
+                            **expired,
+                        }
                         db.commit()
                     except BaseException:
                         db.rollback()
@@ -469,6 +658,7 @@ class GarbageCollectionMixin:
             "cutoff": iso8601(cutoff_value),
             "retentionDays": resolved_days,
             "eligible": eligible,
+            "protected": summary(protected),
         }
         if apply:
             result["collected"] = eligible
