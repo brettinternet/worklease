@@ -1,11 +1,11 @@
 ---
 id: TASK-63
 title: Retire abandoned expired claims during GC and release v0.8.4
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-10 21:11'
-updated_date: '2026-09-10 21:44'
+updated_date: '2026-09-10 21:55'
 labels: []
 dependencies: []
 references:
@@ -43,7 +43,7 @@ Make garbage collection match operator expectations by retiring abandoned expire
 - [x] #3 GC apply atomically retires eligible expired claims and bundles so they disappear from list, while active claims and expired claims inside the retention window remain unchanged
 - [x] #4 Retirement records truthful expired terminations, preserves monotonic resource revisions, and intentionally forfeits checkpoint recovery only after the retention boundary
 - [x] #5 Unknown operations, concurrency, interruption, bundle atomicity, redaction, dry-run parity, schemas, and operator documentation have regression coverage
-- [ ] #6 Version 0.8.4 is committed, pushed, tagged, and published with passing local and remote release checks
+- [x] #6 Version 0.8.4 is committed, pushed, tagged, and published with passing local and remote release checks
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,4 +63,12 @@ Implemented strict-cutoff inventories for expired singleton and bundle claims, u
 Independent review found legacy revision regression/orphan-termination risk and pre-transaction termination timestamps. Fixed by preserving resource revision tombstones, avoiding fabricated orphan terminations when legacy claims lack epochs, and capturing termination time after acquiring the immediate transaction; added legacy reuse and lock-contention timestamp regressions.
 
 Final local verification: mise lint and format-check pass; 282 core and 19 SDK tests pass; core/SDK Pyright report zero errors; root and SDK 0.8.4 wheel/sdist builds pass; staged Lefthook Ruff and full tests pass. Independent reviewer PASS after two findings were fixed, with no remaining validated findings.
+
+Committed and pushed c889edf to main. Main CI 34533981529 and non-publishing release validation 34533999733 passed. Tagged v0.8.4 at c889edf; tagged CI 34534243946 and Release 34534243887 passed. GitHub release is public with nine assets, and all downloaded assets passed checksum validation.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+GC now retires abandoned singleton and bundle claims after the retention cutoff, reports unresolved-operation protections, preserves truthful history and monotonic revisions, and gives text users a copyable apply hint. Published v0.8.4 from c889edf after full local gates, independent review/fixes, green main and tagged workflows, and checksum verification of all nine release assets.
+<!-- SECTION:FINAL_SUMMARY:END -->
