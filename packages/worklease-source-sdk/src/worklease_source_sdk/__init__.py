@@ -26,7 +26,7 @@ from .models import (
 )
 from .provider import SourceProvider
 
-__version__ = "0.8.4"
+__version__ = "0.9.0"
 
 __all__ = [
     "CONTRACT_VERSION",

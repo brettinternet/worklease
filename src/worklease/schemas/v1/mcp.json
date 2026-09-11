@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/mcp.json",
+  "title": "Worklease MCP schema-v1 result",
+  "description": "Token-free MCP tool result: the schema-v1 CLI envelope plus an opaque lease reference and automatic-heartbeat state when applicable.",
+  "type": "object",
+  "required": ["schemaVersion", "operation", "ok"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"type": "string", "minLength": 1},
+    "ok": {"type": "boolean"},
+    "error": {"type": "string", "minLength": 1},
+    "hint": {"type": "string", "minLength": 1},
+    "lease": {"type": "string", "pattern": "^wl1-[0-9a-f]{32}-[0-9a-f]{32}$"},
+    "autoHeartbeat": {"enum": ["active", "stopped", "disabled"]},
+    "expiresAt": {"type": "string", "minLength": 1}
+  },
+  "oneOf": [
+    {"properties": {"ok": {"const": true}}},
+    {"required": ["error"], "properties": {"ok": {"const": false}}}
+  ],
+  "not": {"required": ["token"]},
+  "additionalProperties": true
+}

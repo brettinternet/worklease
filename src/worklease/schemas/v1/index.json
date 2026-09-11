@@ -2,13 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://worklease.dev/schemas/v1/index.json",
   "title": "Worklease schema version 1",
-  "description": "Published response schemas for the worklease Python and CLI compatibility surface.",
+  "description": "Published response schemas for the worklease Python, CLI, and optional MCP compatibility surfaces.",
   "type": "object",
-  "required": ["version", "common", "cli", "commands", "leaseFile", "history"],
+  "required": ["version", "common", "cli", "mcp", "commands", "leaseFile", "history"],
   "properties": {
     "version": {"const": 1},
     "common": {"const": "common.json"},
     "cli": {"const": "commands.json"},
+    "mcp": {"const": "mcp.json"},
     "leaseFile": {"const": "lease-file.json"},
     "history": {"const": "history.json"},
     "commands": {

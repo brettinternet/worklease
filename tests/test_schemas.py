@@ -162,6 +162,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(
             "lease-file.json", self.index["properties"]["leaseFile"]["const"]
         )
+        self.assertEqual("mcp.json", self.index["properties"]["mcp"]["const"])
         self.assertEqual("history.json", self.index["properties"]["history"]["const"])
         Draft202012Validator.check_schema(self.lease_file)
         Draft202012Validator.check_schema(self.history)

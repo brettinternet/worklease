@@ -235,13 +235,15 @@ class OperationLedgerMixin:
                 member = connection.execute(
                     """
                     UPDATE claims
-                    SET revision = ?, heartbeat_at = ?, expires_at = ?
+                    SET revision = ?, heartbeat_at = ?, expires_at = ?,
+                        checkpoint = COALESCE(?, checkpoint)
                     WHERE resource = ? AND claim_id = ? AND token = ? AND revision = ?
                     """,
                     (
                         revision,
                         now,
                         now + ttl,
+                        checkpoint,
                         resource,
                         request.claim_id,
                         request.token,
@@ -705,6 +707,47 @@ class OperationLedgerMixin:
                 "operation": "checkpoint",
                 "operationId": request.operation_id,
                 "idempotent": False,
+                "checkpoint": json.loads(serialized),
+                "checkpointBytes": len(serialized.encode("utf-8")),
+            }
+            result = self._advance_operation(
+                db,
+                row,
+                request,
+                "checkpoint",
+                operation_request,
+                receipt,
+                checkpoint=serialized,
+            )
+            self._restore_owner_token(request, "checkpoint", result)
+            return result
+
+    def checkpoint_bundle(
+        self: Any,
+        request: BundleMutationRequest,
+        value: Any,
+        *,
+        lock_held: bool = False,
+    ) -> dict[str, Any]:
+        """Persist one bounded checkpoint on every member of a bundle."""
+
+        serialized = self._serialize_checkpoint(value)
+        operation_request = request.request_dict(checkpoint=json.loads(serialized))
+        behavior = self._operation_resource(request, lock_held=lock_held)
+        with behavior.lock(), closing(self._connect()) as db, transaction(db):
+            row = behavior.owner(db)
+            cached = self._cached_operation(
+                db, request, "checkpoint", operation_request
+            )
+            if cached is not None:
+                return cached
+            behavior.current(db)
+            receipt: dict[str, Any] = {
+                "ok": True,
+                "operation": "checkpoint",
+                "operationId": request.operation_id,
+                "idempotent": False,
+                "resources": list(request.resources),
                 "checkpoint": json.loads(serialized),
                 "checkpointBytes": len(serialized.encode("utf-8")),
             }

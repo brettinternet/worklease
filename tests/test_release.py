@@ -261,6 +261,15 @@ class ReleaseValidationTests(unittest.TestCase):
     def test_release_toolchain_is_exact_and_locked(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())
         self.assertEqual(["hatchling==1.32.0"], project["build-system"]["requires"])
+        self.assertEqual([], project["project"]["dependencies"])
+        self.assertEqual(
+            ["mcp>=1.26.0,<2"],
+            project["project"]["optional-dependencies"]["mcp"],
+        )
+        self.assertEqual(
+            "worklease.mcp_server:main",
+            project["project"]["scripts"]["worklease-mcp"],
+        )
         self.assertEqual(
             ["hatchling==1.32.0", "pyinstaller==6.22.0"],
             project["dependency-groups"]["release"],

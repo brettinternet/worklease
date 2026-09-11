@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-09-11
+
+### Added
+
+- Added an optional local stdio MCP server with seven typed lease-lifecycle tools, private restart-safe lease references, automatic bounded heartbeats, and singleton/bundle interoperability with the canonical CLI and public Python API.
+- Added a published schema-v1 MCP result contract, Claude Code setup and recovery guidance, and a repeatable MCP-versus-CLI lifecycle benchmark.
+
+### Changed
+
+- Added public bundle checkpoint support and shared canonical agent instructions for non-CLI integrations.
+
 ## 0.8.4 - 2026-09-10
 
 ### Changed

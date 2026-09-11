@@ -2487,6 +2487,28 @@ LeaseStore().acquire(AcquireRequest('crash-resource', 'child', 'agent', 'session
         self.assertEqual("free", self.store.bundle_status(resources)["state"])
         self.assertNotIn(token, json.dumps(released))
 
+    def test_bundle_checkpoint_renews_every_member_and_replays(self) -> None:
+        resources = ("checkpoint-a", "checkpoint-b")
+        acquired = self.store.acquire_bundle(
+            self.bundle_request(resources, "checkpoint-bundle")
+        )
+        request = self.bundle_mutation(acquired, resources, "bundle-checkpoint")
+
+        checkpointed = self.store.checkpoint_bundle(request, {"step": 2})
+        replay = self.store.checkpoint_bundle(request, {"step": 2})
+
+        self.assertEqual("checkpoint", checkpointed["operation"])
+        self.assertEqual({"step": 2}, checkpointed["checkpoint"])
+        self.assertFalse(checkpointed["idempotent"])
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(checkpointed["claim"]["revision"], replay["claim"]["revision"])
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            checkpoints = db.execute(
+                "SELECT checkpoint FROM claims WHERE claim_id = ? ORDER BY resource",
+                ("checkpoint-bundle",),
+            ).fetchall()
+        self.assertEqual([('{"step":2}',), ('{"step":2}',)], checkpoints)
+
     def test_overlapping_bundles_have_one_winner_without_partial_claims(self) -> None:
         barrier = threading.Barrier(2)
 

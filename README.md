@@ -248,3 +248,10 @@ State directory precedence is:
 4. `~/.local/state/worklease`
 
 Avoid repository-relative state, especially across linked worktrees.
+
+## Optional MCP server
+
+Coding agents can install the local stdio MCP interface with the `mcp` extra.
+It exposes only the seven typed lifecycle tools and keeps bearer tokens in
+private persisted handles. See [the MCP guide](docs/mcp.md) for Claude Code
+configuration, safe lifecycle and operator recovery.
