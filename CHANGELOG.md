@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-09-11
+
 ### Added
 
-- Added a generated `worklease(1)` manual and version-specific changelog release asset. Tagged release automation now derives both from the current CLI and matching changelog section, packages the manual in native archives, and uses the maintained changelog for GitHub release notes.
+- v0.9.1 adds a concise, task-oriented `worklease(1)` manual with valid examples; release automation generates it from the current CLI, packages it in native archives, publishes a version-specific changelog asset, and uses that changelog for GitHub release notes.
 
 ## 0.9.0 - 2026-09-11
 

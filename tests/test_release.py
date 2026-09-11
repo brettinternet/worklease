@@ -29,6 +29,7 @@ from scripts.release_artifacts import (
     write_checksums,
 )
 from scripts.release_docs import (
+    MAN_PAGE_EXAMPLES,
     extract_release_changelog,
     render_man_page,
     write_release_docs,
@@ -248,7 +249,7 @@ class ReleaseValidationTests(unittest.TestCase):
                 )
             )
 
-    def test_release_documentation_matches_changelog_and_complete_help(self) -> None:
+    def test_release_documentation_is_concise_current_and_executable(self) -> None:
         changelog = """# Changelog
 
 ## Unreleased
@@ -272,11 +273,17 @@ class ReleaseValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no release entry"):
             extract_release_changelog(changelog, "1.2.4")
 
-        manual = render_man_page(
-            "1.2.3", release_date, "usage: worklease --help\n.foo -x"
-        )
+        manual = render_man_page("1.2.3", release_date)
         self.assertIn('.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"', manual)
-        self.assertIn(r"\&.foo \-x", manual)
+        self.assertIn(".SH CORE WORKFLOW", manual)
+        self.assertIn(".SH EXAMPLES", manual)
+        self.assertIn(r"\fB--json\fR", manual)
+        self.assertIn(r"\fB--format json\fR", manual)
+        self.assertNotIn("COMPLETE COMMAND REFERENCE", manual)
+        self.assertNotIn(
+            " python ", "\n".join(script for _, script in MAN_PAGE_EXAMPLES)
+        )
+        self.assertLess(len(manual), 12_000)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -286,8 +293,51 @@ class ReleaseValidationTests(unittest.TestCase):
                 "v1.2.3", changelog_path, root / "release"
             )
             generated_manual = man_page.read_text(encoding="utf-8")
-            self.assertIn("=== worklease acquire ===", generated_manual)
-            self.assertIn(r"=== worklease release\-bundle ===", generated_manual)
+            for heading, example in MAN_PAGE_EXAMPLES:
+                with self.subTest(example=heading):
+                    self.assertIn(heading, generated_manual)
+                    example_root = root / heading.replace(" ", "-")
+                    example_root.mkdir()
+                    environment = os.environ.copy()
+                    environment["WORKLEASE_HOME"] = str(example_root / "state")
+                    environment["TMPDIR"] = str(example_root)
+                    result = subprocess.run(
+                        ["sh", "-eu", "-c", example],
+                        cwd=example_root,
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+            failure_root = root / "guarded-failure"
+            failure_root.mkdir()
+            environment = os.environ.copy()
+            environment["WORKLEASE_HOME"] = str(failure_root / "state")
+            environment["TMPDIR"] = str(failure_root)
+            failing_example = MAN_PAGE_EXAMPLES[2][1].replace(
+                "/bin/echo guarded", "/bin/sh -c 'exit 7'"
+            )
+            failed = subprocess.run(
+                ["sh", "-eu", "-c", failing_example],
+                cwd=failure_root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(7, failed.returncode, failed.stderr)
+            status = subprocess.run(
+                ["worklease", "--json", "status", "--resource", "guarded"],
+                cwd=failure_root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, status.returncode, status.stderr)
+            self.assertEqual("free", json.loads(status.stdout)["state"])
             self.assertEqual(section, release_notes.read_text(encoding="utf-8"))
 
     def test_release_metadata_generation_validates_and_embeds_version(self) -> None:
