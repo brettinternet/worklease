@@ -1,11 +1,11 @@
 ---
 id: TASK-66
 title: Refine the manual and release v0.9.1
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-11 21:05'
-updated_date: '2026-09-11 21:26'
+updated_date: '2026-09-11 21:32'
 labels: []
 dependencies: []
 references:
@@ -34,9 +34,9 @@ Replace the exhaustive help dump in the generated manual with a concise task-ori
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The generated `worklease(1)` manual is concise, plain, direct, and covers the core lifecycle without duplicating every command help page.
-- [ ] #2 Examples progress from a simple acquire/status/release flow to lease-file guarded execution and bundle coordination, and every example uses valid current CLI syntax.
-- [ ] #3 The v0.9.1 changelog and package version are ready, all required checks pass, and GitHub release v0.9.1 is published from the matching tag.
+- [x] #1 The generated `worklease(1)` manual is concise, plain, direct, and covers the core lifecycle without duplicating every command help page.
+- [x] #2 Examples progress from a simple acquire/status/release flow to lease-file guarded execution and bundle coordination, and every example uses valid current CLI syntax.
+- [x] #3 The v0.9.1 changelog and package version are ready, all required checks pass, and GitHub release v0.9.1 is published from the matching tag.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -49,4 +49,12 @@ Replace the exhaustive help dump in the generated manual with a concise task-ori
 
 <!-- SECTION:NOTES:BEGIN -->
 Replaced the exhaustive help dump with a task-oriented manual. The generator checks its command inventory against argparse, and tests execute all four examples from basic lease through guarded and bundle workflows. Independent review found unsafe repo-relative advanced handles, a Python dependency, and incomplete JSON guidance; all were corrected with private temporary handles, failure-release traps, /bin/echo, and both JSON selectors. Full lint, formatting, 302 core tests, 19 SDK tests, type checks, release generation, and mandoc lint pass.
+
+Published v0.9.1 from the annotated tag. GitHub Actions release run 34649574899 passed all Python, Linux, macOS, checksum, and publish jobs. The published release is non-draft and non-prerelease with 11 assets; downloaded worklease.1 passes mandoc lint and the published changelog begins with the exact v0.9.1 section.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Published v0.9.1 with a concise task-oriented manual, executable examples from simple leases through guarded bundles, safer failure cleanup, matching package and SDK versions, and changelog-derived release notes. Verified all local quality checks, independent review fixes, the successful release workflow, and published assets.
+<!-- SECTION:FINAL_SUMMARY:END -->
