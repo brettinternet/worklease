@@ -25,6 +25,7 @@ PACKAGE_DATA = (
 )
 SDK_PACKAGE_DATA = ("worklease_source_sdk/py.typed",)
 NATIVE_ARCHIVE_MEMBER = "bin/worklease"
+NATIVE_MANPAGE_MEMBER = "share/man/man1/worklease.1"
 
 
 def _missing_package_data(names: set[str], *, source_prefix: str = "") -> list[str]:
@@ -105,14 +106,20 @@ def validate_native_artifact(path: Path) -> None:
     _validate_native_content(path.name, content)
 
 
-def package_native_artifact(executable: Path, archive: Path) -> None:
-    """Package one executable at mise's autodetected ``bin/worklease`` path."""
+def package_native_artifact(
+    executable: Path, archive: Path, *, man_page: Path | None = None
+) -> None:
+    """Package an executable and optional manual at standard archive paths."""
     if executable.is_symlink() or not executable.is_file():
         raise ValueError(f"native executable is not a regular file: {executable}")
+    if man_page is not None and (man_page.is_symlink() or not man_page.is_file()):
+        raise ValueError(f"man page is not a regular file: {man_page}")
     validate_native_artifact(executable)
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "w:gz") as output:
         output.add(executable, arcname=NATIVE_ARCHIVE_MEMBER, recursive=False)
+        if man_page is not None:
+            output.add(man_page, arcname=NATIVE_MANPAGE_MEMBER, recursive=False)
     validate_native_artifact(archive)
 
 
@@ -189,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     native_command.add_argument("--executable", type=Path, required=True)
     native_command.add_argument("--archive", type=Path, required=True)
+    native_command.add_argument("--man-page", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.operation == "write":
@@ -198,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
             validate_checksums(args.directory)
             print("checksums valid")
         elif args.operation == "package-native":
-            package_native_artifact(args.executable, args.archive)
+            package_native_artifact(
+                args.executable, args.archive, man_page=args.man_page
+            )
             print(args.archive)
         elif args.kind == "editable":
             validate_editable_package(args.artifact)

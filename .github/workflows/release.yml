@@ -36,12 +36,13 @@ jobs:
           expected=${RELEASE_TAG#v}
           actual=$(mise exec uv -- uv run python -c 'import importlib.metadata; print(importlib.metadata.version("worklease"))')
           test "$actual" = "$expected"
-      - name: Embed published documentation metadata
+      - name: Generate version-matched release documentation
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           expected=${RELEASE_TAG#v}
           mise exec uv -- uv run python scripts/embed_release_metadata.py "$expected"
+          mise exec uv -- uv run python scripts/release_docs.py "$expected"
       - name: Build wheel and sdist
         run: |
           mkdir -p dist/release
@@ -97,12 +98,13 @@ jobs:
           cache: true
       - name: Sync locked environment
         run: mise run sync
-      - name: Embed published documentation metadata
+      - name: Generate version-matched release documentation
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           expected=${RELEASE_TAG#v}
           mise exec uv -- uv run python scripts/embed_release_metadata.py "$expected"
+          mise exec uv -- uv run python scripts/release_docs.py "$expected"
       - name: Build one-file executable with package metadata
         run: |
           mise exec uv -- uv run --locked --group release pyinstaller \
@@ -132,7 +134,8 @@ jobs:
           ASSET_NAME: worklease-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}-${{ matrix.platform }}-${{ matrix.asset_arch }}.tar.gz
         run: |
           mise exec uv -- uv run python scripts/release_artifacts.py \
-            package-native --executable dist/worklease --archive "dist/$ASSET_NAME"
+            package-native --executable dist/worklease --archive "dist/$ASSET_NAME" \
+            --man-page dist/release/worklease.1
       - name: Upload native asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -170,4 +173,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: dist/release/*
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: dist/release/worklease-${{ github.ref_name }}-changelog.md

@@ -34,7 +34,7 @@ Or install the latest release with [mise](https://mise.jdx.dev/):
 "github:brettinternet/worklease" = "latest"
 ```
 
-Pin a release by replacing `latest` with a tag such as `vX.Y.Z`. See [GitHub Releases](https://github.com/brettinternet/worklease/releases).
+Pin a release by replacing `latest` with a tag such as `vX.Y.Z`. See [GitHub Releases](https://github.com/brettinternet/worklease/releases). Each release publishes a version-matched `worklease.1` manual and changelog; native archives also contain the manual at `share/man/man1/worklease.1`.
 
 Acquire a lease with the defaults:
 

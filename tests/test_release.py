@@ -18,6 +18,7 @@ from scripts.embed_release_metadata import (
 )
 from scripts.release_artifacts import (
     NATIVE_ARCHIVE_MEMBER,
+    NATIVE_MANPAGE_MEMBER,
     PACKAGE_DATA,
     SDK_PACKAGE_DATA,
     package_native_artifact,
@@ -26,6 +27,11 @@ from scripts.release_artifacts import (
     validate_native_artifact,
     validate_python_artifact,
     write_checksums,
+)
+from scripts.release_docs import (
+    extract_release_changelog,
+    render_man_page,
+    write_release_docs,
 )
 from scripts.release_installer import (
     ReleaseError,
@@ -242,6 +248,48 @@ class ReleaseValidationTests(unittest.TestCase):
                 )
             )
 
+    def test_release_documentation_matches_changelog_and_complete_help(self) -> None:
+        changelog = """# Changelog
+
+## Unreleased
+
+## 1.2.3 - 2026-09-12
+
+### Added
+
+- Complete manual.
+
+## 1.2.2 - 2026-09-11
+
+### Fixed
+
+- Earlier fix.
+"""
+        release_date, section = extract_release_changelog(changelog, "v1.2.3")
+        self.assertEqual("2026-09-12", release_date)
+        self.assertIn("## 1.2.3 - 2026-09-12", section)
+        self.assertNotIn("1.2.2", section)
+        with self.assertRaisesRegex(ValueError, "no release entry"):
+            extract_release_changelog(changelog, "1.2.4")
+
+        manual = render_man_page(
+            "1.2.3", release_date, "usage: worklease --help\n.foo -x"
+        )
+        self.assertIn('.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"', manual)
+        self.assertIn(r"\&.foo \-x", manual)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            changelog_path = root / "CHANGELOG.md"
+            changelog_path.write_text(changelog, encoding="utf-8")
+            man_page, release_notes = write_release_docs(
+                "v1.2.3", changelog_path, root / "release"
+            )
+            generated_manual = man_page.read_text(encoding="utf-8")
+            self.assertIn("=== worklease acquire ===", generated_manual)
+            self.assertIn(r"=== worklease release\-bundle ===", generated_manual)
+            self.assertEqual(section, release_notes.read_text(encoding="utf-8"))
+
     def test_release_metadata_generation_validates_and_embeds_version(self) -> None:
         self.assertIn(
             "PUBLISHED_RELEASE_VERSION: str | None = '0.4.0'",
@@ -391,12 +439,16 @@ class ReleaseValidationTests(unittest.TestCase):
             )
             native.chmod(0o755)
             archive = output / "worklease-v0.1.0-linux-x64.tar.gz"
-            package_native_artifact(native, archive)
+            man_page = output / "worklease.1"
+            man_page.write_text(".TH WORKLEASE 1\n", encoding="utf-8")
+            package_native_artifact(native, archive, man_page=man_page)
             validate_native_artifact(archive)
             with tarfile.open(archive, "r:gz") as packaged:
                 member = packaged.getmember(NATIVE_ARCHIVE_MEMBER)
                 self.assertTrue(member.isfile())
                 self.assertTrue(member.mode & 0o111)
+                manual = packaged.getmember(NATIVE_MANPAGE_MEMBER)
+                self.assertTrue(manual.isfile())
 
     def test_workflow_packages_autodetected_native_archives(self) -> None:
         release = (ROOT / ".github/workflows/release.yml").read_text()
@@ -412,6 +464,13 @@ class ReleaseValidationTests(unittest.TestCase):
             self.assertIn(f"asset_arch: {architecture}", release)
         self.assertIn("${{ matrix.asset_arch }}.tar.gz", release)
         self.assertIn("package-native --executable dist/worklease", release)
+        self.assertIn("--man-page dist/release/worklease.1", release)
+        self.assertEqual(2, release.count("scripts/release_docs.py"))
+        self.assertIn(
+            "body_path: dist/release/worklease-${{ github.ref_name }}-changelog.md",
+            release,
+        )
+        self.assertNotIn("generate_release_notes", release)
 
     def test_manifest_covers_every_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
