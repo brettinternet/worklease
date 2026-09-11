@@ -4,7 +4,7 @@ title: Add an optional MCP interface for coding agents
 status: To Do
 assignee: []
 created_date: '2026-09-11 18:25'
-updated_date: '2026-09-11 18:32'
+updated_date: '2026-09-11 18:34'
 labels: []
 dependencies: []
 references:
@@ -81,3 +81,13 @@ Ship as the `mcp` extra with a `worklease-mcp` console script. Core `worklease` 
 - [ ] #11 Documentation covers MCP client configuration for at least Claude Code, a complete safe lifecycle, guarantee-scope warnings, the recovery matrix (disconnect, restart, stale revision, expiry, unknown outcome) naming the CLI lease-file command for each operator step, and the explicit exclusions.
 - [ ] #12 A repeatable benchmark runs one acquire / heartbeat / checkpoint / release lifecycle over MCP and over equivalent `--json --lease-file` subprocess calls, recording wall latency, process count, and the byte size of `tools/list` and each result payload as a context-cost proxy, without asserting a performance guarantee.
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @brett
+created: 2026-09-11 18:34
+---
+Decision (2026-09-11): reconciliation and inspect-operation stay CLI-only; MCP lease references persist as lease-file handles and resolve across server restarts. Rationale: in-process calls cannot lose responses, so unknown outcomes are operator recovery cases; persisted handles give a CLI release path after a crashed session. Safeguard: the server removes handles whose claim is free or expired when serving `list`, so mcp-leases does not accumulate dead files.
+---
+<!-- COMMENTS:END -->
