@@ -4251,12 +4251,13 @@ with resource_lock(resource):
         )
 
         gc = self.text_cli("gc")
-        self.assertIn("OK gc\nDRY_RUN\ttrue\n", gc)
+        self.assertIn("OK gc\nDRY_RUN\tno records changed\nRETENTION\t30d\n", gc)
+        self.assertIn("ELIGIBLE\t0 records\n", gc)
         self.assertNotIn("HINT\t", gc)
         gc_error = self.text_cli("gc", "--cutoff", "not-a-timestamp", expected_code=64)
         self.assertIn("ERROR gc: invalid-gc-cutoff\n", gc_error)
 
-    def test_gc_text_dry_run_hints_when_records_are_eligible(self) -> None:
+    def test_gc_text_dry_run_is_compact_and_actionable(self) -> None:
         payload: dict[str, object] = {
             "ok": True,
             "operation": "gc",
@@ -4266,9 +4267,9 @@ with resource_lock(resource):
             "retentionDays": 30.0,
             "eligible": {
                 "epochs": {
-                    "count": 1,
+                    "count": 2,
                     "oldest": "2025-12-01T00:00:00Z",
-                    "newest": "2025-12-01T00:00:00Z",
+                    "newest": "2025-12-31T00:00:00Z",
                 },
                 "operations": {"count": 0, "oldest": None, "newest": None},
             },
@@ -4288,22 +4289,147 @@ with resource_lock(resource):
         output = StringIO()
         with redirect_stdout(output):
             cli_module._render_gc(payload)
-        self.assertIn(
-            "HINT\tRun worklease gc --cutoff 2026-01-01T00:00:00Z "
-            "--apply to collect eligible records\n",
+        self.assertEqual(
+            "OK gc\n"
+            "DRY_RUN\tno records changed\n"
+            "RETENTION\t30d\n"
+            "CUTOFF\t2026-01-01T00:00:00Z\n"
+            "ELIGIBLE\t2 records\n"
+            "singleton epochs\t2\t62d ago\t32d ago\n"
+            "HINT\tRun worklease gc --cutoff 2026-01-01T00:00:00Z --apply\n"
+            "PROTECTED\t1 record\n"
+            "expired singleton claims\t1\t92d ago\t92d ago\t"
+            "blocked by unresolved operations\n",
             output.getvalue(),
         )
-        self.assertIn(
-            "PROTECTED\nexpiredClaims\tunresolved-operations\t1\t"
-            '"2025-11-01T00:00:00Z"\t"2025-11-01T00:00:00Z"\n',
-            output.getvalue(),
+        self.assertNotIn("null", output.getvalue())
+        self.assertNotIn("operations\t0", output.getvalue())
+
+    def test_gc_cli_fixed_clock_covers_dry_run_apply_noop_and_json(self) -> None:
+        now = [0.0]
+        store = LeaseStore(self.home.name, clock=lambda: now[0])
+
+        collected_acquire = store.acquire(
+            AcquireRequest(
+                resource="repo:gc-collected",
+                claim_id="gc-collected-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="gc-test",
+            )
+        )
+        collected_claim = collected_acquire["claim"]
+        assert isinstance(collected_claim, dict)
+        store.release(
+            MutationRequest(
+                resource="repo:gc-collected",
+                claim_id=str(collected_claim["claimId"]),
+                token=str(collected_claim["token"]),
+                revision=int(collected_claim["revision"]),
+                operation_id="gc-collected-release",
+            ),
+            "done",
         )
 
-        payload["dryRun"] = False
+        protected_acquire = store.acquire(
+            AcquireRequest(
+                resource="repo:gc-protected",
+                claim_id="gc-protected-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="gc-test",
+                ttl=1.0,
+            )
+        )
+        protected_claim = protected_acquire["claim"]
+        assert isinstance(protected_claim, dict)
+        protected_request = MutationRequest(
+            resource="repo:gc-protected",
+            claim_id=str(protected_claim["claimId"]),
+            token=str(protected_claim["token"]),
+            revision=int(protected_claim["revision"]),
+            operation_id="gc-protected-operation",
+        )
+        self.assertIsNone(
+            store.begin_operation(protected_request, "exec", {"argv": ["true"]})
+        )
+        now[0] = 31 * 86400
+
+        def run_gc(*arguments: str) -> str:
+            output = StringIO()
+            with (
+                patch.object(cli_module, "LeaseStore", return_value=store),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(0, cli_module.main(list(arguments)))
+            return output.getvalue()
+
+        dry_run = run_gc("--format", "text", "gc")
+        self.assertIn("DRY_RUN\tno records changed\n", dry_run)
+        self.assertIn("RETENTION\t30d\n", dry_run)
+        self.assertIn("singleton epochs\t1\t31d ago\t31d ago\n", dry_run)
+        self.assertIn("PROTECTED\t1 record\n", dry_run)
+        self.assertIn("blocked by unresolved operations\n", dry_run)
+        self.assertIn(" --apply\n", dry_run)
+
+        json_payload = json.loads(run_gc("--json", "gc"))
+        self.assertTrue(json_payload["dryRun"])
+        self.assertIn("expiredClaims", json_payload["eligible"])
+        self.assertIn("expiredBundleClaims", json_payload["protected"])
+        self.assertIn("oldest", json_payload["eligible"]["epochs"])
+
+        applied = run_gc("--format", "text", "gc", "--apply")
+        self.assertIn("COLLECTED\t3 records\n", applied)
+        self.assertNotIn("HINT\t", applied)
+        no_op = run_gc("--format", "text", "gc", "--apply")
+        self.assertIn("COLLECTED\t0 records (no changes)\n", no_op)
+
+    def test_gc_text_empty_and_apply_results_are_distinct(self) -> None:
+        payload: dict[str, object] = {
+            "ok": True,
+            "operation": "gc",
+            "dryRun": True,
+            "capturedAt": "2026-02-01T00:00:00Z",
+            "cutoff": "2026-01-01T00:00:00Z",
+            "retentionDays": None,
+            "eligible": {"operations": {"count": 0, "oldest": None, "newest": None}},
+            "protected": {},
+        }
         output = StringIO()
         with redirect_stdout(output):
             cli_module._render_gc(payload)
+        self.assertEqual(
+            "OK gc\n"
+            "DRY_RUN\tno records changed\n"
+            "RETENTION\texplicit cutoff\n"
+            "CUTOFF\t2026-01-01T00:00:00Z\n"
+            "ELIGIBLE\t0 records\n",
+            output.getvalue(),
+        )
         self.assertNotIn("HINT\t", output.getvalue())
+
+        payload.update(dryRun=False, collected=payload["eligible"])
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_gc(payload)
+        self.assertIn("COLLECTED\t0 records (no changes)\n", output.getvalue())
+        self.assertNotIn("ELIGIBLE\t", output.getvalue())
+        self.assertNotIn("HINT\t", output.getvalue())
+
+        collected = payload["collected"]
+        assert isinstance(collected, dict)
+        collected["releases"] = {
+            "count": 3,
+            "oldest": "2025-12-01T00:00:00Z",
+            "newest": "2025-12-31T00:00:00Z",
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_gc(payload)
+        self.assertIn("COLLECTED\t3 records\n", output.getvalue())
+        self.assertIn("releases\t3\t62d ago\t32d ago\n", output.getvalue())
 
     def test_text_renderers_cover_mutations_aliases_and_child_failures(self) -> None:
         acquired_text = self.text_cli(

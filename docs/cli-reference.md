@@ -172,7 +172,7 @@ worklease gc --retention-days 90
 worklease gc --cutoff 2026-01-01T00:00:00Z --apply
 ```
 
-The result reports deterministic counts, oldest eligible timestamp, and newest
+JSON reports deterministic counts, oldest eligible timestamp, and newest
 eligible timestamp for each category:
 
 | Category |
@@ -188,9 +188,14 @@ eligible timestamp for each category:
 
 Records strictly older than the captured cutoff are eligible. For current
 claims, age is measured from `expiresAt`; an expiry exactly at the cutoff is
-retained. When a text-mode dry run finds eligible records, it prints a copyable
-`HINT` that reuses the captured cutoff with `--apply`; JSON output remains
-unchanged.
+retained. Text output states whether the run changed anything, shows the
+retention window, exact cutoff, and total eligible or collected count, and lists
+only nonzero groups with readable labels and compact oldest/newest ages such as
+`62d ago`. When a dry run finds eligible records, it prints a copyable `HINT`
+that reuses the exact captured cutoff with `--apply`; empty dry runs omit the
+hint. A successful apply reports either the collected total or an explicit
+`0 records (no changes)`. JSON output remains unchanged and retains every group
+and absolute timestamp.
 
 GC always protects active claims, expired claims inside the retention window,
 and claims with unresolved started operations. The `protected` JSON object and
@@ -268,7 +273,7 @@ example or valid values. Hints never echo rejected argument values.
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, one compact `RESOURCE` or ordered `RESOURCES` value, `STATE`, then `AGENT_ID`, `WORK_KEY`, relative `LEASE`, and `REVISION` for a claim |
 | Status commands with `--verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
-| `gc` | `OK gc`, retention fields, sorted `ELIGIBLE` rows, an apply `HINT` when useful, then nonzero unresolved-operation `PROTECTED` rows |
+| `gc` | `OK gc`; `DRY_RUN` plus `RETENTION`, `CUTOFF`, and total `ELIGIBLE`, or total `COLLECTED`; nonzero readable group rows with compact oldest/newest ages; an exact-cutoff apply `HINT` when useful; then nonzero `PROTECTED` rows naming unresolved operations |
 | Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
 
 `list` uses a fixed-width, space-padded summary table. Widths follow terminal

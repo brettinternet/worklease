@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -2220,51 +2221,112 @@ def _render_inspect_operation(payload: dict[str, object]) -> None:
             print(f"{_text_label(field)}\t{_text_value(payload[field])}")
 
 
+_GC_GROUPS = (
+    ("expiredClaims", "expired singleton claims"),
+    ("expiredBundleClaims", "expired bundle claims"),
+    ("epochs", "singleton epochs"),
+    ("bundleEpochs", "bundle epochs"),
+    ("operations", "operations"),
+    ("releases", "releases"),
+    ("reconciliations", "reconciliations"),
+    ("resources", "resource metadata"),
+)
+
+
+def _timestamp_epoch(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _compact_age(value: object, captured_at: float | None) -> str | None:
+    timestamp = _timestamp_epoch(value)
+    if timestamp is None or captured_at is None:
+        return None
+    difference = captured_at - timestamp
+    if difference < 0:
+        return f"in {_relative_duration(-difference)}"
+    return f"{_relative_duration(difference)} ago"
+
+
+def _gc_count(inventory: object) -> int:
+    if not isinstance(inventory, dict):
+        return 0
+    return sum(
+        int(summary.get("count", 0))
+        for summary in inventory.values()
+        if isinstance(summary, dict)
+    )
+
+
+def _record_count(count: int) -> str:
+    return f"{count} {'record' if count == 1 else 'records'}"
+
+
+def _render_gc_inventory(
+    inventory: object, *, captured_at: float | None, protected: bool = False
+) -> None:
+    if not isinstance(inventory, dict):
+        return
+    for record_type, label in _GC_GROUPS:
+        summary = inventory.get(record_type)
+        if not isinstance(summary, dict) or int(summary.get("count", 0)) <= 0:
+            continue
+        fields = [label, str(summary["count"])]
+        oldest = _compact_age(summary.get("oldest"), captured_at)
+        newest = _compact_age(summary.get("newest"), captured_at)
+        if oldest is not None:
+            fields.append(oldest)
+        if newest is not None:
+            fields.append(newest)
+        if protected:
+            fields.append("blocked by unresolved operations")
+        print("\t".join(fields))
+
+
 def _render_gc(payload: dict[str, object]) -> None:
     if not payload.get("ok"):
         _text_header(payload)
         _emit_error_details(payload)
         return
     _text_header(payload)
-    for field in ("dryRun", "capturedAt", "cutoff", "retentionDays"):
-        if field in payload:
-            print(f"{_text_label(field)}\t{_text_value(payload[field])}")
-    eligible = payload.get("eligible", {})
-    if isinstance(eligible, dict):
-        print("ELIGIBLE")
-        for record_type in sorted(eligible):
-            summary = eligible[record_type]
-            if isinstance(summary, dict):
-                print(
-                    f"{record_type}\t{summary.get('count', 0)}\t"
-                    f"{_text_value(summary.get('oldest'))}\t"
-                    f"{_text_value(summary.get('newest'))}"
-                )
-        has_eligible_records = any(
-            isinstance(summary, dict) and int(summary.get("count", 0)) > 0
-            for summary in eligible.values()
+    dry_run = bool(payload.get("dryRun"))
+    inventory = payload.get("eligible" if dry_run else "collected", {})
+    total = _gc_count(inventory)
+    captured_at = _timestamp_epoch(payload.get("capturedAt"))
+    if dry_run:
+        print("DRY_RUN\tno records changed")
+    elif total:
+        print(f"COLLECTED\t{_record_count(total)}")
+    else:
+        print("COLLECTED\t0 records (no changes)")
+    retention_days = payload.get("retentionDays")
+    retention = (
+        f"{retention_days:g}d"
+        if isinstance(retention_days, (int, float))
+        else "explicit cutoff"
+    )
+    print(f"RETENTION\t{retention}")
+    print(f"CUTOFF\t{_text_atom(payload.get('cutoff', ''))}")
+    if dry_run:
+        print(f"ELIGIBLE\t{_record_count(total)}")
+    if total:
+        _render_gc_inventory(inventory, captured_at=captured_at)
+    if dry_run and total:
+        print(
+            "HINT\tRun worklease gc --cutoff "
+            f"{_text_atom(payload.get('cutoff', ''))} --apply"
         )
-        if payload.get("dryRun") and has_eligible_records:
-            print(
-                "HINT\tRun worklease gc --cutoff "
-                f"{_text_atom(payload.get('cutoff', ''))} --apply to collect "
-                "eligible records"
-            )
-    protected = payload.get("protected", {})
-    if isinstance(protected, dict) and any(
-        isinstance(summary, dict) and int(summary.get("count", 0)) > 0
-        for summary in protected.values()
-    ):
-        print("PROTECTED")
-        for record_type in sorted(protected):
-            summary = protected[record_type]
-            if isinstance(summary, dict) and int(summary.get("count", 0)) > 0:
-                print(
-                    f"{record_type}\tunresolved-operations\t"
-                    f"{summary.get('count', 0)}\t"
-                    f"{_text_value(summary.get('oldest'))}\t"
-                    f"{_text_value(summary.get('newest'))}"
-                )
+    protected_inventory = payload.get("protected", {})
+    protected_total = _gc_count(protected_inventory)
+    if protected_total:
+        print(f"PROTECTED\t{_record_count(protected_total)}")
+        _render_gc_inventory(
+            protected_inventory, captured_at=captured_at, protected=True
+        )
 
 
 def _render_mutation(payload: dict[str, object]) -> None:
