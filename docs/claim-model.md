@@ -96,7 +96,10 @@ ID is unsafe and unsupported.
 
 V1 never imports Python SQLite schemas or old handle directories and never
 silently falls back from a configured remote authority. Python-era files are
-left untouched for optional recoverable disposal during cutover.
+left untouched. After stopping every Python-era Worklease process, users may
+recoverably move `leases.sqlite3`, `locks/`, `context-leases/`, and `mcp-leases/`
+out of `WORKLEASE_HOME` into a private backup directory. Keep that backup until
+no rollback or historical inspection is needed; the Go authority never reads it.
 
 See [CLI reference](cli-reference.md) for commands and
 [MCP and JSON](mcp.md) for agent orchestration. The Cloudflare design document

@@ -51,7 +51,7 @@ Verify every acceptance criterion with objective evidence, record the evidence i
 Before handing off or committing changes:
 
 - Run `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck`; fix every reported failure instead of bypassing or weakening a check.
-- For Python changes, stage the intended files and run `mise run hooks`; fix Ruff and test failures before committing.
+- Stage the intended files and run `mise run hooks`; fix formatting and test failures before committing.
 - Install the Git hook once with `mise run hooks-install`, and do not disable Lefthook or skip failing jobs to force a commit.
 
 ## Worklease workflow

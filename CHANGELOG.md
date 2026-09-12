@@ -2,10 +2,17 @@
 
 ## Unreleased
 
+### Removed
+
+- Retired the Python proof of concept, source-provider SDK, Python packaging, legacy JSON schemas, and Python test/build automation after the Go capability cutover.
+
+### Changed
+
+- Repointed generic repository gates, hooks, and CI to the Go implementation, including race, vulnerability, built-binary, documentation, and clean-checkout end-to-end checks.
+
 ### Added
 
 - Bootstrapped the Go CLI, typed configuration, stable error/output contracts, and additive Go quality gates.
-- Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI calls, and bounded subprocesses.
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI invocation, and bounded subprocesses.
 - Added deterministic Go resource policies, canonical keys, and key/policy inspection commands.
 - Added the transactional Go singleton lease lifecycle with hashed client credentials, authenticated replay, clock safety, and guarded-operation state.

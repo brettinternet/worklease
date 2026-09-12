@@ -1,14 +1,7 @@
-.venv/
 .direnv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
 mise.local.toml
 build/
 dist/
 /bin/
-*.egg-info/
-.coverage
-coverage.xml
 .worklease/
 .worktrees/

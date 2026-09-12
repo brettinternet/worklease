@@ -1,4 +1,0 @@
-{
-  "include": ["src", "tests", "packages/worklease-source-sdk/src"],
-  "exclude": ["packages/worklease-source-sdk/tests"]
-}

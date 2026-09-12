@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  go:
+  quality:
     name: Go (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -22,8 +22,12 @@ jobs:
         uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           cache: true
-      - name: Run Go quality gates
-        run: mise run ci-go
+      - name: Install and exercise repository hooks
+        run: |
+          mise run hooks-install
+          mise run hooks-all
+      - name: Run quality gates, race tests, and end-to-end smoke
+        run: mise run ci
       - name: Validate generated manual
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
@@ -33,109 +37,3 @@ jobs:
           else
             mandoc -Tlint dist/worklease.1
           fi
-
-  quality:
-    name: Quality (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15-intel, macos-14]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install mise
-        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-        with:
-          cache: true
-      - name: Sync locked environment
-        run: mise run sync
-      - name: Run tests
-        run: mise run test
-      - name: Typecheck
-        run: mise run typecheck
-      - name: Lint
-        run: mise run lint
-      - name: Check formatting
-        run: mise run format-check
-      - name: Build wheel and sdist
-        run: mise run build
-      - name: Build SDK and example distributions
-        run: |
-          mkdir -p dist/extensions
-          mise exec uv -- uv build --project packages/worklease-source-sdk \
-            --no-build-isolation --out-dir dist/extensions
-          mise exec uv -- uv build \
-            --project packages/worklease-source-sdk/examples/source-provider-plugin \
-            --no-build-isolation --out-dir dist/extensions
-      - name: Install built wheel and sdist and smoke-test version
-        shell: bash
-        run: |
-          wheel=$(printf '%s\n' dist/*.whl)
-          uv tool install --force "$wheel"
-          tool_bin=$(uv tool dir --bin)
-          "$tool_bin/worklease" --json --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
-          sdist=$(printf '%s\n' dist/*.tar.gz)
-          uv tool install --force "$sdist"
-          "$tool_bin/worklease" --json --version | python -c 'import json,sys; p=json.load(sys.stdin); assert p["ok"] and p["version"]'
-      - name: Install SDK and example wheels together
-        shell: bash
-        run: |
-          target="$RUNNER_TEMP/worklease-extension-smoke"
-          mise exec uv -- uv pip install --no-index --target "$target" \
-            dist/*.whl dist/extensions/*.whl
-          PYTHONPATH="$target" python -c \
-            'import source_provider_example, worklease_source_sdk; assert source_provider_example.registration.descriptor.contract_version == worklease_source_sdk.CONTRACT_VERSION'
-
-  native:
-    name: Native (${{ matrix.platform }}-${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            arch: x86_64
-          - os: macos-15-intel
-            platform: macos
-            arch: x86_64
-          - os: macos-14
-            platform: macos
-            arch: arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install mise
-        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-        with:
-          cache: true
-      - name: Sync locked environment
-        run: mise run sync
-      - name: Build one-file executable
-        env:
-          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
-        run: |
-          mise exec uv -- uv run --locked --group release pyinstaller \
-            --clean --noconfirm --onefile \
-            --name "$ASSET_NAME" \
-            --copy-metadata worklease \
-            --collect-submodules worklease.adapters \
-            src/worklease/__main__.py
-      - name: Smoke-test frozen version and adapter key
-        env:
-          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
-        shell: bash
-        run: |
-          "dist/$ASSET_NAME" --json --version | python -c \
-            'import json,sys; p=json.load(sys.stdin); assert p["schemaVersion"] == 1 and p["operation"] == "version" and p["ok"]'
-          "dist/$ASSET_NAME" --json key --provider github --source example/repo --item 1 | python -c \
-            'import json,sys; p=json.load(sys.stdin); assert p["schemaVersion"] == 1 and p["operation"] == "key" and p["ok"] and p["provider"] == "github"'
-      - name: Validate native checksum manifest
-        env:
-          ASSET_NAME: worklease-ci-${{ matrix.platform }}-${{ matrix.arch }}
-        run: |
-          mkdir -p dist/release
-          cp "dist/$ASSET_NAME" dist/release/
-          mise exec uv -- uv run python scripts/release_artifacts.py write --directory dist/release
-          mise run release-validate

@@ -14,14 +14,13 @@ never printed.
 Build from source with Go 1.27.1:
 
 ```sh
-mise run go-build
+mise run build
 ./bin/worklease version
 ```
 
 Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
 and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
-`checksums.txt`. Python packaging remains available only during the rewrite and
-will be removed at cutover.
+`checksums.txt`.
 
 ## Human CLI quick start
 
@@ -122,15 +121,13 @@ See:
 ## Development
 
 ```sh
-mise run ci-go
+mise run ci
 ```
 
-`ci-go` formats, vets, tests, race-tests, scans vulnerabilities, builds the
-binary, executes built-binary smoke, and renders the manual. Release preparation
+`ci` formats, vets, tests, race-tests, scans vulnerabilities, builds the
+binary, executes clean-checkout end-to-end smoke, and renders the manual. Release preparation
 builds four CGO-disabled archives and verifies their checksums. Publishing,
 tagging, pushing, dispatching publication, and creating a release always require
 separate owner authorization.
 
-Python quality gates and packaging stay in the repository until the final
-cutover task. Python-era state is never imported or deleted automatically; the
-cutover notes provide optional recoverable disposal steps.
+Python-era state is never imported or deleted automatically.
