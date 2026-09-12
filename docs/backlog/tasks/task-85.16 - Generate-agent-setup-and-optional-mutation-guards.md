@@ -1,10 +1,11 @@
 ---
 id: TASK-85.16
 title: Generate agent setup and optional mutation guards
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 06:28'
+updated_date: '2026-09-12 19:59'
 labels:
   - go-rewrite
 milestone: m-0
@@ -48,3 +49,22 @@ Evidence and patterns (the amended contract is normative): TASK-80 and TASK-82 (
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add internal/setup JSON generators and atomic preview/apply/remove operations for Claude Code, Cursor, and generic output.
+2. Add setup CLI commands and real Claude Code verify-hook parsing with claim/path coverage and explicit authority selection.
+3. Add fixtures and integration/surface tests for client scopes, mutation safety, authority consistency, hook behavior, and onboarding.
+4. Update MCP/setup documentation with verified client URLs and safety boundaries; run focused tests and mise run ci-go.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Current client documentation verified before implementation:
+- Claude Code hooks/input/exit semantics and hook locations: https://docs.anthropic.com/en/docs/claude-code/hooks (PreToolUse command hooks receive JSON stdin including cwd, tool_name, and tool_input; exit 2 blocks, exit 0 allows).
+- Claude Code user settings: https://docs.anthropic.com/en/docs/claude-code/settings (~/.claude/settings.json); user MCP state uses ~/.claude.json as documented there.
+- Cursor MCP installation: https://cursor.com/docs/context/mcp/install-links (project .cursor/mcp.json and global ~/.cursor/mcp.json).
+- Cursor hooks/configuration: https://cursor.com/docs/agent/hooks (~/.cursor/hooks.json is the user hook shape; native guard generation is not claimed for Cursor).
+<!-- SECTION:NOTES:END -->
