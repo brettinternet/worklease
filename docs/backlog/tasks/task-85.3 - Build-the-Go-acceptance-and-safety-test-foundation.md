@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a0945b'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 07:13'
+updated_date: '2026-09-12 07:15'
 labels:
   - go-rewrite
 milestone: m-0
@@ -65,10 +65,12 @@ Evidence and patterns (the amended contract is normative): hum test shapes in `c
 Resumed under a fresh Worklease local-coordination claim.
 
 Implemented in ce8ecb6 and fast-forwarded to main. Verification passed: TestClockAndGeneratorAreDeterministicAndRaceSafe; TestHomeAndEnvironmentArePrivateAndProcessIsolated; TestRunCLIParsesInjectedVersionResult; TestRunTestProcessSuccessAndBoundedCleanup; go test and go test -race for internal/testkit; mise run ci-go; repository lint, format-check, test, and typecheck.
+
+Final race pass increased subprocess startup/timeout bounds for instrumented CI; go test -race -count=1 ./internal/testkit and mise run ci-go passed on dc0a960.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added the focused Go test foundation. AC1: TestClockAndGeneratorAreDeterministicAndRaceSafe and TestHomeAndEnvironmentArePrivateAndProcessIsolated prove race-safe clocks, deterministic IDs/tokens, private homes, and isolated env maps. AC2: TestRunCLIParsesInjectedVersionResult and the echo helper prove injected CLI and marked test-binary execution. AC3: TestRunTestProcessSuccessAndBoundedCleanup proves timeout diagnostics, process-group termination, and reaping. AC4: package documentation records main/linked/symlink Git context expectations while deferring unused fixtures. AC5/DoD: all exported helpers are consumed by acceptance tests and mise run ci-go passed on ce8ecb6.
+Added the focused Go test foundation. AC1: TestClockAndGeneratorAreDeterministicAndRaceSafe and TestHomeAndEnvironmentArePrivateAndProcessIsolated prove race-safe clocks, deterministic IDs/tokens, private homes, and isolated env maps. AC2: TestRunCLIParsesInjectedVersionResult and the echo helper prove injected CLI and marked test-binary execution. AC3: TestRunTestProcessSuccessAndBoundedCleanup proves timeout diagnostics, descendant process-group termination, and reaping. AC4: package documentation records main/linked/symlink Git context expectations while deferring unused fixtures. AC5/DoD: all exported helpers are consumed by acceptance tests; go test -race -count=1 ./internal/testkit and mise run ci-go passed on dc0a960.
 <!-- SECTION:FINAL_SUMMARY:END -->
