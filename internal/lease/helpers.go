@@ -637,12 +637,13 @@ func hasControl(value string) bool {
 	return strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0
 }
 
-func sameResources(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+func containsResources(have, want []string) bool {
+	members := make(map[string]bool, len(have))
+	for _, value := range have {
+		members[value] = true
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	for _, value := range want {
+		if !members[value] {
 			return false
 		}
 	}
