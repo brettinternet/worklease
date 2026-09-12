@@ -79,11 +79,13 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	execCommand.Action = execAction(s)
 	replaceCommand := jsonless("replace-file", "replace one file", "worklease replace-file --path FILE", append(mutate(), flag("path"), flag("expected-sha256"), flag("content-file"))...)
 	replaceCommand.Action = replaceFileAction(s)
+	watchCommand := jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout (default 30s, maximum 1h)"})...)
+	watchCommand.Action = watchAction(s)
 	commands := []*urfavecli.Command{
 		jsonless("version", "print version metadata", "worklease version --json"), keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
 		verifyCommand, execCommand, replaceCommand,
-		historyCommand, eventsCommand, jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout"})...), gcCommand, jsonless("doctor", "run diagnostics", "worklease doctor"),
+		historyCommand, eventsCommand, watchCommand, gcCommand, jsonless("doctor", "run diagnostics", "worklease doctor"),
 	}
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
 		return &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name + " <command>", Description: usage + ".\n\nExamples:\n  " + example, Commands: commands}

@@ -150,6 +150,22 @@ func encodeCursor(authority, feed, filter string, seq int64) string {
 	b, _ := json.Marshal(Cursor{Version: 1, AuthorityID: authority, Feed: feed, Filter: filter, Sequence: strconv.FormatInt(seq, 10)})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
+
+// EncodeCursor creates the opaque cursor used by every ledger feed. Callers
+// should preserve the filter exactly when continuing a filtered feed.
+func EncodeCursor(authority, feed, filter string, seq int64) string {
+	return encodeCursor(authority, feed, filter, seq)
+}
+
+// ResourcesFilter is the canonical cursor filter for a resource watch. JSON is
+// used rather than a delimiter so opaque resource bytes remain unambiguous.
+func ResourcesFilter(resources []string) string {
+	if len(resources) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(resources)
+	return string(b)
+}
 func bindCursor(value, authority, feed, filter string) (int64, error) {
 	if value == "" {
 		return 0, nil
@@ -199,7 +215,7 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 	}
 	page := EventsPage{AuthorityID: s.st.AuthorityID(), Events: []Event{}}
 	err = s.st.Read(ctx, func(tx *store.Tx) error {
-		last, pruned, err := watermarks(tx)
+		last, pruned, err := watermarks(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -251,17 +267,104 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 	})
 	return page, err
 }
+
+// EventsScan is a bounded observation of the events feed. InspectedSequence
+// advances only over rows actually read, allowing a timeout to be resumed
+// without hiding an event that arrived after the observation began.
+type EventsScan struct {
+	Events            []Event
+	NextCursor        string
+	Gap               bool
+	InspectedSequence string
+}
+
+// ScanEvents scans the durable event rows after cursor in sequence order. It
+// applies the resource intersection filter while still inspecting every row,
+// rather than using a page limit that could skip a later match.
+func (s *Service) ScanEvents(ctx context.Context, cursor, filter string) (EventsScan, error) {
+	position, err := bindCursor(cursor, s.st.AuthorityID(), "events", filter)
+	if err != nil {
+		return EventsScan{}, err
+	}
+	resources := []string{}
+	if filter != "" {
+		if err := json.Unmarshal([]byte(filter), &resources); err != nil || len(resources) == 0 {
+			return EventsScan{}, cursorInvalid()
+		}
+	}
+	result := EventsScan{Events: []Event{}, InspectedSequence: strconv.FormatInt(position, 10)}
+	err = s.st.Read(ctx, func(tx *store.Tx) error {
+		last, pruned, err := watermarks(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if cursor != "" && position < pruned {
+			result.Gap = true
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, pruned)
+			result.InspectedSequence = strconv.FormatInt(pruned, 10)
+			return nil
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT seq,at,kind,coalesce(claim_id,''),resources,coalesce(operation_id,''),revision,coalesce(agent_id,''),detail FROM events WHERE seq>? AND seq<=? ORDER BY seq ASC`, position, last)
+		if err != nil {
+			return storage(err)
+		}
+		defer rows.Close()
+		matched := false
+		for rows.Next() {
+			var seq, at int64
+			var encodedResources, detail string
+			var revision *int64
+			var event Event
+			if err := rows.Scan(&seq, &at, &event.Kind, &event.ClaimID, &encodedResources, &event.OperationID, &revision, &event.AgentID, &detail); err != nil {
+				return storage(err)
+			}
+			if json.Unmarshal([]byte(encodedResources), &event.Resources) != nil || json.Unmarshal([]byte(detail), &event.Detail) != nil {
+				return storage(errors.New("invalid public event JSON"))
+			}
+			event.Sequence, event.At, event.Revision = strconv.FormatInt(seq, 10), time.UnixMicro(at).UTC(), revision
+			result.InspectedSequence = event.Sequence
+			if len(resources) == 0 || eventIntersects(event.Resources, resources) {
+				result.Events = append(result.Events, event)
+				matched = true
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return storage(err)
+		}
+		inspected, _ := parseSequence(result.InspectedSequence)
+		if matched {
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, inspected)
+		} else {
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, last)
+		}
+		return nil
+	})
+	return result, err
+}
+
+func eventIntersects(eventResources, requested []string) bool {
+	for _, left := range eventResources {
+		for _, right := range requested {
+			if left == right {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func reverseEvents(v []Event) {
 	for i, j := 0, len(v)-1; i < j; i, j = i+1, j-1 {
 		v[i], v[j] = v[j], v[i]
 	}
 }
-func watermarks(tx *store.Tx) (int64, int64, error) {
+func watermarks(ctx context.Context, tx *store.Tx) (int64, int64, error) {
 	var lastRaw, prunedRaw string
-	if err := tx.QueryRowContext(context.Background(), `SELECT value FROM meta WHERE key='last_event_seq'`).Scan(&lastRaw); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='last_event_seq'`).Scan(&lastRaw); err != nil {
 		return 0, 0, storage(err)
 	}
-	if err := tx.QueryRowContext(context.Background(), `SELECT value FROM meta WHERE key='pruned_through_seq'`).Scan(&prunedRaw); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='pruned_through_seq'`).Scan(&prunedRaw); err != nil {
 		return 0, 0, storage(err)
 	}
 	last, e := parseSequence(lastRaw)
@@ -405,7 +508,7 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 	}
 	page := HistoryPage{AuthorityID: s.st.AuthorityID(), Resource: resource, Epochs: []Epoch{}}
 	e = s.st.Read(ctx, func(tx *store.Tx) error {
-		last, pruned, err := watermarks(tx)
+		last, pruned, err := watermarks(ctx, tx)
 		if err != nil {
 			return err
 		}
