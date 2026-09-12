@@ -1,10 +1,11 @@
 ---
 id: TASK-85.3
 title: Build the Go test foundation
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi-01a0945b'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 07:13'
 labels:
   - go-rewrite
 milestone: m-0
@@ -37,15 +38,37 @@ Evidence and patterns (the amended contract is normative): hum test shapes in `c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Clock, ID/token and isolated-home helpers are exercised under go test and -race; environment helpers isolate WORKLEASE_* and GIT_* values without concurrent process-global mutation.
-- [ ] #2 CLI helpers exercise the version command through injected writers and parse its result; subprocess helpers re-execute the test binary with explicit markers and bounded cleanup.
-- [ ] #3 Bounded subprocess failure diagnostics identify the helper and timeout, and no child survives test cleanup.
-- [ ] #4 Git fixtures actually used by resource/handle tests are documented with main/linked/symlink context expectations; downstream tasks own adding unused fixtures when needed.
-- [ ] #5 Every exported helper has a demonstrated consumer or its own meaningful acceptance test; mise run ci-go passes.
+- [x] #1 Clock, ID/token and isolated-home helpers are exercised under go test and -race; environment helpers isolate WORKLEASE_* and GIT_* values without concurrent process-global mutation.
+- [x] #2 CLI helpers exercise the version command through injected writers and parse its result; subprocess helpers re-execute the test binary with explicit markers and bounded cleanup.
+- [x] #3 Bounded subprocess failure diagnostics identify the helper and timeout, and no child survives test cleanup.
+- [x] #4 Git fixtures actually used by resource/handle tests are documented with main/linked/symlink context expectations; downstream tasks own adding unused fixtures when needed.
+- [x] #5 Every exported helper has a demonstrated consumer or its own meaningful acceptance test; mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Inspect the referenced Go/Python test patterns and define only the internal/testkit helpers exercised by this task: deterministic clock/identity data, isolated homes/environment maps, CLI invocation, and bounded test-binary subprocesses.
+2. Implement helpers with race-safe instance state and focused acceptance tests, including timeout diagnostics, child cleanup, and documented Git fixture expectations without unused fixtures.
+3. Run ci-go and repository gates, review the diff, merge the committed work to main, and record objective completion evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Resumed under a fresh Worklease local-coordination claim.
+
+Implemented in ce8ecb6 and fast-forwarded to main. Verification passed: TestClockAndGeneratorAreDeterministicAndRaceSafe; TestHomeAndEnvironmentArePrivateAndProcessIsolated; TestRunCLIParsesInjectedVersionResult; TestRunTestProcessSuccessAndBoundedCleanup; go test and go test -race for internal/testkit; mise run ci-go; repository lint, format-check, test, and typecheck.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added the focused Go test foundation. AC1: TestClockAndGeneratorAreDeterministicAndRaceSafe and TestHomeAndEnvironmentArePrivateAndProcessIsolated prove race-safe clocks, deterministic IDs/tokens, private homes, and isolated env maps. AC2: TestRunCLIParsesInjectedVersionResult and the echo helper prove injected CLI and marked test-binary execution. AC3: TestRunTestProcessSuccessAndBoundedCleanup proves timeout diagnostics, process-group termination, and reaping. AC4: package documentation records main/linked/symlink Git context expectations while deferring unused fixtures. AC5/DoD: all exported helpers are consumed by acceptance tests and mise run ci-go passed on ce8ecb6.
+<!-- SECTION:FINAL_SUMMARY:END -->
