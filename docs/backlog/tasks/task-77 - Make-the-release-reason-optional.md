@@ -1,10 +1,10 @@
 ---
 id: TASK-77
 title: Make the release reason optional
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 02:18'
-updated_date: '2026-09-12 02:24'
+updated_date: '2026-09-12 04:45'
 labels:
   - cli
   - ux
@@ -41,3 +41,15 @@ At the CLI parser boundary only, `-m/--reason` on `release`, `release-bundle`, a
 - [ ] #4 The public lifecycle/store methods and MCP `release` tool keep requiring a nonblank reason and remain schema-compatible.
 - [ ] #5 Tests cover omitted, explicit, and explicitly empty reasons for singleton and bundle CLI commands, the bundle alias, receipt/idempotency persistence, fixed termination semantics, and unchanged direct API and MCP validation; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.7 and TASK-85.14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.7 and TASK-85.14 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 7.8 (--reason optional, default released) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->
