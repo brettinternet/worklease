@@ -188,20 +188,17 @@ func TestHandlelessTransferIsRejected(t *testing.T) {
 	if err := os.Chmod(credentialDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	currentTokenPath, successorTokenPath := filepath.Join(credentialDir, "current"), filepath.Join(credentialDir, "successor")
+	currentTokenPath := filepath.Join(credentialDir, "current")
 	if err := os.WriteFile(currentTokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(successorTokenPath, []byte(strings.Repeat("b", 64)), 0600); err != nil {
-		t.Fatal(err)
-	}
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	claimID, successorID := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	claimID := strings.Repeat("1", 32)
 	acquire := []string{"worklease", "acquire", "--json", "--home", home, "--resource", "r", "--no-handle", "--claim-id", claimID, "--session", "stateless-session", "--token-file", currentTokenPath, "--request-not-after", deadline}
 	if err := Run(context.Background(), acquire, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	transfer := []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", currentTokenPath, "--revision", "1", "--operation-id", strings.Repeat("3", 32), "--request-not-after", deadline, "--successor-claim-id", successorID, "--successor-token-file", successorTokenPath, "--to-agent", "next", "--to-session", "next-session"}
+	transfer := []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", currentTokenPath, "--revision", "1", "--operation-id", strings.Repeat("3", 32), "--request-not-after", deadline, "--to-agent", "next", "--to-session", "next-session"}
 	var transferOut bytes.Buffer
 	if err := Run(context.Background(), transfer, "dev", "unknown", "unknown", &transferOut, &bytes.Buffer{}); err == nil || !strings.Contains(transferOut.String(), "successor-handle") {
 		t.Fatalf("handle-less transfer err=%v output=%q", err, transferOut.String())

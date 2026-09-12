@@ -20,6 +20,8 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+var writeHandleFile = handle.Write
+
 func serviceFor(ctx context.Context, cmd *urfave.Command, write bool) (*lease.Service, *store.Store, config.Config, error) {
 	cfg, err := config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "agent": cmd.String("agent"), "session": cmd.String("session"), "ttl": cmd.String("ttl"), "poll_interval": cmd.String("poll-interval"), "config": cmd.String("config")}})
 	if err != nil {
@@ -155,7 +157,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			}
 			if current.Claim != nil && current.Claim.Active {
 				h.Revision, h.ExpiresAt = current.Claim.Revision, current.Claim.ExpiresAt
-				if writeErr := handle.Write(path, h); writeErr != nil {
+				if writeErr := writeHandleFile(path, h); writeErr != nil {
 					return s.handle(cmd, writeErr)
 				}
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
@@ -227,13 +229,13 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			ready := h
 			ready.State, ready.Revision, ready.ExpiresAt = "ready", g.Revision, g.ExpiresAt
 			ready.PendingRequest = nil
-			if e := handle.Write(path, ready); e != nil {
+			if e := writeHandleFile(path, ready); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, g.Receipt, path, h.ClaimID, p.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
 		}
 		pending := handle.Handle{SchemaVersion: 1, AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Resources: resources, AgentID: cfg.AgentID, SessionID: session, LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claimID, Kind: "acquire", AuthorityID: st.AuthorityID(), ClaimID: claimID, RequestHash: requestHash, RequestNotAfter: deadline, Inputs: inputs}}
-		if err := handle.Write(path, pending); err != nil {
+		if err := writeHandleFile(path, pending); err != nil {
 			return s.handle(cmd, err)
 		}
 		g, e := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: resources, Token: token, ClaimID: claimID, AgentID: cfg.AgentID, SessionID: session, WorkKey: workKey, TTL: ttl, Wait: wait, PollInterval: poll, CoordinationOnly: cmd.Bool("coordination-only"), LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, RequestNotAfter: deadline})
@@ -248,7 +250,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		ready.Revision = g.Revision
 		ready.ExpiresAt = g.ExpiresAt
 		ready.PendingRequest = nil
-		if err := handle.Write(path, ready); err != nil {
+		if err := writeHandleFile(path, ready); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, g.Receipt, path, claimID, claimID))
 		}
 		return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
