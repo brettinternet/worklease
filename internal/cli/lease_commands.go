@@ -495,24 +495,20 @@ func mutationFailure(err error, claim, op, path string) error {
 		return nil
 	}
 	if e := reason.As(err); e != nil {
-		state := "not-committed"
-		if !isDefinitiveNoCommit(err) {
-			state = "unknown"
+		e.With("claimId", claim).With("operationId", op).With("pendingPath", path)
+		// A guard that already committed its started intent reports its own
+		// commit state; only classify errors that have not been classified.
+		if _, classified := e.Details["commitState"]; !classified {
+			state := "not-committed"
+			if !isDefinitiveNoCommit(err) {
+				state = "unknown"
+			}
+			e.With("commitState", state)
 		}
-		e.With("claimId", claim).With("operationId", op).With("commitState", state).With("pendingPath", path)
 	}
 	return err
 }
-func isDefinitiveNoCommit(err error) bool {
-	if e := reason.As(err); e != nil {
-		switch e.Reason {
-		case reason.ReasonUnknownOutcome, reason.ReasonUnknownOutcomePending, reason.ReasonReplayExpired, reason.ReasonStorageFailure, reason.ReasonHandleWriteFailed, reason.ReasonOwnershipLost, reason.ReasonChildTimeout, reason.ReasonInterrupted:
-			return false
-		}
-		return true
-	}
-	return false
-}
+func isDefinitiveNoCommit(err error) bool { return reason.DefinitiveNoCommit(err) }
 func committedHandleFailure(err error, receipt lease.Receipt, path, claim, op string) error {
 	e := reason.New(reason.ReasonHandleWriteFailed, "claim committed but handle could not be updated").With("claimId", claim).With("operationId", op).With("commitState", "committed").With("pendingPath", path)
 	if receipt.OperationID != "" {
@@ -520,17 +516,7 @@ func committedHandleFailure(err error, receipt lease.Receipt, path, claim, op st
 	}
 	return e
 }
-func clearPending(path string, h *handle.Handle) {
-	if h == nil {
-		return
-	}
-	if h.Revision > 0 && !h.ExpiresAt.IsZero() {
-		h.State, h.PendingRequest = "ready", nil
-		_ = handle.Write(path, *h)
-	} else {
-		_ = handle.Remove(path)
-	}
-}
+func clearPending(path string, h *handle.Handle) { _ = handle.ClearPending(path, h) }
 
 // recoverPendingMutation replays only the exact request retained in a handle.
 // It never constructs a new operation or deadline.

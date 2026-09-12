@@ -914,7 +914,11 @@ func OperationRequestHash(kind, authority, claim string, request map[string]any,
 // effect and records completion in a second serialized authority transaction.
 // This makes intent observable before effects while keeping authorization,
 // replacement, and completion in one completing transaction.
-func (s *Service) RunGuardedOperation(ctx context.Context, creds Credentials, op OperationIntent, effect func(ClaimView) (map[string]any, error)) (Receipt, error) {
+//
+// onStarted, when non-nil, is invoked once the started intent has committed
+// and before the effect runs, so adapters can distinguish a pre-dispatch
+// failure from one that leaves a started operation behind.
+func (s *Service) RunGuardedOperation(ctx context.Context, creds Credentials, op OperationIntent, onStarted func(), effect func(ClaimView) (map[string]any, error)) (Receipt, error) {
 	if effect == nil {
 		return Receipt{}, reason.Invalid("guarded operation effect is required")
 	}
@@ -924,6 +928,9 @@ func (s *Service) RunGuardedOperation(ctx context.Context, creds Credentials, op
 	}
 	if started.Completed && started.Receipt != nil {
 		return *started.Receipt, nil
+	}
+	if onStarted != nil {
+		onStarted()
 	}
 	creds.Revision = started.Revision
 	now := s.clock.Now()

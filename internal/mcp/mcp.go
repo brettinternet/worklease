@@ -590,6 +590,13 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	ref := opID()
 	claim := opID()
 	path := s.handlePath(ref)
+	// The reference is private until returned, but the handle lock is still
+	// the contract boundary from pending write through dispatch and update.
+	lk, e := handle.AcquireLock(ctx, path+".lock")
+	if e != nil {
+		return nil, e
+	}
+	defer lk.Close()
 	deadline := s.deadline()
 	inputs := map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "wait": time.Duration(wait * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "coordinationOnly": co, "localReplaceAllowed": !co}
 	hash := hashValue(map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "localReplaceAllowed": !co, "coordinationOnly": co})
@@ -604,10 +611,16 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	}
 	g, e := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: h.Token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: time.Duration(ttlv * float64(time.Second)), Wait: time.Duration(wait * float64(time.Second)), CoordinationOnly: co, LocalReplaceAllowed: !co, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	if e != nil {
-		if x := reason.As(e); x != nil {
-			x.With("claimId", claim).With("operationId", claim).With("pendingPath", path).With("lease", ref).With("commitState", "unknown")
+		if reason.DefinitiveNoCommit(e) {
+			// A grant that provably never committed leaves no recoverable
+			// state; retaining it would only accumulate orphan pending handles.
+			_ = handle.Remove(path)
+			return nil, mutationError(e, claim, claim, path)
 		}
-		return nil, e
+		if x := reason.As(e); x != nil {
+			x.With("lease", ref)
+		}
+		return nil, mutationError(e, claim, claim, path)
 	}
 	h.State = "ready"
 	h.Revision = g.Revision
@@ -666,6 +679,9 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	local := !co
 	g, err := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: h.HoldUntil})
 	if err != nil {
+		if reason.DefinitiveNoCommit(err) {
+			_ = handle.ClearPending(path, &h)
+		}
 		return nil, mutationError(err, h.ClaimID, p.OperationID, path)
 	}
 	h.State, h.PendingRequest = "ready", nil

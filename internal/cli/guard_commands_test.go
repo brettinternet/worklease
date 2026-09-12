@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
 )
 
@@ -149,4 +151,51 @@ func runWithStdin(t *testing.T, data []byte, args []string) error {
 func strconvQuote(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+// After the authority commits a started intent, the pending request is the
+// only exact record of that operation. A completion-stage failure whose reason
+// would otherwise prove no commit (stale-revision) must not clear it.
+func TestGuardLifecycleKeepsPendingRequestAfterStart(t *testing.T) {
+	home := t.TempDir()
+	handles := filepath.Join(home, "handles")
+	if err := os.Mkdir(handles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(handles, "ctx-"+strings.Repeat("0", 64)+".json")
+	authority, claim := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	h := handle.Handle{SchemaVersion: 1, AuthorityID: authority, ClaimID: claim, Token: strings.Repeat("c", 64), Revision: 3, Resources: []string{"guarded"}, ExpiresAt: time.Now().Add(time.Hour), AgentID: "agent", SessionID: "session", LocalReplaceAllowed: true, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: strings.Repeat("d", 32), Kind: "exec", AuthorityID: authority, ClaimID: claim, RequestHash: strings.Repeat("e", 64), RequestNotAfter: time.Now().Add(time.Hour), Inputs: map[string]any{"argv": []any{"true"}}}}
+	if err := handle.Write(path, h); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := guardLifecycle(path, &h)
+	lifecycle.Failure(reason.New(reason.ReasonStaleRevision, "stale"), true)
+	after, err := handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "pending" || after.PendingRequest == nil {
+		t.Fatalf("post-start failure cleared pending request: state=%s", after.State)
+	}
+	lifecycle.Failure(reason.New(reason.ReasonStaleRevision, "stale"), false)
+	after, err = handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" || after.PendingRequest != nil || after.Revision != 3 {
+		t.Fatalf("pre-start definitive failure must restore the ready handle: state=%s revision=%d", after.State, after.Revision)
+	}
+}
+
+// mutationFailure must not overwrite a commit state the guard already
+// established after its started intent committed.
+func TestMutationFailurePreservesGuardCommitState(t *testing.T) {
+	err := mutationFailure(reason.New(reason.ReasonStaleRevision, "stale").With("commitState", "unknown"), "claim", "op", "/p")
+	if got := reason.As(err).Details["commitState"]; got != "unknown" {
+		t.Fatalf("commitState=%v", got)
+	}
+	err = mutationFailure(reason.New(reason.ReasonStaleRevision, "stale"), "claim", "op", "/p")
+	if got := reason.As(err).Details["commitState"]; got != "not-committed" {
+		t.Fatalf("unclassified stale-revision commitState=%v", got)
+	}
 }

@@ -78,8 +78,12 @@ type Driver struct {
 }
 
 // OpenDriver opens path using the modernc.org/sqlite pure-Go driver. A write
-// open may create path with mode 0600; a read-only open never creates or chmods
-// any path and uses SQLite's mode=ro URI option. The parent directory is
+// open may create path with mode 0600; a read-only open never creates the
+// database, never chmods any path, and uses SQLite's mode=ro URI option. SQLite
+// itself still creates absent -wal/-shm sidecars for a read-only WAL open when
+// the directory is writable; they inherit the database's private mode, and
+// TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars documents that
+// limit because the driver exposes no way to refuse it. The parent directory is
 // intentionally not created here; home ownership and directory checks belong
 // to the authority store (TASK-85.6).
 //

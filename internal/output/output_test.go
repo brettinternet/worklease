@@ -84,3 +84,26 @@ func TestInvalidUTF8IsRedacted(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Contextual handle paths embed a SHA-256 context ID and receipts carry
+// SHA-256 request hashes. Neither is a credential; redacting them would
+// destroy the recovery pointers the contract requires. A bare 64-hex value
+// under any other key is still treated as a token.
+func TestRedactKeepsHashAndPathFieldsButRedactsBareTokens(t *testing.T) {
+	hex64 := strings.Repeat("ab", 32)
+	redacted := Redact(map[string]any{
+		"pendingPath":   "/home/handles/ctx-" + hex64 + ".json",
+		"handlePath":    "/home/handles/ctx-" + hex64 + ".json",
+		"requestSha256": hex64,
+		"contentSha256": hex64,
+		"note":          hex64,
+	}).(map[string]any)
+	for _, key := range []string{"pendingPath", "handlePath", "requestSha256", "contentSha256"} {
+		if value, _ := redacted[key].(string); !strings.Contains(value, hex64) {
+			t.Fatalf("%s was redacted: %v", key, redacted[key])
+		}
+	}
+	if redacted["note"] != "[REDACTED]" {
+		t.Fatalf("bare token survived under a neutral key: %v", redacted["note"])
+	}
+}

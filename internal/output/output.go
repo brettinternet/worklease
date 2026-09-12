@@ -200,10 +200,25 @@ func redact(value any, key string) any {
 		}
 		return result
 	case string:
+		if isPublicHexKey(key) {
+			return typed
+		}
 		return RedactString(typed)
 	default:
+		// Typed structs are not traversed. Domain projections (receipts,
+		// claim views) are token-free by construction; this pass is defense
+		// in depth for loosely typed detail maps only.
 		return value
 	}
+}
+
+// isPublicHexKey names fields whose values legitimately contain 64 lowercase
+// hex characters that are not credentials: SHA-256 request and content hashes,
+// and handle paths whose contextual identity is a SHA-256 digest. Redacting
+// those would destroy the recovery pointers the contract requires.
+func isPublicHexKey(key string) bool {
+	lower := strings.ToLower(key)
+	return strings.HasSuffix(lower, "sha256") || strings.HasSuffix(lower, "path")
 }
 
 func isSecretKey(key string) bool {

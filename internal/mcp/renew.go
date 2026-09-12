@@ -6,6 +6,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
 )
 
 func (s *Server) startRenewal(ref string, ttl time.Duration, hold time.Time) {
@@ -26,18 +27,19 @@ func stopRenewal(s *Server, ref string) {
 	}
 	s.mu.Unlock()
 }
+
+// renewLoop renews one lease this server acquired until its hold deadline,
+// expiry, an ownership failure, release, or shutdown. Every exit path marks the
+// runtime status stopped so tool results never report a dead renewer as active.
 func (s *Server) renewLoop(r *runtimeLease) {
+	defer s.markRenewalStopped(r)
 	for {
 		h, err := handle.Read(r.path)
 		if err != nil {
-			s.markRenewalStopped(r)
 			return
 		}
 		now := time.Now()
 		if !r.holdUntil.After(now) || !h.ExpiresAt.After(now) {
-			s.mu.Lock()
-			r.status = "stopped"
-			s.mu.Unlock()
 			return
 		}
 		wait := time.Until(h.ExpiresAt) / 2
@@ -52,13 +54,12 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		case <-t.C:
 		}
 		if !r.holdUntil.After(time.Now()) {
-			s.mu.Lock()
-			r.status = "stopped"
-			s.mu.Unlock()
 			return
 		}
 		remaining := time.Until(r.holdUntil)
+		s.mu.Lock()
 		ttl := r.ttl
+		s.mu.Unlock()
 		if ttl > remaining {
 			ttl = remaining
 		}
@@ -76,9 +77,6 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		}
 		h, err = handle.Read(r.path)
 		if err == nil && h.State == "pending" {
-			s.mu.Lock()
-			r.status = "stopped"
-			s.mu.Unlock()
 			lk.Close()
 			b.st.Close()
 			return
@@ -104,15 +102,21 @@ func (s *Server) renewLoop(r *runtimeLease) {
 						h.ExpiresAt = h.HoldUntil
 					}
 					if writeErr := handle.Write(r.path, h); writeErr != nil {
-						s.markRenewalStopped(r)
 						lk.Close()
 						b.st.Close()
 						return
 					}
 				} else {
-					s.mu.Lock()
-					r.status = "stopped"
-					s.mu.Unlock()
+					// A definitive failure (expired, stale, rejected) leaves the
+					// ready credential usable for explicit calls; an uncertain
+					// one keeps the exact pending request for recovery. Either
+					// way automatic renewal stops until the client intervenes.
+					if reason.DefinitiveNoCommit(callErr) {
+						_ = handle.ClearPending(r.path, &h)
+					}
+					lk.Close()
+					b.st.Close()
+					return
 				}
 			}
 		}

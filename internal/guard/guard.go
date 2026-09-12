@@ -42,10 +42,31 @@ type ExecResult struct {
 	ExitCode int
 }
 
+// OperationLifecycle lets an adapter persist the exact request before dispatch
+// and reconcile its private handle afterwards. Failure receives started=true
+// once the authority has committed the started intent: from then on the
+// pending request must be retained for exact recovery even when the error
+// itself would otherwise prove no commit.
 type OperationLifecycle struct {
 	Prepare  func(lease.OperationIntent) error
 	Complete func(lease.Receipt) error
-	Failure  func(error)
+	Failure  func(err error, started bool)
+}
+
+// postStart marks an error that occurred after the started intent committed.
+// The authority holds a started operation whose outcome this process could not
+// record, so the commit state is unknown regardless of the error's own reason.
+func postStart(err error, operationID string) error {
+	if e := reason.As(err); e != nil {
+		e.With("commitState", "unknown").With("operationId", operationID)
+	}
+	return err
+}
+
+func failLifecycle(lc *OperationLifecycle, err error, started bool) {
+	if lc != nil && lc.Failure != nil {
+		lc.Failure(err, started)
+	}
 }
 
 type ReplaceRequest struct {
@@ -290,8 +311,8 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 	}
 	started, e := svc.BeginOperation(ctx, creds, operation)
 	if e != nil {
-		if req.Lifecycle != nil && req.Lifecycle.Failure != nil && !started.Completed {
-			req.Lifecycle.Failure(e)
+		if !started.Completed {
+			failLifecycle(req.Lifecycle, e, false)
 		}
 		if started.Completed && started.Receipt != nil {
 			return ExecResult{Receipt: *started.Receipt, ExitCode: receiptExit(*started.Receipt)}, nil
@@ -311,9 +332,8 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 	preSpawnFailure := func(cause error) (ExecResult, error) {
 		completed, completeErr := svc.CompleteOperation(ctx, current, req.OperationID, map[string]any{"argv": req.Argv, "returncode": 127, "stdout": "", "stderr": "", "stdoutBytes": 0, "stderrBytes": 0, "stdoutTruncated": false, "stderrTruncated": false, "error": cause.Error(), "executionDirectory": map[string]any{"mode": "caller", "path": cwd}})
 		if completeErr != nil {
-			if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-				req.Lifecycle.Failure(completeErr)
-			}
+			completeErr = postStart(completeErr, req.OperationID)
+			failLifecycle(req.Lifecycle, completeErr, true)
 			return ExecResult{}, completeErr
 		}
 		if req.Lifecycle != nil && req.Lifecycle.Complete != nil {
@@ -414,6 +434,12 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 		case result := <-renewResults:
 			renewing = false
 			if result.err != nil {
+				// Only an ownership or clock failure proves the lease is gone.
+				// A transient storage error leaves the last confirmed deadline
+				// in force; the lease timer terminates the child if it passes.
+				if !reason.OwnershipRenewalFailure(result.err) {
+					continue
+				}
 				ownershipLost = true
 				waitErr = terminateAndWait(cmd, exited)
 				_ = stdoutPipe.Close()
@@ -432,15 +458,23 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 			_ = terminateAndWait(cmd, exited)
 			_ = stdoutPipe.Close()
 			_ = stderrPipe.Close()
-			err := reason.New(reason.ReasonInterrupted, "guarded command interrupted")
-			if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-				req.Lifecycle.Failure(err)
-			}
+			err := postStart(reason.New(reason.ReasonInterrupted, "guarded command interrupted"), req.OperationID)
+			failLifecycle(req.Lifecycle, err, true)
 			return ExecResult{}, err
 		}
 	}
 done:
 	close(done)
+	if renewing {
+		// The child finished while a renewal was in flight. Completion must
+		// use the revision that renewal committed, otherwise the authority
+		// rejects the completion as stale and strands a finished child as an
+		// unresolved operation.
+		result := <-renewResults
+		if result.err == nil {
+			current.Revision = result.receipt.Revision
+		}
+	}
 	var stdout, stderr capture
 	captureDeadline := time.NewTimer(time.Until(deadline))
 	defer captureDeadline.Stop()
@@ -462,17 +496,13 @@ done:
 		}
 	}
 	if timedOut {
-		err := reason.New(reason.ReasonChildTimeout, "guarded child exceeded max-duration").With("operationId", req.OperationID).With("timedOut", true)
-		if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-			req.Lifecycle.Failure(err)
-		}
+		err := postStart(reason.New(reason.ReasonChildTimeout, "guarded child exceeded max-duration").With("timedOut", true), req.OperationID)
+		failLifecycle(req.Lifecycle, err, true)
 		return ExecResult{}, err
 	}
 	if ownershipLost {
-		err := reason.New(reason.ReasonOwnershipLost, "claim ownership was lost while command was running").With("operationId", req.OperationID)
-		if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-			req.Lifecycle.Failure(err)
-		}
+		err := postStart(reason.New(reason.ReasonOwnershipLost, "claim ownership was lost while command was running"), req.OperationID)
+		failLifecycle(req.Lifecycle, err, true)
 		return ExecResult{}, err
 	}
 	code := 0
@@ -500,9 +530,8 @@ done:
 	receiptMap := map[string]any{"argv": req.Argv, "returncode": code, "stdout": text(stdout), "stderr": text(stderr), "stdoutBytes": stdout.total, "stderrBytes": stderr.total, "stdoutTruncated": stdout.truncated, "stderrTruncated": stderr.truncated, "executionDirectory": directory, "timedOut": false, "guarantee": "local-coordination", "providerFencing": false}
 	receipt, e := svc.CompleteOperation(ctx, current, req.OperationID, receiptMap)
 	if e != nil {
-		if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-			req.Lifecycle.Failure(e)
-		}
+		e = postStart(e, req.OperationID)
+		failLifecycle(req.Lifecycle, e, true)
 		return ExecResult{}, e
 	}
 	if req.Lifecycle != nil && req.Lifecycle.Complete != nil {
@@ -655,7 +684,8 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 			return ReplaceResult{}, err
 		}
 	}
-	receipt, err := svc.RunGuardedOperation(ctx, creds, operation, func(claim lease.ClaimView) (map[string]any, error) {
+	startedCommitted := false
+	receipt, err := svc.RunGuardedOperation(ctx, creds, operation, func() { startedCommitted = true }, func(claim lease.ClaimView) (map[string]any, error) {
 		if !claim.LocalReplaceAllowed || !containsResource(claim.Resources, key.Resource) {
 			return nil, reason.New(reason.ReasonUnsupportedCoordinationReplace, "claim does not permit local replacement")
 		}
@@ -702,7 +732,9 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		}
 		tmp, tmpName, e := newTempAt(dir, oldInfo.Mode().Perm())
 		if e != nil {
-			return nil, e
+			// Nothing was created: this is a proven no-effect failure and must
+			// free the started slot rather than remain unresolved.
+			return nil, reason.New(reason.ReasonInvalidPath, "temporary file cannot be created in target directory")
 		}
 		committed := false
 		defer func() {
@@ -717,7 +749,9 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 			e = closeErr
 		}
 		if e != nil {
-			return nil, e
+			// The temporary file is unlinked by the deferred cleanup and the
+			// target was never renamed over, so no effect occurred.
+			return nil, reason.New(reason.ReasonInvalidPath, "temporary file cannot be written")
 		}
 		if !req.RequestNotAfter.After(time.Now()) {
 			return nil, reason.New(reason.ReasonReplayExpired, "request replay deadline has passed")
@@ -741,12 +775,17 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		return map[string]any{"ok": true, "path": target, "previousSha256": actual, "sha256": contentHash, "contentBytes": len(contentBytes), "mutationProtection": "local-serialized-replace", "providerMutationFenced": false}, nil
 	})
 	if err != nil {
-		if receipt.Committed && req.Lifecycle != nil && req.Lifecycle.Complete != nil {
-			if completeErr := req.Lifecycle.Complete(receipt); completeErr != nil {
-				return ReplaceResult{}, completeErr
+		if receipt.Committed {
+			if req.Lifecycle != nil && req.Lifecycle.Complete != nil {
+				if completeErr := req.Lifecycle.Complete(receipt); completeErr != nil {
+					return ReplaceResult{}, completeErr
+				}
 			}
-		} else if req.Lifecycle != nil && req.Lifecycle.Failure != nil {
-			req.Lifecycle.Failure(err)
+		} else {
+			if startedCommitted {
+				err = postStart(err, req.OperationID)
+			}
+			failLifecycle(req.Lifecycle, err, startedCommitted)
 		}
 		return ReplaceResult{Receipt: receipt}, err
 	}

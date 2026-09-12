@@ -627,3 +627,17 @@ func ResolveCredential(path string, fd *int) (string, error) {
 	}
 	return ReadCredential(path)
 }
+
+// ClearPending restores a handle after its pending request provably did not
+// commit. A usable credential returns to the ready state; a pending grant that
+// never committed is removed so the slot is free again.
+func ClearPending(path string, h *Handle) error {
+	if h == nil {
+		return nil
+	}
+	if h.Revision > 0 && !h.ExpiresAt.IsZero() {
+		h.State, h.PendingRequest = "ready", nil
+		return Write(path, *h)
+	}
+	return Remove(path)
+}
