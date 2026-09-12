@@ -131,6 +131,22 @@ worklease acquire \
   --wait-timeout 30
 ```
 
+## Why not a lock file?
+
+A simple sentinel file can signal that work is claimed, but it does not by itself provide safe ownership or recovery. A correctly implemented OS-backed lock may be all you need for local mutual exclusion. Worklease is a higher-level, same-host coordination protocol. Candidly, it uses OS locking internally.
+
+Worklease adds:
+
+- Expiring, recoverable ownership through TTLs and heartbeats.
+- Named, inspectable ownership epochs with claim IDs, tokens, and revisions; stale owners are rejected.
+- Guarded, bounded execution.
+- Atomic bundles for related changes.
+- Checkpoints, retention-bounded coordination history, and reconciliation for unknown outcomes.
+
+Use a lock when mutual exclusion is sufficient. Use Worklease when work needs expiring ownership, stale-owner protection, bounded execution, coordinated updates, or recovery checkpoints.
+
+Neither a local lock nor Worklease fences writes made directly to an external provider; provider-side concurrency controls are required for that boundary.
+
 ## How it works
 
 ```text
