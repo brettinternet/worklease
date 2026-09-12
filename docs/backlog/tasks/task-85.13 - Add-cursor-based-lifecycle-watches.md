@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi-01a09633'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 15:20'
+updated_date: '2026-09-12 15:22'
 labels:
   - go-rewrite
 milestone: m-0
@@ -46,6 +46,15 @@ Evidence and patterns (the amended contract is normative): TASK-81 (closed as su
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add internal/watch with authority-bound event continuations, atomic initial state/cursor snapshots, short read transactions, adaptive bounded polling, expiry-aware free/change evaluation, gap handling, and unresolved-predecessor metadata.
+2. Wire worklease watch CLI validation and text/JSON output for cursor and resource until modes, enforcing the 30s default and 1h maximum without opening or creating state for malformed input.
+3. Add domain and CLI/subprocess tests for matching/unrelated events, lazy expiry, transfer/reacquire, cursor binding/gaps, timeout scanned positions, concurrency/cancellation, clock regression, empty authorities, redaction, and no-write behavior.
+4. Run focused Go tests and the full repository quality gates, review the diff, and record criterion-specific evidence.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
