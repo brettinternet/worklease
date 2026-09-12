@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 22:39'
-updated_date: '2026-09-12 23:11'
+updated_date: '2026-09-12 23:31'
 labels:
   - go-rewrite
 dependencies: []
@@ -51,6 +51,8 @@ Implemented atomic current-revision reconciliation for a pending handle's own st
 Verification passed: go test ./internal/lease ./internal/cli; mise run e2e; mise run lint; mise run format-check; mise run test; mise run typecheck; mise run race; mise run vuln; mise run man; git diff --check.
 
 Independent review found two replay edges: an active claim could advance after reconciliation committed but before handle recovery, and an ended claim could make a known committed replay look uncommitted. Fixed both by authenticating live claim state on current-revision replay, synchronizing only active handles to the live revision/expiry, and preserving committed recovery state when the claim is ended. Added active-renewal and ended-claim regressions.
+
+Implementation commit 0160d6f was fast-forward merged to main.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
