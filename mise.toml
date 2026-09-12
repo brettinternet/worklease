@@ -3,10 +3,13 @@ _.python.venv = { path = ".venv", create = true }
 
 [tools]
 python = "3.14"
+go = "1.27.1"
 uv = "latest"
 "npm:pyright" = "latest"
 "npm:backlog.md" = "latest"
 lefthook = "latest"
+staticcheck = "2026.2.1"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
 [settings]
 disable_backends = ["pipx"]
@@ -31,3 +34,11 @@ build-sdk = "uv build --project packages/worklease-source-sdk --no-build-isolati
 build-sdk-example = "uv build --project packages/worklease-source-sdk/examples/source-provider-plugin --no-build-isolation"
 install-release = "scripts/install-release.sh"
 release-validate = "uv run python scripts/release_artifacts.py verify --directory dist/release"
+go-build = "CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease"
+go-fmt = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
+go-fmt-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
+go-vet = { run = ["go vet ./...", "staticcheck ./..."] }
+go-test = "go test ./..."
+go-race = "go test -race ./..."
+go-vuln = "govulncheck ./..."
+ci-go = { depends = ["go-fmt-check", "go-vet", "go-test", "go-race", "go-vuln", "go-build"] }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Bootstrapped the Go CLI, typed configuration, stable error/output contracts, and additive Go quality gates.
+
 ## 0.10.0 - 2026-09-12
 
 ### Added
