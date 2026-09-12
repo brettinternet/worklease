@@ -51,10 +51,14 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	full := func() urfavecli.Flag {
 		return &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}, Usage: "include non-secret metadata"}
 	}
+	keyCommand := jsonless("key", "derive a resource key", "worklease key --path README.md", resource()...)
+	keyCommand.Action = keyAction(s)
+	acquireCommand := jsonless("acquire", "acquire a claim", "worklease acquire --path README.md", append(resource(), &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"T"}, Usage: "claim lifetime [$WORKLEASE_TTL]"}, &urfavecli.DurationFlag{Name: "wait", Aliases: []string{"W"}, Usage: "bounded wait"}, &urfavecli.DurationFlag{Name: "poll-interval", Usage: "poll interval [$WORKLEASE_POLL_INTERVAL]"}, flag("agent", "a"), flag("work-key", "w"), flag("session"), flag("handle"), flag("claim-id", "c"), flag("token-file", "F"), &urfavecli.IntFlag{Name: "token-fd", Aliases: []string{"D"}, Usage: "token descriptor"}, flag("request-not-after"), &urfavecli.BoolFlag{Name: "no-handle", Usage: "disable contextual handle"})...)
+	acquireCommand.Action = acquireAction(s)
 	commands := []*urfavecli.Command{
 		jsonless("version", "print version metadata", "worklease version --json"),
-		jsonless("key", "derive a resource key", "worklease key --path README.md", resource()...),
-		jsonless("acquire", "acquire a claim", "worklease acquire --path README.md", append(resource(), &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"T"}, Usage: "claim lifetime [$WORKLEASE_TTL]"}, &urfavecli.DurationFlag{Name: "wait", Aliases: []string{"W"}, Usage: "bounded wait"}, &urfavecli.DurationFlag{Name: "poll-interval", Usage: "poll interval [$WORKLEASE_POLL_INTERVAL]"}, flag("agent", "a"), flag("work-key", "w"), flag("session"), flag("handle"), flag("claim-id", "c"), flag("token-file", "F"), &urfavecli.IntFlag{Name: "token-fd", Aliases: []string{"D"}, Usage: "token descriptor"}, flag("request-not-after"), &urfavecli.BoolFlag{Name: "no-handle", Usage: "disable contextual handle"})...),
+		keyCommand,
+		acquireCommand,
 		jsonless("status", "show claim status", "worklease status", append(selection(), resources(), full())...),
 		jsonless("list", "list current claims", "worklease list", resources(), full()),
 		jsonless("heartbeat", "renew a claim", "worklease heartbeat --handle PATH", mutate()...),
@@ -73,7 +77,11 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
 		return &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name + " <command>", Description: usage + ".\n\nExamples:\n  " + example, Commands: commands}
 	}
-	policy := group("policy", "show built-in policies", "worklease policy list", jsonless("list", "list built-in policies", "worklease policy list"), jsonless("describe", "describe a policy", "worklease policy describe path", flag("name")))
+	policyList := jsonless("list", "list built-in policies", "worklease policy list", full())
+	policyList.Action = policyListAction(s)
+	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path", append([]urfavecli.Flag{full()}, flag("name"))...)
+	policyDescribe.Action = policyDescribeAction(s)
+	policy := group("policy", "show built-in policies", "worklease policy list", policyList, policyDescribe)
 	op := group("op", "inspect or reconcile operations", "worklease op inspect --operation-id ID", jsonless("inspect", "inspect an operation", "worklease op inspect", append(selection(), flag("operation-id", "o"), &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}})...), jsonless("reconcile", "reconcile an operation", "worklease op reconcile", append(mutate(), flag("target-claim-id"), flag("target-operation-id"), flag("outcome"), flag("evidence"), flag("expected-request-sha256"))...))
 	instructions := group("instructions", "print canonical instructions", "worklease instructions loop", jsonless("loop", "print loop instructions", "worklease instructions loop"), jsonless("safety", "print safety instructions", "worklease instructions safety"))
 	setup := group("setup", "configure integrations", "worklease setup instructions", jsonless("mcp", "configure MCP", "worklease setup mcp", flag("client"), flag("scope"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("guard", "configure native guard", "worklease setup guard", flag("client"), flag("scope"), flag("coverage"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("instructions", "print setup instructions", "worklease setup instructions"))

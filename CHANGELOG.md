@@ -7,6 +7,7 @@
 - Bootstrapped the Go CLI, typed configuration, stable error/output contracts, and additive Go quality gates.
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI calls, and bounded subprocesses.
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI invocation, and bounded subprocesses.
+- Added deterministic Go resource policies, canonical keys, and key/policy inspection commands.
 
 ## 0.10.0 - 2026-09-12
 
