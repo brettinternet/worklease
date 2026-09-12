@@ -53,8 +53,10 @@ bytes and are never silently normalized.
 | `watch` | Wait for a resource state or event cursor change. |
 | `gc` | Preview or apply contiguous-prefix retention. |
 
-`exec` reports `local-coordination`; it is not provider fencing. Only successful
-expected-hash replacement reports `local-serialized-replace`. A started guarded
+`exec` reports `local-coordination`; it is not provider fencing. Replacement
+content is limited to 16 MiB and is read and digested before the guarded
+transaction. Only successful expected-hash replacement reports
+`local-serialized-replace`. A started guarded
 operation blocks another until its outcome and process cessation are established.
 Exact replay accepts the same operation ID and normalized request during its
 bounded recovery window; changed intent is rejected.
