@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,66 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
+
+func TestMCPRedactsTypedPublicMetadata(t *testing.T) {
+	home, _ := testkit.Home(t)
+	s, err := NewServer(Options{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	secret := strings.Repeat("ab", 32)
+	acquired, err := s.Call(context.Background(), "acquire", map[string]any{
+		"resources": []any{"resource-" + secret}, "workKey": secret, "agentId": secret, "autoHeartbeat": false,
+	})
+	if err != nil || acquired["isError"] == true {
+		t.Fatalf("acquire: %v %v", err, acquired)
+	}
+	ref := acquired["structuredContent"].(map[string]any)["lease"].(string)
+	results := []map[string]any{acquired}
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"status", map[string]any{"lease": ref}},
+		{"list", map[string]any{}},
+		{"events", map[string]any{}},
+		{"verify", map[string]any{"lease": ref}},
+	} {
+		result, err := s.Call(context.Background(), call.name, call.args)
+		if err != nil || result["isError"] == true {
+			t.Fatalf("%s: %v %v", call.name, err, result)
+		}
+		results = append(results, result)
+	}
+	for i, result := range results {
+		// Marshal directly: jsonText itself redacts and can hide a leak in
+		// structuredContent that the actual JSON-RPC writer would expose.
+		encoded, err := json.Marshal(result)
+		if err != nil || strings.Contains(string(encoded), secret) {
+			t.Fatalf("result %d leaked metadata: %s (%v)", i, encoded, err)
+		}
+	}
+}
+
+func TestMCPProjectionPreservesExactNumbersAndPublicHashes(t *testing.T) {
+	type projection struct {
+		Revision    int64          `json:"revision"`
+		RequestHash string         `json:"requestSha256"`
+		Checkpoint  map[string]any `json:"checkpoint"`
+	}
+	hash := strings.Repeat("cd", 32)
+	value := projection{9007199254740993, hash, map[string]any{"private": "private-payload"}}
+	for _, result := range []map[string]any{
+		toolSuccess(map[string]any{"receipt": value}),
+		toolFailure(reason.Invalid("rejected").With("receipt", value)),
+	} {
+		encoded, err := json.Marshal(result)
+		if err != nil || !strings.Contains(string(encoded), "9007199254740993") || !strings.Contains(string(encoded), hash) || strings.Contains(string(encoded), "private-payload") {
+			t.Fatalf("unsafe or lossy projection: %s (%v)", encoded, err)
+		}
+	}
+}
 
 func toolError(t *testing.T, result map[string]any) map[string]any {
 	t.Helper()

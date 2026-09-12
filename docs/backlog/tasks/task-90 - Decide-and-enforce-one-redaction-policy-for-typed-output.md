@@ -5,6 +5,7 @@ status: To Do
 assignee:
   - '@brett'
 created_date: '2026-09-12 22:39'
+updated_date: '2026-09-12 22:42'
 labels:
   - go-rewrite
 dependencies: []
@@ -28,3 +29,9 @@ output.Redact only traverses map[string]any, []any, and strings. Typed structs s
 - [ ] #3 op inspect --full, exec, checkpoint, and replace-file receipts return argv, checkpoint, and evidence exactly as the contract permits, and public status, list, history, events, and MCP projections never do
 - [ ] #4 Tests assert both the allowed and forbidden cases on CLI JSON, text, and MCP structuredContent
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Follow-up review TASK-94 reproduced a concrete MCP leak: bearer-shaped resource/agent/work metadata bypasses output.Redact through typed slices and claim projections. TASK-94 fixes the MCP serialization boundary with exact-number JSON normalization; this item retains the broader CLI authenticated/public output policy and suffix-based hash/path exemptions.
+<!-- SECTION:NOTES:END -->

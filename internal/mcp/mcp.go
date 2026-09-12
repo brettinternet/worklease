@@ -182,12 +182,27 @@ func toolSuccess(v any) map[string]any {
 	} else {
 		m["value"] = v
 	}
-	return map[string]any{"content": []any{map[string]any{"type": "text", "text": jsonText(m)}}, "structuredContent": output.Redact(m)}
+	// Normalize typed projections and slices before redaction. UseNumber
+	// preserves revisions and sequence values beyond float64's exact range.
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		return toolFailure(reason.New(reason.ReasonInternal, "result could not be encoded"))
+	}
+	dec := json.NewDecoder(bytesReader(encoded))
+	dec.UseNumber()
+	var projection map[string]any
+	if err := dec.Decode(&projection); err != nil {
+		return toolFailure(reason.New(reason.ReasonInternal, "result could not be encoded"))
+	}
+	redacted := output.Redact(projection)
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": jsonText(redacted)}}, "structuredContent": redacted}
 }
 func toolFailure(err error) map[string]any {
 	f := output.Classify(err)
 	m := map[string]any{"ok": false, "error": map[string]any{"reason": f.Reason, "exitCode": f.ExitCode, "message": f.Message, "details": f.Details}}
-	return map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": jsonText(m)}}, "structuredContent": output.Redact(m)}
+	result := toolSuccess(m)
+	result["isError"] = true
+	return result
 }
 func jsonText(v any) string { b, _ := json.Marshal(output.Redact(v)); return string(b) }
 func contains(a []string, v string) bool {
