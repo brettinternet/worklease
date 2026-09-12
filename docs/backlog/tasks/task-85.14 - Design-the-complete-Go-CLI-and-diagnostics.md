@@ -1,11 +1,11 @@
 ---
 id: TASK-85.14
 title: 'Complete the CLI, diagnostics, and agent instructions'
-status: In Progress
+status: Done
 assignee:
   - '@pi-01a09679'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 16:38'
+updated_date: '2026-09-12 18:42'
 labels:
   - go-rewrite
 milestone: m-0
@@ -26,6 +26,25 @@ references:
   - TASK-77
   - TASK-78
   - TASK-83
+modified_files:
+  - CHANGELOG.md
+  - internal/cli/commands.go
+  - internal/cli/doctor_commands.go
+  - internal/cli/doctor_commands_test.go
+  - internal/cli/lease_commands.go
+  - internal/cli/resource_commands_test.go
+  - internal/cli/root.go
+  - internal/cli/root_test.go
+  - internal/cli/watch_commands.go
+  - internal/cli/watch_commands_test.go
+  - internal/doctor/doctor.go
+  - internal/doctor/doctor_test.go
+  - internal/handle/handle.go
+  - internal/handle/handle_test.go
+  - internal/instructions/instructions.go
+  - internal/output/output.go
+  - internal/output/output_test.go
+  - internal/store/store.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -44,18 +63,18 @@ Evidence and patterns (the amended contract is normative): `src/worklease/instru
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Surface/help tests validate all commands available at this stage, exact flags/short options and examples; extension tests cover later registration without requiring unfinished MCP/setup commands.
-- [ ] #2 Black-box tests exercise success and applicable failure families in text/JSON, exclusive selectors, config precedence and redacted committed/unknown failures.
-- [ ] #3 Ergonomics tests cover inline provider/path acquisition, agent defaults, stable session selectors, optional release reason, holder metadata and expiry-aware watch guidance.
-- [ ] #4 Doctor reports configuration sources, authority identity, missing/unsafe state, clock regression, Git/context/session and Python-era leftovers without creating/chmodding state or exposing private content.
-- [ ] #5 Canonical instructions distinguish task/path resources, claim/operation/provider state, pending recovery and unfenced native/provider effects; mise run ci-go passes.
-- [ ] #6 From an empty isolated home with no config, setup or explicit credentials, black-box tests run acquire --path, contextual status, exec and release in both human and --json modes; verify concise actionable contention output, exactly one machine envelope without prompts/logs, and two loops isolated by session environment alone.
+- [x] #1 Surface/help tests validate all commands available at this stage, exact flags/short options and examples; extension tests cover later registration without requiring unfinished MCP/setup commands.
+- [x] #2 Black-box tests exercise success and applicable failure families in text/JSON, exclusive selectors, config precedence and redacted committed/unknown failures.
+- [x] #3 Ergonomics tests cover inline provider/path acquisition, agent defaults, stable session selectors, optional release reason, holder metadata and expiry-aware watch guidance.
+- [x] #4 Doctor reports configuration sources, authority identity, missing/unsafe state, clock regression, Git/context/session and Python-era leftovers without creating/chmodding state or exposing private content.
+- [x] #5 Canonical instructions distinguish task/path resources, claim/operation/provider state, pending recovery and unfenced native/provider effects; mise run ci-go passes.
+- [x] #6 From an empty isolated home with no config, setup or explicit credentials, black-box tests run acquire --path, contextual status, exec and release in both human and --json modes; verify concise actionable contention output, exactly one machine envelope without prompts/logs, and two loops isolated by session environment alone.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -66,3 +85,15 @@ Evidence and patterns (the amended contract is normative): `src/worklease/instru
 3. Strengthen staged command-tree/help and black-box ergonomics coverage for current commands, JSON/text errors, config/selection rules, contention, optional release reason, and session-isolated empty-home lifecycles.
 4. Run focused Go tests, review the diff, then run all repository and ci-go quality gates.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in 5189a17 and merged to main in the subsequent merge commit. Independent review found and drove fixes for unsafe ancestry checks, grouped JSON help, clock tolerance, command help, and missing acceptance evidence. Final validation passed: mise run lint, mise run format-check, mise run test, mise run typecheck, and post-merge mise run ci-go.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed Go CLI diagnostics, canonical instructions, staged help, redacted error reporting, and setup-free lifecycle ergonomics. AC1: TestCommandTreeRegistrationHelpAndShortOptions and TestCanonicalCommandHelpPathsFlagsAndExamples verify the staged surface, exact flags/aliases, usage paths, and examples. AC2: TestCLIConfigPrecedenceAndBlankEnvironment, TestRunAcquireCommittedHandleWriteFailureIsRedacted, TestRunStartedOperationRetryReportsUnknownOutcomeRedacted, and existing selector/parser tests verify precedence, exclusivity, failure families, and redaction. AC3: TestSetupFreePathLifecycleTextAndJSON, TestContextualLoopsUseSessionEnvironmentOnly, TestWriteTextErrorIncludesSafeHolderMetadata, and TestWatchTextIncludesExpiryGuidance verify ergonomic defaults and guidance. AC4: internal/doctor tests plus TestDoctorUnsafeStateFailureEnvelopeAndHints and TestDoctorDoesNotExposePrivateHandleOrPythonState verify all read-only checks, unsafe state, clock/context failures, identity, leftovers, and secrecy. AC5: TestInstructionsAndDoctorAreReadOnly verifies canonical loop/safety text; post-merge mise run ci-go passed. AC6: TestSetupFreePathLifecycleTextAndJSON and TestContextualLoopsUseSessionEnvironmentOnly verify empty-home human/JSON lifecycle, one-envelope output, contention guidance, and session-only isolation. All repository gates passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
