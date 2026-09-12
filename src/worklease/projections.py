@@ -99,6 +99,8 @@ class ProjectionMixin:
         )
         if any(path.is_symlink() for path in state_files):
             raise LeaseError("state-file-is-symlink", code=64)
+        if database.exists() and not database.is_file():
+            raise LeaseError("storage-failure", code=75)
         if not database.is_file():
             return {
                 "schemaVersion": 1,

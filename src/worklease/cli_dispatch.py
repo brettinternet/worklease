@@ -18,6 +18,7 @@ from .models import (
     LeaseError,
     MutationRequest,
     TransferRequest,
+    require_bundle_resources,
 )
 from .store import LeaseStore
 
@@ -171,7 +172,30 @@ def dispatch_store(
             0,
         )
     if operation in {"status-bundle", "bundle-status", "inspect-bundle"}:
-        return store.bundle_status(tuple(args.resources)), 0
+        resources = require_bundle_resources(tuple(args.resources))
+        if not args.verbose:
+            return store.bundle_status(resources), 0
+        diagnostic = store.status_verbose(resources[0])
+        claim = diagnostic.get("claim")
+        if isinstance(claim, dict):
+            if claim.get("resources") != list(resources):
+                raise LeaseError(
+                    "bundle-membership-mismatch",
+                    code=3,
+                    resource=",".join(resources),
+                )
+        elif any(
+            store.status_verbose(resource).get("claim") is not None
+            for resource in resources[1:]
+        ):
+            raise LeaseError(
+                "bundle-membership-mismatch",
+                code=3,
+                resource=",".join(resources),
+            )
+        diagnostic.pop("resource", None)
+        diagnostic["resources"] = list(resources)
+        return diagnostic, 0
     if operation == "status":
         return (
             store.status_verbose(args.resource)

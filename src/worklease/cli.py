@@ -929,6 +929,12 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(status_bundle_parser)
     _bundle_resources(status_bundle_parser)
+    status_bundle_parser.add_argument(
+        "-V",
+        "--verbose",
+        action="store_true",
+        help="include redacted diagnostic metadata and unknown outcomes",
+    )
 
     status_parser = commands.add_parser(
         "status", help="read current lease state", epilog=_STATUS_EPILOG
@@ -1480,7 +1486,10 @@ def _emit_command(command: object) -> None:
 
 
 def _emit_verbose_status(payload: dict[str, object]) -> None:
-    print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
+    if "resources" in payload:
+        print(f"RESOURCES\t{_text_value(payload['resources'])}")
+    else:
+        print(f"RESOURCE\t{_text_value(payload.get('resource', ''))}")
     print(f"STATE\t{payload.get('state', '')}")
 
     claim = payload.get("claim")
@@ -1892,19 +1901,42 @@ def _render_list(
     _render_table(headers, rows)
 
 
-def _render_status(payload: dict[str, object]) -> None:
+def _compact_status_resources(payload: dict[str, object]) -> tuple[str, object]:
+    claim = payload.get("claim")
+    source = claim if isinstance(claim, dict) else payload
+    resources = source.get("resources")
+    if isinstance(resources, list):
+        return (
+            "RESOURCES",
+            [
+                _summarize_resource(_text_atom(resource), _LIST_RESOURCE_WIDTH)
+                for resource in resources
+            ],
+        )
+    resource = source.get("resource", payload.get("resource", ""))
+    return (
+        "RESOURCE",
+        _summarize_resource(_text_atom(resource), _LIST_RESOURCE_WIDTH),
+    )
+
+
+def _render_status(payload: dict[str, object], *, now: float | None = None) -> None:
     if not payload.get("ok"):
         _text_header(payload)
         _emit_error_details(payload)
         return
     _text_header(payload)
-    if not isinstance(payload.get("claim"), dict):
-        if "resource" in payload:
-            print(f"RESOURCE\t{_text_value(payload['resource'])}")
-        if "resources" in payload:
-            print(f"RESOURCES\t{_text_value(payload['resources'])}")
+    resource_label, resource_value = _compact_status_resources(payload)
+    print(f"{resource_label}\t{_text_value(resource_value)}")
     print(f"STATE\t{_text_atom(payload.get('state', ''))}")
-    _emit_claim(payload.get("claim"))
+    claim = payload.get("claim")
+    if not isinstance(claim, dict):
+        return
+    display_now = time.time() if now is None else now
+    print(f"AGENT_ID\t{_text_value(claim.get('agentId', ''))}")
+    print(f"WORK_KEY\t{_text_value(claim.get('workKey', ''))}")
+    print(f"LEASE\t{_compact_expiry(claim, display_now)}")
+    print(f"REVISION\t{_text_value(claim.get('revision', ''))}")
 
 
 def _render_status_verbose(payload: dict[str, object]) -> None:

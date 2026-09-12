@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Default singleton and bundle `status` text now shows a compact operational summary; `--verbose` preserves the complete redacted diagnostic projection.
+
 ## 0.9.1 - 2026-09-11
 
 ### Added

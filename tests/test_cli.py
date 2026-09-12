@@ -57,6 +57,22 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("0 0\n", result.stdout)
 
+    def test_verbose_bundle_status_rejects_non_file_database(self) -> None:
+        (Path(self.home.name) / "leases.sqlite3").mkdir()
+        result = self.run_cli(
+            "status-bundle",
+            "--resource",
+            "local:a",
+            "--resource",
+            "local:b",
+            "--verbose",
+        )
+        self.assertEqual(75, result.returncode)
+        self.assertEqual("", result.stderr)
+        self.assertTrue(
+            result.stdout.startswith("ERROR status-bundle: storage-failure\n")
+        )
+
     def test_unusable_home_reports_storage_failure(self) -> None:
         blocker = Path(self.home.name) / "not-a-directory"
         blocker.write_text("")
@@ -2339,6 +2355,110 @@ with resource_lock(resource):
         for resource, expected in resources:
             self.assertEqual(expected, cli_module._summarize_resource(resource, 52))
 
+    def test_text_status_uses_compact_operational_summary(self) -> None:
+        now = 1_750_000_000.0
+        resource = "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-70"
+        claim = {
+            "resource": resource,
+            "claimId": "claim-secret-diagnostic-id",
+            "agentId": "pi-1234",
+            "sessionId": "session-secret-diagnostic-id",
+            "ownerId": "owner-secret-diagnostic-id",
+            "workKey": "implement:TASK-70",
+            "revision": 4,
+            "expiresAt": "2025-06-15T23:02:00Z",
+            "expiresAtEpoch": now + 3720,
+            "active": True,
+            "guarantee": "local-coordination",
+        }
+        payload = {
+            "ok": True,
+            "operation": "status",
+            "resource": resource,
+            "state": "active",
+            "claim": claim,
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_status(payload, now=now)
+        self.assertEqual(
+            "OK status\n"
+            'RESOURCE\t"backlog-md:worklease:TASK-70"\n'
+            "STATE\tactive\n"
+            'AGENT_ID\t"pi-1234"\n'
+            'WORK_KEY\t"implement:TASK-70"\n'
+            "LEASE\t1h 2m left\n"
+            "REVISION\t4\n",
+            output.getvalue(),
+        )
+        for hidden in (
+            "claim-secret",
+            "session-secret",
+            "owner-secret",
+            "2025-06-15",
+            "local-coordination",
+            "docs/backlog",
+        ):
+            self.assertNotIn(hidden, output.getvalue())
+
+        expired = {**payload, "state": "expired", "claim": {**claim, "active": False}}
+        expired["claim"]["expiresAtEpoch"] = now - 190
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_status(expired, now=now)
+        self.assertIn("STATE\texpired\n", output.getvalue())
+        self.assertIn("LEASE\t3m ago\n", output.getvalue())
+
+        free = {
+            "ok": True,
+            "operation": "status",
+            "resource": resource,
+            "state": "free",
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_status(free, now=now)
+        self.assertEqual(
+            'OK status\nRESOURCE\t"backlog-md:worklease:TASK-70"\nSTATE\tfree\n',
+            output.getvalue(),
+        )
+        self.assertNotIn("CLAIM", output.getvalue())
+
+    def test_text_bundle_status_preserves_compact_ordered_identity(self) -> None:
+        now = 1_750_000_000.0
+        resources = [
+            "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-70",
+            "github:/Users/brett/dev/me/worklease/.git:issues:123",
+        ]
+        payload = {
+            "ok": True,
+            "operation": "status-bundle",
+            "resources": resources,
+            "state": "active",
+            "claim": {
+                "resources": resources,
+                "claimId": "hidden-claim",
+                "agentId": "agent",
+                "sessionId": "hidden-session",
+                "ownerId": "hidden-owner",
+                "workKey": "implement:bundle",
+                "revision": 2,
+                "expiresAtEpoch": now + 60,
+                "active": True,
+            },
+        }
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._render_status(payload, now=now)
+        rendered = output.getvalue()
+        self.assertIn(
+            'RESOURCES\t["backlog-md:worklease:TASK-70","github:worklease:123"]\n',
+            rendered,
+        )
+        self.assertIn("LEASE\t1m left\n", rendered)
+        self.assertNotIn("hidden-", rendered)
+        self.assertNotIn("RESOURCE\t", rendered)
+
     def test_text_list_renders_deep_resource_path_anchor(self) -> None:
         resource = (
             "backlog-md:/Users/brett/dev/me/a/b/c/d/worklease/.git:"
@@ -2853,6 +2973,49 @@ with resource_lock(resource):
         )
         self.assertIn('UNKNOWN\t"verbose-bundle-cli-unknown"\t"exec-bundle"', text)
         self.assertNotIn(str(claim["token"]), text)
+
+        bundle_verbose = self.json_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--verbose",
+        )
+        self.assertEqual("status-verbose", bundle_verbose["operation"])
+        self.assertEqual(list(resources), bundle_verbose["resources"])
+        self.assertNotIn("resource", bundle_verbose)
+        bundle_verbose_claim = bundle_verbose["claim"]
+        assert isinstance(bundle_verbose_claim, dict)
+        self.assertEqual(list(resources), bundle_verbose_claim["resources"])
+        self.assertNotIn(str(claim["token"]), json.dumps(bundle_verbose))
+        bundle_text = self.text_cli(
+            "status-bundle",
+            "--resource",
+            resources[0],
+            "--resource",
+            resources[1],
+            "--verbose",
+        )
+        serialized_resources = json.dumps(list(resources), separators=(",", ":"))
+        self.assertTrue(bundle_text.startswith(f"RESOURCES\t{serialized_resources}\n"))
+        self.assertIn(f"CLAIM\nRESOURCES\t{serialized_resources}", bundle_text)
+        self.assertIn(
+            'UNKNOWN\t"verbose-bundle-cli-unknown"\t"exec-bundle"', bundle_text
+        )
+
+        free_resources = ("repo:verbose-free-a", "repo:verbose-free-b")
+        free_verbose = self.json_cli(
+            "status-bundle",
+            "--resource",
+            free_resources[0],
+            "--resource",
+            free_resources[1],
+            "--verbose",
+        )
+        self.assertEqual(list(free_resources), free_verbose["resources"])
+        self.assertEqual("free", free_verbose["state"])
+        self.assertIsNone(free_verbose["claim"])
 
     def test_operation_inspection_and_reconciliation_cli(self) -> None:
         resource = "repo:reconcile"
@@ -3917,7 +4080,7 @@ with resource_lock(resource):
         assert isinstance(claim, dict)
         token = str(claim["token"])
         status = self.text_cli("status", "--resource", "repo:text-read")
-        self.assertIn("OK status\nSTATE\tactive\n", status)
+        self.assertIn('OK status\nRESOURCE\t"repo:text-read"\nSTATE\tactive\n', status)
         self.assertNotIn(token, status)
         verbose = self.text_cli("status", "--resource", "repo:text-read", "--verbose")
         self.assertIn('RESOURCE\t"repo:text-read"\nSTATE\tactive\n', verbose)
@@ -3958,7 +4121,11 @@ with resource_lock(resource):
             "--resource",
             resources[1],
         )
-        self.assertIn("OK status-bundle\nSTATE\tactive\n", bundle_status)
+        self.assertIn(
+            'OK status-bundle\nRESOURCES\t["repo:text-read-a","repo:text-read-b"]\n'
+            "STATE\tactive\n",
+            bundle_status,
+        )
         self.assertNotIn(token, bundle_status)
 
         operation_resource = "repo:text-inspect"

@@ -54,7 +54,7 @@ are the stable interface; short options are a convenience.
 | `-o` | `--operation-id` | inspection and mutating lifecycle commands |
 | `-T` | `--ttl` | acquire and renewable lifecycle commands |
 | `-M` | `--max-duration` | exec commands |
-| `-V` | `--verbose` | `status` |
+| `-V` | `--verbose` | singleton and bundle status commands |
 | `-I` | `--target-operation-id` | reconciliation commands |
 | `-x` | `--expected-request-sha256` | reconciliation commands |
 | `-O` | `--outcome` | reconciliation commands |
@@ -252,8 +252,8 @@ example or valid values. Hints never echo rejected argument values.
 | `policy describe` | One `FIELD: value` line per policy field |
 | `list` | Fixed-width summary columns `STATE`, `RESOURCE`, `LEASE`, then rows; `--full` adds lifecycle identifiers and absolute expiry |
 | `history` | `OK history`, `RESOURCE`, a `COVERAGE` block, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
-| `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, optional `RESOURCE` or `RESOURCES`, `STATE`, then `CLAIM` fields `RESOURCE` or `RESOURCES`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, `GUARANTEE` |
-| `status --verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
+| `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, one compact `RESOURCE` or ordered `RESOURCES` value, `STATE`, then `AGENT_ID`, `WORK_KEY`, relative `LEASE`, and `REVISION` for a claim |
+| Status commands with `--verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
 | `gc` | `OK gc`, retention fields, sorted `ELIGIBLE` rows, an apply `HINT` when useful, then nonzero unresolved-operation `PROTECTED` rows |
 | Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
@@ -268,8 +268,11 @@ expired values use elapsed durations such as `3m ago`.
 
 `worklease list --full` shows `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, and
 `EXPIRES_AT` with complete values. JSON also remains complete. An empty policy list
-emits its header only. An unclaimed status emits `CLAIM <none>`. Tokens are
-never listed.
+emits its header only. Default status output uses the same compact resource and
+relative lease conventions as `list`; an unclaimed status ends after `STATE free`
+without an empty claim block. `--verbose` restores complete redacted lifecycle
+identifiers, timestamps, unknown operations, release data, and guidance for
+singleton and bundle status commands. Tokens are never listed.
 
 `history` emits `OK history`, `RESOURCE`, a `COVERAGE` block, and `EPOCHS`.
 Each `EPOCH` includes `SOURCE`, acquisition identity, acquired time,
@@ -287,9 +290,9 @@ history is retention-bounded local diagnostic state: migration-era nulls and
 `gc --apply` removal are not recoverable, and it is not append-only audit or
 provider history.
 
-For `status --verbose`, bundle claims use ordered `RESOURCES`, including the
-JSON claim's `resources` array. Unknown operations include started bundle
-operations such as `exec-bundle`. A missing release emits `RELEASE <none>`.
+For status commands with `--verbose`, bundle claims use ordered `RESOURCES`,
+including the JSON claim's `resources` array. Unknown operations include started
+bundle operations such as `exec-bundle`. A missing release emits `RELEASE <none>`.
 Field labels use upper snake case.
 
 Successful `acquire`, `heartbeat`, `checkpoint`, and `transfer` may include
