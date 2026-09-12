@@ -13,6 +13,7 @@
 - Added private contextual handles, strict credential sources, durable pending requests, and stable cross-process handle locks.
 - Added redacted operation inspection, authenticated reconciliation, cursor-bound lifecycle events, and exact-resource history to the Go implementation.
 - Added strict-cutoff transactional Go garbage collection and deterministic Unicode-safe read-view text output.
+- Added canonical Go loop and safety instructions, staged command help polish, expiry-aware watch guidance, and read-only environment diagnostics.
 
 ## 0.10.0 - 2026-09-12
 

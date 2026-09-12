@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/brettinternet/worklease/internal/reason"
 	urfavecli "github.com/urfave/cli/v3"
@@ -59,13 +60,13 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	statusCommand.Action = statusActionReal(s)
 	listCommand := jsonless("list", "list current claims", "worklease list", resources(), full())
 	listCommand.Action = listActionReal(s)
-	heartbeatCommand := jsonless("heartbeat", "renew a claim", "worklease heartbeat --claim-id ID", mutate()...)
+	heartbeatCommand := jsonless("heartbeat", "renew the contextual claim", "worklease heartbeat", mutate()...)
 	heartbeatCommand.Action = heartbeatActionReal(s)
-	checkpointCommand := jsonless("checkpoint", "store recovery metadata", "worklease checkpoint --claim-id ID --data JSON", append(mutate(), flag("data"), flag("data-file"))...)
+	checkpointCommand := jsonless("checkpoint", "store recovery metadata", "worklease checkpoint --data '{}'", append(mutate(), flag("data"), flag("data-file"))...)
 	checkpointCommand.Action = checkpointActionReal(s)
-	releaseCommand := jsonless("release", "release a claim", "worklease release --claim-id ID", append(mutate(), flag("reason", "m"))...)
+	releaseCommand := jsonless("release", "release the contextual claim (default reason: released)", "worklease release", append(mutate(), flag("reason", "m"))...)
 	releaseCommand.Action = releaseActionReal(s)
-	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --claim-id ID", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"), flag("successor-claim-id"), flag("successor-token-file"))...)
+	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"))...)
 	transferCommand.Action = transferActionReal(s)
 	historyCommand := jsonless("history", "show retained history", "worklease history --resource RESOURCE", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
 	historyCommand.Action = historyAction(s)
@@ -73,34 +74,60 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	eventsCommand.Action = eventsAction(s)
 	gcCommand := jsonless("gc", "preview or apply retention", "worklease gc --retention-days 30", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply retention"})
 	gcCommand.Action = gcAction(s)
-	verifyCommand := jsonless("verify", "verify ownership", "worklease verify --claim-id ID", append(selection(), resources(), flag("hook"), flag("coverage"))...)
+	verifyCommand := jsonless("verify", "verify contextual ownership", "worklease verify", append(selection(), resources(), flag("hook"), flag("coverage"))...)
 	verifyCommand.Action = verifyAction(s)
-	execCommand := jsonless("exec", "run a guarded command", "worklease exec --claim-id ID -- command", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...)
+	execCommand := jsonless("exec", "run a guarded contextual command", "worklease exec -- git status", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...)
 	execCommand.Action = execAction(s)
-	replaceCommand := jsonless("replace-file", "replace one file", "worklease replace-file --path FILE", append(mutate(), flag("path"), flag("expected-sha256"), flag("content-file"))...)
+	replaceCommand := jsonless("replace-file", "replace one file", "worklease replace-file --path FILE --expected-sha256 SHA256 --content-file CONTENT", append(mutate(), flag("path"), flag("expected-sha256"), flag("content-file"))...)
 	replaceCommand.Action = replaceFileAction(s)
-	watchCommand := jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout (default 30s, maximum 1h)"})...)
+	watchCommand := jsonless("watch", "wait for lifecycle changes", "worklease watch --resource RESOURCE --until free", resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout (default 30s, maximum 1h)"})
 	watchCommand.Action = watchAction(s)
+	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor")
+	doctorCommand.Action = doctorAction(s)
 	commands := []*urfavecli.Command{
 		jsonless("version", "print version metadata", "worklease version --json"), keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
 		verifyCommand, execCommand, replaceCommand,
-		historyCommand, eventsCommand, watchCommand, gcCommand, jsonless("doctor", "run diagnostics", "worklease doctor"),
+		historyCommand, eventsCommand, watchCommand, gcCommand, doctorCommand,
 	}
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
-		return &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name + " <command>", Description: usage + ".\n\nExamples:\n  " + example, Commands: commands}
+		for _, child := range commands {
+			if child != nil {
+				child.UsageText = "worklease " + name + " " + child.Name
+			}
+		}
+		return &urfavecli.Command{
+			Name: name, Usage: usage, UsageText: "worklease " + name + " <command>",
+			Description: usage + ".\n\nExamples:\n  " + example, Commands: commands,
+			OnUsageError: func(_ context.Context, cmd *urfavecli.Command, err error, _ bool) error {
+				return s.handle(cmd, reason.Invalid(err.Error()))
+			},
+			Action: func(_ context.Context, cmd *urfavecli.Command) error {
+				if cmd.Args().Len() > 0 {
+					return s.handle(cmd, reason.Invalid(fmt.Sprintf("unknown command %q", cmd.Args().First())))
+				}
+				if s.jsonRequested(cmd) {
+					return s.handle(cmd, reason.Invalid(fmt.Sprintf("%s requires a subcommand", name)))
+				}
+				return urfavecli.ShowSubcommandHelp(cmd)
+			},
+		}
 	}
 	policyList := jsonless("list", "list built-in policies", "worklease policy list", full())
 	policyList.Action = policyListAction(s)
-	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path", append([]urfavecli.Flag{full()}, flag("name"))...)
+	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path", full())
 	policyDescribe.Action = policyDescribeAction(s)
 	policy := group("policy", "show built-in policies", "worklease policy list", policyList, policyDescribe)
-	inspectCommand := jsonless("inspect", "inspect an operation", "worklease op inspect", append(selection(), resources(), flag("operation-id", "o"), &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}})...)
+	inspectCommand := jsonless("inspect", "inspect an operation", "worklease op inspect --operation-id ID", append(selection(), resources(), flag("operation-id", "o"), &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}})...)
 	inspectCommand.Action = inspectAction(s)
-	reconcileCommand := jsonless("reconcile", "reconcile an operation", "worklease op reconcile", append(mutate(), flag("target-claim-id"), flag("target-operation-id"), flag("outcome"), flag("evidence"), flag("expected-request-sha256"))...)
+	reconcileCommand := jsonless("reconcile", "reconcile an operation", "worklease op reconcile --target-operation-id ID --outcome observed-success --evidence '{\"outcome\":\"observed-success\",\"executorStopped\":true}'", append(mutate(), flag("target-claim-id"), flag("target-operation-id"), flag("outcome"), flag("evidence"), flag("expected-request-sha256"))...)
 	reconcileCommand.Action = reconcileAction(s)
 	op := group("op", "inspect or reconcile operations", "worklease op inspect --operation-id ID", inspectCommand, reconcileCommand)
-	instructions := group("instructions", "print canonical instructions", "worklease instructions loop", jsonless("loop", "print loop instructions", "worklease instructions loop"), jsonless("safety", "print safety instructions", "worklease instructions safety"))
+	loopCommand := jsonless("loop", "print loop instructions", "worklease instructions loop")
+	loopCommand.Action = instructionsAction(s, "loop")
+	safetyCommand := jsonless("safety", "print safety instructions", "worklease instructions safety")
+	safetyCommand.Action = instructionsAction(s, "safety")
+	instructions := group("instructions", "print canonical instructions", "worklease instructions loop", loopCommand, safetyCommand)
 	setup := group("setup", "configure integrations", "worklease setup instructions", jsonless("mcp", "configure MCP", "worklease setup mcp", flag("client"), flag("scope"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("guard", "configure native guard", "worklease setup guard", flag("client"), flag("scope"), flag("coverage"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("instructions", "print setup instructions", "worklease setup instructions"))
 	mcp := jsonless("mcp", "serve MCP over stdio", "worklease mcp")
 	return append(commands, policy, op, instructions, setup, mcp)

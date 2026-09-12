@@ -54,6 +54,22 @@ func TestErrorsAndNestedValuesAreRedacted(t *testing.T) {
 	}
 }
 
+func TestWriteTextErrorIncludesSafeHolderMetadata(t *testing.T) {
+	var out bytes.Buffer
+	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "task").With("holder", map[string]any{
+		"agentId": "other", "claimId": "claim", "expiresAt": "2026-09-12T00:00:00.000000Z",
+	})
+	if writeErr := WriteTextError(&out, err); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	text := out.String()
+	for _, phrase := range []string{"error: already-claimed:", "holder:", "agentId", "expiresAt"} {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("text error missing %q: %q", phrase, text)
+		}
+	}
+}
+
 func TestClassifyUnexpectedErrorIsSafe(t *testing.T) {
 	t.Parallel()
 	failure := Classify(errors.New("private implementation detail"))

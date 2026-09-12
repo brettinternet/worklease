@@ -37,6 +37,16 @@ type Store struct {
 
 // Open opens an authority under home. Read-only opens never create or chmod
 // filesystem state; a missing home or database is an empty authority.
+// ValidateHome checks the complete existing ancestry and home metadata without
+// opening a database or creating or changing filesystem state.
+func ValidateHome(home string) error {
+	file, _, err := secureHome(home, true)
+	if file != nil {
+		_ = file.Close()
+	}
+	return err
+}
+
 func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 	if ctx == nil {
 		return nil, errors.New("nil context")
@@ -207,6 +217,21 @@ func (s *Store) Path() string        { return filepath.Join(s.homePath, Database
 func (s *Store) Home() string        { return s.homePath }
 func (s *Store) AuthorityID() string { return s.authority }
 func (s *Store) Empty() bool         { return s.driver == nil }
+
+// LastObservedAt returns the authority wall-clock watermark without changing
+// state. A missing read-only authority has no watermark.
+func (s *Store) LastObservedAt(ctx context.Context) (time.Time, error) {
+	if s == nil || s.driver == nil {
+		return time.Time{}, nil
+	}
+	var micros int64
+	if err := s.Read(ctx, func(tx *Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='last_observed_at'`).Scan(&micros)
+	}); err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMicro(micros).UTC(), nil
+}
 
 // ReadbackProbe establishes whether a transaction-specific durable marker is
 // present after Commit returns an error. The supplied database is a fresh,

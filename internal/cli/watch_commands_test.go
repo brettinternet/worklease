@@ -90,6 +90,21 @@ func TestWatchTextIncludesUnresolvedPredecessorMetadata(t *testing.T) {
 	}
 }
 
+func TestWatchTextIncludesExpiryGuidance(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeWatchText(&out, watchpkg.Result{Resources: []watchpkg.ResourceState{{
+		Resource: "task", State: "active", ExpiresAt: time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, phrase := range []string{"expiresAt", "nearest expiry", "verify ownership"} {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("watch text missing %q: %q", phrase, text)
+		}
+	}
+}
+
 func TestWatchEmptyAuthorityUntilChangeDoesNotEmitCursor(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "empty")
 	var out bytes.Buffer

@@ -91,10 +91,10 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 		Version:     version, HideVersion: true, Writer: stdout, ErrWriter: stderr,
 		Metadata: map[string]any{jsonStateKey: state}, ExitErrHandler: func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
-			&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "output one JSON envelope [$WORKLEASE_JSON]"},
+			&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "output one JSON envelope"},
 			&urfavecli.StringFlag{Name: "home", Aliases: []string{"H"}, Usage: "state directory [$WORKLEASE_HOME]"},
 			&urfavecli.StringFlag{Name: "config", Usage: "configuration file [$WORKLEASE_CONFIG]"},
-			&urfavecli.BoolFlag{Name: "version", Aliases: []string{"v"}, Usage: "show version metadata"},
+			&urfavecli.BoolFlag{Name: "version", Aliases: []string{"v"}, Usage: "show version metadata", Local: true},
 		},
 		Commands: newCommands(state),
 		OnUsageError: func(ctx context.Context, cmd *urfavecli.Command, err error, _ bool) error {
