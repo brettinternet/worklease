@@ -175,7 +175,7 @@ func validateHandle(h Handle) error {
 			return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 		}
 		switch p.Kind {
-		case "acquire", "heartbeat", "checkpoint", "release", "transfer":
+		case "acquire", "heartbeat", "checkpoint", "release", "transfer", "exec", "replace-file":
 		default:
 			return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 		}
