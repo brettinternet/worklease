@@ -4,7 +4,7 @@ title: 'Replace documentation, skills, build, and release automation'
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:07'
 labels:
   - go-rewrite
 milestone: m-0
@@ -47,6 +47,7 @@ Build and test all four archives with the chosen driver, checksums and versioned
 - [ ] #3 Go workflows prepare four correctly named archives with bin/worklease and share/man/man1/worklease.1 plus verified checksums; each target is installed/smoke-tested on its native CI runner without publication.
 - [ ] #4 Current docs, workflow skills and backlog doc-1 describe the amended Go contract; historical migration/deferred-design text is explicitly exempted from executable-example checks, and the remote proposal remains deferred.
 - [ ] #5 Marked runnable examples execute against temporary state, documentation validation distinguishes forbidden argv --token from supported --token-file/--token-fd, CHANGELOG describes cutover/disposal, and mise run ci-go passes.
+- [ ] #6 Separate concise human CLI and MCP/JSON quick starts execute against temporary state and cover the short common path, structured contention handling and two isolated loops. Advanced recovery and native hooks are linked references; CLI-only operations are clearly identified instead of promising eleven-tool MCP parity with the entire command tree.
 <!-- AC:END -->
 
 ## Definition of Done

@@ -3,7 +3,7 @@ id: doc-2
 title: Go Product Contract
 type: specification
 created_date: '2026-09-12 03:51'
-updated_date: '2026-09-12 05:58'
+updated_date: '2026-09-12 06:06'
 tags:
   - go-rewrite
   - contract
@@ -21,6 +21,18 @@ Fixed decisions in section 2 change only through the amendment procedure in sect
 - The Python package under `src/worklease` is a proof of concept. It is behavior evidence, not a compatibility target. Its public API, SDK, entry-point plugins, SQLite database, lease-file format, JSON schema version 1, and exact text output are all retired (section 16).
 - The Go implementation is POSIX-only (Linux and macOS). V1 coordinates cooperating processes using the same authority on the same host. Arbitrary child processes and direct provider writes are not fenced. Section 20 preserves the boundary for future remote authority; remote implementation is deferred.
 - Every capability below is either retained as specified or listed as removed. When the Python code does something this document does not mention, treat it as removed unless the capability inventory (TASK-85.1) says otherwise.
+
+### 1.1 Interaction priorities
+
+Human command-line use and AI orchestration through JSON/MCP are first-class release requirements, not optional polish. Keep the common path short; expose recovery and stateless credential machinery progressively without weakening ownership checks.
+
+- Human CLI: a fresh installation needs no configuration file, MCP setup, hook installation, hand-generated identifiers or token handling for an ordinary local claim. In one checkout/loop, `worklease acquire --path README.md`, `worklease status`, `worklease exec -- git diff -- README.md`, and `worklease release` form the minimal journey. Root help and command examples lead with these common forms. Text results are concise; contention identifies the holder/expiry and errors explain a safe next action. Acquisition is fail-fast unless the caller explicitly requests waiting.
+- Concurrent loops: set a distinct stable `WORKLEASE_SESSION_ID` once in each loop's environment, or select an explicit handle. Subsequent commands reuse it; callers need not repeat claim IDs, tokens or revisions. Do not market the unscoped checkout convenience as multi-loop isolation.
+- JSON CLI: adding `--json` retains the same convenient handle-backed workflow; it does not require `--no-handle` or manual credentials. Commands never prompt for missing input, and each command result is one section 6 envelope on stdout, without progress/log text. Agents branch on structured reasons, applicable error details/commit state, holder metadata and cursors, never by parsing human messages. Bounded waiting, cancellation and pending recovery remain explicit.
+- MCP: discoverable descriptions and typed schemas expose the simplest valid inputs; ordinary acquisition needs only a resource input, and later lifecycle calls reuse the opaque `lease` reference. Clients do not manage tokens or revisions. Equivalent CLI/MCP operations share domain behavior and preserve structured result/error information; transport wrappers do not flatten it into prose. Keep the eleven-tool surface in section 12; document CLI-only operations and recovery escape paths instead of implying full command parity.
+- Onboarding: document and execute separate short human CLI and MCP/JSON orchestration quick starts, including contention and two isolated loops. Configuration and native guard hooks are optional advanced setup. Keep detailed safety/recovery contracts available as reference, not prerequisites to trying the common path.
+
+TASK-85.14–85.17 own executable acceptance journeys for these priorities. They add no new command family, MCP tool, compatibility layer or remote backend.
 
 ## 2. Fixed decisions
 
@@ -422,7 +434,7 @@ Prune events only as one contiguous prefix older than cutoff, below every retain
 
 `worklease mcp` reads newline-delimited JSON-RPC 2.0 from stdin and writes responses to stdout; stderr carries redacted logs. Protocol baseline: [MCP 2026-07-28 versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning) and [stdio](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio), with a [2025-11-25 legacy lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) for initialization-based clients. Modern requests carry per-request version metadata and support server/discover; unsupported modern versions return the specified error and supported-version list. Legacy initialize negotiates a supported legacy version and waits for initialized; do not reuse modern error/handshake semantics for legacy sessions. Tests cover both before claiming client interoperability. Implementation pattern for transport primitives only: hum `internal/mcp/server.go` (request registry with duplicate-ID rejection, per-request cancellation via `notifications/cancelled`, serialized response writer, 4 MiB message limit, EOF and parent-context shutdown). Concurrency limit: 8 in-flight tool calls. Shutdown waits up to 5 s for in-flight calls.
 
-Tools (`tools/list` returns these names, descriptions, and JSON Schemas; domain failures are tool results with `isError: true` and structured `{ok:false,error:{reason,exitCode,message}}`; protocol failures are JSON-RPC errors):
+Tools (`tools/list` returns these names, descriptions, and JSON Schemas; domain failures are tool results with `isError: true` and structured `{ok:false,error:{reason,exitCode,message,details?}}`; preserve the applicable section 6 domain fields, including commit state and recovery/holder metadata, rather than discarding them in the transport adapter. Protocol failures are JSON-RPC errors):
 
 | Tool | Input | Output |
 | --- | --- | --- |
@@ -484,6 +496,8 @@ Removed at TASK-85.18 with no replacement: the Python public API (`worklease.__a
 - 2026-09-12, adversarial contract review before the loop started (no task): section 7.4 keeps `ttl` in the request hash and drops `maxDuration`, and defines acquire idempotency (key `claimId`, operations row with `operation_id = claimId`, replay returns the claim without the token); section 10.1 leaves the operation `started` on ownership loss instead of writing `completed`; section 4 makes `--revision` optional for the read-only `verify` and `status`; section 7.3 states that guarded operations raise the revision by more than one and that the handle receives the final revision; section 6.1 drops the never-emitted `gc-protected-record` reason; sections 7.5 and 9 name the triggers of `operation-ambiguous` and `credential-unsafe`. Evidence: the earlier text contradicted TASK-85.7 acceptance criterion 3, the Python fingerprint in `operations.py` (keeps ttl, drops maxDuration), and `execution.py`, which re-raises on renewal failure and leaves the operation started.
 
 - 2026-09-12, TASK-86, owner-requested product review: D5–D8 and sections 4–13, 16, 18–20 supersede prior Python-derived choices. Introduce session-scoped exclusive handle selection, pre-dispatch durable client credentials and exact requests, authenticated bounded replay, authority-bound handles/cursors, predecessor reconciliation, explicit local replacement protection, expiry-aware watches and contiguous-prefix GC. Remove claim-wide fenced promises, token recovery on stdout, hash-only automatic replacement reconciliation, Bash first-word bypass, and MCP revision secrecy. Preserve deferred remote design and make the inventory gate implementation. Evidence and counterexamples are recorded in section 21; the owner explicitly waived Python compatibility and requested anticipation of remote support. Go 1.27.1 was confirmed available at https://go.dev/dl/?mode=json during this review. D13/section 12 now target the current 2026-07-28 MCP spec plus 2025-11-25 legacy interoperability, based on the official versioning/stdio/lifecycle sources linked there, rather than freezing the Python-era protocol list.
+
+- 2026-09-12, TASK-86, owner-requested ergonomics priority: section 1.1 makes setup-free human commands and handle-backed JSON/typed MCP orchestration release requirements; section 12 preserves structured domain error details across MCP. TASK-85.14–85.17 gain executable common-path, contention, session-isolation and onboarding acceptance journeys. Evidence: the owner explicitly prioritized quick human commands and ergonomic MCP/JSON support for agent orchestration; the prior MCP error sketch dropped section 6 details needed for machine decisions. No new commands, MCP tools or remote implementation are introduced.
 
 ## 18. Internal API sketches
 

@@ -4,7 +4,7 @@ title: Rewrite Worklease in Go
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 05:53'
+updated_date: '2026-09-12 06:07'
 labels:
   - go-rewrite
 milestone: m-0
@@ -40,6 +40,7 @@ Use the actual dependency graph, not static waves. TASK-85.1 inventories capabil
 - [ ] #3 Retired Python core/SDK/packaging are removed, every retained capability inventory row is delivered or explicitly rejected, and deferred remote design is preserved without implementing it.
 - [ ] #4 Four release archives install and pass native smoke tests with checksums and man pages; code/artifact completion does not require tag creation or public release.
 - [ ] #5 All eighteen implementation/inventory children are Done with evidence, final Go gates pass, and CHANGELOG documents the intentionally incompatible cutover and optional recoverable state disposal.
+- [ ] #6 The section 1.1 human CLI and MCP/JSON interaction priorities pass executable common-path, contention and isolated-loop journeys; the shipped quick starts require no manual credential/revision plumbing or mandatory guard setup.
 <!-- AC:END -->
 
 ## Comments
@@ -49,5 +50,11 @@ author: @codex
 created: 2026-09-12 05:53
 ---
 TASK-86 amends the contract under the owner-requested-change rule in section 15. The review preserves Go/POSIX/SQLite and one claim model, removes Python parity requirements, tightens session/handle isolation, authenticated recoverable replay, operation-specific protection, predecessor recovery, cursor/watch/GC semantics and MCP hold bounds, and preserves the Cloudflare proposal as deferred. All eighteen child tasks now use the amended decisions and live dependency graph; remote implementation and publication are outside this refinement.
+---
+
+author: @codex
+created: 2026-09-12 06:07
+---
+Owner-requested amendment recorded in contract sections 1.1, 12 and 17 (TASK-86): prioritize short setup-free human commands and ergonomic handle-backed JSON/typed MCP orchestration. Preserve structured error details; test common paths, contention and isolated loops in 85.14–85.17. This does not expand the eleven MCP tools or implement remote authority.
 ---
 <!-- COMMENTS:END -->
