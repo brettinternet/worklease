@@ -4,6 +4,7 @@ title: Default the agent ID to the login user
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:18'
+updated_date: '2026-09-12 02:23'
 labels:
   - cli
   - ux
@@ -14,6 +15,7 @@ references:
   - README.md
   - docs/cli-reference.md
   - CHANGELOG.md
+  - scripts/release_docs.py
 priority: medium
 type: enhancement
 ordinal: 82000
@@ -26,14 +28,14 @@ A bare `worklease acquire -r demo` fails with `missing-agent-id` unless `WORKLEA
 
 ## Decision
 
-Resolution order becomes `--agent-id`, then `WORKLEASE_AGENT_ID`, then the login user name from `getpass.getuser()`. When all three are unavailable the existing `missing-agent-id` error and hint remain. The same helper (`_default_agent_id` in `cli.py`) already serves `acquire`, `acquire-bundle`, and `transfer --successor-agent-id`, so all three inherit the default. The MCP server resolves its own identity from `WORKLEASE_AGENT_ID` or a startup argument and is unchanged.
+For an omitted agent option, resolution becomes a nonblank `WORKLEASE_AGENT_ID`, then the login name from `getpass.getuser()`. An explicit nonblank `--agent-id` or `--successor-agent-id` continues to win because defaults are applied only when the parsed option is `None`; an explicitly blank option is not replaced and continues to fail model validation. `_default_agent_id` catches login lookup failure and rejects a blank lookup result. If neither source yields a value, the existing `missing-agent-id` error and option-specific hint remain. The same helper already serves `acquire`, `acquire-bundle`, and `transfer --successor-agent-id`, so all three inherit the fallback. The MCP server resolves its own identity from `WORKLEASE_AGENT_ID` or a startup argument and is unchanged.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease acquire -r RES` with no `-a` and no `WORKLEASE_AGENT_ID` succeeds and records `agentId` equal to the login user name; `WORKLEASE_AGENT_ID` when set takes precedence over the login name; `-a` wins over both.
-- [ ] #2 The same precedence applies to `acquire-bundle` and to `transfer --successor-agent-id`.
-- [ ] #3 When the login lookup fails and neither the flag nor the variable is set, the error remains `missing-agent-id` with the existing hint.
-- [ ] #4 Help text for `--agent-id` and `--successor-agent-id` names the three-step default; the README lifecycle no longer exports `WORKLEASE_AGENT_ID` and mentions it as an optional override; `docs/cli-reference.md` and CHANGELOG `Unreleased` are updated; the MCP server identity resolution is untouched.
-- [ ] #5 Tests cover flag, variable, and login-name precedence plus the lookup-failure path, and `mise run lint`, `format-check`, `test`, and `typecheck` pass.
+- [ ] #1 `worklease acquire -r RES` with no `-a` and no nonblank `WORKLEASE_AGENT_ID` succeeds and records `agentId` equal to `getpass.getuser()`; a nonblank `WORKLEASE_AGENT_ID` takes precedence over the login name, and an explicit nonblank `-a` wins over both.
+- [ ] #2 The same omitted-option fallback and precedence apply to `acquire-bundle` and `transfer --successor-agent-id`.
+- [ ] #3 When `getpass.getuser()` raises `OSError` or returns blank and no nonblank environment override exists, the command exits 64 with `missing-agent-id` and the existing option-specific hint; an explicitly blank agent option is not defaulted and continues to fail with `invalid-agent-id` or `invalid-successor-agent-id`.
+- [ ] #4 Help for `--agent-id` and `--successor-agent-id` names the environment and login-name fallback; the README lifecycle and generated manual examples no longer require `WORKLEASE_AGENT_ID` and mention it as an optional override; `docs/cli-reference.md` and CHANGELOG `Unreleased` are updated; generated release documentation renders successfully; the MCP identity contract is unchanged.
+- [ ] #5 Tests mock the environment and login lookup to cover flag, variable, and login-name precedence, blank and raising lookup failures, explicit blank options, all three affected commands, and option-specific hints; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
