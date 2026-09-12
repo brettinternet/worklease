@@ -73,6 +73,8 @@ Implemented internal/store Store.Open with secure owner-private home validation,
 Follow-up hardening: schema bootstrap rechecks user_version inside BEGIN IMMEDIATE so competing opens converge on one authority ID; Store writes persist monotonic last_observed_at watermark and read validates canceled contexts; trusted root-owned macOS /var compatibility ancestor is allowed while user-owned/writable ancestors fail. Validation: go test ./internal/store ./internal/testkit, go test -race ./internal/store ./internal/testkit, and mise run ci-go all passed.
 
 Independent adversarial review found path TOCTOU, handles-directory, bootstrap interleaving, schema validation, transaction escape-hatch, and commit read-back gaps. Addressed them with descriptor-based chmod and identity checks, live SQLite descriptor verification on Darwin/Linux, private handles validation, in-transaction empty-schema checks, constraint/watermark validation, package-private raw write access, and Store.WriteWithReadback. Added adversarial final-open swap, home swap, handles, weakened-index/watermark, and cross-process event-order tests. Final validation passed: mise run lint, format-check, test (339 Python tests), typecheck, hooks, ci-go, and Linux CGO-free cross-build.
+
+Implementation commit: 4884501 (Implement secure Go authority store).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
