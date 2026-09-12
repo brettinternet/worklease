@@ -1,10 +1,11 @@
 ---
 id: TASK-85.13
 title: Add cursor-based lifecycle watches
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a09633'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 15:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -45,3 +46,9 @@ Evidence and patterns (the amended contract is normative): TASK-81 (closed as su
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed with Worklease resource backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-85.13 (claim 5a5a7d0b482f4da2f416ecf00d4326e0; local coordination only, provider writes are not fenced).
+<!-- SECTION:NOTES:END -->
