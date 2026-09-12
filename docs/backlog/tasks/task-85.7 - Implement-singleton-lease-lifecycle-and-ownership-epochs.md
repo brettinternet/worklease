@@ -1,11 +1,11 @@
 ---
 id: TASK-85.7
 title: Implement the claim lifecycle service
-status: In Progress
+status: Done
 assignee:
   - '@pi-01a094d6'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 10:11'
+updated_date: '2026-09-12 10:26'
 labels:
   - go-rewrite
 milestone: m-0
@@ -21,6 +21,14 @@ references:
   - src/worklease/models.py
   - tests/test_store.py
   - tests/test_cli.py
+modified_files:
+  - CHANGELOG.md
+  - internal/cli/commands.go
+  - internal/cli/lease_commands.go
+  - internal/cli/resource_commands.go
+  - internal/cli/resource_commands_test.go
+  - internal/lease
+  - internal/store/store.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -43,17 +51,17 @@ Evidence and patterns (the amended contract is normative): `src/worklease/claims
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Lifecycle tests prove atomic acquire/renew/checkpoint/release/transfer and epoch end/checkpoint recovery, client-held 64-hex credentials with hashes only in authority state, successor revision 1, release audit reason and no transfer free interval.
-- [ ] #2 Authorization tests prove ordered current-claim/token/expiry/revision checks without failed-write side effects, exclusive explicit selection, bounds validation and token-free public status/list.
-- [ ] #3 Replay tests authenticate original epochs after release/transfer, return recorded receipts without reviving ownership, reject changed TTL/maxDuration/cwd/content intent, enforce requestNotAfter and preserve current revisions; no replay returns a token.
-- [ ] #4 Clock/wait tests cover forward expiry, bounded small rollback clamping, larger regression failing closed without re-anchoring, monotonic jittered wait deadlines and redacted contention metadata.
-- [ ] #5 Cross-process contention has exactly one winner; started-operation tests reject overlapping guarded starts and unrelated lifecycle mutations, permit only guard-internal renewal/completion, and expose predecessor unknowns after expiry; mise run ci-go passes.
+- [x] #1 Lifecycle tests prove atomic acquire/renew/checkpoint/release/transfer and epoch end/checkpoint recovery, client-held 64-hex credentials with hashes only in authority state, successor revision 1, release audit reason and no transfer free interval.
+- [x] #2 Authorization tests prove ordered current-claim/token/expiry/revision checks without failed-write side effects, exclusive explicit selection, bounds validation and token-free public status/list.
+- [x] #3 Replay tests authenticate original epochs after release/transfer, return recorded receipts without reviving ownership, reject changed TTL/maxDuration/cwd/content intent, enforce requestNotAfter and preserve current revisions; no replay returns a token.
+- [x] #4 Clock/wait tests cover forward expiry, bounded small rollback clamping, larger regression failing closed without re-anchoring, monotonic jittered wait deadlines and redacted contention metadata.
+- [x] #5 Cross-process contention has exactly one winner; started-operation tests reject overlapping guarded starts and unrelated lifecycle mutations, permit only guard-internal renewal/completion, and expose predecessor unknowns after expiry; mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -71,4 +79,12 @@ Evidence and patterns (the amended contract is normative): `src/worklease/claims
 Claimed with Worklease for isolated implementation; local coordination scope only, provider mutations are not fenced.
 
 Implemented the singleton Go claim lifecycle in an isolated worktree, including authenticated replay, conservative clocks, atomic epoch transitions, stateless CLI wiring, predecessor recovery, and guarded-operation primitives. Independent review found and drove fixes for replay ordering, credential selection, wait bounds, redaction, and cross-process evidence. mise run ci-go passes.
+
+Final verification after merge: mise run ci-go passed on main at 63c7ffe; independent verification found no remaining criterion-specific gap after the final JSON contract fix. Full repository lint, format-check, test (339 Python tests), and typecheck also passed before integration.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the typed Go singleton claim lifecycle and stateless CLI at commit 63c7ffe. AC1: TestLifecycleAtomicAcquireRenewCheckpointReleaseTransfer, TestAcquireReturnsPredecessorCheckpointAfterRelease, and TestCheckpointRejectsCredentialFieldsAndDuplicates prove atomic lifecycle, checkpoint recovery, successor revision, and credential storage boundaries. AC2: TestAuthorizationOrderedAndNoFailedWriteSideEffects, TestInvalidInputsAndSecretsDoNotMutate, TestLifecycleRejectsMixedCredentialSelection, and TestStatusRequiresSelectionAndStatelessTransferSucceeds prove ordered authorization, exclusive selection, bounds, redaction, and contract-cased public output. AC3: TestReplayAuthenticatesEndedEpochAndRejectsChangedIntent, TestGuardReplayUsesOriginalEpochBeforeCurrentAuthorization, TestSuppliedGuardHashMustMatchCanonicalIntent, and TestAcquireReplayReportsOriginalReceiptAndFinalEpochState prove authenticated exact replay without ownership revival. AC4: TestClockForwardExpirySmallRollbackAndLargeRegression, TestForwardClockStepExpiresClaim, and TestReplayDeadlineIsExclusiveAndWaitCapsSleep prove expiry, rollback handling, deadline exclusivity, and bounded monotonic waiting. AC5: TestCrossProcessContentionHasExactlyOneWinner, TestStartedOperationExclusivityAndCompletionRevision, and TestExpiredPredecessorUnknownOperationBlocksVerification prove process contention and guarded-operation recovery. mise run ci-go passed on the final merged commit.
+<!-- SECTION:FINAL_SUMMARY:END -->
