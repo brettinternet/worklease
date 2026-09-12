@@ -778,6 +778,9 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 }
 
 func (s *Service) Verify(ctx context.Context, creds Credentials, expected []string) (Verification, error) {
+	if s == nil || s.st == nil || s.st.Empty() || s.st.AuthorityID() == "" {
+		return Verification{}, reason.New(reason.ReasonStorageFailure, "authority is not available")
+	}
 	var out Verification
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
 		var row claimRow
@@ -803,7 +806,7 @@ func (s *Service) Verify(ctx context.Context, creds Credentials, expected []stri
 			out.UnknownOperations = unknown
 			return reason.New(reason.ReasonUnknownOutcomePending, "a predecessor operation has unknown outcome")
 		}
-		if len(expected) > 0 && !sameResources(row.Resources, expected) {
+		if len(expected) > 0 && !containsResources(row.Resources, expected) {
 			return reason.New(reason.ReasonVerifyFailed, "claim resources do not match").With("cause", "resource-mismatch")
 		}
 		v, e := row.view(s.st.AuthorityID(), effective.UnixMicro())
@@ -814,6 +817,183 @@ func (s *Service) Verify(ctx context.Context, creds Credentials, expected []stri
 		return nil
 	})
 	return out, err
+}
+
+// ReplayOperation resolves a previously recorded guarded operation without
+// consulting mutable filesystem state. It is used by idempotent guarded
+// clients before validating paths that may have changed since the commit.
+func (s *Service) ReplayOperation(ctx context.Context, creds Credentials, id, kind string, requestHashes ...string) (Receipt, bool, error) {
+	requestHash := ""
+	if len(requestHashes) > 0 {
+		requestHash = requestHashes[0]
+	}
+	if err := validateOperationID(id); err != nil {
+		return Receipt{}, false, err
+	}
+	if kind != "exec" && kind != "replace-file" {
+		return Receipt{}, false, reason.Invalid("unsupported operation kind")
+	}
+	if s == nil || s.st == nil || s.st.Empty() || s.st.AuthorityID() == "" {
+		return Receipt{}, false, reason.New(reason.ReasonStorageFailure, "authority is not available")
+	}
+	now := s.clock.Now()
+	var out Receipt
+	found := false
+	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		var op operationRow
+		ok, err := readOperation(tx, creds.ClaimID, id, &op)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		found = true
+		if op.Kind != kind {
+			return reason.New(reason.ReasonOperationRequestMismatch, "operation kind differs from the recorded operation")
+		}
+		if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(hashToken(creds.Token))) != 1 {
+			return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+		}
+		effective, err := s.effectiveNow(tx, now)
+		if err != nil {
+			return err
+		}
+		if requestHash == "" {
+			return reason.New(reason.ReasonOperationRequestMismatch, "exact operation request hash is required for replay")
+		}
+		if err := replayOperation(op, requestHash, effective); err != nil {
+			return err
+		}
+		_, err = receiptFromOperation(op, true, &out)
+		return err
+	})
+	return out, found, err
+}
+
+// OperationRequestHash returns the canonical digest persisted for a guarded
+// operation intent. Clients use it when durably recording a pending lifecycle request.
+func OperationRequestHash(kind, authority, claim string, request map[string]any, ttl time.Duration, deadline time.Time) (string, error) {
+	return checkedRequestHash(map[string]any{"kind": kind, "authorityId": authority, "claimId": claim, "request": request, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()})
+}
+
+// RunGuardedOperation first commits the started intent, then executes its local
+// effect and records completion in a second serialized authority transaction.
+// This makes intent observable before effects while keeping authorization,
+// replacement, and completion in one completing transaction.
+func (s *Service) RunGuardedOperation(ctx context.Context, creds Credentials, op OperationIntent, effect func(ClaimView) (map[string]any, error)) (Receipt, error) {
+	if effect == nil {
+		return Receipt{}, reason.Invalid("guarded operation effect is required")
+	}
+	started, err := s.BeginOperation(ctx, creds, op)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if started.Completed && started.Receipt != nil {
+		return *started.Receipt, nil
+	}
+	creds.Revision = started.Revision
+	now := s.clock.Now()
+	var out Receipt
+	var operationErr error
+	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
+		effective, err := s.effectiveNow(tx, now)
+		if err != nil {
+			return err
+		}
+		var row claimRow
+		ok, err := readClaim(tx, creds.ClaimID, &row)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return reason.New(reason.ReasonStaleClaim, "claim is not current")
+		}
+		if err = s.authorize(row, creds, effective.UnixMicro(), true); err != nil {
+			return err
+		}
+		if unknown, err := unresolvedForResourcesExcept(tx, row.Resources, row.ClaimID); err != nil {
+			return err
+		} else if len(unknown) > 0 {
+			return reason.New(reason.ReasonUnknownOutcomePending, "a predecessor operation has unknown outcome").With("operations", unknown)
+		}
+		var recorded operationRow
+		found, err := readOperation(tx, row.ClaimID, op.OperationID, &recorded)
+		if err != nil {
+			return err
+		}
+		if !found || recorded.State != "started" || recorded.RequestHash != started.RequestHash {
+			return reason.New(reason.ReasonOperationNotFound, "started operation was not found")
+		}
+		view, err := row.view(s.st.AuthorityID(), effective.UnixMicro())
+		if err != nil {
+			return err
+		}
+		result, effectErr := effect(view)
+		if effectErr != nil {
+			if isUncertainGuardError(effectErr) {
+				operationErr = effectErr
+				return nil
+			}
+			if result == nil {
+				result = map[string]any{}
+			}
+			result["ok"], result["error"] = false, effectErr.Error()
+			completed, completeErr := s.completeGuardedInTx(ctx, tx, row, op, started.RequestHash, op.RequestNotAfter, effective, row.Revision, result)
+			if completeErr != nil {
+				return completeErr
+			}
+			out = completed
+			operationErr = effectErr
+			return nil
+		}
+		out, err = s.completeGuardedInTx(ctx, tx, row, op, started.RequestHash, op.RequestNotAfter, effective, row.Revision, result)
+		return err
+	})
+	if err != nil {
+		return Receipt{}, err
+	}
+	if operationErr != nil {
+		return out, operationErr
+	}
+	return out, nil
+}
+
+func isUncertainGuardError(err error) bool {
+	e := reason.As(err)
+	if e == nil {
+		return true
+	}
+	switch e.Reason {
+	case reason.ReasonUnknownOutcome, reason.ReasonOwnershipLost, reason.ReasonStorageFailure, reason.ReasonChildTimeout, reason.ReasonInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) completeGuardedInTx(ctx context.Context, tx *store.Tx, row claimRow, op OperationIntent, hash string, deadline, effective time.Time, startedRevision int64, result map[string]any) (Receipt, error) {
+	if result == nil {
+		result = map[string]any{}
+	}
+	rev := startedRevision + 1
+	kind := op.Kind + "-completed"
+	if op.Kind == "replace-file" {
+		kind = "replace-completed"
+	}
+	seq, err := tx.AppendEvent(store.Event{At: effective, Kind: kind, ClaimID: row.ClaimID, Resources: row.Resources, OperationID: op.OperationID, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(result)})
+	if err != nil {
+		return Receipt{}, storage(err)
+	}
+	result["revision"] = rev
+	encoded, _ := json.Marshal(result)
+	if _, err := tx.ExecContext(ctx, `UPDATE claims SET revision=? WHERE claim_id=?`, rev, row.ClaimID); err != nil {
+		return Receipt{}, storage(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE operations SET state='completed',receipt=?,completed_at=?,completed_seq=? WHERE claim_id=? AND operation_id=?`, string(encoded), effective.UnixMicro(), seq, row.ClaimID, op.OperationID); err != nil {
+		return Receipt{}, storage(err)
+	}
+	return Receipt{OperationID: op.OperationID, ClaimID: row.ClaimID, Kind: op.Kind, RequestHash: hash, Revision: rev, Committed: true, Result: result}, nil
 }
 
 func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op OperationIntent) (Started, error) {
@@ -835,7 +1015,7 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 	if err := validateTTL(ttl); err != nil {
 		return Started{}, err
 	}
-	hash, err := checkedRequestHash(map[string]any{"kind": op.Kind, "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "request": op.Request, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()})
+	hash, err := OperationRequestHash(op.Kind, s.st.AuthorityID(), creds.ClaimID, op.Request, ttl, deadline)
 	if err != nil {
 		return Started{}, err
 	}

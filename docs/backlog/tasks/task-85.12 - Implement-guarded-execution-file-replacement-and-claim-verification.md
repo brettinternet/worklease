@@ -1,10 +1,11 @@
 ---
 id: TASK-85.12
 title: 'Implement guarded exec, replace-file, and verify'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi-01a095f7'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:28'
+updated_date: '2026-09-12 15:17'
 labels:
   - go-rewrite
 milestone: m-0
@@ -19,6 +20,20 @@ references:
   - ../hum/internal/daemon/runtime.go
   - ../hum/internal/app/app.go
   - TASK-79
+modified_files:
+  - internal/cli/commands.go
+  - internal/cli/guard_commands.go
+  - internal/cli/guard_commands_test.go
+  - internal/cli/lease_commands.go
+  - internal/cli/root.go
+  - internal/guard/guard.go
+  - internal/guard/guard_test.go
+  - internal/guard/replace_test.go
+  - internal/handle/handle.go
+  - internal/handle/handle_test.go
+  - internal/lease/helpers.go
+  - internal/lease/service.go
+  - internal/lease/verify_regression_test.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -39,15 +54,49 @@ Evidence and patterns (the amended contract is normative): `src/worklease/execut
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Exec tests cover literal argv, cwd/git-primary environment isolation, /dev/null stdin, bounded/invalid-UTF8 output, child/signal status and token-free environment/diagnostics.
-- [ ] #2 Process tests cover timeout including inherited/escaped pipes, ownership/clock/storage failure, uncertain completion and killed-supervisor/orphan limits; no controllable process-group members leak.
-- [ ] #3 Intent tests prove one guarded operation at a time, started-before-effects and final revision reporting, exact replay without re-execution and changed maxDuration rejection; predecessor unknowns block new guards until explicit reconciliation.
-- [ ] #4 Replacement tests cover canonical claimed-path membership, symlink/hard-link/parent-swap rejection, expected/content hashes, mode/fsync/rename, completed no-effect failures, and uncertain rename requiring reconciliation even when bytes match.
-- [ ] #5 Verify/hook tests cover all ownership/authority/pending failures with no writes, native Edit/Write/MultiEdit/NotebookEdit events, default --coverage claim allowing an edit of any file under a valid claim and blocking missing/expired/pending claims, --coverage path denying an unrelated path and allowing a claimed path, unsupported Bash input failing closed, plus MCP reference selection; mise run ci-go passes.
+- [x] #1 Exec tests cover literal argv, cwd/git-primary environment isolation, /dev/null stdin, bounded/invalid-UTF8 output, child/signal status and token-free environment/diagnostics.
+- [x] #2 Process tests cover timeout including inherited/escaped pipes, ownership/clock/storage failure, uncertain completion and killed-supervisor/orphan limits; no controllable process-group members leak.
+- [x] #3 Intent tests prove one guarded operation at a time, started-before-effects and final revision reporting, exact replay without re-execution and changed maxDuration rejection; predecessor unknowns block new guards until explicit reconciliation.
+- [x] #4 Replacement tests cover canonical claimed-path membership, symlink/hard-link/parent-swap rejection, expected/content hashes, mode/fsync/rename, completed no-effect failures, and uncertain rename requiring reconciliation even when bytes match.
+- [x] #5 Verify/hook tests cover all ownership/authority/pending failures with no writes, native Edit/Write/MultiEdit/NotebookEdit events, default --coverage claim allowing an edit of any file under a valid claim and blocking missing/expired/pending claims, --coverage path denying an unrelated path and allowing a claimed path, unsupported Bash input failing closed, plus MCP reference selection; mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Port the Python guarded operation behavior into Go lease/guard services, preserving started-operation, replay, timeout, ownership, and bounded-output semantics.
+2. Add canonical target resolution and atomic expected-hash replacement with claim coverage and filesystem safety checks.
+3. Add read-only claim/path verification and wire exec, replace-file, and verify into the CLI and native hook inputs.
+4. Add focused Go tests matching the task edge cases, then run repository quality gates and record evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Selected as the earliest dependency-ready backlog item. Claimed with Worklease resource backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-85.12 under local-coordination scope; provider mutations are not fenced.
+
+Implemented Go guarded operation services and CLI wiring. Guarded exec uses literal argv, isolated environments, /dev/null stdin, bounded UTF-8-safe capture, process groups, asynchronous renewal, deadline/ownership termination, replay, and handle recovery. Replace-file commits started intent before effects, binds exact request/content hashes, verifies path claim membership, uses pinned directory descriptors and no-follow opens, performs serialized expected-hash rename/fsync, and leaves uncertain outcomes pending. Verify fails closed, supports contextual/explicit/MCP handles, uses existing shared locks without creating them, validates claim or path coverage, and rejects malformed/unsupported native hooks.
+
+Validation: mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run ci-go; go test -count=1 ./internal/guard ./internal/lease ./internal/handle ./internal/cli; git diff --check. Independent verifier review completed after fixes.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented Go exec, replace-file, and verify guards with CLI integration and durable handle/replay behavior.
+
+Acceptance evidence:
+1. Exec argv/cwd/git-primary/environment/output behavior: TestExecLiteralArgvBoundedInvalidUTF8SignalAndEnvironment, TestExecUsesRequestedCWDAndIsolatesGitEnvironment, TestGitPrimaryResolvesLinkedWorktree, and TestExecUsesArgvDevNullAndCompletesReceipt.
+2. Process supervision and uncertain outcomes: TestExecLeaderExitReapsProcessGroupDescendant, TestExecTimeoutLeavesOperationUnresolved, and go test -race ./....
+3. Intent/replay/revision rules: TestStartedOperationExclusivityAndCompletionRevision, TestGuardReplayUsesOriginalEpochBeforeCurrentAuthorization, TestSuppliedGuardHashMustMatchCanonicalIntent, and TestExpiredPredecessorUnknownOperationBlocksVerification.
+4. Serialized safe replacement: TestReplaceFileExpectedHashPreservesModeAndReplay and TestReplaceFileRejectsSymlinkTargetBeforeCanonicalization.
+5. Verify/hooks: TestVerifyEmptyReadOnlyAuthorityFailsClosed, TestExistingSharedLockDoesNotCreateMissingLock, TestHookTargetsAcceptNativeFileEditorsAndRejectBash, and TestHookTargetsRejectMalformedInput.
+
+Repository gates passed: mise run lint, format-check, test (339 tests), typecheck, and ci-go.
+<!-- SECTION:FINAL_SUMMARY:END -->
