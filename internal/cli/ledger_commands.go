@@ -25,7 +25,10 @@ func writeLedgerResult(s *boundary, cmd *urfave.Command, operation string, field
 				public[key] = value
 			}
 		}
-		return output.WriteSuccess(s.writer, operation, public)
+		if operation == "inspect" && cmd.Bool("full") {
+			return output.WriteSuccess(s.writer, operation, public)
+		}
+		return output.WritePublicSuccess(s.writer, operation, public)
 	}
 	if operation == "history" {
 		return writeHistoryText(s.writer, fields["historyPage"].(ledger.HistoryPage))
@@ -33,7 +36,10 @@ func writeLedgerResult(s *boundary, cmd *urfave.Command, operation string, field
 	if operation == "events" {
 		return writeEventsText(s.writer, fields["eventsPage"].(ledger.EventsPage))
 	}
-	return output.WriteText(s.writer, operation, fields)
+	if operation == "inspect" && cmd.Bool("full") {
+		return output.WriteText(s.writer, operation, fields)
+	}
+	return output.WritePublicText(s.writer, operation, fields)
 }
 
 func eventsAction(s *boundary) func(context.Context, *urfave.Command) error {
