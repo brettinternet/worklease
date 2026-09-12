@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a0938d'
 created_date: '2026-09-12 02:11'
-updated_date: '2026-09-12 03:20'
+updated_date: '2026-09-12 03:21'
 labels:
   - cli
   - ux
@@ -62,6 +62,8 @@ Human-readable `history` currently prints a diagnostic field dump for every epoc
 Implemented compact chronological history text, preserved the prior full diagnostic projection behind --full, added rich fixed-timestamp renderer and CLI coverage, and updated CLI/claim-model documentation plus changelog. Focused history and CLI suites pass (99 tests).
 
 Independent review found one compact-rendering defect: a terminated migration-era epoch hid legacy-incomplete completeness behind its release reason. Fixed by keeping completeness in STATE and the termination reason on its labeled row; added a regression fixture contrasting complete and terminated legacy-incomplete epochs. After rebasing onto current main (including TASK-69 events and TASK-72 GC output), mise run lint, format-check, test (324 core + 19 SDK), and typecheck all pass.
+
+Integration: implementation commit f0bf846 and delivery commit e91902c were fast-forwarded to main. Worklease guarantee was local coordination on this host; providerMutationFenced=false.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
