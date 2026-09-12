@@ -102,8 +102,8 @@ func validateResource(value string) (string, error) {
 		return "", invalid("resource must not start or end with whitespace")
 	}
 	for _, r := range value {
-		if r == 0 || r == '\r' || r == '\n' {
-			return "", invalid("resource must not contain NUL, CR, or LF")
+		if r < 0x20 || r == 0x7f {
+			return "", invalid("resource must not contain control characters")
 		}
 	}
 	return value, nil
