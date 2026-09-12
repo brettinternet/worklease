@@ -42,11 +42,27 @@ type ReconciliationReceipt struct {
 	ExpiresAt         time.Time `json:"expiresAt"`
 	Idempotent        bool      `json:"idempotent"`
 	Committed         bool      `json:"committed"`
+	CurrentRevision   int64     `json:"-"`
+	CurrentExpiresAt  time.Time `json:"-"`
 }
 
 // Reconcile records a caller-attested result for one started operation. It
 // advances only the current resolver claim and never revives the target epoch.
 func (s *Service) Reconcile(ctx context.Context, creds Credentials, req ReconcileRequest) (ReconciliationReceipt, error) {
+	return s.reconcile(ctx, creds, req, false)
+}
+
+// ReconcileAtCurrentRevision recovers an operation started by the resolver's
+// own handle. The token is authenticated in the reconciliation transaction and
+// the current authority revision is used so a pending handle cannot rewind it.
+func (s *Service) ReconcileAtCurrentRevision(ctx context.Context, creds Credentials, req ReconcileRequest) (ReconciliationReceipt, error) {
+	if req.TargetClaimID != creds.ClaimID {
+		return ReconciliationReceipt{}, reason.Invalid("current-revision reconciliation requires the resolver claim as its target")
+	}
+	return s.reconcile(ctx, creds, req, true)
+}
+
+func (s *Service) reconcile(ctx context.Context, creds Credentials, req ReconcileRequest, useCurrentRevision bool) (ReconciliationReceipt, error) {
 	if err := validateOperationID(req.OperationID); err != nil {
 		return ReconciliationReceipt{}, err
 	}
@@ -113,6 +129,23 @@ func (s *Service) Reconcile(ctx context.Context, creds Credentials, req Reconcil
 			if replay.Receipt == "" || json.Unmarshal([]byte(replay.Receipt), &result) != nil {
 				return storage(errors.New("invalid reconciliation receipt"))
 			}
+			if useCurrentRevision {
+				var resolver claimRow
+				ok, e := readClaim(tx, creds.ClaimID, &resolver)
+				if e != nil {
+					return e
+				}
+				if !ok {
+					return reason.New(reason.ReasonStaleClaim, "resolver claim is not current")
+				}
+				authorized := creds
+				authorized.Revision = 0
+				if e = s.authorize(resolver, authorized, effective.UnixMicro(), false); e != nil {
+					return e
+				}
+				result.CurrentRevision = resolver.Revision
+				result.CurrentExpiresAt = time.UnixMicro(resolver.ExpiresAt).UTC()
+			}
 			result.Idempotent = true
 			return nil
 		}
@@ -124,7 +157,11 @@ func (s *Service) Reconcile(ctx context.Context, creds Credentials, req Reconcil
 		if !ok {
 			return reason.New(reason.ReasonStaleClaim, "resolver claim is not current")
 		}
-		if e = s.authorize(resolver, creds, effective.UnixMicro(), true); e != nil {
+		authorized := creds
+		if useCurrentRevision {
+			authorized.Revision = 0
+		}
+		if e = s.authorize(resolver, authorized, effective.UnixMicro(), !useCurrentRevision); e != nil {
 			return e
 		}
 		var target operationRow
@@ -171,7 +208,7 @@ func (s *Service) Reconcile(ctx context.Context, creds Credentials, req Reconcil
 		if _, e = tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, revision, ttl.Microseconds(), effective.UnixMicro(), expires, resolver.ClaimID); e != nil {
 			return storage(e)
 		}
-		result = ReconciliationReceipt{OperationID: req.OperationID, TargetClaimID: req.TargetClaimID, TargetOperationID: req.TargetOperationID, ResolverClaimID: resolver.ClaimID, Outcome: req.Outcome, RequestSHA256: req.ExpectedRequestSHA256, Revision: revision, ReconciledAt: effective, ExpiresAt: time.UnixMicro(expires).UTC(), Committed: true}
+		result = ReconciliationReceipt{OperationID: req.OperationID, TargetClaimID: req.TargetClaimID, TargetOperationID: req.TargetOperationID, ResolverClaimID: resolver.ClaimID, Outcome: req.Outcome, RequestSHA256: req.ExpectedRequestSHA256, Revision: revision, ReconciledAt: effective, ExpiresAt: time.UnixMicro(expires).UTC(), Committed: true, CurrentRevision: revision, CurrentExpiresAt: time.UnixMicro(expires).UTC()}
 		if beforeReconciliationCommit != nil {
 			if e := beforeReconciliationCommit(); e != nil {
 				return storage(e)

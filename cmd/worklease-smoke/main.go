@@ -16,8 +16,12 @@ type envelope struct {
 	OK          bool   `json:"ok"`
 	Version     string `json:"version"`
 	Resource    string `json:"resource"`
+	ClaimID     string `json:"claimId"`
 	OperationID string `json:"operationId"`
 	NextCursor  string `json:"nextCursor"`
+	Inspection  struct {
+		RequestSHA256 string `json:"requestSha256"`
+	} `json:"inspection"`
 }
 
 func main() {
@@ -57,7 +61,19 @@ func main() {
 	runJSON(env, *binary, "list", "--resource", key.Resource)
 	runJSON(env, *binary, "verify", "--coverage", "path", "--resource", key.Resource)
 	runJSON(env, *binary, "exec", "--", *binary, "version")
-	runJSON(env, *binary, "checkpoint", "--data", `{"phase":"smoke"}`)
+
+	// Recover a same-claim guard whose started intent advanced the authority
+	// beyond the revision retained by its pending contextual handle.
+	timedOutOperation := strings.Repeat("e", 32)
+	runFailure(env, *binary, "exec", "--operation-id", timedOutOperation, "--max-duration", "100ms", "--", "sleep", "5")
+	inspection := runJSON(env, *binary, "op", "inspect", "--operation-id", timedOutOperation)
+	if inspection.Inspection.RequestSHA256 == "" {
+		fatal(fmt.Errorf("timed-out operation inspection returned no request hash"))
+	}
+	runJSON(env, *binary, "op", "reconcile", "--target-claim-id", acquired.ClaimID, "--target-operation-id", timedOutOperation, "--expected-request-sha256", inspection.Inspection.RequestSHA256, "--outcome", "observed-failure", "--evidence", `{"outcome":"observed-failure","executorStopped":true}`)
+	runJSON(env, *binary, "heartbeat")
+	runJSON(env, *binary, "checkpoint", "--data", `{"phase":"recovered"}`)
+	runJSON(env, *binary, "exec", "--", *binary, "version")
 	if acquired.OperationID != "" {
 		runJSON(env, *binary, "op", "inspect", "--operation-id", acquired.OperationID)
 	}
@@ -90,6 +106,14 @@ func main() {
 		}
 	}
 	fmt.Println("worklease built-binary smoke passed")
+}
+
+func runFailure(env []string, binary string, args ...string) {
+	cmd := exec.Command(binary, append([]string{"--json"}, args...)...)
+	cmd.Env = env
+	if output, err := cmd.CombinedOutput(); err == nil {
+		fatal(fmt.Errorf("%s %s unexpectedly succeeded: %s", binary, strings.Join(args, " "), output))
+	}
 }
 
 func runJSON(env []string, binary string, args ...string) envelope {

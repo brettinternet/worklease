@@ -51,6 +51,40 @@ func TestReconcileExpiredPredecessorRequiresCoveringCurrentClaimAndIsIdempotent(
 	}
 }
 
+func TestReconcileAtCurrentRevisionAuthenticatesAndRejectsChangedReplay(t *testing.T) {
+	svc, st, _ := openLeaseTest(t)
+	ctx := context.Background()
+	id, token := strings.Repeat("1", 32), strings.Repeat("a", 64)
+	grant, err := svc.Acquire(ctx, req("a", id, token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := strings.Repeat("2", 32)
+	started, err := svc.BeginOperation(ctx, credentials(st, id, token, grant.Revision), OperationIntent{OperationID: targetID, Kind: "exec", Request: map[string]any{"argv": []any{"sleep", "5"}}, TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ReconcileRequest{OperationID: strings.Repeat("3", 32), TargetClaimID: id, TargetOperationID: targetID, ExpectedRequestSHA256: started.RequestHash, Outcome: "observed-failure", Evidence: json.RawMessage(`{"outcome":"observed-failure","executorStopped":true}`), TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)}
+	stale := credentials(st, id, token, grant.Revision)
+	if _, err := svc.Reconcile(ctx, stale, request); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonStaleRevision {
+		t.Fatalf("strict stale revision err=%v", err)
+	}
+	foreign := stale
+	foreign.Token = strings.Repeat("b", 64)
+	if _, err := svc.ReconcileAtCurrentRevision(ctx, foreign, request); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonInvalidToken {
+		t.Fatalf("foreign credential err=%v", err)
+	}
+	receipt, err := svc.ReconcileAtCurrentRevision(ctx, stale, request)
+	if err != nil || receipt.Revision != started.Revision+1 {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	changed := request
+	changed.Evidence = json.RawMessage(`{"changed":true,"outcome":"observed-failure","executorStopped":true}`)
+	if _, err := svc.ReconcileAtCurrentRevision(ctx, stale, changed); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonReconciliationConflict {
+		t.Fatalf("changed replay err=%v", err)
+	}
+}
+
 func TestReconcileRejectsPartialCoverageHashAndMalformedEvidence(t *testing.T) {
 	svc, st, _ := openLeaseTest(t)
 	ctx := context.Background()

@@ -216,8 +216,20 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 				return s.handle(cmd, err)
 			}
 		}
-		r, err := svc.Reconcile(ctx, creds, lease.ReconcileRequest{OperationID: op, TargetClaimID: targetClaim, TargetOperationID: targetOp, ExpectedRequestSHA256: expected, Outcome: outcome, Evidence: evidence, TTL: ttl, RequestNotAfter: deadline})
+		request := lease.ReconcileRequest{OperationID: op, TargetClaimID: targetClaim, TargetOperationID: targetOp, ExpectedRequestSHA256: expected, Outcome: outcome, Evidence: evidence, TTL: ttl, RequestNotAfter: deadline}
+		var r lease.ReconciliationReceipt
+		if h != nil && h.PendingRequest != nil && h.PendingRequest.ClaimID == targetClaim && h.PendingRequest.OperationID == targetOp {
+			r, err = svc.ReconcileAtCurrentRevision(ctx, creds, request)
+		} else {
+			r, err = svc.Reconcile(ctx, creds, request)
+		}
 		if err != nil {
+			if r.Committed {
+				if e := reason.As(err); e != nil {
+					e.With("claimId", creds.ClaimID).With("operationId", op).With("pendingPath", path).With("commitState", "committed").With("receipt", r)
+				}
+				return s.handle(cmd, err)
+			}
 			if h != nil && isDefinitiveNoCommit(err) {
 				h.RecoveryRequest = nil
 				_ = handle.Write(path, *h)
@@ -225,13 +237,17 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, path))
 		}
 		if h != nil {
+			revision, expiresAt := r.Revision, r.ExpiresAt
+			if r.CurrentRevision > 0 {
+				revision, expiresAt = r.CurrentRevision, r.CurrentExpiresAt
+			}
 			h.State = "ready"
 			h.PendingRequest = nil
 			h.RecoveryRequest = nil
-			h.Revision = r.Revision
-			h.ExpiresAt = r.ExpiresAt
+			h.Revision = revision
+			h.ExpiresAt = expiresAt
 			if err := handle.Write(path, *h); err != nil {
-				return s.handle(cmd, committedHandleFailure(err, lease.Receipt{OperationID: r.OperationID, ClaimID: r.ResolverClaimID, Kind: "reconcile", Revision: r.Revision, Committed: true}, path, creds.ClaimID, op))
+				return s.handle(cmd, committedHandleFailure(err, lease.Receipt{OperationID: r.OperationID, ClaimID: r.ResolverClaimID, Kind: "reconcile", Revision: revision, Committed: true}, path, creds.ClaimID, op))
 			}
 		}
 		return writeLedgerResult(s, cmd, "reconcile", map[string]any{"receipt": r})
