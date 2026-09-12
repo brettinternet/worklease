@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi-01a09679'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 16:36'
+updated_date: '2026-09-12 16:38'
 labels:
   - go-rewrite
 milestone: m-0
@@ -57,3 +57,12 @@ Evidence and patterns (the amended contract is normative): `src/worklease/instru
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add canonical Go loop/safety instruction text and wire real instructions CLI actions.
+2. Add a strictly read-only doctor package and CLI projection covering configuration, authority, context/session, state safety, clock, Git, MCP availability, and Python-era leftovers.
+3. Strengthen staged command-tree/help and black-box ergonomics coverage for current commands, JSON/text errors, config/selection rules, contention, optional release reason, and session-isolated empty-home lifecycles.
+4. Run focused Go tests, review the diff, then run all repository and ci-go quality gates.
+<!-- SECTION:PLAN:END -->
