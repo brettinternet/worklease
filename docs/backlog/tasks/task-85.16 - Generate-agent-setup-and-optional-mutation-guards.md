@@ -4,7 +4,7 @@ title: Generate agent setup and optional mutation guards
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:07'
 labels:
   - go-rewrite
 milestone: m-0
@@ -38,6 +38,7 @@ Preview by default, apply/remove explicitly, preserve unrelated keys and reject 
 - [ ] #3 Generated commands use the safely quoted absolute running binary and preserve explicit home/config/session selection; CLI/MCP/hooks resolve the same authority in integration tests.
 - [ ] #4 Native guard integration executes real verify with valid claims and path coverage, blocks unrelated/missing/expired/pending claims, and supports explicit MCP reference binding; Bash is not registered.
 - [ ] #5 Setup instructions/version markers and a generic wrapper match the contract; final surface tests now include all commands, documentation states supported boundaries, and mise run ci-go passes.
+- [ ] #6 A new-user setup journey previews then explicitly applies MCP configuration and completes a minimal lease lifecycle without installing native guards or manually editing credentials; generic output explains the required client action and all setup help presents guards as optional.
 <!-- AC:END -->
 
 ## Definition of Done

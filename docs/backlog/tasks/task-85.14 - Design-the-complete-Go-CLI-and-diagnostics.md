@@ -4,7 +4,7 @@ title: 'Complete the CLI, diagnostics, and agent instructions'
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:07'
 labels:
   - go-rewrite
 milestone: m-0
@@ -46,6 +46,7 @@ At this dependency stage MCP/setup may not yet be registered. Validate the comma
 - [ ] #3 Ergonomics tests cover inline provider/path acquisition, agent defaults, stable session selectors, optional release reason, holder metadata and expiry-aware watch guidance.
 - [ ] #4 Doctor reports configuration sources, authority identity, missing/unsafe state, clock regression, Git/context/session and Python-era leftovers without creating/chmodding state or exposing private content.
 - [ ] #5 Canonical instructions distinguish task/path resources, claim/operation/provider state, pending recovery and unfenced native/provider effects; mise run ci-go passes.
+- [ ] #6 From an empty isolated home with no config, setup or explicit credentials, black-box tests run acquire --path, contextual status, exec and release in both human and --json modes; verify concise actionable contention output, exactly one machine envelope without prompts/logs, and two loops isolated by session environment alone.
 <!-- AC:END -->
 
 ## Definition of Done

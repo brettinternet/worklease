@@ -4,7 +4,7 @@ title: Implement the stdio MCP server
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:07'
 labels:
   - go-rewrite
 milestone: m-0
@@ -39,6 +39,7 @@ Use cross-process handle locking, exact pending-request recovery and persisted a
 - [ ] #3 Lifecycle tests cover CLI/MCP interoperability, two servers using one reference, pending acquire/heartbeat/release recovery, restart reference use and no bearer/hash leakage; public revision fields are allowed.
 - [ ] #4 Heartbeat tests prove persisted holdUntil, expiry clamping, no restart extension/resumption, one automatic-renewal owner, serialized explicit mutations and no spurious verify failures from renewal races. A TTL longer than maxHold is capped on initial grant and explicit renewal after restart.
 - [ ] #5 Events/watch enforce timeout and cursor semantics, checkpoint input rejects embedded credentials, and actual returned lease references can be passed to CLI verify/native hook selection; mise run ci-go passes.
+- [ ] #6 An end-to-end client uses discovery/schema information, minimal acquire input and only the returned lease for status/verify, checkpoint and release, plus bounded watch/events, without shell calls or token/revision management. Contention and applicable unknown-outcome failures retain structured domain details/commit state, and separate leases do not adopt another loop's claim.
 <!-- AC:END -->
 
 ## Definition of Done
