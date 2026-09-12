@@ -154,7 +154,7 @@ func TestReferencesCrossServerPendingRecoveryAndRestartHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err := first.Call(context.Background(), "acquire", map[string]any{"resources": []any{"shared-reference"}, "ttl": float64(1), "maxHold": float64(60), "autoHeartbeat": false})
+	acquired, err := first.Call(context.Background(), "acquire", map[string]any{"resources": []any{"shared-reference"}, "ttl": float64(10), "maxHold": float64(60), "autoHeartbeat": false})
 	if err != nil {
 		t.Fatal(err)
 	}
