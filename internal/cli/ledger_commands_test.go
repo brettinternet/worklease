@@ -28,6 +28,115 @@ func TestEventsCLIRejectsMalformedCursorBeforeOpeningStorage(t *testing.T) {
 	}
 }
 
+func TestSameHandleReconciliationAdoptsCurrentRevisionAndRestoresLifecycle(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	st, err := store.Open(ctx, home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	claimID, token := strings.Repeat("1", 32), strings.Repeat("a", 64)
+	grant, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Resources: []string{"r"}, AgentID: "agent", SessionID: "session", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := strings.Repeat("2", 32)
+	deadline := time.Now().Add(time.Hour).UTC()
+	started, err := svc.BeginOperation(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: grant.Revision}, lease.OperationIntent{OperationID: targetID, Kind: "exec", Request: map[string]any{"argv": []any{"sleep", "5"}}, TTL: time.Minute, RequestNotAfter: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlePath := filepath.Join(home, "handles", "same-claim.json")
+	h := handle.Handle{SchemaVersion: 1, AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: grant.Revision, Resources: []string{"r"}, ExpiresAt: grant.ExpiresAt, AgentID: "agent", SessionID: "session", LocalReplaceAllowed: true, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: targetID, Kind: "exec", AuthorityID: st.AuthorityID(), ClaimID: claimID, RequestHash: started.RequestHash, RequestNotAfter: deadline, Inputs: map[string]any{"argv": []any{"sleep", "5"}}}}
+	if err := handle.Write(handlePath, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileID := strings.Repeat("3", 32)
+	reconcile := func(expected, evidence string) error {
+		var out bytes.Buffer
+		args := []string{"worklease", "op", "reconcile", "--json", "--home", home, "--handle", handlePath, "--operation-id", reconcileID, "--request-not-after", deadline.Format(time.RFC3339Nano), "--ttl", "1m", "--target-claim-id", claimID, "--target-operation-id", targetID, "--outcome", "observed-failure", "--evidence", evidence, "--expected-request-sha256", expected}
+		return Run(ctx, args, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+	}
+	if err := reconcile(strings.Repeat("f", 64), `{"outcome":"observed-failure","executorStopped":true}`); err == nil {
+		t.Fatal("wrong request hash succeeded")
+	}
+	// Simulate a reconciliation commit followed by a crash before the pending
+	// handle is updated, then a concurrent valid renewal before exact recovery.
+	st, err = store.Open(ctx, home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	reconciled, err := svc.ReconcileAtCurrentRevision(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: grant.Revision}, lease.ReconcileRequest{OperationID: reconcileID, TargetClaimID: claimID, TargetOperationID: targetID, ExpectedRequestSHA256: started.RequestHash, Outcome: "observed-failure", Evidence: json.RawMessage(`{"outcome":"observed-failure","executorStopped":true}`), TTL: time.Minute, RequestNotAfter: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := svc.Heartbeat(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: reconciled.Revision}, lease.Renew{OperationID: strings.Repeat("4", 32), TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(started.RequestHash, `{"outcome":"observed-failure","executorStopped":true}`); err != nil {
+		t.Fatal(err)
+	}
+	after, err := handle.Read(handlePath)
+	if err != nil || after.State != "ready" || after.PendingRequest != nil || after.RecoveryRequest != nil || after.Revision != renewed.Revision {
+		t.Fatalf("reconciled handle=%+v err=%v", after, err)
+	}
+	for _, args := range [][]string{
+		{"worklease", "heartbeat", "--json", "--home", home, "--handle", handlePath},
+		{"worklease", "checkpoint", "--json", "--home", home, "--handle", handlePath, "--data", `{"phase":"recovered"}`},
+		{"worklease", "exec", "--json", "--home", home, "--handle", handlePath, "--", "true"},
+	} {
+		if err := Run(ctx, args, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	if err := reconcile(started.RequestHash, `{"outcome":"observed-failure","executorStopped":true,"changed":true}`); err == nil {
+		t.Fatal("changed evidence replay succeeded")
+	}
+
+	// A committed replay cannot make an ended claim ready, but it must remain
+	// classified as committed and retain the exact recovery request.
+	after, err = handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(ctx, home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	if _, err := svc.Release(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: after.Revision}, lease.ReleaseRequest{OperationID: strings.Repeat("5", 32), Reason: "ended before replay", RequestNotAfter: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after.State = "pending"
+	after.PendingRequest = h.PendingRequest
+	after.RecoveryRequest = nil
+	if err := handle.Write(handlePath, after); err != nil {
+		t.Fatal(err)
+	}
+	var replayOut bytes.Buffer
+	replayArgs := []string{"worklease", "op", "reconcile", "--json", "--home", home, "--handle", handlePath, "--operation-id", reconcileID, "--request-not-after", deadline.Format(time.RFC3339Nano), "--ttl", "1m", "--target-claim-id", claimID, "--target-operation-id", targetID, "--outcome", "observed-failure", "--evidence", `{"outcome":"observed-failure","executorStopped":true}`, "--expected-request-sha256", started.RequestHash}
+	if err := Run(ctx, replayArgs, "dev", "unknown", "unknown", &replayOut, &bytes.Buffer{}); err == nil || !strings.Contains(replayOut.String(), `"commitState":"committed"`) {
+		t.Fatalf("ended replay out=%s err=%v", replayOut.String(), err)
+	}
+	after, err = handle.Read(handlePath)
+	if err != nil || after.State != "pending" || after.PendingRequest == nil || after.RecoveryRequest == nil {
+		t.Fatalf("ended replay handle=%+v err=%v", after, err)
+	}
+}
+
 func TestLedgerCLIJSONAndPendingHandleReconciliationRecovery(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
