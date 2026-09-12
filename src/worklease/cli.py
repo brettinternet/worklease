@@ -136,6 +136,7 @@ _COMMANDS = frozenset(
         "bundle-acquire",
         "status",
         "history",
+        "events",
         "status-bundle",
         "bundle-status",
         "inspect-bundle",
@@ -251,6 +252,7 @@ _TOP_LEVEL_EPILOG = f"""\
                         release every member of an active bundle
   {_help_heading("Inspection and reconciliation:")}
     {_help_command("history")}             show retained local resource history
+    {_help_command("events")}              show a paginated cross-resource event feed
     {_help_command("inspect-operation")}   inspect one operation outcome
     {_help_command("reconcile-operation")}
                         record an observed operation outcome
@@ -301,6 +303,7 @@ _STATUS_BUNDLE_EPILOG = _single_line_epilog(
 )
 _STATUS_EPILOG = _single_line_epilog("worklease status --resource local:formatter")
 _HISTORY_EPILOG = _single_line_epilog("worklease history --resource local:formatter")
+_EVENTS_EPILOG = _single_line_epilog("worklease events --limit 100")
 _INSPECT_OPERATION_EPILOG = _single_line_epilog(
     "worklease inspect-operation --resource local:formatter "
     "--operation-id test-TASK-42-001"
@@ -969,6 +972,24 @@ def _parser() -> _ArgumentParser:
         "--resource",
         required=True,
         help="exact opaque resource identity (from `worklease key` or a stable local name)",
+    )
+
+    events_parser = commands.add_parser(
+        "events",
+        help="show a paginated cross-resource event feed",
+        epilog=_EVENTS_EPILOG,
+    )
+    _add_output_arguments(events_parser)
+    events_parser.add_argument(
+        "--limit",
+        default="100",
+        help="number of events per page (1 through 1000; default: 100)",
+    )
+    events_parser.add_argument(
+        "--cursor", default=None, help="opaque cursor returned by a previous page"
+    )
+    events_parser.add_argument(
+        "--full", action="store_true", help="show complete resources and identifiers"
     )
 
     inspect_operation_parser = commands.add_parser(
@@ -2107,6 +2128,75 @@ def _render_history(payload: dict[str, object]) -> None:
             print("CURRENT_CLAIM\t<none>")
 
 
+def _render_events(payload: dict[str, object], *, full: bool = False) -> None:
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    print(f"EVENTS\t{len(events)}")
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        print("EVENT")
+        for field in (
+            "source",
+            "at",
+            "resource",
+            "resources",
+            "kind",
+            "claimId",
+            "operationId",
+            "agentId",
+            "sessionId",
+            "ownerId",
+            "workKey",
+            "acquiredAt",
+            "acquisitionRevision",
+            "state",
+            "expectedRevision",
+            "createdAt",
+            "targetClaimId",
+            "targetOperationId",
+            "reconciliationOperationId",
+            "outcome",
+            "reconciledAt",
+            "reason",
+            "effectiveAt",
+            "recordedAt",
+            "finalRevision",
+            "heartbeatAt",
+            "expiresAt",
+            "checkpointPresent",
+            "successorClaimId",
+        ):
+            if field not in event:
+                continue
+            value = event[field]
+            if not full and field in {"resource", "resources"}:
+                rendered_resource = (
+                    _text_value(value) if field == "resources" else _text_atom(value)
+                )
+                value = _summarize_resource(rendered_resource, _LIST_RESOURCE_WIDTH)
+            elif not full and field in {
+                "claimId",
+                "operationId",
+                "targetClaimId",
+                "targetOperationId",
+                "reconciliationOperationId",
+            }:
+                value = _shorten_text(_text_atom(value), 20)
+            print(f"{_text_label(field)}\t{_text_value(value)}")
+    if payload.get("hasMore"):
+        next_cursor = payload.get("nextCursor")
+        if isinstance(next_cursor, str):
+            print(f"NEXT_CURSOR\t{next_cursor}")
+            print(f"HINT\tworklease events --cursor {next_cursor}")
+
+
 def _render_inspect_operation(payload: dict[str, object]) -> None:
     if not payload.get("ok"):
         _text_header(payload)
@@ -2264,6 +2354,7 @@ _TEXT_RENDERERS = {
     "inspect-bundle": _render_status,
     "status-verbose": _render_status_verbose,
     "history": _render_history,
+    "events": _render_events,
     "inspect-operation": _render_inspect_operation,
     "inspect-operation-bundle": _render_inspect_operation,
     "gc": _render_gc,
@@ -2296,6 +2387,8 @@ def _emit(
             _render_list(payload, full=full)
         elif operation == "policy-list":
             _render_policy_list(payload, full=full)
+        elif operation == "events":
+            _render_events(payload, full=full)
         else:
             renderer = _TEXT_RENDERERS.get(operation, _render_generic)
             renderer(payload)
@@ -2832,6 +2925,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 64
 
     try:
+        if args.operation == "events":
+            try:
+                args.limit = int(args.limit)
+            except (TypeError, ValueError) as error:
+                raise LeaseError(
+                    "invalid-limit", code=64, minimumInclusive=1, maximumInclusive=1000
+                ) from error
+            if not 1 <= args.limit <= 1000:
+                raise LeaseError(
+                    "invalid-limit", code=64, minimumInclusive=1, maximumInclusive=1000
+                )
         _resolve_lease_file(args)
         _apply_lifecycle_defaults(args)
         _validate_claim_arguments(args)

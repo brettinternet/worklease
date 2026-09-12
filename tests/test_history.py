@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -156,6 +157,44 @@ class HistoryProjectionTests(unittest.TestCase):
                     expected_revision,
                     json.dumps(receipt or {}, sort_keys=True, separators=(",", ":")),
                     created_at,
+                ),
+            )
+
+    def _insert_reconciliation(
+        self,
+        resource: str,
+        claim_id: str,
+        operation_id: str,
+        *,
+        reconciled_at: float,
+    ) -> None:
+        self._ensure_database()
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db, db:
+            db.execute(
+                """
+                INSERT INTO reconciliations(
+                    resource, operation_id, kind, claim_id, target_claim_id,
+                    outcome, evidence, resolver_agent_id, resolver_session_id,
+                    resolver_owner_id, resolver_work_key, request_sha256,
+                    reconciliation_operation_id, reconciled_at, receipt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resource,
+                    operation_id,
+                    "exec",
+                    claim_id,
+                    "target-claim",
+                    "completed",
+                    "{}",
+                    "agent",
+                    "session",
+                    "owner",
+                    "work",
+                    "0" * 64,
+                    f"reconcile-{operation_id}",
+                    reconciled_at,
+                    "{}",
                 ),
             )
 
@@ -595,9 +634,13 @@ class HistoryProjectionTests(unittest.TestCase):
 
         with patch("worklease.projections.connect_readonly", guarded_connect):
             history = self.store.history("guarded")
+            events = self.store.events()
         self.assertEqual("guarded-claim", history["epochs"][0]["claimId"])
         self.assertEqual(
             "guarded-op", history["epochs"][0]["operations"][0]["operationId"]
+        )
+        self.assertTrue(
+            any(event.get("operationId") == "guarded-op" for event in events["events"])
         )
 
     def test_history_provenance_completeness_and_coverage_metadata(self) -> None:
@@ -799,6 +842,181 @@ class HistoryProjectionTests(unittest.TestCase):
             invalid_database.stdout.startswith("ERROR history: storage-failure\n")
         )
         self.assertIn("check --home, WORKLEASE_HOME", invalid_database.stdout)
+
+    def test_events_feed_is_redacted_paginated_and_has_timestamp_indexes(self) -> None:
+        self.assertEqual(
+            {
+                "ok": True,
+                "operation": "events",
+                "events": [],
+                "hasMore": False,
+                "nextCursor": None,
+            },
+            self.store.events(),
+        )
+        self.assertFalse(self.home.exists())
+        self.assertEqual([], self.store.events(limit=1000)["events"])
+        singleton = self._acquire("event-singleton", "event-singleton-claim")
+        self.store.release(
+            self._mutation("event-singleton", singleton, "event-release"), "done"
+        )
+        self._insert_operation(
+            "event-singleton",
+            "event-singleton-claim",
+            "event-operation",
+            "heartbeat",
+            "completed",
+            1,
+            1001,
+        )
+        self._insert_reconciliation(
+            "event-singleton",
+            "event-singleton-claim",
+            "event-operation",
+            reconciled_at=1002,
+        )
+        bundle = self.store.acquire_bundle(
+            BundleAcquireRequest(
+                resources=("event-a", "event-b"),
+                claim_id="event-bundle-claim",
+                agent_id="agent",
+                session_id="session",
+                owner_id="owner",
+                work_key="work",
+            )
+        )
+        bundle_claim = bundle["claim"]
+        assert isinstance(bundle_claim, dict)
+        page = self.store.events(limit=1)
+        rows = list(page["events"])
+        while page["hasMore"]:
+            page = self.store.events(limit=2, cursor=page["nextCursor"])
+            rows.extend(page["events"])
+        self.assertEqual(
+            {"epoch", "operation", "reconciliation", "termination"},
+            {row["source"] for row in rows},
+        )
+        self.assertTrue(
+            any(row.get("resources") == ["event-a", "event-b"] for row in rows)
+        )
+        self.assertTrue(all("token" not in row for row in rows))
+        with closing(sqlite3.connect(self.home / "leases.sqlite3")) as db:
+            indexes = {row[1] for row in db.execute("PRAGMA index_list(epochs)")}
+            bundle_indexes = {
+                row[1] for row in db.execute("PRAGMA index_list(bundle_epochs)")
+            }
+        self.assertIn("epochs_by_acquired_at", indexes)
+        self.assertIn("bundle_epochs_by_acquired_at", bundle_indexes)
+
+    def test_events_cursor_preserves_ties_and_concurrent_insert_semantics(self) -> None:
+        for operation_id in ("op-a", "op-b", "op-c"):
+            self._insert_operation(
+                "tied", "claim", operation_id, "exec", "completed", 1, 1000
+            )
+        self._insert_epoch("json-resource", '["a","b"]', 900, 1)
+
+        page = self.store.events(limit=1)
+        rows = list(page["events"])
+        self._insert_operation(
+            "newer", "newer-claim", "op-new", "exec", "completed", 1, 2000
+        )
+        self._insert_operation(
+            "older", "older-claim", "op-old", "exec", "completed", 1, 800
+        )
+        while page["hasMore"]:
+            page = self.store.events(limit=2, cursor=page["nextCursor"])
+            rows.extend(page["events"])
+
+        operation_ids = [
+            row["operationId"] for row in rows if row["source"] == "operation"
+        ]
+        self.assertEqual(["op-a", "op-b", "op-c", "op-old"], operation_ids)
+        self.assertNotIn("op-new", operation_ids)
+        self.assertEqual(len(operation_ids), len(set(operation_ids)))
+        self.assertTrue(
+            all("claimId" in row for row in rows if row["source"] == "operation")
+        )
+        json_resource = next(
+            row for row in rows if row.get("claimId") == "json-resource"
+        )
+        self.assertEqual('["a","b"]', json_resource["resource"])
+        self.assertNotIn("resources", json_resource)
+
+    def test_events_cli_limits_and_copyable_text_cursor(self) -> None:
+        for index in range(3):
+            self._insert_epoch(f"text-{index}", f"resource-{index}", float(index), 1)
+        environment = {**os.environ, "WORKLEASE_HOME": str(self.home)}
+
+        def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, "-m", "worklease.cli", *arguments],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        page = run("events", "--limit", "1")
+        self.assertEqual(0, page.returncode, page.stderr)
+        self.assertNotIn("\\\\t", page.stdout)
+        hint = next(
+            line for line in page.stdout.splitlines() if line.startswith("HINT\t")
+        )
+        continuation = hint.removeprefix("HINT\t").split()
+        self.assertEqual(["worklease", "events", "--cursor"], continuation[:3])
+        continued = run(*continuation[1:])
+        self.assertEqual(0, continued.returncode, continued.stderr)
+
+        invalid_home = Path(self.temporary.name) / "invalid-events-state"
+        invalid_home.mkdir()
+        invalid_home.joinpath("leases.sqlite3").mkdir()
+        invalid_environment = {**environment, "WORKLEASE_HOME": str(invalid_home)}
+        for value in ("0", "-1", "1001", "not-an-integer"):
+            invalid = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "worklease.cli",
+                    "--json",
+                    "events",
+                    "--limit",
+                    value,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=invalid_environment,
+            )
+            self.assertEqual(64, invalid.returncode)
+            self.assertEqual("invalid-limit", json.loads(invalid.stdout)["error"])
+
+    def test_events_rejects_symlinked_state(self) -> None:
+        self.home.mkdir()
+        target = Path(self.temporary.name) / "events-target.sqlite3"
+        target.touch()
+        self.home.joinpath("leases.sqlite3").symlink_to(target)
+        with self.assertRaisesRegex(Exception, "state-file-is-symlink"):
+            self.store.events()
+
+    def test_events_rejects_invalid_cursor_without_opening_database(self) -> None:
+        invalid_cursors = ["not-a-cursor"]
+        for version in (True, 1.0, 2):
+            payload = json.dumps(
+                {"v": version, "key": [1, "epoch", "r", "c", "", "singleton"]},
+                separators=(",", ":"),
+            ).encode()
+            invalid_cursors.append(
+                base64.urlsafe_b64encode(payload).decode().rstrip("=")
+            )
+        for cursor in invalid_cursors:
+            with (
+                self.subTest(cursor=cursor),
+                patch(
+                    "worklease.projections.connect_readonly", side_effect=AssertionError
+                ),
+                self.assertRaisesRegex(Exception, "invalid-cursor"),
+            ):
+                self.store.events(cursor=cursor)
 
 
 if __name__ == "__main__":

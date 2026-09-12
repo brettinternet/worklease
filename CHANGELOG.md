@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added `worklease events`, a redacted, paginated cross-resource feed of retained lifecycle records with stable keyset cursors.
+
 ### Changed
 
 - Default `policy list` text now shows a compact five-column summary; `--full` preserves package provenance and policy contract versions.

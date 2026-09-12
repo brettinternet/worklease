@@ -86,6 +86,18 @@ distribution includes those schemas and `worklease/py.typed`.
 
 ## Local history, retention, and archival
 
+`worklease events` is a read-only, newest-first projection of retained lifecycle rows
+across all resources. It includes one redacted record for each retained epoch (including
+bundle epochs), operation, reconciliation, and termination row. Use `--limit 1..1000`
+(default 100) and follow the opaque `--cursor`/`nextCursor` keyset chain; the cursor is
+not tied to the page size. Ordering is by descending `at`, then source order
+`termination`, `reconciliation`, `operation`, `epoch`, then normalized resource key,
+claim ID, operation ID, and kind. `--full` preserves complete resources and identifiers
+in text output. The feed is retention-bounded: rows collected by `gc --apply` between
+pages disappear, and there is no cross-invocation snapshot. Newer rows recorded after a
+page are excluded from its continuation; explicitly backdated rows older than the cursor
+may appear.
+
 `history --resource R` is a read-only projection of the retained local epochs
 for exactly `R`. It includes singleton epochs and bundle epochs containing `R`,
 plus safe operation and reconciliation summaries. Each acquisition epoch has
@@ -100,8 +112,8 @@ stored termination is present; `open` means a matching current claim snapshot
 is present and no termination is stored; `legacy-incomplete` means the
 acquisition revision is null or neither ending source is retained. `open`
 describes retained epoch closure, not current-clock activity, so a past stored
-expiry does not make the epoch active or complete. The command does not provide
-all-resource output, provider lookups, pagination, or time filters.
+expiry does not make the epoch active or complete. The command does not provide provider lookups or time filters. Use `events` for
+all-resource output and keyset pagination.
 
 The `COVERAGE` block reports nullable `EARLIEST_RETAINED_ACQUISITION_REVISION`,
 nullable `RESOURCE_REVISION_WATERMARK`, and `LEGACY_INCOMPLETE_COUNT`. The
@@ -252,6 +264,7 @@ example or valid values. Hints never echo rejected argument values.
 | `policy describe` | One `FIELD: value` line per policy field |
 | `list` | Fixed-width summary columns `STATE`, `RESOURCE`, `LEASE`, then rows; `--full` adds lifecycle identifiers and absolute expiry |
 | `history` | `OK history`, `RESOURCE`, a `COVERAGE` block, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
+| `events` | `OK events`, `EVENTS`, retained `EVENT` blocks, and `NEXT_CURSOR` plus a continuation `HINT` only when another page exists |
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, one compact `RESOURCE` or ordered `RESOURCES` value, `STATE`, then `AGENT_ID`, `WORK_KEY`, relative `LEASE`, and `REVISION` for a claim |
 | Status commands with `--verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |

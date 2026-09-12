@@ -205,6 +205,8 @@ def dispatch_store(
         )
     if operation == "history":
         return store.history(args.resource), 0
+    if operation == "events":
+        return store.events(limit=args.limit, cursor=args.cursor), 0
     if operation == "inspect-operation":
         return store.inspect_operation(args.resource, args.operation_id), 0
     if operation == "inspect-operation-bundle":

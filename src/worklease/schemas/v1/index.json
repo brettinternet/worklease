@@ -4,7 +4,7 @@
   "title": "Worklease schema version 1",
   "description": "Published response schemas for the worklease Python, CLI, and optional MCP compatibility surfaces.",
   "type": "object",
-  "required": ["version", "common", "cli", "mcp", "commands", "leaseFile", "history"],
+  "required": ["version", "common", "cli", "mcp", "commands", "leaseFile", "history", "events"],
   "properties": {
     "version": {"const": 1},
     "common": {"const": "common.json"},
@@ -12,6 +12,7 @@
     "mcp": {"const": "mcp.json"},
     "leaseFile": {"const": "lease-file.json"},
     "history": {"const": "history.json"},
+    "events": {"const": "events.json"},
     "commands": {
       "type": "array",
       "items": {
@@ -19,7 +20,7 @@
         "enum": [
           "parse", "version", "instructions", "key", "policy-list", "policy-describe",
           "acquire", "bundle-acquire", "acquire-bundle",
-          "status", "status-verbose", "history", "bundle-status", "inspect-bundle", "status-bundle",
+          "status", "status-verbose", "history", "events", "bundle-status", "inspect-bundle", "status-bundle",
           "inspect-operation", "inspect-operation-bundle",
           "reconcile-operation", "reconcile-operation-bundle", "list", "heartbeat",
           "checkpoint", "transfer", "release", "bundle-heartbeat", "heartbeat-bundle",

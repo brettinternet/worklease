@@ -1,10 +1,11 @@
 ---
 id: TASK-69
 title: Add a paginated cross-resource events command
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi-01a0936c'
 created_date: '2026-09-12 02:01'
-updated_date: '2026-09-12 02:16'
+updated_date: '2026-09-12 03:05'
 labels:
   - cli
   - ux
@@ -20,6 +21,23 @@ references:
   - scripts/release_docs.py
   - docs/cli-reference.md
   - docs/claim-model.md
+  - tests/test_history.py
+  - tests/test_schemas.py
+modified_files:
+  - CHANGELOG.md
+  - README.md
+  - docs/claim-model.md
+  - docs/cli-reference.md
+  - scripts/release_artifacts.py
+  - scripts/release_docs.py
+  - src/worklease/cli.py
+  - src/worklease/cli_dispatch.py
+  - src/worklease/projections.py
+  - src/worklease/schemas/v1/commands.json
+  - src/worklease/schemas/v1/events.json
+  - src/worklease/schemas/v1/index.json
+  - src/worklease/sqlite.py
+  - tests/test_cli.py
   - tests/test_history.py
   - tests/test_schemas.py
 priority: medium
@@ -50,14 +68,37 @@ Filtering, time windows, any change to `history`, live tailing, exposing current
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease events` succeeds on an empty ledger (zero records, `hasMore` false, `nextCursor` null) and on a populated ledger returns one record per retained epoch, bundle epoch, operation, reconciliation, and termination row; each record carries `source`, `at`, `resource` or ordered `resources`, and the allowlisted identity fields for its source, and never a token, request, receipt, evidence, or checkpoint body.
-- [ ] #2 Records are newest-first by the total order in the description; records with identical timestamps follow the documented tie-breakers, and JSON output is byte-identical across repeated reads of unchanged state.
-- [ ] #3 `--limit` defaults to 100, accepts 1 through 1000, and rejects 0, negatives, non-integers, and values above 1000 with exit 64 through the standard error envelope without opening the state database.
-- [ ] #4 When more records exist, JSON has `hasMore: true` and a string `nextCursor`, and text prints `NEXT_CURSOR` plus a `HINT` with the copyable continuation command; when none remain, `hasMore` is false, `nextCursor` is null, and text prints neither.
-- [ ] #5 Following the cursor chain to exhaustion returns every row that remains present throughout the traversal exactly once, including when `--limit` changes between pages. Rows inserted after page one follow their sort key: newer head rows are excluded from the continued chain, while an explicitly backdated row older than the cursor may appear; rows collected between pages may disappear.
-- [ ] #6 Malformed, truncated, wrong-version, or structurally invalid cursors fail `invalid-cursor` (exit 64) before the store is opened; a valid cursor with modified but well-typed sort-key values is treated as a caller-supplied position, and a cursor past every remaining record returns an empty page with `hasMore` false.
-- [ ] #7 `events` is read-only: it uses the read-only connection, refuses symlinked state files with `state-file-is-symlink`, returns the empty result when no database exists, creates no files, and its queries never touch secret-bearing columns (verified the same way as the existing history secret-column test).
-- [ ] #8 `history --resource R` text and JSON output are byte-for-byte unchanged, `history` still requires `--resource`, and `events` rejects `--resource` as an unrecognized argument.
-- [ ] #9 `events.json` validates success and error payloads, `commands.json` and `index.json` list `events`, `scripts/release_docs.py` renders with `events` in the inspection group, `docs/cli-reference.md` and `docs/claim-model.md` document the command, ordering, cursor semantics, consistency caveats, and retention gaps, README has one example, and CHANGELOG `Unreleased` has an Added entry.
-- [ ] #10 Tests cover empty and multi-resource ledgers, singleton and bundle records, every source, timestamp ties, default, minimum, maximum, and invalid limits, multi-page traversal, newer and explicitly backdated writes between pages, a changed page size mid-traversal, exhausted and invalid cursors, redaction, read-only behavior, the new indexes, and `history` compatibility; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
+- [x] #1 `worklease events` succeeds on an empty ledger (zero records, `hasMore` false, `nextCursor` null) and on a populated ledger returns one record per retained epoch, bundle epoch, operation, reconciliation, and termination row; each record carries `source`, `at`, `resource` or ordered `resources`, and the allowlisted identity fields for its source, and never a token, request, receipt, evidence, or checkpoint body.
+- [x] #2 Records are newest-first by the total order in the description; records with identical timestamps follow the documented tie-breakers, and JSON output is byte-identical across repeated reads of unchanged state.
+- [x] #3 `--limit` defaults to 100, accepts 1 through 1000, and rejects 0, negatives, non-integers, and values above 1000 with exit 64 through the standard error envelope without opening the state database.
+- [x] #4 When more records exist, JSON has `hasMore: true` and a string `nextCursor`, and text prints `NEXT_CURSOR` plus a `HINT` with the copyable continuation command; when none remain, `hasMore` is false, `nextCursor` is null, and text prints neither.
+- [x] #5 Following the cursor chain to exhaustion returns every row that remains present throughout the traversal exactly once, including when `--limit` changes between pages. Rows inserted after page one follow their sort key: newer head rows are excluded from the continued chain, while an explicitly backdated row older than the cursor may appear; rows collected between pages may disappear.
+- [x] #6 Malformed, truncated, wrong-version, or structurally invalid cursors fail `invalid-cursor` (exit 64) before the store is opened; a valid cursor with modified but well-typed sort-key values is treated as a caller-supplied position, and a cursor past every remaining record returns an empty page with `hasMore` false.
+- [x] #7 `events` is read-only: it uses the read-only connection, refuses symlinked state files with `state-file-is-symlink`, returns the empty result when no database exists, creates no files, and its queries never touch secret-bearing columns (verified the same way as the existing history secret-column test).
+- [x] #8 `history --resource R` text and JSON output are byte-for-byte unchanged, `history` still requires `--resource`, and `events` rejects `--resource` as an unrecognized argument.
+- [x] #9 `events.json` validates success and error payloads, `commands.json` and `index.json` list `events`, `scripts/release_docs.py` renders with `events` in the inspection group, `docs/cli-reference.md` and `docs/claim-model.md` document the command, ordering, cursor semantics, consistency caveats, and retention gaps, README has one example, and CHANGELOG `Unreleased` has an Added entry.
+- [x] #10 Tests cover empty and multi-resource ledgers, singleton and bundle records, every source, timestamp ties, default, minimum, maximum, and invalid limits, multi-page traversal, newer and explicitly backdated writes between pages, a changed page size mid-traversal, exhausted and invalid cursors, redaction, read-only behavior, the new indexes, and `history` compatibility; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add the public events projection with stable source allowlists, total-order keyset cursor encoding, read-only database access, and timestamp indexes.
+2. Wire CLI parsing, dispatch, compact/full rendering, schemas, and release-doc generation without changing history.
+3. Add focused projection, pagination, validation, redaction, read-only, compatibility, and schema tests.
+4. Update README, references, and changelog, then run repository quality gates and review the integrated diff.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented the events feed with per-source bounded keyset queries and an internal total-order cursor key. Independent review found cursor tie, operation schema, text hint, version validation, JSON-looking singleton, bounded-query, coverage, and documentation defects; all were corrected and covered by focused tests.
+
+Validation: mise run lint; mise run format-check; mise run test (308 tests); mise run typecheck. All passed. One initial full-suite run had a timing-only MCP heartbeat failure (0.170s vs 0.150s); the isolated test and the subsequent full suite passed unchanged.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added the read-only `worklease events` command with deterministic cross-resource ordering, bounded keyset pagination, redacted schemas, compact/full text output, additive indexes, release-doc integration, and user documentation. Verified empty/populated ledgers, every event source, tied cursors, changed page sizes, concurrent newer/backdated rows, invalid limits/cursors before database access, symlink/no-file behavior, secret-column redaction, schema validation, and history compatibility; all repository quality gates pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

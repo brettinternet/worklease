@@ -25,6 +25,7 @@ READ_ONLY = {
     "status",
     "status-verbose",
     "history",
+    "events",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -48,6 +49,7 @@ RELEASED_OPERATIONS = {
     "status",
     "status-verbose",
     "history",
+    "events",
     "bundle-status",
     "inspect-bundle",
     "status-bundle",
@@ -89,6 +91,18 @@ class SchemaContractTests(unittest.TestCase):
             schema_root.joinpath("lease-file.json").read_text()
         )
         self.history = json.loads(schema_root.joinpath("history.json").read_text())
+        self.events = json.loads(schema_root.joinpath("events.json").read_text())
+        self.events_validator = Draft202012Validator(
+            self.events,
+            resolver=RefResolver(
+                "https://worklease.dev/schemas/v1/events.json",
+                self.events,
+                store={
+                    "https://worklease.dev/schemas/v1/commands.json": self.commands,
+                    "https://worklease.dev/schemas/v1/common.json": self.common,
+                },
+            ),
+        )
         self.history_validator = Draft202012Validator(
             self.history,
             resolver=RefResolver(
@@ -166,6 +180,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual("history.json", self.index["properties"]["history"]["const"])
         Draft202012Validator.check_schema(self.lease_file)
         Draft202012Validator.check_schema(self.history)
+        Draft202012Validator.check_schema(self.events)
         commands = self.index["properties"]["commands"]["items"]["enum"]
         self.assertEqual(RELEASED_OPERATIONS, set(commands))
         for path in files("worklease").joinpath("schemas", "v1").iterdir():
@@ -304,6 +319,27 @@ class SchemaContractTests(unittest.TestCase):
         self.assert_matches_commands_schema(verbose)
         self.assertEqual("status-verbose", verbose["operation"])
         self.assertNotIn(token, json.dumps(verbose))
+
+        heartbeat = self.run_cli(
+            "heartbeat",
+            "--resource",
+            "schema:resource",
+            "--claim-id",
+            "schema-claim",
+            "--revision",
+            "1",
+            "--token",
+            token,
+            "--operation-id",
+            "schema-heartbeat",
+        )
+        self.assert_matches_commands_schema(heartbeat)
+        events = self.run_cli("events", "--limit", "1")
+        self.assert_matches_commands_schema(events)
+        self.assertEqual([], list(self.events_validator.iter_errors(events)))
+        self.assertIn("hasMore", events)
+        self.assertIn("nextCursor", events)
+        self.assertNotIn(token, json.dumps(events))
 
         history = self.run_cli("history", "--resource", "schema:resource")
         self.assert_matches_commands_schema(history)

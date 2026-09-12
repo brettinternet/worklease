@@ -190,6 +190,12 @@ worklease key \
 
 The resulting resource is suitable for `acquire`, `status`, `exec`, and related commands.
 
+Inspect recent retained activity across resources with a bounded, copyable feed:
+
+```bash
+worklease events --limit 25 --json
+```
+
 ## Bundles
 
 Use a bundle when one operation needs several resources together. Bundles contain 1 to 32 ordered resources and acquire them atomically, all or nothing.

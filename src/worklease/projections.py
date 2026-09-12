@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import math
+import re
 import sqlite3
 from contextlib import closing
 from typing import Any
@@ -16,6 +19,84 @@ from .models import (
     require_resource,
 )
 from .sqlite import connect_readonly, transaction
+
+_EVENT_CURSOR_VERSION = 1
+_EVENT_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
+_EVENT_SOURCE_ORDER = {
+    "termination": 0,
+    "reconciliation": 1,
+    "operation": 2,
+    "epoch": 3,
+}
+
+
+def _event_cursor_key(event: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the internal descending-feed key for one public event."""
+
+    return (
+        -float(event["_at_number"]),
+        _EVENT_SOURCE_ORDER[str(event["source"])],
+        str(event["_resource_key"]),
+        str(event["_claim_id"]),
+        str(event["_operation_id"]),
+        str(event["_kind"]),
+    )
+
+
+def _encode_event_cursor(key: tuple[Any, ...]) -> str:
+    source = next(name for name, rank in _EVENT_SOURCE_ORDER.items() if rank == key[1])
+    payload = {
+        "v": _EVENT_CURSOR_VERSION,
+        "key": [key[0] * -1, source, *key[2:]],
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    return base64.urlsafe_b64encode(encoded).decode().rstrip("=")
+
+
+def _decode_event_cursor(cursor: str | None) -> tuple[Any, ...] | None:
+    if cursor is None:
+        return None
+    if (
+        not isinstance(cursor, str)
+        or not cursor
+        or not _EVENT_CURSOR_PATTERN.fullmatch(cursor)
+    ):
+        raise LeaseError("invalid-cursor", code=64)
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        decoded = base64.b64decode(cursor + padding, altchars=b"-_", validate=True)
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError) as error:
+        raise LeaseError("invalid-cursor", code=64) from error
+    if not isinstance(payload, dict) or set(payload) != {"v", "key"}:
+        raise LeaseError("invalid-cursor", code=64)
+    version = payload.get("v")
+    if type(version) is not int or version != _EVENT_CURSOR_VERSION:
+        raise LeaseError("invalid-cursor", code=64)
+    key = payload.get("key")
+    if not isinstance(key, list) or len(key) != 6:
+        raise LeaseError("invalid-cursor", code=64)
+    at, source, resource_key, claim_id, operation_id, kind = key
+    if (
+        isinstance(at, bool)
+        or not isinstance(at, (int, float))
+        or not math.isfinite(float(at))
+        or not isinstance(source, str)
+        or source not in _EVENT_SOURCE_ORDER
+        or not isinstance(resource_key, str)
+        or not isinstance(claim_id, str)
+        or not isinstance(operation_id, str)
+        or not isinstance(kind, str)
+    ):
+        raise LeaseError("invalid-cursor", code=64)
+    return (
+        -float(at),
+        _EVENT_SOURCE_ORDER[source],
+        resource_key,
+        claim_id,
+        operation_id,
+        kind,
+    )
 
 
 class ProjectionMixin:
@@ -783,6 +864,413 @@ class ProjectionMixin:
             "resource": resource,
             "coverage": coverage,
             "epochs": projected_epochs,
+        }
+
+    def events(
+        self: Any, limit: int = 100, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Read the bounded, newest-first feed of retained lifecycle rows."""
+
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 1000
+        ):
+            raise LeaseError(
+                "invalid-limit", code=64, minimumInclusive=1, maximumInclusive=1000
+            )
+        cursor_key = _decode_event_cursor(cursor)
+        database = self.home / "leases.sqlite3"
+        state_files = (
+            database,
+            database.with_name(f"{database.name}-wal"),
+            database.with_name(f"{database.name}-shm"),
+        )
+        if any(path.is_symlink() for path in state_files):
+            raise LeaseError("state-file-is-symlink", code=64)
+        empty = {
+            "ok": True,
+            "operation": "events",
+            "events": [],
+            "hasMore": False,
+            "nextCursor": None,
+        }
+        if not database.exists():
+            return empty
+        if not database.is_file():
+            raise OSError("state database is not a regular file")
+
+        with (
+            closing(connect_readonly(self.home)) as db,
+            transaction(db, immediate=False),
+        ):
+            tables = {
+                str(row["name"])
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            events: list[dict[str, Any]] = []
+
+            def table_columns(table: str) -> set[str]:
+                return {
+                    str(row["name"])
+                    for row in db.execute(f"PRAGMA table_info({table})")
+                }
+
+            def timestamp_number(value: Any) -> float:
+                try:
+                    number = float(value)
+                except TypeError, ValueError, OverflowError:
+                    return 0.0
+                return number if math.isfinite(number) else 0.0
+
+            def cursor_clause(
+                source: str,
+                at_column: str,
+                resource_column: str,
+                claim_column: str,
+                operation_column: str,
+                kind_column: str,
+            ) -> tuple[str, tuple[Any, ...]]:
+                if cursor_key is None:
+                    return "", ()
+                cursor_at = -float(cursor_key[0])
+                source_rank = _EVENT_SOURCE_ORDER[source]
+                cursor_source_rank = int(cursor_key[1])
+                if source_rank < cursor_source_rank:
+                    return f"WHERE {at_column} < ?", (cursor_at,)
+                if source_rank > cursor_source_rank:
+                    return f"WHERE {at_column} <= ?", (cursor_at,)
+                return (
+                    f"WHERE {at_column} < ? OR ({at_column} = ? AND "
+                    f"({resource_column}, {claim_column}, {operation_column}, "
+                    f"{kind_column}) > (?, ?, ?, ?))",
+                    (
+                        cursor_at,
+                        cursor_at,
+                        str(cursor_key[2]),
+                        str(cursor_key[3]),
+                        str(cursor_key[4]),
+                        str(cursor_key[5]),
+                    ),
+                )
+
+            def rows_for(
+                table: str,
+                source: str,
+                columns: str,
+                at_column: str,
+                resource_column: str,
+                claim_column: str,
+                operation_column: str,
+                kind_column: str,
+            ) -> list[sqlite3.Row]:
+                if table not in tables:
+                    return []
+                where, parameters = cursor_clause(
+                    source,
+                    at_column,
+                    resource_column,
+                    claim_column,
+                    operation_column,
+                    kind_column,
+                )
+                return db.execute(
+                    f"""
+                    SELECT {columns}
+                    FROM {table}
+                    {where}
+                    ORDER BY {at_column} DESC, {resource_column}, {claim_column},
+                             {operation_column}, {kind_column}
+                    LIMIT ?
+                    """,
+                    (*parameters, limit + 1),
+                ).fetchall()
+
+            def add_event(
+                source: str,
+                at: Any,
+                fields: dict[str, Any],
+                *,
+                claim_id: str = "",
+                operation_id: str = "",
+                kind: str = "",
+                resource_key: str,
+            ) -> None:
+                at_number = timestamp_number(at)
+                events.append(
+                    {
+                        "source": source,
+                        "at": self._timestamp(at_number),
+                        **fields,
+                        "_at_number": at_number,
+                        "_resource_key": resource_key,
+                        "_claim_id": claim_id,
+                        "_operation_id": operation_id,
+                        "_kind": kind,
+                    }
+                )
+
+            if "epochs" in tables:
+                revision = (
+                    "acquisition_revision"
+                    if "acquisition_revision" in table_columns("epochs")
+                    else "NULL AS acquisition_revision"
+                )
+                for row in rows_for(
+                    "epochs",
+                    "epoch",
+                    "claim_id, resource, agent_id, session_id, owner_id, "
+                    f"work_key, acquired_at, {revision}",
+                    "acquired_at",
+                    "resource",
+                    "claim_id",
+                    "''",
+                    "'singleton'",
+                ):
+                    resource = str(row["resource"])
+                    claim_id = str(row["claim_id"])
+                    add_event(
+                        "epoch",
+                        row["acquired_at"],
+                        {
+                            "resource": resource,
+                            "kind": "singleton",
+                            "claimId": claim_id,
+                            "agentId": str(row["agent_id"]),
+                            "sessionId": str(row["session_id"]),
+                            "ownerId": str(row["owner_id"]),
+                            "workKey": str(row["work_key"]),
+                            "acquiredAt": self._timestamp(
+                                timestamp_number(row["acquired_at"])
+                            ),
+                            "acquisitionRevision": (
+                                int(row["acquisition_revision"])
+                                if row["acquisition_revision"] is not None
+                                else None
+                            ),
+                        },
+                        claim_id=claim_id,
+                        kind="singleton",
+                        resource_key=resource,
+                    )
+
+            if "bundle_epochs" in tables:
+                revision = (
+                    "acquisition_revision"
+                    if "acquisition_revision" in table_columns("bundle_epochs")
+                    else "NULL AS acquisition_revision"
+                )
+                for row in rows_for(
+                    "bundle_epochs",
+                    "epoch",
+                    "claim_id, resources, agent_id, session_id, owner_id, "
+                    f"work_key, acquired_at, {revision}",
+                    "acquired_at",
+                    "resources",
+                    "claim_id",
+                    "''",
+                    "'bundle'",
+                ):
+                    try:
+                        decoded = json.loads(str(row["resources"]))
+                    except TypeError, ValueError:
+                        continue
+                    if not (
+                        isinstance(decoded, list)
+                        and decoded
+                        and all(isinstance(member, str) for member in decoded)
+                    ):
+                        continue
+                    resources = [str(member) for member in decoded]
+                    resource_key = json.dumps(
+                        resources, ensure_ascii=False, separators=(",", ":")
+                    )
+                    claim_id = str(row["claim_id"])
+                    add_event(
+                        "epoch",
+                        row["acquired_at"],
+                        {
+                            "resources": resources,
+                            "kind": "bundle",
+                            "claimId": claim_id,
+                            "agentId": str(row["agent_id"]),
+                            "sessionId": str(row["session_id"]),
+                            "ownerId": str(row["owner_id"]),
+                            "workKey": str(row["work_key"]),
+                            "acquiredAt": self._timestamp(
+                                timestamp_number(row["acquired_at"])
+                            ),
+                            "acquisitionRevision": (
+                                int(row["acquisition_revision"])
+                                if row["acquisition_revision"] is not None
+                                else None
+                            ),
+                        },
+                        claim_id=claim_id,
+                        kind="bundle",
+                        resource_key=resource_key,
+                    )
+
+            for row in rows_for(
+                "operations",
+                "operation",
+                "resource, claim_id, operation_id, kind, state, "
+                "expected_revision, created_at",
+                "created_at",
+                "resource",
+                "claim_id",
+                "operation_id",
+                "kind",
+            ):
+                resource = str(row["resource"])
+                claim_id = str(row["claim_id"])
+                operation_id = str(row["operation_id"])
+                kind = str(row["kind"])
+                add_event(
+                    "operation",
+                    row["created_at"],
+                    {
+                        "resource": resource,
+                        "claimId": claim_id,
+                        "operationId": operation_id,
+                        "kind": kind,
+                        "state": str(row["state"]),
+                        "expectedRevision": int(row["expected_revision"]),
+                        "createdAt": self._timestamp(
+                            timestamp_number(row["created_at"])
+                        ),
+                    },
+                    claim_id=claim_id,
+                    operation_id=operation_id,
+                    kind=kind,
+                    resource_key=resource,
+                )
+
+            if "reconciliations" in tables:
+                target_claim = (
+                    "target_claim_id"
+                    if "target_claim_id" in table_columns("reconciliations")
+                    else "NULL AS target_claim_id"
+                )
+                reconciliation_columns = (
+                    "resource, operation_id, kind, claim_id, "
+                    f"{target_claim}, outcome, reconciliation_operation_id, "
+                    "reconciled_at"
+                )
+            else:
+                reconciliation_columns = ""
+            for row in rows_for(
+                "reconciliations",
+                "reconciliation",
+                reconciliation_columns,
+                "reconciled_at",
+                "resource",
+                "claim_id",
+                "operation_id",
+                "kind",
+            ):
+                resource = str(row["resource"])
+                claim_id = str(row["claim_id"])
+                operation_id = str(row["operation_id"])
+                kind = str(row["kind"])
+                target_claim_id = row["target_claim_id"]
+                add_event(
+                    "reconciliation",
+                    row["reconciled_at"],
+                    {
+                        "resource": resource,
+                        "targetClaimId": (
+                            str(target_claim_id)
+                            if target_claim_id not in (None, "")
+                            else None
+                        ),
+                        "targetOperationId": operation_id,
+                        "reconciliationOperationId": str(
+                            row["reconciliation_operation_id"]
+                        ),
+                        "kind": kind,
+                        "outcome": str(row["outcome"]),
+                        "reconciledAt": self._timestamp(
+                            timestamp_number(row["reconciled_at"])
+                        ),
+                    },
+                    claim_id=claim_id,
+                    operation_id=operation_id,
+                    kind=kind,
+                    resource_key=resource,
+                )
+
+            for row in rows_for(
+                "epoch_terminations",
+                "termination",
+                "resource, claim_id, reason, effective_at, recorded_at, "
+                "final_revision, heartbeat_at, expires_at, "
+                "checkpoint IS NOT NULL AS checkpoint_present, "
+                "successor_claim_id, operation_id",
+                "recorded_at",
+                "resource",
+                "claim_id",
+                "COALESCE(operation_id, '')",
+                "''",
+            ):
+                resource = str(row["resource"])
+                claim_id = str(row["claim_id"])
+                operation_id = (
+                    str(row["operation_id"]) if row["operation_id"] is not None else ""
+                )
+                add_event(
+                    "termination",
+                    row["recorded_at"],
+                    {
+                        "resource": resource,
+                        "reason": str(row["reason"]),
+                        "effectiveAt": self._timestamp(
+                            timestamp_number(row["effective_at"])
+                        ),
+                        "recordedAt": self._timestamp(
+                            timestamp_number(row["recorded_at"])
+                        ),
+                        "finalRevision": int(row["final_revision"]),
+                        "heartbeatAt": self._timestamp(
+                            timestamp_number(row["heartbeat_at"])
+                        ),
+                        "expiresAt": self._timestamp(
+                            timestamp_number(row["expires_at"])
+                        ),
+                        "checkpointPresent": bool(row["checkpoint_present"]),
+                        "successorClaimId": (
+                            str(row["successor_claim_id"])
+                            if row["successor_claim_id"] is not None
+                            else None
+                        ),
+                        "operationId": operation_id or None,
+                    },
+                    claim_id=claim_id,
+                    operation_id=operation_id,
+                    resource_key=resource,
+                )
+
+        events.sort(key=_event_cursor_key)
+        page_events = events[: limit + 1]
+        has_more = len(page_events) > limit
+        page_events = page_events[:limit]
+        page = [
+            {key: value for key, value in event.items() if not key.startswith("_")}
+            for event in page_events
+        ]
+        next_cursor = (
+            _encode_event_cursor(_event_cursor_key(page_events[-1]))
+            if has_more and page_events
+            else None
+        )
+        return {
+            "ok": True,
+            "operation": "events",
+            "events": page,
+            "hasMore": has_more,
+            "nextCursor": next_cursor,
         }
 
     def list_claims(self: Any, resource: str | None = None) -> dict[str, Any]:

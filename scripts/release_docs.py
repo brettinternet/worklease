@@ -30,7 +30,7 @@ _COMMAND_GROUPS = (
     ),
     (
         "Inspection and recovery",
-        "history, inspect-operation, inspect-operation-bundle, reconcile-operation, reconcile-operation-bundle",
+        "history, events, inspect-operation, inspect-operation-bundle, reconcile-operation, reconcile-operation-bundle",
         "Read retained events and resolve an operation whose outcome is unknown. Inspect before reconciling.",
     ),
     (

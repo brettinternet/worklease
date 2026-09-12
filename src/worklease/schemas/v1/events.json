@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worklease.dev/schemas/v1/events.json",
+  "title": "Worklease retained event feed",
+  "description": "A deterministic, redacted, newest-first feed of retained Worklease lifecycle rows across all resources. This is retention-bounded local state, not an audit log or cross-invocation snapshot.",
+  "allOf": [
+    {"$ref": "commands.json"},
+    {
+      "type": "object",
+      "required": ["operation"],
+      "properties": {
+        "operation": {"const": "events"},
+        "events": {"type": "array", "items": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Event"}},
+        "hasMore": {"type": "boolean"},
+        "nextCursor": {"type": ["string", "null"]}
+      },
+      "if": {"properties": {"ok": {"const": true}}, "required": ["ok"]},
+      "then": {"required": ["events", "hasMore", "nextCursor"]},
+      "additionalProperties": true
+    }
+  ],
+  "$defs": {
+    "Timestamp": {"type": ["string", "null"]},
+    "Event": {
+      "type": "object",
+      "required": ["source", "at"],
+      "properties": {
+        "source": {"enum": ["epoch", "operation", "reconciliation", "termination"]},
+        "at": {"type": "string"},
+        "resource": {"type": "string"},
+        "resources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "claimId": {"type": "string", "minLength": 1},
+        "operationId": {"type": ["string", "null"]},
+        "agentId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "ownerId": {"type": "string"},
+        "workKey": {"type": "string"},
+        "acquiredAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "acquisitionRevision": {"type": ["integer", "null"], "minimum": 1},
+        "state": {"type": "string", "minLength": 1},
+        "expectedRevision": {"type": "integer", "minimum": 1},
+        "createdAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "targetClaimId": {"type": ["string", "null"]},
+        "targetOperationId": {"type": "string", "minLength": 1},
+        "reconciliationOperationId": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "minLength": 1},
+        "reconciledAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "reason": {"type": "string", "minLength": 1},
+        "effectiveAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "recordedAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "finalRevision": {"type": "integer", "minimum": 1},
+        "heartbeatAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "expiresAt": {"$ref": "https://worklease.dev/schemas/v1/events.json#/$defs/Timestamp"},
+        "checkpointPresent": {"type": "boolean"},
+        "successorClaimId": {"type": ["string", "null"]}
+      },
+      "oneOf": [
+        {"required": ["resource"], "not": {"required": ["resources"]}},
+        {"required": ["resources"], "not": {"required": ["resource"]}}
+      ],
+      "allOf": [
+        {"if": {"properties": {"source": {"const": "epoch"}}}, "then": {"required": ["kind", "claimId", "agentId", "sessionId", "ownerId", "workKey", "acquiredAt", "acquisitionRevision"]}},
+        {"if": {"properties": {"source": {"const": "operation"}}}, "then": {"required": ["operationId", "kind", "claimId", "state", "expectedRevision", "createdAt"]}},
+        {"if": {"properties": {"source": {"const": "reconciliation"}}}, "then": {"required": ["targetClaimId", "targetOperationId", "reconciliationOperationId", "kind", "outcome", "reconciledAt"]}},
+        {"if": {"properties": {"source": {"const": "termination"}}}, "then": {"required": ["reason", "effectiveAt", "recordedAt", "finalRevision", "heartbeatAt", "expiresAt", "checkpointPresent", "successorClaimId", "operationId"]}}
+      ],
+      "additionalProperties": false
+    }
+  }
+}

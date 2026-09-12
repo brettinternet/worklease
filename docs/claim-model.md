@@ -121,6 +121,7 @@ as `bundle-acquire` accept the same inputs as the displayed command name.
 | `status` | `resource` | No token; read-only output is redacted |
 | `list` | None | Optional resource filter |
 | `history` | `resource` | No token; read-only retained local history for exactly that resource |
+| `events` | None | No token; read-only paginated feed of retained lifecycle rows; `--limit`, opaque `--cursor`, and `--full` are available |
 | `heartbeat` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
 | `checkpoint` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; JSON checkpoint; renewal TTL defaults to 900 seconds |
 | `exec` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; command argv; optional execution-directory selection |
@@ -240,6 +241,14 @@ termination when the database cannot prove those values. History already
 removed by `gc --apply` cannot be reconstructed. Garbage collection retains an
 epoch and its associated rows through the termination's `recorded_at` retention
 window, then deletes the terminal and epoch records atomically.
+
+`events` provides the corresponding cross-resource feed without current claims. It
+orders rows newest-first by timestamp, fixed source precedence (`termination`,
+`reconciliation`, `operation`, `epoch`), normalized resource key, claim ID, operation
+ID, and kind. Its URL-safe cursor is a keyset position, not an offset or snapshot: a
+continued traversal excludes newer writes, may include an explicitly backdated older
+write, and can lose rows collected by `gc --apply`. The feed omits secret-bearing
+request, receipt, evidence, token, checkpoint, and payload bodies.
 
 This data is retention-bounded diagnostics on one local Worklease database. A
 read-only `worklease history --resource R` projection is scoped to the exact
