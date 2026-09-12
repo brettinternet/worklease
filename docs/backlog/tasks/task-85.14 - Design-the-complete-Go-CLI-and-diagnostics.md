@@ -1,10 +1,11 @@
 ---
 id: TASK-85.14
 title: 'Complete the CLI, diagnostics, and agent instructions'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a09679'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 16:36'
 labels:
   - go-rewrite
 milestone: m-0
