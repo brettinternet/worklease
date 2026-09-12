@@ -4,7 +4,7 @@ title: Implement contextual handles and credential sources
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -31,6 +31,8 @@ ordinal: 102000
 Implement private client handles and exclusive credential selection per contract sections 4, 6.2 and 9. Own internal/handle and lifecycle CLI wiring. Independent loops must have stable session-scoped contexts or explicit handles; login agent identity is only metadata.
 
 Persist generated acquire/transfer credentials and exact pending requests before authority dispatch. Use stable cross-process sibling locks and atomic fsync/rename updates, bind authorityId, and preserve recoverable pending state through crashes or failed final writes. Explicit credentials bypass contextual lookup and never mix with handle fields. Read-only inspection/verification does not create files or automatically dispatch pending mutations. No error path prints a token.
+
+Evidence and patterns (the amended contract is normative): `src/worklease/lease_context.py` (context root through git rev-parse with GIT_* stripped), `lease_file.py` (size cap, atomic write, permission checks), `credentials.py` (file and descriptor rules). Tests: all of `tests/test_lease_context.py` and `tests/test_credentials.py`; in `tests/test_cli.py`: test_unwritable_lease_file_fails_before_the_claim_commits, test_late_lease_file_failure_still_returns_the_claim_token (the Go contract never prints tokens; keep the recovery intent only), test_acquire_refuses_to_clobber_a_handle_holding_a_live_claim, test_idempotent_replay_does_not_rewind_the_lease_handle, test_lease_file_singleton_lifecycle_tracks_revision_and_clears, test_lease_file_bundle_and_transfer_handoff, test_non_argv_token_sources_cover_lifecycle_and_prevent_state_changes. Pattern: hum `internal/cli/project_dir_test.go` for working-directory-dependent tests. TASK-67 (Done) shipped the Python version of this idea.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
