@@ -117,5 +117,5 @@ Worklease process, move `leases.sqlite3`, `locks/`, `context-leases/`, and
 until you no longer need rollback or historical inspection.
 
 See [CLI reference](cli-reference.md) for commands and
-[MCP and JSON](mcp.md) for agent orchestration. The Cloudflare design document
-is explicitly deferred.
+[MCP and JSON](mcp.md) for agent orchestration. The remote authority design
+document is explicitly deferred.

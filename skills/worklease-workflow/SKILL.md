@@ -115,6 +115,6 @@ authoritative provider receipt before checkpoint and release. Assignment,
 status, comments, branches, worktrees, local locks, and operation receipts are
 not substitutes for a claim or provider checkpoint.
 
-The local SQLite authority is the only shipped authority. The remote Cloudflare
+The local SQLite authority is the only shipped authority. The remote authority
 proposal is deferred; never silently fall back from a configured remote service
 or describe local coordination as cross-host exclusion.

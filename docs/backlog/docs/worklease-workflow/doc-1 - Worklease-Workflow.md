@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-12 22:13'
+updated_date: '2026-09-12 23:46'
 tags:
   - agent
   - workflow
@@ -78,7 +78,7 @@ branches, worktrees, local locks, and receipts are not substitutes for claims or
 provider checkpoints.
 
 The local authority is the only shipped authority. Handles and event/watch
-cursors bind to its immutable authority ID. The Cloudflare remote-authority
+cursors bind to its immutable authority ID. The remote-authority design
 document is explicitly deferred. Worklease has no HTTP backend or remote
 fallback.
 

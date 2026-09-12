@@ -78,5 +78,5 @@ provider work, perform provider writes, or prove provider-side fencing. A client
 must verify its authoritative provider checkpoint before release.
 
 Native editor guards are optional and separate; see [setup](setup.md). The
-deferred Cloudflare authority document is design evidence, not an available MCP
+deferred remote authority document is design evidence, not an available MCP
 transport.
