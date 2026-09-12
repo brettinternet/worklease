@@ -10,7 +10,7 @@ The CLI is installed through `mise`. Prefer the explicit form below when the com
 backlog <command>
 ```
 
-Before deciding how to handle a request, read the overview:
+For committed, non-trivial work, read the overview before deciding whether to use an existing task or create one:
 
 ```bash
 backlog instructions overview
@@ -83,9 +83,7 @@ The detailed contracts remain in the generated Backlog guide and reusable skills
 
 This project uses Backlog.md for task and project management.
 
-**For every user request in this project, run `backlog instructions overview` before answering or taking action.**
-
-Use the overview to decide whether to search, read, create, or update Backlog tasks.
+For committed, non-trivial work, run `backlog instructions overview` to decide whether to search, read, create, or update Backlog tasks.
 
 Before task lifecycle actions, read the matching detailed guide:
 - `backlog instructions task-creation` before creating or splitting tasks
