@@ -1,25 +1,17 @@
 # Local MCP server
 
-The MCP interface is optional and local-only. Install a tagged release with its
-extra, for example:
+The MCP interface is optional and local-only. The Go `worklease` binary serves
+it over stdio. Preview a Claude Code or Cursor configuration, then apply it
+explicitly:
 
 ```sh
-uv tool install 'worklease[mcp] @ git+https://github.com/brettinternet/worklease@v0.9.0'
+worklease setup mcp --client claude-code --scope project
+worklease setup mcp --client claude-code --scope project --agent claude-code --apply
 ```
 
-A Claude Code configuration can start it over stdio:
-
-```json
-{
-  "mcpServers": {
-    "worklease": {
-      "command": "worklease-mcp",
-      "args": [],
-      "env": {"WORKLEASE_AGENT_ID": "claude-code"}
-    }
-  }
-}
-```
+The generated `mcpServers.worklease` entry uses the absolute running binary and
+`args: ["mcp"]`. See [optional agent setup](setup.md) for user-scope targets,
+removal, native-hook binding, and safety limits.
 
 The server exposes exactly `key`, `acquire`, `status`, `list`, `heartbeat`,
 `checkpoint`, and `release`. It has no HTTP transport and never launches the
@@ -54,8 +46,7 @@ or checkpoints. The filename is the returned reference plus `.lease`.
 The guarantee covers only cooperating callers using the same authority and
 exact resource. Only guarded local operations are fenced; coordination-only
 claims, provider writes, and other external effects are not provider-fenced.
-The PyInstaller/native `worklease` binary remains CLI-only; install the Python
-package with the `mcp` extra to run the server.
+Native edit guards are not installed by MCP setup and remain optional.
 
 ## Recovery matrix
 
