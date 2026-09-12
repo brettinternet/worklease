@@ -55,9 +55,9 @@ in results, errors, logs, checkpoints, or tool schemas.
 ## Renewal, cancellation, and recovery
 
 The server can renew an active claim before half its TTL while a tool call is in
-flight, bounded by the original absolute hold deadline. It continues reading
-stdin so cancellation and EOF are prompt. Restarting does not auto-renew an old
-handle.
+flight. Every MCP heartbeat, automatic or explicit, is capped by the original
+absolute `maxHold` deadline. The server keeps reading stdin so cancellation and
+EOF are prompt. Restarting does not auto-renew an old handle.
 
 Mutations persist exact pending requests before dispatch. A retry replays only
 the identical operation during its bounded window. Changed intent conflicts.

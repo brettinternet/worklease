@@ -32,12 +32,10 @@ semantics, discover items, execute writes, or provide provider fencing. A
 misspelled dedicated provider fails as `resource-policy-not-found` instead of
 silently joining another ownership domain.
 
-A custom resource policy may be installed through the
-`worklease.resource_policies` entry-point group. Its version-1 descriptor must
-document canonical source/item identity, claim granularity, collision
-avoidance, and stability across worktrees and sessions. Wheel and editable
-installs discover these policies lazily; frozen standalone executables expose
-built-ins only.
+Unknown or custom providers must explicitly select the `generic` resource
+policy when appropriate. Custom source adapters remain caller-owned
+capabilities. Worklease does not ship a plugin SDK or a mechanism for installing
+custom resource policies.
 
 ## Guarantee and extension rule
 

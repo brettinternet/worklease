@@ -110,6 +110,7 @@ func TestDiagnoseReportsMetadataStatusesDetailsAndHints(t *testing.T) {
 	assertCheck("agent.identity", "fail", "unavailable", "WORKLEASE_AGENT_ID")
 	assertCheck("clock.authority", "unknown", "watermark is unavailable", "")
 	assertCheck("authority.identity", "unknown", "identity is unavailable until state exists", "")
+	assertCheck("mcp.available", "ok", "MCP stdio server is available", "")
 	if strings.Contains(fmt.Sprint(checks), "secret") {
 		t.Fatal("diagnostics exposed sensitive content")
 	}

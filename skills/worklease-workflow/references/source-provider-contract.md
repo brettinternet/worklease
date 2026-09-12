@@ -55,15 +55,13 @@ the local resource identity and guarantee declaration. A source-provider
 adapter owns reads, writes, receipts, review boundaries, and archive behavior;
 the generic workflow owns scheduling and claim lifecycle.
 
-External policies use the version-1 `worklease.resource_policies` entry-point
-contract. A descriptor declares origin, key-policy version, claim scope,
-capability, generic execution guarantee, and provider-fencing support.
-Installable wheels and editable installs can discover these registrations
-lazily; standalone frozen executables expose built-ins only.
+Supported policies are `backlog-md`, `markdown`, `github`, `linear`, `generic`,
+and `path`.
 
-A custom resource policy must document canonicalization, claim granularity,
-collision avoidance across sources, and worktree/checkout stability. Session,
-agent, process, or temporary-path identity must not enter the resource.
+Source adapters remain caller-owned capabilities. Worklease does not ship a
+plugin SDK or a mechanism for installing custom resource policies. Use
+`generic` explicitly for an unknown or custom provider when its resource
+behavior matches the generic policy.
 
 ## Provider receipts
 

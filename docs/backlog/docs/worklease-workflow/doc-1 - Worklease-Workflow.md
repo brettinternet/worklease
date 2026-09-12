@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-12 20:30'
+updated_date: '2026-09-12 22:13'
 tags:
   - agent
   - workflow
@@ -17,7 +17,7 @@ Human-facing entry point for the provider-neutral coordination skill at [`skills
 
 Use the skill for dependency-aware selection, bounded ownership, heartbeats,
 durable provider checkpoints, review boundaries, handoff, or archive. Continue
-to use the provider's supported interface—such as the `backlog` CLI—for
+to use the provider's supported interface, such as the `backlog` CLI, for
 provider reads and writes. The skill never edits provider files directly or
 chooses a provider.
 
@@ -60,11 +60,12 @@ worklease checkpoint --session "$SESSION" --data '{"phase":"verified"}'
 worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
-One claim atomically covers one to 32 ordered resources. The Go product has no
-owner ID, token output, or separate bundle commands. Omit operation IDs for
-ordinary mutations; retain and reuse one only for exact bounded replay after a
-lost response. Changed intent conflicts. Unknown guarded outcomes require
-provider-effect and process-cessation evidence plus explicit reconciliation.
+One claim atomically covers one to 32 ordered resources. Credentials remain in
+private handles or file/descriptor sources and never appear in output. Omit
+operation IDs for ordinary mutations. Reuse one only for exact bounded replay
+after a lost response. Changed intent conflicts. Unknown guarded outcomes
+require provider-effect and process-cessation evidence plus explicit
+reconciliation.
 
 ## Guarantees
 
@@ -78,8 +79,8 @@ provider checkpoints.
 
 The local authority is the only shipped authority. Handles and event/watch
 cursors bind to its immutable authority ID. The Cloudflare remote-authority
-document is explicitly deferred; V1 has no HTTP backend, fallback, deployment,
-remote exec, or fencing counter.
+document is explicitly deferred. Worklease has no HTTP backend or remote
+fallback.
 
 ## References
 
