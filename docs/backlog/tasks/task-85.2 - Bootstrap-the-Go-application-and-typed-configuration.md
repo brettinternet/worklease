@@ -3,9 +3,9 @@ id: TASK-85.2
 title: Bootstrap the Go application and typed configuration
 status: Done
 assignee:
-  - '@pi-01a09452'
+  - '@pi-01a0945b'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 07:04'
+updated_date: '2026-09-12 07:05'
 labels:
   - go-rewrite
 milestone: m-0
@@ -78,6 +78,8 @@ Evidence and patterns (the amended contract is normative): hum files to mirror, 
 Resumed after the prior Worklease claim ended; acquired a fresh local-coordination claim for implementation.
 
 Implemented in d775c30 and fast-forwarded to main. Verification: mise run ci-go; backlog doctor; mise run lint, format-check, test, and typecheck; four CGO-disabled GOOS/GOARCH builds; injected darwin/arm64 version smoke. Review tightened global short-option validation and group help before the final ci-go pass.
+
+Final claim holder independently reran ci-go and all repository gates before committing the provider checkpoint.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
