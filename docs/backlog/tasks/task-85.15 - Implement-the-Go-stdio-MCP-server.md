@@ -1,11 +1,11 @@
 ---
 id: TASK-85.15
 title: Implement the stdio MCP server
-status: In Progress
+status: Done
 assignee:
   - '@pi-01a096ee'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 18:44'
+updated_date: '2026-09-12 19:53'
 labels:
   - go-rewrite
 milestone: m-0
@@ -19,6 +19,15 @@ references:
   - src/worklease/mcp_server.py
   - docs/mcp.md
   - tests/test_mcp.py
+modified_files:
+  - internal/cli/commands.go
+  - internal/lease/service.go
+  - internal/mcp/server.go
+  - internal/mcp/mcp.go
+  - internal/mcp/lifecycle.go
+  - internal/mcp/renew.go
+  - internal/mcp/mcp_test.go
+  - internal/mcp/acceptance_regression_test.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -37,18 +46,18 @@ Evidence and patterns (the amended contract is normative): hum `internal/mcp/ser
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Real stdio/subprocess tests prove modern 2026-07-28 per-request versioning/server-discover and specified unsupported-version errors, legacy 2025-11-25 initialize/initialized negotiation, exact eleven-tool schemas, unknown methods, duplicate IDs, malformed/oversized input and serialized responses.
-- [ ] #2 Eight long-running calls plus queued calls still permit cancellation/EOF processing; shutdown is bounded and leaves handles/claims recoverable with no goroutine leaks.
-- [ ] #3 Lifecycle tests cover CLI/MCP interoperability, two servers using one reference, pending acquire/heartbeat/release recovery, restart reference use and no bearer/hash leakage; public revision fields are allowed.
-- [ ] #4 Heartbeat tests prove persisted holdUntil, expiry clamping, no restart extension/resumption, one automatic-renewal owner, serialized explicit mutations and no spurious verify failures from renewal races. A TTL longer than maxHold is capped on initial grant and explicit renewal after restart.
-- [ ] #5 Events/watch enforce timeout and cursor semantics, checkpoint input rejects embedded credentials, and actual returned lease references can be passed to CLI verify/native hook selection; mise run ci-go passes.
-- [ ] #6 An end-to-end client uses discovery/schema information, minimal acquire input and only the returned lease for status/verify, checkpoint and release, plus bounded watch/events, without shell calls or token/revision management. Contention and applicable unknown-outcome failures retain structured domain details/commit state, and separate leases do not adopt another loop's claim.
+- [x] #1 Real stdio/subprocess tests prove modern 2026-07-28 per-request versioning/server-discover and specified unsupported-version errors, legacy 2025-11-25 initialize/initialized negotiation, exact eleven-tool schemas, unknown methods, duplicate IDs, malformed/oversized input and serialized responses.
+- [x] #2 Eight long-running calls plus queued calls still permit cancellation/EOF processing; shutdown is bounded and leaves handles/claims recoverable with no goroutine leaks.
+- [x] #3 Lifecycle tests cover CLI/MCP interoperability, two servers using one reference, pending acquire/heartbeat/release recovery, restart reference use and no bearer/hash leakage; public revision fields are allowed.
+- [x] #4 Heartbeat tests prove persisted holdUntil, expiry clamping, no restart extension/resumption, one automatic-renewal owner, serialized explicit mutations and no spurious verify failures from renewal races. A TTL longer than maxHold is capped on initial grant and explicit renewal after restart.
+- [x] #5 Events/watch enforce timeout and cursor semantics, checkpoint input rejects embedded credentials, and actual returned lease references can be passed to CLI verify/native hook selection; mise run ci-go passes.
+- [x] #6 An end-to-end client uses discovery/schema information, minimal acquire input and only the returned lease for status/verify, checkpoint and release, plus bounded watch/events, without shell calls or token/revision management. Contention and applicable unknown-outcome failures retain structured domain details/commit state, and separate leases do not adopt another loop's claim.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,3 +68,15 @@ Evidence and patterns (the amended contract is normative): hum `internal/mcp/ser
 3. Wire all tools to existing typed services and add real stdio/subprocess, lifecycle, heartbeat, event/watch, redaction, contention, and end-to-end tests.
 4. Run focused Go tests and the full repository quality gates, review the diff, then record acceptance evidence and completion.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented commit c497cb0 in HWT workspace w8F. Added the Go stdio JSON-RPC/MCP server, eleven typed tools, private reference-backed lifecycle handles, cross-process mutation locking and pending replay, bounded renewal/hold enforcement, CLI wiring, and acceptance tests. Independent review found queueing, duplicate-ID, renewal recovery, hold ceiling, schema validation, verify locking, and input-validation defects; all valid findings were fixed. Validation passed: mise run ci-go; mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run hooks; go test -race ./internal/mcp.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the Go stdio MCP server and all eleven contract tools on the typed lease services with private handle references, bounded request concurrency, cancellation/EOF shutdown, exact pending recovery, cross-process serialization, persisted hold ceilings, automatic renewal ownership, redaction, and CLI interoperability. AC1: TestDuplicateIDsLegacyNegotiationAndMalformedInput, TestOversizedInputAndExactElevenToolSchemas, TestStdioNegotiationSurfaceAndProtocolErrors, and TestSubprocessStdioLifecycle prove protocol/version/schema/input behavior. AC2: TestQueuedToolCallWaitsBehindEightAndEOFIsBounded and TestServeCancellationClosesIdleInputAndBrokenOutput prove queued admission, cancellation, serialized output, and bounded shutdown. AC3: TestReferencesCrossServerPendingRecoveryAndRestartHold and TestCallLifecycleAndRedaction prove cross-server references, CLI verify interoperability, pending heartbeat/release recovery, and redaction; TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions covers pending acquire replay. AC4: TestAutomaticHeartbeatHasOneOwnerAndDoesNotResumeAfterRestart, TestReferencesCrossServerPendingRecoveryAndRestartHold, and the race-enabled MCP suite prove renewal ownership, restart behavior, recovery, and durable expiry ceilings. AC5: TestRejectedCheckpointDoesNotStrandLease, TestEndToEndDiscoveredClientUsesOnlyLeaseReference, and the watch/events lifecycle paths prove credential rejection, cursor/timeouts, and returned-handle CLI verification. AC6: TestEndToEndDiscoveredClientUsesOnlyLeaseReference exercises discovery-driven acquire/status/verify/checkpoint/events/watch/release without shell credential or revision management. Final validation: mise run ci-go passed, including gofmt, go test ./..., go test -race ./..., vet/staticcheck, govulncheck, and CGO-disabled build; repository lint, format-check, test, typecheck, and hooks also passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
