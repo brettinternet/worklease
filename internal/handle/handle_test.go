@@ -36,6 +36,55 @@ func TestContextRootAndContextualPathAreStableAndSessionScoped(t *testing.T) {
 		t.Fatal("context path is unstable")
 	}
 }
+func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "h.json")
+	if present, err := ValidateMetadata(path); err != nil || present {
+		t.Fatalf("missing metadata present=%t err=%v", present, err)
+	}
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateMetadata(path); err == nil {
+		t.Fatal("accepted writable handle parent")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlinkBase := t.TempDir()
+	symlinkTarget := t.TempDir()
+	if err := os.Chmod(symlinkTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlinkParent := filepath.Join(symlinkBase, "handles")
+	if err := os.Symlink(symlinkTarget, symlinkParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateMetadata(filepath.Join(symlinkParent, "h.json")); err == nil {
+		t.Fatal("accepted symlink handle parent")
+	}
+	if err := Write(path, testHandle()); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateMetadata(link); err == nil {
+		t.Fatal("accepted symlink handle parent/leaf")
+	}
+	hardlink := filepath.Join(dir, "hardlink")
+	if err := os.Link(path, hardlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateMetadata(path); err == nil {
+		t.Fatal("accepted hard-linked handle")
+	}
+}
+
 func TestHandleAtomicPrivateRoundTripAndRejectsUnsafe(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {

@@ -107,6 +107,22 @@ func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.R
 	if result.Changed {
 		fields["changed"] = true
 	}
+	if len(result.Resources) > 0 {
+		states := make([]string, 0, len(result.Resources))
+		expires := false
+		for _, state := range result.Resources {
+			value := shortenOpaque(state.Resource, 48) + "=" + state.State
+			if !state.ExpiresAt.IsZero() {
+				expires = true
+				value += " (expiresAt " + state.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00") + ")"
+			}
+			states = append(states, value)
+		}
+		fields["resources"] = strings.Join(states, ", ")
+		if expires {
+			fields["hint"] = "watch rechecks state at the nearest expiry; verify ownership before mutating"
+		}
+	}
 	if len(result.UnresolvedPredecessor) > 0 {
 		fields["unresolvedPredecessor"] = result.UnresolvedPredecessor
 	}

@@ -65,7 +65,8 @@ func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 
 func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
-	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "mcp"}
+	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions"}
+	future := []string{"setup", "mcp"} // TASK-85.15/85.16 may register these later.
 	got := map[string]bool{}
 	for _, command := range root.Commands {
 		got[command.Name] = true
@@ -73,6 +74,11 @@ func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	for _, name := range want {
 		if !got[name] {
 			t.Errorf("command %q is not registered", name)
+		}
+	}
+	for _, name := range future {
+		if command := root.Command(name); command != nil && (command.Usage == "" || !strings.Contains(command.Description, "Examples:")) {
+			t.Errorf("future command %q has incomplete staged help", name)
 		}
 	}
 	if err := validateCLICommandTree(root); err != nil {
@@ -96,6 +102,78 @@ func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 		if !found {
 			t.Errorf("root help does not reference %s", part)
 		}
+	}
+}
+
+type canonicalHelpCase struct {
+	path, example string
+	flags         []string
+}
+
+func (test canonicalHelpCase) pathUsage() string {
+	return "worklease " + test.path
+}
+
+func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	tests := []canonicalHelpCase{
+		{path: "version", example: "worklease version --json", flags: []string{}},
+		{path: "key", example: "worklease key --path README.md", flags: []string{"resource", "provider", "source", "item", "path", "coordination-only"}},
+		{path: "acquire", example: "worklease acquire --path README.md", flags: []string{"resource", "provider", "source", "item", "path", "coordination-only", "ttl", "wait", "poll-interval", "agent", "work-key", "session", "handle", "claim-id", "token-file", "token-fd", "request-not-after", "no-handle"}},
+		{path: "status", example: "worklease status", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "full"}},
+		{path: "list", example: "worklease list", flags: []string{"resource", "full"}},
+		{path: "heartbeat", example: "worklease heartbeat", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after"}},
+		{path: "checkpoint", example: "worklease checkpoint --data '{}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "data", "data-file"}},
+		{path: "release", example: "worklease release", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "reason"}},
+		{path: "exec", example: "worklease exec -- git status", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "max-duration", "cwd", "git-primary"}},
+		{path: "transfer", example: "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "to-agent", "to-session", "to-work-key", "successor-handle"}},
+		{path: "replace-file", example: "worklease replace-file --path FILE --expected-sha256 SHA256 --content-file CONTENT", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "path", "expected-sha256", "content-file"}},
+		{path: "verify", example: "worklease verify", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "hook", "coverage"}},
+		{path: "history", example: "worklease history --resource RESOURCE", flags: []string{"resource", "cursor", "limit", "full"}},
+		{path: "events", example: "worklease events", flags: []string{"cursor", "limit", "full"}},
+		{path: "watch", example: "worklease watch --resource RESOURCE --until free", flags: []string{"resource", "cursor", "until", "timeout"}},
+		{path: "gc", example: "worklease gc --retention-days 30", flags: []string{"retention-days", "cutoff", "apply"}},
+		{path: "doctor", example: "worklease doctor", flags: []string{}},
+		{path: "policy list", example: "worklease policy list", flags: []string{"full"}},
+		{path: "policy describe", example: "worklease policy describe path", flags: []string{"full"}},
+		{path: "op inspect", example: "worklease op inspect --operation-id ID", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "operation-id", "full"}},
+		{path: "op reconcile", example: "worklease op reconcile --target-operation-id ID --outcome observed-success --evidence '{\"outcome\":\"observed-success\",\"executorStopped\":true}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "target-claim-id", "target-operation-id", "outcome", "evidence", "expected-request-sha256"}},
+		{path: "instructions loop", example: "worklease instructions loop", flags: []string{}},
+		{path: "instructions safety", example: "worklease instructions safety", flags: []string{}},
+	}
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			command := root
+			for _, name := range strings.Fields(test.path) {
+				command = command.Command(name)
+				if command == nil {
+					t.Fatalf("missing command")
+				}
+			}
+			if command.UsageText != test.pathUsage() {
+				t.Fatalf("usage=%q want=%q", command.UsageText, test.pathUsage())
+			}
+			if !strings.Contains(command.Description, test.example) {
+				t.Fatalf("description lacks executable example %q: %q", test.example, command.Description)
+			}
+			got := make([]string, 0, len(command.Flags))
+			for _, flag := range command.Flags {
+				got = append(got, flag.Names()[0])
+			}
+			if strings.Join(got, "\x00") != strings.Join(test.flags, "\x00") {
+				t.Fatalf("flags=%v want=%v", got, test.flags)
+			}
+			aliases := map[string]string{"resource": "r", "provider": "p", "source": "s", "item": "i", "coordination-only": "C", "ttl": "T", "wait": "W", "agent": "a", "work-key": "w", "claim-id": "c", "token-file": "F", "token-fd": "D", "revision": "R", "operation-id": "o", "reason": "m", "max-duration": "M", "full": "f"}
+			for _, flag := range command.Flags {
+				wantNames := flag.Names()[0]
+				if alias := aliases[wantNames]; alias != "" {
+					wantNames += "\x00" + alias
+				}
+				if strings.Join(flag.Names(), "\x00") != wantNames {
+					t.Fatalf("flag %q names=%v want=%q", flag.Names()[0], flag.Names(), wantNames)
+				}
+			}
+		})
 	}
 }
 
