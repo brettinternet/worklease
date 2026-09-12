@@ -4,7 +4,7 @@ title: 'Implement guarded exec, replace-file, and verify'
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 04:47'
+updated_date: '2026-09-12 05:04'
 labels:
   - go-rewrite
 milestone: m-0
@@ -41,8 +41,8 @@ Owned paths: `internal/guard`, `internal/lease/verify.go`, `internal/cli/exec.go
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Exec tests prove exact argv without shell interpretation (an argument containing $HOME and ; arrives literally), child statuses 0, 3, and signal termination map to 0, 3, and 128 plus the signal number, stdout and stderr over 1 MiB are truncated with byte counts and flags, invalid UTF-8 is replaced, stdin is /dev/null, WORKLEASE_CLAIM_ID and WORKLEASE_OPERATION_ID are set with no token in the child environment, and --cwd and --git-primary strip the GIT_* routing variables.
-- [ ] #2 Termination tests prove --max-duration kills a child whose grandchild holds the inherited stdout pipe within 3 s and exits 124 with timedOut true and the operation completed, a heartbeat failure injected mid-run (claim expired through the clock or transferred by a subprocess) terminates the process group and fails ownership-lost, a storage failure injected after spawn terminates the child and leaves the operation started (unknown-outcome on replay), and no processes remain in the group afterwards.
-- [ ] #3 Ledger tests prove exec writes started before spawn (a child that reads the database sees its own started row), writes completed with the receipt, replays the receipt without re-running (a counter file is unchanged), and a claim over three resources executes once with a single operation row.
+- [ ] #2 Termination tests prove --max-duration kills a child whose grandchild holds the inherited stdout pipe within 3 s and exits 124 with timedOut true and the operation completed, a heartbeat failure injected mid-run (claim expired through the clock or transferred by a subprocess) terminates the process group, fails ownership-lost, and leaves the operation started (unknown-outcome on replay) because completion needs credentials that are gone, a storage failure injected after spawn terminates the child and also leaves the operation started, and no processes remain in the group afterwards.
+- [ ] #3 Ledger tests prove exec writes started before spawn (a child that reads the database sees its own started row), writes completed with a receipt whose revision is the final claim revision after the start renewal, internal heartbeats, and completion, replays the receipt without re-running (a counter file is unchanged) including a replay that changes only --max-duration, and a claim over three resources executes once with a single operation row.
 - [ ] #4 replace-file tests prove atomic replacement preserving mode, rejection of a symlinked target or content file and of a wrong expected hash with actualSha256 (exit 3), rejection under a local-coordination claim (64), deterministic replay, completion of a started operation whose rename already happened, and --git-primary resolution across a linked worktree, a symlinked worktree path, and a separate git dir while ignoring a prunable worktree.
 - [ ] #5 verify tests prove the success fields, each failure cause (missing-handle, stale-claim, invalid-token, claim-expired, stale-revision, resource-mismatch, unknown-outcome-pending) with exit 2, that the database mtime, handle mtime, and events count are unchanged after 100 verify calls, and that --hook claude-code resolves the context from the cwd field of sample hook JSON on stdin, exits 0 silently for a Bash event whose command starts with worklease or backlog when no claim exists, exits 2 with a one-line stderr message for an Edit event without a valid claim, and reports hook-input-invalid for malformed input; `mise run ci-go` passes.
 <!-- AC:END -->

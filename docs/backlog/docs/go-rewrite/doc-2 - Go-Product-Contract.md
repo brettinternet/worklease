@@ -3,7 +3,7 @@ id: doc-2
 title: Go Product Contract
 type: specification
 created_date: '2026-09-12 03:51'
-updated_date: '2026-09-12 04:47'
+updated_date: '2026-09-12 05:04'
 tags:
   - go-rewrite
   - contract
@@ -78,7 +78,7 @@ Shared files any task may edit minimally: `internal/cli/commands.go` (command re
 
 Global flags (every command): `--json`/`-j`, `--home DIR`/`-H`, `--config PATH`, `--help`/`-h`, `--version`/`-v` (root only).
 
-Claim selection for lifecycle commands, evaluated in this order: `--handle PATH`; otherwise the contextual handle for the current directory if it exists; otherwise explicit `--claim-id ID --revision N` with exactly one of `--token-file PATH` or `--token-fd N`. Explicit `--claim-id`, `--revision`, `--token-file`, and `--token-fd` override the corresponding handle fields individually. If nothing selects a claim the command fails with `claim-selection-missing` (exit 64). Resource input for `acquire` and `key` is exactly one of: repeated `-r/--resource`, the provider triple `-p/--provider -s/--source -i/--item`, or `--path PATH`; mixing modes fails with `resource-input-conflict` (64).
+Claim selection for lifecycle commands, evaluated in this order: `--handle PATH`; otherwise the contextual handle for the current directory if it exists; otherwise explicit `--claim-id ID` with exactly one of `--token-file PATH` or `--token-fd N`; `--revision N` is required for mutating commands (omitting it fails `invalid-argument` with a hint) and optional for the read-only `verify` and `status`, where it is compared only when supplied. Explicit `--claim-id`, `--revision`, `--token-file`, and `--token-fd` override the corresponding handle fields individually. If nothing selects a claim the command fails with `claim-selection-missing` (exit 64). Resource input for `acquire` and `key` is exactly one of: repeated `-r/--resource`, the provider triple `-p/--provider -s/--source -i/--item`, or `--path PATH`; mixing modes fails with `resource-input-conflict` (64).
 
 | Command | Purpose | Key flags | Mutates | Owner |
 | --- | --- | --- | --- | --- |
@@ -141,7 +141,7 @@ Text mode: a first line summarizing the outcome (for example `acquired 1 resourc
 | 0 | success | |
 | 1 | internal failure (bug or unexpected I/O) | `internal` |
 | 2 | ownership or contention | `already-claimed`, `stale-claim`, `invalid-token`, `stale-revision`, `claim-expired`, `wait-timeout`, `verify-failed`, `ownership-lost`, `handle-in-use` |
-| 3 | ledger or idempotency | `operation-request-mismatch`, `unknown-outcome`, `expected-hash-mismatch`, `gc-protected-record`, `reconciliation-conflict`, `operation-ambiguous` |
+| 3 | ledger or idempotency | `operation-request-mismatch`, `unknown-outcome`, `expected-hash-mismatch`, `reconciliation-conflict`, `operation-ambiguous` |
 | 64 | invalid input or configuration | `invalid-argument`, `config-invalid`, `config-missing`, `claim-selection-missing`, `resource-input-conflict`, `invalid-resource`, `unknown-policy`, `invalid-path`, `handle-unsafe`, `handle-malformed`, `credential-unsafe`, `credential-malformed`, `credential-source-conflict`, `agent-id-required`, `unsupported-coordination-replace`, `cursor-invalid`, `setup-config-malformed` |
 | 75 | authority or storage failure | `home-unsafe`, `storage-failure`, `schema-unsupported`, `schema-corrupt`, `handle-write-failed` |
 | 124 | guarded child exceeded `--max-duration` | `child-timeout` |
@@ -170,15 +170,15 @@ A claim has `claimId`, `resources` (ordered, unique, 1 to 32), `agentId`, `sessi
 
 ### 7.3 Revision and credentials
 
-`revision` starts at 1 on acquire and increments by exactly one per successful mutation (heartbeat, checkpoint, exec, replace-file, reconcile; transfer starts the successor at 1). A mutation supplies `claimId`, `token`, and expected `revision`. Checks run in this order and stop at the first failure: claim ID not current → `stale-claim`; token hash mismatch → `invalid-token`; claim expired → `claim-expired`; revision mismatch → `stale-revision` with `expectedRevision` and `suppliedRevision` in details. Failed checks never mutate.
+`revision` starts at 1 on acquire and increments by exactly one per successful mutation transaction (heartbeat, checkpoint, reconcile, the `started` and `completed` writes of a guarded operation, and each internal renewal during `exec`; transfer starts the successor at 1). A guarded `exec` or `replace-file` therefore raises `revision` by more than one; its receipt reports the final `revision`, which is the value written to the handle after commit. A mutation supplies `claimId`, `token`, and expected `revision`. Checks run in this order and stop at the first failure: claim ID not current → `stale-claim`; token hash mismatch → `invalid-token`; claim expired → `claim-expired`; revision mismatch → `stale-revision` with `expectedRevision` and `suppliedRevision` in details. Failed checks never mutate.
 
 ### 7.4 Operations and idempotency
 
-Every mutation carries an `operationId` (caller-supplied or generated). The request hash is SHA-256 over canonical JSON (sorted keys, no whitespace) of the request with `operationId`, `revision`, and `ttl` removed. Replay of the same `operationId` on the same claim with an equal hash returns the stored receipt with `idempotent: true` and changes nothing; a different hash fails `operation-request-mismatch`; a `started` operation fails `unknown-outcome` until reconciled. Replay never repeats external effects. Operation IDs are unique per claim; reuse across kinds is a mismatch.
+Every mutation carries an `operationId` (caller-supplied or generated). The request hash is SHA-256 over canonical JSON (sorted keys, no whitespace) of the request with `operationId`, `revision`, and `maxDuration` removed; `ttl` stays in the hash, so replaying any operation with a different requested `ttl` fails `operation-request-mismatch`, while an `exec` replay that changes only `--max-duration` is idempotent. Replay of the same `operationId` on the same claim with an equal hash returns the stored receipt with `idempotent: true` and changes nothing; a different hash fails `operation-request-mismatch`; a `started` operation fails `unknown-outcome` until reconciled. Replay never repeats external effects. Operation IDs are unique per claim; reuse across kinds is a mismatch. `acquire` has no `operationId`: its idempotency key is the `claimId`, it writes one operations row with `operation_id = claimId` and kind `acquire` holding the acquire request hash, and an equal-hash replay returns the existing claim without the token and with `idempotent: true`; a different hash (for example a changed `ttl`) fails `operation-request-mismatch`.
 
 ### 7.5 Guarded intent
 
-`exec` and `replace-file` write an operation row in state `started` in one transaction before producing any external effect, then write `completed` with the receipt afterwards. A crash between the two leaves `started`, which `status`, `op inspect`, and `verify` report as an unknown outcome. `op reconcile` records exactly one observed outcome with caller evidence under current credentials, sets state `reconciled`, increments the revision, and appends `reconciled`. Reconciling twice with identical input is idempotent; with different input it fails `reconciliation-conflict`.
+`exec` and `replace-file` write an operation row in state `started` in one transaction before producing any external effect, then write `completed` with the receipt afterwards. A crash between the two leaves `started`, which `status`, `op inspect`, and `verify` report as an unknown outcome. `op reconcile` records exactly one observed outcome with caller evidence under current credentials, sets state `reconciled`, increments the revision, and appends `reconciled`. Reconciling twice with identical input is idempotent; with different input it fails `reconciliation-conflict`. `op inspect` addressed by resources resolves the operation across the epochs of those resources; when more than one epoch holds the same `operationId` it fails `operation-ambiguous` and lists the candidate claim IDs so the caller can retry with an explicit claim ID.
 
 ### 7.6 Clocks
 
@@ -347,7 +347,7 @@ Handle file: JSON `{"schemaVersion":1,"claimId":"...","token":"...","revision":N
 
 Acquire behavior: without `--handle` or `--no-handle`, write the contextual handle; if a handle already exists at the destination and its claim is still current and active, fail `handle-in-use` (2) before touching the authority; if it is stale (released, expired, or unknown claim), replace it. `--handle PATH` writes there with the same rules; the parent directory must exist. Heartbeat, checkpoint, exec, replace-file, and reconcile rewrite the handle with the new revision (and expiry) after commit. Release removes the handle after commit. Transfer removes the predecessor handle after commit and writes the successor handle only when `--successor-handle` is given. Idempotent replays never rewind a handle's revision.
 
-Credential sources for explicit selection: `--token-file PATH` must be a regular, owner-only (`0600` or stricter), non-symlink file of at most 4096 bytes; `--token-fd N` duplicates the descriptor with `CLOEXEC` and reads at most 4096 bytes. The value is one line; a single trailing newline is stripped; empty, multi-line, NUL-containing, or non-UTF-8 content is `credential-malformed`. Supplying both sources is `credential-source-conflict`.
+Credential sources for explicit selection: `--token-file PATH` must be a regular, owner-only (`0600` or stricter), non-symlink file (anything else fails `credential-unsafe`) of at most 4096 bytes; `--token-fd N` duplicates the descriptor with `CLOEXEC` and reads at most 4096 bytes. The value is one line; a single trailing newline is stripped; empty, multi-line, NUL-containing, or non-UTF-8 content is `credential-malformed`. Supplying both sources is `credential-source-conflict`.
 
 ## 10. Guarded operations
 
@@ -355,7 +355,7 @@ Credential sources for explicit selection: `--token-file PATH` must be a regular
 
 Runs exactly the argv after `--` without a shell, in a new process group (`Setpgid`), stdin from `/dev/null`, stdout and stderr captured up to 1 MiB each (the receipt records `stdoutBytes`, `stderrBytes`, `stdoutTruncated`, `stderrTruncated`, and the captured text with invalid UTF-8 replaced). Working directory: caller directory by default, `--cwd DIR`, or `--git-primary` (the primary worktree of the repository containing the caller directory, resolved through `git rev-parse --git-common-dir`; fails `invalid-path` when the caller is not in a repository or the primary worktree is missing). When `--cwd` or `--git-primary` is used, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_PREFIX`, and `GIT_OBJECT_DIRECTORY` are removed from the child environment. The child receives `WORKLEASE_CLAIM_ID` and `WORKLEASE_OPERATION_ID`; never the token.
 
-Sequence: validate input and credentials; write `started` (event `exec-started`) and renew the claim; spawn; while the child runs, heartbeat at `ttl/2`; if a heartbeat fails with an ownership reason, send SIGTERM to the process group, wait 2 s, SIGKILL the group, and fail `ownership-lost` (2) after recording `completed` with `terminated: "ownership-lost"`; when `--max-duration` elapses (monotonic, covering pipe draining), terminate the same way, stop draining, and exit 124 with `timedOut: true`; otherwise record `completed` with the exit status and exit with the child's status. Replay returns the stored receipt without spawning. Storage failure after spawn terminates the group and leaves the operation `started`.
+Sequence: validate input and credentials; write `started` (event `exec-started`) and renew the claim; spawn; while the child runs, heartbeat at `ttl/2`; if a heartbeat fails with an ownership reason, send SIGTERM to the process group, wait 2 s, SIGKILL the group, and fail `ownership-lost` (2); the operation row stays `started` because completion is a credentialed mutation and ownership is gone, so `status`, `op inspect`, and `verify` report an unknown outcome until `op reconcile` resolves it; when `--max-duration` elapses (monotonic, covering pipe draining), terminate the same way, stop draining, and exit 124 with `timedOut: true`; otherwise record `completed` with the exit status and exit with the child's status. Replay returns the stored receipt without spawning. Storage failure after spawn terminates the group and leaves the operation `started`.
 
 ### 10.2 replace-file
 
@@ -438,6 +438,7 @@ Removed at TASK-85.18 with no replacement: the Python public API (`worklease.__a
 ## 17. Amendments
 
 - 2026-09-12, owner-requested before the loop started (no task): section 10.3 `--hook claude-code` now parses the hook JSON (`cwd`, `tool_name`, `tool_input.command`) and allowlists Bash commands whose first word is `worklease` or `backlog`; section 13 default guard matcher excludes `Bash`, with `--include-bash` as opt-in; section 13 `doctor` gains the `state.python-era` check; section 19 records the absolute hum path, the `Blocked` label convention, and the closure of the Python-era tasks. Evidence: a blanket Bash matcher would have blocked `worklease acquire` itself, and worktree checkouts cannot resolve `../hum`.
+- 2026-09-12, adversarial contract review before the loop started (no task): section 7.4 keeps `ttl` in the request hash and drops `maxDuration`, and defines acquire idempotency (key `claimId`, operations row with `operation_id = claimId`, replay returns the claim without the token); section 10.1 leaves the operation `started` on ownership loss instead of writing `completed`; section 4 makes `--revision` optional for the read-only `verify` and `status`; section 7.3 states that guarded operations raise the revision by more than one and that the handle receives the final revision; section 6.1 drops the never-emitted `gc-protected-record` reason; sections 7.5 and 9 name the triggers of `operation-ambiguous` and `credential-unsafe`. Evidence: the earlier text contradicted TASK-85.7 acceptance criterion 3, the Python fingerprint in `operations.py` (keeps ttl, drops maxDuration), and `execution.py`, which re-raises on renewal failure and leaves the operation started.
 
 ## 18. Internal API sketches
 
