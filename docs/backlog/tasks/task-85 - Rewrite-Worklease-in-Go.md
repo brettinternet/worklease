@@ -1,10 +1,11 @@
 ---
 id: TASK-85
 title: Rewrite Worklease in Go
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 21:30'
+updated_date: '2026-09-12 21:34'
 labels:
   - go-rewrite
 milestone: m-0
@@ -18,6 +19,8 @@ references:
   - ../hum/internal/mcp/server.go
   - src/worklease
   - tests
+modified_files:
+  - docs/backlog/tasks/task-85 - Rewrite-Worklease-in-Go.md
 priority: high
 type: feature
 ordinal: 92000
@@ -35,13 +38,27 @@ Use the actual dependency graph, not static waves. TASK-85.1 inventories capabil
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The Go binary provides every command and all eleven MCP tools in the amended contract with tested local coordination, session isolation, exact recovery and public redaction behavior.
-- [ ] #2 Production CLI/MCP require no Python and build for all four POSIX targets without CGO, or the documented driver amendment provides the tested native build alternative.
-- [ ] #3 Retired Python core/SDK/packaging are removed, every retained capability inventory row is delivered or explicitly rejected, and deferred remote design is preserved without implementing it.
-- [ ] #4 Four release archives install and pass native smoke tests with checksums and man pages; code/artifact completion does not require tag creation or public release.
-- [ ] #5 All eighteen implementation/inventory children are Done with evidence, final Go gates pass, and CHANGELOG documents the intentionally incompatible cutover and optional recoverable state disposal.
-- [ ] #6 The section 1.1 human CLI and MCP/JSON interaction priorities pass executable common-path, contention and isolated-loop journeys; the shipped quick starts require no manual credential/revision plumbing or mandatory guard setup.
+- [x] #1 The Go binary provides every command and all eleven MCP tools in the amended contract with tested local coordination, session isolation, exact recovery and public redaction behavior.
+- [x] #2 Production CLI/MCP require no Python and build for all four POSIX targets without CGO, or the documented driver amendment provides the tested native build alternative.
+- [x] #3 Retired Python core/SDK/packaging are removed, every retained capability inventory row is delivered or explicitly rejected, and deferred remote design is preserved without implementing it.
+- [x] #4 Four release archives install and pass native smoke tests with checksums and man pages; code/artifact completion does not require tag creation or public release.
+- [x] #5 All eighteen implementation/inventory children are Done with evidence, final Go gates pass, and CHANGELOG documents the intentionally incompatible cutover and optional recoverable state disposal.
+- [x] #6 The section 1.1 human CLI and MCP/JSON interaction priorities pass executable common-path, contention and isolated-loop journeys; the shipped quick starts require no manual credential/revision plumbing or mandatory guard setup.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Re-run the complete Go quality, acceptance, release-build, and native smoke-test gates on main.
+2. Review the closure diff and verify all six parent acceptance criteria against executable evidence and completed child records.
+3. Record evidence, complete TASK-85, stage the authoritative backlog update, run hooks, and commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closure verification on main: mise run lint, format-check, test, and typecheck passed; mise run ci passed with unit, race, vet/staticcheck, govulncheck, built-binary E2E, executable documentation journeys, and man generation. worklease-release built all four CGO-disabled 0.10.0 POSIX archives; each archive contained bin/worklease and share/man/man1/worklease.1, generated checksums verified, and the installed macOS arm64 archive passed worklease-smoke. Backlog JSON confirmed all eighteen children Done with every child acceptance criterion checked. Reviewed the closure diff and cumulative TASK-85.14/.15/.17/.18 evidence; no unresolved item-scoped defect remains.
+<!-- SECTION:NOTES:END -->
 
 ## Comments
 
@@ -76,3 +93,9 @@ created: 2026-09-12 21:30
 TASK-85.18 final integration evidence: tracked Python runtime/SDK/packaging/test/release assets and Python CI/release jobs are removed; the deferred Cloudflare proposal remains documentation-only. mise run ci passed with failing python/python3 shims first on PATH, including Go test/race/vuln and clean-checkout E2E. mise run hooks-all passed after CI was changed to execute installed hooks. The full CLI registration and eleven MCP tools are covered by native acceptance tests and scripts/test-e2e.sh. Independent review and its resolved hook finding are recorded in docs/reviews/task-85.18-independent-review.md. No release was published.
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed the Go rewrite after all eighteen child tasks completed. The native CLI and eleven-tool MCP server, local authority, session-safe handles, exact recovery/redaction, Go-only build, four release archives, docs, quick starts, and deferred remote design are complete. Verified with mise run lint, format-check, test, typecheck, and ci; four-archive build/layout/checksums; installed native archive smoke; completed child records; and the resolved independent review in docs/reviews/task-85.18-independent-review.md. No tag, push, or release was performed.
+<!-- SECTION:FINAL_SUMMARY:END -->
