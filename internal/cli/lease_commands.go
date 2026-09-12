@@ -2,13 +2,17 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
-	"io"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -33,46 +37,31 @@ func tokenFromCommand(cmd *urfave.Command, fileFlag, fdFlag string) (string, err
 	if (path != "") == fdSet {
 		return "", reason.New(reason.ReasonCredentialSourceConflict, "exactly one token source is required")
 	}
-	var data []byte
-	var err error
 	if path != "" {
-		file, openErr := os.Open(path)
-		if openErr != nil {
-			return "", reason.New(reason.ReasonCredentialUnsafe, "token source cannot be read safely")
-		}
-		data, err = io.ReadAll(io.LimitReader(file, 4097))
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
-		}
+		return handle.ReadCredential(path)
 	} else {
 		fd := cmd.Int(fdFlag)
 		if fd < 0 {
 			return "", reason.New(reason.ReasonCredentialUnsafe, "token descriptor is invalid")
 		}
-		file := os.NewFile(uintptr(fd), "credential")
-		if file == nil {
-			return "", reason.New(reason.ReasonCredentialUnsafe, "token descriptor is invalid")
-		}
-		data, err = io.ReadAll(io.LimitReader(file, 4097))
+		return handle.ReadCredentialFD(fd)
 	}
-	if err != nil || len(data) > 4096 {
-		return "", reason.New(reason.ReasonCredentialUnsafe, "token source cannot be read safely")
-	}
-	value := strings.TrimSuffix(string(data), "\n")
-	if err := validateTokenCLI(value); err != nil {
-		return "", err
-	}
-	return value, nil
 }
 func requestDeadlineCLI(cmd *urfave.Command) (time.Time, error) {
 	value := strings.TrimSpace(cmd.String("request-not-after"))
 	if value == "" {
-		return time.Time{}, reason.New(reason.ReasonReplayExpired, "request-not-after is required until handle-backed requests are available")
+		if strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != "" || (strings.TrimSpace(cmd.String("claim-id")) == "" && strings.TrimSpace(cmd.String("token-file")) == "" && !cmd.IsSet("token-fd") && !cmd.IsSet("revision")) {
+			return time.Now().UTC().Add(24 * time.Hour), nil
+		}
+		return time.Time{}, reason.New(reason.ReasonReplayExpired, "request-not-after is required for stateless requests")
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Time{}, reason.Invalid("request-not-after must be RFC3339")
+	}
+	now := time.Now()
+	if !deadline.After(now) || deadline.After(now.Add(24*time.Hour)) {
+		return time.Time{}, reason.New(reason.ReasonReplayExpired, "request replay deadline must be within 24 hours")
 	}
 	return deadline, nil
 }
@@ -97,57 +86,240 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		if !cmd.Bool("no-handle") {
-			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "stateless acquire requires --no-handle until handles are available"))
+		explicitHandle := strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != ""
+		if cmd.Bool("no-handle") && explicitHandle {
+			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "--no-handle cannot be mixed with a handle"))
 		}
 		svc, st, cfg, err := serviceFor(ctx, cmd, true)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
-		if strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != "" {
-			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "handle-backed acquire is unavailable until handle support is implemented"))
-		}
-		if strings.TrimSpace(cmd.String("claim-id")) == "" {
-			return s.handle(cmd, reason.Invalid("stateless acquire requires --claim-id"))
-		}
-		token, err := tokenFromCommand(cmd, "token-file", "token-fd")
-		if err != nil {
-			return s.handle(cmd, err)
-		}
-		deadline, err := requestDeadlineCLI(cmd)
-		if err != nil {
-			return s.handle(cmd, err)
-		}
 		resources := make([]string, 0, len(in.Keys))
 		for _, key := range in.Keys {
 			resources = append(resources, key.Resource)
 		}
-		g, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: resources, Token: token, ClaimID: cmd.String("claim-id"), AgentID: cfg.AgentID, SessionID: cfg.SessionID, WorkKey: cmd.String("work-key"), TTL: cmd.Duration("ttl"), Wait: cmd.Duration("wait"), PollInterval: cmd.Duration("poll-interval"), CoordinationOnly: cmd.Bool("coordination-only"), LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, RequestNotAfter: deadline})
-		if err != nil {
+		// --no-handle is the deliberately explicit stateless escape hatch.
+		if cmd.Bool("no-handle") {
+			if strings.TrimSpace(cmd.String("claim-id")) == "" {
+				return s.handle(cmd, reason.Invalid("stateless acquire requires --claim-id"))
+			}
+			if strings.TrimSpace(cfg.SessionID) == "" {
+				return s.handle(cmd, reason.Invalid("stateless acquire requires --session so retries preserve identity"))
+			}
+			token, e := tokenFromCommand(cmd, "token-file", "token-fd")
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			deadline, e := requestDeadlineCLI(cmd)
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			g, e := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: resources, Token: token, ClaimID: cmd.String("claim-id"), AgentID: cfg.AgentID, SessionID: cfg.SessionID, WorkKey: cmd.String("work-key"), TTL: cmd.Duration("ttl"), Wait: cmd.Duration("wait"), PollInterval: cmd.Duration("poll-interval"), CoordinationOnly: cmd.Bool("coordination-only"), LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, RequestNotAfter: deadline})
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
+		}
+		if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") {
+			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "explicit credentials require --no-handle"))
+		}
+		path, e := acquireHandlePath(cmd, cfg)
+		if e != nil {
+			return s.handle(cmd, e)
+		}
+		lock, e := handle.AcquireLock(ctx, path+".lock")
+		if e != nil {
+			return s.handle(cmd, e)
+		}
+		defer lock.Close()
+		var h handle.Handle
+		existing, re := handle.Read(path)
+		if re == nil {
+			h = existing
+			if h.AuthorityID != st.AuthorityID() {
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
+			}
+		}
+		claimID, token, session := h.ClaimID, h.Token, h.SessionID
+		if h.State == "ready" && !h.ExpiresAt.After(time.Now()) {
+			current, statusErr := svc.Status(ctx, lease.Selector{ClaimID: h.ClaimID})
+			if statusErr != nil {
+				return s.handle(cmd, statusErr)
+			}
+			if current.Claim != nil && current.Claim.Active {
+				h.Revision, h.ExpiresAt = current.Claim.Revision, current.Claim.ExpiresAt
+				if writeErr := handle.Write(path, h); writeErr != nil {
+					return s.handle(cmd, writeErr)
+				}
+				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
+			}
+			claimID, token, session = "", "", ""
+		}
+		if claimID == "" {
+			claimID = randomHex(16)
+			token = randomHex(32)
+			session = cfg.SessionID
+			if session == "" {
+				session = randomHex(16)
+			}
+		}
+		if err := validateTokenCLI(token); err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeLeaseResult(s, cmd, "acquire", map[string]any{"claimId": g.ClaimID, "resources": g.Resources, "agentId": g.AgentID, "sessionId": g.SessionID, "workKey": g.WorkKey, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee, "localReplaceAllowed": g.LocalReplaceAllowed, "receipt": g.Receipt, "recovery": g.Recovery, "unknownOperations": g.UnknownOperations})
+		ttl := cmd.Duration("ttl")
+		if ttl == 0 {
+			ttl = cfg.TTL
+		}
+		if ttl < time.Second || ttl > time.Hour {
+			return s.handle(cmd, reason.Invalid("ttl must be between 1s and 1h"))
+		}
+		wait, poll := cmd.Duration("wait"), cmd.Duration("poll-interval")
+		if wait < 0 || wait > time.Minute {
+			return s.handle(cmd, reason.Invalid("wait must be between 0 and 60s"))
+		}
+		if poll == 0 {
+			poll = cfg.PollInterval
+		}
+		if poll < 10*time.Millisecond || poll > 30*time.Second {
+			return s.handle(cmd, reason.Invalid("poll interval is invalid"))
+		}
+		if err := validatePublicCLI("work key", cmd.String("work-key"), 1024, false); err != nil {
+			return s.handle(cmd, err)
+		}
+		deadline, deadlineErr := requestDeadlineCLI(cmd)
+		if deadlineErr != nil {
+			return s.handle(cmd, deadlineErr)
+		}
+		if h.State == "pending" && h.PendingRequest != nil && !cmd.IsSet("request-not-after") {
+			deadline = h.PendingRequest.RequestNotAfter
+		}
+		workKey := strings.TrimSpace(cmd.String("work-key"))
+		if workKey == "" {
+			workKey = strings.Join(resources, ",")
+		}
+		inputs := acquireInputs(st.AuthorityID(), claimID, resources, cfg.AgentID, session, workKey, ttl, wait, poll, cmd.Bool("coordination-only"), in.Keys[0].LocalReplaceAllowed, deadline)
+		requestHash := acquireRequestHash(inputs)
+		if h.State == "ready" && h.ExpiresAt.After(time.Now()) {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
+		}
+		if h.RecoveryRequest != nil {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
+		if h.State == "pending" {
+			p := h.PendingRequest
+			if p == nil || p.Kind != "acquire" || p.RequestHash != requestHash {
+				return s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs"))
+			}
+			g, replayErr := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: h.Resources, Token: h.Token, ClaimID: h.ClaimID, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: inputString(p.Inputs, "workKey"), TTL: inputDuration(p.Inputs, "ttl", ttl), Wait: inputDuration(p.Inputs, "wait", 0), PollInterval: inputDuration(p.Inputs, "pollInterval", poll), CoordinationOnly: inputBool(p.Inputs, "coordinationOnly"), LocalReplaceAllowed: h.LocalReplaceAllowed, RequestNotAfter: p.RequestNotAfter})
+			if replayErr != nil {
+				if isDefinitiveNoCommit(replayErr) {
+					_ = handle.Remove(path)
+				}
+				return s.handle(cmd, mutationFailure(replayErr, h.ClaimID, p.OperationID, path))
+			}
+			ready := h
+			ready.State, ready.Revision, ready.ExpiresAt = "ready", g.Revision, g.ExpiresAt
+			ready.PendingRequest = nil
+			if e := handle.Write(path, ready); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, g.Receipt, path, h.ClaimID, p.OperationID))
+			}
+			return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
+		}
+		pending := handle.Handle{SchemaVersion: 1, AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Resources: resources, AgentID: cfg.AgentID, SessionID: session, LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claimID, Kind: "acquire", AuthorityID: st.AuthorityID(), ClaimID: claimID, RequestHash: requestHash, RequestNotAfter: deadline, Inputs: inputs}}
+		if err := handle.Write(path, pending); err != nil {
+			return s.handle(cmd, err)
+		}
+		g, e := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: resources, Token: token, ClaimID: claimID, AgentID: cfg.AgentID, SessionID: session, WorkKey: workKey, TTL: ttl, Wait: wait, PollInterval: poll, CoordinationOnly: cmd.Bool("coordination-only"), LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, RequestNotAfter: deadline})
+		if e != nil {
+			if isDefinitiveNoCommit(e) {
+				_ = handle.Remove(path)
+			}
+			return s.handle(cmd, mutationFailure(e, claimID, claimID, path))
+		}
+		ready := pending
+		ready.State = "ready"
+		ready.Revision = g.Revision
+		ready.ExpiresAt = g.ExpiresAt
+		ready.PendingRequest = nil
+		if err := handle.Write(path, ready); err != nil {
+			return s.handle(cmd, committedHandleFailure(err, g.Receipt, path, claimID, claimID))
+		}
+		return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
 	}
+}
+func acquireFields(g lease.Grant) map[string]any {
+	return map[string]any{"claimId": g.ClaimID, "resources": g.Resources, "agentId": g.AgentID, "sessionId": g.SessionID, "workKey": g.WorkKey, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee, "localReplaceAllowed": g.LocalReplaceAllowed, "receipt": g.Receipt, "recovery": g.Recovery, "unknownOperations": g.UnknownOperations}
+}
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, e := rand.Read(b); e != nil {
+		panic("secure random unavailable")
+	}
+	return hex.EncodeToString(b)
+}
+func acquireHandlePath(cmd *urfave.Command, cfg config.Config) (string, error) {
+	if p := strings.TrimSpace(cmd.String("handle")); p != "" {
+		return filepath.Clean(p), nil
+	}
+	if p := strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")); p != "" {
+		return filepath.Clean(p), nil
+	}
+	root, e := handle.ContextRoot(mustGetwd(), nil)
+	if e != nil {
+		return "", e
+	}
+	return handle.ContextualPath(cfg.Home, root, cfg.SessionID), nil
+}
+func mustGetwd() string {
+	v, e := os.Getwd()
+	if e != nil {
+		return "."
+	}
+	return v
 }
 func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		if strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(cmd.String("lease")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision") {
-			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "status currently supports only public claim-id or resource selection"))
-		}
 		claimID, resources := strings.TrimSpace(cmd.String("claim-id")), cmd.StringSlice("resource")
+		selectedHandle := strings.TrimSpace(cmd.String("handle"))
+		if selectedHandle == "" {
+			selectedHandle = strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE"))
+		}
+		if strings.TrimSpace(cmd.String("lease")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision") {
+			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "status public selection cannot include private credentials"))
+		}
 		if claimID != "" && len(resources) > 0 {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "claim-id and resource status selection are exclusive"))
 		}
-		if claimID == "" && len(resources) == 0 {
-			return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "status requires claim-id or resource selection"))
+		if selectedHandle != "" && (claimID != "" || len(resources) > 0) {
+			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "handle and public status selection are exclusive"))
 		}
-		svc, st, _, err := serviceFor(ctx, cmd, false)
+		svc, st, cfg, err := serviceFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
-		v, err := svc.Status(ctx, lease.Selector{ClaimID: cmd.String("claim-id"), Resources: cmd.StringSlice("resource")})
+		if selectedHandle != "" || (claimID == "" && len(resources) == 0) {
+			path := selectedHandle
+			if path == "" {
+				path, err = acquireHandlePath(cmd, cfg)
+				if err != nil {
+					return s.handle(cmd, err)
+				}
+			}
+			h, e := handle.Read(path)
+			if e != nil {
+				return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "selected handle is unavailable"))
+			}
+			if h.AuthorityID != st.AuthorityID() {
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
+			}
+			claimID = h.ClaimID
+		}
+		if claimID == "" && len(resources) == 0 {
+			return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "status requires claim-id or resource selection"))
+		}
+		v, err := svc.Status(ctx, lease.Selector{ClaimID: claimID, Resources: resources})
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -168,48 +340,325 @@ func listActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 		return writeLeaseResult(s, cmd, "list", map[string]any{"claims": v})
 	}
 }
-func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lease.Service, *store.Store, error) {
+func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lease.Service, *store.Store, *handle.Lock, *handle.Handle, string, error) {
 	if err := ValidateSelection(cmd, true); err != nil {
-		return lease.Credentials{}, nil, nil, err
+		return lease.Credentials{}, nil, nil, nil, nil, "", err
 	}
-	if strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(cmd.String("lease")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != "" {
-		return lease.Credentials{}, nil, nil, reason.New(reason.ReasonCredentialSourceConflict, "handle and lease selection are unavailable until handle support is implemented")
-	}
-	token, err := tokenFromCommand(cmd, "token-file", "token-fd")
+	svc, st, cfg, err := serviceFor(ctx, cmd, true)
 	if err != nil {
-		return lease.Credentials{}, nil, nil, err
+		return lease.Credentials{}, nil, nil, nil, nil, "", err
 	}
-	svc, st, _, err := serviceFor(ctx, cmd, true)
+	// Explicit credentials are the only stateless lifecycle mode. With no
+	// explicit credential source, ordinary commands select the contextual file.
+	if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision") {
+		token, e := tokenFromCommand(cmd, "token-file", "token-fd")
+		if e != nil {
+			st.Close()
+			return lease.Credentials{}, nil, nil, nil, nil, "", e
+		}
+		return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}, svc, st, nil, nil, "", nil
+	}
+	if strings.TrimSpace(cmd.String("lease")) != "" {
+		st.Close()
+		return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonInvalidArgument, "private lease references are only available through MCP")
+	}
+	path := strings.TrimSpace(cmd.String("handle"))
+	var e error
+	if path == "" {
+		path, e = acquireHandlePath(cmd, cfg)
+		if e != nil {
+			st.Close()
+			return lease.Credentials{}, nil, nil, nil, nil, "", e
+		}
+	}
+	lk, e := handle.AcquireLock(ctx, path+".lock")
+	if e != nil {
+		st.Close()
+		return lease.Credentials{}, nil, nil, nil, nil, "", e
+	}
+	h, e := handle.Read(path)
+	if e != nil {
+		lk.Close()
+		st.Close()
+		return lease.Credentials{}, nil, nil, nil, nil, "", e
+	}
+	if h.AuthorityID != st.AuthorityID() {
+		lk.Close()
+		st.Close()
+		return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match")
+	}
+	return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, svc, st, lk, &h, path, nil
+}
+func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadline time.Time, inputs map[string]any) error {
+	if h == nil {
+		return nil
+	}
+	if h.PendingRequest != nil || h.RecoveryRequest != nil {
+		return reason.New(reason.ReasonHandleInUse, "pending request requires recovery")
+	}
+	if !validHexID(op) {
+		return reason.Invalid("operation ID must be 32 lowercase hex characters")
+	}
+	if deadline.IsZero() {
+		return reason.New(reason.ReasonReplayExpired, "request-not-after is required")
+	}
+	h.State = "pending"
+	h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(inputs), RequestNotAfter: deadline, Inputs: inputs}
+	return handle.Write(path, *h)
+}
+func operationID(cmd *urfave.Command, pending *handle.PendingRequest) (string, error) {
+	value := strings.TrimSpace(cmd.String("operation-id"))
+	if pending != nil {
+		if value == "" {
+			return pending.OperationID, nil
+		}
+		if value != pending.OperationID {
+			return "", reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+		}
+		return value, nil
+	}
+	if value == "" {
+		return randomHex(16), nil
+	}
+	if !validHexID(value) {
+		return "", reason.Invalid("operation ID must be 32 lowercase hex characters")
+	}
+	return value, nil
+}
+func validHexID(v string) bool {
+	if len(v) != 32 {
+		return false
+	}
+	b, err := hex.DecodeString(v)
+	return err == nil && hex.EncodeToString(b) == v
+}
+func validatePublicCLI(name, value string, max int, required bool) error {
+	if !required && value == "" {
+		return nil
+	}
+	if value == "" || len([]byte(value)) > max || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n") {
+		return reason.Invalid(name + " is invalid")
+	}
+	return nil
+}
+func acquireInputs(authority, claim string, resources []string, agent, session, work string, ttl, wait, poll time.Duration, coordination, local bool, deadline time.Time) map[string]any {
+	return map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "wait": wait.Microseconds(), "pollInterval": poll.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": local, "coordinationOnly": coordination}
+}
+func acquireRequestHash(in map[string]any) string {
+	return requestHashCLI(map[string]any{"kind": in["kind"], "authorityId": in["authorityId"], "claimId": in["claimId"], "resources": in["resources"], "agentId": in["agentId"], "sessionId": in["sessionId"], "workKey": in["workKey"], "ttl": in["ttl"], "requestNotAfter": in["requestNotAfter"], "localReplaceAllowed": in["localReplaceAllowed"], "coordinationOnly": in["coordinationOnly"]})
+}
+func inputString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+func inputBool(m map[string]any, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
+}
+func inputDuration(m map[string]any, key string, fallback time.Duration) time.Duration {
+	if v, ok := m[key].(float64); ok {
+		return time.Duration(int64(v)) * time.Microsecond
+	}
+	if v, ok := m[key].(json.Number); ok {
+		n, _ := v.Int64()
+		return time.Duration(n) * time.Microsecond
+	}
+	if v, ok := m[key].(int64); ok {
+		return time.Duration(v) * time.Microsecond
+	}
+	return fallback
+}
+func inputBytes(m map[string]any, key string) []byte {
+	if v, ok := m[key].(string); ok {
+		return []byte(v)
+	}
+	if v, ok := m[key]; ok {
+		b, _ := json.Marshal(v)
+		return b
+	}
+	return nil
+}
+func mutationFailure(err error, claim, op, path string) error {
+	if err == nil {
+		return nil
+	}
+	if e := reason.As(err); e != nil {
+		state := "not-committed"
+		if !isDefinitiveNoCommit(err) {
+			state = "unknown"
+		}
+		e.With("claimId", claim).With("operationId", op).With("commitState", state).With("pendingPath", path)
+	}
+	return err
+}
+func isDefinitiveNoCommit(err error) bool {
+	if e := reason.As(err); e != nil {
+		switch e.Reason {
+		case reason.ReasonUnknownOutcome, reason.ReasonUnknownOutcomePending, reason.ReasonReplayExpired, reason.ReasonStorageFailure, reason.ReasonHandleWriteFailed:
+			return false
+		}
+		return true
+	}
+	return false
+}
+func committedHandleFailure(err error, receipt lease.Receipt, path, claim, op string) error {
+	e := reason.New(reason.ReasonHandleWriteFailed, "claim committed but handle could not be updated").With("claimId", claim).With("operationId", op).With("commitState", "committed").With("pendingPath", path)
+	if receipt.OperationID != "" {
+		e.With("receipt", receipt)
+	}
+	return e
+}
+func clearPending(path string, h *handle.Handle) {
+	if h == nil {
+		return
+	}
+	if h.Revision > 0 && !h.ExpiresAt.IsZero() {
+		h.State, h.PendingRequest = "ready", nil
+		_ = handle.Write(path, *h)
+	} else {
+		_ = handle.Remove(path)
+	}
+}
+
+// recoverPendingMutation replays only the exact request retained in a handle.
+// It never constructs a new operation or deadline.
+func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Credentials, path string, h *handle.Handle, kind string, currentHash string) (lease.Receipt, bool, error) {
+	if h == nil || h.State != "pending" {
+		return lease.Receipt{}, false, nil
+	}
+	p := h.PendingRequest
+	if p == nil || p.Kind != kind {
+		return lease.Receipt{}, true, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+	}
+	if p.RequestHash != currentHash {
+		return lease.Receipt{}, true, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+	}
+	var r lease.Receipt
+	var err error
+	switch kind {
+	case "heartbeat":
+		r, err = svc.Heartbeat(ctx, c, lease.Renew{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), RequestNotAfter: p.RequestNotAfter})
+	case "checkpoint":
+		r, err = svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), Data: inputBytes(p.Inputs, "checkpoint"), RequestNotAfter: p.RequestNotAfter})
+	case "release":
+		r, err = svc.Release(ctx, c, lease.ReleaseRequest{OperationID: p.OperationID, Reason: inputString(p.Inputs, "reason"), RequestNotAfter: p.RequestNotAfter})
+	default:
+		return lease.Receipt{}, true, reason.New(reason.ReasonOperationRequestMismatch, "pending request cannot be replayed here")
+	}
 	if err != nil {
-		return lease.Credentials{}, nil, nil, err
+		if isDefinitiveNoCommit(err) {
+			clearPending(path, h)
+		}
+		return lease.Receipt{}, true, mutationFailure(err, c.ClaimID, p.OperationID, path)
 	}
-	return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}, svc, st, nil
+	return r, true, nil
+}
+func requestHashCLI(v any) string {
+	b, _ := json.Marshal(v)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+func finishHandleMutation(path string, h *handle.Handle, r lease.Receipt) error {
+	if h == nil {
+		return nil
+	}
+	h.State = "ready"
+	h.PendingRequest = nil
+	if r.Revision > h.Revision {
+		h.Revision = r.Revision
+	}
+	if v, ok := r.Result["expiresAt"].(string); ok {
+		if t, e := time.Parse(time.RFC3339Nano, v); e == nil {
+			h.ExpiresAt = t
+		}
+	}
+	return handle.Write(path, *h)
 }
 func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		c, svc, st, err := credsCLI(ctx, cmd)
+		c, svc, st, lk, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
+		defer func() {
+			if lk != nil {
+				lk.Close()
+			}
+		}()
+		if h != nil && h.RecoveryRequest != nil {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		r, err := svc.Heartbeat(ctx, c, lease.Renew{OperationID: cmd.String("operation-id"), TTL: cmd.Duration("ttl"), RequestNotAfter: deadline})
+		if h != nil && h.PendingRequest != nil && !cmd.IsSet("request-not-after") {
+			deadline = h.PendingRequest.RequestNotAfter
+		}
+		ttl := cmd.Duration("ttl")
+		if ttl == 0 {
+			ttl = svc.DefaultTTL()
+		}
+		if ttl < time.Second || ttl > time.Hour {
+			return s.handle(cmd, reason.Invalid("ttl must be between 1s and 1h"))
+		}
+		var pending *handle.PendingRequest
+		if h != nil {
+			pending = h.PendingRequest
+		}
+		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
+		}
+		op, err := operationID(cmd, pending)
 		if err != nil {
 			return s.handle(cmd, err)
+		}
+		inputs := map[string]any{"kind": "heartbeat", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs)); recovering {
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			if e = finishHandleMutation(hp, h, r); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
+			}
+			return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
+		}
+		if err := beginHandleMutation(hp, h, "heartbeat", op, deadline, inputs); err != nil {
+			return s.handle(cmd, err)
+		}
+		r, err := svc.Heartbeat(ctx, c, lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline})
+		if err != nil {
+			if isDefinitiveNoCommit(err) {
+				clearPending(hp, h)
+			}
+			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
+		}
+		if err := finishHandleMutation(hp, h, r); err != nil {
+			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 		}
 		return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
 	}
 }
 func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		c, svc, st, err := credsCLI(ctx, cmd)
+		c, svc, st, lk, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
+		defer func() {
+			if lk != nil {
+				lk.Close()
+			}
+		}()
+		if h != nil && h.RecoveryRequest != nil {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
 		data := []byte(cmd.String("data"))
 		if p := cmd.String("data-file"); p != "" {
 			data, err = os.ReadFile(p)
@@ -217,60 +666,379 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 				return s.handle(cmd, reason.New(reason.ReasonInvalidArgument, "checkpoint data file cannot be read"))
 			}
 		}
+		data, normalizeErr := lease.NormalizeCheckpoint(data)
+		if normalizeErr != nil || len(data) == 0 || len(data) > 8*1024 || strings.Contains(string(data), c.Token) {
+			return s.handle(cmd, reason.Invalid("checkpoint must be canonical JSON no larger than 8 KiB"))
+		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		r, err := svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: cmd.String("operation-id"), TTL: cmd.Duration("ttl"), Data: data, RequestNotAfter: deadline})
+		if h != nil && h.PendingRequest != nil && !cmd.IsSet("request-not-after") {
+			deadline = h.PendingRequest.RequestNotAfter
+		}
+		ttl := cmd.Duration("ttl")
+		if ttl == 0 {
+			ttl = svc.DefaultTTL()
+		}
+		if ttl < time.Second || ttl > time.Hour {
+			return s.handle(cmd, reason.Invalid("ttl must be between 1s and 1h"))
+		}
+		var pending *handle.PendingRequest
+		if h != nil {
+			pending = h.PendingRequest
+		}
+		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
+		}
+		op, err := operationID(cmd, pending)
 		if err != nil {
 			return s.handle(cmd, err)
+		}
+		inputs := map[string]any{"kind": "checkpoint", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(data), "requestNotAfter": deadline.UTC().UnixMicro()}
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs)); recovering {
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			if e = finishHandleMutation(hp, h, r); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
+			}
+			return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
+		}
+		if err := beginHandleMutation(hp, h, "checkpoint", op, deadline, inputs); err != nil {
+			return s.handle(cmd, err)
+		}
+		r, err := svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: op, TTL: ttl, Data: data, RequestNotAfter: deadline})
+		if err != nil {
+			if isDefinitiveNoCommit(err) {
+				clearPending(hp, h)
+			}
+			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
+		}
+		if err := finishHandleMutation(hp, h, r); err != nil {
+			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 		}
 		return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
 	}
 }
 func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		c, svc, st, err := credsCLI(ctx, cmd)
+		c, svc, st, lk, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
+		defer func() {
+			if lk != nil {
+				lk.Close()
+			}
+		}()
+		if h != nil && h.RecoveryRequest != nil {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		r, err := svc.Release(ctx, c, lease.ReleaseRequest{OperationID: cmd.String("operation-id"), Reason: cmd.String("reason"), RequestNotAfter: deadline})
+		if h != nil && h.PendingRequest != nil && !cmd.IsSet("request-not-after") {
+			deadline = h.PendingRequest.RequestNotAfter
+		}
+		reasonText := strings.TrimSpace(cmd.String("reason"))
+		if reasonText == "" {
+			reasonText = "released"
+		}
+		if err := validatePublicCLI("release reason", reasonText, 1024, true); err != nil || strings.Contains(reasonText, c.Token) {
+			if err == nil {
+				err = reason.Invalid("release reason is invalid")
+			}
+			return s.handle(cmd, err)
+		}
+		var pending *handle.PendingRequest
+		if h != nil {
+			pending = h.PendingRequest
+		}
+		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
+		}
+		op, err := operationID(cmd, pending)
 		if err != nil {
 			return s.handle(cmd, err)
+		}
+		inputs := map[string]any{"kind": "release", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()}
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "release", requestHashCLI(inputs)); recovering {
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			if e = handle.Remove(hp); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
+			}
+			return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
+		}
+		if err := beginHandleMutation(hp, h, "release", op, deadline, inputs); err != nil {
+			return s.handle(cmd, err)
+		}
+		r, err := svc.Release(ctx, c, lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
+		if err != nil {
+			if isDefinitiveNoCommit(err) {
+				clearPending(hp, h)
+			}
+			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
+		}
+		if h != nil {
+			if err := handle.Remove(hp); err != nil {
+				return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
+			}
 		}
 		return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
 	}
 }
 func transferActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		c, svc, st, err := credsCLI(ctx, cmd)
-		if err != nil {
+		if strings.TrimSpace(cmd.String("successor-handle")) == "" {
+			return s.handle(cmd, reason.Invalid("transfer requires --successor-handle"))
+		}
+		if err := ValidateSelection(cmd, true); err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		if strings.TrimSpace(cmd.String("successor-handle")) != "" {
-			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "successor handles are unavailable until handle support is implemented"))
-		}
-		successor, err := tokenFromCommand(cmd, "successor-token-file", "")
+		svc, st, cfg, err := serviceFor(ctx, cmd, true)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		successorID := strings.TrimSpace(cmd.String("successor-claim-id"))
-		if successorID == "" {
-			return s.handle(cmd, reason.Invalid("successor-claim-id is required"))
+		defer st.Close()
+		successorPath := filepath.Clean(strings.TrimSpace(cmd.String("successor-handle")))
+		explicit := strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision")
+		predecessorPath := ""
+		if !explicit {
+			predecessorPath, err = acquireHandlePath(cmd, cfg)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			if filepath.Clean(predecessorPath) == successorPath {
+				return s.handle(cmd, reason.Invalid("successor handle must differ from predecessor"))
+			}
 		}
-		g, err := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: cmd.String("operation-id"), SuccessorClaimID: successorID, SuccessorToken: successor, ToAgent: cmd.String("to-agent"), ToSession: cmd.String("to-session"), ToWorkKey: cmd.String("to-work-key"), TTL: cmd.Duration("ttl"), RequestNotAfter: deadline})
+		lockPaths := []string{successorPath + ".lock"}
+		if predecessorPath != "" {
+			lockPaths = append(lockPaths, predecessorPath+".lock")
+		}
+		locks, err := handle.AcquireLocks(ctx, lockPaths...)
 		if err != nil {
 			return s.handle(cmd, err)
+		}
+		defer func() {
+			for _, l := range locks {
+				_ = l.Close()
+			}
+		}()
+		var h *handle.Handle
+		hp := predecessorPath
+		var c lease.Credentials
+		if explicit {
+			token, e := tokenFromCommand(cmd, "token-file", "token-fd")
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			c = lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}
+			if successor, readErr := handle.Read(successorPath); readErr == nil && successor.State == "pending" && successor.PendingRequest != nil && successor.PendingRequest.Kind == "transfer" && inputString(successor.PendingRequest.Inputs, "claimId") == c.ClaimID {
+				if successor.AuthorityID != st.AuthorityID() {
+					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "successor handle authority does not match"))
+				}
+				if successor.RecoveryRequest != nil {
+					return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+				}
+				h = &handle.Handle{SchemaVersion: 1, AuthorityID: c.AuthorityID, ClaimID: c.ClaimID, Token: c.Token, Revision: c.Revision, Resources: append([]string(nil), successor.Resources...), ExpiresAt: time.Now().Add(time.Second), AgentID: "stateless", SessionID: "stateless", LocalReplaceAllowed: successor.LocalReplaceAllowed, State: "ready"}
+			} else {
+				status, statusErr := svc.Status(ctx, lease.Selector{ClaimID: c.ClaimID})
+				if statusErr != nil || status.Claim == nil {
+					return s.handle(cmd, reason.New(reason.ReasonStaleClaim, "claim is not current"))
+				}
+				h = &handle.Handle{SchemaVersion: 1, AuthorityID: c.AuthorityID, ClaimID: c.ClaimID, Token: c.Token, Revision: c.Revision, Resources: append([]string(nil), status.Claim.Resources...), ExpiresAt: status.Claim.ExpiresAt, AgentID: status.Claim.AgentID, SessionID: status.Claim.SessionID, LocalReplaceAllowed: status.Claim.LocalReplaceAllowed, State: "ready"}
+			}
+			hp = ""
+		} else {
+			loaded, e := handle.Read(predecessorPath)
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			if loaded.AuthorityID != st.AuthorityID() {
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
+			}
+			h = &loaded
+			c = lease.Credentials{AuthorityID: loaded.AuthorityID, ClaimID: loaded.ClaimID, Token: loaded.Token, Revision: loaded.Revision}
+		}
+		if h != nil && h.RecoveryRequest != nil {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
+		if h != nil && h.PendingRequest != nil && h.PendingRequest.Kind != "transfer" {
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
+		}
+		if h != nil && h.PendingRequest != nil && h.PendingRequest.Kind == "transfer" {
+			p := h.PendingRequest
+			if _, e := operationID(cmd, p); e != nil {
+				return s.handle(cmd, e)
+			}
+			successorID := inputString(p.Inputs, "successorClaimId")
+			sh, readErr := handle.Read(successorPath)
+			if readErr != nil {
+				if classified := reason.As(readErr); classified == nil || classified.Reason != reason.ReasonHandleMalformed {
+					return s.handle(cmd, readErr)
+				}
+				sh = handle.Handle{SchemaVersion: 1, AuthorityID: h.AuthorityID, ClaimID: successorID, Token: p.SuccessorToken, Resources: append([]string(nil), h.Resources...), AgentID: inputString(p.Inputs, "toAgent"), SessionID: inputString(p.Inputs, "toSession"), State: "pending", LocalReplaceAllowed: h.LocalReplaceAllowed, PendingRequest: &handle.PendingRequest{OperationID: p.OperationID, Kind: "transfer", AuthorityID: h.AuthorityID, ClaimID: successorID, RequestHash: p.RequestHash, RequestNotAfter: p.RequestNotAfter, Inputs: p.Inputs, SuccessorToken: p.SuccessorToken}}
+				if e := handle.Write(successorPath, sh); e != nil {
+					return s.handle(cmd, e)
+				}
+			}
+			if sh.RecoveryRequest != nil {
+				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+			}
+			if (sh.State != "pending" && sh.State != "ready") || sh.ClaimID != successorID || sh.PendingRequest != nil && sh.PendingRequest.OperationID != p.OperationID || sh.AuthorityID != st.AuthorityID() || sh.Token != p.SuccessorToken {
+				return s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending transfer recovery requires its successor handle"))
+			}
+			if filepath.Clean(inputString(p.Inputs, "successorHandle")) != successorPath ||
+				(cmd.String("to-agent") != "" && cmd.String("to-agent") != sh.AgentID) ||
+				(cmd.String("to-session") != "" && cmd.String("to-session") != sh.SessionID) ||
+				(cmd.IsSet("to-work-key") && cmd.String("to-work-key") != inputString(p.Inputs, "toWorkKey")) ||
+				(cmd.IsSet("ttl") && cmd.Duration("ttl").Microseconds() != int64(inputDuration(p.Inputs, "ttl", 0)/time.Microsecond)) ||
+				(cmd.IsSet("request-not-after") && !deadline.Equal(p.RequestNotAfter)) {
+				return s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending transfer request differs"))
+			}
+			g, replayErr := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: p.OperationID, SuccessorClaimID: sh.ClaimID, SuccessorToken: sh.Token, ToAgent: sh.AgentID, ToSession: sh.SessionID, ToWorkKey: inputString(p.Inputs, "toWorkKey"), TTL: inputDuration(p.Inputs, "ttl", svc.DefaultTTL()), RequestNotAfter: p.RequestNotAfter})
+			if replayErr != nil {
+				if isDefinitiveNoCommit(replayErr) {
+					clearPending(hp, h)
+					_ = handle.Remove(successorPath)
+				}
+				return s.handle(cmd, mutationFailure(replayErr, c.ClaimID, p.OperationID, hp))
+			}
+			sh.State, sh.ExpiresAt, sh.PendingRequest = "ready", g.ExpiresAt, nil
+			if g.Revision > sh.Revision {
+				sh.Revision = g.Revision
+			}
+			if e := handle.Write(successorPath, sh); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, g.Receipt, successorPath, c.ClaimID, p.OperationID))
+			}
+			if e := handle.Remove(hp); e != nil {
+				return s.handle(cmd, committedHandleFailure(e, g.Receipt, hp, c.ClaimID, p.OperationID))
+			}
+			return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
+		}
+		if explicit {
+			if _, statErr := os.Lstat(successorPath); statErr == nil {
+				sh, readErr := handle.Read(successorPath)
+				if readErr != nil {
+					return s.handle(cmd, readErr)
+				}
+				p := sh.PendingRequest
+				if sh.AuthorityID != st.AuthorityID() {
+					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "successor handle authority does not match"))
+				}
+				if sh.RecoveryRequest != nil {
+					return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+				}
+				if sh.State != "pending" || p == nil || p.Kind != "transfer" || inputString(p.Inputs, "claimId") != c.ClaimID || filepath.Clean(inputString(p.Inputs, "successorHandle")) != successorPath {
+					return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "successor handle is already in use"))
+				}
+				if _, e := operationID(cmd, p); e != nil {
+					return s.handle(cmd, e)
+				}
+				if (cmd.String("to-agent") != "" && cmd.String("to-agent") != sh.AgentID) || (cmd.String("to-session") != "" && cmd.String("to-session") != sh.SessionID) || (cmd.IsSet("to-work-key") && cmd.String("to-work-key") != inputString(p.Inputs, "toWorkKey")) || (cmd.IsSet("ttl") && cmd.Duration("ttl") != inputDuration(p.Inputs, "ttl", 0)) || (cmd.IsSet("request-not-after") && !deadline.Equal(p.RequestNotAfter)) {
+					return s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending transfer request differs"))
+				}
+				g, replayErr := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: p.OperationID, SuccessorClaimID: sh.ClaimID, SuccessorToken: sh.Token, ToAgent: sh.AgentID, ToSession: sh.SessionID, ToWorkKey: inputString(p.Inputs, "toWorkKey"), TTL: inputDuration(p.Inputs, "ttl", svc.DefaultTTL()), RequestNotAfter: p.RequestNotAfter})
+				if replayErr != nil {
+					if isDefinitiveNoCommit(replayErr) {
+						_ = handle.Remove(successorPath)
+					}
+					return s.handle(cmd, mutationFailure(replayErr, c.ClaimID, p.OperationID, successorPath))
+				}
+				sh.State, sh.ExpiresAt, sh.PendingRequest = "ready", g.ExpiresAt, nil
+				if g.Revision > sh.Revision {
+					sh.Revision = g.Revision
+				}
+				if e := handle.Write(successorPath, sh); e != nil {
+					return s.handle(cmd, committedHandleFailure(e, g.Receipt, successorPath, c.ClaimID, p.OperationID))
+				}
+				return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
+			} else if !os.IsNotExist(statErr) {
+				return s.handle(cmd, reason.New(reason.ReasonHandleUnsafe, "successor handle path is unsafe"))
+			}
+		}
+		successorID, successor := randomHex(16), randomHex(32)
+		if explicit && strings.TrimSpace(cmd.String("operation-id")) == "" {
+			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
+		}
+		op, err := operationID(cmd, nil)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		if strings.TrimSpace(cmd.String("to-agent")) == "" || strings.TrimSpace(cmd.String("to-session")) == "" {
+			return s.handle(cmd, reason.Invalid("successor identity is required"))
+		}
+		ttl := cmd.Duration("ttl")
+		if ttl == 0 {
+			ttl = svc.DefaultTTL()
+		}
+		if ttl < time.Second || ttl > time.Hour {
+			return s.handle(cmd, reason.Invalid("ttl must be between 1s and 1h"))
+		}
+		toWorkKey := strings.TrimSpace(cmd.String("to-work-key"))
+		if toWorkKey == "" {
+			toWorkKey = strings.Join(h.Resources, ",")
+		}
+		inputs := map[string]any{"kind": "transfer", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "successorClaimId": successorID, "successorHandle": successorPath, "toAgent": cmd.String("to-agent"), "toSession": cmd.String("to-session"), "toWorkKey": toWorkKey, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+		transferHash := requestHashCLI(inputs)
+		sh := handle.Handle{SchemaVersion: 1, AuthorityID: c.AuthorityID, ClaimID: successorID, Token: successor, Resources: h.Resources, AgentID: cmd.String("to-agent"), SessionID: cmd.String("to-session"), State: "pending", LocalReplaceAllowed: h.LocalReplaceAllowed, PendingRequest: &handle.PendingRequest{OperationID: op, Kind: "transfer", AuthorityID: c.AuthorityID, ClaimID: successorID, RequestHash: transferHash, RequestNotAfter: deadline, Inputs: inputs, SuccessorToken: successor}}
+		if _, e := os.Lstat(successorPath); e == nil {
+			if _, readErr := handle.Read(successorPath); readErr != nil {
+				return s.handle(cmd, readErr)
+			}
+			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "successor handle is already in use"))
+		} else if !os.IsNotExist(e) {
+			return s.handle(cmd, reason.New(reason.ReasonHandleUnsafe, "successor handle path is unsafe"))
+		}
+		predecessorReady := *h
+		if hp != "" {
+			h.State = "pending"
+			h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: "transfer", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: transferHash, RequestNotAfter: deadline, Inputs: inputs, SuccessorToken: successor}
+			if err := handle.Write(hp, *h); err != nil {
+				return s.handle(cmd, err)
+			}
+		}
+		if err := handle.Write(successorPath, sh); err != nil {
+			if hp != "" {
+				_ = handle.Write(hp, predecessorReady)
+			}
+			return s.handle(cmd, err)
+		}
+		g, err := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: op, SuccessorClaimID: successorID, SuccessorToken: successor, ToAgent: cmd.String("to-agent"), ToSession: cmd.String("to-session"), ToWorkKey: toWorkKey, TTL: ttl, RequestNotAfter: deadline})
+		if err != nil {
+			if isDefinitiveNoCommit(err) {
+				if hp != "" {
+					clearPending(hp, h)
+				}
+				_ = handle.Remove(successorPath)
+			}
+			pendingPath := hp
+			if pendingPath == "" {
+				pendingPath = successorPath
+			}
+			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, pendingPath))
+		}
+		sh.State, sh.ExpiresAt, sh.PendingRequest = "ready", g.ExpiresAt, nil
+		if g.Revision > sh.Revision {
+			sh.Revision = g.Revision
+		}
+		if err := handle.Write(successorPath, sh); err != nil {
+			return s.handle(cmd, committedHandleFailure(err, g.Receipt, successorPath, c.ClaimID, op))
+		}
+		if hp != "" {
+			if err := handle.Remove(hp); err != nil {
+				return s.handle(cmd, committedHandleFailure(err, g.Receipt, hp, c.ClaimID, op))
+			}
 		}
 		return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
 	}

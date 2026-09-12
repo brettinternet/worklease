@@ -10,6 +10,7 @@
 - Added deterministic Go resource policies, canonical keys, and key/policy inspection commands.
 - Added the transactional Go singleton lease lifecycle with hashed client credentials, authenticated replay, clock safety, and guarded-operation state.
 - Extended Go claims to 1–32 ordered resources with atomic overlap handling, whole-claim lifecycle mutations, and mixed-resource status projections.
+- Added private contextual handles, strict credential sources, durable pending requests, and stable cross-process handle locks.
 
 ## 0.10.0 - 2026-09-12
 
