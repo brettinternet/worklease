@@ -154,6 +154,24 @@ func TestWatchJSONRedactsEventDetails(t *testing.T) {
 	}
 }
 
+func TestWatchTextTimeoutIncludesDurableCursor(t *testing.T) {
+	home := t.TempDir()
+	st, err := store.Open(context.Background(), home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "watch", "--home", home, "--resource", "r", "--until", "change", "--timeout", "60ms"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "timedOut: true") || !strings.Contains(out.String(), "nextCursor:") {
+		t.Fatalf("text=%q", out.String())
+	}
+}
+
 func TestWatchEmptyAuthorityUntilFreeJSONAndTimeoutBounds(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "empty")
 	var out bytes.Buffer

@@ -110,12 +110,9 @@ func Wait(ctx context.Context, st *store.Store, req Request) (Result, error) {
 	if req.Until != "" && len(req.Resources) == 0 {
 		return Result{}, reason.Invalid("until requires at least one resource")
 	}
-	timeout := req.Timeout
-	if timeout == 0 {
-		timeout = DefaultTimeout
-	}
-	if timeout < 0 || timeout > MaxTimeout {
-		return Result{}, reason.Invalid("timeout must be between 1s and 1h")
+	timeout, err := normalizeTimeout(req.Timeout)
+	if err != nil {
+		return Result{}, err
 	}
 	poll := req.PollInterval
 	if poll == 0 {
@@ -316,6 +313,16 @@ func scanPosition(scan ledger.EventsScan, fallback string) int64 {
 		return 0
 	}
 	return position
+}
+
+func normalizeTimeout(timeout time.Duration) (time.Duration, error) {
+	if timeout == 0 {
+		return DefaultTimeout, nil
+	}
+	if timeout < 0 || timeout > MaxTimeout {
+		return 0, reason.Invalid("timeout must be between 1s and 1h")
+	}
+	return timeout, nil
 }
 
 type observation struct {

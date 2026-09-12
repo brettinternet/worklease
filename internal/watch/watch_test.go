@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -245,6 +246,180 @@ func TestWaitUntilChangeReturnsActiveReacquireEvent(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("watch did not return on active-to-active transfer")
+	}
+}
+
+func TestWaitBindsCursorToAuthorityFeedAndFilter(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	filter := ledger.ResourcesFilter([]string{"r"})
+	cases := []string{
+		ledger.EncodeCursor(strings.Repeat("f", 32), "events", filter, 0),
+		ledger.EncodeCursor(st.AuthorityID(), "history", filter, 0),
+		ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"other"}), 0),
+	}
+	for _, cursor := range cases {
+		if _, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Millisecond}); err == nil {
+			t.Errorf("accepted mismatched cursor %q", cursor)
+		}
+	}
+}
+
+func TestWaitTimeoutContinuationDoesNotSkipLateEvent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	filter := ledger.ResourcesFilter([]string{"r"})
+	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", filter, 0)
+	writeErr := make(chan error, 1)
+	go func() {
+		time.Sleep(275 * time.Millisecond)
+		writeErr <- st.Write(ctx, func(tx *store.Tx) error {
+			_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("8", 32)})
+			return err
+		})
+	}()
+	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 300 * time.Millisecond, PollInterval: 250 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatal(err)
+	}
+	if !first.TimedOut || first.Event != nil {
+		t.Fatalf("first=%+v", first)
+	}
+	continued, err := Wait(ctx, st, Request{Cursor: first.NextCursor, Resources: []string{"r"}, Timeout: time.Second, PollInterval: MinPoll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Event == nil || continued.Event.ClaimID != strings.Repeat("8", 32) {
+		t.Fatalf("late event was skipped: first=%+v continued=%+v", first, continued)
+	}
+}
+
+func TestWaitUntilFreeKeepsWaitingThroughTransfer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	clock := testkit.NewClock(time.Now().UTC().Truncate(time.Microsecond))
+	svc := lease.New(st, clock, nil, lease.Defaults{TTL: time.Second, PollInterval: MinPoll})
+	oldID, oldToken := strings.Repeat("9", 32), strings.Repeat("d", 64)
+	grant, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: oldID, Token: oldToken, Resources: []string{"r"}, AgentID: "old", SessionID: "old", TTL: time.Second, RequestNotAfter: clock.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultCh := make(chan Result, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, waitErr := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "free", Timeout: time.Second, PollInterval: MinPoll, Clock: clock})
+		resultCh <- result
+		errCh <- waitErr
+	}()
+	time.Sleep(20 * time.Millisecond)
+	newID, newToken := strings.Repeat("a", 32), strings.Repeat("e", 64)
+	successor, err := svc.Transfer(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: oldID, Token: oldToken, Revision: grant.Revision}, lease.TransferRequest{OperationID: strings.Repeat("b", 32), SuccessorClaimID: newID, SuccessorToken: newToken, ToAgent: "new", ToSession: "new", ToWorkKey: "new", TTL: time.Second, RequestNotAfter: clock.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-resultCh:
+		t.Fatalf("watch returned while successor was active: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := svc.Release(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: newID, Token: newToken, Revision: successor.Revision}, lease.ReleaseRequest{OperationID: strings.Repeat("c", 32), Reason: "done", RequestNotAfter: clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-resultCh:
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+		if !result.Free {
+			t.Fatalf("result=%+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watch did not return after successor release")
+	}
+}
+
+func TestManyWaitersCancelWithoutLeakingOrBlockingWrites(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st, err := store.Open(ctx, t.TempDir(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
+	const waiters = 24
+	done := make(chan error, waiters)
+	for range waiters {
+		go func() {
+			_, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Second, PollInterval: MinPoll})
+			done <- err
+		}()
+	}
+	time.Sleep(75 * time.Millisecond)
+	writeCtx, stopWrite := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer stopWrite()
+	if err := st.Write(writeCtx, func(tx *store.Tx) error {
+		_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "acquired", Resources: []string{"other"}, ClaimID: strings.Repeat("d", 32)})
+		return err
+	}); err != nil {
+		t.Fatalf("waiters held transactions between polls: %v", err)
+	}
+	cancel()
+	for range waiters {
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("wait error=%v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("waiter leaked after cancellation")
+		}
+	}
+}
+
+func TestTimeoutDefaultsAndMaximum(t *testing.T) {
+	if got, err := normalizeTimeout(0); err != nil || got != DefaultTimeout {
+		t.Fatalf("default timeout=%v err=%v", got, err)
+	}
+	if got, err := normalizeTimeout(MaxTimeout); err != nil || got != MaxTimeout {
+		t.Fatalf("maximum timeout=%v err=%v", got, err)
+	}
+	if _, err := normalizeTimeout(MaxTimeout + time.Nanosecond); err == nil {
+		t.Fatal("accepted timeout above maximum")
+	}
+}
+
+func TestEmptyFeedReturnsDurableBoundCursor(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: 60 * time.Millisecond, PollInterval: MinPoll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := ledger.ParseCursor(result.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TimedOut || cursor.AuthorityID != st.AuthorityID() || cursor.Feed != "events" || cursor.Filter != ledger.ResourcesFilter([]string{"r"}) || cursor.Sequence != "0" {
+		t.Fatalf("result=%+v cursor=%+v", result, cursor)
 	}
 }
 
