@@ -4,7 +4,7 @@ title: Cut over to Go and retire the Python proof of concept
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 05:51'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -47,6 +47,8 @@ Retire the Python proof of concept after the Go capability inventory is satisfie
 Remove the exact tracked Python core/SDK/tests/packaging/build assets using recoverable cleanup. Repoint lint/format/test/typecheck/ci to Go and update AGENTS/CLAUDE guidance, preserving managed blocks. Historical Python references are allowed in committed task evidence and migration notes; do not erase evidence to satisfy a broad grep.
 
 Verify duplicate Python-era tasks stay superseded. Run clean Go-only builds and native end-to-end scenarios, obtain independent review of filesystem safety, process cleanup, transaction/replay/recovery boundaries, redaction and cancellation, and resolve blocking findings. Release publishing remains a separately authorized action.
+
+Evidence and patterns (the amended contract is normative): the Python-era surfaces to remove are `pyproject.toml`, `uv.lock`, `src/worklease`, `tests/*.py`, `packages/worklease-source-sdk`, `scripts/*.py`, the Python jobs in `.github/workflows/ci.yml`, and the Python tools and tasks in `mise.toml`. The TASK-85.1 inventory document lists every retained capability and its owner; TASK-74 through TASK-84 are already Done as superseded and TASK-67 shipped in Python.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

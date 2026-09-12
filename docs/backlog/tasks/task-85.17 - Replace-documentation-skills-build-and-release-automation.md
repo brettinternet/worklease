@@ -4,7 +4,7 @@ title: 'Replace documentation, skills, build, and release automation'
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 06:07'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -38,6 +38,8 @@ Replace documentation, skills, man generation and Go release preparation after a
 Document the intentionally incompatible Go product, session-safe handles, no token output, operation-specific protection, exact path membership, replay/recovery and authority-bound events. Preserve docs/distributed-cloudflare-claim-authority.md as the deferred Go proposal; remove only retired SDK compatibility docs. The provider-neutral workflow stays provider-neutral while its Go adapter drops ownerId and bundle-specific concepts.
 
 Build and test all four archives with the chosen driver, checksums and versioned man page. Release publication is a separate explicitly authorized action: do not create tags, push, dispatch publication or publish merely to satisfy a planning task. Local artifact and CI validation must not require a public release.
+
+Evidence and patterns (the amended contract is normative): hum `.github/workflows/release.yaml` (CI verification, matrix build with ldflags, checksums, gh release), `cmd/hum-man/main.go` and `internal/cli/man.go` (man generation from the command tree), `README.md` structure, `scripts/install_test.sh`. Current repository evidence: `scripts/release_artifacts.py` (archive members `bin/worklease` and `share/man/man1/worklease.1`), `.github/workflows/release.yml` (asset naming), `README.md`, `docs/cli-reference.md`, `docs/claim-model.md`, `docs/mcp.md`, `skills/worklease-workflow/SKILL.md` and its references, backlog doc-1, `CHANGELOG.md`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

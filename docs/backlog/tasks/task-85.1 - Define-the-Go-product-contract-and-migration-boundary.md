@@ -4,7 +4,7 @@ title: Inventory capabilities and safety evidence for the Go rewrite
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 05:51'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -32,6 +32,8 @@ Inventory the useful Python capabilities and safety evidence before Go implement
 Record the current HEAD SHA so paths remain retrievable after retirement. Discover current CLI/MCP surfaces instead of hard-coding counts (TASK-86 observed 26 add_parser calls and seven Python MCP tools). Group modules, scripts, docs, skills and SDK surfaces by capability; give each retained/redesigned capability an owning Go task, contract section, and representative named safety tests. Identify intentional removals and the deferred remote proposal. Do not enumerate every Python test or require one-to-one test/module ports.
 
 Create the Go Rewrite Capability Inventory through backlog doc create/update. Record concrete missing safety behaviors and any proposed amendments, or explicitly state none. Resolve material gaps through section 15 before declaring this prerequisite complete. No implementation work is included. Owned surface: inventory document and a TASK-85 summary comment; current TASK-86 amendments need not be re-ratified.
+
+Evidence and patterns (the amended contract is normative; Python is behavior evidence, not a parity target): CLI surfaces are the `add_parser` calls in `src/worklease/cli.py`; MCP tools are in `src/worklease/mcp_server.py`; identity policies in `src/worklease/adapters/`; release and packaging in `scripts/*.py`; prior human docs in `docs/cli-reference.md`, `docs/claim-model.md`, `docs/mcp.md`; the reusable skill under `skills/worklease-workflow/`. Named safety test families to cite: `tests/test_store.py` (concurrency, expiry, transfer, idempotency, clock), `tests/test_execution.py` (process groups, pipes, timeouts, replacement), `tests/test_credentials.py` and `tests/test_lease_context.py` (secret and handle safety), `tests/test_gc.py` and `tests/test_history.py` (retention, redaction, cursors), `tests/test_mcp.py` (heartbeat, handles, EOF).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,7 +4,7 @@ title: Select and prove the SQLite driver
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -30,6 +30,8 @@ ordinal: 96000
 Prove a SQLite driver against the actual authority boundary before selecting it. Read D2/D3/D8 and contract sections 8, 14 and 20. Prefer modernc.org/sqlite; evaluate alternatives only if executable evidence requires it. Own internal/store/driver.go and driver tests plus driver dependency/amendment.
 
 Prove WAL/FULL, writer serialization, rollback, cancellation, crash durability, AUTOINCREMENT, safe actual driver opens of main/WAL/SHM, and read-only observation without creating files or ignoring committed WAL. An lstat check followed by an ordinary path-based driver open is not equivalent to no-follow safety. Record capability limits and amend unsafe assumptions before later tasks rely on them.
+
+Evidence and patterns (the amended contract is normative): `src/worklease/sqlite.py` shows the pragmas the proof of concept relied on (WAL, synchronous FULL, busy_timeout, BEGIN IMMEDIATE) and `connect_readonly` opening `?mode=ro` over a WAL database, which is the read-only behavior section 8 requires the spike to prove. Tests to reproduce in shape: `tests/test_store.py` test_concurrent_acquire_has_one_winner_and_independent_resources_proceed and test_epoch_schema_migration_rolls_back_atomically, `tests/test_gc.py` test_apply_rolls_back_on_injected_sqlite_interruption. Candidate drivers in order: `modernc.org/sqlite` (preferred, pure Go), `github.com/ncruces/go-sqlite3` (pure Go), `github.com/mattn/go-sqlite3` (CGO fallback requiring a D3 amendment).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

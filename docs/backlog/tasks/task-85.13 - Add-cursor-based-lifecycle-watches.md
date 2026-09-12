@@ -4,7 +4,7 @@ title: Add cursor-based lifecycle watches
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 05:51'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -27,6 +27,8 @@ ordinal: 105000
 Implement bounded read-only lifecycle watches using the event and state contracts in section 11. Own internal/watch and watch CLI. An expired lease becomes acquirable without any new durable event; waiting for a release event alone is incorrect.
 
 Capture initial state/cursor in one snapshot, scan matching events in order, recheck time-based transitions on every poll, and return only a position actually inspected at timeout. Bind continuations to the authority/feed/filter and expose gaps and unresolved predecessor metadata. Do not introduce notification sockets or filesystem watchers.
+
+Evidence and patterns (the amended contract is normative): TASK-81 (closed as superseded) records the watch intent; `tests/test_history.py` test_events_cursor_preserves_ties_and_concurrent_insert_semantics shows the concurrent-insert cursor expectations. hum patterns for bounded waits and cancellation: `internal/cli/wait_test.go` and `internal/daemon`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

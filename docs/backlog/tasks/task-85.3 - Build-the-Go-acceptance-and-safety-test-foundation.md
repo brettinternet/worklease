@@ -4,7 +4,7 @@ title: Build the Go test foundation
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 05:51'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -31,6 +31,8 @@ ordinal: 95000
 Provide the small shared test foundation used by the Go tasks: isolated private homes, controllable wall/monotonic clocks, deterministic identifiers/credentials, CLI execution and bounded subprocess helpers. Read contract sections 3, 14 and 18, and the cited Python concurrency/process/Git fixtures as behavior evidence.
 
 Own internal/testkit. Add helpers only when this task or an actual downstream test exercises them; do not introduce skipped database fixtures or a broad unused framework. Later tasks may extend helpers for their concrete crash, permissions, Git and process scenarios. Tests should prove behavior, not reproduce implementation structure.
+
+Evidence and patterns (the amended contract is normative): hum test shapes in `cmd/hum/integration_test.go` (built-binary integration), `internal/cli/root_test.go` and siblings (in-process NewRootCommand with injected writers), `internal/daemon/runtime_test.go` (bounded waits and cleanup). Python fixture shapes: `tests/test_store.py` test_concurrent_acquire_has_one_winner_and_independent_resources_proceed and test_overlapping_bundles_across_processes_have_one_winner (multi-process contention), `tests/test_execution.py` test_exec_timeout_kills_inherited_pipe_descendant_and_is_inspectable (grandchild holding an inherited pipe), all nine tests in `tests/test_lease_context.py` (Git root, nested symlink, linked worktree, foreign-owned directory), all eight tests in `tests/test_credentials.py` (permission fixtures).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

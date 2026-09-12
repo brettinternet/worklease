@@ -4,7 +4,7 @@ title: Implement resource policies and key derivation
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -32,6 +32,8 @@ ordinal: 97000
 Implement deterministic static resource policies, key/policy commands and shared acquire resource input. Read contract sections 4, 7.1, 7.11, 7.13 and 20. Own internal/resource and key/policy/resource-input CLI files. Reuse the cited Python derivation evidence without carrying plugins or fencing claims forward.
 
 Identities are exact opaque bytes. Encode tuple components unambiguously, resolve canonical path aliases including missing leaves, and distinguish host-local filesystem keys from portable provider keys. Path resources cover exact files only; task/source identity does not implicitly protect arbitrary edits. No cross-host repository namespace configuration is introduced now.
+
+Evidence and patterns (the amended contract is normative): `src/worklease/adapters/protocol.py` (local_resource, coordination_resource, normalize_provider, require_identity, and the GIT_* stripping in _git_output), `backlog_md.py`, `markdown.py`, `github.py`, `linear.py`, `registry.py` (the generic policy). Tests: `tests/test_adapters.py` test_github_key_matches_reference_policy, test_backlog_and_markdown_use_repository_local_identity, test_missing_git_uses_path_fallback, test_nested_source_keys_match_across_linked_worktrees, test_generic_policy_is_explicit_and_unknown_names_fail, test_source_scope_collision_checks_every_sample_item. TASK-84 (closed as superseded) records the `path` policy intent. Pattern: hum `internal/config/config.go` for validation error wording.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

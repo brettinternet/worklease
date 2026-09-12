@@ -4,7 +4,7 @@ title: Implement the secure authority store and schema
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -28,6 +28,8 @@ ordinal: 98000
 Implement the fresh secure SQLite authority store from contract section 8, using the proven driver. Own internal/store schema/open/transaction/event code and required testkit database helpers. No Python migration/import and no per-resource locks.
 
 Create immutable authorityId and durable event/clock watermarks, epoch replay hashes and recorded end time, bounded replay deadlines, resolver claim identity and the unique started-operation constraint. Enforce private main/WAL/SHM paths through the actual driver, not a disconnected preflight open. Read commands do not create or chmod state. Use typed transaction boundaries and classify uncertain commits honestly.
+
+Evidence and patterns (the amended contract is normative): `src/worklease/sqlite.py` (lease_home, secure_directory, open_private_file, schema bootstrap and version checks). Tests: `tests/test_store.py` test_state_home_and_files_are_private_with_a_permissive_umask, test_state_database_symlink_is_rejected, test_unknown_schema_version_fails_before_migration, test_schema_failure_closes_new_connection, test_up_to_date_open_skips_schema_writes; `tests/test_history.py` test_events_rejects_symlinked_state. Pattern: hum `internal/daemon/runtime.go` for runtime-directory permission handling.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

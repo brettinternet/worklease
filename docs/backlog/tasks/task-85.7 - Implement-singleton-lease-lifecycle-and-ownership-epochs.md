@@ -4,7 +4,7 @@ title: Implement the claim lifecycle service
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 05:56'
+updated_date: '2026-09-12 06:27'
 labels:
   - go-rewrite
 milestone: m-0
@@ -36,6 +36,8 @@ The authority accepts client-held credentials and never returns tokens. Until 85
 The service carries authority identity and typed domain results; it does not accept CLI paths, remote transports, or provider writes. Keep all lifecycle events transactional and make unresolved predecessor operations visible to later guard/reconciliation consumers.
 
 Provide authenticated operation lookup and current-state synchronization for 85.10 pending-handle recovery; 85.9 adds user-facing ledger projections and reconciliation on top.
+
+Evidence and patterns (the amended contract is normative): `src/worklease/claims.py`, `acquisition.py` (singleton path; acquire replay keyed on the claim id), `lifecycle.py` (transfer and release), `operations.py` (ledger, request fingerprint, replay, mismatch, unknown outcome), `models.py` (bounds). Tests in `tests/test_store.py`: test_expiry_reclaim_replaces_token_and_increases_revision, test_small_backward_clock_step_keeps_a_live_lease, test_backward_clock_regression_is_reanchored_by_a_contender (the Go contract fails closed instead), test_forward_clock_step_past_expiry_still_expires, test_checkpoint_renews_replays_and_rejects_stale_owner, test_transfer_replaces_owner_atomically_and_preserves_checkpoint, test_transfer_rolls_back_on_interruption_without_free_interval, test_transfer_serializes_contender_acquire, test_acquire_retry_rejects_any_ttl_change, test_stale_owner_cannot_heartbeat_after_reclaim, test_heartbeat_retry_is_idempotent_and_rejects_request_mismatch, test_release_retry_is_idempotent_and_claim_id_cannot_be_reused, test_claim_survives_process_exit_and_can_be_reclaimed, test_invalid_ttl_and_blank_release_reason_do_not_change_state. Tests in `tests/test_cli.py`: test_wait_retries_transient_contention_until_acquire, test_no_wait_remains_one_atomic_attempt, test_wait_timeout_preserves_conflict_exit_code_and_redaction, test_heartbeat_distinguishes_invalid_token_from_stale_claim, test_acquire_defaults_generate_and_echo_identifiers, test_lifecycle_redacts_read_only_tokens_and_supports_text_list.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
