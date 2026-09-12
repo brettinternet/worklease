@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a097fc'
 created_date: '2026-09-12 22:39'
-updated_date: '2026-09-12 23:54'
+updated_date: '2026-09-12 23:55'
 labels:
   - go-rewrite
 dependencies: []
@@ -44,6 +44,8 @@ guard.ReplaceFile runs its whole effect inside RunGuardedOperation's BEGIN IMMED
 Implemented a 16 MiB replacement-content limit and pinned, bounded preflight read before lifecycle preparation. The completing transaction hashes the prepared byte snapshot again before temp-file write and rename.
 
 Evidence: TestReplaceFileRejectsOversizedContentBeforeStarting proves invalid-argument, no lifecycle preparation, unchanged revision, and no unknown operation. TestReplaceFilePreflightDoesNotBlockConcurrentHeartbeat pauses a maximum-size preflight while a different claim heartbeats through the same authority. go test -race ./internal/guard and the repository lint, format-check, test, and typecheck gates pass. Direct item-scoped diff review found no defects; the independent reviewer attempt timed out without returning findings.
+
+Delivery: implementation commit d523cb4; merged to main as c5fa89d. Post-merge focused guard tests passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
