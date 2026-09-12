@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .execution_context import _git_output
@@ -50,7 +53,11 @@ def context_lease_path(
     """Return the contextual handle path without creating state on disk."""
 
     root = resolve_context_root(cwd)
-    context_id = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    try:
+        encoded_root = str(root).encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise LeaseError("lease-context-directory-invalid", code=64) from error
+    context_id = hashlib.sha256(encoded_root).hexdigest()
     return lease_home(home) / _CONTEXT_LEASE_DIRECTORY / f"{context_id}.lease"
 
 
@@ -67,6 +74,46 @@ def _validate_context_directory(path: Path) -> None:
         or metadata.st_uid != os.geteuid()
     ):
         raise LeaseError("lease-context-directory-unsafe", code=64)
+
+
+@contextmanager
+def context_lease_lock(
+    home: str | os.PathLike[str] | None = None,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    create: bool = False,
+) -> Iterator[None]:
+    """Serialize contextual handle validation, store dispatch, and persistence.
+
+    The lock lives beside the contextual handles and is deliberately process
+    scoped via ``flock`` so independent CLI processes cannot both validate an
+    old handle before either one persists its replacement.
+    """
+
+    directory = context_lease_path(home, cwd=cwd).parent
+    if create:
+        prepare_context_lease_path(home, cwd=cwd)
+    elif not directory.is_dir():
+        yield
+        return
+    try:
+        # Revalidate the directory immediately before opening the lock. This
+        # keeps contextual reads from proceeding through a replaced or
+        # permission-relaxed state directory.
+        secure_directory(directory)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(directory / ".lock", flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+    except OSError as error:
+        raise LeaseError("lease-context-directory-unsafe", code=64) from error
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def prepare_context_lease_path(

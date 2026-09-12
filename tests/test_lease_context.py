@@ -78,6 +78,19 @@ class LeaseContextTests(unittest.TestCase):
         self.assertEqual(caller.resolve(), resolve_context_root(caller))
         self.assertFalse(self.home.exists())
 
+    def test_non_utf8_context_fails_with_a_stable_error(self) -> None:
+        with (
+            patch(
+                "worklease.lease_context.resolve_context_root",
+                return_value=Path("/tmp/non-utf8-\udcff"),
+            ),
+            self.assertRaisesRegex(
+                LeaseError, "lease-context-directory-invalid"
+            ) as raised,
+        ):
+            context_lease_path(self.home)
+        self.assertEqual(64, raised.exception.code)
+
     def test_distinct_non_git_directories_have_distinct_handles(self) -> None:
         first = self.root / "first"
         second = self.root / "second"

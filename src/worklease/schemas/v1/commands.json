@@ -76,6 +76,11 @@
           "items": {"$ref": "common.json#/$defs/PolicyDescriptor"}
         },
         "resource": {"type": "string"},
+        "leaseFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Private lease handle path used by the CLI lifecycle."
+        },
         "state": {"enum": ["free", "active", "expired", "completed", "unknown-outcome", "reconciled"]},
         "operationId": {
           "type": "string",

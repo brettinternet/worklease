@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-09-12
+
 ### Added
 
 - Added `worklease events`, a redacted, paginated cross-resource feed of retained lifecycle records with stable keyset cursors.
+
+### Breaking
+
+- A bare `worklease acquire` or `acquire-bundle` now writes a private contextual handle and omits the bearer token from output. Use `--no-lease-file` for the compatible stateless token-bearing behavior.
 
 ### Changed
 
