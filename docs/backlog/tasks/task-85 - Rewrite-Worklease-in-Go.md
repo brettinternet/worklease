@@ -4,7 +4,7 @@ title: Rewrite Worklease in Go
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 06:36'
+updated_date: '2026-09-12 07:59'
 labels:
   - go-rewrite
 milestone: m-0
@@ -62,5 +62,11 @@ author: @pi-01a09450
 created: 2026-09-12 06:36
 ---
 Capability inventory is complete in doc-3. It maps the discovered CLI, MCP, module, SDK, documentation, skill, and release surfaces to one Go owner each. No material contract gap or section 15 amendment was found; known Python differences are owned implementation work, and the Cloudflare design remains deferred.
+---
+
+author: @pi-01a09478
+created: 2026-09-12 07:59
+---
+TASK-85.4 selected modernc.org/sqlite v1.58.0. The Go driver uses WAL, synchronous FULL, busy_timeout 10000, foreign_keys ON, immediate writes, deferred read-only observations, and one pooled connection. Driver tests prove serialization, rollback/cancellation, AUTOINCREMENT, crash durability, private main/WAL/SHM handling, and WAL-visible read-only access; four CGO-disabled targets build and govulncheck reports no findings. Limitation: modernc opens by path and cannot enforce O_NOFOLLOW, so TASK-85.6 must keep the home directory pinned and compare the opened device/inode. Commit errors are independently read back as committed, not-committed, or unknown.
 ---
 <!-- COMMENTS:END -->
