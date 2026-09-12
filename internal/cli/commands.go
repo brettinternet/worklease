@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 
+	"github.com/brettinternet/worklease/internal/config"
+	mcpserver "github.com/brettinternet/worklease/internal/mcp"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -130,5 +133,16 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	instructions := group("instructions", "print canonical instructions", "worklease instructions loop", loopCommand, safetyCommand)
 	setup := group("setup", "configure integrations", "worklease setup instructions", jsonless("mcp", "configure MCP", "worklease setup mcp", flag("client"), flag("scope"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("guard", "configure native guard", "worklease setup guard", flag("client"), flag("scope"), flag("coverage"), &urfavecli.BoolFlag{Name: "apply"}, &urfavecli.BoolFlag{Name: "remove"}), jsonless("instructions", "print setup instructions", "worklease setup instructions"))
 	mcp := jsonless("mcp", "serve MCP over stdio", "worklease mcp")
+	mcp.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+		cfg, err := config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "agent": cmd.String("agent"), "config": cmd.String("config"), "ttl": cmd.String("ttl"), "poll_interval": cmd.String("poll-interval")}})
+		if err != nil {
+			return err
+		}
+		server, err := mcpserver.NewServer(mcpserver.Options{Home: cfg.Home, AgentID: cfg.AgentID, SessionID: cfg.SessionID, TTL: cfg.TTL, PollInterval: cfg.PollInterval})
+		if err != nil {
+			return err
+		}
+		return server.Serve(ctx, os.Stdin, s.writer)
+	}
 	return append(commands, policy, op, instructions, setup, mcp)
 }
