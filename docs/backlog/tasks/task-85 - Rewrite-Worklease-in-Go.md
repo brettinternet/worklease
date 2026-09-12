@@ -4,7 +4,7 @@ title: Rewrite Worklease in Go
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 06:07'
+updated_date: '2026-09-12 06:36'
 labels:
   - go-rewrite
 milestone: m-0
@@ -56,5 +56,11 @@ author: @codex
 created: 2026-09-12 06:07
 ---
 Owner-requested amendment recorded in contract sections 1.1, 12 and 17 (TASK-86): prioritize short setup-free human commands and ergonomic handle-backed JSON/typed MCP orchestration. Preserve structured error details; test common paths, contention and isolated loops in 85.14–85.17. This does not expand the eleven MCP tools or implement remote authority.
+---
+
+author: @pi-01a09450
+created: 2026-09-12 06:36
+---
+Capability inventory is complete in doc-3. It maps the discovered CLI, MCP, module, SDK, documentation, skill, and release surfaces to one Go owner each. No material contract gap or section 15 amendment was found; known Python differences are owned implementation work, and the Cloudflare design remains deferred.
 ---
 <!-- COMMENTS:END -->

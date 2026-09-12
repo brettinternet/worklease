@@ -1,10 +1,11 @@
 ---
 id: TASK-85.1
 title: Inventory capabilities and safety evidence for the Go rewrite
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a09450'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 06:36'
 labels:
   - go-rewrite
 milestone: m-0
@@ -18,6 +19,13 @@ references:
   - docs/cli-reference.md
   - docs/claim-model.md
   - docs/mcp.md
+documentation:
+  - doc-3 - Go Rewrite Capability Inventory
+modified_files:
+  - docs/backlog/docs/go-rewrite/doc-3 - Go-Rewrite-Capability-Inventory.md
+  - >-
+    docs/backlog/tasks/task-85.1 -
+    Define-the-Go-product-contract-and-migration-boundary.md
 parent_task_id: TASK-85
 priority: high
 type: spike
@@ -49,3 +57,17 @@ Evidence and patterns (the amended contract is normative; Python is behavior evi
 <!-- DOD:BEGIN -->
 - [ ] #1 Inventory document created and updated only through the backlog CLI
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Record the current commit and inventory the normative contract, discovered CLI/MCP surfaces, Python capability families, release/docs/skill/SDK artifacts, and representative safety tests.
+2. Create the Go Rewrite Capability Inventory through the backlog CLI, mapping retained or redesigned capabilities to one TASK-85.x owner and contract sections while documenting removals, semantic changes, deferred remote authority, and any contract gaps.
+3. Add the TASK-85 summary comment, run backlog integrity and repository quality gates, review the generated diff, and record objective completion evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Created doc-3 through the Backlog CLI. Inventory evidence at commit 6a92441 covers 26 CLI parser registrations, seven Python MCP tools, all capability families, one primary Go owner per row, named safety tests, intentional removals, changed semantics, and deferred remote authority. No material contract gap or section 15 amendment was identified.
+<!-- SECTION:NOTES:END -->
