@@ -51,6 +51,123 @@ func TestReplaceFileRejectsSymlinkTargetBeforeCanonicalization(t *testing.T) {
 	}
 }
 
+func TestReplaceFileRejectsOversizedContentBeforeStarting(t *testing.T) {
+	root := t.TempDir()
+	if out, err := testkit.GitCommand("-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	target := filepath.Join(root, "target.txt")
+	content := filepath.Join(root, "content.bin")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(content, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(content, MaxReplaceBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	key, err := resource.Resolve(resource.Input{Path: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(root, "state"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	token := strings.Repeat("a", 64)
+	claim := strings.Repeat("1", 32)
+	grant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Resources: []string{key.Resource}, AgentID: "agent", SessionID: "session", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour), LocalReplaceAllowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := false
+	sum := sha256.Sum256([]byte("old"))
+	_, err = ReplaceFile(context.Background(), svc, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: grant.Revision}, ReplaceRequest{
+		OperationID: strings.Repeat("2", 32), Path: target, ExpectedSHA256: hex.EncodeToString(sum[:]), ContentFile: content,
+		TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour), Lifecycle: &OperationLifecycle{Prepare: func(lease.OperationIntent) error { prepared = true; return nil }},
+	})
+	if got := reason.As(err); got == nil || got.Reason != reason.ReasonInvalidArgument {
+		t.Fatalf("oversized content error=%v", err)
+	}
+	if prepared {
+		t.Fatal("oversized content persisted a pending request")
+	}
+	status, err := svc.Status(context.Background(), lease.Selector{ClaimID: claim})
+	if err != nil || status.Claim == nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Claim.Revision != grant.Revision || len(status.Claim.UnknownOperations) != 0 {
+		t.Fatalf("oversized content started an operation: %+v", status.Claim)
+	}
+}
+
+func TestReplaceFilePreflightDoesNotBlockConcurrentHeartbeat(t *testing.T) {
+	root := t.TempDir()
+	if out, err := testkit.GitCommand("-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	target := filepath.Join(root, "target.txt")
+	content := filepath.Join(root, "content.bin")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(content, make([]byte, MaxReplaceBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := resource.Resolve(resource.Input{Path: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(root, "state"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	deadline := time.Now().Add(time.Hour)
+	replaceToken, replaceClaim := strings.Repeat("b", 64), strings.Repeat("3", 32)
+	replaceGrant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: replaceClaim, Token: replaceToken, Resources: []string{key.Resource}, AgentID: "replace", SessionID: "replace", TTL: time.Minute, RequestNotAfter: deadline, LocalReplaceAllowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeatToken, heartbeatClaim := strings.Repeat("c", 64), strings.Repeat("4", 32)
+	heartbeatGrant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: heartbeatClaim, Token: heartbeatToken, Resources: []string{"other-resource"}, AgentID: "heartbeat", SessionID: "heartbeat", TTL: time.Minute, RequestNotAfter: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reading, continueRead := make(chan struct{}), make(chan struct{})
+	beforeReplaceContentRead = func() {
+		close(reading)
+		<-continueRead
+	}
+	defer func() { beforeReplaceContentRead = nil }()
+	replaced := make(chan error, 1)
+	sum := sha256.Sum256([]byte("old"))
+	go func() {
+		_, replaceErr := ReplaceFile(context.Background(), svc, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: replaceClaim, Token: replaceToken, Revision: replaceGrant.Revision}, ReplaceRequest{
+			OperationID: strings.Repeat("5", 32), Path: target, ExpectedSHA256: hex.EncodeToString(sum[:]), ContentFile: content,
+			TTL: time.Minute, RequestNotAfter: deadline,
+		})
+		replaced <- replaceErr
+	}()
+	select {
+	case <-reading:
+	case <-time.After(time.Second):
+		t.Fatal("replace-file did not enter content preflight")
+	}
+	_, heartbeatErr := svc.Heartbeat(context.Background(), lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: heartbeatClaim, Token: heartbeatToken, Revision: heartbeatGrant.Revision}, lease.Renew{OperationID: strings.Repeat("6", 32), TTL: time.Minute, RequestNotAfter: deadline})
+	close(continueRead)
+	if err := <-replaced; err != nil {
+		t.Fatalf("replace-file: %v", err)
+	}
+	if heartbeatErr != nil {
+		t.Fatalf("heartbeat during maximum-size preflight: %v", heartbeatErr)
+	}
+}
+
 func TestReplaceFileExpectedHashPreservesModeAndReplay(t *testing.T) {
 	root := t.TempDir()
 	if out, err := testkit.GitCommand("-C", root, "init", "-q").CombinedOutput(); err != nil {
