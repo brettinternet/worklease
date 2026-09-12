@@ -1,5 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://worklease.dev/schemas/v1/inspect-operation-bundle.json",
-  "allOf": [{"$ref": "commands.json"}, {"properties": {"operation": {"const": "inspect-operation-bundle"}}, "required": ["operation"]}]
-}

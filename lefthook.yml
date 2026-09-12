@@ -1,12 +1,9 @@
 pre-commit:
   parallel: true
   commands:
-    ruff-check:
-      glob: "*.py"
-      run: uv run ruff check --force-exclude {staged_files}
-    ruff-format:
-      glob: "*.py"
-      run: uv run ruff format --check {staged_files}
-    tests:
-      glob: ["*.py", "**/*.py"]
-      run: mise run test
+    gofmt:
+      glob: "*.go"
+      run: test -z "$(gofmt -l {staged_files})"
+    test:
+      glob: ["*.go", "go.mod", "go.sum"]
+      run: env -u GIT_INDEX_FILE mise run test

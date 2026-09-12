@@ -13,9 +13,11 @@ import (
 )
 
 type envelope struct {
-	OK       bool   `json:"ok"`
-	Version  string `json:"version"`
-	Resource string `json:"resource"`
+	OK          bool   `json:"ok"`
+	Version     string `json:"version"`
+	Resource    string `json:"resource"`
+	OperationID string `json:"operationId"`
+	NextCursor  string `json:"nextCursor"`
 }
 
 func main() {
@@ -50,10 +52,25 @@ func main() {
 	if key.Resource == "" {
 		fatal(fmt.Errorf("key returned no resource"))
 	}
-	runJSON(env, *binary, "acquire", "--path", target)
+	acquired := runJSON(env, *binary, "acquire", "--resource", key.Resource, "--resource", "smoke-extra")
+	runJSON(env, *binary, "status")
+	runJSON(env, *binary, "list", "--resource", key.Resource)
 	runJSON(env, *binary, "verify", "--coverage", "path", "--resource", key.Resource)
 	runJSON(env, *binary, "exec", "--", *binary, "version")
 	runJSON(env, *binary, "checkpoint", "--data", `{"phase":"smoke"}`)
+	if acquired.OperationID != "" {
+		runJSON(env, *binary, "op", "inspect", "--operation-id", acquired.OperationID)
+	}
+	runJSON(env, *binary, "history", "--resource", key.Resource)
+	events := runJSON(env, *binary, "events", "--limit", "100")
+	if events.NextCursor != "" {
+		runJSON(env, *binary, "watch", "--cursor", events.NextCursor, "--timeout", "10ms")
+	}
+	runJSON(env, *binary, "gc")
+	runJSON(env, *binary, "doctor")
+	runJSON(env, *binary, "policy", "list")
+	runJSON(env, *binary, "policy", "describe", "path")
+	runJSON(env, *binary, "setup", "instructions")
 	hash := sha256File(target)
 	runJSON(env, *binary, "replace-file", "--path", target, "--expected-sha256", hash, "--content-file", content)
 	runJSON(env, *binary, "release", "--reason", "smoke complete")

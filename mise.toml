@@ -1,48 +1,26 @@
-[env]
-_.python.venv = { path = ".venv", create = true }
-
 [tools]
-python = "3.14"
 go = "1.27.1"
-uv = "latest"
-"npm:pyright" = "latest"
 "npm:backlog.md" = "latest"
 lefthook = "latest"
 staticcheck = "2026.2.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
-[settings]
-disable_backends = ["pipx"]
-pipx.uvx = true
-
 [tasks]
-sync = "uv sync --locked"
-cli = "uv run worklease"
-test-core = "uv run python -m unittest discover -s tests -v"
-test-sdk = { run = "uv run python -m unittest discover -s packages/worklease-source-sdk/tests -v", env = { PYTHONPATH = "packages/worklease-source-sdk/src:packages/worklease-source-sdk/examples/source-provider-plugin/src" } }
-test = { depends = ["test-core", "test-sdk"] }
-typecheck-core = "pyright"
-typecheck-sdk = "pyright --project packages/worklease-source-sdk/pyrightconfig.json"
-typecheck = { depends = ["typecheck-core", "typecheck-sdk"] }
-lint = "uv run ruff check ."
-format = "uv run ruff format ."
-format-check = "uv run ruff format --check ."
+cli = "go run ./cmd/worklease"
+lint = "staticcheck ./..."
+format = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
+format-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
+test = "go test ./..."
+typecheck = "go vet ./..."
 hooks-install = "lefthook install"
 hooks = "lefthook run pre-commit"
-build = "uv build --no-build-isolation"
-build-sdk = "uv build --project packages/worklease-source-sdk --no-build-isolation"
-build-sdk-example = "uv build --project packages/worklease-source-sdk/examples/source-provider-plugin --no-build-isolation"
-install-release = "scripts/install-release.sh"
-release-validate = "uv run python scripts/release_artifacts.py verify --directory dist/release"
-go-build = "CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease"
-go-man = "mkdir -p dist && go run ./cmd/worklease-man --version dev > dist/worklease.1"
-go-smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev", depends = ["go-build"] }
-go-doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["go-build"] }
-go-release = "go run ./cmd/worklease-release"
-go-fmt = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
-go-fmt-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
-go-vet = { run = ["go vet ./...", "staticcheck ./..."] }
-go-test = "go test ./..."
-go-race = "go test -race ./..."
-go-vuln = "govulncheck ./..."
-ci-go = { depends = ["go-fmt-check", "go-vet", "go-test", "go-race", "go-vuln", "go-smoke", "go-doc-test", "go-man"] }
+hooks-all = "lefthook run pre-commit --all-files"
+build = "CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease"
+man = "mkdir -p dist && go run ./cmd/worklease-man --version dev > dist/worklease.1"
+smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev", depends = ["build"] }
+doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
+e2e = "scripts/test-e2e.sh"
+release = "go run ./cmd/worklease-release"
+race = "go test -race ./..."
+vuln = "govulncheck ./..."
+ci = { depends = ["format-check", "lint", "typecheck", "test", "race", "vuln", "e2e", "man"] }

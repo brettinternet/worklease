@@ -4,7 +4,7 @@ title: Rewrite Worklease in Go
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 07:59'
+updated_date: '2026-09-12 21:30'
 labels:
   - go-rewrite
 milestone: m-0
@@ -68,5 +68,11 @@ author: @pi-01a09478
 created: 2026-09-12 07:59
 ---
 TASK-85.4 selected modernc.org/sqlite v1.58.0. The Go driver uses WAL, synchronous FULL, busy_timeout 10000, foreign_keys ON, immediate writes, deferred read-only observations, and one pooled connection. Driver tests prove serialization, rollback/cancellation, AUTOINCREMENT, crash durability, private main/WAL/SHM handling, and WAL-visible read-only access; four CGO-disabled targets build and govulncheck reports no findings. Limitation: modernc opens by path and cannot enforce O_NOFOLLOW, so TASK-85.6 must keep the home directory pinned and compare the opened device/inode. Commit errors are independently read back as committed, not-committed, or unknown.
+---
+
+author: @brett
+created: 2026-09-12 21:30
+---
+TASK-85.18 final integration evidence: tracked Python runtime/SDK/packaging/test/release assets and Python CI/release jobs are removed; the deferred Cloudflare proposal remains documentation-only. mise run ci passed with failing python/python3 shims first on PATH, including Go test/race/vuln and clean-checkout E2E. mise run hooks-all passed after CI was changed to execute installed hooks. The full CLI registration and eleven MCP tools are covered by native acceptance tests and scripts/test-e2e.sh. Independent review and its resolved hook finding are recorded in docs/reviews/task-85.18-independent-review.md. No release was published.
 ---
 <!-- COMMENTS:END -->
