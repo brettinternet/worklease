@@ -45,6 +45,7 @@ const (
 // lstat-to-open race. It is intentionally not exported; production callers
 // must treat UnsafePathRaceWarning as a capability limit.
 var beforeSQLiteOpenHook func(string)
+var afterSQLiteOpenHook func(string)
 
 // CommitOutcome is the result of classifying an error returned by Commit.
 type CommitOutcome string
@@ -166,6 +167,9 @@ func OpenDriver(ctx context.Context, path string, readOnly bool) (*Driver, error
 			_ = driver.Close()
 			return nil, err
 		}
+	}
+	if afterSQLiteOpenHook != nil {
+		afterSQLiteOpenHook(path)
 	}
 	return driver, nil
 }
