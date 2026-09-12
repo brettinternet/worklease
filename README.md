@@ -4,8 +4,6 @@ Provider-neutral same-host work leases for coordinating humans and agents on one
 
 Worklease prevents duplicate local work. Your external backlog or provider remains authoritative.
 
-![A minimal Worklease acquire and release lifecycle](docs/simple-demo.gif)
-
 ![Two workers contending for one Worklease resource](docs/demo.gif)
 
 ```mermaid
