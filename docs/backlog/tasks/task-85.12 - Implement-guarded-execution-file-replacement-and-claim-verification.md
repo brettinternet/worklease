@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a095f7'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 15:17'
+updated_date: '2026-09-12 15:18'
 labels:
   - go-rewrite
 milestone: m-0
@@ -84,6 +84,8 @@ Selected as the earliest dependency-ready backlog item. Claimed with Worklease r
 Implemented Go guarded operation services and CLI wiring. Guarded exec uses literal argv, isolated environments, /dev/null stdin, bounded UTF-8-safe capture, process groups, asynchronous renewal, deadline/ownership termination, replay, and handle recovery. Replace-file commits started intent before effects, binds exact request/content hashes, verifies path claim membership, uses pinned directory descriptors and no-follow opens, performs serialized expected-hash rename/fsync, and leaves uncertain outcomes pending. Verify fails closed, supports contextual/explicit/MCP handles, uses existing shared locks without creating them, validates claim or path coverage, and rejects malformed/unsupported native hooks.
 
 Validation: mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run ci-go; go test -count=1 ./internal/guard ./internal/lease ./internal/handle ./internal/cli; git diff --check. Independent verifier review completed after fixes.
+
+Delivered implementation commit ae02d43 and merge commit b4e468a. Post-merge mise run ci-go passed; review findings were fixed and independent verification was rerun.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
