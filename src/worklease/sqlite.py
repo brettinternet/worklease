@@ -89,7 +89,20 @@ def secure_directory(path: Path) -> Path:
     """Create a private state directory or tighten an existing one."""
 
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.chmod(0o700)
+    flags = (
+        os.O_RDONLY
+        | os.O_CLOEXEC
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise OSError("state directory is unsafe")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
     return path
 
 
