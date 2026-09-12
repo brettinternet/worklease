@@ -13,8 +13,11 @@ does not share a provider fence.
 7. Re-read and verify the provider checkpoint.
 8. Checkpoint locally, then release.
 
+Set `$key_policy` to `linear` or `github` for those built-ins. Use `generic` for
+Jira or a custom provider.
+
 ```sh
-worklease key --provider "$provider_kind" --source "$source_locator" \
+worklease key --provider "$key_policy" --source "$source_locator" \
   --item "$item_id" --coordination-only --json
 worklease acquire --resource "$resource" --session "$session"
 # provider read/write/re-read occurs through caller-authorized capabilities

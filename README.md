@@ -1,13 +1,8 @@
-# worklease
+# Worklease
 
 Provider-neutral, same-host coordination for humans and coding agents.
-Worklease prevents cooperating local loops from duplicating work; your backlog or
-provider remains authoritative.
-
-The Go rewrite is intentionally incompatible with the retired Python proof of
-concept. It uses one claim model for one to 32 exact resources, schema-version 2
-JSON, authority-bound session handles, and client-held credentials that are
-never printed.
+Worklease prevents cooperating local loops from duplicating work. Your backlog
+or provider remains authoritative.
 
 ## Install
 
@@ -39,10 +34,10 @@ worklease release --session human --reason "provider checkpoint verified"
 ```
 <!-- worklease-example:end -->
 
-Use `--path FILE` to derive exact repository/path membership. The default claim
-coverage used by native hooks confirms only a current claim. Opt into
-`verify --coverage path --resource RESOURCE` when each edited path must be an
-exact member. Only expected-hash `replace-file` reports
+Use `--path FILE` to derive exact repository/path membership. Native hooks
+confirm only a current claim by default; generate them with `--coverage path`
+to require every edited path. A direct `verify --resource RESOURCE` checks exact
+membership. Only expected-hash `replace-file` reports
 `mutationProtection: local-serialized-replace`; `exec` and provider calls remain
 `guarantee: local-coordination`.
 
@@ -83,15 +78,10 @@ printf '%s\n' \
 ```
 <!-- worklease-example:end -->
 
-MCP exposes eleven orchestration tools: `key`, `acquire`, `status`, `list`,
-`heartbeat`, `checkpoint`, `release`, `verify`, `watch`, `events`, and
-`instructions`. Handles are private server-side references. `exec`,
-`replace-file`, transfer, reconciliation, setup, doctor, policy inspection,
-history, and garbage collection are CLI-only operations; MCP intentionally does
-not mirror the entire command tree.
+Handles are private server-side references. MCP intentionally exposes a smaller
+surface than the CLI.
 
-See [MCP and JSON](docs/mcp.md) for typed errors, modern and legacy handshakes,
-automatic renewal, cancellation, and two-loop usage.
+For the MCP tool boundary, see [MCP tools](docs/mcp.md).
 
 ## Recovery and safety
 
@@ -124,10 +114,7 @@ See:
 mise run ci
 ```
 
-`ci` formats, vets, tests, race-tests, scans vulnerabilities, builds the
-binary, executes clean-checkout end-to-end smoke, and renders the manual. Release preparation
-builds four CGO-disabled archives and verifies their checksums. Publishing,
-tagging, pushing, dispatching publication, and creating a release always require
+`ci` formats, vets, tests, race-tests, scans vulnerabilities, builds the binary,
+runs clean-checkout end-to-end smoke, and renders the manual. Release preparation
+builds four CGO-disabled archives and verifies their checksums. Publishing needs
 separate owner authorization.
-
-Python-era state is never imported or deleted automatically.

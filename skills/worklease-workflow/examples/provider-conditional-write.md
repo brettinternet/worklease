@@ -29,8 +29,8 @@ Worklease and provider guarantees remain separate:
 
 ```text
 Worklease claim:
-  guarantee: local-coordination or fenced for its named local operation
-  guaranteeScope: exact local host/operation boundary
+  guarantee: local-coordination
+  guaranteeScope: cooperating callers sharing this authority on one host
 
 Provider receipt:
   conditionalWrite: true

@@ -17,11 +17,9 @@ login, worktree, or path. Portable provider keys may be used today without
 claiming cross-host exclusion.
 
 A claim has an immutable claim ID, hashed client-held credential, current
-revision, expiry, checkpoint, and agent/work metadata. MCP automatic renewal adds
-an absolute per-lease hold limit; ordinary CLI renewal is not capped by MCP's
-`maxHold`.
-`agentId` is audit identity, never authorization. The Python owner ID and
-singleton/bundle split are retired.
+revision, expiry, checkpoint, and agent/work metadata. MCP leases have an
+absolute `maxHold` deadline; ordinary CLI claims do not. `agentId` is audit
+identity, never authorization.
 
 ## Credentials and handles
 
@@ -94,12 +92,12 @@ requests, receipts, and cursors bind to it. A home path is only a locator.
 Copying an active database to create another independent authority with the same
 ID is unsafe and unsupported.
 
-V1 never imports Python SQLite schemas or old handle directories and never
-silently falls back from a configured remote authority. Python-era files are
-left untouched. After stopping every Python-era Worklease process, users may
-recoverably move `leases.sqlite3`, `locks/`, `context-leases/`, and `mcp-leases/`
-out of `WORKLEASE_HOME` into a private backup directory. Keep that backup until
-no rollback or historical inspection is needed; the Go authority never reads it.
+## Legacy Python state
+
+Worklease does not import or delete Python-era state. After stopping every old
+Worklease process, move `leases.sqlite3`, `locks/`, `context-leases/`, and
+`mcp-leases/` out of `WORKLEASE_HOME` into a private backup. Keep the backup
+until you no longer need rollback or historical inspection.
 
 See [CLI reference](cli-reference.md) for commands and
 [MCP and JSON](mcp.md) for agent orchestration. The Cloudflare design document

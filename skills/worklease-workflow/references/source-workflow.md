@@ -1,8 +1,8 @@
 # Worklease Source Workflow
 
-Use this composition layer when a caller needs to connect a concrete work
-source—Backlog.md, loose Markdown, GitHub Issues, Linear, Jira, or a custom
-system—to Worklease coordination. It is not a provider client, scheduler,
+Use this composition layer to connect a concrete work source to Worklease.
+Supported mappings cover Backlog.md, loose Markdown, GitHub Issues, Linear,
+Jira, and custom systems. This layer is not a provider client, scheduler,
 credential source, or mutation authority.
 
 ## Progressive loading

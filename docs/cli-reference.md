@@ -1,7 +1,7 @@
 # CLI reference
 
-This reference describes the Go command tree. Run `worklease COMMAND --help` or
-read `worklease(1)` for every derived flag and example.
+Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
+example.
 
 ## Global interface
 
@@ -12,8 +12,7 @@ worklease [--json] [--home PATH] [--config PATH] COMMAND
 Configuration precedence is flags, environment, YAML, then defaults. Important
 environment variables are `WORKLEASE_HOME`, `WORKLEASE_CONFIG`,
 `WORKLEASE_AGENT_ID`, and `WORKLEASE_SESSION_ID`. Text output is for humans;
-`--json` emits one schema-version 2 envelope. There is no `--format` compatibility
-flag.
+`--json` emits one schema-version 2 envelope.
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
@@ -24,7 +23,7 @@ never returns it in text or JSON.
 
 | Command | Purpose |
 | --- | --- |
-| `version` | Print build version, commit, time, Go version, OS, and architecture. |
+| `version` | Print build version, commit, build time, Go version, and schema version. |
 | `key` | Derive an exact built-in resource key. |
 | `acquire` | Atomically claim one to 32 ordered, unique resources. |
 | `status` / `list` | Read current non-secret claim state. |
@@ -39,9 +38,8 @@ Worklease selects an authority-bound contextual handle by Git worktree root (or
 resolved current directory) and session. A handle is convenience state, not the
 claim or an authoritative provider checkpoint.
 
-One claim covers `--resource` values atomically. The Go CLI has no separate
-bundle commands or owner ID. Resources contend by exact bytes and are never
-silently normalized.
+One claim covers all `--resource` values atomically. Resources contend by exact
+bytes and are never silently normalized.
 
 ## Guarded and recovery operations
 
@@ -105,14 +103,11 @@ authority.
 
 A claim contains one immutable claim ID, one credential, one revision stream,
 and one to 32 resources. All lifecycle mutations apply to the whole claim.
-MCP automatic renewal adds its own absolute `maxHold`; ordinary CLI renewal has
-no MCP hold deadline. Concurrent sessions need distinct selectors even in one
-checkout.
+MCP leases have an absolute `maxHold` deadline; ordinary CLI claims do not.
+Concurrent sessions need distinct selectors even in one checkout.
 
-## Historical and deferred material
+## Deferred authority
 
-Migration history and backlog specifications are design evidence, not runnable
-CLI examples. `docs/distributed-cloudflare-claim-authority.md` is a deferred Go
-proposal, not a shipped HTTP backend. V1 has one local SQLite authority and no
-remote fallback, backend registry, Worker deployment, remote exec, or fencing
-counter.
+[`distributed-cloudflare-claim-authority.md`](distributed-cloudflare-claim-authority.md)
+is a proposal, not a shipped HTTP backend. Worklease uses one local SQLite
+authority. It has no remote fallback.

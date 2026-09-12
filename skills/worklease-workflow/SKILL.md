@@ -33,9 +33,9 @@ caller selects a provider, source, and item. They do not authenticate,
 discover, mutate, or fence a provider. Exact resources contend by bytes within
 one local authority namespace. Repository/path keys are host-local.
 
-One claim ID, credential, revision, expiry, and hold deadline cover the complete
-resource set. Overlap conflicts and acquisition is all-or-none. The Go CLI has
-no separate bundle lifecycle and no owner ID.
+One claim ID, credential, revision, and expiry cover the complete resource set.
+MCP leases have an absolute `maxHold` deadline; automatic renewal is bounded by
+it. Any overlap conflicts, and acquisition is all-or-none.
 
 ## Normalized loop
 
