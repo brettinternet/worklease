@@ -165,7 +165,7 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	pending := &handle.PendingRequest{OperationID: id, Kind: kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(inputs), RequestNotAfter: deadline, Inputs: inputs}
 	h.State = "pending"
 	h.PendingRequest = pending
-	if e = handle.Write(path, h); e != nil {
+	if e = lk.Write(path, h); e != nil {
 		return nil, e
 	}
 	var receipt lease.Receipt
@@ -185,13 +185,13 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 		if reason.DefinitiveNoCommit(e) {
 			// The request provably did not commit: restore the usable ready
 			// credential so later calls are not wedged behind this request.
-			_ = handle.ClearPending(path, &h)
+			_ = lk.ClearPending(path, &h)
 		}
 		return nil, mutationError(e, h.ClaimID, id, path)
 	}
 	if kind == "release" {
 		stopRenewal(s, ref)
-		if e = handle.Remove(path); e != nil {
+		if e = lk.Remove(path); e != nil {
 			return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be removed").With("claimId", h.ClaimID).With("operationId", id).With("commitState", "committed")
 		}
 		return map[string]any{"receipt": receipt, "lease": ref, "autoHeartbeat": "stopped"}, nil
@@ -209,7 +209,7 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	if !h.HoldUntil.IsZero() && h.ExpiresAt.After(h.HoldUntil) {
 		h.ExpiresAt = h.HoldUntil
 	}
-	if e = handle.Write(path, h); e != nil {
+	if e = lk.Write(path, h); e != nil {
 		return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", h.ClaimID).With("operationId", id).With("commitState", "committed")
 	}
 	state := "stopped"
@@ -243,13 +243,13 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 	}
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
-			_ = handle.ClearPending(path, &h)
+			_ = lk.ClearPending(path, &h)
 		}
 		return nil, mutationError(err, h.ClaimID, p.OperationID, path)
 	}
 	if kind == "release" {
 		stopRenewal(s, ref)
-		if e := handle.Remove(path); e != nil {
+		if e := lk.Remove(path); e != nil {
 			return nil, e
 		}
 		return map[string]any{"lease": ref, "receipt": rec, "autoHeartbeat": "stopped"}, nil
@@ -265,7 +265,7 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 	if h.ExpiresAt.After(h.HoldUntil) {
 		h.ExpiresAt = h.HoldUntil
 	}
-	if e := handle.Write(path, h); e != nil {
+	if e := lk.Write(path, h); e != nil {
 		return nil, e
 	}
 	s.mu.Lock()

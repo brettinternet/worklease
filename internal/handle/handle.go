@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -201,72 +202,160 @@ func validPublicText(v string) bool {
 	return utf8.ValidString(v) && len([]byte(v)) <= 128 && !strings.ContainsAny(v, "\x00\r\n") && strings.TrimSpace(v) == v
 }
 
-// ValidateMetadata checks a handle path using metadata only. It never opens or
-// reads the leaf, and reports an absent leaf separately from an unsafe parent
-// or leaf. The parent must be an existing private directory owned by this user.
-func ValidateMetadata(path string) (present bool, err error) {
-	_, parentErr := os.Lstat(filepath.Dir(path))
-	if errors.Is(parentErr, os.ErrNotExist) {
-		return false, os.ErrNotExist
-	}
-	if parentErr != nil {
-		return false, parentErr
-	}
-	if err := trustedParent(path); err != nil {
-		return false, err
-	}
-	_, err = inspect(path, true)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+// fileIdentity is the stable identity used to bind a pathname to an opened
+// descriptor. Device and inode are sufficient for the local filesystem
+// integrity boundary; this package does not attempt to fence a hostile UID.
+type fileIdentity struct {
+	dev uint64
+	ino uint64
 }
 
-func trustedParent(path string) error {
-	p := filepath.Dir(path)
-	st, err := os.Lstat(p)
-	if err != nil || !st.IsDir() || st.Mode()&0o077 != 0 || st.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(st) {
+func identity(st *unix.Stat_t) fileIdentity {
+	return fileIdentity{dev: uint64(st.Dev), ino: uint64(st.Ino)}
+}
+func sameIdentity(a, b fileIdentity) bool { return a == b }
+
+func statFD(f *os.File) (unix.Stat_t, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+func statAt(dir *os.File, name string) (unix.Stat_t, error) {
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+func validateParentFD(f *os.File) (unix.Stat_t, error) {
+	st, err := statFD(f)
+	if err != nil {
+		return st, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&0o077 != 0 || st.Nlink == 0 {
+		return st, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	return st, nil
+}
+func validateLeafStat(st *unix.Stat_t, requirePrivate bool) error {
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 || (requirePrivate && st.Mode&0o077 != 0) {
 		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	return nil
 }
 
-func ownedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && uint32(stat.Uid) == uint32(os.Geteuid())
-}
-func inspect(path string, requirePrivate bool) (os.FileInfo, error) {
-	st, err := os.Lstat(path)
+// openParent walks every ancestor through an opened descriptor. No component
+// is followed as a symlink, and only the final directory is subject to the
+// owner/private policy (system ancestors such as /tmp cannot be private).
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	absolute = filepath.Clean(absolute)
+	// macOS exposes these system directories through symlink aliases. Resolve
+	// only those fixed system aliases; user-controlled ancestors remain
+	// subject to O_NOFOLLOW below.
+	if runtime.GOOS == "darwin" {
+		if strings.HasPrefix(absolute, "/var/") {
+			absolute = "/private" + absolute
+		} else if strings.HasPrefix(absolute, "/tmp/") {
+			absolute = "/private" + absolute
 		}
-		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	stat, statOK := st.Sys().(*syscall.Stat_t)
-	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || !statOK || !ownedByCurrentUser(st) || stat.Nlink != 1 || (requirePrivate && st.Mode()&0o077 != 0) {
-		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
-	}
-	return st, nil
+	return absolute, nil
 }
-func Read(path string) (Handle, error) {
-	if err := trustedParent(path); err != nil {
-		return Handle{}, err
+
+func openParent(path string) (*os.File, string, string, error) {
+	absolute, err := canonicalPath(path)
+	if err != nil {
+		return nil, "", "", err
 	}
-	if _, err := inspect(path, true); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	parent, name := filepath.Dir(absolute), filepath.Base(absolute)
+	if name == "." || name == string(filepath.Separator) || parent == absolute {
+		return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	parts := strings.Split(strings.TrimPrefix(parent, string(filepath.Separator)), string(filepath.Separator))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		next, openErr := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if openErr != nil {
+			if errors.Is(openErr, unix.ENOENT) {
+				return nil, "", "", os.ErrNotExist
+			}
+			return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+		}
+		fd = next
+	}
+	f := os.NewFile(uintptr(fd), parent)
+	if _, err := validateParentFD(f); err != nil {
+		_ = f.Close()
+		return nil, "", "", err
+	}
+	return f, name, absolute, nil
+}
+func verifyParentPath(path string, expected fileIdentity) error {
+	p, _, _, err := openParent(path)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	st, err := validateParentFD(p)
+	if err != nil || !sameIdentity(expected, identity(&st)) {
+		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	return nil
+}
+
+// ValidateMetadata checks metadata without opening or reading the leaf.
+func ValidateMetadata(path string) (present bool, err error) {
+	parent, name, _, err := openParent(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, os.ErrNotExist
+	}
+	if err != nil {
+		return false, err
+	}
+	defer parent.Close()
+	st, err := statAt(parent, name)
+	if errors.Is(err, unix.ENOENT) {
+		return false, nil
+	}
+	if err != nil {
+		return false, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	if err := validateLeafStat(&st, true); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func readAt(parent *os.File, name string) (Handle, error) {
+	fd, openErr := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if openErr != nil {
+		if errors.Is(openErr, unix.ENOENT) {
 			return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is missing")
 		}
-		return Handle{}, err
+		return Handle{}, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
+	st, err := statFD(f)
 	if err != nil {
 		return Handle{}, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	defer f.Close()
+	if err := validateLeafStat(&st, true); err != nil {
+		return Handle{}, err
+	}
 	b, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))
 	if err != nil || len(b) > MaxBytes {
 		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
@@ -286,6 +375,35 @@ func Read(path string) (Handle, error) {
 		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if err := validateHandle(h); err != nil {
+		return Handle{}, err
+	}
+	current, err := statAt(parent, name)
+	if err != nil || validateLeafStat(&current, true) != nil || !sameIdentity(identity(&st), identity(&current)) {
+		return Handle{}, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	return h, nil
+}
+func Read(path string) (Handle, error) {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is missing")
+		}
+		return Handle{}, err
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return Handle{}, err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
+		return Handle{}, err
+	}
+	h, err := readAt(parent, name)
+	if err != nil {
+		return Handle{}, err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
 		return Handle{}, err
 	}
 	return h, nil
@@ -360,18 +478,17 @@ func encoded(h Handle) ([]byte, error) {
 	}
 	return b, nil
 }
-func Write(path string, h Handle) error {
-	if err := trustedParent(path); err != nil {
-		return err
-	}
+func writeAt(parent *os.File, name string, h Handle) error {
 	b, err := encoded(h)
 	if err != nil {
 		return err
 	}
-	if _, e := os.Lstat(path); e == nil {
-		old, readErr := Read(path)
+	if st, statErr := statAt(parent, name); statErr == nil {
+		if err := validateLeafStat(&st, true); err != nil {
+			return err
+		}
+		old, readErr := readAt(parent, name)
 		if readErr != nil {
-			// An existing malformed or unsafe file is never an absent slot.
 			return readErr
 		}
 		if old.AuthorityID != h.AuthorityID {
@@ -383,37 +500,56 @@ func Write(path string, h Handle) error {
 		if old.State == "ready" && old.ClaimID != h.ClaimID && old.ExpiresAt.After(time.Now()) {
 			return newHandleError(reason.ReasonHandleInUse, "active handle is in use")
 		}
-	} else if !errors.Is(e, os.ErrNotExist) {
+	} else if !errors.Is(statErr, unix.ENOENT) {
 		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	tmp, err := os.OpenFile(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp-"+randomName()), os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	tmpName := "." + name + ".tmp-" + randomName()
+	fd, err := unix.Openat(int(parent.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
+	tmp := os.NewFile(uintptr(fd), tmpName)
+	defer unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+	tmpST, statErr := statFD(tmp)
+	if statErr != nil || validateLeafStat(&tmpST, true) != nil {
+		_ = tmp.Close()
+		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
+	}
 	if _, err = tmp.Write(b); err == nil {
 		err = tmp.Sync()
 	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
-	}
-	if err = os.Rename(name, path); err != nil {
-		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
-	}
-	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
-	}
-	err = d.Sync()
-	if closeErr := d.Close(); err == nil {
+	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
+	}
+	if err = unix.Renameat(int(parent.Fd()), tmpName, int(parent.Fd()), name); err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
+	}
+	if err = parent.Sync(); err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
+	}
+	return nil
+}
+func Write(path string, h Handle) error {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
+		return err
+	}
+	if err := writeAt(parent, name, h); err != nil {
+		return err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -424,65 +560,120 @@ func randomName() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-func Remove(path string) error {
-	if err := trustedParent(path); err != nil {
+func removeAt(parent *os.File, name string) error {
+	st, err := statAt(parent, name)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	if err := validateLeafStat(&st, false); err != nil {
 		return err
 	}
-	if _, err := inspect(path, false); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if err := os.Remove(path); err != nil {
+	if err := unix.Unlinkat(int(parent.Fd()), name, 0); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be removed")
 	}
-	d, e := os.Open(filepath.Dir(path))
-	if e == nil {
-		e = d.Sync()
-		d.Close()
+	if err := parent.Sync(); err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be removed")
 	}
-	return e
+	return nil
+}
+func Remove(path string) error {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
+		return err
+	}
+	if err := removeAt(parent, name); err != nil {
+		return err
+	}
+	return verifyParentPath(absolute, identity(&st))
 }
 
+var afterLockOpenForTest = func() {}
+
 type Lock struct {
-	f    *os.File
-	path string
+	f          *os.File
+	parent     *os.File
+	path       string
+	parentPath string
+	parentID   fileIdentity
+	lockName   string
+	lockID     fileIdentity
+}
+
+func lockFromFiles(path string, parent *os.File, name string, f *os.File, lockST, parentST *unix.Stat_t) *Lock {
+	return &Lock{f: f, parent: parent, path: path, parentPath: filepath.Dir(path), parentID: identity(parentST), lockName: name, lockID: identity(lockST)}
 }
 
 func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := trustedParent(path); err != nil {
+	parent, name, absolute, err := openParent(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return &Lock{}, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	st, err := inspect(path, true)
+	parentST, err := validateParentFD(parent)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &Lock{}, nil
-		}
+		parent.Close()
 		return nil, err
 	}
-	if st == nil {
+	lockST, err := statAt(parent, name)
+	if errors.Is(err, unix.ENOENT) {
+		parent.Close()
+		return &Lock{}, nil
+	}
+	if err != nil || validateLeafStat(&lockST, true) != nil {
+		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
+		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
+	f := os.NewFile(uintptr(fd), absolute)
+	openedST, statErr := statFD(f)
+	if statErr != nil || validateLeafStat(&openedST, true) != nil || !sameIdentity(identity(&lockST), identity(&openedST)) {
+		f.Close()
+		parent.Close()
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
+	}
+	afterLockOpenForTest()
 	for {
 		err = unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
 		if err == nil {
-			return &Lock{f: f, path: path}, nil
+			if err = verifyLockPath(parent, name, identity(&openedST)); err == nil {
+				err = verifyParentPath(absolute, identity(&parentST))
+			}
+			if err != nil {
+				f.Close()
+				parent.Close()
+				return nil, err
+			}
+			return lockFromFiles(absolute, parent, name, f, &openedST, &parentST), nil
 		}
 		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
-			_ = f.Close()
+			f.Close()
+			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock cannot be acquired")
 		}
 		select {
 		case <-ctx.Done():
-			_ = f.Close()
+			f.Close()
+			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleInUse, "handle is in use")
 		case <-time.After(10 * time.Millisecond):
 		}
@@ -493,47 +684,70 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := trustedParent(path); err != nil {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
 		return nil, err
 	}
-	st, e := os.Lstat(path)
-	if e == nil && (st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode()&0o077 != 0 || st.Sys().(*syscall.Stat_t).Nlink != 1 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid())) {
+	parentST, err := validateParentFD(parent)
+	if err != nil {
+		parent.Close()
+		return nil, err
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
-	f, e := os.OpenFile(path, os.O_RDWR|os.O_CREATE|unix.O_CLOEXEC, 0o600)
-	if e != nil {
+	f := os.NewFile(uintptr(fd), absolute)
+	lockST, err := statFD(f)
+	if err != nil || validateLeafStat(&lockST, true) != nil {
+		f.Close()
+		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
+	afterLockOpenForTest()
 	for {
-		e = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if e == nil {
-			return &Lock{f: f, path: path}, nil
+		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			if err = verifyLockPath(parent, name, identity(&lockST)); err == nil {
+				err = verifyParentPath(absolute, identity(&parentST))
+			}
+			if err != nil {
+				f.Close()
+				parent.Close()
+				return nil, err
+			}
+			return lockFromFiles(absolute, parent, name, f, &lockST, &parentST), nil
 		}
-		if e != unix.EWOULDBLOCK && e != unix.EAGAIN {
+		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
 			f.Close()
+			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock cannot be acquired")
 		}
 		select {
 		case <-ctx.Done():
 			f.Close()
+			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleInUse, "handle is in use")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }
+func verifyLockPath(parent *os.File, name string, expected fileIdentity) error {
+	st, err := statAt(parent, name)
+	if err != nil || validateLeafStat(&st, true) != nil || !sameIdentity(expected, identity(&st)) {
+		return newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
+	}
+	return nil
+}
 func AcquireLocks(ctx context.Context, paths ...string) ([]*Lock, error) {
 	canonical := make([]string, len(paths))
 	for i, p := range paths {
-		v, e := filepath.Abs(p)
-		if e != nil {
-			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+		v, err := canonicalPath(p)
+		if err != nil {
+			return nil, err
 		}
-		// Canonicalize existing symlinked parents so aliases cannot acquire
-		// different lock orders or bypass the same-destination check.
-		if resolved, e := filepath.EvalSymlinks(filepath.Dir(v)); e == nil {
-			v = filepath.Join(resolved, filepath.Base(v))
-		}
-		canonical[i] = filepath.Clean(v)
+		canonical[i] = v
 	}
 	for i := 0; i < len(canonical); i++ {
 		for j := i + 1; j < len(canonical); j++ {
@@ -558,6 +772,106 @@ func AcquireLocks(ctx context.Context, paths ...string) ([]*Lock, error) {
 	}
 	return locks, nil
 }
+func (l *Lock) validateFor(path string) (string, error) {
+	if l == nil || l.f == nil || l.parent == nil {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle lock is unavailable")
+	}
+	if !l.Matches(path) {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle lock does not match path")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	absolute = filepath.Clean(absolute)
+	parent, name, canonical, err := openParent(absolute)
+	if err != nil {
+		return "", err
+	}
+	st, statErr := validateParentFD(parent)
+	parent.Close()
+	if statErr != nil || filepath.Dir(canonical) != l.parentPath || !sameIdentity(l.parentID, identity(&st)) {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	parentST, statErr := validateParentFD(l.parent)
+	if statErr != nil || !sameIdentity(l.parentID, identity(&parentST)) {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+	}
+	fdST, statErr := statFD(l.f)
+	if statErr != nil || validateLeafStat(&fdST, true) != nil || !sameIdentity(l.lockID, identity(&fdST)) {
+		return "", newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
+	}
+	if err := verifyLockPath(l.parent, l.lockName, l.lockID); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+func (l *Lock) Read(path string) (Handle, error) {
+	name, err := l.validateFor(path)
+	if err != nil {
+		return Handle{}, err
+	}
+	h, err := readAt(l.parent, name)
+	if err != nil {
+		return Handle{}, err
+	}
+	if _, err = l.validateFor(path); err != nil {
+		return Handle{}, err
+	}
+	return h, nil
+}
+func (l *Lock) Write(path string, h Handle) error {
+	name, err := l.validateFor(path)
+	if err != nil {
+		return err
+	}
+	if err := writeAt(l.parent, name, h); err != nil {
+		return err
+	}
+	return l.validateAfter(path)
+}
+func (l *Lock) Remove(path string) error {
+	name, err := l.validateFor(path)
+	if err != nil {
+		return err
+	}
+	if err := removeAt(l.parent, name); err != nil {
+		return err
+	}
+	return l.validateAfter(path)
+}
+func (l *Lock) validateAfter(path string) error {
+	_, err := l.validateFor(path)
+	return err
+}
+func (l *Lock) ClearPending(path string, h *Handle) error {
+	if h == nil {
+		return nil
+	}
+	if h.Revision > 0 && !h.ExpiresAt.IsZero() {
+		h.State, h.PendingRequest = "ready", nil
+		return l.Write(path, *h)
+	}
+	return l.Remove(path)
+}
+
+// Path returns the lock pathname bound to this descriptor.
+func (l *Lock) Path() string {
+	if l == nil {
+		return ""
+	}
+	return l.path
+}
+
+// Matches reports whether this lock protects path's sibling lock pathname.
+func (l *Lock) Matches(path string) bool {
+	if l == nil || l.f == nil {
+		return false
+	}
+	canonical, err := canonicalPath(path + ".lock")
+	return err == nil && canonical == l.path
+}
+
 func (l *Lock) Close() error {
 	if l == nil || l.f == nil {
 		return nil
@@ -565,6 +879,11 @@ func (l *Lock) Close() error {
 	e := unix.Flock(int(l.f.Fd()), unix.LOCK_UN)
 	if ce := l.f.Close(); e == nil {
 		e = ce
+	}
+	if l.parent != nil {
+		if ce := l.parent.Close(); e == nil {
+			e = ce
+		}
 	}
 	return e
 }

@@ -3,12 +3,15 @@ package handle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func testHandle() Handle {
@@ -124,7 +127,7 @@ func TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees(t *testi
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"init", repository}, {"-C", repository, "config", "user.name", "test"}, {"-C", repository, "config", "user.email", "test@example.invalid"}} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if out, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
@@ -132,7 +135,7 @@ func TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees(t *testi
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"-C", repository, "add", "tracked"}, {"-C", repository, "commit", "-m", "initial"}} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if out, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
@@ -153,7 +156,7 @@ func TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees(t *testi
 		t.Fatalf("symlinked git root=%q err=%v want=%q", root, err, resolvedRepository)
 	}
 	linked := filepath.Join(t.TempDir(), "linked")
-	if out, err := exec.Command("git", "-C", repository, "worktree", "add", "--detach", linked).CombinedOutput(); err != nil {
+	if out, err := testkit.GitCommand("-C", repository, "worktree", "add", "--detach", linked).CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
 	linkedRoot, err := ContextRoot(linked, nil)
@@ -326,5 +329,183 @@ func TestSiblingLockSerializesAndDoesNotUnlink(t *testing.T) {
 	}
 	if _, err := os.Stat(p); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHandleRejectsAncestorSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(link, "handles")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireLock(context.Background(), filepath.Join(parent, "h.lock")); err == nil {
+		t.Fatal("accepted symlink ancestor")
+	}
+}
+
+func TestPinnedLockRejectsParentReplacement(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "handles")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "h.json")
+	if err := Write(path, testHandle()); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	old := filepath.Join(root, "handles-old")
+	if err := os.Rename(parent, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Read(path); err == nil {
+		t.Fatal("read replacement parent through old lock")
+	}
+}
+
+func TestPinnedLockRejectsLockLeafReplacement(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "h.json")
+	if err := Write(path, testHandle()); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := os.Rename(path+".lock", path+".lock-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Read(path); err == nil {
+		t.Fatal("read after lock leaf replacement")
+	}
+}
+
+func TestPinnedLockRejectsParentReplacementBeforePersistence(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "handles")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "h.json")
+	lock, err := AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := os.Rename(parent, filepath.Join(root, "handles-old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Write(path, testHandle()); err == nil {
+		t.Fatal("persisted through replacement parent")
+	}
+}
+
+func TestAcquireLockRejectsParentReplacementWhileWaiting(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "handles")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "h.json")
+	first, err := AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan struct{})
+	resume := make(chan struct{})
+	afterLockOpenForTest = func() {
+		close(opened)
+		<-resume
+	}
+	defer func() { afterLockOpenForTest = func() {} }()
+	result := make(chan error, 1)
+	go func() {
+		second, acquireErr := AcquireLock(context.Background(), path+".lock")
+		if second != nil {
+			_ = second.Close()
+		}
+		result <- acquireErr
+	}()
+	<-opened
+	if err := os.Rename(parent, filepath.Join(root, "handles-old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	close(resume)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("acquired lock after parent replacement")
+	}
+}
+
+func TestLockRejectsDifferentSiblingHandle(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstPath := filepath.Join(dir, "a.json")
+	otherPath := filepath.Join(dir, "b.json")
+	lock, err := AcquireLock(context.Background(), firstPath+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := lock.Write(otherPath, testHandle()); err == nil {
+		t.Fatal("lock protected a different sibling handle")
+	}
+	if _, err := os.Stat(otherPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("different sibling was created: %v", err)
+	}
+}
+
+func TestAcquireLocksCanonicalizesDarwinSystemAliasesBeforeSorting(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin system alias behavior")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var alias string
+	switch {
+	case strings.HasPrefix(dir, "/private/tmp/"), strings.HasPrefix(dir, "/private/var/"):
+		alias = strings.TrimPrefix(dir, "/private")
+	case strings.HasPrefix(dir, "/tmp/"), strings.HasPrefix(dir, "/var/"):
+		alias = "/private" + dir
+	default:
+		t.Skip("temporary directory does not use a Darwin system alias")
+	}
+	if _, err := AcquireLocks(context.Background(), filepath.Join(dir, "h.lock"), filepath.Join(alias, "h.lock")); err == nil {
+		t.Fatal("accepted duplicate lock paths through Darwin system aliases")
 	}
 }

@@ -5,10 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestRFC3986EncodingAndCanonicalCoordinationKey(t *testing.T) {
@@ -343,7 +344,7 @@ func TestValidationAndDeterministicRegistry(t *testing.T) {
 
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := testkit.GitCommand(append([]string{"-C", dir}, args...)...)
 	cmd.Env = withoutGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v (%s)", args, err, out)

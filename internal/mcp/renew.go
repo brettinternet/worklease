@@ -75,7 +75,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 			b.st.Close()
 			return
 		}
-		h, err = handle.Read(r.path)
+		h, err = lk.Read(r.path)
 		if err == nil && h.State == "pending" {
 			lk.Close()
 			b.st.Close()
@@ -87,7 +87,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 			inputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UnixMicro()}
 			h.State = "pending"
 			h.PendingRequest = &handle.PendingRequest{OperationID: id, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(inputs), RequestNotAfter: deadline, Inputs: inputs}
-			if err = handle.Write(r.path, h); err == nil {
+			if err = lk.Write(r.path, h); err == nil {
 				rec, callErr := b.svc.Heartbeat(r.ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: id, TTL: ttl, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 				if callErr == nil {
 					h.State = "ready"
@@ -101,7 +101,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 					if h.ExpiresAt.After(h.HoldUntil) {
 						h.ExpiresAt = h.HoldUntil
 					}
-					if writeErr := handle.Write(r.path, h); writeErr != nil {
+					if writeErr := lk.Write(r.path, h); writeErr != nil {
 						lk.Close()
 						b.st.Close()
 						return
@@ -112,7 +112,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 					// one keeps the exact pending request for recovery. Either
 					// way automatic renewal stops until the client intervenes.
 					if reason.DefinitiveNoCommit(callErr) {
-						_ = handle.ClearPending(r.path, &h)
+						_ = lk.ClearPending(r.path, &h)
 					}
 					lk.Close()
 					b.st.Close()
