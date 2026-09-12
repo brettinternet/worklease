@@ -33,6 +33,15 @@ func (e *handledError) Unwrap() error {
 	}
 	return e.cause
 }
+func (e *handledError) ExitCode() int {
+	if e == nil || e.cause == nil {
+		return reason.ExitInternal
+	}
+	if classified := reason.As(e.cause); classified != nil {
+		return classified.ExitCode()
+	}
+	return reason.ExitInternal
+}
 
 // JSONErrorHandled reports whether an error has already been rendered by the
 // command's injected output boundary.
