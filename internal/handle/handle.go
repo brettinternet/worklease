@@ -200,13 +200,43 @@ func validHash(v string) bool {
 func validPublicText(v string) bool {
 	return utf8.ValidString(v) && len([]byte(v)) <= 128 && !strings.ContainsAny(v, "\x00\r\n") && strings.TrimSpace(v) == v
 }
+
+// ValidateMetadata checks a handle path using metadata only. It never opens or
+// reads the leaf, and reports an absent leaf separately from an unsafe parent
+// or leaf. The parent must be an existing private directory owned by this user.
+func ValidateMetadata(path string) (present bool, err error) {
+	_, parentErr := os.Lstat(filepath.Dir(path))
+	if errors.Is(parentErr, os.ErrNotExist) {
+		return false, os.ErrNotExist
+	}
+	if parentErr != nil {
+		return false, parentErr
+	}
+	if err := trustedParent(path); err != nil {
+		return false, err
+	}
+	_, err = inspect(path, true)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func trustedParent(path string) error {
 	p := filepath.Dir(path)
 	st, err := os.Lstat(p)
-	if err != nil || !st.IsDir() || st.Mode()&0o077 != 0 || st.Mode()&os.ModeSymlink != 0 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
+	if err != nil || !st.IsDir() || st.Mode()&0o077 != 0 || st.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(st) {
 		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	return nil
+}
+
+func ownedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint32(stat.Uid) == uint32(os.Geteuid())
 }
 func inspect(path string, requirePrivate bool) (os.FileInfo, error) {
 	st, err := os.Lstat(path)
@@ -216,7 +246,8 @@ func inspect(path string, requirePrivate bool) (os.FileInfo, error) {
 		}
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) || st.Sys().(*syscall.Stat_t).Nlink != 1 || (requirePrivate && st.Mode()&0o077 != 0) {
+	stat, statOK := st.Sys().(*syscall.Stat_t)
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || !statOK || !ownedByCurrentUser(st) || stat.Nlink != 1 || (requirePrivate && st.Mode()&0o077 != 0) {
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	return st, nil

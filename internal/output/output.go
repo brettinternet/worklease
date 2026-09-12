@@ -143,9 +143,36 @@ func escapeText(value string) string {
 // WriteTextError writes the human error format to stderr. It never includes
 // the rejected credential itself.
 func WriteTextError(w io.Writer, err error) error {
+	if w == nil {
+		return errors.New("nil output writer")
+	}
 	failure := Classify(err)
-	_, writeErr := fmt.Fprintf(w, "error: %s: %s\n", failure.Reason, RedactString(failure.Message))
-	return writeErr
+	if _, writeErr := fmt.Fprintf(w, "error: %s: %s\n", failure.Reason, RedactString(failure.Message)); writeErr != nil {
+		return writeErr
+	}
+	keys := make([]string, 0, len(failure.Details))
+	for key := range failure.Details {
+		if safeTextDetail(key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := escapeText(fmt.Sprint(Redact(failure.Details[key])))
+		if _, writeErr := fmt.Fprintf(w, "%s: %s\n", key, value); writeErr != nil {
+			return writeErr
+		}
+	}
+	return nil
+}
+
+func safeTextDetail(key string) bool {
+	switch key {
+	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint":
+		return true
+	default:
+		return false
+	}
 }
 
 // Redact recursively removes values under credential-like keys and replaces
