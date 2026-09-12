@@ -78,6 +78,12 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 	if s.jsonRequested(cmd) {
 		return output.WriteSuccess(s.writer, operation, fields)
 	}
+	if operation == "status" {
+		return writeStatusText(s.writer, lease.Status{Claim: fields["claim"].(*lease.ClaimView), Resources: fields["resources"].([]lease.ResourceStatus)})
+	}
+	if operation == "list" {
+		return writeListText(s.writer, fields["claims"].([]lease.ClaimView))
+	}
 	return output.WriteText(s.writer, operation, fields)
 }
 func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error {
