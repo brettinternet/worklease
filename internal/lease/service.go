@@ -95,7 +95,9 @@ type AcquireRequest struct {
 	RequestNotAfter             time.Time
 	LocalReplaceAllowed         bool
 	CoordinationOnly            bool
-	Wait, PollInterval          time.Duration
+	// HoldUntil is an authority-enforced expiry ceiling for handle-backed leases.
+	HoldUntil          time.Time
+	Wait, PollInterval time.Duration
 }
 type Grant struct {
 	ClaimID             string     `json:"claimId"`
@@ -155,12 +157,15 @@ type Renew struct {
 	OperationID     string
 	TTL             time.Duration
 	RequestNotAfter time.Time
+	// HoldUntil prevents a renewal from extending beyond the client's durable hold.
+	HoldUntil time.Time
 }
 type CheckpointRequest struct {
 	OperationID     string
 	TTL             time.Duration
 	Data            json.RawMessage
 	RequestNotAfter time.Time
+	HoldUntil       time.Time
 }
 type ReleaseRequest struct {
 	OperationID, Reason string
@@ -382,6 +387,12 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 		}
 		acquired := effective.UnixMicro()
 		expires := acquired + ttl.Microseconds()
+		if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
+			expires = req.HoldUntil.UnixMicro()
+		}
+		if expires <= acquired {
+			return reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,checkpoint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)`, claimID, tokenHash, 1, agent, session, work, "local-coordination", boolInt(req.LocalReplaceAllowed && !req.CoordinationOnly), acquired, ttl.Microseconds(), acquired, expires); err != nil {
 			return storage(err)
 		}
@@ -567,6 +578,12 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
 			expires := effective.UnixMicro() + ttl.Microseconds()
+			if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
+				expires = req.HoldUntil.UnixMicro()
+			}
+			if expires <= effective.UnixMicro() {
+				return nil, reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
+			}
 			if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, row.ClaimID); e != nil {
 				return nil, storage(e)
 			}
@@ -577,19 +594,29 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 	return receipt, err
 }
 
-func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req CheckpointRequest) (Receipt, error) {
-	if len(req.Data) == 0 || len(req.Data) > maxCheckpoint {
-		return Receipt{}, reason.Invalid("checkpoint must be canonical JSON no larger than 8 KiB")
+// ValidateCheckpoint canonicalizes and validates checkpoint data without mutating authority state.
+// Adapters use it before persisting a pending mutation so rejected input cannot strand a handle.
+func ValidateCheckpoint(data []byte, activeToken string) ([]byte, error) {
+	if len(data) == 0 || len(data) > maxCheckpoint {
+		return nil, reason.Invalid("checkpoint must be canonical JSON no larger than 8 KiB")
 	}
-	canonical, err := strictCheckpoint(req.Data)
+	canonical, err := strictCheckpoint(data)
 	if err != nil {
-		return Receipt{}, reason.Invalid("checkpoint must be strict JSON without duplicate or credential-like fields")
+		return nil, reason.Invalid("checkpoint must be strict JSON without duplicate or credential-like fields")
 	}
-	if len(creds.Token) == 64 && strings.Contains(string(canonical), creds.Token) {
-		return Receipt{}, reason.Invalid("checkpoint must not contain the active credential")
+	if len(activeToken) == 64 && strings.Contains(string(canonical), activeToken) {
+		return nil, reason.Invalid("checkpoint must not contain the active credential")
 	}
 	if len(canonical) > maxCheckpoint {
-		return Receipt{}, reason.Invalid("checkpoint exceeds 8 KiB")
+		return nil, reason.Invalid("checkpoint exceeds 8 KiB")
+	}
+	return canonical, nil
+}
+
+func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req CheckpointRequest) (Receipt, error) {
+	canonical, err := ValidateCheckpoint(req.Data, creds.Token)
+	if err != nil {
+		return Receipt{}, err
 	}
 	ttl := req.TTL
 	if ttl == 0 {
@@ -618,6 +645,12 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
 			expires := effective.UnixMicro() + ttl.Microseconds()
+			if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
+				expires = req.HoldUntil.UnixMicro()
+			}
+			if expires <= effective.UnixMicro() {
+				return nil, reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
+			}
 			if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=?,checkpoint=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, string(canonical), row.ClaimID); e != nil {
 				return nil, storage(e)
 			}
