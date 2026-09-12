@@ -38,16 +38,14 @@ A provider reference must define how each value is read and how duplicate or amb
 ## Resource policy
 
 The caller supplies provider, source, and item identity before resource
-derivation. Prefer the bundled `worklease.adapters` key policy when its
+derivation. Prefer the static built-in Worklease key policy when its
 identity and claim scope fit:
 
-```python
-from worklease.adapters import key
-
-resource_key = key(provider_kind, source_locator, item_id)
+```sh
+worklease --json key --provider "$provider_kind" --source "$source_locator" --item "$item_id"
 ```
 
-The returned `resource` is passed unchanged to Worklease. `capability` and
+The caller reads the returned envelope's `resource` and passes it unchanged to Worklease. `capability` and
 `scope` describe local coordination policy, not provider discovery or
 provider-side fencing. Every contender for the same logical claim scope must
 receive the same exact resource.

@@ -21,7 +21,7 @@ Complete this checklist for each source kind. A missing answer is an unsupported
 
 ## Worklease identity and capability
 
-- Which bundled key adapter fits the provider, or why is a custom resource policy required?
+- Which built-in key policy fits the provider, or why is a custom resource policy required?
 - Is the claim scope one item or the whole source?
 - Does the resource remain identical across worktrees, sessions, agents, and processes?
 - Can two unrelated sources or items collide?

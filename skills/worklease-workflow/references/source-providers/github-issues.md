@@ -16,10 +16,8 @@ Discovery must paginate the complete selected collection. A bare issue number is
 
 Use the bundled GitHub key policy after repository and issue resolution:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("github", repository, issue_number)
+```sh
+worklease key --provider github --source "$repository" --item "$issue_number"
 ```
 
 This creates an item-scoped local key. A locally guarded GitHub command is not a provider-fenced issue mutation; other hosts and direct writers remain possible. Default to `providerMutationFenced: false` and normalize the mutation guarantee as `local-coordination` unless the selected GitHub operation atomically enforces a supplied provider version and returns evidence.

@@ -15,12 +15,10 @@ Discovery must follow provider pagination and include dependency items needed fo
 ## Worklease resource policy
 
 Jira uses the explicit built-in `generic` coordination policy because no
-provider-specific resource policy is bundled:
+provider-specific resource policy is built in:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("generic", f"jira:{site}:{source_locator}", issue_id)
+```sh
+worklease key --provider generic --source "jira:$site:$source_locator" --item "$issue_id" --coordination-only
 ```
 
 Include the Jira site and collection identity in the source so distinct Jira

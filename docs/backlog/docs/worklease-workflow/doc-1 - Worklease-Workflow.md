@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-12 03:56'
+updated_date: '2026-09-12 20:30'
 tags:
   - agent
   - workflow
@@ -11,80 +11,76 @@ tags:
 ---
 # Worklease Workflow
 
-This guide is the human-facing entry point for the provider-neutral backlog coordination skill at [`skills/worklease-workflow/SKILL.md`](../../../../skills/worklease-workflow/SKILL.md).
+Human-facing entry point for the provider-neutral coordination skill at [`skills/worklease-workflow/SKILL.md`](../../../../skills/worklease-workflow/SKILL.md).
 
 ## When to use it
 
-Use the skill when work needs more than a task status: dependency-aware selection, bounded ownership, heartbeats, durable progress checkpoints, review boundaries, handoff, or archive. It is useful for coding agents, operators, and other callers that can provide the underlying work system.
+Use the skill for dependency-aware selection, bounded ownership, heartbeats,
+durable provider checkpoints, review boundaries, handoff, or archive. Continue
+to use the provider's supported interface—such as the `backlog` CLI—for
+provider reads and writes. The skill never edits provider files directly or
+chooses a provider.
 
-For ordinary Backlog.md task lifecycle changes, keep using the `backlog` CLI and its built-in guides. This skill does not replace `backlog task`, does not write task files, and does not choose a provider.
+## Capability boundary
 
-## Start here
+The caller supplies source resolution/discovery, item reads and durable writes,
+dependency/status mapping, one to 32 exact ordered claim resources, claim
+authority, provider receipts, and optional review/archive operations.
 
-Read the project guidance and current backlog state before acting:
-
-```bash
-mise exec -- backlog instructions overview
-mise exec -- backlog search "<terms>" --plain
-mise exec -- backlog task list --plain
-```
-
-Then load the generic skill. The caller must supply an implementation of its capability boundary:
-
-- source resolution and discovery;
-- item reads and durable writes;
-- dependency/status/priority mapping;
-- one exact opaque claim resource per target and operation scope;
-- claim inspection, acquisition, heartbeat, and release authority; and
-- review and archive operations when supported.
-
-The skill treats source locators, item IDs, statuses, metadata, claim resources, and receipts as opaque caller-owned values. The generic contract contains no provider detection, provider commands, credential rules, or remote-fencing claims. After the caller selects a provider, source, and item, a bundled Worklease key adapter may supply a deterministic local resource and capability; it does not discover provider work or execute provider writes. When caller context does not already provide the remaining mappings, load a provider-specific workflow adapter after the generic contract and only for the providers actually resolved. That workflow adapter inherits generic graph construction and selection; it records `providerMutationFenced: false` unless the provider mutation itself supplies fencing evidence.
+Worklease supplies a local SQLite claim authority and static deterministic key
+policies. It does not discover provider work, authenticate to providers, perform
+provider writes, or prove provider-side fencing. Source locators, IDs, statuses,
+metadata, resources, and receipts stay opaque.
 
 ## Operating loop
 
-1. Resolve the caller's ordered sources and selectors.
-2. Discover the complete scoped item set, including dependencies needed for readiness checks.
-3. Build the dependency graph before selecting work; report missing or cyclic dependencies instead of guessing.
-4. Select one item or a dependency-ready wave, excluding active claims and terminal work.
-5. Accept one exact caller-supplied claim resource and atomically claim it before delegation or edits.
-6. Retain the resource, claim ID, token, revision, expiry, and guarantee; the Worklease CLI keeps these in its private contextual handle by default.
-7. Heartbeat before the lease is half-expired and around long work.
-8. Re-read eligibility, ownership, and provider state before each durable mutation.
-9. Persist and verify a coherent provider checkpoint before release or handoff.
-10. Release only the matching claim after retaining the provider receipt or verifying source state.
-11. Review or archive only when the caller explicitly authorizes those boundaries.
+1. Resolve ordered sources/selectors and discover the complete dependency graph.
+2. Report complete, blocked, or active-claim outcomes when nothing is eligible.
+3. Select terminal-prerequisite, unblocked work in provider order.
+4. Acquire a fresh claim over the exact caller-supplied resource set before
+   delegation, isolation, or edits.
+5. Keep credentials only in an authority-bound private session handle or
+   file/descriptor source; output never includes them.
+6. Revalidate dependencies, ownership, guarantee scope, and provider state
+   before every durable write.
+7. Heartbeat before half the TTL and around bounded long operations.
+8. Perform only caller-authorized provider mutations and retain/re-read their
+   durable receipts.
+9. Verify the authoritative provider checkpoint, persist bounded local recovery
+   metadata, then release with an audit reason.
+10. Review/archive only at an explicit authorized boundary.
 
-Checkpoint-before-release is caller policy. Worklease validates ownership and a non-blank audit reason; the reason is not provider-checkpoint proof.
+Use stable distinct sessions for concurrent loops:
 
-## Checkpoint contract
-
-A checkpoint is optional coordination metadata for resumable work. `LeaseStore.checkpoint(MutationRequest(...), value)` canonicalizes one JSON value with sorted object keys, compact separators, and `allow_nan=False`, then measures its UTF-8 encoding. The serialized value must be at most 8 KiB (`MAX_CHECKPOINT_BYTES = 8192`); non-JSON values and larger values are rejected without changing the claim. The operation atomically stores the value, renews the lease, and advances the claim revision.
-
-The path-free CLI loop is:
-
-```bash
-worklease acquire --resource RESOURCE
-worklease heartbeat
-worklease checkpoint --checkpoint JSON
-worklease release --reason "provider checkpoint verified"
+```sh
+worklease acquire --resource "$RESOURCE" --session "$SESSION"
+worklease verify --session "$SESSION"
+worklease heartbeat --session "$SESSION"
+worklease checkpoint --session "$SESSION" --data '{"phase":"verified"}'
+worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
-The contextual handle lives under the Worklease state home and is selected by
-Git worktree root, or by resolved current directory outside Git. Use `-L PATH`
-for a concurrent lease in the same context:
+One claim atomically covers one to 32 ordered resources. The Go product has no
+owner ID, token output, or separate bundle commands. Omit operation IDs for
+ordinary mutations; retain and reuse one only for exact bounded replay after a
+lost response. Changed intent conflicts. Unknown guarded outcomes require
+provider-effect and process-cessation evidence plus explicit reconciliation.
 
-```bash
-worklease acquire --resource OTHER_RESOURCE -L "$LEASE_FILE"
-worklease checkpoint -L "$LEASE_FILE" --checkpoint JSON
-worklease release -L "$LEASE_FILE" --reason "provider checkpoint verified"
-```
+## Guarantees
 
-The version-1 checkpoint success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`. The contextual or explicit handle keeps the bearer token out of output and arguments. Read-only `status` and `list` never expose it. Replaying the same operation ID with the same request returns the cached receipt, even after the lease expires; a changed request under the same operation ID, or a new/uncached request with stale/expired ownership, fails without changing the checkpoint.
+Claim lifecycle and supervised exec provide `local-coordination` among
+cooperating callers on one host. Exact expected-hash path replacement may report
+`local-serialized-replace` for that file only. Provider mutations remain
+`providerMutationFenced: false` unless the provider operation itself enforces a
+conditional write/fence and returns evidence. Assignment, status, comments,
+branches, worktrees, local locks, and receipts are not substitutes for claims or
+provider checkpoints.
 
-The latest value is retained on the active claim. A clean `release` copies it into release history, and a later acquire returns it with `recovery: "clean-handoff"`. If the claim expires first, the next acquire returns the retained value with `recovery: "expired-recovery"`. A first acquire has no recovery marker. Retention is local SQLite coordination state and is not lease-TTL-limited: the latest value survives clean release and expiry recovery until a future explicit retention or garbage-collection operation removes it. The caller's provider remains authoritative for progress, and checkpoints do not provide provider-side fencing, cross-host exclusion, or exactly-once external effects.
+The local authority is the only shipped authority. Handles and event/watch
+cursors bind to its immutable authority ID. The Cloudflare remote-authority
+document is explicitly deferred; V1 has no HTTP backend, fallback, deployment,
+remote exec, or fencing counter.
 
-If the caller cannot provide one capability, return a structured capability result. Never invent a resource mapping, assignee/status/comment lock, writable local shadow, or provider fencing guarantee. Worklease can fence its matching guarded local operation among cooperating same-host callers; it does not make an invoked provider CLI/API mutation provider-fenced or exclude cross-host workers. Never put the bearer token in status output, diagnostics, provider checkpoints, logs, or handoffs.
+## References
 
-## Source of truth
-
-The caller's backing system remains authoritative for item content and workflow state. A Worklease claim or operation receipt is coordination evidence, not a provider checkpoint. For Backlog.md changes specifically, an authorized caller or adapter uses `backlog task view`, `backlog task edit`, `backlog doc create/update`, and the matching built-in guide rather than editing `docs/backlog/` records directly.
+Read [`references/contract.md`](../../../../skills/worklease-workflow/references/contract.md) first. If caller context does not already supply source capabilities, then read [`references/source-workflow.md`](../../../../skills/worklease-workflow/references/source-workflow.md) and only the matching provider reference.

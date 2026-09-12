@@ -1,343 +1,103 @@
-# Worklease claim model
+# Claim, operation, and recovery model
 
-Worklease is a local ownership coordinator. It does not own a backlog item or
-its workflow state. It grants one worker a bounded ownership epoch over an
-opaque resource, then checks that ownership before guarded local operations.
+Worklease coordinates cooperating processes through one owner-private SQLite
+authority. It does not replace a backlog, prove provider writes, or stop remote
+work.
 
-The shortest useful model is:
+## Exact resources and claims
 
-```text
-provider + source + item -> resource -> claim -> guarded operations
-```
+A resource is an opaque byte-exact string inside one authority namespace. One
+claim atomically owns one to 32 ordered, unique resources. Overlap conflicts;
+there is no partial acquisition. Built-in policies derive deterministic keys,
+but the claim service does not interpret them.
 
-- The **item** is provider work.
-- The **resource** is the exact value contenders coordinate on.
-- The **claim** is one temporary ownership epoch for that resource.
-- The **provider** remains authoritative for item state and progress.
+Repository, Markdown, Backlog.md, and path identities are host-local. A future
+remote namespace must be caller-selected rather than guessed from a Git remote,
+login, worktree, or path. Portable provider keys may be used today without
+claiming cross-host exclusion.
 
-## Entity relationships
+A claim has an immutable claim ID, hashed client-held credential, current
+revision, expiry, checkpoint, and agent/work metadata. MCP automatic renewal adds
+an absolute per-lease hold limit; ordinary CLI renewal is not capped by MCP's
+`maxHold`.
+`agentId` is audit identity, never authorization. The Python owner ID and
+singleton/bundle split are retired.
 
-```mermaid
-flowchart LR
-    subgraph Provider["Authoritative work provider"]
-        P["provider<br/>for example, backlog-md"]
-        S["source<br/>for example, docs/backlog"]
-        I["item<br/>for example, TASK-42"]
-        PS["item state, dependencies,<br/>progress, provider version"]
-    end
+## Credentials and handles
 
-    P --> K["resource-key policy"]
-    S --> K
-    I --> K
-    I --- PS
-    K --> R["resource<br/>exact contention identity"]
+Acquire and transfer generate and privately persist credentials before sending
+the exact request. Grants and replays never output a token. Mutations resolve a
+credential from:
 
-    subgraph Caller["Caller/CLI-generated identity"]
-        A["agent ID<br/>stable logical agent"]
-        SE["session ID<br/>current invocation"]
-        O["owner ID<br/>current worker attempt"]
-        W["work key<br/>purpose of the claim"]
-        CI["claim ID<br/>new ownership epoch"]
-    end
+1. an explicit private handle;
+2. configured handle selection;
+3. `--token-file` or `--token-fd` with claim/revision inputs; or
+4. an authority-bound contextual handle selected by root and stable session.
 
-    R --> ACQ["atomic acquire"]
-    A --> ACQ
-    SE --> ACQ
-    O --> ACQ
-    W --> ACQ
-    CI --> ACQ
+A handle includes authority ID, resources, claim ID, revision, credential, and
+pending exact request. It is written atomically with owner-only permissions and
+serialized across processes. It is convenience state, not ownership or a
+provider checkpoint. Two loops in one checkout must use distinct sessions.
 
-    ACQ --> C["active claim<br/>resource + claim ID<br/>identities + guarantee<br/>token + revision<br/>timestamps + expiry"]
+## Revisions, replay, and unknown outcomes
 
-    C --> M["guarded mutation request<br/>resource + claim ID<br/>token + current revision<br/>fresh operation ID"]
-    M --> V["verify active epoch<br/>and compare revision"]
-    V --> X["heartbeat / checkpoint / exec<br/>replace-file / reconciliation"]
-    X --> N["receipt<br/>new revision and usually new expiry"]
-    N --> C
-    C --> REL["verified release"]
-    REL --> FREE["resource available"]
+Every mutation names an operation ID and exact normalized request with a bounded
+`requestNotAfter`. Omit the operation ID for ordinary work. Reuse it only to
+replay the same request after losing a response. A changed resource set, cwd,
+content digest, duration, checkpoint, or other protected intent conflicts.
 
-    C -. "coordinates access; does not replace" .-> PS
-    X -. "may affect provider work;<br/>provider state still requires its own receipt and verification" .-> PS
-```
+A committed response can remain unknown to the client. The pending request in
+the handle permits authenticated replay during the recovery window. Acquire and
+transfer replays remain authenticated even after the original epoch ends; no
+public replay can recover a credential.
 
-`provider`, `source`, and `item` are inputs to resource derivation. The
-Worklease core receives the resulting resource as an opaque string and does
-not infer provider behavior from it.
+Guarded operations record intent before side effects. If ownership is lost,
+the operation remains started. A predecessor started operation blocks new
+guarded work until an authorized operator checks the authoritative effect,
+proves the old executor has ceased, and records explicit reconciliation. A file
+already matching a proposed hash is not enough evidence that an old executor
+cannot still write.
 
-Every contender for the same protected unit must derive the same resource
-byte-for-byte. A transient value such as agent, process, worktree, or session
-identity must not be part of the resource: doing so would give each contender
-a different lock instead of making them contend.
+## Guarantees
 
-## What each value does
-
-| Value | Meaning | Why it exists |
-| --- | --- | --- |
-| `provider` | Resource-key policy name, such as `backlog-md` | Selects deterministic resource derivation; it does not make provider calls |
-| `source` | Stable provider collection or location | Separates identically named items in different sources |
-| `item` | Provider-local work identity, such as `TASK-42` | Identifies the work within its source |
-| `resource` | Exact opaque contention key | Makes cooperating callers contend on the same protected unit |
-| `claim ID` | Globally unique ownership-epoch ID | Distinguishes this attempt from every previous or future owner |
-| `agent ID` | Stable, caller-visible logical agent identity | Makes ownership diagnostics understandable; it does not authorize mutations |
-| `session ID` | Current invocation or session identity | Distinguishes separate runs of an agent |
-| `owner ID` | Unique worker-attempt identity | Distinguishes retries or concurrent workers within an agent/session |
-| `work key` | Caller-defined purpose, such as `implement:TASK-42` | Explains what the owner intends to do; it is not the contention key |
-| `token` | Secret bearer credential returned by acquisition | Proves possession of the ownership epoch |
-| `token file` | Recommended mode-0600 transport for the token | Keeps the token out of argv; it is not a separate claim entity |
-| `revision` | Monotonic claim-authority compare-and-set value | Rejects a worker using stale claim state |
-| `operation ID` | Idempotency key for one exact mutation request | Recovers a lost response without accidentally executing changed intent |
-| `TTL` | Requested bounded lease lifetime | Ensures abandoned ownership eventually ends |
-| `expiresAt` | Authority-generated deadline | Determines when the claim stops being active |
-| `operation` | Command/result kind, such as `acquire` or `heartbeat` | Describes what a request or receipt represents; it is not the operation ID |
-| `guarantee` | `fenced` or `local-coordination` | States the exact protection Worklease can prove |
-| `checkpoint` | Optional bounded local recovery metadata | Helps a successor resume; it is not authoritative provider progress |
-| provider version | Provider-side version, hash, or conditional-write value | Detects changes to authoritative work independently of the claim revision |
-
-The identifiers answer different questions:
-
-| Identifier | Question |
+| Operation | Honest guarantee |
 | --- | --- |
-| `agent ID` | Which logical agent is running? |
-| `session ID` | Which invocation is this? |
-| `owner ID` | Which worker attempt is this? |
-| `claim ID` | Which ownership epoch is this? |
-| `work key` | What is the worker doing? |
-| `resource` | What exact unit is contested? |
+| Claim lifecycle, `exec`, or a provider CLI/API invoked locally | `local-coordination` among cooperating callers on this host |
+| `replace-file` with exact path membership and expected hash | `local-serialized-replace` for that local replacement |
+| Provider mutation with its own conditional write/fence | Provider's separately evidenced guarantee |
 
-These values do not authorize claim adoption. A mutation requires the active
-claim ID, bearer token, and current revision.
+Expiry ends authorization but does not stop arbitrary child or remote work.
+Guarded exec supervises its process group and records uncertain outcomes instead
+of claiming impossible fencing. Default native-hook claim coverage verifies a
+current claim only; opt-in path coverage requires exact claimed membership.
 
-## Required values by operation
+## Events, cursors, and retention
 
-“Required” below means required by that claim-related CLI path. Defaults and
-operation-specific payloads are shown separately. Canonical bundle aliases such
-as `bundle-acquire` accept the same inputs as the displayed command name.
+The authority appends one ordered lifecycle event sequence. Events and history
+are non-secret projections. They exclude credentials, raw requests, command
+output, replacement contents, checkpoint values, reconciliation evidence, and
+provider payloads.
 
-| Operation | Required identity and authorization | Additional input |
-| --- | --- | --- |
-| `key` | `provider`, `source`, `item` | Optional `--coordination-only` |
-| `acquire` | `resource`; fresh `claim ID`, `agent ID`, `session ID`, and `owner ID` may be omitted by the CLI; `work key` defaults to the resource | Omitted IDs are generated; omitted agent ID comes from `WORKLEASE_AGENT_ID`; TTL defaults to 900 seconds; optional `--coordination-only` |
-| `status` | `resource` | No token; read-only output is redacted |
-| `list` | None | Optional resource filter |
-| `history` | `resource` | No token; read-only retained local history for exactly that resource |
-| `events` | None | No token; read-only paginated feed of retained lifecycle rows; `--limit`, opaque `--cursor`, and `--full` are available |
-| `heartbeat` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
-| `checkpoint` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; JSON checkpoint; renewal TTL defaults to 900 seconds |
-| `exec` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; command argv; optional execution-directory selection |
-| `replace-file` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; path, content file, and expected SHA-256 are always required |
-| `transfer` | Same claim mutation fields as heartbeat | Omitted operation and successor claim/session/owner IDs are generated; successor agent defaults to `WORKLEASE_AGENT_ID`; successor work key defaults to the resource |
-| `release` | `resource`, `claim ID`, token credential, current `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; nonblank audit reason; no renewal TTL |
-| `inspect-operation` | `resource`, `operation ID` | No token; read-only inspection |
-| `reconcile-operation` | Same claim mutation fields as heartbeat | Omitted operation IDs are generated; target operation ID, expected request SHA-256, observed outcome, and evidence |
-| `acquire-bundle` | Ordered `resource` values; fresh `claim ID`, `agent ID`, `session ID`, and `owner ID` may be omitted by the CLI; `work key` defaults to the ordered resource set | Omitted IDs are generated; omitted agent ID comes from `WORKLEASE_AGENT_ID`; 1–32 unique resources; TTL defaults to 900 seconds; optional `--coordination-only` |
-| `status-bundle` | Exact ordered `resource` values | No token; order must match acquisition |
-| `heartbeat-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; renewal TTL defaults to 900 seconds |
-| `exec-bundle` | Same bundle mutation fields as heartbeat-bundle | Omitted operation IDs are generated; command argv; optional execution-directory selection |
-| `release-bundle` | Exact ordered `resource` values, bundle `claim ID`, token credential, current bundle `revision`; `operation ID` may be omitted by the CLI | Omitted operation IDs are generated; nonblank audit reason; no renewal TTL |
-| `inspect-operation-bundle` | Exact ordered `resource` values, `operation ID` | No token; read-only inspection |
-| `reconcile-operation-bundle` | Same bundle mutation fields as heartbeat-bundle | Omitted operation IDs are generated; target operation ID, expected request SHA-256, observed outcome, and evidence |
+Watch cursors carry authority identity and the last scanned sequence. Watches
+poll time/state as well as events so expiry without a write is observable. A
+timeout returns only the last fully scanned cursor.
 
-A token credential is required for each claim mutation, but `--token-file` is
-only one transport. Supply exactly one of `--token`, `--token-file`, or
-`--token-fd`. Prefer a mode-0600 token file or inherited file descriptor so the
-secret does not appear in argv. Never place the token in logs, provider
-comments, checkpoints, diagnostics, examples, or handoffs.
+Garbage collection retires eligible claims and removes only a safe contiguous
+history prefix. Active claims, unresolved effects, authenticated replay windows,
+and recently recorded endings pin required evidence. An ancient claim newly
+retired today is retained from that recorded end, not its old expiry.
 
-Bundle commands use one bundle claim over an exact ordered set of 1–32
-resources. Status, mutation, operation inspection, and reconciliation must
-repeat the resources in acquisition order. Bundle acquisition, reconciliation,
-and revision changes are all-or-nothing.
+## Authority identity and copies
 
-## Lifecycle and mutation checks
+Each local authority creates one immutable random authority ID. Handles,
+requests, receipts, and cursors bind to it. A home path is only a locator.
+Copying an active database to create another independent authority with the same
+ID is unsafe and unsupported.
 
-```mermaid
-sequenceDiagram
-    participant W as Worker
-    participant L as Worklease
-    participant P as Provider
+V1 never imports Python SQLite schemas or old handle directories and never
+silently falls back from a configured remote authority. Python-era files are
+left untouched for optional recoverable disposal during cutover.
 
-    W->>L: acquire(resource, claim ID, identities)
-    L-->>W: token, revision 1, expiresAt
-
-    W->>L: heartbeat(resource, claim ID, token, revision 1, operation ID)
-    L-->>W: revision 2, later expiresAt
-
-    Note over W: Revision 1 is now stale
-
-    W->>L: exec(resource, claim ID, token, revision 2, new operation ID)
-    L-->>W: revision 3 and operation receipt
-
-    W->>P: write durable provider state
-    P-->>W: provider receipt or version
-    W->>P: reread and verify state
-
-    W->>L: release(resource, claim ID, token, revision 3, new operation ID)
-    L-->>W: resource available
-```
-
-Each value protects a different boundary:
-
-```text
-claim ID + token     = possession of this ownership epoch
-claim revision       = current claim state
-operation ID         = retry of this exact request
-provider version     = current provider state
-```
-
-Successful claim mutations return a new revision. Store and use that revision
-for the next mutation. Reusing an older revision fails.
-
-Reuse an operation ID only after a lost response, and only with the same
-request. A changed command, checkpoint, TTL, or release reason needs a new ID.
-
-## Expiry and recovery
-
-```mermaid
-stateDiagram-v2
-    [*] --> Free
-    Free --> Active: atomic acquire\nfresh claim ID and token
-    Active --> Active: successful mutation\nnew revision and expiry
-    Active --> Free: verified release
-    Active --> Expired: expiresAt passes
-    Expired --> Active: fresh acquire\nnew claim ID and token
-```
-
-`active` is derived from the authority clock: the claim is active while the
-current time is before `expiresAt`. A heartbeat should occur before half the
-lease elapses and around long operations. Expiry permits a new ownership epoch;
-it does not permit a successor to adopt the old claim ID or token.
-
-## Retained local epoch boundaries
-
-Worklease retains local, token-free ownership history separately from current
-claim state. Every epoch created after the schema-v3 migration records its
-acquisition revision. Release, transfer, and replacement of expired ownership
-record a terminal snapshot containing the reason, effective and recorded
-times, final revision, last heartbeat and expiry, optional checkpoint,
-optional successor claim ID, and applicable operation ID. Bundle transitions
-record one snapshot per member resource.
-
-A terminal snapshot contains no bearer token, token hash, raw request, or raw
-receipt. The existing singleton `releases` rows remain replay and clean-handoff
-state; they are not the canonical epoch-ending record. A transfer or release
-uses one authority-clock value for both its effective and recorded time. An
-expired replacement is effective at the predecessor's stored expiry but is
-recorded when the successor transaction observes and replaces it.
-
-Expiry remains lazy. Reading an expired current claim does not mutate storage,
-so an expired-but-unreclaimed epoch remains open in retained history until a
-later replacement or explicit garbage collection records its end. `gc --apply`
-retires a current claim only when its stored expiry is strictly older than the
-retention cutoff and no unresolved started operation protects it. It records an
-expired termination effective at the stored expiry and recorded at collection
-time, then removes the current projection. This intentionally forfeits
-checkpoint recovery from that abandoned claim; active claims and recently
-expired claims remain recoverable. Bundles retire atomically as one ownership
-unit.
-
-Pre-migration epochs keep a null acquisition revision and no fabricated
-termination when the database cannot prove those values. History already
-removed by `gc --apply` cannot be reconstructed. Garbage collection retains an
-epoch and its associated rows through the termination's `recorded_at` retention
-window, then deletes the terminal and epoch records atomically.
-
-`events` provides the corresponding cross-resource feed without current claims. It
-orders rows newest-first by timestamp, fixed source precedence (`termination`,
-`reconciliation`, `operation`, `epoch`), normalized resource key, claim ID, operation
-ID, and kind. Its URL-safe cursor is a keyset position, not an offset or snapshot: a
-continued traversal excludes newer writes, may include an explicitly backdated older
-write, and can lose rows collected by `gc --apply`. The feed omits secret-bearing
-request, receipt, evidence, token, checkpoint, and payload bodies.
-
-This data is retention-bounded diagnostics on one local Worklease database. A
-read-only `worklease history --resource R` projection is scoped to the exact
-opaque resource: it includes singleton epochs and bundle-member epochs, keeps
-termination separate from the current snapshot, and does not derive active or
-expired state from the clock. Default text is a chronological summary with
-explicitly labeled acquisition, operation, reconciliation, termination, and
-current-snapshot details; the snapshot wording does not assert current lease
-activity. `history --full` restores every redacted diagnostic field and
-identifier, while JSON remains schema-compatible and complete. JSON provenance
-labels distinguish the retained
-record categories: `epoch`, `operation`, `reconciliation`, `termination`, and
-`current-claim`. Each epoch is `complete`, `open`, or `legacy-incomplete` under
-stored-field rules; `open` is not the same as active. The coverage summary has
-nullable earliest acquisition and resource-watermark revisions plus a retained
-legacy count. A revision watermark is not an event count and cannot identify
-exact missing events because GC and pre-migration history are indistinguishable
-and non-acquisition mutations also consume revisions.
-
-Where an end bound is stored, a consumer may project `acquiredAt <= T <
-termination.effectiveAt` for a terminated epoch or `acquiredAt <= T <
-currentClaim.expiresAt` for an open epoch. A legacy-incomplete epoch without
-termination or current-claim evidence has an unknown upper bound. This is a
-consumer rule over retained local rows, not an audit fact; history has no
-`--at` filter and does not read the current clock. A migrated current epoch may
-therefore have a null acquisition revision, while GC may remove all epochs and
-leave only the resource tombstone watermark. Rows removed by `gc --apply` and
-pre-migration facts cannot be reconstructed.
-
-`--json` is a sanitized per-resource diagnostic export, not the complete
-archive; it deliberately omits tokens, hashes, checkpoint bodies,
-request/receipt blobs, argv, process output, file contents, and reconciliation
-or provider evidence. Export it before `gc --apply` when a portable diagnostic
-is needed. A private SQLite backup of the mode-0600 local database, made before
-collection, is the complete archive and therefore must be handled as
-secret-bearing state.
-
-History is local coordination metadata rather than provider evidence. It is not
-provider progress, an attestation, tamper evidence, or cross-host history, and
-it cannot prove that a provider write occurred. The work provider remains
-authoritative for item state, progress, receipts, and eligibility.
-
-## Three meanings of state
-
-“State” appears at three different boundaries:
-
-| State | Authority | Examples |
-| --- | --- | --- |
-| Provider item state | Backlog.md, GitHub, Linear, or another work source | todo, in progress, blocked, done |
-| Resource/claim state | Worklease | free, active, expired |
-| Operation outcome state | Worklease operation history | completed, unknown-outcome, reconciled |
-
-Provider state determines whether work is eligible and whether progress is
-durable. Claim state determines whether a local caller currently owns the
-resource. Operation state records whether Worklease can establish the outcome
-of a guarded request. None substitutes for another.
-
-## Claim revision versus provider version
-
-These values protect different authorities:
-
-```text
-claim ID + token + claim revision
-                 AND
-provider eligibility + provider version
-```
-
-The **claim revision** changes when Worklease successfully heartbeats,
-checkpoints, executes, transfers, reconciles, or otherwise mutates the claim.
-It detects stale claim holders.
-
-The **provider version** changes when authoritative work changes. Depending on
-the provider, it might be a file SHA-256, version number, update marker, or
-conditional-write token. It detects stale provider reads.
-
-A local claim does not automatically fence a remote provider mutation. For a
-direct Backlog.md, GitHub, Linear, or other provider write, use
-`local-coordination`, refresh claim ownership and provider eligibility before
-the write, retain the provider receipt, and reread both afterward. Report
-provider fencing only when the provider mutation itself conditionally rejects
-stale writers and returns evidence.
-
-## Sources of truth
-
-- The [generic coordination contract](../skills/worklease-workflow/references/contract.md)
-  is normative for scheduling, claims, mutation sequencing, and guarantees.
-- The [Worklease workflow guide](backlog/docs/worklease-workflow/doc-1%20-%20Worklease-Workflow.md)
-  explains how callers apply the contract.
-- The [source workflow](../skills/worklease-workflow/references/source-workflow.md)
-  maps concrete providers into the provider-neutral contract.
-- The [CLI JSON schemas](../src/worklease/schemas/v1/commands.json) define
-  released response fields.
+See [CLI reference](cli-reference.md) for commands and
+[MCP and JSON](mcp.md) for agent orchestration. The Cloudflare design document
+is explicitly deferred.
