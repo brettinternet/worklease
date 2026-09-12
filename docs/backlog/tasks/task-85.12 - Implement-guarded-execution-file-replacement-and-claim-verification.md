@@ -4,13 +4,12 @@ title: 'Implement guarded exec, replace-file, and verify'
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 05:04'
+updated_date: '2026-09-12 05:56'
 labels:
   - go-rewrite
 milestone: m-0
 dependencies:
-  - TASK-85.8
-  - TASK-85.10
+  - TASK-85.9
 references:
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
   - src/worklease/execution.py
@@ -29,22 +28,20 @@ ordinal: 104000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A lease is only useful if local work can be tied to it. Guarded exec runs one exact command under renewed ownership and records intent before effects; replace-file performs an expected-hash atomic write; verify (the TASK-79 intent) lets agent tools that mutate through their own editors check ownership cheaply first. Contract section 10 fixes the semantics and hum provides the POSIX process-group patterns.
+Implement supervised exec, serialized expected-hash replacement and read-only verification from contract section 10. Own internal/guard, lease.Verify and exec/replace-file/verify CLI. Use the real handle and reconciliation paths before finalizing tests.
 
-Read first: contract sections 4 (exec, replace-file, verify rows), 6.1 (exit 124, child status, ownership-lost), 7.4, 7.5, 7.11, 10, 13 (the guard hook that consumes verify), 18 (guard and Verify sketches). Patterns: `../hum/internal/daemon/runtime.go` and `../hum/internal/app` (process start with Setpgid, stop grace, SIGTERM then SIGKILL escalation, bounded output capture), `../hum/internal/cli/run_args_test.go` (argv after `--`). Python evidence: `src/worklease/execution.py` (bounded capture, deadline covering pipe draining, ownership-loss termination, storage failure handling), `execution_context.py` (`--git-primary` resolution rules), `replacement.py` (symlink rejection, fsync and rename, replay); all 33 tests in `tests/test_execution.py` are the edge cases to preserve, notably test_exec_timeout_kills_inherited_pipe_descendant_and_is_inspectable, test_exec_timeout_does_not_wait_for_escaped_grandchild_pipes, test_ownership_loss_terminates_running_process_group, test_exec_storage_failure_terminates_child_as_unknown_outcome, test_exec_decodes_invalid_output_and_normalizes_signal_status, test_git_primary_resolves_linked_symlink_and_separate_git_dir, test_git_primary_ignores_prunable_linked_worktree, test_replacement_is_atomic_preserves_mode_and_replays, test_replacement_rejects_wrong_hash_and_symlink, test_replacement_keeps_ownership_during_atomic_write; TASK-79 (closed as superseded) for the verify intent.
+Exec records intent before effects, renews within known lease deadlines, captures bounded output, kills the process group on timeout/ownership uncertainty and reports honest completion/unknown state. It is coordination, not arbitrary-process fencing. Replacement additionally requires the canonical target path resource and localReplaceAllowed. Hash equality after an uncertain rename is evidence for explicit reconciliation, never automatic proof that the old executor ceased.
 
-Deliver in `internal/guard`: `Exec` and `ReplaceFile` per contract 10.1 and 10.2 using `lease.Service.BeginOperation` and `CompleteOperation`; the git-primary resolution helper; environment sanitization; bounded capture with byte counts and truncation flags; a heartbeat goroutine at ttl/2 with ownership-loss termination; a deadline covering draining; SIGTERM, 2 s grace, SIGKILL on the process group; exit-status normalization (signals to 128 plus n). Deliver `lease.Service.Verify` in `internal/lease` per contract 10.3 (read-only, ordered checks, cause codes). Deliver in `internal/cli`: `exec`, `replace-file`, and `verify` using the TASK-85.10 claim selection. `verify --hook claude-code` must follow contract 10.3 exactly: parse the PreToolUse JSON from stdin, resolve the contextual handle from its `cwd` field, allow `Bash` commands whose first word is `worklease` or `backlog` without a claim, verify everything else, exit 2 with a one-line stderr reason to block and 0 silently to allow, and treat malformed input as cause `hook-input-invalid`. Help text states that verify is a cooperative precondition, not a fence.
-
-Owned paths: `internal/guard`, `internal/lease/verify.go`, `internal/cli/exec.go`, `replace_file.go`, `verify.go` and tests. Out of scope: MCP exposure (TASK-85.15), hook installation (TASK-85.16).
+Native edit hooks validate exact path coverage and fail closed for malformed/unsupported input. Do not parse shell text or implement a Bash first-word exemption.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Exec tests prove exact argv without shell interpretation (an argument containing $HOME and ; arrives literally), child statuses 0, 3, and signal termination map to 0, 3, and 128 plus the signal number, stdout and stderr over 1 MiB are truncated with byte counts and flags, invalid UTF-8 is replaced, stdin is /dev/null, WORKLEASE_CLAIM_ID and WORKLEASE_OPERATION_ID are set with no token in the child environment, and --cwd and --git-primary strip the GIT_* routing variables.
-- [ ] #2 Termination tests prove --max-duration kills a child whose grandchild holds the inherited stdout pipe within 3 s and exits 124 with timedOut true and the operation completed, a heartbeat failure injected mid-run (claim expired through the clock or transferred by a subprocess) terminates the process group, fails ownership-lost, and leaves the operation started (unknown-outcome on replay) because completion needs credentials that are gone, a storage failure injected after spawn terminates the child and also leaves the operation started, and no processes remain in the group afterwards.
-- [ ] #3 Ledger tests prove exec writes started before spawn (a child that reads the database sees its own started row), writes completed with a receipt whose revision is the final claim revision after the start renewal, internal heartbeats, and completion, replays the receipt without re-running (a counter file is unchanged) including a replay that changes only --max-duration, and a claim over three resources executes once with a single operation row.
-- [ ] #4 replace-file tests prove atomic replacement preserving mode, rejection of a symlinked target or content file and of a wrong expected hash with actualSha256 (exit 3), rejection under a local-coordination claim (64), deterministic replay, completion of a started operation whose rename already happened, and --git-primary resolution across a linked worktree, a symlinked worktree path, and a separate git dir while ignoring a prunable worktree.
-- [ ] #5 verify tests prove the success fields, each failure cause (missing-handle, stale-claim, invalid-token, claim-expired, stale-revision, resource-mismatch, unknown-outcome-pending) with exit 2, that the database mtime, handle mtime, and events count are unchanged after 100 verify calls, and that --hook claude-code resolves the context from the cwd field of sample hook JSON on stdin, exits 0 silently for a Bash event whose command starts with worklease or backlog when no claim exists, exits 2 with a one-line stderr message for an Edit event without a valid claim, and reports hook-input-invalid for malformed input; `mise run ci-go` passes.
+- [ ] #1 Exec tests cover literal argv, cwd/git-primary environment isolation, /dev/null stdin, bounded/invalid-UTF8 output, child/signal status and token-free environment/diagnostics.
+- [ ] #2 Process tests cover timeout including inherited/escaped pipes, ownership/clock/storage failure, uncertain completion and killed-supervisor/orphan limits; no controllable process-group members leak.
+- [ ] #3 Intent tests prove one guarded operation at a time, started-before-effects and final revision reporting, exact replay without re-execution and changed maxDuration rejection; predecessor unknowns block new guards until explicit reconciliation.
+- [ ] #4 Replacement tests cover canonical claimed-path membership, symlink/hard-link/parent-swap rejection, expected/content hashes, mode/fsync/rename, completed no-effect failures, and uncertain rename requiring reconciliation even when bytes match.
+- [ ] #5 Verify/hook tests cover all ownership/authority/pending/coverage failures with no writes, native Edit/Write/MultiEdit/NotebookEdit paths, unrelated-path denial and unsupported Bash input, plus MCP reference selection; mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done

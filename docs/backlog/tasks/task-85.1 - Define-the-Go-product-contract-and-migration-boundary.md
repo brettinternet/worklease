@@ -1,10 +1,10 @@
 ---
 id: TASK-85.1
-title: Ratify the Go product contract and inventory Python capabilities
+title: Inventory capabilities and safety evidence for the Go rewrite
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 04:47'
+updated_date: '2026-09-12 05:51'
 labels:
   - go-rewrite
 milestone: m-0
@@ -27,30 +27,20 @@ ordinal: 93000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The Go Product Contract (`docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md`) fixes the design for the rewrite so implementing agents do not make product decisions. What it does not yet contain is a complete, evidence-backed inventory of what the Python proof of concept actually does. Without that inventory an implementer may silently drop a safety behavior the contract forgot, or port accidental complexity the contract meant to remove.
+Inventory the useful Python capabilities and safety evidence before Go implementation begins. The owner explicitly permits redesign with no Python compatibility. The amended Go Product Contract is normative; Python behavior is evidence, not a parity checklist.
 
-This is a bounded documentation spike, not a design task. Fixed decisions in contract section 2 are not up for revision here. If the inventory reveals a contradiction, record it as a comment on TASK-85 and as a proposed amendment (contract section 15); do not change the decision.
+Record the current HEAD SHA so paths remain retrievable after retirement. Discover current CLI/MCP surfaces instead of hard-coding counts (TASK-86 observed 26 add_parser calls and seven Python MCP tools). Group modules, scripts, docs, skills and SDK surfaces by capability; give each retained/redesigned capability an owning Go task, contract section, and representative named safety tests. Identify intentional removals and the deferred remote proposal. Do not enumerate every Python test or require one-to-one test/module ports.
 
-Work:
-
-1. Record the current HEAD commit SHA at the top of the inventory. TASK-85.18 deletes the Python sources and tests, so every evidence citation must be retrievable afterwards with `git show <sha>:<path>`.
-2. Walk every Python surface: each `add_parser` command in `src/worklease/cli.py` (25 commands), each MCP tool in `src/worklease/mcp_server.py` (7 tools), each module in `src/worklease/` and `src/worklease/adapters/`, each file in `scripts/`, each page in `docs/*.md`, and the `skills/` tree.
-3. For each surface write one inventory row with these columns: Python surface | one-line behavior | disposition (`retain`, `redesign`, `remove`, `defer`) | contract section specifying the Go behavior | owning task (TASK-85.2 to TASK-85.18) | Python test names that are the edge-case evidence (from `tests/`, as `tests/<file>::<test_name>`).
-4. Create the inventory with `backlog doc create "Go Rewrite Capability Inventory" -p go-rewrite -t specification`, then fill it with `backlog doc update <id> --content "$(cat file)"`. Never edit the Markdown file directly.
-5. Where the contract is silent about a Python behavior worth keeping (a safety check, a redaction rule, an edge case with a test), add the row with disposition `retain` and write the exact proposed contract sentence in a "Gaps" section of the inventory.
-6. List every Python test function name under a "Not carried forward" heading when it is Python-only (packaging, entry points, SDK) so later tasks know it was considered.
-7. Add one comment on TASK-85 summarizing the gaps (or stating there are none).
-
-Owned paths: the new inventory document under `docs/backlog/docs/go-rewrite/` only. No code changes. Out of scope: editing the contract's fixed decisions, creating or editing other tasks.
+Create the Go Rewrite Capability Inventory through backlog doc create/update. Record concrete missing safety behaviors and any proposed amendments, or explicitly state none. Resolve material gaps through section 15 before declaring this prerequisite complete. No implementation work is included. Owned surface: inventory document and a TASK-85 summary comment; current TASK-86 amendments need not be re-ratified.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A backlog document titled "Go Rewrite Capability Inventory" exists under docs/backlog/docs/go-rewrite/ with one row per Python CLI command (all 25 add_parser entries in src/worklease/cli.py), per MCP tool (7), per module in src/worklease/ and src/worklease/adapters/, per file in scripts/, and per page in docs/*.md; every row has disposition, contract section, owning task, and evidence columns filled.
-- [ ] #2 Every retain or redesign row names exactly one owning task from TASK-85.2 to TASK-85.18 and a contract section number that specifies the Go behavior; every remove row cites contract section 16 or gives a one-line rationale; every defer row names the follow-up decision the owner must make.
-- [ ] #3 Every test function in tests/*.py appears in the evidence column of at least one row or under the "Not carried forward" heading with a reason, and the inventory records the HEAD commit SHA at inventory time so `git show <sha>:tests/<file>` retrieves the files after TASK-85.18 deletes them.
-- [ ] #4 A "Gaps" section lists every retained Python behavior the contract does not specify, each with the exact proposed contract sentence and the task that should implement it, and TASK-85 carries one comment summarizing the gaps or stating there are none.
-- [ ] #5 The contract document is unchanged by this task: `git diff -- "docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md"` is empty at finalization.
+- [ ] #1 An evidence-backed Go Rewrite Capability Inventory records HEAD and covers discovered CLI/MCP capabilities plus modules, scripts, docs, skills and SDK by capability family; counts are derived from the recorded checkout.
+- [ ] #2 Each retained/redesigned capability names one primary TASK-85.x owner, applicable contract sections, and representative named safety tests retrievable with git show at the inventory SHA.
+- [ ] #3 Intentional removals and changed semantics are explicit; there is no Python API/schema/output/test parity requirement, and the remote design is marked deferred rather than removed.
+- [ ] #4 Material safety gaps are resolved in the normative contract through section 15 and synchronized with owning tasks; TASK-85 has a comment summarizing the result.
+- [ ] #5 Backlog integrity and available repository quality gates pass; the inventory is committed and TASK-85.2 depends on this completed prerequisite.
 <!-- AC:END -->
 
 ## Definition of Done
