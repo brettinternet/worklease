@@ -1,9 +1,10 @@
 ---
 id: TASK-84
 title: Add canonical repository path resource policy
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 03:06'
+updated_date: '2026-09-12 04:45'
 labels: []
 dependencies: []
 references:
@@ -29,3 +30,15 @@ Task-level claims do not prevent two different tasks from modifying the same fil
 - [ ] #5 Documentation shows atomically bundling an authoritative task resource with one or more path resources and preserves the external provider as task authority.
 - [ ] #6 Tests cover files, directories, linked worktrees, separate repositories, invalid paths, stable key derivation, bundles, and guarantee language.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.5.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.5 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 7.13 (path policy keyed by git common dir and repo-relative path) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

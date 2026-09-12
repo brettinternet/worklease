@@ -1,9 +1,10 @@
 ---
 id: TASK-81
 title: Add cursor-based lifecycle watches
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 03:06'
+updated_date: '2026-09-12 04:45'
 labels: []
 dependencies:
   - TASK-69
@@ -29,3 +30,15 @@ Supervisors and coding agents currently poll status, retry acquisition, or repea
 - [ ] #5 Concurrent tests demonstrate prompt wake-up, timeout behavior, multiple waiters, cursor resumption, and token/checkpoint redaction.
 - [ ] #6 Documentation distinguishes lifecycle notification from task scheduling, durable provider progress, and provider-side fencing.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.13.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.13 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 11 (watch by cursor or resource with bounded timeout and honest gaps) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

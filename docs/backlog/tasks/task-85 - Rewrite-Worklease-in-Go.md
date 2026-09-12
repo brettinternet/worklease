@@ -4,7 +4,7 @@ title: Rewrite Worklease in Go
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 04:06'
+updated_date: '2026-09-12 04:47'
 labels:
   - go-rewrite
 milestone: m-0
@@ -28,9 +28,9 @@ ordinal: 92000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Worklease began as a Python script and the current Python package is a proof of concept with no users beyond the owner. Rebuild it as a maintainable POSIX-first Go application using patterns from the sibling hum repository (urfave/cli v3, a typed config package, explicit process boundaries, dependency-light stdio MCP). Backward compatibility with the Python API, SDK, plugin entry points, SQLite database, lease files, or exact CLI output is not required. Preserve the useful capabilities and safety boundaries, simplify the interface, and make the repository suitable for unattended implementation and review loops.
 
-The design is fixed in the Go Product Contract at `docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md`. Every subtask names the contract sections it implements, the Python files that are behavior evidence, the hum files that are patterns, and the paths it owns. Agents must not reopen fixed decisions; contract section 15 defines the amendment procedure and section 19 describes how to work the plan unattended, including the parallel waves.
+The design is fixed in the Go Product Contract at `docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md`. Every subtask names the contract sections it implements, the Python files that are behavior evidence, the hum files that are patterns, and the paths it owns. Agents must not reopen fixed decisions; contract section 15 defines the amendment procedure and section 19 describes how to work the plan unattended, including the parallel waves, the absolute path of the hum repository for worktree checkouts, and the `Blocked` label convention.
 
-Unattended execution: select only tasks labeled `go-rewrite` whose dependencies are Done. This parent task is the closure task: it becomes actionable only after TASK-85.18 is Done and consists of re-verifying the acceptance criteria below with evidence and recording the final summary. Python-era tasks (TASK-67, TASK-74 through TASK-84) are resolved by TASK-85.18, not here.
+Unattended execution: select only tasks labeled `go-rewrite` whose dependencies are Done. This parent task is the closure task: it becomes actionable only after TASK-85.18 is Done and consists of re-verifying the acceptance criteria below with evidence and recording the final summary. The Python-era tasks TASK-74 through TASK-84 were closed as superseded on 2026-09-12 with final summaries naming their Go owners, and TASK-67 shipped in Python before the cutover; TASK-85.18 verifies that no nonterminal Python-era task remains.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -1,9 +1,10 @@
 ---
 id: TASK-80
 title: Add optional agent mutation guard integrations
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 03:06'
+updated_date: '2026-09-12 04:45'
 labels: []
 dependencies:
   - TASK-79
@@ -29,3 +30,15 @@ A verification primitive only helps when coding agents invoke it consistently. O
 - [ ] #4 Guard documentation explains bypasses and race boundaries, including that unsupported tools and mutations occurring after verification are not fenced.
 - [ ] #5 Automated tests exercise allow, deny, installation, idempotency, preservation of unrelated configuration, and removal behavior.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.16.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.16 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 13 (setup guard: preview by default, apply and remove, Claude Code PreToolUse hook, generic shell example) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

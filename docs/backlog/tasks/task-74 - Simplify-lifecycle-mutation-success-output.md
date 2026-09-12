@@ -1,10 +1,10 @@
 ---
 id: TASK-74
 title: Simplify lifecycle mutation success output
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 02:11'
-updated_date: '2026-09-12 02:17'
+updated_date: '2026-09-12 04:44'
 labels:
   - cli
   - ux
@@ -40,3 +40,15 @@ Successful lifecycle commands currently emit a generic field dump containing lon
 - [ ] #7 CLI contract tests cover every canonical singleton and bundle mutation, aliases where relevant, contextual-handle, explicit-handle, and stateless token flows, child success/failure/truncation, empty optional fields, full-detail behavior, and JSON compatibility.
 - [ ] #8 A consistent documented `--full` text option on canonical singleton and bundle mutation commands, and their aliases, preserves all current non-secret text fields; JSON schemas and payloads remain compatible, command help and generated release documentation render successfully, and CHANGELOG `Unreleased` records the changed text output.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.11 and TASK-85.14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.11 and TASK-85.14 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 6 (text mode: one summary line, key: value details, --full for complete output) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

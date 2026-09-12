@@ -1,9 +1,10 @@
 ---
 id: TASK-82
 title: Generate AI-agent setup configuration
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 03:06'
+updated_date: '2026-09-12 04:45'
 labels: []
 dependencies: []
 references:
@@ -30,3 +31,15 @@ Using Worklease from a coding agent currently requires manually assembling packa
 - [ ] #5 Documentation covers preview, apply, manual installation, update, and removal workflows.
 - [ ] #6 Tests cover fresh setup, repeated setup, existing unrelated configuration, malformed configuration, and safe removal of Worklease-owned entries.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.16.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.16 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 13 (setup mcp and setup instructions with preview, apply, remove) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

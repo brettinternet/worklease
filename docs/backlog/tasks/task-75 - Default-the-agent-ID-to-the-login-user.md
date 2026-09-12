@@ -1,10 +1,10 @@
 ---
 id: TASK-75
 title: Default the agent ID to the login user
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 02:18'
-updated_date: '2026-09-12 02:23'
+updated_date: '2026-09-12 04:44'
 labels:
   - cli
   - ux
@@ -39,3 +39,15 @@ For an omitted agent option, resolution becomes a nonblank `WORKLEASE_AGENT_ID`,
 - [ ] #4 Help for `--agent-id` and `--successor-agent-id` names the environment and login-name fallback; the README lifecycle and generated manual examples no longer require `WORKLEASE_AGENT_ID` and mention it as an optional override; `docs/cli-reference.md` and CHANGELOG `Unreleased` are updated; generated release documentation renders successfully; the MCP identity contract is unchanged.
 - [ ] #5 Tests mock the environment and login lookup to cover flag, variable, and login-name precedence, blank and raising lookup failures, explicit blank options, all three affected commands, and option-specific hints; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.14 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 5 (agent ID resolves from --agent, WORKLEASE_AGENT_ID, YAML agent_id, then the OS user) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

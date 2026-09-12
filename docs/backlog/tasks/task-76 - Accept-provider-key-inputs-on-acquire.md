@@ -1,10 +1,10 @@
 ---
 id: TASK-76
 title: Accept provider key inputs on acquire
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 02:18'
-updated_date: '2026-09-12 02:24'
+updated_date: '2026-09-12 04:44'
 labels:
   - cli
   - ux
@@ -48,3 +48,15 @@ This task depends on TASK-67.3 so the README and skill examples it rewrites are 
 - [ ] #5 The `acquire` help and epilog show both input modes; the README lifecycle and workflow-skill loop no longer pipe `key` output through Python; `docs/cli-reference.md` lists `-p` and `-i` on `acquire`; CHANGELOG `Unreleased` is updated; generated release documentation renders successfully.
 - [ ] #6 Tests cover fenced and inherently coordination-only policies, explicit `-C`, work-key defaulting, wait and lease-file compatibility, every partial and conflicting input shape, provider errors, no-store failure ordering, and unchanged acquire response shape; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.5 and TASK-85.14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.5 and TASK-85.14 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 4 (acquire accepts -p/-s/-i or --path inline as one of the resource input modes) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->

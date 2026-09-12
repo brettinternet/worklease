@@ -1,10 +1,10 @@
 ---
 id: TASK-78
 title: Show holder details and a wait hint on contention
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 02:18'
-updated_date: '2026-09-12 02:25'
+updated_date: '2026-09-12 04:45'
 labels:
   - cli
   - ux
@@ -42,3 +42,15 @@ Add exactly one final contention hint for both `already-claimed` and `resource-g
 - [ ] #5 `docs/cli-reference.md` documents the holder block and command-specific hint grammar, and CHANGELOG `Unreleased` records the text-output change.
 - [ ] #6 Tests use fixed holder data to cover singleton and bundle contention, both retryable reasons, exact hint count and placement, missing and non-mapping claims, redaction, non-acquire scoping, and unchanged JSON; `mise run lint`, `format-check`, `test`, and `typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.7 and TASK-85.14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-85.7 and TASK-85.14 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 7.9 (contention reports holder claimId, agentId, workKey, expiresAt and a watch hint) fixes the behavior.
+<!-- SECTION:FINAL_SUMMARY:END -->
