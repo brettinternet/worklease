@@ -79,7 +79,8 @@ func TestEventsCursorBindingPaginationWatermarkAndGap(t *testing.T) {
 	ledgerSvc, leaseSvc, st, _ := fixture(t)
 	ctx := context.Background()
 	token := strings.Repeat("a", 64)
-	acquire(t, leaseSvc, st, strings.Repeat("1", 32), token, []string{"r"})
+	claim := strings.Repeat("1", 32)
+	grant := acquire(t, leaseSvc, st, claim, token, []string{"r"})
 	first, e := ledgerSvc.Events(ctx, "", 1)
 	if e != nil {
 		t.Fatal(e)
@@ -94,8 +95,12 @@ func TestEventsCursorBindingPaginationWatermarkAndGap(t *testing.T) {
 	if e := ValidateCursor(duplicate, "events", ""); reason.As(e) == nil || reason.As(e).Reason != reason.ReasonCursorInvalid {
 		t.Fatalf("duplicate cursor err=%v", e)
 	}
-	if _, e := ledgerSvc.Events(ctx, first.NextCursor, 1); e != nil {
+	if _, e := leaseSvc.Heartbeat(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: grant.Revision}, lease.Renew{OperationID: strings.Repeat("2", 32), TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)}); e != nil {
 		t.Fatal(e)
+	}
+	continuation, e := ledgerSvc.Events(ctx, first.NextCursor, 1)
+	if e != nil || len(continuation.Events) != 1 || continuation.Events[0].Kind != "renewed" {
+		t.Fatalf("continuation=%+v err=%v", continuation, e)
 	}
 	if err := st.Write(ctx, func(tx *store.Tx) error {
 		_, e := tx.ExecContext(ctx, `UPDATE meta SET value='1' WHERE key='pruned_through_seq'`)
@@ -122,6 +127,31 @@ func TestEventsCursorBindingPaginationWatermarkAndGap(t *testing.T) {
 	}
 }
 
+func TestEmptyFeedsPreserveDurableWatermark(t *testing.T) {
+	ledgerSvc, leaseSvc, st, _ := fixture(t)
+	ctx := context.Background()
+	acquire(t, leaseSvc, st, strings.Repeat("1", 32), strings.Repeat("a", 64), []string{"r"})
+	if err := st.Write(ctx, func(tx *store.Tx) error { _, err := tx.ExecContext(ctx, `DELETE FROM events`); return err }); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ledgerSvc.Events(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := ParseCursor(events.NextCursor)
+	if err != nil || cursor.Sequence != "1" || len(events.Events) != 0 {
+		t.Fatalf("events=%+v cursor=%+v err=%v", events, cursor, err)
+	}
+	history, err := ledgerSvc.History(ctx, "missing", "", 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err = ParseCursor(history.NextCursor)
+	if err != nil || cursor.Sequence != "1" || len(history.Epochs) != 0 {
+		t.Fatalf("history=%+v cursor=%+v err=%v", history, cursor, err)
+	}
+}
+
 func TestHistoryExactResourceCoverageAndNeverReturnsPrivatePayloads(t *testing.T) {
 	ledgerSvc, leaseSvc, st, _ := fixture(t)
 	ctx := context.Background()
@@ -140,7 +170,7 @@ func TestHistoryExactResourceCoverageAndNeverReturnsPrivatePayloads(t *testing.T
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(page.Epochs) != 1 || len(page.Epochs[0].Resources) != 2 || len(page.Epochs[0].Operations) != 2 {
+	if len(page.Epochs) != 1 || len(page.Epochs[0].Resources) != 2 || len(page.Epochs[0].Operations) != 2 || page.Coverage.EarliestRetainedSequence == nil {
 		t.Fatalf("page=%+v", page)
 	}
 	encoded, _ := json.Marshal(page)

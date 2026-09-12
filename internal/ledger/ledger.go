@@ -379,11 +379,16 @@ type Epoch struct {
 	FinalRevision *int64      `json:"finalRevision,omitempty"`
 	Operations    []Operation `json:"operations"`
 }
+type HistoryCoverage struct {
+	EarliestRetainedSequence *string `json:"earliestRetainedSequence"`
+	PrunedThroughSequence    string  `json:"prunedThroughSequence"`
+}
 type HistoryPage struct {
 	AuthorityID, Resource string
-	Epochs                []Epoch `json:"epochs"`
-	NextCursor            string  `json:"nextCursor"`
-	Gap                   bool    `json:"gap"`
+	Coverage              HistoryCoverage `json:"coverage"`
+	Epochs                []Epoch         `json:"epochs"`
+	NextCursor            string          `json:"nextCursor"`
+	Gap                   bool            `json:"gap"`
 }
 
 func (s *Service) History(ctx context.Context, resource, cursor string, limit int, full bool) (HistoryPage, error) {
@@ -400,9 +405,18 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 	}
 	page := HistoryPage{AuthorityID: s.st.AuthorityID(), Resource: resource, Epochs: []Epoch{}}
 	e = s.st.Read(ctx, func(tx *store.Tx) error {
-		_, pruned, err := watermarks(tx)
+		last, pruned, err := watermarks(tx)
 		if err != nil {
 			return err
+		}
+		page.Coverage.PrunedThroughSequence = strconv.FormatInt(pruned, 10)
+		var earliest *int64
+		if err := tx.QueryRowContext(ctx, `SELECT min(e.acquired_seq) FROM epochs e JOIN epoch_resources er ON er.claim_id=e.claim_id WHERE er.resource=?`, resource).Scan(&earliest); err != nil {
+			return storage(err)
+		}
+		if earliest != nil {
+			value := strconv.FormatInt(*earliest, 10)
+			page.Coverage.EarliestRetainedSequence = &value
 		}
 		if cursor != "" && pos < pruned {
 			page.Gap = true
@@ -463,6 +477,8 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 		next := pos
 		if len(seqs) > 0 {
 			next = seqs[len(seqs)-1]
+		} else if cursor == "" {
+			next = last
 		}
 		page.NextCursor = encodeCursor(s.st.AuthorityID(), "history", resource, next)
 		return rows.Err()
