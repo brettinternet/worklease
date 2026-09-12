@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 20:53'
+updated_date: '2026-09-12 20:57'
 labels:
   - go-rewrite
 milestone: m-0
@@ -75,6 +75,8 @@ Evidence and patterns (the amended contract is normative): hum `.github/workflow
 Implemented command-tree-derived Go man generation, built-binary smoke (lifecycle, exact path replacement, modern/legacy MCP), executable marked docs examples, structured contention/two-session checks, Go archive/checksum tooling, four-target native workflow validation, current Go docs/skills, and doc-1 update through backlog CLI. Transitional Python packages remain until TASK-85.18; retired SDK compatibility doc removed as required.
 
 Final verification: mise run ci-go passed (format, vet/staticcheck, unit, race, vulnerability, built-binary smoke, executable docs, man generation); mandoc -Tlint dist/worklease.1 passed; local worklease-release built all four archives and tar listings confirmed bin/worklease plus share/man/man1/worklease.1; mise run lint, format-check, test, and typecheck passed. Independent review found three documentation/smoke defects; all were fixed and rechecked with go-doc-test.
+
+Delivery commit: da6d272 (Prepare Go release and documentation). Final-commit mise run ci-go passed with a clean worktree.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
