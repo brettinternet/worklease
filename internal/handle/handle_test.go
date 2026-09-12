@@ -231,6 +231,34 @@ func TestExistingMalformedHandleIsNeverReplaceable(t *testing.T) {
 	}
 }
 
+func TestExistingSharedLockDoesNotCreateMissingLock(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "missing.lock")
+	missing, err := AcquireExistingLock(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missing.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lock path exists after failed verify: %v", err)
+	}
+	first, err := AcquireLock(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := AcquireExistingLock(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+}
+
 func TestSiblingLockSerializesAndDoesNotUnlink(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "h.lock")

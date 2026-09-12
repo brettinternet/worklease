@@ -504,7 +504,7 @@ func mutationFailure(err error, claim, op, path string) error {
 func isDefinitiveNoCommit(err error) bool {
 	if e := reason.As(err); e != nil {
 		switch e.Reason {
-		case reason.ReasonUnknownOutcome, reason.ReasonUnknownOutcomePending, reason.ReasonReplayExpired, reason.ReasonStorageFailure, reason.ReasonHandleWriteFailed:
+		case reason.ReasonUnknownOutcome, reason.ReasonUnknownOutcomePending, reason.ReasonReplayExpired, reason.ReasonStorageFailure, reason.ReasonHandleWriteFailed, reason.ReasonOwnershipLost, reason.ReasonChildTimeout, reason.ReasonInterrupted:
 			return false
 		}
 		return true

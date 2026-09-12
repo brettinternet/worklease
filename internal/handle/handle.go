@@ -419,6 +419,45 @@ type Lock struct {
 	path string
 }
 
+func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := trustedParent(path); err != nil {
+		return nil, err
+	}
+	st, err := inspect(path, true)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &Lock{}, nil
+		}
+		return nil, err
+	}
+	if st == nil {
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
+	}
+	for {
+		err = unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		if err == nil {
+			return &Lock{f: f, path: path}, nil
+		}
+		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+			_ = f.Close()
+			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock cannot be acquired")
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, newHandleError(reason.ReasonHandleInUse, "handle is in use")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
