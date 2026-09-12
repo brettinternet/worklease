@@ -182,19 +182,7 @@ func toolSuccess(v any) map[string]any {
 	} else {
 		m["value"] = v
 	}
-	// Normalize typed projections and slices before redaction. UseNumber
-	// preserves revisions and sequence values beyond float64's exact range.
-	encoded, err := json.Marshal(m)
-	if err != nil {
-		return toolFailure(reason.New(reason.ReasonInternal, "result could not be encoded"))
-	}
-	dec := json.NewDecoder(bytesReader(encoded))
-	dec.UseNumber()
-	var projection map[string]any
-	if err := dec.Decode(&projection); err != nil {
-		return toolFailure(reason.New(reason.ReasonInternal, "result could not be encoded"))
-	}
-	redacted := output.Redact(projection)
+	redacted := output.RedactPublic(m)
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": jsonText(redacted)}}, "structuredContent": redacted}
 }
 func toolFailure(err error) map[string]any {
@@ -204,7 +192,7 @@ func toolFailure(err error) map[string]any {
 	result["isError"] = true
 	return result
 }
-func jsonText(v any) string { b, _ := json.Marshal(output.Redact(v)); return string(b) }
+func jsonText(v any) string { b, _ := json.Marshal(output.RedactPublic(v)); return string(b) }
 func contains(a []string, v string) bool {
 	for _, x := range a {
 		if x == v {

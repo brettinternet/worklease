@@ -88,6 +88,9 @@ func validateTokenCLI(v string) error {
 }
 func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields map[string]any) error {
 	if s.jsonRequested(cmd) {
+		if operation == "status" || operation == "list" {
+			return output.WritePublicSuccess(s.writer, operation, fields)
+		}
 		return output.WriteSuccess(s.writer, operation, fields)
 	}
 	if operation == "status" {

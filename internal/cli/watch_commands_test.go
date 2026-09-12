@@ -153,8 +153,9 @@ func TestWatchJSONRedactsEventDetails(t *testing.T) {
 	}
 	defer st.Close()
 	token := strings.Repeat("a", 64)
+	revision := int64(9007199254740993)
 	if err := st.Write(ctx, func(tx *store.Tx) error {
-		_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("1", 32), Detail: map[string]any{"reason": token}})
+		_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("1", 32), Revision: &revision, Detail: map[string]any{"reason": token}})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -166,6 +167,9 @@ func TestWatchJSONRedactsEventDetails(t *testing.T) {
 	}
 	if strings.Contains(out.String(), token) || !strings.Contains(out.String(), "[REDACTED]") {
 		t.Fatalf("event detail was not redacted: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"revision":9007199254740993`) {
+		t.Fatalf("event revision lost precision: %s", out.String())
 	}
 }
 
