@@ -1678,9 +1678,11 @@ def _render_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None
 
 
 _LIST_RESOURCE_WIDTH = 52
-_LIST_CLAIM_ID_WIDTH = 18
-_LIST_OWNER_ID_WIDTH = 24
 _LIST_EXPIRY_WIDTH = 16
+_GIT_RESOURCE_PATTERN = re.compile(
+    r"^(?P<provider>[^:]+):(?:.*[\\/])?(?P<repository>[^\\/:]+)"
+    r"[\\/]\.git:.*:(?P<item>[^:]+)$"
+)
 
 
 def _shorten_text(value: str, width: int) -> str:
@@ -1796,6 +1798,18 @@ def _shorten_resource(value: str, width: int) -> str:
     )
 
 
+def _summarize_resource(value: str, width: int) -> str:
+    """Render Git-backed resources as provider, repository, and item."""
+
+    match = _GIT_RESOURCE_PATTERN.fullmatch(value)
+    if match is None:
+        return _shorten_resource(value, width)
+    summary = ":".join(
+        (match.group("provider"), match.group("repository"), match.group("item"))
+    )
+    return _shorten_resource(summary, width)
+
+
 def _relative_duration(seconds: float) -> str:
     """Render a non-negative approximate duration for a list row."""
 
@@ -1825,11 +1839,11 @@ def _compact_expiry(claim: dict[str, object], now: float) -> str:
     remaining = expires_at - now
     if remaining < 0:
         return _shorten_text(
-            f"expired {_relative_duration(-remaining)}", _LIST_EXPIRY_WIDTH
+            f"{_relative_duration(-remaining)} ago", _LIST_EXPIRY_WIDTH
         )
     if not claim.get("active", True):
         return "expired"
-    return _shorten_text(_relative_duration(remaining), _LIST_EXPIRY_WIDTH)
+    return _shorten_text(f"{_relative_duration(remaining)} left", _LIST_EXPIRY_WIDTH)
 
 
 def _list_resource(claim: dict[str, object], *, full: bool) -> str:
@@ -1839,7 +1853,7 @@ def _list_resource(claim: dict[str, object], *, full: bool) -> str:
         if resource is not None
         else _text_value(claim.get("resources", []))
     )
-    return value if full else _shorten_resource(value, _LIST_RESOURCE_WIDTH)
+    return value if full else _summarize_resource(value, _LIST_RESOURCE_WIDTH)
 
 
 def _render_list(
@@ -1856,29 +1870,26 @@ def _render_list(
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
-            rows.append(
-                (
-                    "active" if claim.get("active") else "expired",
-                    _list_resource(claim, full=full),
-                    _text_atom(claim.get("claimId", ""))
-                    if full
-                    else _shorten_text(
-                        _text_atom(claim.get("claimId", "")), _LIST_CLAIM_ID_WIDTH
-                    ),
-                    _text_atom(claim.get("ownerId", ""))
-                    if full
-                    else _shorten_text(
-                        _text_atom(claim.get("ownerId", "")), _LIST_OWNER_ID_WIDTH
-                    ),
-                    _text_atom(claim.get("expiresAt", ""))
-                    if full
-                    else _compact_expiry(claim, display_now),
+            state = "active" if claim.get("active") else "expired"
+            resource = _list_resource(claim, full=full)
+            if full:
+                rows.append(
+                    (
+                        state,
+                        resource,
+                        _text_atom(claim.get("claimId", "")),
+                        _text_atom(claim.get("ownerId", "")),
+                        _text_atom(claim.get("expiresAt", "")),
+                    )
                 )
-            )
-    _render_table(
-        ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT"),
-        rows,
+            else:
+                rows.append((state, resource, _compact_expiry(claim, display_now)))
+    headers = (
+        ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+        if full
+        else ("STATE", "RESOURCE", "LEASE")
     )
+    _render_table(headers, rows)
 
 
 def _render_status(payload: dict[str, object]) -> None:

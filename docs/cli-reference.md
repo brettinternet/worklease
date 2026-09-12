@@ -250,7 +250,7 @@ example or valid values. Hints never echo rejected argument values.
 | `key` | `OK key`, `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, `PROVIDER_FENCING` |
 | `policy list` | Header `NAME`, `ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`, then rows |
 | `policy describe` | One `FIELD: value` line per policy field |
-| `list` | Fixed-width `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, `EXPIRES_AT`, then rows |
+| `list` | Fixed-width summary columns `STATE`, `RESOURCE`, `LEASE`, then rows; `--full` adds lifecycle identifiers and absolute expiry |
 | `history` | `OK history`, `RESOURCE`, a `COVERAGE` block, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, optional `RESOURCE` or `RESOURCES`, `STATE`, then `CLAIM` fields `RESOURCE` or `RESOURCES`, `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, `REVISION`, `EXPIRES_AT`, `GUARANTEE` |
 | `status --verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
@@ -258,22 +258,16 @@ example or valid values. Hints never echo rejected argument values.
 | `gc` | `OK gc`, retention fields, sorted `ELIGIBLE` rows, an apply `HINT` when useful, then nonzero unresolved-operation `PROTECTED` rows |
 | Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
 
-`list` uses a fixed-width, space-padded table. Widths follow terminal columns:
-East Asian wide characters count as two, and combining marks count as zero.
+`list` uses a fixed-width, space-padded summary table. Widths follow terminal
+columns: East Asian wide characters count as two, and combining marks count as
+zero. Git-backed resource keys are summarized as provider, repository, and
+item (for example, `backlog-md:worklease:TASK-68`). Other long resources keep
+recognizable boundaries or a prefix and suffix around an ellipsis within 52
+columns. Active lease values use approximate durations such as `1h 2m left`;
+expired values use elapsed durations such as `3m ago`.
 
-| Field | Default width |
-| --- | ---: |
-| `RESOURCE` | 52 |
-| `CLAIM_ID` | 18 |
-| `OWNER_ID` | 24 |
-| `EXPIRES_AT` | 16 |
-
-Long paths keep recognizable repository, source, and item boundaries. Other
-long values keep a prefix and suffix around an ellipsis. Active expiry values
-use approximate durations such as `1h 2m`; expired values use labels such as
-`expired 3m`.
-
-`worklease list --full` and JSON preserve complete values. An empty policy list
+`worklease list --full` shows `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, and
+`EXPIRES_AT` with complete values. JSON also remains complete. An empty policy list
 emits its header only. An unclaimed status emits `CLAIM <none>`. Tokens are
 never listed.
 

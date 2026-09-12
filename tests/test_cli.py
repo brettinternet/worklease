@@ -1988,18 +1988,14 @@ with resource_lock(resource):
         self.assertEqual(3, len(lines))
         self.assertNotIn("\t", listed)
 
-        headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+        headers = ("STATE", "RESOURCE", "LEASE")
         header_starts = [lines[0].index(header) for header in headers]
-        for line in lines:
-            starts: list[int] = []
-            in_field = False
-            for index, character in enumerate(line):
-                if character != " " and not in_field:
-                    starts.append(index)
-                    in_field = True
-                elif character == " ":
-                    in_field = False
-            self.assertEqual(header_starts, starts, line)
+        for line in lines[1:]:
+            self.assertEqual(
+                "active", line[header_starts[0] : header_starts[1]].strip()
+            )
+            self.assertNotEqual(" ", line[header_starts[1]])
+            self.assertNotEqual(" ", line[header_starts[2]])
 
     def test_grouped_short_flags_do_not_consume_child_arguments(self) -> None:
         self.environment["WORKLEASE_AGENT_ID"] = "agent-test"
@@ -2218,7 +2214,6 @@ with resource_lock(resource):
                 },
             ],
         }
-        headers = ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
 
         def measured_width(value: str) -> int:
             # Deliberately independent of cli._display_width: asserting
@@ -2245,29 +2240,42 @@ with resource_lock(resource):
             with redirect_stdout(output):
                 cli_module._render_list(payload, full=full, now=now)
             lines = output.getvalue().rstrip("\n").splitlines()
+            headers = (
+                ("STATE", "RESOURCE", "CLAIM_ID", "OWNER_ID", "EXPIRES_AT")
+                if full
+                else ("STATE", "RESOURCE", "LEASE")
+            )
             expected_starts = column_starts(lines[0], headers)
             expected_rows = (
                 (
-                    "active",
-                    wide_resource
+                    (
+                        "active",
+                        wide_resource,
+                        wide_claim_id,
+                        "owner-wide",
+                        "2025-06-15T22:14:20Z",
+                    )
                     if full
-                    else cli_module._shorten_resource(wide_resource, 52),
-                    wide_claim_id
-                    if full
-                    else cli_module._shorten_text(wide_claim_id, 18),
-                    "owner-wide",
-                    "2025-06-15T22:14:20Z" if full else "1m",
+                    else (
+                        "active",
+                        cli_module._summarize_resource(wide_resource, 52),
+                        "1m left",
+                    )
                 ),
                 (
-                    "active",
-                    ascii_resource
+                    (
+                        "active",
+                        ascii_resource,
+                        ascii_claim_id,
+                        "owner-ascii",
+                        "2025-06-15T22:14:20Z",
+                    )
                     if full
-                    else cli_module._shorten_resource(ascii_resource, 52),
-                    ascii_claim_id
-                    if full
-                    else cli_module._shorten_text(ascii_claim_id, 18),
-                    "owner-ascii",
-                    "2025-06-15T22:14:20Z" if full else "1m",
+                    else (
+                        "active",
+                        cli_module._summarize_resource(ascii_resource, 52),
+                        "1m left",
+                    )
                 ),
             )
             for line, cells in zip(lines[1:], expected_rows, strict=True):
@@ -2278,7 +2286,8 @@ with resource_lock(resource):
                 self.assertIn(wide_claim_id, output.getvalue())
             else:
                 self.assertLessEqual(cli_module._display_width(expected_rows[0][1]), 52)
-                self.assertLessEqual(cli_module._display_width(expected_rows[0][2]), 18)
+                self.assertNotIn(wide_claim_id, output.getvalue())
+                self.assertNotIn(ascii_claim_id, output.getvalue())
 
     def test_resource_shortening_bounds_opaque_values(self) -> None:
         opaque = "opaque-resource-" + ("x" * 100)
@@ -2316,6 +2325,20 @@ with resource_lock(resource):
             52,
         )
 
+    def test_resource_summary_collapses_git_backed_resources(self) -> None:
+        resources = (
+            (
+                "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-68",
+                "backlog-md:worklease:TASK-68",
+            ),
+            (
+                "backlog-md:C:\\Users\\brett\\dev\\hum\\.git:backlog:HUM-103",
+                "backlog-md:hum:HUM-103",
+            ),
+        )
+        for resource, expected in resources:
+            self.assertEqual(expected, cli_module._summarize_resource(resource, 52))
+
     def test_text_list_renders_deep_resource_path_anchor(self) -> None:
         resource = (
             "backlog-md:/Users/brett/dev/me/a/b/c/d/worklease/.git:"
@@ -2340,8 +2363,10 @@ with resource_lock(resource):
             cli_module._render_list(payload, now=1_750_000_000.0)
 
         rendered = output.getvalue()
-        self.assertIn("backlog-md:…/worklease:docs/backlog:TASK-xxxxxxxx", rendered)
+        self.assertIn("backlog-md:worklease:TASK-xxxxxxxx", rendered)
         self.assertNotIn(resource, rendered)
+        self.assertNotIn("CLAIM_ID", rendered)
+        self.assertNotIn("OWNER_ID", rendered)
 
     def test_text_list_uses_bounded_relative_values_with_full_override(self) -> None:
         now = 1_750_000_000.0
@@ -2376,20 +2401,18 @@ with resource_lock(resource):
             cli_module._render_list(payload, now=now)
         compact = compact_output.getvalue()
         self.assertNotIn(resource, compact)
-        self.assertIn("…", compact)
-        self.assertIn(
-            "backlog-md:…/me/worklease/.git:docs/backlog:TASK-18",
-            compact,
+        self.assertIn("backlog-md:worklease:TASK-18", compact)
+        self.assertNotIn("docs/backlog", compact)
+        self.assertNotIn("6D075B01", compact)
+        self.assertNotIn("3829F1", compact)
+        self.assertIn("1h 2m left", compact)
+        self.assertIn("3m ago", compact)
+        self.assertEqual(
+            ("STATE", "RESOURCE", "LEASE"), tuple(compact.splitlines()[0].split())
         )
-        self.assertIn("docs/backlog", compact)
-        self.assertIn("TASK-18", compact)
-        self.assertIn("6D075B01", compact)
-        self.assertIn("3829F1", compact)
-        self.assertIn("1h 2m", compact)
-        self.assertIn("expired 3m", compact)
         self.assertLessEqual(
             max(len(line) for line in compact.rstrip("\n").splitlines()),
-            124,
+            80,
         )
 
         full_output = StringIO()
@@ -4332,10 +4355,7 @@ with resource_lock(resource):
 
     def test_text_renderers_cover_canonical_bundle_operations(self) -> None:
         empty = self.text_cli("list")
-        self.assertEqual(
-            "STATE   RESOURCE   CLAIM_ID   OWNER_ID   EXPIRES_AT\n",
-            empty,
-        )
+        self.assertEqual("STATE   RESOURCE   LEASE\n", empty)
 
         acquire_text = self.text_cli(
             *(
