@@ -62,7 +62,7 @@ func historyAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeLedgerResult(s, cmd, "history", map[string]any{"authorityId": page.AuthorityID, "resource": page.Resource, "epochs": page.Epochs, "nextCursor": page.NextCursor, "gap": page.Gap})
+		return writeLedgerResult(s, cmd, "history", map[string]any{"authorityId": page.AuthorityID, "resource": page.Resource, "coverage": page.Coverage, "epochs": page.Epochs, "nextCursor": page.NextCursor, "gap": page.Gap})
 	}
 }
 
