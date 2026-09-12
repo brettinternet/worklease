@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-12 22:42'
-updated_date: '2026-09-12 23:34'
+updated_date: '2026-09-12 23:35'
 labels:
   - go-rewrite
 dependencies: []
@@ -47,10 +47,14 @@ Review reproduction passed with a temporary Go overlay: hold the original exclus
 Implemented descriptor-relative handle and lock I/O with component-wise no-follow parent traversal, opened-descriptor validation, pinned lock-bound lifecycle operations, atomic *at persistence, and parent/lock identity rechecks. Updated CLI and MCP lifecycle/recovery/transfer callers. Added deterministic regressions for ancestor symlinks, parent substitution during lock acquisition and before persistence, lock-leaf replacement, sibling-lock misuse, and Darwin alias canonicalization. Validation so far: focused and race tests pass for internal/handle, internal/cli, and internal/mcp; Linux amd64 and Darwin arm64 CGO-disabled builds pass; mise lint, format-check, test, and typecheck pass.
 
 Final verification: implementation commit fedce72. mise run lint, format-check, test, and typecheck passed on macOS; go test -race passed for internal/handle, internal/cli, and internal/mcp; the focused handle plus CLI/MCP handle-isolation and transfer suite passed in golang:1.27-bookworm on Linux; Linux amd64 and Darwin arm64 CGO-disabled builds passed. Pre-commit hooks passed. Independent filesystem-race review found three defects (Darwin alias ordering, post-flock parent identity, and sibling lock binding); all were fixed and the follow-up review found only a test self-skip, also fixed.
+
+Merged to main as 85478ee after resolving the TASK-89 reconciliation overlap by preserving current-revision synchronization while using the pinned lock for handle persistence.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Pinned handle and lock operations to validated no-follow directory descriptors, bound CLI/MCP lifecycle persistence to the held sibling lock, and added deterministic replacement-race and cross-platform lock-order coverage. Verified by macOS full/race suites, Linux focused handle/isolation/transfer tests, cross-builds, repository quality gates, hooks, and independent review. Implementation commit: fedce72.
+
+Merged to main: 85478ee.
 <!-- SECTION:FINAL_SUMMARY:END -->
