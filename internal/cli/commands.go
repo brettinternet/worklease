@@ -71,13 +71,15 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	historyCommand.Action = historyAction(s)
 	eventsCommand := jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
 	eventsCommand.Action = eventsAction(s)
+	gcCommand := jsonless("gc", "preview or apply retention", "worklease gc --retention-days 30", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply retention"})
+	gcCommand.Action = gcAction(s)
 	commands := []*urfavecli.Command{
 		jsonless("version", "print version metadata", "worklease version --json"), keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
 		jsonless("verify", "verify ownership", "worklease verify --claim-id ID", append(selection(), resources(), flag("hook"), flag("coverage"))...),
 		jsonless("exec", "run a guarded command", "worklease exec --claim-id ID -- command", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...),
 		jsonless("replace-file", "replace one file", "worklease replace-file --path FILE", append(mutate(), flag("path"), flag("expected-sha256"), flag("content-file"))...),
-		historyCommand, eventsCommand, jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout"})...), jsonless("gc", "preview or apply retention", "worklease gc", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply"}), jsonless("doctor", "run diagnostics", "worklease doctor"),
+		historyCommand, eventsCommand, jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout"})...), gcCommand, jsonless("doctor", "run diagnostics", "worklease doctor"),
 	}
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
 		return &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name + " <command>", Description: usage + ".\n\nExamples:\n  " + example, Commands: commands}

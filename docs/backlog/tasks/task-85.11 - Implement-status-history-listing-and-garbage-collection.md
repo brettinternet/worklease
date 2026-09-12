@@ -1,10 +1,11 @@
 ---
 id: TASK-85.11
 title: Implement read views and garbage collection
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi-01a095b3'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 13:41'
 labels:
   - go-rewrite
 milestone: m-0
@@ -16,6 +17,17 @@ references:
   - src/worklease/projections.py
   - tests/test_gc.py
   - tests/test_cli.py
+modified_files:
+  - CHANGELOG.md
+  - internal/gc/gc.go
+  - internal/gc/gc_test.go
+  - internal/cli/commands.go
+  - internal/cli/lease_commands.go
+  - internal/cli/ledger_commands.go
+  - internal/cli/gc_commands.go
+  - internal/cli/gc_commands_test.go
+  - internal/cli/text.go
+  - internal/cli/text_test.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -34,15 +46,36 @@ Evidence and patterns (the amended contract is normative): `src/worklease/garbag
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Dry-run tests prove strict cutoff behavior, accurate eligible/protected counts and timestamps, and no writes to rows/revisions/watermarks or filesystem.
-- [ ] #2 Apply tests prove atomic rollback, multi-resource retirement, ended_recorded_at-based retention and that newly retired epochs survive the same run.
-- [ ] #3 Interleaved old/current/new epochs prove no middle event rows are pruned, replay/authentication is retained through requestNotAfter, and expired retries then fail replay-expired without redispatch, unresolved predecessors remain visible, and prunedThrough reflects only a real contiguous prefix. An old protected epoch pins newer epoch/history/receipt deletion too, so history cannot lose a row without a prefix gap.
-- [ ] #4 Concurrent acquire/heartbeat/reconcile during GC observes a complete valid state; last_event_seq survives full eligible pruning and continuations report gaps instead of silently skipping.
-- [ ] #5 Empty/populated default/full text is deterministic and readable for long/Unicode resources; all public JSON/full views and GC redact private payloads; mise run ci-go passes.
+- [x] #1 Dry-run tests prove strict cutoff behavior, accurate eligible/protected counts and timestamps, and no writes to rows/revisions/watermarks or filesystem.
+- [x] #2 Apply tests prove atomic rollback, multi-resource retirement, ended_recorded_at-based retention and that newly retired epochs survive the same run.
+- [x] #3 Interleaved old/current/new epochs prove no middle event rows are pruned, replay/authentication is retained through requestNotAfter, and expired retries then fail replay-expired without redispatch, unresolved predecessors remain visible, and prunedThrough reflects only a real contiguous prefix. An old protected epoch pins newer epoch/history/receipt deletion too, so history cannot lose a row without a prefix gap.
+- [x] #4 Concurrent acquire/heartbeat/reconcile during GC observes a complete valid state; last_event_seq survives full eligible pruning and continuations report gaps instead of silently skipping.
+- [x] #5 Empty/populated default/full text is deterministic and readable for long/Unicode resources; all public JSON/full views and GC redact private payloads; mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add an internal/gc service that previews strict-cutoff retention and atomically applies expired retirement plus contiguous epoch/event prefix pruning inside one immediate transaction.
+2. Wire gc into the CLI and add deterministic redacted text rendering for gc, status, list, history, and events.
+3. Add focused Go tests for cutoff/protection/replay retention, atomicity/concurrency, cursor gaps/watermarks, redaction, and long/Unicode text.
+4. Run focused tests and mise run ci-go, review the diff, fix findings, then record objective acceptance evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented transactional Go GC and deterministic read-view text. Added focused tests for strict cutoff/dry-run immutability, multi-resource retirement/newly-retired retention, rollback, replay deadlines, unresolved predecessors, contiguous prefix/watermark gaps, concurrent lifecycle operations, active protection, Unicode width, and public/full redaction. Validation: mise run ci-go passed in the task worktree.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented strict-cutoff transactional Go garbage collection plus deterministic redacted status/list/history/events/GC text. AC1: TestCollectStrictCutoffAndDryRunDoesNotMutate proves cutoff and full state/filesystem immutability. AC2: TestCollectRetiresExpiredClaimAndKeepsItUntilNextRun and TestApplyRollbackLeavesRetirementAndWatermarksUntouched prove multi-resource retirement, recorded-end retention, fresh recovery retention, and rollback. AC3: TestInterleavedEpochsPruneOnlyEventPrefixAndProtectUnresolved, TestUnresolvedPredecessorIsProtected, and TestReplayReceiptAndAuthenticationRetainedThroughDeadlineThenPruned prove contiguous pruning, explicit gaps, unresolved protection, bounded replay, and replay-expired after collection. AC4: TestConcurrentGCAcquireHeartbeatAndReconcileSerialize proves serialized valid state with integrity_check=ok; interleaved coverage proves watermarks and cursor gaps. AC5: TestPublicFullHistoryAndEventsRedactCheckpointAndCredentials, TestGCEmptyPreviewJSONAndText, TestOpaqueTextWidthAndShortening, and TestListTextAlignsByTerminalCells prove redaction and deterministic Unicode-safe text. Verified with mise run ci-go, mise run lint, mise run format-check, mise run test, and mise run typecheck.
+<!-- SECTION:FINAL_SUMMARY:END -->
