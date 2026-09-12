@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 21:34'
+updated_date: '2026-09-12 23:46'
 labels:
   - go-rewrite
 milestone: m-0
@@ -91,6 +91,11 @@ author: @brett
 created: 2026-09-12 21:30
 ---
 TASK-85.18 final integration evidence: tracked Python runtime/SDK/packaging/test/release assets and Python CI/release jobs are removed; the deferred Cloudflare proposal remains documentation-only. mise run ci passed with failing python/python3 shims first on PATH, including Go test/race/vuln and clean-checkout E2E. mise run hooks-all passed after CI was changed to execute installed hooks. The full CLI registration and eleven MCP tools are covered by native acceptance tests and scripts/test-e2e.sh. Independent review and its resolved hook finding are recorded in docs/reviews/task-85.18-independent-review.md. No release was published.
+---
+
+created: 2026-09-12 23:46
+---
+Contract amendment (section 17, 2026-09-12): section 20 now recommends serving the existing Go authority over authenticated HTTPS instead of a Cloudflare Durable Object reimplementation, and names the restore generation and single-writer guard as pre-release remote invariants. Owner-authorized pivot; remote implementation stays deferred. Rationale in docs/distributed-cloudflare-claim-authority.md.
 ---
 <!-- COMMENTS:END -->
 
