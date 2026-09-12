@@ -8,6 +8,7 @@
 - Guard failures after the started intent commits keep the exact pending request in the handle and report `commitState: unknown` instead of clearing it.
 - MCP heartbeat, checkpoint, release, recovery, and automatic renewal restore the ready handle after a definitive no-commit failure, and a contended MCP acquire removes its pending grant and reports `not-committed` instead of leaving orphan pending handles behind.
 - `replace-file` records a completed failure for temporary-file errors before rename instead of leaving the operation unresolved.
+- `replace-file` now reads and digests at most 16 MiB of replacement content before its completing authority transaction, avoiding bulk input I/O while holding SQLite's write lock.
 - Output redaction no longer destroys contextual handle paths and SHA-256 hash fields, and MCP tool results no longer report a stopped automatic renewer as `active`.
 - Documented that SQLite recreates private WAL sidecars for read-only opens; a driver test covers the sidecars-absent case.
 

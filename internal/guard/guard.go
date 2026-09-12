@@ -24,8 +24,13 @@ import (
 
 const (
 	MaxCaptureBytes = 1 << 20
+	MaxReplaceBytes = 16 << 20
 	TimeoutExitCode = 124
 )
+
+// beforeReplaceContentRead is a test seam for proving content preflight does
+// not hold the authority write transaction.
+var beforeReplaceContentRead func()
 
 type ExecRequest struct {
 	OperationID     string
@@ -569,6 +574,43 @@ func sha256File(path string) (string, []byte, os.FileInfo, error) {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), b, st, nil
 }
+
+func readReplaceContent(path string) (string, []byte, error) {
+	parent := filepath.Dir(path)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil || resolvedParent != parent {
+		return "", nil, reason.New(reason.ReasonInvalidPath, "content parent is not canonical")
+	}
+	dir, err := openPinnedDir(parent)
+	if err != nil {
+		return "", nil, reason.New(reason.ReasonInvalidPath, "content parent is not canonical")
+	}
+	defer dir.Close()
+	f, opened, err := openRegularAt(dir, filepath.Base(path))
+	if err != nil {
+		return "", nil, reason.New(reason.ReasonInvalidPath, "content file is not a safe regular file")
+	}
+	defer f.Close()
+	if opened.Size() > MaxReplaceBytes {
+		return "", nil, reason.Invalid("content file exceeds the 16 MiB replacement limit")
+	}
+	if beforeReplaceContentRead != nil {
+		beforeReplaceContentRead()
+	}
+	content, err := io.ReadAll(io.LimitReader(f, MaxReplaceBytes+1))
+	if err != nil {
+		return "", nil, reason.New(reason.ReasonInvalidPath, "content file cannot be read")
+	}
+	if len(content) > MaxReplaceBytes {
+		return "", nil, reason.Invalid("content file exceeds the 16 MiB replacement limit")
+	}
+	after, err := f.Stat()
+	if err != nil || !sameFile(opened, after) || after.Size() != int64(len(content)) {
+		return "", nil, reason.New(reason.ReasonInvalidPath, "content file changed while reading")
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), content, nil
+}
 func sameFile(a, b os.FileInfo) bool {
 	as, aok := a.Sys().(*syscall.Stat_t)
 	bs, bok := b.Sys().(*syscall.Stat_t)
@@ -673,9 +715,9 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		return ReplaceResult{}, err
 	}
 	target = key.Source
-	contentHash, _, _, err := sha256File(content)
+	contentHash, contentBytes, err := readReplaceContent(content)
 	if err != nil {
-		return ReplaceResult{}, reason.New(reason.ReasonInvalidPath, "content file is not a safe regular file")
+		return ReplaceResult{}, err
 	}
 	intent := map[string]any{"path": target, "expectedSha256": req.ExpectedSHA256, "contentSha256": contentHash, "resource": key.Resource}
 	operation := lease.OperationIntent{OperationID: req.OperationID, Kind: "replace-file", Request: intent, RequestHash: req.RequestHash, RequestNotAfter: req.RequestNotAfter, TTL: req.TTL}
@@ -711,24 +753,9 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		if !sameFile(oldInfo, targetInfo) || nowHash != req.ExpectedSHA256 {
 			return map[string]any{"path": target, "expectedSha256": req.ExpectedSHA256, "actualSha256": nowHash}, reason.New(reason.ReasonExpectedHashMismatch, "target hash does not match expected hash")
 		}
-		contentParent := filepath.Dir(content)
-		resolvedContentParent, e := filepath.EvalSymlinks(contentParent)
-		if e != nil || resolvedContentParent != contentParent {
-			return nil, reason.New(reason.ReasonInvalidPath, "content parent is not canonical")
-		}
-		contentDir, e := openPinnedDir(contentParent)
-		if e != nil {
-			return nil, reason.New(reason.ReasonInvalidPath, "content parent is not canonical")
-		}
-		defer contentDir.Close()
-		contentFile, _, e := openRegularAt(contentDir, filepath.Base(content))
-		if e != nil {
-			return nil, reason.New(reason.ReasonInvalidPath, "content file is not a safe regular file")
-		}
-		defer contentFile.Close()
-		contentNow, contentBytes, e := digestOpenFile(contentFile)
-		if e != nil || contentNow != contentHash {
-			return nil, reason.New(reason.ReasonInvalidPath, "content file changed while opening")
+		contentNow := sha256.Sum256(contentBytes)
+		if hex.EncodeToString(contentNow[:]) != contentHash {
+			return nil, reason.New(reason.ReasonInvalidPath, "prepared content digest changed before replacement")
 		}
 		tmp, tmpName, e := newTempAt(dir, oldInfo.Mode().Perm())
 		if e != nil {
