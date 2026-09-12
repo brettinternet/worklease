@@ -71,15 +71,6 @@ func (s *boundary) policyDescribeResult(cmd *urfave.Command) error {
 	}
 	return writeResourceResult(s, cmd, "policy describe", descriptorFields(p.Describe()))
 }
-func (s *boundary) acquireResult(cmd *urfave.Command) error {
-	// Derivation is deliberately shared with key. The authority lifecycle is a
-	// later task, but malformed or ambiguous input must fail before mutation.
-	if _, err := ResolveResourceInput(cmd); err != nil {
-		return s.handle(cmd, err)
-	}
-	return s.handle(cmd, reason.New(reason.ReasonInternal, "acquire behavior is implemented by a later task"))
-}
-
 func keyAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error { return s.keyResult(cmd) }
 }
@@ -88,7 +79,4 @@ func policyListAction(s *boundary) func(context.Context, *urfave.Command) error 
 }
 func policyDescribeAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error { return s.policyDescribeResult(cmd) }
-}
-func acquireAction(s *boundary) func(context.Context, *urfave.Command) error {
-	return func(_ context.Context, cmd *urfave.Command) error { return s.acquireResult(cmd) }
 }

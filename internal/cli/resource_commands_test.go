@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestKeyAndPolicyCommandsReportContractMetadata(t *testing.T) {
@@ -121,13 +124,65 @@ func TestResourceInputResolverRejectsDuplicateAndMixedModesBeforeAcquire(t *test
 	}
 }
 
-func TestAcquireDerivesInputBeforeLaterPlaceholder(t *testing.T) {
-	var stdout bytes.Buffer
-	err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--provider", "generic", "--source", "s", "--item", "i"}, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("placeholder should return an error")
+func TestLifecycleRejectsMixedCredentialSelection(t *testing.T) {
+	home, tokenPath := t.TempDir(), filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"reason":"internal"`) {
-		t.Fatalf("output=%q", stdout.String())
+	var stdout bytes.Buffer
+	args := []string{"worklease", "heartbeat", "--json", "--home", home, "--handle", "lease.json", "--claim-id", strings.Repeat("1", 32), "--token-file", tokenPath, "--revision", "1", "--operation-id", strings.Repeat("2", 32), "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{})
+	if err == nil || !strings.Contains(stdout.String(), `"reason":"credential-source-conflict"`) {
+		t.Fatalf("mixed selection err=%v output=%q", err, stdout.String())
+	}
+}
+
+func TestStatusRequiresSelectionAndStatelessTransferSucceeds(t *testing.T) {
+	home, credentialDir := t.TempDir(), t.TempDir()
+	currentTokenPath, successorTokenPath := filepath.Join(credentialDir, "current"), filepath.Join(credentialDir, "successor")
+	if err := os.WriteFile(currentTokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(successorTokenPath, []byte(strings.Repeat("b", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	claimID, successorID := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	acquire := []string{"worklease", "acquire", "--json", "--home", home, "--resource", "r", "--no-handle", "--claim-id", claimID, "--token-file", currentTokenPath, "--request-not-after", deadline}
+	if err := Run(context.Background(), acquire, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	transfer := []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", currentTokenPath, "--revision", "1", "--operation-id", strings.Repeat("3", 32), "--request-not-after", deadline, "--successor-claim-id", successorID, "--successor-token-file", successorTokenPath, "--to-agent", "next", "--to-session", "next-session"}
+	var transferOut bytes.Buffer
+	if err := Run(context.Background(), transfer, "dev", "unknown", "unknown", &transferOut, &bytes.Buffer{}); err != nil || !strings.Contains(transferOut.String(), successorID) {
+		t.Fatalf("transfer err=%v output=%q", err, transferOut.String())
+	}
+	var publicOut bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home, "--claim-id", successorID}, "dev", "unknown", "unknown", &publicOut, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(publicOut.String(), `"AgentID"`) || !strings.Contains(publicOut.String(), `"agentId":"next"`) {
+		t.Fatalf("status fields are not contract-cased: %q", publicOut.String())
+	}
+	var statusOut bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home}, "dev", "unknown", "unknown", &statusOut, &bytes.Buffer{})
+	if err == nil || !strings.Contains(statusOut.String(), `"reason":"claim-selection-missing"`) {
+		t.Fatalf("empty status err=%v output=%q", err, statusOut.String())
+	}
+}
+
+func TestAcquireDerivesInputBeforeDispatch(t *testing.T) {
+	var stdout bytes.Buffer
+	home, tokenPath := t.TempDir(), filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"worklease", "acquire", "--json", "--home", home, "--provider", "generic", "--source", "s", "--item", "i", "--no-handle", "--claim-id", strings.Repeat("1", 32), "--token-file", tokenPath, "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("acquire failed: %v output=%q", err, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"claimId"`) || strings.Contains(stdout.String(), `"token"`) {
+		t.Fatalf("unexpected output=%q", stdout.String())
 	}
 }
