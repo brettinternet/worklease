@@ -54,25 +54,26 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	keyCommand := jsonless("key", "derive a resource key", "worklease key --path README.md", resource()...)
 	keyCommand.Action = keyAction(s)
 	acquireCommand := jsonless("acquire", "acquire a claim", "worklease acquire --path README.md", append(resource(), &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"T"}, Usage: "claim lifetime [$WORKLEASE_TTL]"}, &urfavecli.DurationFlag{Name: "wait", Aliases: []string{"W"}, Usage: "bounded wait"}, &urfavecli.DurationFlag{Name: "poll-interval", Usage: "poll interval [$WORKLEASE_POLL_INTERVAL]"}, flag("agent", "a"), flag("work-key", "w"), flag("session"), flag("handle"), flag("claim-id", "c"), flag("token-file", "F"), &urfavecli.IntFlag{Name: "token-fd", Aliases: []string{"D"}, Usage: "token descriptor"}, flag("request-not-after"), &urfavecli.BoolFlag{Name: "no-handle", Usage: "disable contextual handle"})...)
-	acquireCommand.Action = acquireAction(s)
+	acquireCommand.Action = acquireActionReal(s)
+	statusCommand := jsonless("status", "show claim status", "worklease status", append(selection(), resources(), full())...)
+	statusCommand.Action = statusActionReal(s)
+	listCommand := jsonless("list", "list current claims", "worklease list", resources(), full())
+	listCommand.Action = listActionReal(s)
+	heartbeatCommand := jsonless("heartbeat", "renew a claim", "worklease heartbeat --claim-id ID", mutate()...)
+	heartbeatCommand.Action = heartbeatActionReal(s)
+	checkpointCommand := jsonless("checkpoint", "store recovery metadata", "worklease checkpoint --claim-id ID --data JSON", append(mutate(), flag("data"), flag("data-file"))...)
+	checkpointCommand.Action = checkpointActionReal(s)
+	releaseCommand := jsonless("release", "release a claim", "worklease release --claim-id ID", append(mutate(), flag("reason", "m"))...)
+	releaseCommand.Action = releaseActionReal(s)
+	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --claim-id ID", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"), flag("successor-claim-id"), flag("successor-token-file"))...)
+	transferCommand.Action = transferActionReal(s)
 	commands := []*urfavecli.Command{
-		jsonless("version", "print version metadata", "worklease version --json"),
-		keyCommand,
-		acquireCommand,
-		jsonless("status", "show claim status", "worklease status", append(selection(), resources(), full())...),
-		jsonless("list", "list current claims", "worklease list", resources(), full()),
-		jsonless("heartbeat", "renew a claim", "worklease heartbeat --handle PATH", mutate()...),
-		jsonless("checkpoint", "store recovery metadata", "worklease checkpoint --handle PATH --data JSON", append(mutate(), flag("data"), flag("data-file"))...),
-		jsonless("release", "release a claim", "worklease release --handle PATH", append(mutate(), flag("reason", "m"))...),
-		jsonless("transfer", "transfer a claim", "worklease transfer --handle PATH", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"))...),
-		jsonless("verify", "verify ownership", "worklease verify --handle PATH", append(selection(), resources(), flag("hook"), flag("coverage"))...),
-		jsonless("exec", "run a guarded command", "worklease exec --handle PATH -- command", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...),
+		jsonless("version", "print version metadata", "worklease version --json"), keyCommand, acquireCommand,
+		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
+		jsonless("verify", "verify ownership", "worklease verify --claim-id ID", append(selection(), resources(), flag("hook"), flag("coverage"))...),
+		jsonless("exec", "run a guarded command", "worklease exec --claim-id ID -- command", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...),
 		jsonless("replace-file", "replace one file", "worklease replace-file --path FILE", append(mutate(), flag("path"), flag("expected-sha256"), flag("content-file"))...),
-		jsonless("history", "show retained history", "worklease history --resource RESOURCE", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full()),
-		jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full()),
-		jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout"})...),
-		jsonless("gc", "preview or apply retention", "worklease gc", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply"}),
-		jsonless("doctor", "run diagnostics", "worklease doctor"),
+		jsonless("history", "show retained history", "worklease history --resource RESOURCE", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full()), jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full()), jsonless("watch", "wait for lifecycle changes", "worklease watch --cursor CURSOR", append(selection(), resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout"})...), jsonless("gc", "preview or apply retention", "worklease gc", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply"}), jsonless("doctor", "run diagnostics", "worklease doctor"),
 	}
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
 		return &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name + " <command>", Description: usage + ".\n\nExamples:\n  " + example, Commands: commands}

@@ -8,6 +8,7 @@
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI calls, and bounded subprocesses.
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI invocation, and bounded subprocesses.
 - Added deterministic Go resource policies, canonical keys, and key/policy inspection commands.
+- Added the transactional Go singleton lease lifecycle with hashed client credentials, authenticated replay, clock safety, and guarded-operation state.
 
 ## 0.10.0 - 2026-09-12
 

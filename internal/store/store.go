@@ -216,7 +216,14 @@ type ReadbackProbe func(context.Context, *sql.DB) (bool, error)
 // Write executes one typed BEGIN IMMEDIATE transaction. Callers whose durable
 // effect can be probed after an uncertain commit should use WriteWithReadback.
 func (s *Store) Write(ctx context.Context, fn func(*Tx) error) error {
-	return s.write(ctx, nil, fn)
+	return s.write(ctx, nil, fn, time.Now().UnixMicro())
+}
+
+// WriteAt is Write with an authority wall-clock observation supplied by the
+// domain service. Tests and callers that own the authority clock use this to
+// keep persisted clock-regression detection independent of process time.
+func (s *Store) WriteAt(ctx context.Context, now time.Time, fn func(*Tx) error) error {
+	return s.write(ctx, nil, fn, now.UnixMicro())
 }
 
 // WriteWithReadback executes a write and classifies a commit error as
@@ -225,10 +232,10 @@ func (s *Store) WriteWithReadback(ctx context.Context, probe ReadbackProbe, fn f
 	if probe == nil {
 		return errors.New("read-back probe is required")
 	}
-	return s.write(ctx, probe, fn)
+	return s.write(ctx, probe, fn, time.Now().UnixMicro())
 }
 
-func (s *Store) write(ctx context.Context, probe ReadbackProbe, fn func(*Tx) error) error {
+func (s *Store) write(ctx context.Context, probe ReadbackProbe, fn func(*Tx) error, observedAt int64) error {
 	if s.driver == nil {
 		return reason.New(reason.ReasonStorageFailure, "authority is not available")
 	}
@@ -239,8 +246,7 @@ func (s *Store) write(ctx context.Context, probe ReadbackProbe, fn func(*Tx) err
 		if err := fn(&Tx{tx: tx, write: true}); err != nil {
 			return err
 		}
-		now := time.Now().UnixMicro()
-		_, err := tx.ExecContext(ctx, `UPDATE meta SET value = CASE WHEN CAST(value AS INTEGER) > ? THEN value ELSE ? END WHERE key='last_observed_at'`, now, fmt.Sprintf("%d", now))
+		_, err := tx.ExecContext(ctx, `UPDATE meta SET value = CASE WHEN CAST(value AS INTEGER) > ? THEN value ELSE ? END WHERE key='last_observed_at'`, observedAt, fmt.Sprintf("%d", observedAt))
 		return err
 	}
 	if probe != nil {
@@ -274,6 +280,15 @@ type Tx struct {
 }
 
 func (t *Tx) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
+}
+
+// ExecContext is the typed write-side SQL escape hatch used by domain
+// packages. Transactions remain the only way to issue mutations.
+func (t *Tx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if t == nil || t.tx == nil || !t.write {
+		return nil, errors.New("writes require a write transaction")
+	}
 	return t.tx.ExecContext(ctx, query, args...)
 }
 func (t *Tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
