@@ -19,7 +19,19 @@ import (
 
 func writeLedgerResult(s *boundary, cmd *urfave.Command, operation string, fields map[string]any) error {
 	if s.jsonRequested(cmd) {
-		return output.WriteSuccess(s.writer, operation, fields)
+		public := make(map[string]any, len(fields))
+		for key, value := range fields {
+			if key != "historyPage" && key != "eventsPage" {
+				public[key] = value
+			}
+		}
+		return output.WriteSuccess(s.writer, operation, public)
+	}
+	if operation == "history" {
+		return writeHistoryText(s.writer, fields["historyPage"].(ledger.HistoryPage))
+	}
+	if operation == "events" {
+		return writeEventsText(s.writer, fields["eventsPage"].(ledger.EventsPage))
 	}
 	return output.WriteText(s.writer, operation, fields)
 }
@@ -39,7 +51,7 @@ func eventsAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeLedgerResult(s, cmd, "events", map[string]any{"authorityId": page.AuthorityID, "events": page.Events, "nextCursor": page.NextCursor, "gap": page.Gap})
+		return writeLedgerResult(s, cmd, "events", map[string]any{"eventsPage": page, "authorityId": page.AuthorityID, "events": page.Events, "nextCursor": page.NextCursor, "gap": page.Gap})
 	}
 }
 func historyAction(s *boundary) func(context.Context, *urfave.Command) error {
@@ -62,7 +74,7 @@ func historyAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeLedgerResult(s, cmd, "history", map[string]any{"authorityId": page.AuthorityID, "resource": page.Resource, "coverage": page.Coverage, "epochs": page.Epochs, "nextCursor": page.NextCursor, "gap": page.Gap})
+		return writeLedgerResult(s, cmd, "history", map[string]any{"historyPage": page, "authorityId": page.AuthorityID, "resource": page.Resource, "coverage": page.Coverage, "epochs": page.Epochs, "nextCursor": page.NextCursor, "gap": page.Gap})
 	}
 }
 
