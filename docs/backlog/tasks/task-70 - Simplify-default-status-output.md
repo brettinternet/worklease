@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a0936b'
 created_date: '2026-09-12 02:10'
-updated_date: '2026-09-12 02:39'
+updated_date: '2026-09-12 02:44'
 labels:
   - cli
   - ux
@@ -59,6 +59,8 @@ The default human-readable `status` response currently repeats the resource and 
 Implemented compact singleton and ordered-bundle status summaries using the existing list resource and relative lease helpers. Added bundle --verbose diagnostics and preserved read-only behavior, including rejecting a non-file state database after independent review found that edge case.
 
 Validation: mise run lint, mise run format-check, mise run typecheck, and mise run test all passed (306 core tests and 19 SDK tests).
+
+Delivery: implementation commit 4fc9860 was fast-forward merged to main; post-merge lint, format-check, typecheck, and full test suite passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
