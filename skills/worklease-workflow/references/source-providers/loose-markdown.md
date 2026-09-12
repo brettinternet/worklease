@@ -13,12 +13,10 @@ All items in one file share a source-wide mutation boundary. Parse complete sour
 
 ## Worklease resource policy
 
-Use the bundled Markdown key policy:
+Use the static built-in Markdown key policy:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("markdown", source_path, item_id)
+```sh
+worklease key --provider markdown --source "$source_path" --item "$item_id"
 ```
 
 The returned resource is source-scoped, so every item in the same file contends on one claim. Build complete replacement content separately, retain the current SHA-256, and call `MarkdownAdapter.replace_file` or the equivalent core guarded replacement with the matching source resource.

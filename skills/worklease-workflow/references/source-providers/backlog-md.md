@@ -14,12 +14,10 @@ Source-only discovery enumerates the complete project. An explicit task selector
 
 ## Worklease resource policy
 
-Use the bundled Backlog.md key policy after resolution:
+Use the static built-in Backlog.md key policy after resolution:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("backlog-md", project_path, task_id)
+```sh
+worklease key --provider backlog-md --source "$project_path" --item "$task_id"
 ```
 
 This produces an item-scoped local key. Its local guarded-operation capability does not make a Backlog.md CLI, MCP, SDK, or remote write provider-fenced. Normalize direct provider mutations as `local-coordination` and set `providerMutationFenced: false` unless the provider operation itself returns conditional-write evidence.

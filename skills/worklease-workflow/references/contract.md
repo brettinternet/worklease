@@ -58,19 +58,18 @@ WorkItem {
 ```text
 WorkClaim {
   target: WorkRef or Source.id
-  resource: exact opaque key used by the claim authority
+  resources: one to 32 exact ordered opaque keys used by the claim authority
   workKey: exact caller-defined operation key
   mode: opaque workflow mode
   claimID: unique ownership-epoch ID
-  agentID: caller-visible agent identity
-  ownerID: unique worker-attempt identity
-  sessionID: invocation/session identity
-  authority: opaque claim-authority identity
-  guarantee: fenced | local-coordination
+  agentID: caller-visible audit identity
+  sessionID: stable invocation/loop identity
+  authority: immutable claim-authority identity
+  guarantee: local-coordination | local-serialized-replace
   guaranteeScope: exact host/process/mutation scope the authority guarantees
   providerMutationFenced: boolean, false unless the provider write supplies fencing evidence
   revision: exact claim-authority compare-and-set revision
-  token: opaque ownership token
+  credentialRef: private handle or credential source, never a public token
   acquiredAt: authority timestamp
   acquireTTL: bounded lease duration accepted at acquisition
   heartbeatAt: authority timestamp
@@ -78,11 +77,11 @@ WorkClaim {
 }
 ```
 
-Absence of a claim is represented by `WorkItem.claim: null` plus a structured `capability` or guarantee outcome, never by a synthetic `WorkClaim`. A new attempt may replace an expired claim with a fresh claim ID and token, but may not adopt or renew an unexpired claim because its agent or session identity matches. An active claim is one bounded ownership epoch for one exact authority resource. `fenced` means the named mutation executes inside the authority boundary described by `guaranteeScope`; it never implies a wider provider or cross-host fence. `local-coordination` means only cooperating callers under the stated local scope are excluded.
+Absence of a claim is represented by `WorkItem.claim: null` plus a structured `capability` or guarantee outcome, never by a synthetic `WorkClaim`. A new attempt may replace an expired claim with a fresh claim ID and credential, but may not adopt or renew an unexpired claim because its agent or session identity matches. An active claim is one bounded ownership epoch over one to 32 exact authority resources. `local-coordination` excludes only cooperating callers under the stated local scope. `local-serialized-replace` applies only to the exact expected-hash local file replacement.
 
-`WorkClaim` is normalized adapter state, not the raw Worklease wire object. A Worklease adapter maps `claimId` to `claimID`, `acquiredAt` unchanged, and `acquireTtl` to `acquireTTL`; it records `guaranteeScope` and `providerMutationFenced` from caller/provider evidence because Worklease does not emit those fields. The raw Worklease `fenced` value advertises eligibility for a same-host guarded local operation; normalize the workflow guarantee to `local-coordination` when the durable provider mutation occurs outside that guard. Keep provider source versions in provider metadata or a separate provider receipt; never overload the claim-authority revision.
+`WorkClaim` is normalized adapter state, not the raw Worklease wire object. A Worklease adapter records `guaranteeScope` and `providerMutationFenced` from caller/provider evidence because Worklease does not emit provider guarantees. Keep provider source versions in provider metadata or a separate provider receipt; never overload claim revision or event sequence.
 
-The token is a bearer credential. Pass it only to claim mutations and guarded operations. Never include it in read-only status, diagnostics, provider checkpoints, logs, or handoffs.
+The credential is a bearer secret held in an authority-bound private handle or file/fd source. Pass it only to claim mutations and guarded operations. Never include it in grants, read-only status, diagnostics, provider checkpoints, logs, or handoffs.
 
 ### `SchedulingScope`
 
@@ -121,10 +120,10 @@ The caller exposes equivalent provider and claim-authority operations and suppli
 1. `resolveSources(arguments, context)` returns ordered `Source[]` and diagnostics without mutating.
 2. `discover(source, selector?)` returns every matching `WorkItem`, plus dependency items needed for graph validation.
 3. `readItem(ref)` refreshes one durable item before claim, write, review, or archive.
-4. `readClaim(resource, authority)` returns the current claim metadata without exposing its bearer token.
-5. `claim(resource, request, authority)` atomically claims an absent or expired resource and returns the normalized `WorkClaim` plus the authority receipt.
-6. `heartbeat(resource, claimID, token, revision, operationID, ttl, authority)` conditionally extends only the matching unexpired claim and returns its new revision.
-7. `releaseClaim(resource, claimID, token, revision, operationID, reason, authority)` conditionally releases only the matching claim. Checkpoint-before-release is a caller-enforced precondition.
+4. `readClaim(resources, authority)` returns current claim metadata without exposing its credential.
+5. `claim(resources, request, authority)` atomically claims one to 32 absent/expired resources and returns the normalized `WorkClaim` plus the authority receipt.
+6. `heartbeat(resources, claimID, credentialRef, revision, operationID, ttl, authority)` conditionally extends only the matching unexpired claim and returns its new revision.
+7. `releaseClaim(resources, claimID, credentialRef, revision, operationID, reason, authority)` conditionally releases only the matching claim. Checkpoint-before-release is caller-enforced.
 8. `writeState(ref, patch, authority, claim?)` writes caller-owned durable state and returns a provider receipt.
 9. `recordProgress(ref, marker, authority, claim?)` writes the caller's durable provider checkpoint.
 10. `resolveReviewBoundary(scope, requestedBoundary, authority)` resolves an explicitly requested provider boundary and its exact members.
@@ -142,7 +141,7 @@ The generic workflow, not a provider adapter, builds and validates the dependenc
 - If any explicit source fails, report that failure; do not silently derive another source.
 - When no source is explicit, the caller may derive one only under its own unambiguous repository/context rules. This contract does not define those rules.
 - Resolve item selectors and dependency references to exact `WorkRef` values before graph construction. A source-local ID without its source identity is ambiguous in a multi-source scope.
-- Require one exact opaque claim resource supplied by the caller or provider adapter for each target and operation scope. Its derivation remains outside this contract, and every contender must receive the same byte-for-byte value.
+- Require one to 32 exact ordered opaque claim resources supplied by the caller or provider adapter for each target and operation scope. Derivation remains outside this contract, and every contender must receive the same byte-for-byte values.
 - Build the complete dependency graph before selecting work.
 - Missing dependencies and directed cycles block every affected item.
 - A dependency is not complete because it is assigned, claimed, in progress, reviewed, or locally marked; the caller must report it terminal.
@@ -155,10 +154,10 @@ The generic workflow, not a provider adapter, builds and validates the dependenc
 
 - Acquire with one compare-and-set operation, never a read-then-write marker.
 - Treat the caller-derived resource as opaque after derivation. Never derive it from transient session, agent, worktree, checkout, or process identity.
-- Generate globally unique claim, session, worker-attempt, and operation IDs. The bundled CLI generates omitted lifecycle IDs with fresh random values; its `acquire` commands read an omitted agent ID from `WORKLEASE_AGENT_ID` and default the work key to the resource (or ordered resource set for bundles).
-- Retry the same operation ID only to recover the exact same request's lost response; changed inputs, including TTL or release reason, conflict. CLI mutations echo an automatically generated operation ID so callers can retain it for exact replay.
-- Every new ownership epoch uses a new claim ID and token. Retain the revision returned by the authority.
-- Heartbeat requires the exact current claim ID, token, revision, an operation ID for that renewal request, and a bounded renewal TTL. Release requires the exact current claim ID, token, revision, an operation ID for that release request, and a non-blank reason. The bundled CLI generates an omitted operation ID before dispatch; an idempotent retry reuses the original operation ID and exact inputs.
+- Generate globally unique claim, session, worker-attempt, and operation IDs. The Go CLI generates omitted lifecycle IDs with fresh random values, reads an omitted agent ID from `WORKLEASE_AGENT_ID`, and defaults the work key from the ordered resource set.
+- Retry the same operation ID only to recover the exact same request's lost response; changed inputs, including TTL or release reason, conflict. Persist the credential and exact pending request before dispatch; ordinary output never reveals the credential.
+- Every new ownership epoch uses a new claim ID and credential. Retain the revision returned by the authority.
+- Heartbeat and release require the exact current claim ID, private credential, revision, operation ID, and bounded request. The Go CLI generates an omitted operation ID before dispatch; an idempotent retry reuses the original ID and exact inputs.
 - Replace the held revision with the revision returned by every successful heartbeat or guarded operation.
 - Heartbeat before half the lease elapses and around long work.
 - Re-read eligibility, the exact claim, and provider state immediately before durable mutation. After the mutation, re-read the claim and source/version when the caller can do so.
@@ -170,8 +169,8 @@ The generic workflow, not a provider adapter, builds and validates the dependenc
 
 The caller must state the exact scope and guarantee it can prove:
 
-- `fenced`: the named mutation executes within the claim authority's compare-and-set/fencing boundary. For Worklease, this can describe the matching same-host guarded `exec` or `replace-file` operation, not an arbitrary provider mutation or cross-host exclusion.
-- `local-coordination`: cooperating callers on the stated local scope are excluded, but the provider mutation is not fenced by the claim. The caller must pre-check and post-check the claim and provider state around direct mutation.
+- `local-coordination`: cooperating callers on the stated local scope are excluded, but an external provider mutation is not fenced by the claim. The caller must pre-check and post-check claim and provider state.
+- `local-serialized-replace`: exact path membership plus expected-hash atomic replacement protects only that local file mutation.
 - `none`: a structured capability outcome indicating no usable ownership guarantee; it is never a `WorkClaim`. Do not delegate or mutate as claimed work.
 
 Set `providerMutationFenced` to `false` by default. Set it to `true` only when the durable provider mutation itself shares the provider compare-and-set/fencing boundary and returns evidence. Pre/post reads under a local claim can detect some races but do not prevent them.

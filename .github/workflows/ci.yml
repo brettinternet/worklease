@@ -24,6 +24,15 @@ jobs:
           cache: true
       - name: Run Go quality gates
         run: mise run ci-go
+      - name: Validate generated manual
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install --yes groff-base
+            groff -mandoc -Tutf8 dist/worklease.1 >/dev/null
+          else
+            mandoc -Tlint dist/worklease.1
+          fi
 
   quality:
     name: Quality (${{ matrix.os }})

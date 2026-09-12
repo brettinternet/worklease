@@ -5,190 +5,116 @@ description: Coordinate generic work items from Backlog.md, Markdown, GitHub Iss
 
 # Worklease Workflow
 
-Use this skill to add a safe work loop around a backlog, queue, issue system,
-document set, or other work source.
-
-This is a coordination contract, not a provider integration or claim service.
-The caller supplies:
-
-- source access and authentication;
-- mutation APIs and authority;
-- canonical claim resources; and
-- provider selection and configuration.
-
-The contract does not prescribe commands, storage, credentials, statuses,
-transport, or fencing. Source locators, item IDs, statuses, metadata, and
-receipts remain opaque caller-owned values.
+This is a provider-neutral coordination contract, not a provider integration.
+The caller supplies source access, mutation authority, canonical resources, and
+provider selection. IDs, statuses, metadata, and receipts remain opaque.
 
 ## Progressive loading
 
-1. Read [`references/contract.md`](references/contract.md) before designing or executing a workflow.
-2. When caller context does not already implement the source/provider capability
-   object, read [`references/source-workflow.md`](references/source-workflow.md)
-   and load only the matching provider reference.
-3. Declare source resolution, discovery, reads, writes, caller-supplied opaque
-   claim resources, claim reads and authority, and any review/archive operations.
-4. Map the caller's source and claim service to the normalized contract without
-   leaking backend assumptions into scheduling logic.
-5. Use only capabilities the caller explicitly authorizes. A missing capability
-   is a structured result, never an invented fallback.
+1. Read [`references/contract.md`](references/contract.md).
+2. If source capabilities are not already supplied, read
+   [`references/source-workflow.md`](references/source-workflow.md) and only the
+   matching provider reference.
+3. Declare source reads/writes, exact claim resources, claim authority,
+   provider receipts, and review/archive capabilities.
+4. Use only caller-authorized capabilities. Missing capability is structured,
+   never an invented fallback.
 
-## Worklease capability boundary
+## Worklease boundary
 
-When the caller uses this repository's `worklease` package, map only these
-capabilities:
+Worklease can acquire, inspect, heartbeat, checkpoint, verify, and release one
+claim over one to 32 exact ordered resources. It can supervise a local `exec` or
+perform an expected-hash `replace-file`. It does not discover provider work,
+interpret status/dependencies, execute provider writes, or establish
+provider-side fencing.
 
-| Worklease provides | Worklease does not provide |
-| --- | --- |
-| Acquire, inspect, heartbeat, and release a bounded claim for one exact opaque `resource` | Provider discovery, authentication, or selection |
-| Guard one local `exec` or `replace-file` operation | Status or dependency interpretation |
-| Persist a bounded checkpoint and renew the claim | Provider writes, review boundaries, or archive operations |
+The static built-in key policies may derive exact opaque resources after the
+caller selects a provider, source, and item. They do not authenticate,
+discover, mutate, or fence a provider. Exact resources contend by bytes within
+one local authority namespace. Repository/path keys are host-local.
 
-A Worklease checkpoint is local recovery metadata, not provider progress. The
-caller must verify the authoritative provider checkpoint before release.
+One claim ID, credential, revision, expiry, and hold deadline cover the complete
+resource set. Overlap conflicts and acquisition is all-or-none. The Go CLI has
+no separate bundle lifecycle and no owner ID.
 
-The CLI applies these defaults:
+## Normalized loop
 
-| Commands | Omitted value | Result |
-| --- | --- | --- |
-| `acquire`, `acquire-bundle` | Claim, session, or owner ID | Generate a fresh ID |
-| `acquire`, `acquire-bundle` | `--agent-id` | Read `WORKLEASE_AGENT_ID`; if absent, exit 64 with a hint naming both options |
-| `acquire`, `acquire-bundle` | `--work-key` | Use the exact resource or ordered bundle resources |
-| Mutating lifecycle commands | Operation ID | Generate and echo one; retain it only to replay the identical request |
-| `transfer` | Successor identity | Apply the same ID, agent, and work-key defaults |
+1. Resolve sources/selectors in caller order and discover the complete required
+   dependency graph.
+2. Return `complete`, `blocked`, or `active-claims` when no item is eligible.
+3. Select terminal-prerequisite, unblocked, claimable work in provider order.
+4. Accept exact caller-supplied resources and acquire a fresh ownership epoch
+   before delegation, isolation, or edits.
+5. Retain non-secret claim metadata plus the private session handle. Never
+   expose its credential.
+6. Revalidate dependencies, ownership, guarantee scope, and provider state
+   before every durable write.
+7. Heartbeat before half the TTL and around bounded long-running operations.
+8. Perform only caller-authorized provider writes and retain/re-read their
+   durable receipts.
+9. Checkpoint local recovery metadata only after the provider checkpoint is
+   verified.
+10. Review/archive only at explicit boundaries, then release the exact current
+    claim with an audit reason.
 
-The bundled `worklease.adapters` are deterministic resource-identity and local-capability policies for a caller-selected provider, source, and item. They may supply the exact opaque resource and declared local scope. They do not discover provider work, execute provider writes, or establish provider-side fencing.
+A short CLI loop needs no credential plumbing:
 
-Use a bundle when work needs all-or-nothing ownership of several resources.
+```sh
+worklease acquire --resource "$RESOURCE" --work-key "implement:TASK-42" --session "$SESSION"
+worklease verify --session "$SESSION"
+worklease heartbeat --session "$SESSION"
+worklease checkpoint --session "$SESSION" --data '{"phase":"tests"}'
+worklease release --session "$SESSION" --reason "provider checkpoint verified"
+```
 
-| Rule | Bundle behavior |
-| --- | --- |
-| Size | 1–32 non-empty opaque resources |
-| Identity | Exact duplicates fail; caller order is preserved in receipts |
-| Locking | Internal acquisition order is deterministic |
-| Authorization | One shared claim ID, token, and revision cover the complete ordered set |
-| Failure | Conflicts, expiry reclaim, and storage failures leave no partial bundle |
+Use distinct `--session` values for concurrent loops in one checkout. Use
+`--handle PATH` only when an explicit private handle is required. Handles are
+authority-bound convenience state, never claims or provider checkpoints.
+Acquire/transfer credentials are generated and persisted before dispatch and
+never appear in output. Explicit credentials are accepted only through
+`--token-file` or `--token-fd`, never argv token text.
 
-The bundle lifecycle includes `acquire-bundle`, `heartbeat-bundle`,
-`exec-bundle`, `inspect-operation-bundle`, `reconcile-operation-bundle`,
-`release-bundle`, and `status-bundle`. A bundle member cannot use the singleton
-API.
+Omit `--operation-id` for a fresh mutation. Reuse one only to replay the exact
+same pending request after a lost response. Changed intent conflicts. A started
+guarded operation has an unknown outcome; inspect the provider effect, prove the
+old executor ceased, and use explicit CLI reconciliation before retrying.
 
-Bundles provide same-host coordination only. They do not add cross-host
-exclusion or provider-side fencing. Provider checkpoints remain owned by the
-caller and provider.
+## Guarantees
 
-The caller or a bundled/external provider adapter must supply the canonical resource before acquisition. Every contender for the same logical target and operation scope must produce the same exact string; the lease core deliberately does not normalize or interpret it. Retain that resource with the claim receipt for every status, heartbeat, guarded operation, and release.
-
-Record the guarantee and its exact scope:
+Report only the demonstrated operation boundary:
 
 | Situation | Reported guarantee |
 | --- | --- |
-| Matching guarded local `exec` or `replace-file` among cooperating callers on one host | Worklease emits `fenced`; the caller records this `guaranteeScope` |
-| Durable provider mutation outside that guard | `local-coordination` |
-| Provider mutation with its own conditional-write or fencing evidence | Record the provider's evidenced guarantee separately |
+| Matching local claim lifecycle or guarded `exec` among cooperating callers | `local-coordination` |
+| Exact expected-hash `replace-file` with path membership | `local-serialized-replace` for that replacement |
+| Durable provider mutation | `local-coordination` unless the provider itself returns conditional-write/fence evidence |
 
-Running a provider CLI or remote API inside a local guard does not create
-provider-side compare-and-set or cross-host fencing. Use a coordination-only
-claim when Worklease only excludes cooperating local schedulers.
+A provider CLI/API inside local exec does not become provider-fenced. Default
+`providerMutationFenced` to false. Keep provider fencing evidence separate from
+claim revision and event sequence.
 
-A successful Worklease operation receipt is not by itself a durable provider checkpoint. The caller must retain the provider receipt or re-read the authoritative source and verify the expected version/state before checkpointing or release.
+## Safe failure
 
-Checkpoint-before-release is a caller-enforced precondition. Worklease validates the exact ownership epoch and a non-blank audit reason; it does not inspect or verify a provider checkpoint.
+Return structured `blocked`, `active-claims`, `conflict`, `ambiguous`,
+`ineligible`, `capability`, and `complete` results. Stop on uncertain canonical
+resources, ownership, provider versions, receipts, or guarantee scope.
+`stale-claim` means stop mutating. Credential failures require reloading the
+private source and revalidating ownership.
 
-## Provider integration boundary
+Never expose credentials, exact private requests, command output, file contents,
+checkpoints, reconciliation evidence, or provider payloads in status, events,
+comments, logs, or handoffs. Handles and cursors must match the authority ID.
+Expiry ends ownership but does not prove an external process stopped.
 
-If the caller's existing context does not already implement the capability
-object, load [`references/source-workflow.md`](references/source-workflow.md)
-after the generic contract. That layer owns source detection and resolution,
-source-qualified item/status/dependency/order mapping, authenticated reads and
-writes, durable provider receipts, and provider-specific review/archive
-behavior; it may use a bundled Worklease key adapter for canonical resource and
-local-capability policy. It records `providerMutationFenced: false` unless the
-provider mutation itself supplies fencing evidence. It must reuse this
-contract's graph construction, selection, ownership, and checkpoint-ordering
-invariants rather than restating them. Bundled key adapters do not replace this
-workflow layer. Load only the mappings for the providers actually resolved.
+## Provider boundary
 
-## Responsibility boundary
+The source layer owns source detection, authentication, normalized state,
+provider-specific writes, receipts, and review/archive behavior. Worklease
+checkpoints are local recovery metadata, not provider progress. Verify the
+authoritative provider receipt before checkpoint and release. Assignment,
+status, comments, branches, worktrees, local locks, and operation receipts are
+not substitutes for a claim or provider checkpoint.
 
-The caller owns command scope, authority, source-specific interpretation, canonical claim-resource mapping, and durable provider writes. This skill owns the coordination invariants:
-
-- resolve all explicit sources and selectors in caller order;
-- discover the complete dependency graph before selecting work;
-- select only terminal-prerequisite, unblocked, claimable work;
-- claim the exact canonical resource before delegation, isolation, or edits;
-- heartbeat bounded leases while work is active;
-- revalidate eligibility, ownership, guarantee scope, and provider state before durable mutations;
-- verify a durable provider checkpoint before release or handoff; and
-- keep review and archive boundaries explicit.
-
-A caller may use Worklease or another local lease service, but it must report the guarantee and exact scope it actually has. Same-host coordination among cooperating callers is not cross-host exclusion, provider-side compare-and-set, or provider-mutation fencing.
-
-## Normalized operating loop
-
-1. Resolve the ordered source and item arguments.
-2. Discover all scoped items and any dependencies required to establish readiness.
-3. Build and validate the dependency graph. Missing references and cycles block the affected work.
-4. Return `complete`, `blocked`, or `active-claims` when no item can be selected; do not skip a gate to manufacture work.
-5. Select one item or a dependency-ready wave.
-6. Accept one exact caller-supplied claim resource and acquire a fresh ownership epoch before handing off or editing.
-7. Retain the exact resource, claim ID, token, revision, expiry, and guarantee; record the caller-declared guarantee scope alongside the receipt. The Worklease CLI keeps these in its private contextual handle by default.
-8. Revalidate dependencies, claim ownership, and provider state immediately before each durable write.
-9. Heartbeat before half the lease elapses and around long-running operations.
-10. Record and verify a durable checkpoint through the caller's provider write capability.
-11. Review or archive only at an explicit authorized boundary.
-12. Release only the exact current claim after the provider checkpoint succeeds.
-
-Checkpoint-before-release is caller policy; the release reason is audit metadata, not checkpoint proof.
-
-A CLI-owned loop needs no credential plumbing:
-
-```sh
-worklease acquire --resource "$RESOURCE" --work-key "implement:TASK-42"
-worklease heartbeat
-worklease checkpoint --checkpoint '{"phase":"tests"}'
-worklease release --reason "provider checkpoint verified"
-```
-
-Use an explicit handle only for concurrent or automated leases in one context:
-
-```sh
-worklease acquire --resource "$OTHER_RESOURCE" -L "$LEASE_FILE"
-worklease heartbeat -L "$LEASE_FILE"
-worklease release -L "$LEASE_FILE" --reason "provider checkpoint verified"
-```
-
-Omit `--operation-id` in a repeating loop. Each mutation then gets a fresh
-generated identifier; a pinned one replays the first operation and fails
-`stale-revision` on the second heartbeat. Supply an explicit `--operation-id`
-only to replay one specific request to recover a lost response.
-
-The contextual handle is selected by resolved Git worktree root, or by the
-resolved current directory outside Git, and lives under state home rather than
-the repository. `-L PATH` selects an explicit handle. A handle contains
-`schemaVersion`, `resource` or ordered `resources`, `claimId`, `token`,
-`revision`, `expiresAt`, and `guarantee`. Successful mutations rewrite it;
-release unlinks it only after authority confirms release. Transfer may write a
-successor handle with `--successor-lease-file PATH`. A handle is convenience
-state, never a claim or provider checkpoint.
-
-On interruption, let the bounded claim expire or perform an explicit coherent handoff. A resumed attempt receives a fresh claim ID and token; it never adopts an unexpired claim merely because the agent identity is unchanged.
-
-## Safe failure behavior
-
-Return structured diagnostics for `blocked`, `active-claims`, `conflict`, `ambiguous`, `ineligible`, `capability`, and `complete`. Preserve source and selector order in both success and failure results. Stop when the canonical resource, ownership, eligibility, guarantee scope, durable provider write, or receipt is uncertain. `stale-claim` means ownership was lost; stop mutating under that claim. `invalid-token` means the claim ID is still current but the supplied credential is invalid; reload the credential and revalidate ownership before retrying. Never use an assignee, status, comment, branch, worktree, ordinary lock file, local writable shadow, or local operation receipt as a substitute for a claim or verified provider checkpoint.
-
-Display only non-secret claim metadata: resource, claim ID, revision, expiry, authority, guarantee, and guarantee scope. Pass the bearer token only to claim mutations or guarded operations; never include it in diagnostics, checkpoints, logs, or handoffs, including `invalid-token` failures.
-
-`worklease status --resource RESOURCE --verbose` is a read-only crash-diagnostic projection with `schemaVersion`, `ok`, `operation`, `resource`, `state`, `claim`, `unknownOperations`, `release`, and conditional `guidance` fields. It may report `free`, `active`, or `expired` state plus non-secret claim metadata, unresolved started-operation summaries, and latest release metadata. It must never expose bearer tokens, raw requests or receipts, command output, provider payloads, file contents, checkpoints, or completed operation receipts, and it must not reclaim, adopt, reconcile, heartbeat, release, or otherwise mutate state. Started operations represent unknown outcomes: inspect the authoritative provider before retrying and use the separate reconciliation flow when authorized. `reclaimed` is reported by acquire only and is not persisted historical diagnostic state. After expiry, acquire a fresh claim and token; retain the existing local-coordination or provider-fencing guarantee and never describe local coordination as provider-side or cross-host fencing.
-
-For an unknown `exec-bundle` outcome, pass the exact ordered member set to
-`inspect-operation-bundle`, verify the authoritative result, and use
-`reconcile-operation-bundle` under the exact current bundle claim. Bundle
-reconciliation is atomic across members, advances the shared revision, and does
-not reveal the bearer token.
-
-## Human and agent use
-
-Humans can use this contract to review a work system's coordination guarantees and to implement a small adapter without changing scheduling rules. Agents should load the contract before provider mappings, keep the caller's task system authoritative, show the exact opaque claim resource and guarantee scope they hold, and leave durable progress where the provider can discover it. This skill neither authorizes nor implements backing-source edits; an authorized caller or adapter may mutate only through its declared durable write capability.
+The local SQLite authority is the only shipped authority. The remote Cloudflare
+proposal is deferred; never silently fall back from a configured remote service
+or describe local coordination as cross-host exclusion.

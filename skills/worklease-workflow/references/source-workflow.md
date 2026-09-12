@@ -33,12 +33,11 @@ They must not reimplement dependency scheduling, active-claim filtering,
 tie-breakers, ownership epochs, heartbeat cadence, checkpoint-before-release,
 or generic result vocabulary.
 
-The bundled `worklease.adapters` are deterministic resource-key and
-local-capability policies after the caller supplies a provider, source, and
-item. They do not discover provider work, authenticate, execute provider
-writes, or prove provider-side fencing. A source workflow adapter may use a
-bundled key adapter; it still owns the provider reads, writes, and receipts
-authorized by the caller.
+Worklease's static built-in key policies derive deterministic resource keys and
+local capabilities after the caller supplies a provider, source, and item. They
+do not discover provider work, authenticate, execute provider writes, or prove
+provider-side fencing. A source workflow adapter may use a built-in policy; it
+still owns caller-authorized provider reads, writes, and receipts.
 
 ## Required composition
 
@@ -60,11 +59,12 @@ never authorize a local shadow backlog or weaker mutation path.
 
 ## Guarantee mapping
 
-Default `providerMutationFenced` to `false`. A Worklease `fenced` claim covers
-only its named same-host guarded local operation. A provider CLI or remote API
-inside a guarded local process remains `local-coordination` unless the durable
-provider mutation itself uses provider-side compare-and-set or fencing and
-returns evidence.
+Default `providerMutationFenced` to `false`. Worklease claim lifecycle and
+supervised exec provide `local-coordination`; exact expected-hash replacement
+may provide `local-serialized-replace` only for that file operation. A provider
+CLI or remote API inside a guarded local process remains `local-coordination`
+unless the provider mutation itself uses compare-and-set or fencing and returns
+evidence.
 
 A loose-Markdown `replace-file` path may report fencing only for the exact
 source-file mutation guarded by the matching source claim and expected

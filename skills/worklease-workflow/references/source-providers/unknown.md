@@ -22,10 +22,8 @@ Unknown provider names do not use an implicit resource-policy fallback. The
 caller must explicitly select the built-in `generic` policy when a
 coordination-only identity is appropriate:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("generic", source_locator, item_id)
+```sh
+worklease key --provider generic --source "$source_locator" --item "$item_id" --coordination-only
 ```
 
 The generic policy preserves the supplied source and item in a deterministic

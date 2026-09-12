@@ -1,87 +1,82 @@
-# Local MCP server
+# MCP and JSON orchestration
 
-The MCP interface is optional and local-only. The Go `worklease` binary serves
-it over stdio. Preview a Claude Code or Cursor configuration, then apply it
-explicitly:
+`worklease mcp` is a one-process stdio server. Stdout is protocol-only; logs and
+diagnostics use stderr. It supports MCP `2026-07-28` discovery and the
+`2025-11-25` initialize lifecycle for interoperability.
 
-```sh
-worklease setup mcp --client claude-code --scope project
-worklease setup mcp --client claude-code --scope project --agent claude-code --apply
+## Quick start
+
+Configure a client with `worklease setup mcp --client claude-code|cursor` or use:
+
+```json
+{"mcpServers":{"worklease":{"command":"/absolute/path/to/worklease","args":["mcp"]}}}
 ```
 
-The generated `mcpServers.worklease` entry uses the absolute running binary and
-`args: ["mcp"]`. See [optional agent setup](setup.md) for user-scope targets,
-removal, native-hook binding, and safety limits.
+Discover the modern server and list typed tools:
 
-The server exposes exactly `key`, `acquire`, `status`, `list`, `heartbeat`,
-`checkpoint`, and `release`. It has no HTTP transport and never launches the
-CLI. `acquire` and `status` take an ordered `resources` list (one to 32
-members); one member uses the singleton API and multiple members use the
-bundle API. `wait_timeout` is capped at 60 seconds and is intended only as a
-short contention backoff: select another ready item instead of blocking an
-agent for a long time.
-
-## Safe lifecycle
-
-1. Resolve the provider key with `key` and inspect its authoritative eligibility.
-2. Call `acquire` before delegation or edits. Save the returned opaque `lease`
-   reference; do not copy a lease file or attempt to inspect it.
-3. Keep provider progress authoritative. The server renews automatically before
-   half the TTL by default, but `max_hold` (four hours by default) bounds a
-   forgotten live session. A result reports `autoHeartbeat` as `active`,
-   `stopped`, or `disabled`.
-4. Call `checkpoint` for bounded local recovery metadata after verifying that
-   it contains no credentials. Call `status` before durable work and release.
-5. Verify provider state, then call `release` with an audit reason.
-
-References are capabilities, not identities. Handles are private mode `0600`
-files in `$WORKLEASE_HOME/mcp-leases/`, in a mode `0700` directory. These are
-distinct from CLI contextual handles under `context-leases/`; neither interface
-reads the other's handles implicitly. The server uses the same home precedence
-as the CLI: `--home`, `WORKLEASE_HOME`,
-`XDG_STATE_HOME/worklease`, then `~/.local/state/worklease`. Tokens and
-revisions stay in the handle and are never in structured results, text, logs,
-or checkpoints. The filename is the returned reference plus `.lease`.
-
-The guarantee covers only cooperating callers using the same authority and
-exact resource. Only guarded local operations are fenced; coordination-only
-claims, provider writes, and other external effects are not provider-fenced.
-Native edit guards are not installed by MCP setup and remain optional.
-
-## Recovery matrix
-
-| Situation | Operator action |
-| --- | --- |
-| Client disconnects (singleton) | Reconnect with the saved reference; if unavailable, run `worklease status --verbose --resource R`, then `worklease release -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
-| Client disconnects (bundle) | Check every member with `worklease status --verbose --resource R` and `R2`; release atomically with `worklease release-bundle -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
-| Server restarts | Present the saved reference to `heartbeat`, `checkpoint`, or `release`; never adopt by agent identity. Use `worklease release` for a singleton handle or `worklease release-bundle` for a bundle handle. |
-| Stale revision or `stale-claim` | Stop mutating, run singleton `worklease status --verbose --resource R` or bundle `worklease status-bundle --resource R --resource R2`, then acquire a fresh reference; use the matching `release`/`release-bundle -L` command for final release. |
-| Expiry | Stop work, run the matching singleton `status --verbose` or bundle `status-bundle`, and acquire a fresh reference; release with the matching CLI lease-file command only if the claim is still current. |
-| Unknown outcome | Inspect provider state. Use `worklease inspect-operation --resource R --operation-id ID` (or `inspect-operation-bundle` with every `--resource`) and then the matching `worklease reconcile-operation -L ...` or `reconcile-operation-bundle -L ...`; do not blindly replay. |
-
-For operator recovery, release directly with the persisted handle path:
-
-```sh
-# Singleton handle
-worklease release \
-  -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
-  --reason "operator recovery after MCP disconnect"
-
-# Bundle handle (all members are released atomically)
-worklease release-bundle \
-  -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
-  --reason "operator recovery after MCP disconnect"
+```text
+{"jsonrpc":"2.0","id":1,"method":"server/discover"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","_meta":{"protocolVersion":"2026-07-28"}}
 ```
 
-MCP intentionally excludes execution, file replacement, transfer, history,
-garbage collection, operation inspection/reconciliation, policy and provider
-discovery or writes, dependency scheduling, and every HTTP transport. Use the
-canonical CLI and its `--json -L PATH` mode for those operations and for
-unknown-outcome reconciliation.
+Legacy clients send `initialize` with protocol version `2025-11-25`, then
+`notifications/initialized`, then `tools/list`.
 
-The benchmark can be run repeatedly as a context-cost and process-count
-comparison (it makes no performance promise):
+## Tool boundary
 
-```sh
-uv run python benchmarks/mcp_lifecycle.py
+The eleven tools are `key`, `acquire`, `status`, `list`, `heartbeat`,
+`checkpoint`, `release`, `verify`, `watch`, `events`, and `instructions`.
+Schemas reject unknown inputs and return schema-version 2 domain envelopes.
+
+MCP intentionally is not CLI parity. `exec`, `replace-file`, transfer, operation
+inspection/reconciliation, history, garbage collection, doctor, setup, and
+policy inspection are CLI-only. Use the CLI explicitly for those local operator
+boundaries.
+
+## Two isolated loops
+
+Each MCP `acquire` may carry a stable `sessionId`. The server keeps a private
+authority-bound handle under that selector and returns an opaque `lease`
+reference; later lifecycle calls use the reference, not the session selector.
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"acquire","arguments":{"resources":["task:a"],"sessionId":"loop-a","agentId":"agent-a"}},"_meta":{"protocolVersion":"2026-07-28"}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"acquire","arguments":{"resources":["task:b"],"sessionId":"loop-b","agentId":"agent-b"}},"_meta":{"protocolVersion":"2026-07-28"}}
 ```
+
+Capture each successful result's opaque `structuredContent.lease`. Subsequent
+`status`, `heartbeat`, `checkpoint`, `verify`, and `release` tool calls pass
+`{"lease":"REFERENCE"}` rather than a session selector. The sessions isolate
+the private handle files; the lease references select them. If both loops
+acquire `task:a`, the loser receives a structured `already-claimed` result with
+safe holder/expiry details and can watch or select other work. No token appears
+in results, errors, logs, checkpoints, or tool schemas.
+
+## Renewal, cancellation, and recovery
+
+The server can renew an active claim before half its TTL while a tool call is in
+flight, bounded by the original absolute hold deadline. It continues reading
+stdin so cancellation and EOF are prompt. Restarting does not auto-renew an old
+handle.
+
+Mutations persist exact pending requests before dispatch. A retry replays only
+the identical operation during its bounded window. Changed intent conflicts.
+Started guarded effects are not exposed as MCP exec tools; advanced inspection,
+cessation evidence, and reconciliation remain explicit CLI operations described
+in [the claim model](claim-model.md).
+
+MCP errors preserve the CLI's stable `reason`, `exitCode`, and `details` instead
+of flattening contention or stale ownership into prose. Unknown methods, invalid
+protocol transitions, duplicate in-flight IDs, and overload are protocol errors;
+domain failures remain tool results.
+
+## Security boundary
+
+The local SQLite authority and handle directory are owner-private. Authority IDs
+bind handles and cursors. Resource keys may be host-local. MCP does not discover
+provider work, perform provider writes, or prove provider-side fencing. A client
+must verify its authoritative provider checkpoint before release.
+
+Native editor guards are optional and separate; see [setup](setup.md). The
+deferred Cloudflare authority document is design evidence, not an available MCP
+transport.

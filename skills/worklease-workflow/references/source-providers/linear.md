@@ -14,12 +14,10 @@ Discovery must enumerate the complete selected project/team collection and depen
 
 ## Worklease resource policy
 
-The bundled Linear key policy is coordination-only:
+The static built-in Linear key policy is coordination-only:
 
-```python
-from worklease.adapters import key
-
-resource_key = key("linear", source_locator, issue_id)
+```sh
+worklease key --provider linear --source "$source_locator" --item "$issue_id"
 ```
 
 It derives a deterministic item resource but cannot guard the remote mutation. Keep the Worklease guarantee `local-coordination` and `providerMutationFenced: false` unless the caller supplies a Linear operation that atomically rejects stale versions and returns fencing evidence. Assignment, status, or a comment is visibility, not a claim.

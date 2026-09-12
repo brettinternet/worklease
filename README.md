@@ -1,272 +1,136 @@
 # worklease
 
-Provider-neutral same-host work leases for coordinating humans and agents on one machine.
+Provider-neutral, same-host coordination for humans and coding agents.
+Worklease prevents cooperating local loops from duplicating work; your backlog or
+provider remains authoritative.
 
-Worklease prevents duplicate local work. Your external backlog or provider remains authoritative.
+The Go rewrite is intentionally incompatible with the retired Python proof of
+concept. It uses one claim model for one to 32 exact resources, schema-version 2
+JSON, authority-bound session handles, and client-held credentials that are
+never printed.
 
-![Two workers contending for one Worklease resource](docs/demo.gif)
+## Install
 
-```mermaid
-flowchart LR
-    A[Worker A] --> K[Derive resource]
-    B[Worker B] --> K
-    K --> L{Atomic expiring lease}
-    L -->|acquired| G[Guarded local work]
-    L -->|busy| W[Wait or select other work]
-    G --> V[Verify authoritative provider state]
-    V --> R[Release lease]
+Build from source with Go 1.27.1:
+
+```sh
+mise run go-build
+./bin/worklease version
 ```
 
-## Quick start
+Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
+and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
+`checksums.txt`. Python packaging remains available only during the rewrite and
+will be removed at cutover.
 
-Source installs require Python 3.14+ and [uv](https://docs.astral.sh/uv/):
+## Human CLI quick start
 
-```bash
-uv tool install .
-worklease --version
+Commands use an owner-private local SQLite authority. A stable session selector
+keeps concurrent loops in the same checkout from overwriting each other's
+handles. A contextual handle carries the claim ID, revision, authority ID, and
+private credential; output never carries the token.
+
+<!-- worklease-example:run human-quick-start -->
+```sh
+worklease acquire --resource human-quick-start --session human
+worklease verify --session human
+worklease exec --session human -- worklease version
+worklease checkpoint --session human --data '{"phase":"verified"}'
+worklease release --session human --reason "provider checkpoint verified"
+```
+<!-- worklease-example:end -->
+
+Use `--path FILE` to derive exact repository/path membership. The default claim
+coverage used by native hooks confirms only a current claim. Opt into
+`verify --coverage path --resource RESOURCE` when each edited path must be an
+exact member. Only expected-hash `replace-file` reports
+`mutationProtection: local-serialized-replace`; `exec` and provider calls remain
+`guarantee: local-coordination`.
+
+## JSON and MCP quick start
+
+Put `--json` before the command for one schema-version 2 envelope. Domain errors
+retain a stable `reason`, `exitCode`, and machine-readable `details`; contention
+is a normal structured outcome, not a parsing failure.
+
+<!-- worklease-example:run json-two-loops -->
+```sh
+worklease --json acquire --resource loop-a --session loop-a
+worklease --json acquire --resource loop-b --session loop-b
+worklease --json status --session loop-a
+worklease --json status --session loop-b
+worklease --json release --session loop-a --reason done
+worklease --json release --session loop-b --reason done
+```
+<!-- worklease-example:end -->
+
+Contention example:
+
+```sh
+worklease --json acquire --resource shared --session contender-a
+worklease --json acquire --resource shared --session contender-b
+# exits 2 with error.reason "already-claimed" and holder metadata, never a token
+worklease --json release --session contender-a --reason done
 ```
 
-Or install the latest release with [mise](https://mise.jdx.dev/):
+Run the stdio server:
 
-```toml
-# mise.toml
-[tools]
-"github:brettinternet/worklease" = "latest"
+<!-- worklease-example:run mcp-discovery -->
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","_meta":{"protocolVersion":"2026-07-28"}}' \
+  | worklease mcp
+```
+<!-- worklease-example:end -->
+
+MCP exposes eleven orchestration tools: `key`, `acquire`, `status`, `list`,
+`heartbeat`, `checkpoint`, `release`, `verify`, `watch`, `events`, and
+`instructions`. Handles are private server-side references. `exec`,
+`replace-file`, transfer, reconciliation, setup, doctor, policy inspection,
+history, and garbage collection are CLI-only operations; MCP intentionally does
+not mirror the entire command tree.
+
+See [MCP and JSON](docs/mcp.md) for typed errors, modern and legacy handshakes,
+automatic renewal, cancellation, and two-loop usage.
+
+## Recovery and safety
+
+Every mutation has an exact request and operation ID. Omit `--operation-id` for
+a fresh action. Supply one only to replay that same request after a lost
+response. A changed request conflicts. Started guarded operations have unknown
+outcomes until the authoritative effect and process cessation are established;
+inspect and reconcile them explicitly before continuing.
+
+Resources contend by exact bytes in one authority namespace. Local repository
+and path identities are host-local. Handles and event/watch cursors are bound to
+an immutable authority ID, so copied state cannot silently authorize another
+authority. Expiry ends ownership but does not prove an external process stopped.
+
+Credentials may come from a private handle, `--token-file`, or `--token-fd`.
+There is no argv bearer-token option. Never put credentials in output, logs,
+checkpoints, provider comments, or handoffs.
+
+See:
+
+- [CLI reference](docs/cli-reference.md)
+- [Claim, operation, and recovery model](docs/claim-model.md)
+- [MCP and JSON](docs/mcp.md)
+- [Setup and native hooks](docs/setup.md)
+- [Deferred remote-authority proposal](docs/distributed-cloudflare-claim-authority.md)
+
+## Development
+
+```sh
+mise run ci-go
 ```
 
-Pin a release by replacing `latest` with a tag such as `vX.Y.Z`. See [GitHub Releases](https://github.com/brettinternet/worklease/releases). Each release publishes a version-matched `worklease.1` manual and changelog; native archives also contain the manual at `share/man/man1/worklease.1`.
-
-Acquire a lease with the defaults:
-
-```bash
-worklease acquire -r my-task -a me
-```
-
-## A complete lifecycle
-
-This path-free loop keeps the credential out of commands and output:
-
-```bash
-set -euo pipefail
-export WORKLEASE_AGENT_ID="agent-local-1"
-
-RESOURCE="$(worklease --json key \
-  --provider backlog-md --source docs/backlog --item TASK-42 \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["resource"])')"
-
-worklease acquire --resource "$RESOURCE" --ttl 900
-trap 'worklease release --reason aborted 2>/dev/null || true' EXIT
-worklease status
-worklease exec --git-primary -- python3 -c 'print("guarded work")'
-worklease checkpoint --checkpoint '{"status":"tests-passed","item":"TASK-42"}'
-
-# Verify TASK-42 in the authoritative provider before releasing.
-worklease release --reason "provider checkpoint verified"
-trap - EXIT
-```
-
-The CLI stores its mode-`0600` handle under the mode-`0700`
-`<state home>/context-leases/` directory. Commands run anywhere in one Git
-worktree share a handle; linked worktrees do not. Outside Git, each resolved
-working directory is a context. Nothing is written in the repository.
-
-Use `-L PATH` for concurrent leases in one context. Use `--no-lease-file` on
-`acquire` only when automation needs the stateless token-bearing response.
-
-### Advanced: explicit lease handle
-
-```bash
-export WORKLEASE_AGENT_ID="${WORKLEASE_AGENT_ID:-manual}"
-lease_dir="$(mktemp -d "${TMPDIR:-/tmp}/worklease.XXXXXX")"
-lease_file="$lease_dir/task-43.lease"
-
-worklease acquire -r TASK-43 -L "$lease_file"
-trap 'worklease release -L "$lease_file" -m aborted 2>/dev/null || true' EXIT
-worklease exec -L "$lease_file" -- python3 -c 'print("second lease")'
-worklease release -L "$lease_file" -m complete
-trap - EXIT
-```
-
-## Guarded execution duration
-
-`exec` and `exec-bundle` require a finite `--max-duration` greater than zero
-and representable by the host timer. The default is `3600` seconds.
-
-The deadline covers both the child runtime and inherited-pipe draining. When it
-expires, Worklease terminates the child's process group, records
-`child-process-timeout`, and exits `124`.
-
-After the child starts, `exec` returns the child's exit status unless the
-deadline expires. A grandchild that escapes the process group may survive.
-Worklease stops draining at the deadline, so captured stdout or stderr may be
-truncated.
-
-## Heartbeats and contention
-
-Renew long-running work before the TTL expires:
-
-```bash
-worklease heartbeat --ttl 900
-```
-
-Lease expiry uses the system wall clock:
-
-- A forward clock jump can expire a lease immediately.
-- A backward step does not remove a live lease.
-- After a backward step, the next contender re-anchors the stored expiry.
-- An abandoned lease is reclaimable within one TTL after contention.
-
-Synchronize the host clock. After a significant adjustment, stop and reacquire
-the lease.
-
-For contention, wait briefly instead of failing immediately:
-
-```bash
-worklease acquire --resource "$RESOURCE" --ttl 900 --wait-timeout 30
-```
-
-## Why not a lock file?
-
-A simple sentinel file can signal that work is claimed, but it does not by itself provide safe ownership or recovery. A correctly implemented OS-backed lock may be all you need for local mutual exclusion. Worklease is a higher-level, same-host coordination protocol. Candidly, it uses OS locking internally.
-
-Worklease adds:
-
-- Expiring, recoverable ownership through TTLs and heartbeats.
-- Named, inspectable ownership epochs with claim IDs, tokens, and revisions; stale owners are rejected.
-- Guarded, bounded execution.
-- Atomic bundles for related changes.
-- Checkpoints, retention-bounded coordination history, and reconciliation for unknown outcomes.
-
-Use a lock when mutual exclusion is sufficient. Use Worklease when work needs expiring ownership, stale-owner protection, bounded execution, coordinated updates, or recovery checkpoints (e.g. agentic loops).
-
-Neither a local lock nor Worklease fences writes made directly to an external provider; provider-side concurrency controls are required for that boundary.
-
-## How it works
-
-```text
-work identity
-    │
-    ▼
-stable resource key
-    │
-    ▼
-expiring lease ──► guarded local work ──► checkpoint ──► release
-```
-
-Workers that derive the same resource key contend for one lease. The lease
-coordinates local work only. The external provider remains authoritative for
-eligibility, progress, completion, and retries.
-
-### Guarantees and boundaries
-
-- Duplicate local work can be avoided when workers use the same resource.
-- Leases expire unless renewed.
-- Mutating lease operations update the lease file.
-- Guarded commands run only while the lease is held.
-- Worklease does not replace provider-side locking, transactions, or conflict checks.
-
-Use `--coordination-only` when provider writes happen outside a Worklease-guarded local operation. Coordination-only claims are explicitly non-fencing.
-
-If a command has an unknown outcome, inspect it with `inspect-operation`, verify the authoritative external result, then use `reconcile-operation`. Do not automatically rerun it.
-
-See the [claim model](docs/claim-model.md) for the coordination model and failure semantics, and the [CLI reference](docs/cli-reference.md) for exit codes, the short option namespace, state selection, garbage-collection semantics, and the text output grammar.
-
-## Providers and resources
-
-Resource providers include `backlog-md`, `github`, `linear`, `markdown`, and `generic`.
-
-```bash
-worklease key \
-  --provider backlog-md \
-  --source docs/backlog \
-  --item TASK-42
-```
-
-The resulting resource is suitable for `acquire`, `status`, `exec`, and related commands.
-
-Inspect recent retained activity across resources with a bounded, copyable feed:
-
-```bash
-worklease events --limit 25 --json
-```
-
-## Bundles
-
-Use a bundle when one operation needs several resources together. Bundles contain 1 to 32 ordered resources and acquire them atomically, all or nothing.
-
-```bash
-worklease acquire-bundle \
-  --resource "$RESOURCE_A" \
-  --resource "$RESOURCE_B" \
-  --ttl 900
-
-worklease heartbeat-bundle --ttl 900
-worklease exec-bundle -- command --arg
-worklease release-bundle --reason "provider checkpoint verified"
-```
-
-Use the same exact resource order throughout the bundle lifecycle. Bundles coordinate local work only. They do not fence provider writes.
-
-## Agent discovery
-
-For lightweight use, add this to the project's `AGENTS.md` or equivalent:
-
-```md
-## Multi-agent coordination
-When agents may touch the same work item, use `worklease`.
-Run `worklease instructions loop` before coordinating.
-Claims coordinate cooperating workers only; the backing task system remains authoritative.
-```
-
-For a Ralph loop or other multi-agent worker prompt, the CLI supplies concise, version-matched instructions:
-
-```text
-Before editing, run `worklease instructions loop` and follow it.
-All workers must use the same Worklease authority and derive the same exact resource.
-On claim conflict, wait or select other ready work; never edit without the claim.
-```
-
-Use `worklease instructions safety` for the trust, fencing, credential, and recovery boundaries. These commands are the smallest useful integration and can be loaded only when coordination is needed.
-
-Install the complete [`skills/worklease-workflow`](skills/worklease-workflow/SKILL.md) directory only for dependency-aware selection, provider mappings, handoffs, review, or archive workflows. Tell an agent to read [skills/AGENTS.md](skills/AGENTS.md) and install the skill from the same Git tag as the CLI; installing the skill does not install the CLI. Provider compatibility notes are in [docs/source-provider-sdk-compatibility.md](docs/source-provider-sdk-compatibility.md).
-
-## Automation and safety
-
-Use JSON when another program consumes the result:
-
-```bash
-worklease status --resource "$RESOURCE" --json
-worklease status --resource "$RESOURCE" --format json
-```
-
-`--json` and `--format json` provide the schema-versioned JSON contract. Default output is human-readable text. Run `worklease COMMAND --help` or `worklease --help-all` for complete command details.
-
-| Result | Meaning | Action |
-| --- | --- | --- |
-| Exit `2` | Lease or capability conflict | Check the stable reason |
-| Child exit status | Guarded command completed | Handle the child result |
-| Exit `124` | `child-process-timeout` | Inspect the timed-out operation |
-| `stale-claim` | The claim ID no longer owns the resource | Stop mutating |
-| `invalid-token` | The claim is current, but the token is wrong | Reload the credential and revalidate ownership |
-
-Conflict responses never expose token material.
-
-Prefer the default contextual handle. For stateless automation, prefer token
-files or file descriptors; passing `--token` exposes the token in process
-arguments. Never log tokens.
-
-State directory precedence is:
-
-1. `--home`
-2. `WORKLEASE_HOME`
-3. `XDG_STATE_HOME/worklease`
-4. `~/.local/state/worklease`
-
-Avoid repository-relative state, especially across linked worktrees.
-
-## Optional MCP server
-
-Coding agents can install the local stdio MCP interface with the `mcp` extra.
-It exposes only the seven typed lifecycle tools and keeps bearer tokens in
-private persisted handles. See [the MCP guide](docs/mcp.md) for Claude Code
-configuration, safe lifecycle and operator recovery.
+`ci-go` formats, vets, tests, race-tests, scans vulnerabilities, builds the
+binary, executes built-binary smoke, and renders the manual. Release preparation
+builds four CGO-disabled archives and verifies their checksums. Publishing,
+tagging, pushing, dispatching publication, and creating a release always require
+separate owner authorization.
+
+Python quality gates and packaging stay in the repository until the final
+cutover task. Python-era state is never imported or deleted automatically; the
+cutover notes provide optional recoverable disposal steps.

@@ -35,10 +35,14 @@ build-sdk-example = "uv build --project packages/worklease-source-sdk/examples/s
 install-release = "scripts/install-release.sh"
 release-validate = "uv run python scripts/release_artifacts.py verify --directory dist/release"
 go-build = "CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease"
+go-man = "mkdir -p dist && go run ./cmd/worklease-man --version dev > dist/worklease.1"
+go-smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev", depends = ["go-build"] }
+go-doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["go-build"] }
+go-release = "go run ./cmd/worklease-release"
 go-fmt = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
 go-fmt-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
 go-vet = { run = ["go vet ./...", "staticcheck ./..."] }
 go-test = "go test ./..."
 go-race = "go test -race ./..."
 go-vuln = "govulncheck ./..."
-ci-go = { depends = ["go-fmt-check", "go-vet", "go-test", "go-race", "go-vuln", "go-build"] }
+ci-go = { depends = ["go-fmt-check", "go-vet", "go-test", "go-race", "go-vuln", "go-smoke", "go-doc-test", "go-man"] }

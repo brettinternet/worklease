@@ -387,12 +387,14 @@ class ReleaseValidationTests(unittest.TestCase):
         )
         self.assertNotIn("--with pyinstaller", workflows)
         self.assertEqual(
-            2, workflows.count("uv run --locked --group release pyinstaller")
+            1, workflows.count("uv run --locked --group release pyinstaller")
         )
         self.assertIn("uv build --no-build-isolation", workflows)
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertEqual(2, release.count("scripts/embed_release_metadata.py"))
-        self.assertEqual(4, release.count("expected=${RELEASE_TAG#v}"))
+        self.assertEqual(1, release.count("scripts/embed_release_metadata.py"))
+        self.assertEqual(1, release.count("expected=${RELEASE_TAG#v}"))
+        self.assertIn("go run ./cmd/worklease-release", release)
+        self.assertIn("go run ./cmd/worklease-smoke", release)
         self.assertIn("uv build --no-build-isolation", (ROOT / "mise.toml").read_text())
 
     def test_workflow_actions_and_permissions_are_immutable(self) -> None:
@@ -407,14 +409,15 @@ class ReleaseValidationTests(unittest.TestCase):
                 with self.subTest(workflow=name, action=line):
                     self.assertRegex(line, action)
             root = workflow.split("jobs:", 1)[0]
-            self.assertIn("permissions:\n  contents: read", root)
+            self.assertIn("  contents: read", root)
 
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         release = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertNotIn("contents: write", ci)
         self.assertEqual(1, release.count("contents: write"))
         publish = release.split("  publish:", 1)[1]
-        self.assertIn("    permissions:\n      contents: write", publish)
+        self.assertIn("      contents: write", publish)
+        self.assertIn("    environment: release", publish)
 
     def test_package_artifacts_preserve_public_type_and_schema_data(self) -> None:
         validate_editable_package(ROOT / "src" / "worklease")
@@ -512,10 +515,13 @@ class ReleaseValidationTests(unittest.TestCase):
         ):
             self.assertIn(f"platform: {platform}", release)
             self.assertIn(f"asset_arch: {architecture}", release)
-        self.assertIn("${{ matrix.asset_arch }}.tar.gz", release)
-        self.assertIn("package-native --executable dist/worklease", release)
-        self.assertIn("--man-page dist/release/worklease.1", release)
-        self.assertEqual(2, release.count("scripts/release_docs.py"))
+        self.assertIn("worklease-v${version}-${PLATFORM}-${ASSET_ARCH}.tar.gz", release)
+        self.assertIn("go run ./cmd/worklease-release", release)
+        self.assertIn("--current", release)
+        self.assertIn("go run ./cmd/worklease-smoke", release)
+        self.assertIn("groff -mandoc", release)
+        self.assertIn("mandoc -Tlint", release)
+        self.assertEqual(1, release.count("scripts/release_docs.py"))
         self.assertIn(
             "body_path: dist/release/worklease-${{ github.ref_name }}-changelog.md",
             release,
