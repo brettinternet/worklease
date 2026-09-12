@@ -4,7 +4,7 @@ title: Simplify default status output
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:10'
-updated_date: '2026-09-12 02:12'
+updated_date: '2026-09-12 02:17'
 labels:
   - cli
   - ux
@@ -13,6 +13,7 @@ references:
   - src/worklease/cli.py
   - tests/test_cli.py
   - docs/cli-reference.md
+  - CHANGELOG.md
 priority: high
 type: enhancement
 ordinal: 77000
@@ -31,6 +32,6 @@ The default human-readable `status` response currently repeats the resource and 
 - [ ] #3 `status --verbose` preserves the complete current redacted diagnostic projection, including full resource values, lifecycle identifiers, timestamps, unknown operations, release data, and guidance.
 - [ ] #4 JSON output remains schema-compatible and complete in both default and verbose invocations.
 - [ ] #5 Resource and lease summaries reuse the list-output conventions established by TASK-68 rather than defining conflicting formatting.
-- [ ] #6 CLI contract tests cover active, expired, and unclaimed states plus default, verbose, and JSON output; human-readable output documentation is updated.
+- [ ] #6 CLI contract tests use a fixed clock to cover active, expired, and unclaimed states plus singleton and bundle default, verbose, and JSON output; command help and human-readable output documentation are updated, and CHANGELOG `Unreleased` records the changed text output.
 - [ ] #7 Bundle status commands use the same summary vocabulary, preserve ordered bundle identity without dumping lifecycle IDs, and retain their complete current projection in verbose and JSON modes.
 <!-- AC:END -->

@@ -4,6 +4,7 @@ title: Add concise timeline output for history
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:11'
+updated_date: '2026-09-12 02:17'
 labels:
   - cli
   - ux
@@ -14,6 +15,8 @@ references:
   - tests/test_history.py
   - docs/cli-reference.md
   - docs/claim-model.md
+  - scripts/release_docs.py
+  - CHANGELOG.md
 priority: medium
 type: enhancement
 ordinal: 80000
@@ -33,5 +36,5 @@ Human-readable `history` currently prints a diagnostic field dump for every epoc
 - [ ] #4 Current-claim and termination information is summarized without treating a retained snapshot as proof that a claim is still active.
 - [ ] #5 A documented `--full` text mode preserves every redacted field and timestamp currently available, including source provenance, revisions, identifiers, completeness, operations, reconciliations, termination, and current snapshots.
 - [ ] #6 JSON output remains schema-compatible and complete.
-- [ ] #7 CLI and history tests use fixed timestamps and cover complete, open, legacy-incomplete, retention-bounded, empty, bundle, operation, reconciliation, termination, current-snapshot, full, and JSON cases; documentation explains the summary semantics.
+- [ ] #7 CLI and history tests use fixed timestamps and cover complete, open, legacy-incomplete, retention-bounded, empty, bundle, operation, reconciliation, termination, current-snapshot, full, and JSON cases; command help and documentation explain the summary semantics, generated release documentation renders successfully, and CHANGELOG `Unreleased` records the changed text output.
 <!-- AC:END -->

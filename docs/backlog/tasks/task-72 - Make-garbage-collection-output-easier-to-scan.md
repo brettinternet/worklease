@@ -4,6 +4,7 @@ title: Make garbage-collection output easier to scan
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:11'
+updated_date: '2026-09-12 02:17'
 labels:
   - cli
   - ux
@@ -13,6 +14,7 @@ references:
   - tests/test_cli.py
   - tests/test_gc.py
   - docs/cli-reference.md
+  - CHANGELOG.md
 priority: medium
 type: enhancement
 ordinal: 79000
@@ -31,5 +33,5 @@ Human-readable `gc` output exposes storage field names such as `bundleEpochs`, s
 - [ ] #3 Protected unresolved-operation groups remain visible with enough information to explain why collection cannot remove them.
 - [ ] #4 The apply hint remains copy-pasteable, preserves the exact cutoff used by the dry run, and is omitted when there is nothing eligible to collect.
 - [ ] #5 `gc --apply` clearly reports what was collected and distinguishes a successful no-op; JSON output remains schema-compatible and complete.
-- [ ] #6 CLI contract tests use a fixed clock to cover eligible, empty, protected, dry-run, apply, and JSON cases; human-readable output documentation is updated.
+- [ ] #6 CLI contract tests use a fixed clock to cover eligible, empty, protected, dry-run, apply, and JSON cases; human-readable output documentation is updated, and CHANGELOG `Unreleased` records the changed text output.
 <!-- AC:END -->
