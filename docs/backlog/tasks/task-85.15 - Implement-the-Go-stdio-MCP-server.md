@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a096ee'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 19:53'
+updated_date: '2026-09-12 19:54'
 labels:
   - go-rewrite
 milestone: m-0
@@ -73,6 +73,10 @@ Evidence and patterns (the amended contract is normative): hum `internal/mcp/ser
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented commit c497cb0 in HWT workspace w8F. Added the Go stdio JSON-RPC/MCP server, eleven typed tools, private reference-backed lifecycle handles, cross-process mutation locking and pending replay, bounded renewal/hold enforcement, CLI wiring, and acceptance tests. Independent review found queueing, duplicate-ID, renewal recovery, hold ceiling, schema validation, verify locking, and input-validation defects; all valid findings were fixed. Validation passed: mise run ci-go; mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run hooks; go test -race ./internal/mcp.
+
+Merged implementation to main in c4b8573 and the post-merge test stabilization in 31b2e7c. Post-merge mise run ci-go passed on main.
+
+Correction: the post-merge test stabilization merge commit is 812d9d6 (implementation fix bc0c6d6); 31b2e7c was recorded in error.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
