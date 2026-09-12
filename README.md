@@ -143,7 +143,7 @@ Worklease adds:
 - Atomic bundles for related changes.
 - Checkpoints, retention-bounded coordination history, and reconciliation for unknown outcomes.
 
-Use a lock when mutual exclusion is sufficient. Use Worklease when work needs expiring ownership, stale-owner protection, bounded execution, coordinated updates, or recovery checkpoints.
+Use a lock when mutual exclusion is sufficient. Use Worklease when work needs expiring ownership, stale-owner protection, bounded execution, coordinated updates, or recovery checkpoints (e.g. agentic loops).
 
 Neither a local lock nor Worklease fences writes made directly to an external provider; provider-side concurrency controls are required for that boundary.
 
