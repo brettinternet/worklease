@@ -42,36 +42,38 @@ _COMMAND_GROUPS = (
 MAN_PAGE_EXAMPLES = (
     (
         "1. Basic lease",
-        '''WORKLEASE_AGENT_ID=manual worklease acquire --resource build --lease-file ./build.lease
-WORKLEASE_AGENT_ID=manual worklease status --resource build
-WORKLEASE_AGENT_ID=manual worklease release --lease-file ./build.lease --reason "build finished"''',
+        '''WORKLEASE_AGENT_ID=manual worklease acquire --resource build
+WORKLEASE_AGENT_ID=manual worklease status
+WORKLEASE_AGENT_ID=manual worklease release --reason "build finished"''',
     ),
     (
-        "2. Private lease-file lifecycle",
-        '''WORKLEASE_AGENT_ID=manual lease_dir="$(mktemp -d)"
-WORKLEASE_AGENT_ID=manual lease_file="$lease_dir/deploy.lease"
-trap 'WORKLEASE_AGENT_ID=manual worklease release --lease-file "$lease_file" --reason "shell exited" >/dev/null 2>&1 || true' EXIT
-WORKLEASE_AGENT_ID=manual worklease acquire --resource deploy --lease-file "$lease_file"
-WORKLEASE_AGENT_ID=manual worklease heartbeat --lease-file "$lease_file"
-WORKLEASE_AGENT_ID=manual worklease release --lease-file "$lease_file" --reason "deploy finished"''',
+        "2. Contextual lifecycle",
+        '''WORKLEASE_AGENT_ID=manual worklease acquire --resource deploy
+WORKLEASE_AGENT_ID=manual worklease heartbeat
+WORKLEASE_AGENT_ID=manual worklease checkpoint --checkpoint '{"phase":"tested"}'
+WORKLEASE_AGENT_ID=manual worklease release --reason "deploy finished"''',
     ),
     (
         "3. Guarded command",
-        '''WORKLEASE_AGENT_ID=manual lease_dir="$(mktemp -d)"
-WORKLEASE_AGENT_ID=manual lease_file="$lease_dir/guarded.lease"
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then worklease release --lease-file "$lease_file" --reason "guarded command failed" >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
-WORKLEASE_AGENT_ID=manual worklease acquire --resource guarded --lease-file "$lease_file"
-WORKLEASE_AGENT_ID=manual worklease exec --lease-file "$lease_file" -- /bin/echo guarded
-WORKLEASE_AGENT_ID=manual worklease release --lease-file "$lease_file" --reason "guarded command finished"''',
+        '''WORKLEASE_AGENT_ID=manual worklease acquire --resource guarded
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then worklease release --reason "guarded command failed" >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
+WORKLEASE_AGENT_ID=manual worklease exec -- /bin/echo guarded
+WORKLEASE_AGENT_ID=manual worklease release --reason "guarded command finished"''',
     ),
     (
         "4. Atomic bundle",
-        '''WORKLEASE_AGENT_ID=manual lease_dir="$(mktemp -d)"
-WORKLEASE_AGENT_ID=manual lease_file="$lease_dir/bundle.lease"
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then worklease release-bundle --lease-file "$lease_file" --reason "bundle command failed" >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
-WORKLEASE_AGENT_ID=manual worklease acquire-bundle --resource api --resource worker --lease-file "$lease_file"
-WORKLEASE_AGENT_ID=manual worklease exec-bundle --resource api --resource worker --lease-file "$lease_file" -- /bin/echo guarded
-WORKLEASE_AGENT_ID=manual worklease release-bundle --lease-file "$lease_file" --reason "bundle command finished"''',
+        '''WORKLEASE_AGENT_ID=manual worklease acquire-bundle --resource api --resource worker
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then worklease release-bundle --reason "bundle command failed" >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
+WORKLEASE_AGENT_ID=manual worklease exec-bundle -- /bin/echo guarded
+WORKLEASE_AGENT_ID=manual worklease release-bundle --reason "bundle command finished"''',
+    ),
+    (
+        "5. Explicit concurrent handle",
+        '''lease_dir="$(mktemp -d)"
+lease_file="$lease_dir/second.lease"
+WORKLEASE_AGENT_ID=manual worklease acquire --resource second -L "$lease_file"
+WORKLEASE_AGENT_ID=manual worklease heartbeat -L "$lease_file"
+WORKLEASE_AGENT_ID=manual worklease release -L "$lease_file" --reason "second finished"''',
     ),
 )
 

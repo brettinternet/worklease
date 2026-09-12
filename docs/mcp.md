@@ -43,8 +43,10 @@ agent for a long time.
 5. Verify provider state, then call `release` with an audit reason.
 
 References are capabilities, not identities. Handles are private mode `0600`
-files in `$WORKLEASE_HOME/mcp-leases/`, in a mode `0700` directory. The server
-uses the same home precedence as the CLI: `--home`, `WORKLEASE_HOME`,
+files in `$WORKLEASE_HOME/mcp-leases/`, in a mode `0700` directory. These are
+distinct from CLI contextual handles under `context-leases/`; neither interface
+reads the other's handles implicitly. The server uses the same home precedence
+as the CLI: `--home`, `WORKLEASE_HOME`,
 `XDG_STATE_HOME/worklease`, then `~/.local/state/worklease`. Tokens and
 revisions stay in the handle and are never in structured results, text, logs,
 or checkpoints. The filename is the returned reference plus `.lease`.
@@ -59,31 +61,31 @@ package with the `mcp` extra to run the server.
 
 | Situation | Operator action |
 | --- | --- |
-| Client disconnects (singleton) | Reconnect with the saved reference; if unavailable, run `worklease status --verbose --resource R`, then `worklease release --lease-file "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
-| Client disconnects (bundle) | Check every member with `worklease status --verbose --resource R` and `R2`; release atomically with `worklease release-bundle --lease-file "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
+| Client disconnects (singleton) | Reconnect with the saved reference; if unavailable, run `worklease status --verbose --resource R`, then `worklease release -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
+| Client disconnects (bundle) | Check every member with `worklease status --verbose --resource R` and `R2`; release atomically with `worklease release-bundle -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" --reason 'operator recovery'`. |
 | Server restarts | Present the saved reference to `heartbeat`, `checkpoint`, or `release`; never adopt by agent identity. Use `worklease release` for a singleton handle or `worklease release-bundle` for a bundle handle. |
-| Stale revision or `stale-claim` | Stop mutating, run singleton `worklease status --verbose --resource R` or bundle `worklease status-bundle --resource R --resource R2`, then acquire a fresh reference; use the matching `release`/`release-bundle --lease-file` command for final release. |
+| Stale revision or `stale-claim` | Stop mutating, run singleton `worklease status --verbose --resource R` or bundle `worklease status-bundle --resource R --resource R2`, then acquire a fresh reference; use the matching `release`/`release-bundle -L` command for final release. |
 | Expiry | Stop work, run the matching singleton `status --verbose` or bundle `status-bundle`, and acquire a fresh reference; release with the matching CLI lease-file command only if the claim is still current. |
-| Unknown outcome | Inspect provider state. Use `worklease inspect-operation --resource R --operation-id ID` (or `inspect-operation-bundle` with every `--resource`) and then the matching `worklease reconcile-operation --lease-file ...` or `reconcile-operation-bundle --lease-file ...`; do not blindly replay. |
+| Unknown outcome | Inspect provider state. Use `worklease inspect-operation --resource R --operation-id ID` (or `inspect-operation-bundle` with every `--resource`) and then the matching `worklease reconcile-operation -L ...` or `reconcile-operation-bundle -L ...`; do not blindly replay. |
 
 For operator recovery, release directly with the persisted handle path:
 
 ```sh
 # Singleton handle
 worklease release \
-  --lease-file "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
+  -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
   --reason "operator recovery after MCP disconnect"
 
 # Bundle handle (all members are released atomically)
 worklease release-bundle \
-  --lease-file "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
+  -L "$WORKLEASE_HOME/mcp-leases/<lease-reference>.lease" \
   --reason "operator recovery after MCP disconnect"
 ```
 
 MCP intentionally excludes execution, file replacement, transfer, history,
 garbage collection, operation inspection/reconciliation, policy and provider
 discovery or writes, dependency scheduling, and every HTTP transport. Use the
-canonical CLI and its `--json --lease-file` mode for those operations and for
+canonical CLI and its `--json -L PATH` mode for those operations and for
 unknown-outcome reconciliation.
 
 The benchmark can be run repeatedly as a context-cost and process-count

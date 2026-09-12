@@ -157,9 +157,12 @@ class CliContractTests(unittest.TestCase):
     def acquire_arguments(
         resource: str = "repo:cli",
         claim_id: str = "claim-cli",
+        *,
+        stateless: bool = True,
     ) -> tuple[str, ...]:
         return (
             "acquire",
+            *(("--no-lease-file",) if stateless else ()),
             "--resource",
             resource,
             "--claim-id",
@@ -227,8 +230,9 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual("", loop.stderr)
         for phrase in (
             "same exact canonical resource",
-            "private --lease-file",
-            "on conflict",
+            "private contextual handle",
+            "-L PATH only for concurrent or automated leases",
+            "On conflict",
             "Heartbeat before half the TTL",
             "Revalidate claim ownership",
             "provider-visible progress",
@@ -251,6 +255,8 @@ class CliContractTests(unittest.TestCase):
             "provider remains authoritative",
             "same authority and exact resource",
             "not provider-fenced",
+            "contextual handle under state home",
+            "-L PATH only for concurrent or automated leases",
             "bearer tokens private",
             "acquire a fresh claim",
             "unknown operation outcome",
@@ -1261,11 +1267,11 @@ with resource_lock(resource):
 
     def test_help_examples_cover_common_mutating_commands(self) -> None:
         examples = {
-            "acquire": ("worklease acquire \\", "--ttl 900"),
-            "exec": ("worklease exec \\", "-- python -m unittest discover -s tests -v"),
+            "acquire": ("worklease acquire --resource", "--no-lease-file"),
+            "exec": ("worklease exec -- python", "worklease exec -L PATH"),
             "release": (
-                "worklease release \\",
-                "--reason 'provider checkpoint verified'",
+                "worklease release --reason",
+                "worklease release -L PATH",
             ),
             "replace-file": (
                 "worklease replace-file \\",
@@ -1289,10 +1295,10 @@ with resource_lock(resource):
             ("policy",): "worklease policy list",
             ("policy", "list"): "worklease policy list",
             ("policy", "describe"): "worklease policy describe --name generic",
-            ("acquire",): "worklease acquire \\",
+            ("acquire",): "worklease acquire --resource local:formatter",
             ("acquire-bundle",): "worklease acquire-bundle \\",
-            ("status-bundle",): "worklease status-bundle --resource local:formatter",
-            ("status",): "worklease status --resource local:formatter",
+            ("status-bundle",): "worklease status-bundle",
+            ("status",): "worklease status",
             ("inspect-operation",): "worklease inspect-operation --resource",
             (
                 "inspect-operation-bundle",
@@ -1300,15 +1306,15 @@ with resource_lock(resource):
             ("gc",): "worklease gc",
             ("reconcile-operation",): "worklease reconcile-operation \\",
             ("reconcile-operation-bundle",): "worklease reconcile-operation-bundle \\",
-            ("checkpoint",): "worklease checkpoint \\",
-            ("transfer",): "worklease transfer \\",
+            ("checkpoint",): "worklease checkpoint --checkpoint",
+            ("transfer",): "worklease transfer",
             ("list",): "worklease list",
-            ("heartbeat",): "worklease heartbeat \\",
-            ("release",): "worklease release \\",
-            ("exec",): "worklease exec \\",
-            ("heartbeat-bundle",): "worklease heartbeat-bundle \\",
-            ("release-bundle",): "worklease release-bundle \\",
-            ("exec-bundle",): "worklease exec-bundle \\",
+            ("heartbeat",): "worklease heartbeat",
+            ("release",): "worklease release --reason",
+            ("exec",): "worklease exec -- python",
+            ("heartbeat-bundle",): "worklease heartbeat-bundle",
+            ("release-bundle",): "worklease release-bundle --reason",
+            ("exec-bundle",): "worklease exec-bundle -- python",
             ("replace-file",): "worklease replace-file \\",
         }
         for command, example in examples.items():
@@ -1316,7 +1322,7 @@ with resource_lock(resource):
                 result = self.run_cli(*command, "--help")
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual("", result.stderr)
-                self.assertIn("Example:", result.stdout)
+                self.assertIn("Example", result.stdout)
                 self.assertIn(example, result.stdout)
 
         for command in (("heartbeat",), ("heartbeat-bundle",)):
@@ -1437,12 +1443,15 @@ with resource_lock(resource):
         self.assertEqual(len(generated), len(set(generated)))
         self.assertEqual("agent-from-environment", claim["agentId"])
         self.assertEqual(resource, claim["workKey"])
+        self.assertNotIn("token", claim)
+        self.assertIn("leaseFile", payload)
 
         text_resource = "repo:generated-acquire-text"
         text = self.run_cli(
             "--format",
             "text",
             "acquire",
+            "--no-lease-file",
             "--resource",
             text_resource,
         )
@@ -1456,6 +1465,7 @@ with resource_lock(resource):
         operation_resource = "repo:generated-operation-text"
         operation = self.json_cli(
             "acquire",
+            "--no-lease-file",
             "--resource",
             operation_resource,
             "--claim-id",
@@ -1516,6 +1526,7 @@ with resource_lock(resource):
         transfer_resource = "repo:missing-successor-agent"
         acquired = self.json_cli(
             "acquire",
+            "--no-lease-file",
             "--resource",
             transfer_resource,
             "--claim-id",
@@ -1572,6 +1583,7 @@ with resource_lock(resource):
         resource = "repo:generated-transfer"
         acquired = self.json_cli(
             "acquire",
+            "--no-lease-file",
             "--resource",
             resource,
             "--claim-id",
@@ -1610,6 +1622,7 @@ with resource_lock(resource):
         resource = "repo:generated-operations"
         acquired = self.json_cli(
             "acquire",
+            "--no-lease-file",
             "--resource",
             resource,
             "--claim-id",
@@ -1733,6 +1746,7 @@ with resource_lock(resource):
         )
         acquired = self.json_cli(
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -2826,17 +2840,175 @@ with resource_lock(resource):
         self.assertEqual(claim["ownerId"], listed_claim["ownerId"])
         self.assertEqual(claim["expiresAt"], listed_claim["expiresAt"])
 
+    def test_contextual_lease_default_lifecycle_is_private_and_path_free(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "context-agent"
+        resource = "repo:context-default"
+        acquired = self.json_cli("acquire", "--resource", resource)
+        claim = acquired["claim"]
+        assert isinstance(claim, dict)
+        self.assertNotIn("token", claim)
+        handle = Path(str(acquired["leaseFile"]))
+        self.assertEqual("context-leases", handle.parent.name)
+        self.assertEqual(0o600, handle.stat().st_mode & 0o777)
+        self.assertEqual(0o700, handle.parent.stat().st_mode & 0o777)
+        self.assertTrue(self.json_cli("status")["ok"])
+        self.assertTrue(self.json_cli("status", "-L", str(handle))["ok"])
+        heartbeat = self.json_cli("heartbeat")
+        self.assertNotIn("token", json.dumps(heartbeat))
+        released = self.json_cli("release", "--reason", "done")
+        self.assertFalse(handle.exists())
+        self.assertTrue(released["ok"])
+
+    def test_contextual_reads_do_not_create_state_and_resource_status_wins_over_handle(
+        self,
+    ) -> None:
+        resource = "repo:status-resource-wins"
+        missing = self.json_cli("status", expected_code=64)
+        self.assertEqual("lease-context-missing", missing["error"])
+        self.assertFalse(
+            Path(self.home.name).exists() and any(Path(self.home.name).iterdir())
+        )
+
+        unrelated = Path(self.home.name) / "unrelated.lease"
+        unrelated.parent.mkdir(parents=True, exist_ok=True)
+        unrelated.write_text("not a lease handle\n", encoding="utf-8")
+        unrelated.chmod(0o600)
+        status = self.json_cli("status", "--resource", resource, "-L", str(unrelated))
+        self.assertEqual("free", status["state"])
+        self.assertTrue(unrelated.exists())
+
+    def test_contextual_bundle_handle_covers_status_heartbeat_exec_and_release(
+        self,
+    ) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "context-agent"
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            "repo:context-bundle-a",
+            "--resource",
+            "repo:context-bundle-b",
+        )
+        handle = Path(str(acquired["leaseFile"]))
+        status = self.json_cli("status-bundle")
+        self.assertEqual("active", status["state"])
+        heartbeat = self.json_cli("heartbeat-bundle")
+        self.assertNotIn("token", json.dumps(heartbeat))
+        executed = self.json_cli(
+            "exec-bundle",
+            "--",
+            sys.executable,
+            "-c",
+            "print('context bundle')",
+        )
+        self.assertNotIn("token", json.dumps(executed))
+        released = self.json_cli("release-bundle", "--reason", "done")
+        self.assertTrue(released["ok"])
+        self.assertFalse(handle.exists())
+        self.assertEqual(
+            "lease-context-missing",
+            self.json_cli("status-bundle", expected_code=64)["error"],
+        )
+
+    def test_contextual_cross_kind_acquire_protects_active_and_replaces_inactive(
+        self,
+    ) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "context-agent"
+        acquired = self.json_cli(
+            "acquire-bundle",
+            "--resource",
+            "repo:bundle-a",
+            "--resource",
+            "repo:bundle-b",
+        )
+        handle = Path(str(acquired["leaseFile"]))
+        active = self.json_cli(
+            "acquire", "--resource", "repo:singleton", expected_code=64
+        )
+        self.assertEqual("lease-file-in-use", active["error"])
+
+        from worklease.lease_file import read_lease_file
+
+        state = read_lease_file(handle)
+        assert state.resources is not None
+        released = LeaseStore(self.home.name).release_bundle(
+            BundleMutationRequest(
+                resources=state.resources,
+                claim_id=state.claim_id,
+                token=state.token,
+                revision=state.revision,
+                operation_id="release-inactive-context",
+            ),
+            "done",
+        )
+        self.assertTrue(released["ok"])
+        replaced = self.json_cli("acquire", "--resource", "repo:singleton")
+        self.assertTrue(replaced["ok"])
+        self.assertEqual("repo:singleton", json.loads(handle.read_text())["resource"])
+
+    def test_contextual_error_hints_escape_path_and_context_controls(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_module._emit_runtime_error_hint(
+                "heartbeat",
+                "lease-file-in-use",
+                "text",
+                {
+                    "leaseFile": "/tmp/line\nnext\x1b[31m",
+                    "contextRoot": "/repo\rroot",
+                },
+            )
+        rendered = output.getvalue()
+        self.assertEqual(1, rendered.count("\n"))
+        self.assertIn(r"\n", rendered)
+        self.assertIn(r"\u001b[31m", rendered)
+        self.assertIn(r"\r", rendered)
+
+    def test_contextual_precedence_and_stateless_opt_outs(self) -> None:
+        self.environment["WORKLEASE_AGENT_ID"] = "context-agent"
+        stateless = self.json_cli(
+            "acquire", "--no-lease-file", "--resource", "repo:stateless"
+        )
+        claim = stateless["claim"]
+        assert isinstance(claim, dict)
+        self.assertIn("token", claim)
+        conflict = self.json_cli(
+            "heartbeat",
+            "--resource",
+            "repo:stateless",
+            "--claim-id",
+            str(claim["claimId"]),
+            expected_code=64,
+        )
+        self.assertEqual("lease-context-conflict", conflict["error"])
+        both = self.json_cli(
+            "acquire",
+            "--no-lease-file",
+            "-L",
+            str(Path(self.home.name) / "handle.lease"),
+            "--resource",
+            "repo:both",
+            expected_code=64,
+        )
+        self.assertEqual("lease-context-conflict", both["error"])
+        missing = self.json_cli("heartbeat", expected_code=64)
+        self.assertEqual("lease-context-missing", missing["error"])
+        self.assertIn("contextRoot", missing)
+
     def test_lease_file_singleton_lifecycle_tracks_revision_and_clears(self) -> None:
         resource = "repo:lease-file-cli"
         lease_file = Path(self.home.name) / "lease.json"
         acquired = self.json_cli(
-            *self.acquire_arguments(resource=resource, claim_id="lease-file-cli"),
+            *self.acquire_arguments(
+                resource=resource, claim_id="lease-file-cli", stateless=False
+            ),
             "--lease-file",
             str(lease_file),
         )
         self.assertNotIn('"token"', json.dumps(acquired))
         text_acquired = self.text_cli(
-            *self.acquire_arguments(resource=resource, claim_id="lease-file-cli"),
+            *self.acquire_arguments(
+                resource=resource, claim_id="lease-file-cli", stateless=False
+            ),
             "--lease-file",
             str(lease_file),
         )
@@ -2932,7 +3104,9 @@ with resource_lock(resource):
         stale_file = Path(self.home.name) / "stale.json"
         self.json_cli(
             *self.acquire_arguments(
-                resource="repo:lease-file-stale", claim_id="lease-file-stale"
+                resource="repo:lease-file-stale",
+                claim_id="lease-file-stale",
+                stateless=False,
             ),
             "--lease-file",
             str(lease_file),
@@ -3011,7 +3185,9 @@ with resource_lock(resource):
         successor = Path(self.home.name) / "successor.json"
         self.json_cli(
             *self.acquire_arguments(
-                resource="repo:lease-transfer", claim_id="lease-transfer"
+                resource="repo:lease-transfer",
+                claim_id="lease-transfer",
+                stateless=False,
             ),
             "--lease-file",
             str(source),
@@ -3171,6 +3347,7 @@ with resource_lock(resource):
         resources = ("repo:verbose-bundle-a", "repo:verbose-bundle-b")
         acquired = self.json_cli(
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -3341,6 +3518,7 @@ with resource_lock(resource):
         resources = ("repo:reconcile-a", "repo:reconcile-b")
         acquired = self.json_cli(
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -3443,6 +3621,7 @@ with resource_lock(resource):
         resources = ("repo:bundle-a", "repo:bundle-b")
         acquire_args = (
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -3607,7 +3786,7 @@ with resource_lock(resource):
         self.assertEqual(64, result.returncode)
         self.assertEqual(
             "ERROR status: invalid-arguments\n"
-            "HINT\tExample: worklease status --resource local:formatter\n",
+            "HINT\tSee worklease status --help for required options and examples\n",
             result.stdout,
         )
         self.assertEqual("", result.stderr)
@@ -3615,11 +3794,8 @@ with resource_lock(resource):
     def test_actionable_parser_hints_preserve_json_and_redact_values(self) -> None:
         missing = self.run_cli("status")
         self.assertEqual(64, missing.returncode)
-        self.assertEqual(
-            "ERROR status: invalid-arguments\n"
-            "HINT\tExample: worklease status --resource local:formatter\n",
-            missing.stdout,
-        )
+        self.assertIn("ERROR status: lease-context-missing\n", missing.stdout)
+        self.assertIn("HINT\tNo contextual lease handle", missing.stdout)
         self.assertNotIn("--resource\n", missing.stdout)
         self.assertEqual("", missing.stderr)
 
@@ -3693,9 +3869,7 @@ with resource_lock(resource):
         json_missing = self.run_cli("--json", "status")
         self.assertEqual(64, json_missing.returncode)
         self.assertEqual(
-            '{"error":"invalid-arguments","ok":false,"operation":"status",'
-            '"schemaVersion":1}\n',
-            json_missing.stdout,
+            "lease-context-missing", json.loads(json_missing.stdout)["error"]
         )
         self.assertEqual("", json_missing.stderr)
 
@@ -3757,7 +3931,9 @@ with resource_lock(resource):
                 "--format=oneline",
                 expected_code=64,
             )
-            self.assertEqual("invalid-arguments", payload["error"])
+            self.assertIn(
+                payload["error"], {"invalid-arguments", "lease-context-missing"}
+            )
 
         parser_error = self.run_cli(
             "--format",
@@ -3867,7 +4043,7 @@ with resource_lock(resource):
                 "missing",
                 expected_code=64,
             )
-            self.assertEqual("credential-missing", missing["error"])
+            self.assertEqual("lease-context-conflict", missing["error"])
             self.assertEqual(
                 "active", self.json_cli("status", "--resource", resource)["state"]
             )
@@ -3972,7 +4148,7 @@ with resource_lock(resource):
             "conflict",
             expected_code=64,
         )
-        self.assertEqual("credential-source-conflict", conflict["error"])
+        self.assertEqual("lease-context-conflict", conflict["error"])
 
     def test_exec_returns_child_status_and_schema_envelope(self) -> None:
         resource = "repo:exec"
@@ -4191,7 +4367,7 @@ with resource_lock(resource):
         result = self.run_cli("-fjson", "status")
         self.assertEqual(64, result.returncode)
         payload = json.loads(result.stdout)
-        self.assertEqual("invalid-arguments", payload["error"])
+        self.assertEqual("lease-context-missing", payload["error"])
 
         conflicting = self.run_cli("-ftext", "--json", "status", "--resource", "x")
         self.assertEqual(64, conflicting.returncode)
@@ -4795,6 +4971,7 @@ with resource_lock(resource):
         resources = ("repo:text-alias-a", "repo:text-alias-b")
         bundle_acquired = self.json_cli(
             "bundle-acquire",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -4907,6 +5084,7 @@ with resource_lock(resource):
         acquire_text = self.text_cli(
             *(
                 "acquire-bundle",
+                "--no-lease-file",
                 "--resource",
                 "repo:text-canonical-acquire-a",
                 "--resource",
@@ -4929,6 +5107,7 @@ with resource_lock(resource):
         resources = ("repo:text-canonical-a", "repo:text-canonical-b")
         acquired = self.json_cli(
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             resources[0],
             "--resource",
@@ -5061,7 +5240,33 @@ with resource_lock(resource):
                 )
                 failure = self.text_cli(*arguments, expected_code=64)
                 self.assertTrue(
-                    failure.startswith(f"ERROR {command}: invalid-arguments\n"),
+                    failure.startswith(f"ERROR {command}: invalid-arguments\n")
+                    or (
+                        command
+                        in {
+                            "status",
+                            "status-bundle",
+                            "bundle-status",
+                            "inspect-bundle",
+                            "heartbeat",
+                            "heartbeat-bundle",
+                            "bundle-heartbeat",
+                            "transfer",
+                            "exec",
+                            "exec-bundle",
+                            "bundle-exec",
+                        }
+                        and failure.startswith(
+                            "ERROR "
+                            + {
+                                "bundle-status": "status-bundle",
+                                "inspect-bundle": "status-bundle",
+                                "bundle-heartbeat": "heartbeat-bundle",
+                                "bundle-exec": "exec-bundle",
+                            }.get(command, command)
+                            + ": lease-context-missing\n"
+                        )
+                    ),
                     failure,
                 )
         version_error = self.run_cli("--format", "text", "--version", "--bad")

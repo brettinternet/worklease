@@ -1,10 +1,10 @@
 ---
 id: TASK-67
 title: Make secure contextual lease handles the CLI default
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-12 01:49'
-updated_date: '2026-09-12 02:08'
+updated_date: '2026-09-12 04:19'
 labels:
   - cli
   - ux
@@ -64,10 +64,22 @@ Subtasks are ordered by dependency: TASK-67.1 (context resolution module, no CLI
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 From a subdirectory of a Git worktree, `worklease acquire -r RES` followed by `status`, `heartbeat`, `checkpoint -k {}`, `exec -- true`, and `release -m done` all succeed with no lease path, token, claim ID, or revision on the command line, and no token appears in any output.
-- [ ] #2 The same path-free lifecycle works for bundles through `acquire-bundle`, `status-bundle`, `heartbeat-bundle`, `exec-bundle`, and `release-bundle`.
-- [ ] #3 The handle lives under `<state home>/context-leases/` with directory mode 0700 and file mode 0600, follows `--home` and `WORKLEASE_HOME`, and the repository and caller directory receive no new files.
-- [ ] #4 Existing `--lease-file` scripts and complete stateless credential scripts run unchanged, and `acquire --no-lease-file` returns the token-bearing stateless payload.
-- [ ] #5 README, CLI reference, `worklease instructions`, the workflow skill and Backlog guide, command help, generated man page source, and CHANGELOG describe the default, its location and context rules, `-L PATH`, `--no-lease-file`, and the breaking change.
-- [ ] #6 TASK-67.1, TASK-67.2, and TASK-67.3 are Done and `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck` pass.
+- [x] #1 From a subdirectory of a Git worktree, `worklease acquire -r RES` followed by `status`, `heartbeat`, `checkpoint -k {}`, `exec -- true`, and `release -m done` all succeed with no lease path, token, claim ID, or revision on the command line, and no token appears in any output.
+- [x] #2 The same path-free lifecycle works for bundles through `acquire-bundle`, `status-bundle`, `heartbeat-bundle`, `exec-bundle`, and `release-bundle`.
+- [x] #3 The handle lives under `<state home>/context-leases/` with directory mode 0700 and file mode 0600, follows `--home` and `WORKLEASE_HOME`, and the repository and caller directory receive no new files.
+- [x] #4 Existing `--lease-file` scripts and complete stateless credential scripts run unchanged, and `acquire --no-lease-file` returns the token-bearing stateless payload.
+- [x] #5 README, CLI reference, `worklease instructions`, the workflow skill and Backlog guide, command help, generated man page source, and CHANGELOG describe the default, its location and context rules, `-L PATH`, `--no-lease-file`, and the breaking change.
+- [x] #6 TASK-67.1, TASK-67.2, and TASK-67.3 are Done and `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck` pass.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-67.1, TASK-67.2, and TASK-67.3 are complete. Integrated verification passed all 339 tests plus lint, format-check, typecheck, generated release documentation, and independent review.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Delivered secure contextual lease handles as the path-free CLI default for singleton and bundle workflows, with compatibility paths, complete documentation, and release validation.
+<!-- SECTION:FINAL_SUMMARY:END -->

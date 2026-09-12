@@ -44,50 +44,48 @@ worklease acquire -r my-task -a me
 
 ## A complete lifecycle
 
-This example coordinates work for `TASK-42` using a private temporary lease handle. The lease file is mode `0600` and is updated after mutations.
+This path-free loop keeps the credential out of commands and output:
 
 ```bash
 set -euo pipefail
-umask 077
-
 export WORKLEASE_AGENT_ID="agent-local-1"
 
-LEASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/worklease.XXXXXX")"
-LEASE_FILE="$LEASE_DIR/task-42.lease"
-# Release the lease even if a step below fails, so the resource is not held
-# for its full TTL.
-trap 'worklease release --lease-file "$LEASE_FILE" --reason aborted 2>/dev/null || true' EXIT
 RESOURCE="$(worklease --json key \
-  --provider backlog-md \
-  --source docs/backlog \
-  --item TASK-42 \
+  --provider backlog-md --source docs/backlog --item TASK-42 \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["resource"])')"
 
-worklease acquire \
-  --resource "$RESOURCE" \
-  --lease-file "$LEASE_FILE" \
-  --ttl 900
-
-worklease status --resource "$RESOURCE"
-
-worklease exec \
-  --lease-file "$LEASE_FILE" \
-  --git-primary \
-  --max-duration 3600 \
-  -- python3 -c 'print("guarded work")'
-
-worklease checkpoint \
-  --lease-file "$LEASE_FILE" \
-  --checkpoint '{"status":"tests-passed","item":"TASK-42"}'
+worklease acquire --resource "$RESOURCE" --ttl 900
+trap 'worklease release --reason aborted 2>/dev/null || true' EXIT
+worklease status
+worklease exec --git-primary -- python3 -c 'print("guarded work")'
+worklease checkpoint --checkpoint '{"status":"tests-passed","item":"TASK-42"}'
 
 # Verify TASK-42 in the authoritative provider before releasing.
-worklease release \
-  --lease-file "$LEASE_FILE" \
-  --reason "provider checkpoint verified"
+worklease release --reason "provider checkpoint verified"
 trap - EXIT
 ```
 
-Keep the lease handle private. Do not place Worklease state in a repository path shared by linked worktrees.
+The CLI stores its mode-`0600` handle under the mode-`0700`
+`<state home>/context-leases/` directory. Commands run anywhere in one Git
+worktree share a handle; linked worktrees do not. Outside Git, each resolved
+working directory is a context. Nothing is written in the repository.
+
+Use `-L PATH` for concurrent leases in one context. Use `--no-lease-file` on
+`acquire` only when automation needs the stateless token-bearing response.
+
+### Advanced: explicit lease handle
+
+```bash
+export WORKLEASE_AGENT_ID="${WORKLEASE_AGENT_ID:-manual}"
+lease_dir="$(mktemp -d "${TMPDIR:-/tmp}/worklease.XXXXXX")"
+lease_file="$lease_dir/task-43.lease"
+
+worklease acquire -r TASK-43 -L "$lease_file"
+trap 'worklease release -L "$lease_file" -m aborted 2>/dev/null || true' EXIT
+worklease exec -L "$lease_file" -- python3 -c 'print("second lease")'
+worklease release -L "$lease_file" -m complete
+trap - EXIT
+```
 
 ## Guarded execution duration
 
@@ -108,7 +106,7 @@ truncated.
 Renew long-running work before the TTL expires:
 
 ```bash
-worklease heartbeat --lease-file "$LEASE_FILE" --ttl 900
+worklease heartbeat --ttl 900
 ```
 
 Lease expiry uses the system wall clock:
@@ -124,11 +122,7 @@ the lease.
 For contention, wait briefly instead of failing immediately:
 
 ```bash
-worklease acquire \
-  --resource "$RESOURCE" \
-  --lease-file "$LEASE_FILE" \
-  --ttl 900 \
-  --wait-timeout 30
+worklease acquire --resource "$RESOURCE" --ttl 900 --wait-timeout 30
 ```
 
 ## Why not a lock file?
@@ -204,14 +198,11 @@ Use a bundle when one operation needs several resources together. Bundles contai
 worklease acquire-bundle \
   --resource "$RESOURCE_A" \
   --resource "$RESOURCE_B" \
-  --lease-file "$LEASE_FILE" \
   --ttl 900
 
-worklease heartbeat-bundle --lease-file "$LEASE_FILE" --ttl 900
-worklease exec-bundle --lease-file "$LEASE_FILE" -- command --arg
-worklease release-bundle \
-  --lease-file "$LEASE_FILE" \
-  --reason "provider checkpoint verified"
+worklease heartbeat-bundle --ttl 900
+worklease exec-bundle -- command --arg
+worklease release-bundle --reason "provider checkpoint verified"
 ```
 
 Use the same exact resource order throughout the bundle lifecycle. Bundles coordinate local work only. They do not fence provider writes.
@@ -260,7 +251,9 @@ worklease status --resource "$RESOURCE" --format json
 
 Conflict responses never expose token material.
 
-Prefer lease files, token files, or file descriptors for bearer tokens. Never log tokens. Passing `--token` exposes the token in process arguments.
+Prefer the default contextual handle. For stateless automation, prefer token
+files or file descriptors; passing `--token` exposes the token in process
+arguments. Never log tokens.
 
 State directory precedence is:
 

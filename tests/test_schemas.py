@@ -299,6 +299,7 @@ class SchemaContractTests(unittest.TestCase):
 
         acquired = self.run_cli(
             "acquire",
+            "--no-lease-file",
             "--resource",
             "schema:resource",
             "--claim-id",
@@ -355,6 +356,7 @@ class SchemaContractTests(unittest.TestCase):
 
         bundle = self.run_cli(
             "acquire-bundle",
+            "--no-lease-file",
             "--resource",
             "schema:bundle-a",
             "--resource",

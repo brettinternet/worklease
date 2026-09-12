@@ -13,6 +13,7 @@ import sys
 import time
 import unicodedata
 from collections.abc import Sequence
+from contextlib import nullcontext
 from typing import Any, NoReturn, cast
 
 from . import cli_dispatch as _cli_dispatch
@@ -291,18 +292,30 @@ _POLICY_DESCRIBE_EPILOG = _single_line_epilog(
     "worklease policy describe --name generic"
 )
 _ACQUIRE_BUNDLE_EPILOG = """\
-Example:
+Examples:
   worklease acquire-bundle \\
     --resource local:formatter \\
-    --resource local:linter \\
-    --lease-file "$LEASE_FILE"
+    --resource local:linter
+  worklease acquire-bundle -L PATH \\
+    --resource local:formatter \\
+    --resource local:linter
 
-Omitted claim, session, and owner IDs are generated. The work key defaults to
-this ordered resource set; set WORKLEASE_AGENT_ID or pass --agent-id."""
-_STATUS_BUNDLE_EPILOG = _single_line_epilog(
-    "worklease status-bundle --resource local:formatter --resource local:linter"
-)
-_STATUS_EPILOG = _single_line_epilog("worklease status --resource local:formatter")
+The contextual handle is written by default. Use -L PATH for an explicit
+handle or --no-lease-file to return the bearer token. Omitted claim, session,
+and owner IDs are generated. The work key defaults to this ordered resource
+set; set WORKLEASE_AGENT_ID or pass --agent-id."""
+_STATUS_BUNDLE_EPILOG = """\
+Examples:
+  worklease status-bundle
+  worklease status-bundle -L PATH
+
+Provide --resource repeatedly to inspect an explicit bundle."""
+_STATUS_EPILOG = """\
+Examples:
+  worklease status
+  worklease status -L PATH
+
+Use -L PATH or --resource to select a handle or resource explicitly."""
 _HISTORY_EPILOG = _single_line_epilog("worklease history --resource local:formatter")
 _EVENTS_EPILOG = _single_line_epilog("worklease events --limit 100")
 _INSPECT_OPERATION_EPILOG = _single_line_epilog(
@@ -315,39 +328,49 @@ _INSPECT_OPERATION_BUNDLE_EPILOG = _single_line_epilog(
 )
 _GC_EPILOG = _single_line_epilog("worklease gc")
 _RECONCILE_OPERATION_EPILOG = """\
-Example:
+Examples:
   worklease reconcile-operation \\
-    --lease-file "$LEASE_FILE" \\
+    --target-operation-id "test-TASK-42-001" \\
+    --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
+    --outcome observed-success \\
+    --evidence '{}'
+  worklease reconcile-operation -L PATH \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
     --evidence '{}'
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _RECONCILE_OPERATION_BUNDLE_EPILOG = """\
-Example:
+Examples:
   worklease reconcile-operation-bundle \\
-    --lease-file "$LEASE_FILE" \\
+    --target-operation-id "test-TASK-42-001" \\
+    --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
+    --outcome observed-success \\
+    --evidence '{}'
+  worklease reconcile-operation-bundle -L PATH \\
     --target-operation-id "test-TASK-42-001" \\
     --expected-request-sha256 "$EXPECTED_REQUEST_SHA256" \\
     --outcome observed-success \\
     --evidence '{}'
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _CHECKPOINT_EPILOG = """\
-Example:
-  worklease checkpoint \\
-    --lease-file "$LEASE_FILE" \\
-    --checkpoint '{"step":1}'
+Examples:
+  worklease checkpoint --checkpoint '{"step":1}'
+  worklease checkpoint -L PATH --checkpoint '{"step":1}'
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _TRANSFER_EPILOG = """\
-Example:
-  worklease transfer \\
-    --lease-file "$LEASE_FILE" \\
+Examples:
+  worklease transfer
+  worklease transfer -L PATH \\
     --successor-lease-file "$SUCCESSOR_LEASE_FILE"
 
 Successor claim, session, and owner IDs plus the operation ID are generated
@@ -355,32 +378,33 @@ when omitted. The successor work key defaults to the resource; set
 WORKLEASE_AGENT_ID or pass --successor-agent-id."""
 _LIST_EPILOG = _single_line_epilog("worklease list")
 _HEARTBEAT_EPILOG = """\
-Example:
-  worklease heartbeat \\
-    --lease-file "$LEASE_FILE"
+Examples:
+  worklease heartbeat
+  worklease heartbeat -L PATH
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _HEARTBEAT_BUNDLE_EPILOG = """\
-Example:
-  worklease heartbeat-bundle \\
-    --lease-file "$LEASE_FILE"
+Examples:
+  worklease heartbeat-bundle
+  worklease heartbeat-bundle -L PATH
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _RELEASE_BUNDLE_EPILOG = """\
-Example:
-  worklease release-bundle \\
-    --lease-file "$LEASE_FILE" \\
-    --reason 'provider checkpoint verified'
+Examples:
+  worklease release-bundle --reason 'provider checkpoint verified'
+  worklease release-bundle -L PATH --reason 'provider checkpoint verified'
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 _EXEC_BUNDLE_EPILOG = """\
-Example:
-  worklease exec-bundle \\
-    --lease-file "$LEASE_FILE" \\
-    -- python -m unittest discover -s tests -v
+Examples:
+  worklease exec-bundle -- python -m unittest discover -s tests -v
+  worklease exec-bundle -L PATH -- python -m unittest discover -s tests -v
 
 The `--` separator is optional when the child executable is the first positional
 argument. Use it for clarity or when the executable begins with `-`; after the
@@ -395,21 +419,21 @@ request."""
 
 
 _ACQUIRE_EPILOG = """\
-Example:
-  worklease acquire \\
-    --resource local:formatter \\
-    --lease-file "$LEASE_FILE" \\
-    --ttl 900
+Examples:
+  worklease acquire --resource local:formatter
+  worklease acquire --resource local:formatter -L PATH
+  worklease acquire --resource local:formatter --no-lease-file
 
+The contextual handle is written by default and the bearer token is omitted.
+Use -L PATH for an explicit handle or --no-lease-file for stateless output.
 Claim, session, and owner IDs are generated when omitted. The work key
 defaults to the resource; set WORKLEASE_AGENT_ID or pass --agent-id."""
 
 
 _EXEC_EPILOG = """\
-Example:
-  worklease exec \\
-    --lease-file "$LEASE_FILE" \\
-    -- python -m unittest discover -s tests -v
+Examples:
+  worklease exec -- python -m unittest discover -s tests -v
+  worklease exec -L PATH -- python -m unittest discover -s tests -v
 
 The `--` separator is optional when the child executable is the first positional
 argument. Use it for clarity or when the executable begins with `-`; after the
@@ -424,23 +448,27 @@ request."""
 
 
 _RELEASE_EPILOG = """\
-Example:
-  worklease release \\
-    --lease-file "$LEASE_FILE" \\
-    --reason 'provider checkpoint verified'
+Examples:
+  worklease release --reason 'provider checkpoint verified'
+  worklease release -L PATH --reason 'provider checkpoint verified'
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 
 
 _REPLACE_FILE_EPILOG = """\
-Example:
+Examples:
   worklease replace-file \\
-    --lease-file "$LEASE_FILE" \\
+    --path docs/backlog/TASK-42.md \\
+    --expected-sha256 "$EXPECTED_SHA256" \\
+    --content-file /tmp/TASK-42.md
+  worklease replace-file -L PATH \\
     --path docs/backlog/TASK-42.md \\
     --expected-sha256 "$EXPECTED_SHA256" \\
     --content-file /tmp/TASK-42.md
 
+The contextual handle is used by default; use -L PATH for an explicit handle.
 The operation ID is generated when omitted; replay it only with the identical
 request."""
 
@@ -474,10 +502,13 @@ def _add_output_arguments(
 
 def _add_lease_file_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-L",
         "--lease-file",
+        action=_ExplicitValueAction,
         help=(
             "path to a private versioned JSON lease handle; mutation identity, "
-            "token, and revision are read from it and successful mutations rewrite it"
+            "token, and revision are read from it and successful mutations rewrite it "
+            "(default: the contextual handle)"
         ),
     )
 
@@ -827,6 +858,11 @@ def _parser() -> _ArgumentParser:
         help="exact opaque resource identity (from `worklease key` or a stable local name)",
     )
     acquire_parser.add_argument(
+        "--no-lease-file",
+        action="store_true",
+        help="do not write a contextual handle; return the bearer token",
+    )
+    acquire_parser.add_argument(
         "-c",
         "--claim-id",
         default=None,
@@ -892,6 +928,11 @@ def _parser() -> _ArgumentParser:
     )
     _add_output_arguments(acquire_bundle_parser)
     _add_lease_file_argument(acquire_bundle_parser)
+    acquire_bundle_parser.add_argument(
+        "--no-lease-file",
+        action="store_true",
+        help="do not write a contextual handle; return the bearer token",
+    )
     _bundle_resources(acquire_bundle_parser)
     acquire_bundle_parser.add_argument(
         "-c",
@@ -937,7 +978,8 @@ def _parser() -> _ArgumentParser:
         epilog=_STATUS_BUNDLE_EPILOG,
     )
     _add_output_arguments(status_bundle_parser)
-    _bundle_resources(status_bundle_parser)
+    _add_lease_file_argument(status_bundle_parser)
+    _bundle_resources(status_bundle_parser, required=False)
     status_bundle_parser.add_argument(
         "-V",
         "--verbose",
@@ -949,10 +991,11 @@ def _parser() -> _ArgumentParser:
         "status", help="read current lease state", epilog=_STATUS_EPILOG
     )
     _add_output_arguments(status_parser)
+    _add_lease_file_argument(status_parser)
     status_parser.add_argument(
         "-r",
         "--resource",
-        required=True,
+        required=False,
         help="exact opaque resource identity (from `worklease key` or a stable local name)",
     )
     status_parser.add_argument(
@@ -1455,6 +1498,8 @@ def _emit_error_details(payload: dict[str, object]) -> None:
         "providerFencing",
         "expectedRequestSha256",
         "available",
+        "path",
+        "contextRoot",
     )
     for field in allowed:
         if field in payload:
@@ -2431,6 +2476,10 @@ def _render_mutation(payload: dict[str, object]) -> None:
         if "command" in payload:
             _emit_command(payload["command"])
         return
+    if "leaseFileError" in payload:
+        print(f"LEASE_FILE_ERROR\t{_text_value(payload['leaseFileError'])}")
+    if "leaseFile" in payload:
+        print(f"LEASE_FILE\t{_text_value(payload['leaseFile'])}")
     for field in (
         "operationId",
         "targetOperationId",
@@ -2636,7 +2685,12 @@ def _emit_parser_hint(argv: Sequence[str], message: str) -> None:
         print(f"HINT\t{_text_atom(hint)}")
 
 
-def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) -> None:
+def _emit_runtime_error_hint(
+    operation: str,
+    reason: str,
+    output_format: str,
+    details: dict[str, object] | None = None,
+) -> None:
     if output_format != "text":
         return
     if operation in {"status", "history"} and reason == "invalid-resource":
@@ -2646,26 +2700,91 @@ def _emit_runtime_error_hint(operation: str, reason: str, output_format: str) ->
             "HINT\tThe state directory could not be created, opened, or written; "
             "check --home, WORKLEASE_HOME, and filesystem permissions"
         )
+    elif reason == "lease-context-missing":
+        path = (details or {}).get("leaseFile", "the contextual lease handle")
+        root = (details or {}).get("contextRoot", "the current context")
+        print(
+            "HINT\tNo contextual lease handle at "
+            f"{_text_atom(path)} for context root {_text_atom(root)}; "
+            "run worklease acquire --resource RESOURCE first"
+        )
+    elif reason == "lease-context-conflict":
+        if details and "mutually exclusive" in str(details.get("required", "")):
+            print("HINT\tUse either --no-lease-file or -L PATH, not both")
+        else:
+            print(
+                "HINT\tProvide --resource, --claim-id, --revision, and exactly one "
+                "of --token, --token-file, or --token-fd, or omit them to use the "
+                "contextual handle"
+            )
+    elif reason == "lease-file-kind-mismatch":
+        matching = "status-bundle" if operation == "status" else "status"
+        print(f"HINT\tUse {matching} with a matching lease handle kind")
+    elif reason == "lease-file-in-use":
+        path = (details or {}).get("leaseFile", "the contextual lease handle")
+        root = (details or {}).get("contextRoot", "the current context")
+        print(
+            f"HINT\tHandle {_text_atom(path)} for context root {_text_atom(root)} "
+            "is still active; run worklease release or use -L PATH for a separate claim"
+        )
 
 
 def _resolve_lease_file(args: argparse.Namespace) -> None:
     """Load a lease handle and fill only identity fields omitted by the caller."""
 
     path = getattr(args, "lease_file", None)
-    if path is None or args.operation not in _LEASE_FILE_INPUTS:
+    if path is None or args.operation not in _LEASE_FILE_INPUTS | {
+        "status",
+        "status-bundle",
+    }:
         return
     from .lease_file import read_lease_file
 
-    state = read_lease_file(path)
+    # An explicit resource is authoritative for inspection. In particular,
+    # status must remain usable when a supplied handle is absent, malformed,
+    # unsafe, or of the other kind.
+    if args.operation == "status" and getattr(args, "resource", None) is not None:
+        return
+    if (
+        args.operation == "status-bundle"
+        and getattr(args, "resources", None) is not None
+    ):
+        return
+
+    try:
+        state = read_lease_file(path)
+    except LeaseError as error:
+        if (
+            getattr(args, "_contextual", False)
+            and error.reason == "lease-file-not-found"
+        ):
+            raise LeaseError(
+                "lease-context-missing",
+                code=64,
+                leaseFile=str(path),
+                contextRoot=str(_context_root(args)),
+            ) from error
+        raise
     args._lease_file_state = state
     is_bundle = args.operation in {
         "heartbeat-bundle",
         "exec-bundle",
         "release-bundle",
         "reconcile-operation-bundle",
+        "status-bundle",
     }
     if state.is_bundle != is_bundle:
         raise LeaseError("lease-file-kind-mismatch", code=64)
+    if args.operation == "status":
+        if args.resource is None:
+            assert state.resource is not None
+            args.resource = state.resource
+        return
+    if args.operation == "status-bundle":
+        if args.resources is None:
+            assert state.resources is not None
+            args.resources = list(state.resources)
+        return
     if is_bundle:
         if args.resources is None:
             assert state.resources is not None
@@ -2679,6 +2798,77 @@ def _resolve_lease_file(args: argparse.Namespace) -> None:
         args.revision = state.revision
     if args.token is None and args.token_file is None and args.token_fd is None:
         args.token = state.token
+
+
+def _configure_lease_file_mode(args: argparse.Namespace) -> None:
+    """Choose explicit, contextual, or stateless claim credentials."""
+
+    operation = args.operation
+    explicit = getattr(args, "_lease_file_provided", False)
+    acquire = operation in {"acquire", "acquire-bundle"}
+    if acquire:
+        if getattr(args, "no_lease_file", False) and explicit:
+            raise LeaseError(
+                "lease-context-conflict",
+                code=64,
+                required="--lease-file and --no-lease-file are mutually exclusive",
+            )
+        if getattr(args, "no_lease_file", False):
+            return
+        if not explicit:
+            args.lease_file = _contextual_path(args, create=True)
+            args._contextual = True
+        return
+
+    if operation in {"status", "status-bundle"}:
+        if explicit:
+            return
+        resources = getattr(args, "resource", None)
+        bundle_resources = getattr(args, "resources", None)
+        if (operation == "status" and resources is None) or (
+            operation == "status-bundle" and bundle_resources is None
+        ):
+            args.lease_file = _contextual_path(args)
+            args._contextual = True
+        return
+
+    if operation not in _LEASE_FILE_MUTATIONS | {"transfer"}:
+        return
+    if explicit:
+        return
+
+    identity = (
+        (
+            getattr(args, "resources", None)
+            if operation.endswith("-bundle")
+            else getattr(args, "resource", None)
+        ),
+        getattr(args, "claim_id", None),
+        getattr(args, "revision", None),
+    )
+    credentials = tuple(
+        value is not None
+        for value in (
+            getattr(args, "token", None),
+            getattr(args, "token_file", None),
+            getattr(args, "token_fd", None),
+        )
+    )
+    identity_complete = all(value is not None for value in identity)
+    credential_count = sum(credentials)
+    if all(value is None for value in identity) and credential_count == 0:
+        args.lease_file = _contextual_path(args)
+        args._contextual = True
+        return
+    if not identity_complete or credential_count != 1:
+        raise LeaseError(
+            "lease-context-conflict",
+            code=64,
+            required=(
+                "resource(s), claim-id, revision, and exactly one of "
+                "token, token-file, or token-fd"
+            ),
+        )
 
 
 def _lease_file_error_reason(error: BaseException) -> str:
@@ -2703,6 +2893,41 @@ def _lease_file_destination(args: argparse.Namespace) -> str | None:
     return getattr(args, "lease_file", None)
 
 
+def _lease_file_report_path(args: argparse.Namespace) -> str | None:
+    """Return the handle path exposed in a successful CLI payload."""
+
+    if args.operation == "transfer":
+        return getattr(args, "successor_lease_file", None) or getattr(
+            args, "lease_file", None
+        )
+    return getattr(args, "lease_file", None)
+
+
+def _context_root(args: argparse.Namespace) -> Any:
+    from .lease_context import resolve_context_root
+
+    return resolve_context_root()
+
+
+def _contextual_path(args: argparse.Namespace, *, create: bool = False) -> str:
+    from .lease_context import context_lease_path, prepare_context_lease_path
+
+    path = (
+        prepare_context_lease_path(getattr(args, "home", None))
+        if create
+        else context_lease_path(getattr(args, "home", None))
+    )
+    return str(path)
+
+
+def _contextual_lock(args: argparse.Namespace):
+    if not getattr(args, "_contextual", False):
+        return nullcontext()
+    from .lease_context import context_lease_lock
+
+    return context_lease_lock(getattr(args, "home", None), create=False)
+
+
 def _validate_lease_file_destination(args: argparse.Namespace) -> None:
     """Fail before the store commits when the handle could not be written.
 
@@ -2723,9 +2948,16 @@ def _validate_lease_file_destination(args: argparse.Namespace) -> None:
 
     try:
         existing = read_lease_file(destination)
-    except LeaseError:
-        # An absent or unreadable handle is replaced, as before. Only a handle
-        # that still names a live claim is protected.
+    except LeaseError as error:
+        # A contextual destination is fail-closed: only an absent handle can
+        # be replaced. Malformed or unsafe existing handles must not permit a
+        # store mutation that would strand the new claim's token.
+        if (
+            getattr(args, "_contextual", False)
+            and error.reason != "lease-file-not-found"
+        ):
+            raise
+        # Explicit lease-file destinations retain their replacement behavior.
         return
     if not isinstance(existing, LeaseFileState):
         return
@@ -2749,11 +2981,15 @@ def _validate_lease_file_destination(args: argparse.Namespace) -> None:
         and claim.get("claimId") == existing.claim_id
         and claim.get("active") is True
     ):
-        raise LeaseError(
-            "lease-file-in-use",
-            code=64,
-            claimId=existing.claim_id,
-        )
+        details: dict[str, object] = {"claimId": existing.claim_id}
+        if getattr(args, "_contextual", False):
+            details.update(
+                {
+                    "leaseFile": str(destination),
+                    "contextRoot": str(_context_root(args)),
+                }
+            )
+        raise LeaseError("lease-file-in-use", code=64, **details)
 
 
 def _validate_claim_arguments(args: argparse.Namespace) -> None:
@@ -2787,6 +3023,7 @@ def _validate_claim_arguments(args: argparse.Namespace) -> None:
 def _lease_file_requested(args: argparse.Namespace) -> bool:
     return bool(
         getattr(args, "lease_file", None) is not None
+        or getattr(args, "_contextual", False)
         or (
             args.operation == "transfer"
             and getattr(args, "successor_lease_file", None) is not None
@@ -2849,6 +3086,16 @@ def _suppress_lease_file_token(
         payload["claim"] = {
             key: value for key, value in claim.items() if key != "token"
         }
+
+
+def _attach_lease_file_payload(
+    args: argparse.Namespace, payload: dict[str, object]
+) -> None:
+    if not _lease_file_requested(args) or not payload.get("ok"):
+        return
+    path = _lease_file_report_path(args)
+    if path is not None:
+        payload["leaseFile"] = str(path)
 
 
 def _dispatch(
@@ -3095,36 +3342,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise LeaseError(
                     "invalid-limit", code=64, minimumInclusive=1, maximumInclusive=1000
                 )
-        _resolve_lease_file(args)
-        _apply_lifecycle_defaults(args)
-        _validate_claim_arguments(args)
-        _resolve_claim_credential(args)
-        _validate_lease_file_destination(args)
-        store = (
-            None
-            if args.operation
-            in {"instructions", "key", "policy-list", "policy-describe"}
-            else LeaseStore(getattr(args, "home", None))
-        )
-        payload, child_code = _dispatch(args, store)
-        try:
-            _persist_lease_file(args, payload)
-        except (LeaseError, OSError) as error:
-            # The mutation is already durable. Reporting it as a failure would
-            # discard the payload, which for acquire and transfer holds the only
-            # copy of the new bearer token, so emit the claim with its token and
-            # report the handle failure through the exit code instead.
-            payload["leaseFileError"] = _lease_file_error_reason(error)
-            _emit(
-                _envelope(args.operation, payload),
-                output_format,
-                full=getattr(args, "full", False),
+        _configure_lease_file_mode(args)
+        # Contextual commands hold one cross-process lock from handle read and
+        # preflight through store commit and handle rewrite/cleanup.
+        with _contextual_lock(args):
+            _resolve_lease_file(args)
+            _apply_lifecycle_defaults(args)
+            _validate_claim_arguments(args)
+            _resolve_claim_credential(args)
+            _validate_lease_file_destination(args)
+            store = (
+                None
+                if args.operation
+                in {"instructions", "key", "policy-list", "policy-describe"}
+                else LeaseStore(getattr(args, "home", None))
             )
-            return 75
-        _suppress_lease_file_token(args, payload)
-        output = _envelope(args.operation, payload)
-        _emit(output, output_format, full=getattr(args, "full", False))
-        return child_code
+            payload, child_code = _dispatch(args, store)
+            _attach_lease_file_payload(args, payload)
+            try:
+                _persist_lease_file(args, payload)
+            except (LeaseError, OSError) as error:
+                # The mutation is already durable. Reporting it as a failure would
+                # discard the payload, which for acquire and transfer holds the only
+                # copy of the new bearer token, so emit the claim with its token and
+                # report the handle failure through the exit code instead.
+                payload["leaseFileError"] = _lease_file_error_reason(error)
+                _emit(
+                    _envelope(args.operation, payload),
+                    output_format,
+                    full=getattr(args, "full", False),
+                )
+                return 75
+            _suppress_lease_file_token(args, payload)
+            output = _envelope(args.operation, payload)
+            _emit(output, output_format, full=getattr(args, "full", False))
+            return child_code
     except _ArgumentError as error:
         _emit(
             _envelope(
@@ -3142,7 +3394,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             {"ok": False, **error.as_dict()},
         )
         _emit(output, output_format, full=getattr(args, "full", False))
-        _emit_runtime_error_hint(args.operation, error.reason, output_format)
+        _emit_runtime_error_hint(
+            args.operation, error.reason, output_format, error.details
+        )
         return error.code
     except OSError, sqlite3.Error:
         _emit(

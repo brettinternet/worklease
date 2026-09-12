@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-07-14 03:50'
+updated_date: '2026-09-12 03:56'
 tags:
   - agent
   - workflow
@@ -47,7 +47,7 @@ The skill treats source locators, item IDs, statuses, metadata, claim resources,
 3. Build the dependency graph before selecting work; report missing or cyclic dependencies instead of guessing.
 4. Select one item or a dependency-ready wave, excluding active claims and terminal work.
 5. Accept one exact caller-supplied claim resource and atomically claim it before delegation or edits.
-6. Retain the resource, claim ID, token, revision, expiry, and guarantee; record the caller-declared guarantee scope alongside the receipt.
+6. Retain the resource, claim ID, token, revision, expiry, and guarantee; the Worklease CLI keeps these in its private contextual handle by default.
 7. Heartbeat before the lease is half-expired and around long work.
 8. Re-read eligibility, ownership, and provider state before each durable mutation.
 9. Persist and verify a coherent provider checkpoint before release or handoff.
@@ -60,14 +60,26 @@ Checkpoint-before-release is caller policy. Worklease validates ownership and a 
 
 A checkpoint is optional coordination metadata for resumable work. `LeaseStore.checkpoint(MutationRequest(...), value)` canonicalizes one JSON value with sorted object keys, compact separators, and `allow_nan=False`, then measures its UTF-8 encoding. The serialized value must be at most 8 KiB (`MAX_CHECKPOINT_BYTES = 8192`); non-JSON values and larger values are rejected without changing the claim. The operation atomically stores the value, renews the lease, and advances the claim revision.
 
-The CLI command is:
+The path-free CLI loop is:
 
 ```bash
-worklease checkpoint --resource RESOURCE --claim-id ID --token TOKEN \
-  --revision REVISION --operation-id OPERATION_ID --checkpoint JSON [--ttl SECONDS]
+worklease acquire --resource RESOURCE
+worklease heartbeat
+worklease checkpoint --checkpoint JSON
+worklease release --reason "provider checkpoint verified"
 ```
 
-Its version-1 JSON success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`. The mutation response includes the bearer token once; keep it secret and out of logs. Read-only `status` and `list` include the checkpoint but never the bearer token. Replaying the same operation ID with the same request returns the cached receipt, even after the lease expires; a changed request under the same operation ID, or a new/uncached request with stale/expired ownership, fails without changing the checkpoint.
+The contextual handle lives under the Worklease state home and is selected by
+Git worktree root, or by resolved current directory outside Git. Use `-L PATH`
+for a concurrent lease in the same context:
+
+```bash
+worklease acquire --resource OTHER_RESOURCE -L "$LEASE_FILE"
+worklease checkpoint -L "$LEASE_FILE" --checkpoint JSON
+worklease release -L "$LEASE_FILE" --reason "provider checkpoint verified"
+```
+
+The version-1 checkpoint success shape includes `schemaVersion: 1`, `operation: "checkpoint"`, `operationId`, `checkpoint`, `checkpointBytes`, and the renewed claim with its incremented `revision`, `heartbeatAt`, and `expiresAt`. The contextual or explicit handle keeps the bearer token out of output and arguments. Read-only `status` and `list` never expose it. Replaying the same operation ID with the same request returns the cached receipt, even after the lease expires; a changed request under the same operation ID, or a new/uncached request with stale/expired ownership, fails without changing the checkpoint.
 
 The latest value is retained on the active claim. A clean `release` copies it into release history, and a later acquire returns it with `recovery: "clean-handoff"`. If the claim expires first, the next acquire returns the retained value with `recovery: "expired-recovery"`. A first acquire has no recovery marker. Retention is local SQLite coordination state and is not lease-TTL-limited: the latest value survives clean release and expiry recovery until a future explicit retention or garbage-collection operation removes it. The caller's provider remains authoritative for progress, and checkpoints do not provide provider-side fencing, cross-host exclusion, or exactly-once external effects.
 

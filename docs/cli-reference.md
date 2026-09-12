@@ -18,7 +18,7 @@ semantics, and the human-readable text grammar.
 | `124` | A guarded child exceeded `--max-duration` (`child-process-timeout`). |
 
 `exec` returns the child's status once the child has started. When a mutation
-commits but its `--lease-file` handle cannot be written, Worklease still emits
+commits but its lease handle cannot be written, Worklease still emits
 the successful payload, including the bearer token, adds a `leaseFileError`
 field, and exits `75`; the token in that payload is the only copy.
 
@@ -51,6 +51,7 @@ are the stable interface; short options are a convenience.
 | `-F` | `--token-file` | authenticated lifecycle commands |
 | `-D` | `--token-fd` | authenticated lifecycle commands |
 | `-R` | `--revision` | authenticated lifecycle commands |
+| `-L` | `--lease-file` | commands that read or write a lease handle |
 | `-o` | `--operation-id` | inspection and mutating lifecycle commands |
 | `-T` | `--ttl` | acquire and renewable lifecycle commands |
 | `-M` | `--max-duration` | exec commands |
@@ -72,9 +73,26 @@ replacements are tracked in [CHANGELOG.md](../CHANGELOG.md).
 ## State selection
 
 State is selected by `--home`, then `WORKLEASE_HOME`, then
-`XDG_STATE_HOME/worklease`, defaulting to `~/.local/state/worklease`. Use an
-absolute, private path. Never use a repository-relative state path across linked
-worktrees, because each checkout would create a separate lease authority.
+`XDG_STATE_HOME/worklease`, defaulting to `~/.local/state/worklease`.
+
+A bare acquire writes
+`<state home>/context-leases/<sha256-of-context-root>.lease`; the directory is
+mode `0700` and each handle is mode `0600`. The context root is the resolved Git
+worktree root, so subdirectories share a handle and linked worktrees do not.
+Outside a worktree, it is the resolved current directory. No handle is written
+inside the repository.
+
+`-L PATH` selects an explicit handle. For mutations, it wins and permits the
+existing per-field overrides. Without `-L`, omit all identity fields to use the
+contextual handle, or provide resource(s), claim ID, revision, and exactly one
+credential for stateless operation. A partial mix fails
+`lease-context-conflict`; a missing contextual handle fails
+`lease-context-missing`. Explicit `--resource` wins for status. Bare acquire
+uses the contextual handle; `--no-lease-file` returns the stateless,
+token-bearing response.
+
+Use an absolute, private state path. Never use repository-relative state across
+linked worktrees; each checkout would create a separate lease authority.
 
 ## Supported API surface
 
@@ -251,6 +269,7 @@ TARGET_OPERATION_ID
 PROVIDER
 FIELD
 CLAIM_ID
+LEASE_FILE
 revision bounds
 STATE
 GUARANTEE
@@ -280,7 +299,7 @@ example or valid values. Hints never echo rejected argument values.
 | Status commands with `--verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
 | `inspect-operation`, `inspect-operation-bundle` | `OK`, identity, kind, state, outcome, hashes, and reconciliation timestamps when present |
 | `gc` | `OK gc`; `DRY_RUN` plus `RETENTION`, `CUTOFF`, and total `ELIGIBLE`, or total `COLLECTED`; nonzero readable group rows with compact oldest/newest ages; an exact-cutoff apply `HINT` when useful; then nonzero `PROTECTED` rows naming unresolved operations |
-| Claim mutations and guarded commands | `OK`, operation and mutation fields, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
+| Claim mutations and guarded commands | `OK`, operation and mutation fields, optional `LEASE_FILE`, then `CLAIM` with resource(s), `CLAIM_ID`, `AGENT_ID`, `SESSION_ID`, `OWNER_ID`, `WORK_KEY`, revision, expiry, and guarantee |
 
 `list` uses a fixed-width, space-padded summary table. Widths follow terminal
 columns: East Asian wide characters count as two, and combining marks count as
@@ -331,11 +350,11 @@ including the JSON claim's `resources` array. Unknown operations include started
 bundle operations such as `exec-bundle`. A missing release emits `RELEASE <none>`.
 Field labels use upper snake case.
 
-Successful `acquire`, `heartbeat`, `checkpoint`, and `transfer` may include
-`TOKEN` for the next lifecycle step. Other mutation output and all failures
-omit bearer tokens. With `--lease-file`, the token is written to the handle
-instead. Guarded child results append a `COMMAND` block in this order when
-present:
+Successful stateless `acquire`, `heartbeat`, `checkpoint`, and `transfer` may
+include `TOKEN` for the next lifecycle step. Other mutation output and all
+failures omit bearer tokens. The default contextual handle and explicit
+`-L PATH` store the token instead; acquire reports that path as `LEASE_FILE`.
+Guarded child results append a `COMMAND` block in this order when present:
 
 ```text
 RETURNCODE
