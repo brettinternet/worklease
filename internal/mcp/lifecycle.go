@@ -182,6 +182,11 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 		receipt, e = b.svc.Release(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.ReleaseRequest{OperationID: id, Reason: r, RequestNotAfter: deadline})
 	}
 	if e != nil {
+		if reason.DefinitiveNoCommit(e) {
+			// The request provably did not commit: restore the usable ready
+			// credential so later calls are not wedged behind this request.
+			_ = handle.ClearPending(path, &h)
+		}
 		return nil, mutationError(e, h.ClaimID, id, path)
 	}
 	if kind == "release" {
@@ -237,6 +242,9 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
 	}
 	if err != nil {
+		if reason.DefinitiveNoCommit(err) {
+			_ = handle.ClearPending(path, &h)
+		}
 		return nil, mutationError(err, h.ClaimID, p.OperationID, path)
 	}
 	if kind == "release" {
@@ -290,8 +298,7 @@ func pendingString(m map[string]any, k string) string {
 func mutationError(e error, claim, id, path string) error {
 	if x := reason.As(e); x != nil {
 		state := "not-committed"
-		switch x.Reason {
-		case reason.ReasonUnknownOutcome, reason.ReasonUnknownOutcomePending, reason.ReasonStorageFailure, reason.ReasonHandleWriteFailed, reason.ReasonOwnershipLost, reason.ReasonInterrupted:
+		if !reason.DefinitiveNoCommit(e) {
 			state = "unknown"
 		}
 		x.With("claimId", claim).With("operationId", id).With("pendingPath", path).With("commitState", state)

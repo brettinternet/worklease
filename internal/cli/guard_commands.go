@@ -170,8 +170,10 @@ func guardLifecycle(path string, h *handle.Handle) *guard.OperationLifecycle {
 			return handle.Write(path, *h)
 		},
 		Complete: func(receipt lease.Receipt) error { return finishHandleMutation(path, h, receipt) },
-		Failure: func(err error) {
-			if isDefinitiveNoCommit(err) {
+		Failure: func(err error, started bool) {
+			// Once the started intent is committed the pending request is the
+			// only exact record of that operation; keep it for recovery.
+			if !started && isDefinitiveNoCommit(err) {
 				clearPending(path, h)
 			}
 		},

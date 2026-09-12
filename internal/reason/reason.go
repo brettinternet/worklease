@@ -162,3 +162,34 @@ var registry = map[string]int{
 	ReasonAuthorityMismatch: ExitAuthority, ReasonClockRegression: ExitAuthority,
 	ReasonChildTimeout: ExitChildTimeout, ReasonInterrupted: ExitInterrupted,
 }
+
+// DefinitiveNoCommit reports whether err proves the requested mutation did
+// not commit. Uncertain outcomes, storage failures, expired replay windows,
+// lost ownership during a guard, interruptions, and unclassified errors all
+// return false: the caller must keep its pending request for exact recovery.
+func DefinitiveNoCommit(err error) bool {
+	e := As(err)
+	if e == nil {
+		return false
+	}
+	switch e.Reason {
+	case ReasonUnknownOutcome, ReasonUnknownOutcomePending, ReasonReplayExpired, ReasonStorageFailure, ReasonHandleWriteFailed, ReasonOwnershipLost, ReasonChildTimeout, ReasonInterrupted:
+		return false
+	}
+	return true
+}
+
+// OwnershipRenewalFailure reports whether a guard's internal renewal error is
+// an ownership or clock failure that must terminate the supervised child. Other
+// errors are transient and the guard keeps running until its lease deadline.
+func OwnershipRenewalFailure(err error) bool {
+	e := As(err)
+	if e == nil {
+		return false
+	}
+	switch e.Reason {
+	case ReasonStaleClaim, ReasonInvalidToken, ReasonClaimExpired, ReasonStaleRevision, ReasonOwnershipLost, ReasonClockRegression, ReasonAuthorityMismatch, ReasonOperationNotFound:
+		return true
+	}
+	return false
+}

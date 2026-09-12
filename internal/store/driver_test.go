@@ -706,3 +706,71 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// SQLite creates the -wal and -shm sidecars for a read-only WAL open when they
+// are absent and the directory is writable; modernc exposes no option to
+// refuse. This test documents that limit: the sidecars inherit the database's
+// private 0600 mode and effective-user ownership, and the main database is not
+// modified, so a later write open still passes every safety check.
+func TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DatabaseFileName)
+	writer := openTestDriver(t, path, false)
+	mustWrite(t, writer, `CREATE TABLE ro_values (value TEXT)`)
+	mustWrite(t, writer, `INSERT INTO ro_values(value) VALUES ('durable')`)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Remove(path + suffix); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	mainBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := openTestDriver(t, path, true)
+	var value string
+	if err := reader.Read(context.Background(), func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT value FROM ro_values`).Scan(&value)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if value != "durable" {
+		t.Fatalf("read-only value = %q", value)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		info, err := os.Lstat(path + suffix)
+		if err != nil {
+			// Absent is acceptable too; the documented limit is only that a
+			// created sidecar must be private.
+			if os.IsNotExist(err) {
+				continue
+			}
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o077 != 0 || !info.Mode().IsRegular() {
+			t.Fatalf("read-only open created %s with mode %04o", suffix, info.Mode().Perm())
+		}
+		if err := checkExistingPath(path+suffix, "database sidecar"); err != nil {
+			t.Fatalf("created sidecar fails the writer safety check: %v", err)
+		}
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mainAfter, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mainBefore) != string(mainAfter) {
+		t.Fatal("read-only open modified the main database file")
+	}
+	// The next writer must open normally after the read-only observation.
+	writer = openTestDriver(t, path, false)
+	mustWrite(t, writer, `INSERT INTO ro_values(value) VALUES ('after')`)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
