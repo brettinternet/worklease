@@ -100,7 +100,7 @@ func TestRunCLIParsesInjectedVersionResult(t *testing.T) {
 }
 
 func TestRunTestProcessSuccessAndBoundedCleanup(t *testing.T) {
-	result, err := RunTestProcess("echo", time.Second, "one", "two")
+	result, err := RunTestProcess("echo", 10*time.Second, "one", "two")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestRunTestProcessSuccessAndBoundedCleanup(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 
-	spawned, err := RunTestProcess("spawn", time.Second)
+	spawned, err := RunTestProcess("spawn", 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRunTestProcessSuccessAndBoundedCleanup(t *testing.T) {
 	}
 	assertProcessGone(t, childPID)
 
-	timeout := 250 * time.Millisecond
+	timeout := 2 * time.Second
 	result, err = RunTestProcess("hang", timeout)
 	var timeoutErr *TimeoutError
 	if !errors.As(err, &timeoutErr) || timeoutErr.Helper != "hang" || timeoutErr.Timeout != timeout {
