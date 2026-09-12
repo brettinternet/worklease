@@ -1,10 +1,11 @@
 ---
 id: TASK-85.7
 title: Implement the claim lifecycle service
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a094d6'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 10:11'
 labels:
   - go-rewrite
 milestone: m-0
@@ -54,3 +55,20 @@ Evidence and patterns (the amended contract is normative): `src/worklease/claims
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add typed internal/lease models and a SQLite-backed singleton lifecycle service with clock validation, credential hashing, exact request hashing/replay, atomic epoch transitions, and started-operation primitives.
+2. Wire acquire/status/list/heartbeat/checkpoint/release/transfer through the existing CLI boundary using stateless credentials until TASK-85.10 adds handles, preserving redaction and bounded monotonic wait behavior.
+3. Add focused service, replay, clock, contention, started-operation, and CLI tests; append the Unreleased changelog entry.
+4. Run mise run ci-go, independently review acceptance evidence, fix findings, then finalize the Backlog task.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed with Worklease for isolated implementation; local coordination scope only, provider mutations are not fenced.
+
+Implemented the singleton Go claim lifecycle in an isolated worktree, including authenticated replay, conservative clocks, atomic epoch transitions, stateless CLI wiring, predecessor recovery, and guarded-operation primitives. Independent review found and drove fixes for replay ordering, credential selection, wait bounds, redaction, and cross-process evidence. mise run ci-go passes.
+<!-- SECTION:NOTES:END -->
