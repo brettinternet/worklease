@@ -1,10 +1,11 @@
 ---
 id: TASK-85.6
 title: Implement the secure authority store and schema
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a094a4'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 08:04'
 labels:
   - go-rewrite
 milestone: m-0
@@ -46,3 +47,9 @@ Evidence and patterns (the amended contract is normative): `src/worklease/sqlite
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed with Worklease for implementation in an isolated Herdr worktree. Guarantee: local coordination among cooperating callers on this host; providerMutationFenced=false.
+<!-- SECTION:NOTES:END -->
