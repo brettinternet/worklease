@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a095b3'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 13:41'
+updated_date: '2026-09-12 13:42'
 labels:
   - go-rewrite
 milestone: m-0
@@ -72,6 +72,8 @@ Evidence and patterns (the amended contract is normative): `src/worklease/garbag
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented transactional Go GC and deterministic read-view text. Added focused tests for strict cutoff/dry-run immutability, multi-resource retirement/newly-retired retention, rollback, replay deadlines, unresolved predecessors, contiguous prefix/watermark gaps, concurrent lifecycle operations, active protection, Unicode width, and public/full redaction. Validation: mise run ci-go passed in the task worktree.
+
+Delivery: implementation commit 5201e50; merged to main as a9b73b2. Independent reviewer found no source defects; independent verifier passed all five acceptance criteria after evidence gaps were corrected. Post-merge mise run ci-go passed. No remaining blocker; TASK-85.14 is now dependency-ready.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
