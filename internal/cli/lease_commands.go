@@ -151,7 +151,7 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeLeaseResult(s, cmd, "status", map[string]any{"claim": v.Claim, "claims": v.Claims})
+		return writeLeaseResult(s, cmd, "status", map[string]any{"claim": v.Claim, "claims": v.Claims, "resources": v.Resources})
 	}
 }
 func listActionReal(s *boundary) func(context.Context, *urfave.Command) error {

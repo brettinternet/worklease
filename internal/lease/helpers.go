@@ -106,6 +106,70 @@ func readOperation(tx *store.Tx, claim, id string, r *operationRow) (bool, error
 func unresolvedForResources(tx *store.Tx, resources []string) ([]string, error) {
 	return unresolvedForResourcesExcept(tx, resources, "")
 }
+
+// unresolvedRecoveryClosure returns every started predecessor operation that
+// touches resources and the transitive ordered union of resources required to
+// recover them without splitting responsibility between successors.
+func unresolvedRecoveryClosure(tx *store.Tx, resources []string) ([]string, []string, error) {
+	required := append([]string(nil), resources...)
+	seenResources := make(map[string]bool, len(required))
+	for _, resource := range required {
+		seenResources[resource] = true
+	}
+	seenOperations := map[string]bool{}
+	var operations []string
+	for {
+		query := `SELECT DISTINCT o.claim_id,o.operation_id,o.started_seq FROM operations o JOIN epoch_resources er ON er.claim_id=o.claim_id WHERE o.state='started' AND er.resource IN (` + placeholders(len(required)) + `) ORDER BY o.started_seq,o.claim_id,o.operation_id`
+		rows, err := tx.QueryContext(context.Background(), query, stringsToAny(required)...)
+		if err != nil {
+			return nil, nil, storage(err)
+		}
+		type startedOperation struct{ claimID, operationID string }
+		var found []startedOperation
+		for rows.Next() {
+			var operation startedOperation
+			var sequence int64
+			if err := rows.Scan(&operation.claimID, &operation.operationID, &sequence); err != nil {
+				rows.Close()
+				return nil, nil, storage(err)
+			}
+			found = append(found, operation)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, nil, storage(err)
+		}
+		changed := false
+		for _, operation := range found {
+			key := operation.claimID + "\x00" + operation.operationID
+			if !seenOperations[key] {
+				seenOperations[key] = true
+				operations = append(operations, operation.operationID)
+			}
+			memberRows, err := tx.QueryContext(context.Background(), `SELECT resource FROM epoch_resources WHERE claim_id=? ORDER BY position`, operation.claimID)
+			if err != nil {
+				return nil, nil, storage(err)
+			}
+			for memberRows.Next() {
+				var resource string
+				if err := memberRows.Scan(&resource); err != nil {
+					memberRows.Close()
+					return nil, nil, storage(err)
+				}
+				if !seenResources[resource] {
+					seenResources[resource] = true
+					required = append(required, resource)
+					changed = true
+				}
+			}
+			if err := memberRows.Close(); err != nil {
+				return nil, nil, storage(err)
+			}
+		}
+		if !changed {
+			return operations, required, nil
+		}
+	}
+}
 func unresolvedForResourcesExcept(tx *store.Tx, resources []string, exceptClaim string) ([]string, error) {
 	if len(resources) == 0 {
 		return nil, nil
@@ -162,22 +226,6 @@ func latestRecovery(tx *store.Tx, resource string) (Recovery, bool, error) {
 		}
 	}
 	return Recovery{Resource: resource, ClaimID: claim, CheckpointPresent: checkpoint != "", Checkpoint: value}, true, nil
-}
-func startedForClaim(tx *store.Tx, claim string) ([]string, error) {
-	rows, err := tx.QueryContext(context.Background(), `SELECT operation_id FROM operations WHERE claim_id=? AND state='started' ORDER BY operation_id`, claim)
-	if err != nil {
-		return nil, storage(err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, storage(err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, storage(rows.Err())
 }
 func hasStarted(tx *store.Tx, claim string) (bool, error) {
 	var n int
@@ -308,9 +356,9 @@ func (s *Service) releaseInTx(tx *store.Tx, row claimRow, now time.Time, rev int
 	result := map[string]any{"released": true, "revision": rev, "reason": why, "_eventSeq": seq}
 	return result, nil
 }
-func endClaim(tx *store.Tx, row claimRow, now int64, endReason, event string, successor *string) error {
+func endClaim(tx *store.Tx, row claimRow, recordedAt int64, endReason, event string, successor *string) error {
 	rev := row.Revision
-	seq, err := tx.AppendEvent(store.Event{At: time.UnixMicro(now), Kind: event, ClaimID: row.ClaimID, Resources: row.Resources, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"checkpointPresent": row.Checkpoint != ""}})
+	seq, err := tx.AppendEvent(store.Event{At: time.UnixMicro(recordedAt), Kind: event, ClaimID: row.ClaimID, Resources: row.Resources, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"checkpointPresent": row.Checkpoint != ""}})
 	if err != nil {
 		return storage(err)
 	}
@@ -318,7 +366,11 @@ func endClaim(tx *store.Tx, row claimRow, now int64, endReason, event string, su
 	if successor != nil {
 		succ = *successor
 	}
-	if _, err := tx.ExecContext(context.Background(), `UPDATE epochs SET ended_at=?,ended_seq=?,ended_recorded_at=?,end_reason=?,final_revision=?,successor_claim_id=?,checkpoint=? WHERE claim_id=?`, now, seq, now, endReason, rev, succ, nullString(row.Checkpoint), row.ClaimID); err != nil {
+	endedAt := recordedAt
+	if endReason == "expired" {
+		endedAt = row.ExpiresAt
+	}
+	if _, err := tx.ExecContext(context.Background(), `UPDATE epochs SET ended_at=?,ended_seq=?,ended_recorded_at=?,end_reason=?,final_revision=?,successor_claim_id=?,checkpoint=? WHERE claim_id=?`, endedAt, seq, recordedAt, endReason, rev, succ, nullString(row.Checkpoint), row.ClaimID); err != nil {
 		return storage(err)
 	}
 	_, err = tx.ExecContext(context.Background(), `DELETE FROM claims WHERE claim_id=?`, row.ClaimID)
@@ -552,8 +604,8 @@ func validateTTL(ttl time.Duration) error {
 	return nil
 }
 func validateResources(resources []string) error {
-	if len(resources) != 1 {
-		return reason.New(reason.ReasonInvalidResource, "this lifecycle slice accepts exactly one resource")
+	if len(resources) < 1 || len(resources) > 32 {
+		return reason.New(reason.ReasonInvalidResource, "claim requires 1 to 32 resources")
 	}
 	seen := map[string]bool{}
 	for _, r := range resources {
@@ -591,6 +643,22 @@ func sameResources(a, b []string) bool {
 	}
 	for i := range a {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameResourceMembers(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	members := make(map[string]bool, len(a))
+	for _, resource := range a {
+		members[resource] = true
+	}
+	for _, resource := range b {
+		if !members[resource] {
 			return false
 		}
 	}

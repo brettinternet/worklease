@@ -23,6 +23,10 @@ const (
 	maxCheckpoint = 8 * 1024
 )
 
+// beforeClaimResourceInsert is test-only fault injection used to prove that a
+// failed member insert rolls the complete acquisition transaction back.
+var beforeClaimResourceInsert func(int, string) error
+
 type Clock interface {
 	Now() time.Time
 	Monotonic() time.Duration
@@ -130,9 +134,15 @@ type ClaimView struct {
 	CheckpointPresent   bool      `json:"checkpointPresent"`
 	UnknownOperations   []string  `json:"unknownOperations,omitempty"`
 }
+type ResourceStatus struct {
+	Resource string     `json:"resource"`
+	State    string     `json:"state"`
+	Claim    *ClaimView `json:"claim,omitempty"`
+}
 type Status struct {
-	Claim  *ClaimView
-	Claims []ClaimView
+	Claim     *ClaimView
+	Claims    []ClaimView
+	Resources []ResourceStatus
 }
 type Renew struct {
 	OperationID     string
@@ -314,6 +324,11 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			}
 			return err
 		}
+		// Preflight the entire request before changing any projection. Preserve
+		// caller order for contention and recovery while retiring each distinct
+		// expired predecessor only once.
+		expired := map[string]claimRow{}
+		var expiredOrder []string
 		for _, resource := range req.Resources {
 			var old claimRow
 			exists, err := readClaimForResource(tx, resource, &old)
@@ -329,14 +344,12 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 				continue
 			}
 			if old.ExpiresAt > effective.UnixMicro() {
-				return reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("holder", map[string]any{"claimId": old.ClaimID, "agentId": old.AgentID, "workKey": old.WorkKey, "expiresAt": formatMicros(old.ExpiresAt)})
+				return reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", resource).With("holder", map[string]any{"claimId": old.ClaimID, "agentId": old.AgentID, "workKey": old.WorkKey, "expiresAt": formatMicros(old.ExpiresAt)})
 			}
-			// Expired claims are retired and replaced in this same transaction.
-			unknown, e := startedForClaim(tx, old.ClaimID)
-			if e != nil {
-				return e
+			if _, found := expired[old.ClaimID]; !found {
+				expired[old.ClaimID] = old
+				expiredOrder = append(expiredOrder, old.ClaimID)
 			}
-			result.UnknownOperations = append(result.UnknownOperations, unknown...)
 			if old.Checkpoint != "" {
 				var checkpoint any
 				if e := json.Unmarshal([]byte(old.Checkpoint), &checkpoint); e != nil {
@@ -346,7 +359,17 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			} else {
 				result.Recovery = append(result.Recovery, Recovery{Resource: resource, ClaimID: old.ClaimID})
 			}
-			if err := endClaim(tx, old, effective.UnixMicro(), "expired", "expired-replaced", nil); err != nil {
+		}
+		unknown, required, err := unresolvedRecoveryClosure(tx, req.Resources)
+		if err != nil {
+			return err
+		}
+		if !sameResourceMembers(req.Resources, required) {
+			return reason.New(reason.ReasonOperationInProgress, "acquire must cover every resource of unresolved predecessor operations").With("requiredResources", required).With("operations", unknown)
+		}
+		result.UnknownOperations = append(result.UnknownOperations, unknown...)
+		for _, oldID := range expiredOrder {
+			if err := endClaim(tx, expired[oldID], effective.UnixMicro(), "expired", "expired-replaced", nil); err != nil {
 				return err
 			}
 		}
@@ -356,6 +379,11 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			return storage(err)
 		}
 		for i, resource := range req.Resources {
+			if beforeClaimResourceInsert != nil {
+				if err := beforeClaimResourceInsert(i, resource); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO claim_resources(resource,claim_id,position) VALUES(?,?,?)`, resource, claimID, i); err != nil {
 				return storage(err)
 			}
@@ -392,7 +420,10 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 		result = Grant{ClaimID: claimID, Resources: append([]string(nil), req.Resources...), UnknownOperations: append([]string(nil), result.UnknownOperations...), Recovery: append([]Recovery(nil), result.Recovery...), AgentID: agent, SessionID: session, WorkKey: work, Revision: 1, AcquiredAt: time.UnixMicro(acquired).UTC(), ExpiresAt: time.UnixMicro(expires).UTC(), Guarantee: "local-coordination", AuthorityID: authority, LocalReplaceAllowed: req.LocalReplaceAllowed && !req.CoordinationOnly, Active: true, Receipt: Receipt{OperationID: claimID, ClaimID: claimID, Kind: "acquire", RequestHash: hash, Revision: 1, Committed: true, Result: receipt}}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return Grant{}, err
+	}
+	return result, nil
 }
 
 func (s *Service) Status(ctx context.Context, sel Selector) (Status, error) {
@@ -435,16 +466,25 @@ func (s *Service) Status(ctx context.Context, sel Selector) (Status, error) {
 			if err != nil {
 				return err
 			}
-			if ok && !seen[row.ClaimID] {
-				v, e := row.view(s.st.AuthorityID(), s.clock.Now().UnixMicro())
-				if e != nil {
-					return e
-				}
-				unknown, e := unresolvedForResources(tx, row.Resources)
-				if e != nil {
-					return e
-				}
-				v.UnknownOperations = unknown
+			if !ok {
+				out.Resources = append(out.Resources, ResourceStatus{Resource: resource, State: "free"})
+				continue
+			}
+			v, e := row.view(s.st.AuthorityID(), s.clock.Now().UnixMicro())
+			if e != nil {
+				return e
+			}
+			unknown, e := unresolvedForResources(tx, row.Resources)
+			if e != nil {
+				return e
+			}
+			v.UnknownOperations = unknown
+			state := "expired"
+			if v.Active {
+				state = "active"
+			}
+			out.Resources = append(out.Resources, ResourceStatus{Resource: resource, State: state, Claim: &v})
+			if !seen[row.ClaimID] {
 				out.Claims = append(out.Claims, v)
 				seen[row.ClaimID] = true
 			}
