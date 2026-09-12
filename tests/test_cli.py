@@ -1915,6 +1915,81 @@ with resource_lock(resource):
         self.assertIn("name: generic\n", text.stdout)
         self.assertIn("capability: local-coordination\n", text.stdout)
 
+    def test_policy_list_has_compact_full_empty_and_json_modes(self) -> None:
+        compact = self.text_cli("policy", "list")
+        compact_lines = compact.splitlines()
+        self.assertEqual(
+            "NAME         SCOPE    CAPABILITY           EXECUTION            FENCING",
+            compact_lines[0],
+        )
+        self.assertTrue(all(len(line) <= 80 for line in compact_lines))
+        self.assertIn(
+            "backlog-md   item     item-claim           local-coordination   no",
+            compact_lines,
+        )
+        self.assertNotIn("ORIGIN", compact_lines[0])
+
+        full = self.text_cli("policy", "list", "--full")
+        self.assertIn("ORIGIN", full.splitlines()[0])
+        self.assertIn("ORIGIN_VERSION", full.splitlines()[0])
+        self.assertIn("CONTRACT_VERSION", full.splitlines()[0])
+        self.assertIn("KEY_POLICY_VERSION", full.splitlines()[0])
+        self.assertIn("PROVIDER_FENCING_SUPPORTED", full.splitlines()[0])
+
+        listed = self.json_cli("policy", "list")
+        self.assertEqual(listed, self.json_cli("policy", "list", "--full"))
+
+        payload = {
+            "ok": True,
+            "operation": "policy-list",
+            "policies": [
+                {
+                    "name": "external",
+                    "origin": "example-package",
+                    "originVersion": "2.3.4",
+                    "contractVersion": 1,
+                    "keyPolicyVersion": 7,
+                    "scope": "source",
+                    "capability": "source-claim",
+                    "genericExecutionGuarantee": "fenced",
+                    "providerFencingSupported": True,
+                }
+            ],
+        }
+        for full_mode, expected_header, expected_value in (
+            (False, "NAME", "yes"),
+            (True, "ORIGIN_VERSION", "2.3.4"),
+        ):
+            with self.subTest(full=full_mode):
+                output = StringIO()
+                with redirect_stdout(output):
+                    cli_module._render_policy_list(payload, full=full_mode)
+                self.assertIn(expected_header, output.getvalue().splitlines()[0])
+                self.assertIn(expected_value, output.getvalue().splitlines()[1])
+
+        for full_mode, expected_header in (
+            (False, "NAME   SCOPE   CAPABILITY   EXECUTION   FENCING\n"),
+            (
+                True,
+                "NAME   ORIGIN   ORIGIN_VERSION   CONTRACT_VERSION   "
+                "KEY_POLICY_VERSION   SCOPE   CAPABILITY   "
+                "GENERIC_EXECUTION_GUARANTEE   PROVIDER_FENCING_SUPPORTED\n",
+            ),
+        ):
+            with self.subTest(empty_full=full_mode):
+                output = StringIO()
+                with redirect_stdout(output):
+                    cli_module._render_policy_list(
+                        {"ok": True, "operation": "policy-list", "policies": []},
+                        full=full_mode,
+                    )
+                self.assertEqual(expected_header, output.getvalue())
+
+        help_result = self.run_cli("policy", "list", "--help")
+        self.assertEqual(0, help_result.returncode)
+        self.assertIn("--full", help_result.stdout)
+        self.assertIn("package provenance", help_result.stdout)
+
     def test_policy_unknown_name_has_stable_error(self) -> None:
         payload = self.json_cli(
             "policy", "describe", "--name", "typo-provider", expected_code=2
@@ -4022,7 +4097,8 @@ with resource_lock(resource):
         self.assertNotIn("schemaVersion", key)
 
         policies = self.text_cli("policy", "list")
-        self.assertIn("NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION", policies)
+        self.assertIn("NAME         SCOPE    CAPABILITY", policies)
+        self.assertNotIn("\t", policies)
         described = self.text_cli("policy", "describe", "--name", "generic")
         self.assertIn("name: generic\n", described)
         self.assertIn("keyPolicyVersion: 1\n", described)

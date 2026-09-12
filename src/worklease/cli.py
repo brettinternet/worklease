@@ -793,6 +793,11 @@ def _parser() -> _ArgumentParser:
         "list", help="list available resource-key policies", epilog=_POLICY_LIST_EPILOG
     )
     _add_output_arguments(list_policy_parser)
+    list_policy_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="show package provenance and policy contract versions",
+    )
     describe_parser = policy_commands.add_parser(
         "describe",
         help="describe one resource-key policy",
@@ -1570,18 +1575,23 @@ def _render_key(payload: dict[str, object]) -> None:
             print(f"{_text_label(field)}\t{_text_value(payload[field])}")
 
 
-def _render_policy_list(payload: dict[str, object]) -> None:
+def _render_policy_list(payload: dict[str, object], *, full: bool = False) -> None:
     if not payload.get("ok"):
         _text_header(payload)
         _emit_error_details(payload)
         return
-    print(
-        "NAME\tORIGIN\tORIGIN_VERSION\tCONTRACT_VERSION\t"
-        "KEY_POLICY_VERSION\tSCOPE\tCAPABILITY\t"
-        "GENERIC_EXECUTION_GUARANTEE\tPROVIDER_FENCING_SUPPORTED"
-    )
-    policies = payload.get("policies", [])
-    if isinstance(policies, list):
+    if full:
+        headers = (
+            "NAME",
+            "ORIGIN",
+            "ORIGIN_VERSION",
+            "CONTRACT_VERSION",
+            "KEY_POLICY_VERSION",
+            "SCOPE",
+            "CAPABILITY",
+            "GENERIC_EXECUTION_GUARANTEE",
+            "PROVIDER_FENCING_SUPPORTED",
+        )
         fields = (
             "name",
             "origin",
@@ -1593,9 +1603,25 @@ def _render_policy_list(payload: dict[str, object]) -> None:
             "genericExecutionGuarantee",
             "providerFencingSupported",
         )
+    else:
+        headers = ("NAME", "SCOPE", "CAPABILITY", "EXECUTION", "FENCING")
+        fields = (
+            "name",
+            "scope",
+            "capability",
+            "genericExecutionGuarantee",
+            "providerFencingSupported",
+        )
+    policies = payload.get("policies", [])
+    rows: list[tuple[str, ...]] = []
+    if isinstance(policies, list):
         for policy in policies:
             if isinstance(policy, dict):
-                print("\t".join(_text_atom(policy.get(field, "")) for field in fields))
+                values = tuple(_text_atom(policy.get(field, "")) for field in fields)
+                if not full and values:
+                    values = (*values[:-1], "yes" if values[-1] == "true" else "no")
+                rows.append(values)
+    _render_table(headers, rows)
 
 
 def _render_policy_describe(payload: dict[str, object]) -> None:
@@ -2268,6 +2294,8 @@ def _emit(
         operation = str(payload.get("operation", "unknown"))
         if operation == "list":
             _render_list(payload, full=full)
+        elif operation == "policy-list":
+            _render_policy_list(payload, full=full)
         else:
             renderer = _TEXT_RENDERERS.get(operation, _render_generic)
             renderer(payload)

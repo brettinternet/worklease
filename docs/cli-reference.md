@@ -248,7 +248,7 @@ example or valid values. Hints never echo rejected argument values.
 | `version` | Version only |
 | `instructions loop`, `instructions safety` | One concise instruction per line |
 | `key` | `OK key`, `PROVIDER`, `RESOURCE`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `FENCED_MUTATIONS`, `PROVIDER_FENCING` |
-| `policy list` | Header `NAME`, `ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, `SCOPE`, `CAPABILITY`, `GENERIC_EXECUTION_GUARANTEE`, `PROVIDER_FENCING_SUPPORTED`, then rows |
+| `policy list` | Fixed-width summary columns `NAME`, `SCOPE`, `CAPABILITY`, `EXECUTION`, `FENCING`, then rows; `--full` adds package provenance and policy contract versions |
 | `policy describe` | One `FIELD: value` line per policy field |
 | `list` | Fixed-width summary columns `STATE`, `RESOURCE`, `LEASE`, then rows; `--full` adds lifecycle identifiers and absolute expiry |
 | `history` | `OK history`, `RESOURCE`, a `COVERAGE` block, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
@@ -267,12 +267,17 @@ columns. Active lease values use approximate durations such as `1h 2m left`;
 expired values use elapsed durations such as `3m ago`.
 
 `worklease list --full` shows `STATE`, `RESOURCE`, `CLAIM_ID`, `OWNER_ID`, and
-`EXPIRES_AT` with complete values. JSON also remains complete. An empty policy list
-emits its header only. Default status output uses the same compact resource and
-relative lease conventions as `list`; an unclaimed status ends after `STATE free`
-without an empty claim block. `--verbose` restores complete redacted lifecycle
-identifiers, timestamps, unknown operations, release data, and guidance for
-singleton and bundle status commands. Tokens are never listed.
+`EXPIRES_AT` with complete values. JSON also remains complete. The default
+`policy list` table uses concise `yes`/`no` fencing values and fits every built-in
+policy within 80 terminal columns. `worklease policy list --full` restores
+`ORIGIN`, `ORIGIN_VERSION`, `CONTRACT_VERSION`, `KEY_POLICY_VERSION`, and the
+complete existing field set. Policy-list JSON remains complete with or without
+`--full`; an empty policy list emits the selected header only. Default status
+output uses the same compact resource and relative lease conventions as `list`;
+an unclaimed status ends after `STATE free` without an empty claim block.
+`--verbose` restores complete redacted lifecycle identifiers, timestamps, unknown
+operations, release data, and guidance for singleton and bundle status commands.
+Tokens are never listed.
 
 `history` emits `OK history`, `RESOURCE`, a `COVERAGE` block, and `EPOCHS`.
 Each `EPOCH` includes `SOURCE`, acquisition identity, acquired time,

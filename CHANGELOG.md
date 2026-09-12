@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Default `policy list` text now shows a compact five-column summary; `--full` preserves package provenance and policy contract versions.
 - Default singleton and bundle `status` text now shows a compact operational summary; `--verbose` preserves the complete redacted diagnostic projection.
 
 ## 0.9.1 - 2026-09-11
