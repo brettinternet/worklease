@@ -65,8 +65,8 @@ func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 
 func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
-	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions"}
-	future := []string{"setup", "mcp"} // TASK-85.15/85.16 may register these later.
+	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "mcp"}
+	future := []string{}
 	got := map[string]bool{}
 	for _, command := range root.Commands {
 		got[command.Name] = true
@@ -140,6 +140,10 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "op reconcile", example: "worklease op reconcile --target-operation-id ID --outcome observed-success --evidence '{\"outcome\":\"observed-success\",\"executorStopped\":true}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "target-claim-id", "target-operation-id", "outcome", "evidence", "expected-request-sha256"}},
 		{path: "instructions loop", example: "worklease instructions loop", flags: []string{}},
 		{path: "instructions safety", example: "worklease instructions safety", flags: []string{}},
+		{path: "setup mcp", example: "worklease setup mcp --client claude-code --scope project", flags: []string{"client", "scope", "agent", "apply", "remove"}},
+		{path: "setup guard", example: "worklease setup guard --client claude-code --coverage claim", flags: []string{"client", "scope", "coverage", "session", "handle", "lease", "apply", "remove"}},
+		{path: "setup instructions", example: "worklease setup instructions", flags: []string{}},
+		{path: "mcp", example: "worklease mcp", flags: []string{}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

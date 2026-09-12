@@ -1,8 +1,16 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/resource"
 )
 
 func TestHookTargetsAcceptNativeFileEditorsAndRejectBash(t *testing.T) {
@@ -46,4 +54,99 @@ func TestHookTargetsRejectMalformedInput(t *testing.T) {
 			t.Fatalf("malformed event accepted: %v", targets)
 		}
 	}
+}
+
+func TestRealClaudeHookClaimAndPathCoverage(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "authority")
+	workspace, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, unrelated := filepath.Join(workspace, "owned.txt"), filepath.Join(workspace, "other.txt")
+	pathKey, err := resource.Resolve(resource.Input{Path: target, WorkingDir: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlePath := filepath.Join(home, "handles", "claim.json")
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "acquire", "--handle", handlePath, "--resource", pathKey.Resource}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, coverage, path string
+		allow                bool
+	}{
+		{"claim", "claim", unrelated, true},
+		{"owned-path", "path", target, true},
+		{"unrelated-path", "path", unrelated, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			event, _ := json.Marshal(hookEvent{CWD: workspace, ToolName: "Edit", ToolInput: map[string]json.RawMessage{"file_path": json.RawMessage(strconvQuote(test.path))}})
+			err := runWithStdin(t, event, []string{"worklease", "--home", home, "verify", "--handle", handlePath, "--hook", "claude-code", "--coverage", test.coverage})
+			if test.allow && err != nil {
+				t.Fatalf("blocked: %v", err)
+			}
+			if !test.allow && err == nil {
+				t.Fatal("unrelated path allowed")
+			}
+		})
+	}
+}
+
+func TestRealClaudeHookBlocksMissingPendingAndExpiredClaims(t *testing.T) {
+	home, workspace := filepath.Join(t.TempDir(), "authority"), t.TempDir()
+	event, _ := json.Marshal(hookEvent{CWD: workspace, ToolName: "Write", ToolInput: map[string]json.RawMessage{"file_path": json.RawMessage(strconvQuote(filepath.Join(workspace, "file.txt")))}})
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if err := runWithStdin(t, event, []string{"worklease", "--home", home, "verify", "--handle", missing, "--hook", "claude-code"}); err == nil {
+		t.Fatal("missing claim allowed")
+	}
+
+	pending := filepath.Join(home, "handles", "pending.json")
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "acquire", "--handle", pending, "--resource", "pending"}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := handle.Read(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.PendingRequest = &handle.PendingRequest{OperationID: "pending", Kind: "exec", RequestNotAfter: time.Now().Add(time.Hour)}
+	encoded, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pending, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runWithStdin(t, event, []string{"worklease", "--home", home, "verify", "--handle", pending, "--hook", "claude-code"}); err == nil {
+		t.Fatal("pending claim allowed")
+	}
+
+	expired := filepath.Join(home, "handles", "expired.json")
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "acquire", "--handle", expired, "--resource", "expired", "--ttl", "1s"}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := runWithStdin(t, event, []string{"worklease", "--home", home, "verify", "--handle", expired, "--hook", "claude-code"}); err == nil {
+		t.Fatal("expired claim allowed")
+	}
+}
+
+func runWithStdin(t *testing.T, data []byte, args []string) error {
+	t.Helper()
+	input := filepath.Join(t.TempDir(), "stdin.json")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdin
+	os.Stdin = file
+	defer func() { os.Stdin = previous; _ = file.Close() }()
+	return Run(context.Background(), args, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+}
+
+func strconvQuote(value string) string {
+	data, _ := json.Marshal(value)
+	return string(data)
 }
