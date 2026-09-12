@@ -81,30 +81,6 @@ func ValidateSelection(cmd *urfave.Command, mutation bool) error {
 	return err
 }
 
-// ValidateResourceInput enforces one and only one acquire/key addressing mode.
-func ValidateResourceInput(cmd *urfave.Command) error {
-	resources := cmd.StringSlice("resource")
-	path := strings.TrimSpace(cmd.String("path"))
-	provider, source, item := strings.TrimSpace(cmd.String("provider")), strings.TrimSpace(cmd.String("source")), strings.TrimSpace(cmd.String("item"))
-	triple := provider != "" || source != "" || item != ""
-	modes := 0
-	if len(resources) > 0 {
-		modes++
-	}
-	if triple {
-		modes++
-	}
-	if path != "" {
-		modes++
-	}
-	if modes > 1 || triple && (provider == "" || source == "" || item == "") {
-		return reason.New("resource-input-conflict", "resource input modes are exclusive and provider input requires provider, source, and item")
-	}
-	if modes == 0 {
-		return reason.New("invalid-resource", "one resource input is required")
-	}
-	return nil
-}
 func first(value, fallback string) string {
 	if strings.TrimSpace(value) != "" {
 		return value
