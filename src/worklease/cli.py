@@ -974,6 +974,11 @@ def _parser() -> _ArgumentParser:
         required=True,
         help="exact opaque resource identity (from `worklease key` or a stable local name)",
     )
+    history_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="show the complete redacted diagnostic projection",
+    )
 
     events_parser = commands.add_parser(
         "events",
@@ -1995,8 +2000,98 @@ def _render_status_verbose(payload: dict[str, object]) -> None:
         _emit_error_details(payload)
 
 
+def _history_entries(epoch: dict[str, object], field: str) -> list[dict[str, object]]:
+    entries = epoch.get(field, [])
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _history_coverage_summary(
+    coverage: dict[str, object], epochs: list[dict[str, object]]
+) -> str:
+    counts = {"complete": 0, "open": 0, "legacy-incomplete": 0}
+    for epoch in epochs:
+        completeness = epoch.get("completeness")
+        if completeness in counts:
+            counts[str(completeness)] += 1
+    earliest = _text_atom(coverage.get("earliestRetainedAcquisitionRevision"))
+    watermark = _text_atom(coverage.get("resourceRevisionWatermark"))
+    return (
+        "retention-bounded local history; not a provider audit; "
+        f"complete={counts['complete']} open={counts['open']} "
+        f"legacy-incomplete={counts['legacy-incomplete']} "
+        f"retained-from-revision={earliest} resource-watermark={watermark}"
+    )
+
+
 def _render_history(payload: dict[str, object]) -> None:
-    """Render the allowlisted retained-history projection without blobs."""
+    """Render retained history as a concise chronological local timeline."""
+
+    if not payload.get("ok"):
+        _text_header(payload)
+        _emit_error_details(payload)
+        return
+    _text_header(payload)
+    resource = _text_atom(payload.get("resource", ""))
+    print(f"RESOURCE\t{_summarize_resource(resource, _LIST_RESOURCE_WIDTH)}")
+    coverage = payload.get("coverage", {})
+    if not isinstance(coverage, dict):
+        coverage = {}
+    raw_epochs = payload.get("epochs", [])
+    epochs = (
+        [epoch for epoch in raw_epochs if isinstance(epoch, dict)]
+        if isinstance(raw_epochs, list)
+        else []
+    )
+    print(f"COVERAGE\t{_history_coverage_summary(coverage, epochs)}")
+    print(f"EPOCHS\t{len(epochs)}")
+    for epoch in epochs:
+        operations = _history_entries(epoch, "operations")
+        reconciliations = _history_entries(epoch, "reconciliations")
+        termination = epoch.get("termination")
+        current = epoch.get("currentClaim")
+        state = epoch.get("completeness", "unknown")
+        print(
+            "EPOCH\t"
+            f"ACQUIRED={_text_atom(epoch.get('acquiredAt'))}\t"
+            f"AGENT={_text_atom(epoch.get('agentId'))}\t"
+            f"WORK_KEY={_text_atom(epoch.get('workKey'))}\t"
+            f"KIND={_text_atom(epoch.get('kind'))}\t"
+            f"STATE={_text_atom(state)}\t"
+            f"OPERATIONS={len(operations)}\t"
+            f"RECONCILIATIONS={len(reconciliations)}"
+        )
+        for operation in operations:
+            print(
+                "  OPERATION\t"
+                f"AT={_text_atom(operation.get('createdAt'))}\t"
+                f"KIND={_text_atom(operation.get('kind'))}\t"
+                f"STATE={_text_atom(operation.get('state'))}"
+            )
+        for reconciliation in reconciliations:
+            print(
+                "  RECONCILIATION\t"
+                f"AT={_text_atom(reconciliation.get('reconciledAt'))}\t"
+                f"KIND={_text_atom(reconciliation.get('kind'))}\t"
+                f"OUTCOME={_text_atom(reconciliation.get('outcome'))}"
+            )
+        if isinstance(termination, dict):
+            print(
+                "  TERMINATION\t"
+                f"AT={_text_atom(termination.get('effectiveAt'))}\t"
+                f"REASON={_text_atom(termination.get('reason'))}"
+            )
+        elif isinstance(current, dict):
+            print(
+                "  CURRENT_SNAPSHOT\t"
+                f"EXPIRES_AT={_text_atom(current.get('expiresAt'))}\t"
+                "NOTE=retained-snapshot-not-proof-of-active-lease"
+            )
+
+
+def _render_history_full(payload: dict[str, object]) -> None:
+    """Render the complete allowlisted retained-history projection."""
 
     if not payload.get("ok"):
         _text_header(payload)
@@ -2451,6 +2546,8 @@ def _emit(
             _render_policy_list(payload, full=full)
         elif operation == "events":
             _render_events(payload, full=full)
+        elif operation == "history" and full:
+            _render_history_full(payload)
         else:
             renderer = _TEXT_RENDERERS.get(operation, _render_generic)
             renderer(payload)

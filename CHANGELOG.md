@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Default `history` text is now a concise chronological timeline with explicit retention and current-snapshot caveats; `--full` preserves the complete redacted diagnostic projection.
 - Default `policy list` text now shows a compact five-column summary; `--full` preserves package provenance and policy contract versions.
 - Garbage-collection text now highlights eligible or collected totals, compact age ranges, protected unresolved operations, and the exact safe follow-up command without exposing storage field names or null placeholders.
 - Default singleton and bundle `status` text now shows a compact operational summary; `--verbose` preserves the complete redacted diagnostic projection.

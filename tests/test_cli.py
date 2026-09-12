@@ -2535,6 +2535,183 @@ with resource_lock(resource):
         self.assertNotIn("hidden-", rendered)
         self.assertNotIn("RESOURCE\t", rendered)
 
+    def test_history_summary_and_full_rendering_are_distinct(self) -> None:
+        resource = "backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-73"
+        payload: dict[str, object] = {
+            "ok": True,
+            "operation": "history",
+            "resource": resource,
+            "coverage": {
+                "earliestRetainedAcquisitionRevision": 7,
+                "resourceRevisionWatermark": 19,
+                "legacyIncompleteCount": 1,
+            },
+            "epochs": [
+                {
+                    "source": "epoch",
+                    "resource": resource,
+                    "kind": "singleton",
+                    "claimId": "complete-claim",
+                    "agentId": "agent-one",
+                    "sessionId": "session-one",
+                    "ownerId": "owner-one",
+                    "workKey": "first-work",
+                    "acquiredAt": "2026-01-02T03:04:05Z",
+                    "acquisitionRevision": 7,
+                    "completeness": "complete",
+                    "operations": [
+                        {
+                            "source": "operation",
+                            "operationId": "operation-one",
+                            "kind": "exec",
+                            "state": "completed",
+                            "expectedRevision": 7,
+                            "createdAt": "2026-01-02T03:05:00Z",
+                        }
+                    ],
+                    "reconciliations": [
+                        {
+                            "source": "reconciliation",
+                            "targetClaimId": "complete-claim",
+                            "targetOperationId": "operation-one",
+                            "reconciliationOperationId": "reconcile-one",
+                            "kind": "exec",
+                            "outcome": "completed",
+                            "reconciledAt": "2026-01-02T03:06:00Z",
+                        }
+                    ],
+                    "termination": {
+                        "source": "termination",
+                        "reason": "released",
+                        "effectiveAt": "2026-01-02T03:07:00Z",
+                        "recordedAt": "2026-01-02T03:07:01Z",
+                        "finalRevision": 8,
+                        "checkpointPresent": False,
+                    },
+                    "currentClaim": None,
+                },
+                {
+                    "source": "epoch",
+                    "resources": [resource, "peer"],
+                    "kind": "bundle",
+                    "claimId": "open-bundle",
+                    "agentId": "agent-two",
+                    "sessionId": "session-two",
+                    "ownerId": "owner-two",
+                    "workKey": "second-work",
+                    "acquiredAt": "2026-01-02T04:00:00Z",
+                    "acquisitionRevision": 19,
+                    "completeness": "open",
+                    "operations": [],
+                    "reconciliations": [],
+                    "termination": None,
+                    "currentClaim": {
+                        "source": "current-claim",
+                        "resources": [resource, "peer"],
+                        "claimId": "open-bundle",
+                        "revision": 2,
+                        "agentId": "agent-two",
+                        "sessionId": "session-two",
+                        "ownerId": "owner-two",
+                        "workKey": "second-work",
+                        "expiresAt": "2026-01-02T05:00:00Z",
+                    },
+                },
+                {
+                    "source": "epoch",
+                    "resource": resource,
+                    "kind": "singleton",
+                    "claimId": "legacy-claim",
+                    "agentId": "agent-three",
+                    "sessionId": "session-three",
+                    "ownerId": "owner-three",
+                    "workKey": "third-work",
+                    "acquiredAt": "2026-01-02T06:00:00Z",
+                    "acquisitionRevision": None,
+                    "completeness": "legacy-incomplete",
+                    "operations": [],
+                    "reconciliations": [],
+                    "termination": {
+                        "source": "termination",
+                        "reason": "released",
+                        "effectiveAt": "2026-01-02T06:07:00Z",
+                        "recordedAt": "2026-01-02T06:07:01Z",
+                        "finalRevision": 20,
+                        "checkpointPresent": False,
+                    },
+                    "currentClaim": None,
+                },
+            ],
+        }
+
+        compact_output = StringIO()
+        with redirect_stdout(compact_output):
+            cli_module._emit(payload, "text")
+        compact = compact_output.getvalue()
+        self.assertIn("RESOURCE\tbacklog-md:worklease:TASK-73", compact)
+        self.assertIn(
+            "COVERAGE\tretention-bounded local history; not a provider audit; "
+            "complete=1 open=1 legacy-incomplete=1 retained-from-revision=7 "
+            "resource-watermark=19",
+            compact,
+        )
+        self.assertIn(
+            "EPOCH\tACQUIRED=2026-01-02T03:04:05Z\tAGENT=agent-one\t"
+            "WORK_KEY=first-work\tKIND=singleton\tSTATE=complete\t"
+            "OPERATIONS=1\tRECONCILIATIONS=1",
+            compact,
+        )
+        self.assertIn(
+            "OPERATION\tAT=2026-01-02T03:05:00Z\tKIND=exec\tSTATE=completed",
+            compact,
+        )
+        self.assertIn(
+            "RECONCILIATION\tAT=2026-01-02T03:06:00Z\tKIND=exec\tOUTCOME=completed",
+            compact,
+        )
+        self.assertIn("TERMINATION\tAT=2026-01-02T03:07:00Z\tREASON=released", compact)
+        self.assertIn("KIND=bundle\tSTATE=open", compact)
+        self.assertIn(
+            "WORK_KEY=third-work\tKIND=singleton\tSTATE=legacy-incomplete", compact
+        )
+        self.assertIn("TERMINATION\tAT=2026-01-02T06:07:00Z\tREASON=released", compact)
+        self.assertIn("retained-snapshot-not-proof-of-active-lease", compact)
+        self.assertNotIn("complete-claim", compact)
+        self.assertNotIn("session-one", compact)
+        self.assertNotIn("owner-one", compact)
+
+        full_output = StringIO()
+        with redirect_stdout(full_output):
+            cli_module._emit(payload, "text", full=True)
+        full = full_output.getvalue()
+        self.assertIn(f'RESOURCE\t"{resource}"', full)
+        self.assertIn('SOURCE\t"epoch"', full)
+        self.assertIn('CLAIM_ID\t"complete-claim"', full)
+        self.assertIn('SESSION_ID\t"session-one"', full)
+        self.assertIn('OWNER_ID\t"owner-one"', full)
+        self.assertIn("ACQUISITION_REVISION\t7", full)
+        self.assertIn('CURRENT_CLAIM\nSOURCE\t"current-claim"', full)
+
+        empty_output = StringIO()
+        with redirect_stdout(empty_output):
+            cli_module._emit(
+                {
+                    "ok": True,
+                    "operation": "history",
+                    "resource": "never-seen",
+                    "coverage": {
+                        "earliestRetainedAcquisitionRevision": None,
+                        "resourceRevisionWatermark": None,
+                        "legacyIncompleteCount": 0,
+                    },
+                    "epochs": [],
+                },
+                "text",
+            )
+        empty = empty_output.getvalue()
+        self.assertIn("complete=0 open=0 legacy-incomplete=0", empty)
+        self.assertIn("EPOCHS\t0", empty)
+
     def test_text_list_renders_deep_resource_path_anchor(self) -> None:
         resource = (
             "backlog-md:/Users/brett/dev/me/a/b/c/d/worklease/.git:"

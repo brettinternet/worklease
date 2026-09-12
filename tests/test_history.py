@@ -796,12 +796,36 @@ class HistoryProjectionTests(unittest.TestCase):
 
         text = run("history", "--resource", resource)
         self.assertEqual(0, text.returncode, text.stderr)
-        self.assertIn('OK history\nRESOURCE\t"cli-history"', text.stdout)
-        self.assertIn("COVERAGE\n", text.stdout)
-        self.assertIn('SOURCE\t"epoch"', text.stdout)
-        self.assertIn('COMPLETENESS\t"open"', text.stdout)
-        self.assertIn("CURRENT_CLAIM\n", text.stdout)
+        self.assertIn("OK history\nRESOURCE\tcli-history", text.stdout)
+        self.assertIn(
+            "COVERAGE\tretention-bounded local history; not a provider audit; "
+            "complete=0 open=1 legacy-incomplete=0",
+            text.stdout,
+        )
+        self.assertIn("ACQUIRED=1970-01-01T00:16:40Z", text.stdout)
+        self.assertIn("AGENT=agent", text.stdout)
+        self.assertIn("WORK_KEY=work", text.stdout)
+        self.assertIn("STATE=open", text.stdout)
+        self.assertIn("CURRENT_SNAPSHOT", text.stdout)
+        self.assertIn("retained-snapshot-not-proof-of-active-lease", text.stdout)
+        self.assertNotIn("CLAIM_ID", text.stdout)
+        self.assertNotIn("SESSION_ID", text.stdout)
+        self.assertNotIn("OWNER_ID", text.stdout)
         self.assertNotIn("\\\\t", text.stdout)
+
+        full = run("history", "--resource", resource, "--full")
+        self.assertEqual(0, full.returncode, full.stderr)
+        self.assertIn('OK history\nRESOURCE\t"cli-history"', full.stdout)
+        self.assertIn("COVERAGE\n", full.stdout)
+        self.assertIn('SOURCE\t"epoch"', full.stdout)
+        self.assertIn('COMPLETENESS\t"open"', full.stdout)
+        self.assertIn("CURRENT_CLAIM\n", full.stdout)
+        self.assertIn('CLAIM_ID\t"cli-claim"', full.stdout)
+
+        help_result = run("history", "--help")
+        self.assertEqual(0, help_result.returncode, help_result.stderr)
+        self.assertIn("--full", help_result.stdout)
+        self.assertIn("complete redacted diagnostic projection", help_result.stdout)
 
         missing = run("history")
         self.assertEqual(64, missing.returncode)

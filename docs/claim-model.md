@@ -254,7 +254,12 @@ This data is retention-bounded diagnostics on one local Worklease database. A
 read-only `worklease history --resource R` projection is scoped to the exact
 opaque resource: it includes singleton epochs and bundle-member epochs, keeps
 termination separate from the current snapshot, and does not derive active or
-expired state from the clock. JSON provenance labels distinguish the retained
+expired state from the clock. Default text is a chronological summary with
+explicitly labeled acquisition, operation, reconciliation, termination, and
+current-snapshot details; the snapshot wording does not assert current lease
+activity. `history --full` restores every redacted diagnostic field and
+identifier, while JSON remains schema-compatible and complete. JSON provenance
+labels distinguish the retained
 record categories: `epoch`, `operation`, `reconciliation`, `termination`, and
 `current-claim`. Each epoch is `complete`, `open`, or `legacy-incomplete` under
 stored-field rules; `open` is not the same as active. The coverage summary has

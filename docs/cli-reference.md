@@ -98,9 +98,15 @@ pages disappear, and there is no cross-invocation snapshot. Newer rows recorded 
 page are excluded from its continuation; explicitly backdated rows older than the cursor
 may appear.
 
-`history --resource R` is a read-only projection of the retained local epochs
-for exactly `R`. It includes singleton epochs and bundle epochs containing `R`,
-plus safe operation and reconciliation summaries. Each acquisition epoch has
+`history --resource R` is a read-only chronological summary of the retained
+local epochs for exactly `R`. It includes singleton epochs and bundle epochs
+containing `R`, plus safe operation and reconciliation summaries. Default text
+shows one concise resource label, a coverage sentence, and one acquisition row
+per epoch with agent, work key, kind, completeness, and operation and
+reconciliation counts. Nested operation and reconciliation rows use labeled
+fields. A `CURRENT_SNAPSHOT` row is explicitly retained evidence, not proof of
+an active lease. Use `--full` for the complete redacted diagnostic field dump;
+`--json` is unchanged and always complete. Each acquisition epoch has
 `SOURCE epoch`; operation, reconciliation, termination, and current claim
 objects have `SOURCE operation`, `SOURCE reconciliation`, `SOURCE termination`,
 and `SOURCE current-claim` respectively. Acquisition is synthesized from the
@@ -268,7 +274,7 @@ example or valid values. Hints never echo rejected argument values.
 | `policy list` | Fixed-width summary columns `NAME`, `SCOPE`, `CAPABILITY`, `EXECUTION`, `FENCING`, then rows; `--full` adds package provenance and policy contract versions |
 | `policy describe` | One `FIELD: value` line per policy field |
 | `list` | Fixed-width summary columns `STATE`, `RESOURCE`, `LEASE`, then rows; `--full` adds lifecycle identifiers and absolute expiry |
-| `history` | `OK history`, `RESOURCE`, a `COVERAGE` block, `EPOCHS`, then retained `EPOCH` blocks with identity, operations, reconciliations, termination, and current snapshots |
+| `history` | `OK history`, one concise `RESOURCE`, a retention-bounded local `COVERAGE` summary, `EPOCHS`, then chronological acquisition rows with labeled operation, reconciliation, termination, or current-snapshot details; `--full` restores all redacted diagnostic fields |
 | `events` | `OK events`, `EVENTS`, retained `EVENT` blocks, and `NEXT_CURSOR` plus a continuation `HINT` only when another page exists |
 | `status`, `status-bundle`, `bundle-status`, `inspect-bundle` | `OK`, one compact `RESOURCE` or ordered `RESOURCES` value, `STATE`, then `AGENT_ID`, `WORK_KEY`, relative `LEASE`, and `REVISION` for a claim |
 | Status commands with `--verbose` | Resource and state, full redacted `CLAIM`, `UNKNOWN_OPERATIONS`, `RELEASE`, and optional `GUIDANCE` |
@@ -297,21 +303,28 @@ an unclaimed status ends after `STATE free` without an empty claim block.
 operations, release data, and guidance for singleton and bundle status commands.
 Tokens are never listed.
 
-`history` emits `OK history`, `RESOURCE`, a `COVERAGE` block, and `EPOCHS`.
-Each `EPOCH` includes `SOURCE`, acquisition identity, acquired time,
-acquisition revision, and `COMPLETENESS`. It then emits an `OPERATIONS` count
-and ordered safe operation summaries whose first column is `SOURCE operation`,
-followed by `RECONCILIATIONS` rows whose first column is `SOURCE
-reconciliation`. `TERMINATION` and `CURRENT_CLAIM` each contain their stored
-snapshot and source or `<none>`. Epochs sort by acquisition revision, with
-acquired time and stable IDs only for legacy fallback; operations sort by
-expected revision, created time, operation ID, kind, claim ID, and resource.
+`history` emits `OK history`, one concise `RESOURCE`, a `COVERAGE` sentence
+that counts complete, open, and legacy-incomplete epochs while stating that the
+view is retention-bounded local history rather than a provider audit, and
+`EPOCHS`. Each chronological `EPOCH` row labels acquired time, agent, work key,
+kind, per-epoch completeness, and operation and reconciliation counts. An
+indented termination row keeps its distinct reason so migration gaps remain
+visible even for terminated epochs. Operation, reconciliation, and current-snapshot
+rows use labeled fields. Epochs sort by acquisition revision, with acquired
+time and stable IDs only for legacy fallback; operations and reconciliations
+retain their deterministic JSON order.
+
+`history --full` preserves every redacted diagnostic field previously shown by
+default: source provenance, resource membership, lifecycle identifiers,
+revisions, completeness, operation and reconciliation identities, all retained
+termination fields and timestamps, and current snapshots. JSON output is
+schema-compatible and complete with or without `--full`.
 
 `complete`, `open`, and `legacy-incomplete` are projection labels, not
-provider state. The current snapshot is not an active-state assertion. This
-history is retention-bounded local diagnostic state: migration-era nulls and
-`gc --apply` removal are not recoverable, and it is not append-only audit or
-provider history.
+provider state. A `CURRENT_SNAPSHOT` line says explicitly that retained state
+is not proof of an active lease. This history is retention-bounded local
+diagnostic state: migration-era nulls and `gc --apply` removal are not
+recoverable, and it is not append-only audit or provider history.
 
 For status commands with `--verbose`, bundle claims use ordered `RESOURCES`,
 including the JSON claim's `resources` array. Unknown operations include started
