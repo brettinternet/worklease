@@ -5,11 +5,57 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/store"
 )
+
+func TestHandleCLIProcessHelper(t *testing.T) {
+	if os.Getenv("WORKLEASE_HANDLE_TEST_HELPER") != "1" {
+		return
+	}
+	separator := 0
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i + 1
+			break
+		}
+	}
+	if separator == 0 || separator >= len(os.Args) {
+		os.Exit(64)
+	}
+	if err := Run(context.Background(), os.Args[separator:], "dev", "unknown", "unknown", os.Stdout, os.Stderr); err != nil {
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func runHandleProcess(t *testing.T, args []string) (int, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestHandleCLIProcessHelper$", "--"}, args...)...)
+	cmd.Env = append(os.Environ(), "WORKLEASE_HANDLE_TEST_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("helper timed out: %v", args)
+	}
+	if err == nil {
+		return 0, string(output)
+	}
+	if exit, ok := err.(*exec.ExitError); ok {
+		return exit.ExitCode(), string(output)
+	}
+	t.Fatalf("start helper: %v", err)
+	return -1, ""
+}
 
 func TestKeyAndPolicyCommandsReportContractMetadata(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -137,8 +183,11 @@ func TestLifecycleRejectsMixedCredentialSelection(t *testing.T) {
 	}
 }
 
-func TestStatusRequiresSelectionAndStatelessTransferSucceeds(t *testing.T) {
+func TestHandlelessTransferIsRejected(t *testing.T) {
 	home, credentialDir := t.TempDir(), t.TempDir()
+	if err := os.Chmod(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	currentTokenPath, successorTokenPath := filepath.Join(credentialDir, "current"), filepath.Join(credentialDir, "successor")
 	if err := os.WriteFile(currentTokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
@@ -148,41 +197,321 @@ func TestStatusRequiresSelectionAndStatelessTransferSucceeds(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	claimID, successorID := strings.Repeat("1", 32), strings.Repeat("2", 32)
-	acquire := []string{"worklease", "acquire", "--json", "--home", home, "--resource", "r", "--no-handle", "--claim-id", claimID, "--token-file", currentTokenPath, "--request-not-after", deadline}
+	acquire := []string{"worklease", "acquire", "--json", "--home", home, "--resource", "r", "--no-handle", "--claim-id", claimID, "--session", "stateless-session", "--token-file", currentTokenPath, "--request-not-after", deadline}
 	if err := Run(context.Background(), acquire, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	transfer := []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", currentTokenPath, "--revision", "1", "--operation-id", strings.Repeat("3", 32), "--request-not-after", deadline, "--successor-claim-id", successorID, "--successor-token-file", successorTokenPath, "--to-agent", "next", "--to-session", "next-session"}
 	var transferOut bytes.Buffer
-	if err := Run(context.Background(), transfer, "dev", "unknown", "unknown", &transferOut, &bytes.Buffer{}); err != nil || !strings.Contains(transferOut.String(), successorID) {
-		t.Fatalf("transfer err=%v output=%q", err, transferOut.String())
-	}
-	var publicOut bytes.Buffer
-	if err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home, "--claim-id", successorID}, "dev", "unknown", "unknown", &publicOut, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(publicOut.String(), `"AgentID"`) || !strings.Contains(publicOut.String(), `"agentId":"next"`) {
-		t.Fatalf("status fields are not contract-cased: %q", publicOut.String())
+	if err := Run(context.Background(), transfer, "dev", "unknown", "unknown", &transferOut, &bytes.Buffer{}); err == nil || !strings.Contains(transferOut.String(), "successor-handle") {
+		t.Fatalf("handle-less transfer err=%v output=%q", err, transferOut.String())
 	}
 	var statusOut bytes.Buffer
-	err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home}, "dev", "unknown", "unknown", &statusOut, &bytes.Buffer{})
-	if err == nil || !strings.Contains(statusOut.String(), `"reason":"claim-selection-missing"`) {
+	if err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home}, "dev", "unknown", "unknown", &statusOut, &bytes.Buffer{}); err == nil || !strings.Contains(statusOut.String(), `"reason":"claim-selection-missing"`) {
 		t.Fatalf("empty status err=%v output=%q", err, statusOut.String())
 	}
 }
 
+func TestExplicitCredentialsCanTransferIntoPrivateSuccessorHandle(t *testing.T) {
+	home, credentialDir := t.TempDir(), t.TempDir()
+	if err := os.Chmod(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(credentialDir, "current")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claimID := strings.Repeat("1", 32)
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--home", home, "--resource", "explicit-transfer", "--no-handle", "--claim-id", claimID, "--session", "stateless-session", "--token-file", tokenPath, "--request-not-after", deadline}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	successor := filepath.Join(home, "handles", "successor.json")
+	var out bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", tokenPath, "--revision", "1", "--operation-id", strings.Repeat("2", 32), "--request-not-after", deadline, "--successor-handle", successor, "--to-agent", "next", "--to-session", "next-session"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+	if err != nil || strings.Contains(out.String(), "token") {
+		t.Fatalf("explicit transfer err=%v output=%q", err, out.String())
+	}
+	if _, err := os.Stat(successor); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireRejectsMixedHandleAndStatelessSelection(t *testing.T) {
+	home := t.TempDir()
+	var out bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--home", home, "--resource", "r", "--no-handle", "--handle", filepath.Join(home, "handles", "explicit.json"), "--claim-id", strings.Repeat("1", 32)}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+	if err == nil || !strings.Contains(out.String(), `"reason":"credential-source-conflict"`) {
+		t.Fatalf("mixed acquire err=%v output=%q", err, out.String())
+	}
+}
+
+func TestProcessesSerializeOneHandleAndConcurrentMutations(t *testing.T) {
+	home := t.TempDir()
+	handlePath := filepath.Join(home, "handles", "shared.json")
+	args := []string{"worklease", "acquire", "--json", "--home", home, "--handle", handlePath, "--resource", "shared"}
+	type result struct {
+		code int
+		out  string
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, out := runHandleProcess(t, args)
+			results <- result{code, out}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for result := range results {
+		if result.code == 0 {
+			successes++
+		} else if !strings.Contains(result.out, "handle-in-use") && !strings.Contains(result.out, "operation-request-mismatch") {
+			t.Fatalf("unexpected contender result: code=%d output=%q", result.code, result.out)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("acquire successes=%d want=1", successes)
+	}
+	mutation := []string{"worklease", "heartbeat", "--json", "--home", home, "--handle", handlePath}
+	results = make(chan result, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, out := runHandleProcess(t, mutation)
+			results <- result{code, out}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.code != 0 {
+			t.Fatalf("serialized mutation failed: code=%d output=%q", result.code, result.out)
+		}
+	}
+	h, err := handle.Read(handlePath)
+	if err != nil || h.Revision != 3 {
+		t.Fatalf("final handle revision=%d err=%v", h.Revision, err)
+	}
+}
+
+func TestReverseTransfersUseCanonicalLocksWithoutDeadlock(t *testing.T) {
+	home := t.TempDir()
+	first := filepath.Join(home, "handles", "a.json")
+	second := filepath.Join(home, "handles", "b.json")
+	for _, pair := range []struct{ path, resource, session string }{{first, "a", "one"}, {second, "b", "two"}} {
+		if err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--home", home, "--handle", pair.path, "--session", pair.session, "--resource", pair.resource}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commands := [][]string{
+		{"worklease", "transfer", "--json", "--home", home, "--handle", first, "--successor-handle", second, "--to-agent", "next", "--to-session", "next-one"},
+		{"worklease", "transfer", "--json", "--home", home, "--handle", second, "--successor-handle", first, "--to-agent", "next", "--to-session", "next-two"},
+	}
+	results := make(chan int, 2)
+	for _, command := range commands {
+		command := command
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, _ := runHandleProcess(t, command)
+			results <- code
+		}()
+		go func() { wg.Wait() }()
+	}
+	for range 2 {
+		if code := <-results; code == 0 {
+			t.Fatal("reverse transfer unexpectedly overwrote an active destination")
+		}
+	}
+	if _, err := handle.Read(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Read(second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs(t *testing.T) {
+	home := t.TempDir()
+	current := filepath.Join(home, "handles", "current.json")
+	successor := filepath.Join(home, "handles", "successor.json")
+	run := func(args ...string) string {
+		var out bytes.Buffer
+		if err := Run(context.Background(), append([]string{"worklease"}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v output=%q", args, err, out.String())
+		}
+		return out.String()
+	}
+	run("acquire", "--json", "--home", home, "--handle", current, "--resource", "transfer-resource")
+	transferred := run("transfer", "--json", "--home", home, "--handle", current, "--successor-handle", successor, "--to-agent", "next", "--to-session", "next-session")
+	if strings.Contains(transferred, "token") {
+		t.Fatal("transfer exposed a bearer token")
+	}
+	if _, err := os.Stat(current); !os.IsNotExist(err) {
+		t.Fatalf("predecessor handle still exists: %v", err)
+	}
+	run("heartbeat", "--json", "--home", home, "--handle", successor)
+	run("release", "--json", "--home", home, "--handle", successor)
+}
+
+func TestContextualDefaultRunsCompleteLifecycle(t *testing.T) {
+	home := t.TempDir()
+	run := func(args ...string) string {
+		var out bytes.Buffer
+		if err := Run(context.Background(), append([]string{"worklease"}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v output=%q", args, err, out.String())
+		}
+		return out.String()
+	}
+	acquired := run("acquire", "--json", "--home", home, "--resource", "contextual-resource")
+	if strings.Contains(acquired, "token") {
+		t.Fatal("contextual acquire exposed token")
+	}
+	run("heartbeat", "--json", "--home", home, "--operation-id", strings.Repeat("1", 32))
+	run("checkpoint", "--json", "--home", home, "--operation-id", strings.Repeat("2", 32), "--data", `{"step":1}`)
+	run("release", "--json", "--home", home, "--operation-id", strings.Repeat("3", 32))
+}
+
 func TestAcquireDerivesInputBeforeDispatch(t *testing.T) {
 	var stdout bytes.Buffer
-	home, tokenPath := t.TempDir(), filepath.Join(t.TempDir(), "token")
+	home, tokenDir := t.TempDir(), t.TempDir()
+	if err := os.Chmod(tokenDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(tokenDir, "token")
 	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"worklease", "acquire", "--json", "--home", home, "--provider", "generic", "--source", "s", "--item", "i", "--no-handle", "--claim-id", strings.Repeat("1", 32), "--token-file", tokenPath, "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	args := []string{"worklease", "acquire", "--json", "--home", home, "--provider", "generic", "--source", "s", "--item", "i", "--no-handle", "--claim-id", strings.Repeat("1", 32), "--session", "stateless-session", "--token-file", tokenPath, "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
 	err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("acquire failed: %v output=%q", err, stdout.String())
 	}
 	if !strings.Contains(stdout.String(), `"claimId"`) || strings.Contains(stdout.String(), `"token"`) {
 		t.Fatalf("unexpected output=%q", stdout.String())
+	}
+	stdout.Reset()
+	if err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("stateless replay failed: %v output=%q", err, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"idempotent":true`) {
+		t.Fatalf("stateless replay was not idempotent: %q", stdout.String())
+	}
+}
+
+func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
+	home := t.TempDir()
+	handlePath := filepath.Join(home, "handles", "recovery.json")
+	run := func(args ...string) {
+		var out bytes.Buffer
+		if err := Run(context.Background(), append([]string{"worklease"}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v output=%q", args, err, out.String())
+		}
+	}
+	run("acquire", "--json", "--home", home, "--handle", handlePath, "--resource", "recover")
+	h, err := handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Hour).UTC()
+	firstOp := strings.Repeat("d", 32)
+	firstInputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": int64((15 * time.Minute) / time.Microsecond), "requestNotAfter": deadline.UnixMicro()}
+	h.State = "pending"
+	h.PendingRequest = &handle.PendingRequest{OperationID: firstOp, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(firstInputs), RequestNotAfter: deadline, Inputs: firstInputs}
+	if err := handle.Write(handlePath, h); err != nil {
+		t.Fatal(err)
+	}
+	run("heartbeat", "--json", "--home", home, "--handle", handlePath)
+	h, err = handle.Read(handlePath)
+	if err != nil || h.Revision != 2 || h.PendingRequest != nil {
+		t.Fatalf("pre-dispatch recovery=%#v err=%v", h, err)
+	}
+	secondOp := strings.Repeat("e", 32)
+	secondDeadline := time.Now().Add(time.Hour).UTC()
+	secondInputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": int64((15 * time.Minute) / time.Microsecond), "requestNotAfter": secondDeadline.UnixMicro()}
+	h.State = "pending"
+	h.PendingRequest = &handle.PendingRequest{OperationID: secondOp, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(secondInputs), RequestNotAfter: secondDeadline, Inputs: secondInputs}
+	if err := handle.Write(handlePath, h); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := lease.New(st, nil, nil, lease.Defaults{})
+	if _, err := svc.Heartbeat(context.Background(), lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: secondOp, TTL: 15 * time.Minute, RequestNotAfter: secondDeadline}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run("heartbeat", "--json", "--home", home, "--handle", handlePath)
+	h, err = handle.Read(handlePath)
+	if err != nil || h.Revision != 3 || h.PendingRequest != nil {
+		t.Fatalf("post-dispatch recovery=%#v err=%v", h, err)
+	}
+	releaseOp := strings.Repeat("f", 32)
+	releaseDeadline := time.Now().Add(time.Hour).UTC()
+	releaseInputs := map[string]any{"kind": "release", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "reason": "released", "requestNotAfter": releaseDeadline.UnixMicro()}
+	h.State = "pending"
+	h.PendingRequest = &handle.PendingRequest{OperationID: releaseOp, Kind: "release", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(releaseInputs), RequestNotAfter: releaseDeadline, Inputs: releaseInputs}
+	if err := handle.Write(handlePath, h); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(context.Background(), home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = lease.New(st, nil, nil, lease.Defaults{})
+	if _, err := svc.Release(context.Background(), lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.ReleaseRequest{OperationID: releaseOp, Reason: "released", RequestNotAfter: releaseDeadline}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run("release", "--json", "--home", home, "--handle", handlePath)
+	if _, err := os.Stat(handlePath); !os.IsNotExist(err) {
+		t.Fatalf("release recovery did not remove handle: %v", err)
+	}
+}
+
+func TestHandleSynchronizationNeverRewindsRevision(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "claim.json")
+	h := handle.Handle{SchemaVersion: 1, AuthorityID: strings.Repeat("a", 32), ClaimID: strings.Repeat("b", 32), Token: strings.Repeat("c", 64), Revision: 3, Resources: []string{"r"}, ExpiresAt: time.Now().Add(time.Hour), AgentID: "agent", SessionID: "session", State: "ready"}
+	if err := handle.Write(path, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishHandleMutation(path, &h, lease.Receipt{Revision: 2, Result: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := handle.Read(path)
+	if err != nil || got.Revision != 3 {
+		t.Fatalf("handle revision rewound: %d err=%v", got.Revision, err)
+	}
+}
+
+func TestStatusRejectsMixedPrivateAndPublicSelection(t *testing.T) {
+	home := t.TempDir()
+	handlePath := filepath.Join(home, "handles", "claim.json")
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--home", home, "--handle", handlePath, "--resource", "r"}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, extra := range [][]string{{"--claim-id", strings.Repeat("1", 32)}, {"--resource", "r"}} {
+		args := append([]string{"worklease", "status", "--json", "--home", home, "--handle", handlePath}, extra...)
+		var out bytes.Buffer
+		if err := Run(context.Background(), args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err == nil || !strings.Contains(out.String(), `"reason":"credential-source-conflict"`) {
+			t.Fatalf("mixed status %v err=%v output=%q", extra, err, out.String())
+		}
 	}
 }
