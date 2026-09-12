@@ -2,7 +2,7 @@
 
 ## Backlog is the plan of record
 
-This repository uses Backlog.md for committed, non-trivial work. Treat the task, document, decision, and milestone records under `docs/backlog/` as durable project state. Do not edit those Markdown files directly; use the `backlog` CLI so IDs, metadata, relationships, and structured sections remain valid.
+This repository uses Backlog.md for work that needs durable planning or coordination across sessions. Treat the task, document, decision, and milestone records under `docs/backlog/` as durable project state. Do not edit those Markdown files directly; use the `backlog` CLI so IDs, metadata, relationships, and structured sections remain valid.
 
 The CLI is installed through `mise`. Prefer the explicit form below when the command is not already on `PATH`:
 
@@ -10,15 +10,15 @@ The CLI is installed through `mise`. Prefer the explicit form below when the com
 backlog <command>
 ```
 
-For committed, non-trivial work, read the overview before deciding whether to use an existing task or create one:
+When work needs cross-session planning, coordination, review, or handoff, read the overview before deciding whether to use an existing task or create one:
 
 ```bash
 backlog instructions overview
 ```
 
-A backlog item is not a prerequisite for doing work. Do not search for or create one for small, ephemeral, exploratory, or obvious mechanical requests; handle those directly. Questions and explanations also need no item.
+Do not search for or create a backlog item for work expected to finish in the current session, even if it produces a commit. Questions, explanations, exploration, and mechanical requests also need no item. Use Backlog.md only when the user requests it or the work needs durable state across sessions.
 
-For committed, non-trivial work that needs planning, decisions, review, or handoff notes, inspect existing work before starting:
+For work that meets that threshold, inspect existing work before starting:
 
 ```bash
 backlog search "<terms>" --plain
@@ -83,7 +83,7 @@ The detailed contracts remain in the generated Backlog guide and reusable skills
 
 This project uses Backlog.md for task and project management.
 
-For committed, non-trivial work, run `backlog instructions overview` to decide whether to search, read, create, or update Backlog tasks.
+Only for work that needs durable planning or coordination across sessions, run `backlog instructions overview` to decide whether to search, read, create, or update Backlog tasks. Do not use Backlog.md for work expected to finish in the current session unless the user requests it.
 
 Before task lifecycle actions, read the matching detailed guide:
 - `backlog instructions task-creation` before creating or splitting tasks
