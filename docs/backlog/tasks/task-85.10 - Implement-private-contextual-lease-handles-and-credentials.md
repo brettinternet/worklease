@@ -1,10 +1,11 @@
 ---
 id: TASK-85.10
 title: Implement contextual handles and credential sources
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 12:31'
 labels:
   - go-rewrite
 milestone: m-0
@@ -19,6 +20,13 @@ references:
   - tests/test_credentials.py
   - tests/test_cli.py
   - TASK-67
+modified_files:
+  - internal/handle/handle.go
+  - internal/handle/handle_test.go
+  - internal/cli/lease_commands.go
+  - internal/cli/resource_commands_test.go
+  - internal/lease/service.go
+  - CHANGELOG.md
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -37,15 +45,35 @@ Evidence and patterns (the amended contract is normative): `src/worklease/lease_
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Context tests cover subdirectories, symlinks, linked worktrees and non-Git directories, two sessions in one checkout, and identical contention resources despite distinct sessions/handles.
-- [ ] #2 Security tests reject unsafe/symlinked/hard-linked/foreign/oversized handles and credentials, validate the pending/ready schema, enforce strict token encoding and produce durable owner-only writes without secret diagnostics.
-- [ ] #3 Two real processes acquiring different resources into one destination cannot orphan a grant or overwrite an active/pending handle; concurrent mutations reload under a stable lock, and transfer locks two distinct destinations in canonical order.
-- [ ] #4 Crash tests at pre-dispatch, post-commit/pre-handle-write, release cleanup and both transfer-handle boundaries recover the original request and bearer, never rewind revision, never mint new intent and never leak tokens. Handle persistence tests keep a separate recoveryRequest beside a pending external request and clear both only after confirmed resolution; 85.9 owns end-to-end reconciliation crash tests.
-- [ ] #5 Selector tests prove explicit credentials bypass even malformed unrelated contextual files, mixed modes fail, authority mismatch cannot mutate, pending recovery works, with explicit reconciliation integration owned by 85.9, stateless acquire retains required inputs, and mise run ci-go passes.
+- [x] #1 Context tests cover subdirectories, symlinks, linked worktrees and non-Git directories, two sessions in one checkout, and identical contention resources despite distinct sessions/handles.
+- [x] #2 Security tests reject unsafe/symlinked/hard-linked/foreign/oversized handles and credentials, validate the pending/ready schema, enforce strict token encoding and produce durable owner-only writes without secret diagnostics.
+- [x] #3 Two real processes acquiring different resources into one destination cannot orphan a grant or overwrite an active/pending handle; concurrent mutations reload under a stable lock, and transfer locks two distinct destinations in canonical order.
+- [x] #4 Crash tests at pre-dispatch, post-commit/pre-handle-write, release cleanup and both transfer-handle boundaries recover the original request and bearer, never rewind revision, never mint new intent and never leak tokens. Handle persistence tests keep a separate recoveryRequest beside a pending external request and clear both only after confirmed resolution; 85.9 owns end-to-end reconciliation crash tests.
+- [x] #5 Selector tests prove explicit credentials bypass even malformed unrelated contextual files, mixed modes fail, authority mismatch cannot mutate, pending recovery works, with explicit reconciliation integration owned by 85.9, stateless acquire retains required inputs, and mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented private Go contextual and explicit handles with authority binding, owner-only atomic persistence, strict file/descriptor credentials, duplicate-key/schema validation, stable sibling locks, exact pending requests, conservative committed/unknown failure handling, automatic replay, monotonic revision synchronization, and canonical transfer locking/recovery.
+
+Validation evidence:
+- AC1: TestContextRootAndContextualPathAreStableAndSessionScoped; TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees; TestProcessesSerializeOneHandleAndConcurrentMutations.
+- AC2: TestHandleAtomicPrivateRoundTripAndRejectsUnsafe; TestCredentialReaderStrictEncodingAndBounded; TestHandleSchemaRejectsTrailingPendingAndAuthorityErrors; TestExistingMalformedHandleIsNeverReplaceable.
+- AC3: TestProcessesSerializeOneHandleAndConcurrentMutations; TestReverseTransfersUseCanonicalLocksWithoutDeadlock; TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs.
+- AC4: TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch; TestHandleSynchronizationNeverRewindsRevision; TestHandleSchemaRejectsTrailingPendingAndAuthorityErrors; TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs.
+- AC5: TestContextualDefaultRunsCompleteLifecycle; TestExplicitCredentialsCanTransferIntoPrivateSuccessorHandle; TestAcquireRejectsMixedHandleAndStatelessSelection; TestStatusRejectsMixedPrivateAndPublicSelection; TestAcquireDerivesInputBeforeDispatch; mise run ci-go.
+- Required repository gates also passed: mise run lint, format-check, test (339 Python tests), and typecheck (0 errors).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added secure session-scoped and explicit Go handles, strict credentials, stable locks, exact pending-request recovery, and lifecycle/transfer CLI integration. AC1 is proven by context/symlink/linked-worktree and multi-process tests; AC2 by handle/credential/schema safety tests; AC3 by process serialization and reverse-transfer lock tests; AC4 by pre/post-dispatch replay, release cleanup, transfer, and revision-monotonicity tests; AC5 by contextual/stateless/explicit selector tests and `mise run ci-go`. Full lint, format, Python test, and typecheck gates also pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
