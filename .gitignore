@@ -6,6 +6,7 @@ __pycache__/
 mise.local.toml
 build/
 dist/
+/bin/
 *.egg-info/
 .coverage
 coverage.xml
