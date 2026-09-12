@@ -4,6 +4,7 @@ title: Generate agent setup and optional mutation guards
 status: To Do
 assignee: []
 created_date: '2026-09-12 03:24'
+updated_date: '2026-09-12 04:06'
 labels:
   - go-rewrite
 milestone: m-0
@@ -11,11 +12,14 @@ dependencies:
   - TASK-85.14
   - TASK-85.15
 references:
+  - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
+  - docs/mcp.md
+  - ../hum/internal/cli/init.go
+  - ../hum/internal/cli/manifest.go
   - TASK-80
   - TASK-82
-  - ../hum/internal/cli/mcp.go
 parent_task_id: TASK-85
-priority: medium
+priority: high
 type: feature
 ordinal: 108000
 ---
@@ -23,14 +27,26 @@ ordinal: 108000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Make the Go-native MCP and verification workflow easy to install in coding-agent harnesses without silently rewriting user configuration. Combine the setup-generator intent from TASK-82 with opt-in pre-mutation guard integrations from TASK-80. Generated integrations remain cooperative helpers, not part of claim authority.
+Installing Worklease in a coding-agent harness means editing client configuration by hand and remembering the verify step. Contract section 13 specifies conservative generators: preview by default, explicit `--apply`, semantic preservation of unrelated configuration, precise `--remove`, and an opt-in Claude Code PreToolUse guard that calls `worklease verify --hook claude-code`. Generated files are cooperative helpers, never part of claim authority. This task absorbs TASK-82 and TASK-80.
+
+Read first: contract sections 4 (setup rows), 10.3 (hook exit semantics), 13. Evidence: the TASK-80 and TASK-82 acceptance criteria; `docs/mcp.md` (the current Claude Code snippet). Patterns: `../hum/internal/cli/init.go` and `init_test.go` (file generation with preview), `../hum/internal/cli/manifest.go` (JSON handling). Before implementing, confirm the Claude Code hook stdin shape and exit-code semantics against the current Claude Code hooks documentation and record the source URL in the task notes.
+
+Deliver in `internal/setup`: client targets (claude-code project and user, cursor project and user, generic) with target path resolution; `Plan(target, action)` producing the intended JSON document and a unified diff; `Apply` writing atomically with two-space indentation while preserving all unrelated keys; `Remove` deleting only worklease-owned entries; the Claude Code guard hook entry with matcher `Edit|Write|MultiEdit|NotebookEdit|Bash` and the exact command string; the instructions block generator with version markers; a generic POSIX shell guard example. Deliver in `internal/cli`: `setup mcp`, `setup guard`, `setup instructions`. Help text must state the bypass, time-of-check versus time-of-use, unsupported-tool, provider-write, and same-host boundaries (TASK-85.17 copies them into the docs).
+
+Owned paths: `internal/setup`, `internal/cli/setup.go` and tests. Out of scope: Codex or other TOML-configured clients (documented as unsupported), installing the binary itself.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The CLI previews version-matched MCP and agent-instruction configuration for supported coding-agent clients and applies it only with an explicit option.
-- [ ] #2 Apply and remove operations are idempotent, preserve unrelated configuration, reject ambiguous or malformed files, and write no credentials.
-- [ ] #3 At least one hook-capable agent integration and one generic command-hook example use non-mutating claim verification to allow or block configured repository mutations.
-- [ ] #4 Documentation clearly states bypass, time-of-check/time-of-use, unsupported-tool, direct-provider-write, and same-host boundaries.
-- [ ] #5 Tests cover preview, fresh apply, repeat apply, malformed and unrelated configuration, precise removal, guard allow/deny cases, and version-matched generated content.
+- [ ] #1 Preview tests prove `setup mcp --client claude-code` and `--client cursor` print the target path and a unified diff without writing, `--client generic` prints the JSON snippet, the generated command is the absolute path of the running binary with args ["mcp"], and WORKLEASE_AGENT_ID appears only when --agent is given.
+- [ ] #2 Apply tests prove a fresh apply creates the file with the worklease entry, a second apply is a no-op producing a byte-identical file, applying to a file with unrelated mcpServers entries and top-level keys preserves them semantically, a non-object root, invalid JSON, or an existing mcpServers.worklease of a different type fails setup-config-malformed without writing, and writes are atomic through a temp file plus rename.
+- [ ] #3 Remove tests prove --remove deletes only mcpServers.worklease (and only the worklease hook entry for guard), leaves other entries intact, and is idempotent when the entry is absent.
+- [ ] #4 Guard tests prove the generated Claude Code hook entry matches contract 13 exactly, that running the hook command with a valid contextual handle exits 0, and with a missing or expired handle exits 2 with a one-line stderr message (tests execute the real `worklease verify --hook claude-code` with sample hook JSON on stdin); the generic shell example is executable and blocks when verify fails.
+- [ ] #5 `setup instructions` output includes version markers matching `worklease version` and the instructions text, help text for all setup commands states the boundary caveats, and `mise run ci-go` passes.
 <!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 `mise run ci-go` passes on the final commit
+- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+<!-- DOD:END -->
