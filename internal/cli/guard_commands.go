@@ -57,7 +57,7 @@ func execAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if max == 0 {
 			max = time.Hour
 		}
-		result, err := guard.Exec(ctx, svc, creds, guard.ExecRequest{OperationID: op, Argv: argv, CWD: cmd.String("cwd"), GitPrimary: cmd.Bool("git-primary"), MaxDuration: max, TTL: ttl, RequestNotAfter: deadline, Lifecycle: guardLifecycle(hp, h)})
+		result, err := guard.Exec(ctx, svc, creds, guard.ExecRequest{OperationID: op, Argv: argv, CWD: cmd.String("cwd"), GitPrimary: cmd.Bool("git-primary"), MaxDuration: max, TTL: ttl, RequestNotAfter: deadline, Lifecycle: guardLifecycle(hp, h, lock)})
 		if err != nil {
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, hp))
 		}
@@ -113,7 +113,7 @@ func replaceFileAction(s *boundary) func(context.Context, *urfave.Command) error
 		if pending != nil {
 			requestHash = pending.RequestHash
 		}
-		result, err := guard.ReplaceFile(ctx, svc, creds, guard.ReplaceRequest{OperationID: op, Path: path, ExpectedSHA256: strings.ToLower(strings.TrimSpace(cmd.String("expected-sha256"))), ContentFile: content, TTL: ttl, RequestNotAfter: deadline, RequestHash: requestHash, Lifecycle: guardLifecycle(hp, h)})
+		result, err := guard.ReplaceFile(ctx, svc, creds, guard.ReplaceRequest{OperationID: op, Path: path, ExpectedSHA256: strings.ToLower(strings.TrimSpace(cmd.String("expected-sha256"))), ContentFile: content, TTL: ttl, RequestNotAfter: deadline, RequestHash: requestHash, Lifecycle: guardLifecycle(hp, h, lock)})
 		if err != nil {
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, hp))
 		}
@@ -146,7 +146,7 @@ func (c lockAndStore) Close() error {
 	return nil
 }
 
-func guardLifecycle(path string, h *handle.Handle) *guard.OperationLifecycle {
+func guardLifecycle(path string, h *handle.Handle, locks ...*handle.Lock) *guard.OperationLifecycle {
 	if h == nil {
 		return nil
 	}
@@ -167,14 +167,17 @@ func guardLifecycle(path string, h *handle.Handle) *guard.OperationLifecycle {
 			}
 			h.State = "pending"
 			h.PendingRequest = &handle.PendingRequest{OperationID: intent.OperationID, Kind: intent.Kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hash, RequestNotAfter: intent.RequestNotAfter, Inputs: intent.Request}
+			if len(locks) > 0 && locks[0] != nil {
+				return locks[0].Write(path, *h)
+			}
 			return handle.Write(path, *h)
 		},
-		Complete: func(receipt lease.Receipt) error { return finishHandleMutation(path, h, receipt) },
+		Complete: func(receipt lease.Receipt) error { return finishHandleMutation(path, h, receipt, locks...) },
 		Failure: func(err error, started bool) {
 			// Once the started intent is committed the pending request is the
 			// only exact record of that operation; keep it for recovery.
 			if !started && isDefinitiveNoCommit(err) {
-				clearPending(path, h)
+				clearPending(path, h, locks...)
 			}
 		},
 	}
@@ -249,7 +252,7 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 		st.Close()
 		return lease.Credentials{}, nil, nil, nil, e
 	}
-	h, e := handle.Read(path)
+	h, e := lock.Read(path)
 	if e != nil {
 		lock.Close()
 		st.Close()

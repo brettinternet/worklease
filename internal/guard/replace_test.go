@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestReplaceFileRejectsSymlinkTargetBeforeCanonicalization(t *testing.T) {
@@ -53,7 +53,7 @@ func TestReplaceFileRejectsSymlinkTargetBeforeCanonicalization(t *testing.T) {
 
 func TestReplaceFileExpectedHashPreservesModeAndReplay(t *testing.T) {
 	root := t.TempDir()
-	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+	if out, err := testkit.GitCommand("-C", root, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	target := filepath.Join(root, "target.txt")

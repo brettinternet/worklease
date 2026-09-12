@@ -212,7 +212,7 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 			}
 		} else if h != nil {
 			h.RecoveryRequest = &handle.RecoveryRequest{OperationID: op, TargetClaimID: targetClaim, TargetOperationID: targetOp, RequestHash: hash, RequestNotAfter: deadline, Outcome: outcome, Evidence: evidence}
-			if err := handle.Write(path, *h); err != nil {
+			if err := lock.Write(path, *h); err != nil {
 				return s.handle(cmd, err)
 			}
 		}
@@ -220,7 +220,7 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err != nil {
 			if h != nil && isDefinitiveNoCommit(err) {
 				h.RecoveryRequest = nil
-				_ = handle.Write(path, *h)
+				_ = lock.Write(path, *h)
 			}
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, path))
 		}
@@ -230,7 +230,7 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 			h.RecoveryRequest = nil
 			h.Revision = r.Revision
 			h.ExpiresAt = r.ExpiresAt
-			if err := handle.Write(path, *h); err != nil {
+			if err := lock.Write(path, *h); err != nil {
 				return s.handle(cmd, committedHandleFailure(err, lease.Receipt{OperationID: r.OperationID, ClaimID: r.ResolverClaimID, Kind: "reconcile", Revision: r.Revision, Committed: true}, path, creds.ClaimID, op))
 			}
 		}

@@ -20,7 +20,17 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-var writeHandleFile = handle.Write
+var writeHandleFile func(string, handle.Handle) error
+
+func writeHandle(lock *handle.Lock, path string, h handle.Handle) error {
+	if writeHandleFile != nil {
+		return writeHandleFile(path, h)
+	}
+	if lock != nil {
+		return lock.Write(path, h)
+	}
+	return handle.Write(path, h)
+}
 
 func serviceFor(ctx context.Context, cmd *urfave.Command, write bool) (*lease.Service, *store.Store, config.Config, error) {
 	cfg, err := config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "agent": cmd.String("agent"), "session": cmd.String("session"), "ttl": cmd.String("ttl"), "poll_interval": cmd.String("poll-interval"), "config": cmd.String("config")}})
@@ -142,7 +152,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		}
 		defer lock.Close()
 		var h handle.Handle
-		existing, re := handle.Read(path)
+		existing, re := lock.Read(path)
 		if re == nil {
 			h = existing
 			if h.AuthorityID != st.AuthorityID() {
@@ -157,7 +167,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			}
 			if current.Claim != nil && current.Claim.Active {
 				h.Revision, h.ExpiresAt = current.Claim.Revision, current.Claim.ExpiresAt
-				if writeErr := writeHandleFile(path, h); writeErr != nil {
+				if writeErr := writeHandle(lock, path, h); writeErr != nil {
 					return s.handle(cmd, writeErr)
 				}
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
@@ -222,26 +232,26 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			g, replayErr := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: h.Resources, Token: h.Token, ClaimID: h.ClaimID, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: inputString(p.Inputs, "workKey"), TTL: inputDuration(p.Inputs, "ttl", ttl), Wait: inputDuration(p.Inputs, "wait", 0), PollInterval: inputDuration(p.Inputs, "pollInterval", poll), CoordinationOnly: inputBool(p.Inputs, "coordinationOnly"), LocalReplaceAllowed: h.LocalReplaceAllowed, RequestNotAfter: p.RequestNotAfter})
 			if replayErr != nil {
 				if isDefinitiveNoCommit(replayErr) {
-					_ = handle.Remove(path)
+					_ = lock.Remove(path)
 				}
 				return s.handle(cmd, mutationFailure(replayErr, h.ClaimID, p.OperationID, path))
 			}
 			ready := h
 			ready.State, ready.Revision, ready.ExpiresAt = "ready", g.Revision, g.ExpiresAt
 			ready.PendingRequest = nil
-			if e := writeHandleFile(path, ready); e != nil {
+			if e := writeHandle(lock, path, ready); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, g.Receipt, path, h.ClaimID, p.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
 		}
 		pending := handle.Handle{SchemaVersion: 1, AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Resources: resources, AgentID: cfg.AgentID, SessionID: session, LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claimID, Kind: "acquire", AuthorityID: st.AuthorityID(), ClaimID: claimID, RequestHash: requestHash, RequestNotAfter: deadline, Inputs: inputs}}
-		if err := writeHandleFile(path, pending); err != nil {
+		if err := writeHandle(lock, path, pending); err != nil {
 			return s.handle(cmd, err)
 		}
 		g, e := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: resources, Token: token, ClaimID: claimID, AgentID: cfg.AgentID, SessionID: session, WorkKey: workKey, TTL: ttl, Wait: wait, PollInterval: poll, CoordinationOnly: cmd.Bool("coordination-only"), LocalReplaceAllowed: in.Keys[0].LocalReplaceAllowed, RequestNotAfter: deadline})
 		if e != nil {
 			if isDefinitiveNoCommit(e) {
-				_ = handle.Remove(path)
+				_ = lock.Remove(path)
 			}
 			return s.handle(cmd, mutationFailure(e, claimID, claimID, path))
 		}
@@ -250,7 +260,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		ready.Revision = g.Revision
 		ready.ExpiresAt = g.ExpiresAt
 		ready.PendingRequest = nil
-		if err := writeHandleFile(path, ready); err != nil {
+		if err := writeHandle(lock, path, ready); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, g.Receipt, path, claimID, claimID))
 		}
 		return writeLeaseResult(s, cmd, "acquire", acquireFields(g))
@@ -384,7 +394,7 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lea
 		st.Close()
 		return lease.Credentials{}, nil, nil, nil, nil, "", e
 	}
-	h, e := handle.Read(path)
+	h, e := lk.Read(path)
 	if e != nil {
 		lk.Close()
 		st.Close()
@@ -397,7 +407,7 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lea
 	}
 	return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, svc, st, lk, &h, path, nil
 }
-func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadline time.Time, inputs map[string]any) error {
+func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadline time.Time, inputs map[string]any, locks ...*handle.Lock) error {
 	if h == nil {
 		return nil
 	}
@@ -412,6 +422,9 @@ func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadlin
 	}
 	h.State = "pending"
 	h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(inputs), RequestNotAfter: deadline, Inputs: inputs}
+	if len(locks) > 0 && locks[0] != nil {
+		return locks[0].Write(path, *h)
+	}
 	return handle.Write(path, *h)
 }
 func operationID(cmd *urfave.Command, pending *handle.PendingRequest) (string, error) {
@@ -516,11 +529,17 @@ func committedHandleFailure(err error, receipt lease.Receipt, path, claim, op st
 	}
 	return e
 }
-func clearPending(path string, h *handle.Handle) { _ = handle.ClearPending(path, h) }
+func clearPending(path string, h *handle.Handle, locks ...*handle.Lock) {
+	if len(locks) > 0 && locks[0] != nil {
+		_ = locks[0].ClearPending(path, h)
+		return
+	}
+	_ = handle.ClearPending(path, h)
+}
 
 // recoverPendingMutation replays only the exact request retained in a handle.
 // It never constructs a new operation or deadline.
-func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Credentials, path string, h *handle.Handle, kind string, currentHash string) (lease.Receipt, bool, error) {
+func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Credentials, path string, h *handle.Handle, kind string, currentHash string, locks ...*handle.Lock) (lease.Receipt, bool, error) {
 	if h == nil || h.State != "pending" {
 		return lease.Receipt{}, false, nil
 	}
@@ -545,7 +564,7 @@ func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Cre
 	}
 	if err != nil {
 		if isDefinitiveNoCommit(err) {
-			clearPending(path, h)
+			clearPending(path, h, locks...)
 		}
 		return lease.Receipt{}, true, mutationFailure(err, c.ClaimID, p.OperationID, path)
 	}
@@ -556,7 +575,7 @@ func requestHashCLI(v any) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
-func finishHandleMutation(path string, h *handle.Handle, r lease.Receipt) error {
+func finishHandleMutation(path string, h *handle.Handle, r lease.Receipt, locks ...*handle.Lock) error {
 	if h == nil {
 		return nil
 	}
@@ -569,6 +588,9 @@ func finishHandleMutation(path string, h *handle.Handle, r lease.Receipt) error 
 		if t, e := time.Parse(time.RFC3339Nano, v); e == nil {
 			h.ExpiresAt = t
 		}
+	}
+	if len(locks) > 0 && locks[0] != nil {
+		return locks[0].Write(path, *h)
 	}
 	return handle.Write(path, *h)
 }
@@ -613,26 +635,26 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "heartbeat", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
-		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs)); recovering {
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
 				return s.handle(cmd, e)
 			}
-			if e = finishHandleMutation(hp, h, r); e != nil {
+			if e = finishHandleMutation(hp, h, r, lk); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
 		}
-		if err := beginHandleMutation(hp, h, "heartbeat", op, deadline, inputs); err != nil {
+		if err := beginHandleMutation(hp, h, "heartbeat", op, deadline, inputs, lk); err != nil {
 			return s.handle(cmd, err)
 		}
 		r, err := svc.Heartbeat(ctx, c, lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline})
 		if err != nil {
 			if isDefinitiveNoCommit(err) {
-				clearPending(hp, h)
+				clearPending(hp, h, lk)
 			}
 			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
 		}
-		if err := finishHandleMutation(hp, h, r); err != nil {
+		if err := finishHandleMutation(hp, h, r, lk); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 		}
 		return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
@@ -690,26 +712,26 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "checkpoint", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(data), "requestNotAfter": deadline.UTC().UnixMicro()}
-		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs)); recovering {
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
 				return s.handle(cmd, e)
 			}
-			if e = finishHandleMutation(hp, h, r); e != nil {
+			if e = finishHandleMutation(hp, h, r, lk); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
 		}
-		if err := beginHandleMutation(hp, h, "checkpoint", op, deadline, inputs); err != nil {
+		if err := beginHandleMutation(hp, h, "checkpoint", op, deadline, inputs, lk); err != nil {
 			return s.handle(cmd, err)
 		}
 		r, err := svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: op, TTL: ttl, Data: data, RequestNotAfter: deadline})
 		if err != nil {
 			if isDefinitiveNoCommit(err) {
-				clearPending(hp, h)
+				clearPending(hp, h, lk)
 			}
 			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
 		}
-		if err := finishHandleMutation(hp, h, r); err != nil {
+		if err := finishHandleMutation(hp, h, r, lk); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 		}
 		return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
@@ -759,33 +781,42 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "release", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()}
-		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "release", requestHashCLI(inputs)); recovering {
+		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "release", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
 				return s.handle(cmd, e)
 			}
-			if e = handle.Remove(hp); e != nil {
+			if e = lk.Remove(hp); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
 		}
-		if err := beginHandleMutation(hp, h, "release", op, deadline, inputs); err != nil {
+		if err := beginHandleMutation(hp, h, "release", op, deadline, inputs, lk); err != nil {
 			return s.handle(cmd, err)
 		}
 		r, err := svc.Release(ctx, c, lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
 		if err != nil {
 			if isDefinitiveNoCommit(err) {
-				clearPending(hp, h)
+				clearPending(hp, h, lk)
 			}
 			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
 		}
 		if h != nil {
-			if err := handle.Remove(hp); err != nil {
+			if err := lk.Remove(hp); err != nil {
 				return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 			}
 		}
 		return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
 	}
 }
+func lockForPath(locks []*handle.Lock, path string) *handle.Lock {
+	for _, lock := range locks {
+		if lock != nil && lock.Matches(path) {
+			return lock
+		}
+	}
+	return nil
+}
+
 func transferActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
 		if strings.TrimSpace(cmd.String("successor-handle")) == "" {
@@ -828,6 +859,8 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				_ = l.Close()
 			}
 		}()
+		predecessorLock := lockForPath(locks, predecessorPath)
+		successorLock := lockForPath(locks, successorPath)
 		var h *handle.Handle
 		hp := predecessorPath
 		var c lease.Credentials
@@ -837,7 +870,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				return s.handle(cmd, e)
 			}
 			c = lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}
-			if successor, readErr := handle.Read(successorPath); readErr == nil && successor.State == "pending" && successor.PendingRequest != nil && successor.PendingRequest.Kind == "transfer" && inputString(successor.PendingRequest.Inputs, "claimId") == c.ClaimID {
+			if successor, readErr := successorLock.Read(successorPath); readErr == nil && successor.State == "pending" && successor.PendingRequest != nil && successor.PendingRequest.Kind == "transfer" && inputString(successor.PendingRequest.Inputs, "claimId") == c.ClaimID {
 				if successor.AuthorityID != st.AuthorityID() {
 					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "successor handle authority does not match"))
 				}
@@ -854,7 +887,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 			}
 			hp = ""
 		} else {
-			loaded, e := handle.Read(predecessorPath)
+			loaded, e := predecessorLock.Read(predecessorPath)
 			if e != nil {
 				return s.handle(cmd, e)
 			}
@@ -876,13 +909,13 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				return s.handle(cmd, e)
 			}
 			successorID := inputString(p.Inputs, "successorClaimId")
-			sh, readErr := handle.Read(successorPath)
+			sh, readErr := successorLock.Read(successorPath)
 			if readErr != nil {
 				if classified := reason.As(readErr); classified == nil || classified.Reason != reason.ReasonHandleMalformed {
 					return s.handle(cmd, readErr)
 				}
 				sh = handle.Handle{SchemaVersion: 1, AuthorityID: h.AuthorityID, ClaimID: successorID, Token: p.SuccessorToken, Resources: append([]string(nil), h.Resources...), AgentID: inputString(p.Inputs, "toAgent"), SessionID: inputString(p.Inputs, "toSession"), State: "pending", LocalReplaceAllowed: h.LocalReplaceAllowed, PendingRequest: &handle.PendingRequest{OperationID: p.OperationID, Kind: "transfer", AuthorityID: h.AuthorityID, ClaimID: successorID, RequestHash: p.RequestHash, RequestNotAfter: p.RequestNotAfter, Inputs: p.Inputs, SuccessorToken: p.SuccessorToken}}
-				if e := handle.Write(successorPath, sh); e != nil {
+				if e := successorLock.Write(successorPath, sh); e != nil {
 					return s.handle(cmd, e)
 				}
 			}
@@ -903,8 +936,8 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 			g, replayErr := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: p.OperationID, SuccessorClaimID: sh.ClaimID, SuccessorToken: sh.Token, ToAgent: sh.AgentID, ToSession: sh.SessionID, ToWorkKey: inputString(p.Inputs, "toWorkKey"), TTL: inputDuration(p.Inputs, "ttl", svc.DefaultTTL()), RequestNotAfter: p.RequestNotAfter})
 			if replayErr != nil {
 				if isDefinitiveNoCommit(replayErr) {
-					clearPending(hp, h)
-					_ = handle.Remove(successorPath)
+					clearPending(hp, h, predecessorLock)
+					_ = successorLock.Remove(successorPath)
 				}
 				return s.handle(cmd, mutationFailure(replayErr, c.ClaimID, p.OperationID, hp))
 			}
@@ -912,17 +945,17 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 			if g.Revision > sh.Revision {
 				sh.Revision = g.Revision
 			}
-			if e := handle.Write(successorPath, sh); e != nil {
+			if e := successorLock.Write(successorPath, sh); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, g.Receipt, successorPath, c.ClaimID, p.OperationID))
 			}
-			if e := handle.Remove(hp); e != nil {
+			if e := predecessorLock.Remove(hp); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, g.Receipt, hp, c.ClaimID, p.OperationID))
 			}
 			return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
 		}
 		if explicit {
 			if _, statErr := os.Lstat(successorPath); statErr == nil {
-				sh, readErr := handle.Read(successorPath)
+				sh, readErr := successorLock.Read(successorPath)
 				if readErr != nil {
 					return s.handle(cmd, readErr)
 				}
@@ -945,7 +978,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				g, replayErr := svc.Transfer(ctx, c, lease.TransferRequest{OperationID: p.OperationID, SuccessorClaimID: sh.ClaimID, SuccessorToken: sh.Token, ToAgent: sh.AgentID, ToSession: sh.SessionID, ToWorkKey: inputString(p.Inputs, "toWorkKey"), TTL: inputDuration(p.Inputs, "ttl", svc.DefaultTTL()), RequestNotAfter: p.RequestNotAfter})
 				if replayErr != nil {
 					if isDefinitiveNoCommit(replayErr) {
-						_ = handle.Remove(successorPath)
+						_ = successorLock.Remove(successorPath)
 					}
 					return s.handle(cmd, mutationFailure(replayErr, c.ClaimID, p.OperationID, successorPath))
 				}
@@ -953,7 +986,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				if g.Revision > sh.Revision {
 					sh.Revision = g.Revision
 				}
-				if e := handle.Write(successorPath, sh); e != nil {
+				if e := successorLock.Write(successorPath, sh); e != nil {
 					return s.handle(cmd, committedHandleFailure(e, g.Receipt, successorPath, c.ClaimID, p.OperationID))
 				}
 				return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
@@ -987,7 +1020,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		transferHash := requestHashCLI(inputs)
 		sh := handle.Handle{SchemaVersion: 1, AuthorityID: c.AuthorityID, ClaimID: successorID, Token: successor, Resources: h.Resources, AgentID: cmd.String("to-agent"), SessionID: cmd.String("to-session"), State: "pending", LocalReplaceAllowed: h.LocalReplaceAllowed, PendingRequest: &handle.PendingRequest{OperationID: op, Kind: "transfer", AuthorityID: c.AuthorityID, ClaimID: successorID, RequestHash: transferHash, RequestNotAfter: deadline, Inputs: inputs, SuccessorToken: successor}}
 		if _, e := os.Lstat(successorPath); e == nil {
-			if _, readErr := handle.Read(successorPath); readErr != nil {
+			if _, readErr := successorLock.Read(successorPath); readErr != nil {
 				return s.handle(cmd, readErr)
 			}
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "successor handle is already in use"))
@@ -998,13 +1031,13 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		if hp != "" {
 			h.State = "pending"
 			h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: "transfer", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: transferHash, RequestNotAfter: deadline, Inputs: inputs, SuccessorToken: successor}
-			if err := handle.Write(hp, *h); err != nil {
+			if err := predecessorLock.Write(hp, *h); err != nil {
 				return s.handle(cmd, err)
 			}
 		}
-		if err := handle.Write(successorPath, sh); err != nil {
+		if err := successorLock.Write(successorPath, sh); err != nil {
 			if hp != "" {
-				_ = handle.Write(hp, predecessorReady)
+				_ = predecessorLock.Write(hp, predecessorReady)
 			}
 			return s.handle(cmd, err)
 		}
@@ -1012,9 +1045,9 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		if err != nil {
 			if isDefinitiveNoCommit(err) {
 				if hp != "" {
-					clearPending(hp, h)
+					clearPending(hp, h, predecessorLock)
 				}
-				_ = handle.Remove(successorPath)
+				_ = successorLock.Remove(successorPath)
 			}
 			pendingPath := hp
 			if pendingPath == "" {
@@ -1026,11 +1059,11 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		if g.Revision > sh.Revision {
 			sh.Revision = g.Revision
 		}
-		if err := handle.Write(successorPath, sh); err != nil {
+		if err := successorLock.Write(successorPath, sh); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, g.Receipt, successorPath, c.ClaimID, op))
 		}
 		if hp != "" {
-			if err := handle.Remove(hp); err != nil {
+			if err := predecessorLock.Remove(hp); err != nil {
 				return s.handle(cmd, committedHandleFailure(err, g.Receipt, hp, c.ClaimID, op))
 			}
 		}
