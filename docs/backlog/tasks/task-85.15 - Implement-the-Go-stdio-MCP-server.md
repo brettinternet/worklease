@@ -1,10 +1,11 @@
 ---
 id: TASK-85.15
 title: Implement the stdio MCP server
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi-01a096ee'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 18:44'
 labels:
   - go-rewrite
 milestone: m-0
@@ -49,3 +50,12 @@ Evidence and patterns (the amended contract is normative): hum `internal/mcp/ser
 - [ ] #1 `mise run ci-go` passes on the final commit
 - [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add the Go stdio MCP transport, request registry, version negotiation/discovery, bounded concurrency, cancellation, and exact eleven-tool schemas.
+2. Implement private reference-backed lease lifecycle state with cross-process locking, pending-operation recovery, bounded automatic renewal, and CLI/native-hook interoperability.
+3. Wire all tools to existing typed services and add real stdio/subprocess, lifecycle, heartbeat, event/watch, redaction, contention, and end-to-end tests.
+4. Run focused Go tests and the full repository quality gates, review the diff, then record acceptance evidence and completion.
+<!-- SECTION:PLAN:END -->
