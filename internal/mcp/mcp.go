@@ -530,7 +530,7 @@ func (s *Server) readLease(ctx context.Context, ref string, write bool) (handle.
 	if e != nil {
 		return handle.Handle{}, p, nil, e
 	}
-	h, e := handle.Read(p)
+	h, e := lk.Read(p)
 	if e != nil {
 		lk.Close()
 		return handle.Handle{}, p, nil, reason.New(reason.ReasonInvalidToken, "lease reference is unavailable")
@@ -621,7 +621,7 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 		}
 		return ""
 	}(), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: b.st.AuthorityID(), ClaimID: claim, RequestHash: hash, RequestNotAfter: deadline, Inputs: inputs}}
-	if e = handle.Write(path, h); e != nil {
+	if e = lk.Write(path, h); e != nil {
 		return nil, e
 	}
 	g, e := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: h.Token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: time.Duration(ttlv * float64(time.Second)), Wait: time.Duration(wait * float64(time.Second)), CoordinationOnly: co, LocalReplaceAllowed: !co, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
@@ -629,7 +629,7 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 		if reason.DefinitiveNoCommit(e) {
 			// A grant that provably never committed leaves no recoverable
 			// state; retaining it would only accumulate orphan pending handles.
-			_ = handle.Remove(path)
+			_ = lk.Remove(path)
 			return nil, mutationError(e, claim, claim, path)
 		}
 		if x := reason.As(e); x != nil {
@@ -648,7 +648,7 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 		h.ExpiresAt = h.HoldUntil
 	}
 	h.PendingRequest = nil
-	if e = handle.Write(path, h); e != nil {
+	if e = lk.Write(path, h); e != nil {
 		return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", h.ClaimID).With("operationId", claim).With("pendingPath", path).With("commitState", "committed")
 	}
 	status := "disabled"
@@ -695,7 +695,7 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	g, err := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: h.HoldUntil})
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
-			_ = handle.ClearPending(path, &h)
+			_ = lk.ClearPending(path, &h)
 		}
 		return nil, mutationError(err, h.ClaimID, p.OperationID, path)
 	}
@@ -707,7 +707,7 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	if h.ExpiresAt.After(h.HoldUntil) {
 		h.ExpiresAt = h.HoldUntil
 	}
-	if err := handle.Write(path, h); err != nil {
+	if err := lk.Write(path, h); err != nil {
 		return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", h.ClaimID).With("operationId", p.OperationID).With("commitState", "committed")
 	}
 	if h.AutoRenewOwner != "" {

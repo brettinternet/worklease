@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 // A child that exits while the guard's own renewal is in flight must still
@@ -101,7 +101,7 @@ func TestExecPostStartFailureReportsUnknownAndStartedLifecycle(t *testing.T) {
 // leaving the operation unresolved.
 func TestReplaceFileTempCreationFailureRecordsCompletedFailure(t *testing.T) {
 	root := t.TempDir()
-	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+	if out, err := testkit.GitCommand("-C", root, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	targetDir := filepath.Join(root, "locked")

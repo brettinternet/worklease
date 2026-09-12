@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestGuardHelperProcess(t *testing.T) {
@@ -121,7 +121,7 @@ func TestGitPrimaryResolvesLinkedWorktree(t *testing.T) {
 		{"-C", primary, "worktree", "add", "-q", "-b", "linked-test", linked},
 	}
 	for _, args := range commands {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if out, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
