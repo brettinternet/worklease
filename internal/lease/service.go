@@ -72,6 +72,13 @@ func New(st *store.Store, clock Clock, ids IDGenerator, defaults Defaults) *Serv
 	return &Service{st: st, clock: clock, ids: ids, defaults: defaults}
 }
 
+// DefaultTTL is the normalized lifecycle default used by client handles.
+func (s *Service) DefaultTTL() time.Duration { return s.defaults.TTL }
+
+// NormalizeCheckpoint applies the authority's strict checkpoint validation
+// before a client persists a pending lifecycle request.
+func NormalizeCheckpoint(data []byte) ([]byte, error) { return strictCheckpoint(data) }
+
 type Credentials struct {
 	AuthorityID, ClaimID, Token string
 	Revision                    int64
