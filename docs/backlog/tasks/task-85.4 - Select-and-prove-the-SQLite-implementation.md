@@ -71,6 +71,8 @@ Evidence and patterns (the amended contract is normative): `src/worklease/sqlite
 Implemented modernc.org/sqlite v1.58.0 OpenDriver and executable driver proofs. Independent review found and prompted fixes for deferred reads, canceled-context commit read-back, post-commit error classification, sidecar TOCTOU, subprocess serialization, read-only mutation snapshots, permissive umask, complete sidecar link coverage, and deterministic race evidence.
 
 Validation: mise run ci-go passed (format, vet/staticcheck, unit, race, govulncheck, CGO-disabled build); repository mise run lint, format-check, test (339 Python tests), and typecheck passed. Explicit CGO_ENABLED=0 builds passed for linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64. modernc.org/sqlite v1.58.0 includes BSD-3-Clause and SQLite license files; govulncheck reported no vulnerabilities.
+
+Implementation and backlog evidence committed as 80b348c (Prove modernc SQLite driver). Independent review completed with all concrete findings fixed; no known item-scoped defects remain.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
