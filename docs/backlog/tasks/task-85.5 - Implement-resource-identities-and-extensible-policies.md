@@ -1,10 +1,11 @@
 ---
 id: TASK-85.5
 title: Implement resource policies and key derivation
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi-01a09478'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 06:27'
+updated_date: '2026-09-12 07:57'
 labels:
   - go-rewrite
 milestone: m-0
@@ -20,6 +21,15 @@ references:
   - src/worklease/adapters/registry.py
   - tests/test_adapters.py
   - TASK-84
+modified_files:
+  - CHANGELOG.md
+  - internal/cli/commands.go
+  - internal/cli/resource_commands.go
+  - internal/cli/resource_commands_test.go
+  - internal/cli/resource_input.go
+  - internal/cli/selection.go
+  - internal/resource/resource.go
+  - internal/resource/resource_test.go
 parent_task_id: TASK-85
 priority: high
 type: feature
@@ -38,15 +48,38 @@ Evidence and patterns (the amended contract is normative): `src/worklease/adapte
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Golden derivation tests cover every static policy, delimiter-containing source/item values without collisions, linked-worktree agreement, and separation of unrelated repositories.
-- [ ] #2 Path tests canonicalize symlinks and missing leaves through existing ancestors, reject escapes/non-Git paths and invalid traversal, and explicitly show no parent/child/glob overlap.
-- [ ] #3 Validation rejects unknown policies, blank/control/oversized identities, duplicate resource inputs and mixed resource-input modes before mutation; the registry is deterministic with unique names.
-- [ ] #4 Key and policy text/JSON report resource, provider, capability, scope, identityScope, localReplaceAllowed and providerFencing:false; commands make no network calls.
-- [ ] #5 Coordination-only input disables local replacement capability without claiming provider fencing; acquire can reuse the input resolver and mise run ci-go passes.
+- [x] #1 Golden derivation tests cover every static policy, delimiter-containing source/item values without collisions, linked-worktree agreement, and separation of unrelated repositories.
+- [x] #2 Path tests canonicalize symlinks and missing leaves through existing ancestors, reject escapes/non-Git paths and invalid traversal, and explicitly show no parent/child/glob overlap.
+- [x] #3 Validation rejects unknown policies, blank/control/oversized identities, duplicate resource inputs and mixed resource-input modes before mutation; the registry is deterministic with unique names.
+- [x] #4 Key and policy text/JSON report resource, provider, capability, scope, identityScope, localReplaceAllowed and providerFencing:false; commands make no network calls.
+- [x] #5 Coordination-only input disables local replacement capability without claiming provider fencing; acquire can reuse the input resolver and mise run ci-go passes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Inspect the Go CLI/config contracts and Python adapter derivation behavior.
+2. Implement deterministic resource policies, canonical path handling, and shared resource-input validation.
+3. Add key/policy CLI projections and focused golden/validation tests.
+4. Run ci-go and repository quality gates, review the diff, and record evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed with Worklease resource backlog-md:/Users/brett/dev/me/worklease/.git:docs/backlog:TASK-85.5. Guarantee: local coordination among cooperating callers on this host; provider writes are not fenced.
+
+Implemented and merged commit f0dd2a2. Review found identity-normalization, cross-repository symlink, working-directory, Git-output whitespace, descriptor, and test-evidence defects; all were fixed before merge. Validation passed: mise run ci-go; mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck. go list dependency inspection found no net or net/http dependency in the resource or CLI packages.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented six static Go resource policies and shared CLI resource-input resolution. AC1: TestStaticPolicyGoldenDerivations, TestRFC3986EncodingAndCanonicalCoordinationKey, and TestLinkedWorktreesAndSymlinkMissingLeaf prove golden, collision, and repository identity behavior. AC2: TestPathCanonicalContainmentAndExactSemantics, TestLinkedWorktreesAndSymlinkMissingLeaf, and TestPathPreservesGitRootWhitespace prove canonicalization, containment, and exact-path behavior. AC3: TestValidationAndDeterministicRegistry and TestResourceInputResolverRejectsDuplicateAndMixedModesBeforeAcquire prove validation and deterministic registration. AC4: TestKeyAndPolicyCommandsReportContractMetadata proves text and JSON projections; go list dependency inspection confirms no network dependency. AC5: TestKeyAndPolicyCommandsReportContractMetadata, TestAcquireDerivesInputBeforeLaterPlaceholder, and mise run ci-go on f0dd2a2 prove coordination-only semantics, shared acquire resolution, and the final Go gate.
+<!-- SECTION:FINAL_SUMMARY:END -->
