@@ -1,11 +1,11 @@
 ---
 id: TASK-85.16
 title: Generate agent setup and optional mutation guards
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:24'
-updated_date: '2026-09-12 19:59'
+updated_date: '2026-09-12 20:17'
 labels:
   - go-rewrite
 milestone: m-0
@@ -36,18 +36,18 @@ Evidence and patterns (the amended contract is normative): TASK-80 and TASK-82 (
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Preview outputs the correct documented target and diff/snippet without writes for each supported client/scope, including fixtures for user-level configuration.
-- [ ] #2 Apply/remove are atomic and idempotent, preserve unrelated content semantically, reject malformed types/symlinked or unsafe files and detect a concurrent edit before replacement.
-- [ ] #3 Generated commands use the safely quoted absolute running binary and preserve explicit home/config/session selection; CLI/MCP/hooks resolve the same authority in integration tests.
-- [ ] #4 Native guard integration executes the real verify hook in both modes: the default claim-coverage entry allows edits under a valid claim and blocks missing/expired/pending claims, the --coverage path entry additionally blocks unrelated paths, both support explicit MCP reference binding, removal recognizes either generated command form, and Bash is not registered.
-- [ ] #5 Setup instructions/version markers and a generic wrapper match the contract; final surface tests now include all commands, documentation states supported boundaries, and mise run ci-go passes.
-- [ ] #6 A new-user setup journey previews then explicitly applies MCP configuration and completes a minimal lease lifecycle without installing native guards or manually editing credentials; generic output explains the required client action and all setup help presents guards as optional.
+- [x] #1 Preview outputs the correct documented target and diff/snippet without writes for each supported client/scope, including fixtures for user-level configuration.
+- [x] #2 Apply/remove are atomic and idempotent, preserve unrelated content semantically, reject malformed types/symlinked or unsafe files and detect a concurrent edit before replacement.
+- [x] #3 Generated commands use the safely quoted absolute running binary and preserve explicit home/config/session selection; CLI/MCP/hooks resolve the same authority in integration tests.
+- [x] #4 Native guard integration executes the real verify hook in both modes: the default claim-coverage entry allows edits under a valid claim and blocks missing/expired/pending claims, the --coverage path entry additionally blocks unrelated paths, both support explicit MCP reference binding, removal recognizes either generated command form, and Bash is not registered.
+- [x] #5 Setup instructions/version markers and a generic wrapper match the contract; final surface tests now include all commands, documentation states supported boundaries, and mise run ci-go passes.
+- [x] #6 A new-user setup journey previews then explicitly applies MCP configuration and completes a minimal lease lifecycle without installing native guards or manually editing credentials; generic output explains the required client action and all setup help presents guards as optional.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci-go` passes on the final commit
-- [ ] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
+- [x] #1 `mise run ci-go` passes on the final commit
+- [x] #2 Final summary names the Go test functions or commands that prove each acceptance criterion
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -67,4 +67,15 @@ Current client documentation verified before implementation:
 - Claude Code user settings: https://docs.anthropic.com/en/docs/claude-code/settings (~/.claude/settings.json); user MCP state uses ~/.claude.json as documented there.
 - Cursor MCP installation: https://cursor.com/docs/context/mcp/install-links (project .cursor/mcp.json and global ~/.cursor/mcp.json).
 - Cursor hooks/configuration: https://cursor.com/docs/agent/hooks (~/.cursor/hooks.json is the user hook shape; native guard generation is not claimed for Cursor).
+
+Implemented in 9605bcb. Verification:
+- go test ./internal/setup ./internal/cli
+- mise run ci-go (go build, gofmt check, go vet, staticcheck, full tests, race tests, govulncheck)
+- mise run lint, mise run format-check, mise run test, and mise run typecheck all passed. The first full Python test run hit a transient tempfile cleanup race in an existing MCP test; an immediate standalone mise run test passed all 339 tests.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added internal/setup and the setup mcp, setup guard, and setup instructions CLI surfaces. AC1: TestMCPPreviewTargetsDocumentedClientScopesWithoutWrites and TestGenericAndInstructionsOutput cover client/scope previews and snippets. AC2: TestMCPApplyRemovePreserveUnrelatedContentAndAreIdempotent and TestSetupRejectsMalformedUnsafeAndConcurrentTargets cover atomic/idempotent safe mutation. AC3: TestSetupMCPPreviewApplyAndNewUserLifecycle and TestGuardGenerationModesRemovalAndNoBash cover absolute binary and explicit authority/selection propagation. AC4: TestRealClaudeHookClaimAndPathCoverage and TestRealClaudeHookBlocksMissingPendingAndExpiredClaims execute both real verification modes and denial cases. AC5: TestGenericAndInstructionsOutput, TestCanonicalCommandHelpPathsFlagsAndExamples, docs/setup.md, and mise run ci-go cover instructions, wrapper, command surface, docs, and CI. AC6: TestSetupMCPPreviewApplyAndNewUserLifecycle proves preview/apply/minimal lifecycle without native guards. Also passed mise run lint, format-check, test, and typecheck.
+<!-- SECTION:FINAL_SUMMARY:END -->
