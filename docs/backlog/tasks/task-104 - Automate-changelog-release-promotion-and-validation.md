@@ -1,17 +1,25 @@
 ---
 id: TASK-104
 title: Automate changelog release promotion and validation
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-13 05:33'
-updated_date: '2026-09-13 06:08'
+updated_date: '2026-09-13 06:12'
 labels: []
 dependencies: []
 references:
   - CHANGELOG.md
   - .github/workflows/release.yml
   - cmd/worklease-release
+modified_files:
+  - .github/workflows/release.yml
+  - CHANGELOG.md
+  - README.md
+  - cmd/worklease-release/main.go
+  - cmd/worklease-release/main_test.go
+  - internal/release/changelog.go
+  - internal/release/changelog_test.go
 priority: medium
 type: chore
 ordinal: 129000
@@ -25,11 +33,11 @@ The Go release cutover removed the previous changelog-aware release automation. 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A supported release-preparation operation promotes a non-empty Unreleased section to a requested version and date while creating a fresh empty Unreleased section and preserving note categories, text, and order.
-- [ ] #2 Release preparation rejects duplicate versions, empty release notes, malformed versions or dates, and attempts that would overwrite an existing release section, with actionable errors.
-- [ ] #3 Tagged release automation fails clearly unless CHANGELOG.md contains exactly one matching version section at the tagged commit.
-- [ ] #4 The GitHub release body is populated from the exact matching CHANGELOG.md version section instead of GitHub-generated commit notes.
-- [ ] #5 Automated tests cover successful promotion, validation failures, and release-workflow integration, and release documentation explains the curated-entry and automated-promotion workflow.
+- [x] #1 A supported release-preparation operation promotes a non-empty Unreleased section to a requested version and date while creating a fresh empty Unreleased section and preserving note categories, text, and order.
+- [x] #2 Release preparation rejects duplicate versions, empty release notes, malformed versions or dates, and attempts that would overwrite an existing release section, with actionable errors.
+- [x] #3 Tagged release automation fails clearly unless CHANGELOG.md contains exactly one matching version section at the tagged commit.
+- [x] #4 The GitHub release body is populated from the exact matching CHANGELOG.md version section instead of GitHub-generated commit notes.
+- [x] #5 Automated tests cover successful promotion, validation failures, and release-workflow integration, and release documentation explains the curated-entry and automated-promotion workflow.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -45,4 +53,12 @@ The Go release cutover removed the previous changelog-aware release automation. 
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented strict changelog promotion and exact release-note extraction, exposed both through cmd/worklease-release, wired dispatch/tag validation and curated GitHub release bodies, added tests and release documentation. Initial independent review found seven edge cases; fixed source/output alias protection, fenced-code heading parsing, malformed duplicate detection, tab heading emptiness, explicit empty mode flags, workflow-dispatch validation, and concurrent main changelog preservation. Verification after fixes: focused release tests passed; mise run lint, format-check, test, and typecheck passed; release.yml parsed as YAML; promotion and extraction command smokes passed.
+
+Independent reviewer re-review: PASS with no remaining findings. Rebased implementation onto current main and preserved TASK-105 Unreleased notes. Implementation commit: c320c1b.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added validated changelog promotion and exact-version note extraction to worklease-release, including duplicate/empty/malformed safeguards and source overwrite protection. Tagged and manual release validation now checks curated notes, and GitHub publication uses the exact changelog body. Verified with focused promotion/validation/workflow tests, command smokes, YAML parsing, mise lint, format-check, test, typecheck, staged hooks, and an independent review pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
