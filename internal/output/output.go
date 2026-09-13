@@ -192,7 +192,7 @@ func writeTextError(w io.Writer, err error, color bool) error {
 
 func safeTextDetail(key string) bool {
 	switch key {
-	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint", "unknownOperations":
+	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint":
 		return true
 	default:
 		return false

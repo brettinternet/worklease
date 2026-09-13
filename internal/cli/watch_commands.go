@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -67,7 +68,7 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 				"unresolvedOperations": result.UnresolvedOperations,
 			})
 		}
-		return writeWatchText(s.writer, result)
+		return writeWatchText(s.writer, result, output.ColorEnabled(s.writer))
 	}
 }
 
@@ -75,31 +76,36 @@ func storeForWatch(ctx context.Context, home string) (*store.Store, error) {
 	return store.Open(ctx, home, store.Options{ReadOnly: true})
 }
 
-func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.Result) error {
-	fields := map[string]any{"nextCursor": result.NextCursor, "timedOut": result.TimedOut, "gap": result.Gap}
-	if result.Event != nil {
-		fields["event"] = result.Event.Kind
+func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
+	title := "lifecycle state observed"
+	if result.TimedOut {
+		title = "watch timed out"
+	} else if result.Event != nil {
+		title = "observed " + styledState(result.Event.Kind, color) + " event"
+	} else if result.Free {
+		title = "resources are " + styledState("free", color)
+	} else if result.Changed {
+		title = "resources changed"
 	}
-	if result.Free {
-		fields["free"] = true
-	}
-	if result.Changed {
-		fields["changed"] = true
+	lines := []string{
+		"nextCursor: " + escapeTerminalCell(result.NextCursor),
+		fmt.Sprintf("timedOut: %t", result.TimedOut),
+		fmt.Sprintf("gap: %t", result.Gap),
 	}
 	if len(result.Resources) > 0 {
 		states := make([]string, 0, len(result.Resources))
 		expires := false
 		for _, state := range result.Resources {
-			value := shortenOpaque(state.Resource, 48) + "=" + state.State
+			value := summarizeResource(state.Resource) + "=" + styledState(state.State, color)
 			if !state.ExpiresAt.IsZero() {
 				expires = true
 				value += " (expiresAt " + state.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00") + ")"
 			}
 			states = append(states, value)
 		}
-		fields["resources"] = strings.Join(states, ", ")
+		lines = append(lines, "resources: "+strings.Join(states, ", "))
 		if expires {
-			fields["hint"] = "watch rechecks state at the nearest expiry; verify ownership before mutating"
+			lines = append(lines, "hint: watch rechecks state at the nearest expiry; verify ownership before mutating")
 		}
 	}
 	if len(result.UnresolvedPredecessor) > 0 {
@@ -109,12 +115,16 @@ func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.R
 			for i, value := range predecessor.Resources {
 				resources[i] = resourceText(value)
 			}
-			predecessors = append(predecessors, fmt.Sprintf("claim=%s operation=%s resources=%s", predecessor.ClaimID, predecessor.OperationID, strings.Join(resources, ",")))
+			predecessors = append(predecessors, fmt.Sprintf("claimId=%s operationId=%s resources=%s", escapeTerminalCell(predecessor.ClaimID), escapeTerminalCell(predecessor.OperationID), strings.Join(resources, ",")))
 		}
-		fields["unresolvedPredecessor"] = strings.Join(predecessors, "; ")
+		lines = append(lines, "unresolvedPredecessor: "+strings.Join(predecessors, "; "))
 	}
 	if len(result.UnresolvedOperations) > 0 {
-		fields["unresolvedOperations"] = strings.Join(result.UnresolvedOperations, ",")
+		escaped := make([]string, len(result.UnresolvedOperations))
+		for i, operationID := range result.UnresolvedOperations {
+			escaped[i] = escapeTerminalCell(operationID)
+		}
+		lines = append(lines, "unresolvedOperations: "+strings.Join(escaped, ","))
 	}
-	return output.WritePublicText(w, "watch", fields)
+	return writeLines(w, title, lines)
 }

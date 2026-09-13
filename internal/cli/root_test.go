@@ -112,6 +112,33 @@ func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	}
 }
 
+func TestAffectedCommandHelpDescribesTextViewsAndColor(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	for _, path := range []string{"key", "status", "history", "events", "watch", "gc", "policy describe"} {
+		command := root
+		for _, name := range strings.Fields(path) {
+			command = command.Command(name)
+		}
+		if command == nil {
+			t.Fatalf("missing %s command", path)
+		}
+		for _, want := range []string{"Output:", "ANSI color", "NO_COLOR", "TERM=dumb", "redirection", "--json"} {
+			if !strings.Contains(command.Description, want) {
+				t.Errorf("%s help missing %q: %q", path, want, command.Description)
+			}
+		}
+	}
+	for _, path := range []string{"status", "history", "events", "policy describe"} {
+		command := root
+		for _, name := range strings.Fields(path) {
+			command = command.Command(name)
+		}
+		if !strings.Contains(command.Description, "--full") {
+			t.Errorf("%s help does not explain --full: %q", path, command.Description)
+		}
+	}
+}
+
 type canonicalHelpCase struct {
 	path, example string
 	flags         []string
