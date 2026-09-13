@@ -88,7 +88,8 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
 	}
 
-	epoch := ledger.Epoch{ClaimID: claimID, AgentID: "agent", SessionID: "session", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-2 * time.Minute), Status: "open", Operations: []ledger.Operation{{OperationID: operationID, Kind: "exec", State: "started", RequestSHA256: hash}}}
+	completedAt := now.Add(-30 * time.Second)
+	epoch := ledger.Epoch{ClaimID: claimID, AgentID: "agent", SessionID: "session", WorkKey: "work", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-2 * time.Minute), Status: "open", Operations: []ledger.Operation{{OperationID: operationID, Kind: "exec", State: "completed", RequestSHA256: hash, StartedAt: now.Add(-time.Minute), CompletedAt: &completedAt}}}
 	page := ledger.HistoryPage{Resource: "exact-resource", Epochs: []ledger.Epoch{epoch}, NextCursor: "cursor", Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}}
 	compact.Reset()
 	full.Reset()
@@ -98,8 +99,16 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if err := writeHistoryTextAt(&full, page, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), hash) || !strings.Contains(compact.String(), "acquired=2m ago") || strings.Contains(compact.String(), "acquiredAt=") || !strings.Contains(full.String(), "acquiredAt=2026-09-13T02:11:09.000000Z") || !strings.Contains(full.String(), "requestSha256="+hash) || !strings.Contains(full.String(), "resources=exact-resource") {
-		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	if strings.Contains(compact.String(), hash) || !strings.Contains(compact.String(), "agent open acquired 2m ago operations exec") || strings.Contains(compact.String(), "acquiredAt=") || strings.Contains(compact.String(), "claimId=") {
+		t.Fatalf("compact=%q", compact.String())
+	}
+	for _, want := range []string{"claimId=" + claimID, "acquiredAt=2026-09-13T02:11:09.000000Z", "workKey=work", "resources=exact-resource", "startedAt=2026-09-13T02:12:09.000000Z", "completedAt=2026-09-13T02:12:39.000000Z", "requestSha256=" + hash} {
+		if !strings.Contains(full.String(), want) {
+			t.Fatalf("full output missing %q: %q", want, full.String())
+		}
+	}
+	if strings.Contains(full.String(), "1: claimId=") {
+		t.Fatalf("full history used synthetic numbering: %q", full.String())
 	}
 
 	revision := int64(4)
@@ -112,8 +121,11 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if err := writeEventsTextAt(&full, events, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(compact.String(), "resources=exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(compact.String(), "at=30s ago") || !strings.Contains(full.String(), "at=2026-09-13T02:12:39.000000Z") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
-		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	if !strings.Contains(compact.String(), "heartbeat exact-resource 30s ago") || strings.Contains(compact.String(), "resources=") || strings.Contains(compact.String(), "sequence=") || strings.Contains(compact.String(), "claimId=") || strings.Contains(compact.String(), "at=") || strings.Contains(compact.String(), "nextCursor:") {
+		t.Fatalf("compact=%q", compact.String())
+	}
+	if strings.Contains(full.String(), "nextCursor:") || strings.Contains(full.String(), "1: sequence=") || !strings.Contains(full.String(), "sequence=1 kind=heartbeat") || !strings.Contains(full.String(), "claimId="+claimID) || !strings.Contains(full.String(), "at=2026-09-13T02:12:39.000000Z") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
+		t.Fatalf("full=%q", full.String())
 	}
 }
 
@@ -123,7 +135,7 @@ func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
 	long := "backlog-md:%2FUsers%2Fbrett%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-101"
 
 	var events bytes.Buffer
-	page := ledger.EventsPage{NextCursor: "opaque-cursor", Events: []ledger.Event{
+	page := ledger.EventsPage{NextCursor: "opaque-cursor", Gap: true, Events: []ledger.Event{
 		{Sequence: "7", At: now.Add(-90 * time.Second), Kind: "acquired", ClaimID: claimID, Resources: []string{long}},
 		{Sequence: "8", At: now, Kind: "released", ClaimID: other, Resources: []string{"first", "second"}},
 		{Sequence: "9", At: now, Kind: "gc-applied"},
@@ -132,18 +144,20 @@ func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := events.String()
-	for _, want := range []string{"3 events\n", "1: sequence=7 kind=acquired resources=backlog-md:worklease:TASK-101 claimId=", "at=1m ago", "2: sequence=8 kind=released resources=first, second claimId=", "at=now", "3: sequence=9 kind=gc-applied at=now\n"} {
+	for _, want := range []string{"3 events\ngap: true\n", "acquired backlog-md:worklease:TASK-101 1m ago\n", "released first, second now\n", "gc-applied now\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("events missing %q: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "opaque-cursor") || strings.Contains(got, "nextCursor") || strings.Contains(got, "claimId= ") || strings.Contains(got, "resources=none") {
-		t.Fatalf("events text leaked cursor: %q", got)
+	for _, omitted := range []string{"opaque-cursor", "nextCursor", "sequence=", "claimId=", "resources=", "kind=", "at=", "1: ", "2: ", "3: "} {
+		if strings.Contains(got, omitted) {
+			t.Fatalf("compact events included %q: %q", omitted, got)
+		}
 	}
 
 	ended := now.Add(-2 * time.Minute)
 	final := int64(6)
-	history := ledger.HistoryPage{Resource: "exact-resource", NextCursor: "opaque-cursor", Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}, Epochs: []ledger.Epoch{
+	history := ledger.HistoryPage{Resource: "exact-resource", NextCursor: "opaque-cursor", Gap: true, Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}, Epochs: []ledger.Epoch{
 		{ClaimID: claimID, AgentID: "alice", SessionID: "s1", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-10 * time.Minute), EndedAt: &ended, EndReason: "released", FinalRevision: &final, Status: "complete", Operations: []ledger.Operation{{Kind: "acquire", State: "completed"}, {Kind: "heartbeat", State: "completed"}, {Kind: "exec", State: "completed"}}},
 		{ClaimID: other, AgentID: "bob", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-time.Minute), Status: "open", Operations: []ledger.Operation{{Kind: "acquire", State: "completed"}, {Kind: "exec", State: "started"}}},
 	}}
@@ -152,16 +166,19 @@ func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = compact.String()
-	for _, want := range []string{"2 history epochs for exact-resource\n", "1: claimId=", "agentId=alice status=complete acquired=10m ago ended=released 2m ago operations=acquire,heartbeat,exec\n", "2: claimId=", "agentId=bob status=open acquired=1m ago operations=acquire,exec:started\n"} {
+	for _, want := range []string{"2 history epochs for exact-resource\ngap: true\n", "alice complete acquired 10m ago ended released 2m ago operations acquire,heartbeat,exec\n", "bob open acquired 1m ago operations acquire,exec:started\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("history missing %q: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "opaque-cursor") || strings.Contains(got, "nextCursor") || strings.Contains(got, "prunedThroughSequence") || strings.Contains(got, "s1") {
-		t.Fatalf("compact history leaked cursor, coverage sentinel, or session: %q", got)
+	for _, omitted := range []string{"opaque-cursor", "nextCursor", "prunedThroughSequence", "s1", "claimId=", "agentId=", "status=", "acquired=", "ended=", "operations=", "1: ", "2: "} {
+		if strings.Contains(got, omitted) {
+			t.Fatalf("compact history included %q: %q", omitted, got)
+		}
 	}
 
 	compact.Reset()
+	history.Gap = false
 	history.Coverage.PrunedThroughSequence = "12"
 	history.Epochs = history.Epochs[:1]
 	if err := writeHistoryTextAt(&compact, history, false, false, now); err != nil {
@@ -180,13 +197,13 @@ func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
 	}
 }
 
-func TestFullResourceStatusUsesPlainNumberedRows(t *testing.T) {
+func TestFullResourceStatusOmitsSyntheticRowNumbers(t *testing.T) {
 	var out bytes.Buffer
 	status := lease.Status{Resources: []lease.ResourceStatus{{Resource: "first", State: "free"}, {Resource: "second", State: "claimed"}}}
 	if err := writeStatusText(&out, status, true, false); err != nil {
 		t.Fatal(err)
 	}
-	want := "checked 2 resources\n1: first state=free\n2: second state=claimed\n"
+	want := "checked 2 resources\nfirst state=free\nsecond state=claimed\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output=%q want=%q", got, want)
 	}
@@ -258,7 +275,7 @@ func TestRemainingStructuredTextSummariesAvoidGoValueDumps(t *testing.T) {
 			"claimId": claimID, "resources": []string{"resource"}, "agentId": "agent", "sessionId": "session", "revision": int64(1), "expiresAt": now, "guarantee": "local-coordination",
 			"unknownOperations": []string{operationID}, "recovery": []lease.Recovery{{Resource: "resource", ClaimID: strings.Repeat("c", 32), CheckpointPresent: true}},
 		})
-	}, "unknownOperations: [\""+operationID+"\"]", "1: resource=resource claimId="+strings.Repeat("c", 32)+" checkpointPresent=true")
+	}, "unknownOperations: [\""+operationID+"\"]", "recovery: 1\nresource=resource claimId="+strings.Repeat("c", 32)+" checkpointPresent=true")
 	assert("transfer", func(out *bytes.Buffer) error {
 		return writeTransferText(out, map[string]any{"claimId": claimID, "agentId": "next", "sessionId": "loop", "revision": int64(1), "expiresAt": now, "guarantee": "local-coordination"})
 	}, "transferred ownership", "agentId: next", "revision: 1")
