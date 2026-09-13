@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-13 06:51'
-updated_date: '2026-09-13 07:18'
+updated_date: '2026-09-13 07:19'
 labels: []
 dependencies: []
 modified_files:
@@ -50,6 +50,10 @@ Human-readable collection output still reads like serialized records rather than
 Simplified compact event and history rows, removed synthetic numbering from full timelines/status/recovery details, retained full diagnostics with work keys and operation timestamps, and updated fixed-time tests plus CLI docs/changelog. Focused internal/cli tests pass.
 
 Verification: go test ./internal/cli; mise run lint; mise run format-check; mise run test; mise run typecheck; LSP diagnostics clean. Independent reviewer reported no validated findings. Fixed-time renderer tests cover compact/full event and history rows, resource-less authority events, gap/pruning notices, full resource status, and acquire recovery details; CLI tests preserve JSON event/history envelopes and cursors.
+
+Implementation commit: f9eff3a (Simplify lifecycle timeline output).
+
+Rebased implementation commit for main integration: bb9e664.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
