@@ -1,11 +1,11 @@
 ---
 id: TASK-98
 title: Release Go rewrite as v1.0.0
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-13 00:56'
-updated_date: '2026-09-13 01:12'
+updated_date: '2026-09-13 01:20'
 labels: []
 dependencies: []
 references:
@@ -29,10 +29,10 @@ The Go rewrite is complete locally, but the remote CI matrix is failing and the 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 CI passes on all configured Linux and macOS runners for the release commit
-- [ ] #2 Release validation builds and smoke-tests mise-compatible Go archives for linux and macOS on x64 and arm64
-- [ ] #3 GitHub release v1.0.0 publishes checksummed Go archives from the release commit
-- [ ] #4 A clean mise installation using github:brettinternet/worklease = "latest" installs worklease v1.0.0
+- [x] #1 CI passes on all configured Linux and macOS runners for the release commit
+- [x] #2 Release validation builds and smoke-tests mise-compatible Go archives for linux and macOS on x64 and arm64
+- [x] #3 GitHub release v1.0.0 publishes checksummed Go archives from the release commit
+- [x] #4 A clean mise installation using github:brettinternet/worklease = "latest" installs worklease v1.0.0
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -50,4 +50,12 @@ The Go rewrite is complete locally, but the remote CI matrix is failing and the 
 Confirmed the existing release archive names and bin/worklease layout install successfully through mise GitHub backend at v0.10.0. Fixed guarded exec output capture so readers drain owned pipes after the leader exits, and normalized deadline-bounded SQLite contention. Added post-publication latest-mise checks on all four release platforms and documented the unchanged mise declaration.
 
 The first post-publication check exposed mise's intentional minimum-release-age filter: a clean latest lookup selected v0.9.1 immediately after publication. The release artifact itself installed successfully when that delay was disabled. Updated release verification to set MISE_MINIMUM_RELEASE_AGE=0 and to run on workflow_dispatch as well as tagged publication, allowing immediate post-release validation without changing users' simple latest declaration.
+
+Verification: local mise run ci passed all format, staticcheck, vet, unit, race, vulnerability, end-to-end, and manual-generation gates. Main CI runs 34729583689 (release commit ca97d51) and 34729975577 (pipeline follow-up d81e4bd) passed all four OS/architecture jobs. Release v1.0.0 publishes four archives plus checksums from ca97d51. Release validation run 34729978282 passed archive build/smoke/manual checks and clean latest mise installation on linux-x64, linux-arm64, macos-x64, and macos-arm64; its first attempt hit a transient macOS artifact-upload DNS failure and the failed attempt passed on rerun. GitHub latest resolves to v1.0.0.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Released the Go rewrite as v1.0.0 with checksummed cross-platform archives, fixed the CI flakes that blocked the release, preserved and documented the simple mise latest declaration, and added four-platform post-publication mise installation checks. Local gates, both main CI commits, release archive validation, and clean latest mise installs all pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
