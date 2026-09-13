@@ -195,6 +195,6 @@ Concurrent sessions need distinct selectors even in one checkout.
 
 ## Deferred authority
 
-[`distributed-cloudflare-claim-authority.md`](distributed-cloudflare-claim-authority.md)
+[`remote-claim-authority.md`](remote-claim-authority.md)
 is a proposal, not a shipped HTTP backend. Worklease uses one local SQLite
 authority. It has no remote fallback.

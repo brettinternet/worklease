@@ -3,7 +3,7 @@ id: doc-3
 title: Go Rewrite Capability Inventory
 type: specification
 created_date: '2026-09-12 06:33'
-updated_date: '2026-09-13 00:20'
+updated_date: '2026-09-13 22:49'
 tags:
   - go-rewrite
   - inventory
@@ -119,7 +119,7 @@ Representative Python tests preserve failure evidence, not required names, fixtu
 
 ## Deferred remote authority
 
-`docs/distributed-cloudflare-claim-authority.md` is preserved as deferred design evidence. Contract section 20 keeps typed domain behavior independent of local CLI/MCP encoding and SQLite callbacks, but v1 adds no HTTP client, backend registry, Worker, authority credentials, deployment tooling, remote exec, or fencing counter. Configured remote failure must never silently fall back to local coordination in a future design.
+`docs/remote-claim-authority.md` is preserved as deferred design evidence. Contract section 20 keeps typed domain behavior independent of local CLI/MCP encoding and SQLite callbacks, but v1 adds no HTTP client, backend registry, Worker, authority credentials, deployment tooling, remote exec, or fencing counter. Configured remote failure must never silently fall back to local coordination in a future design.
 
 ## Safety-gap and amendment assessment
 
