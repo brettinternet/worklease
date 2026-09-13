@@ -76,17 +76,20 @@ func TestWatchMalformedCursorDoesNotOpenStorage(t *testing.T) {
 }
 
 func TestWatchTextIncludesUnresolvedPredecessorMetadata(t *testing.T) {
+	claimID, operationID := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	var out bytes.Buffer
 	if err := writeWatchText(&out, watchpkg.Result{
 		NextCursor:            "cursor",
-		UnresolvedPredecessor: []watchpkg.Predecessor{{ClaimID: "claim", OperationID: "operation", Resources: []string{"r"}}},
-		UnresolvedOperations:  []string{"operation"},
+		UnresolvedPredecessor: []watchpkg.Predecessor{{ClaimID: claimID, OperationID: operationID, Resources: []string{"first", "second"}}},
+		UnresolvedOperations:  []string{operationID},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "unresolvedPredecessor:") || !strings.Contains(text, "operation") || !strings.Contains(text, "r") {
-		t.Fatalf("text=%q", text)
+	for _, want := range []string{"unresolvedPredecessor:", "claim=" + claimID, "operation=" + operationID, "resources=first,second", "unresolvedOperations: " + operationID} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text missing %q: %q", want, text)
+		}
 	}
 }
 

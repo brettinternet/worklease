@@ -8,9 +8,33 @@ import (
 	"testing"
 	"time"
 
+	gcresult "github.com/brettinternet/worklease/internal/gc"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/store"
 )
+
+func TestGCTextColorsModeAndOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result gcresult.Result
+		want   []string
+	}{
+		{name: "preview", result: gcresult.Result{DryRun: true}, want: []string{"mode: \x1b[33mpreview\x1b[0m"}},
+		{name: "apply", result: gcresult.Result{Collected: map[string]gcresult.Summary{"epochs": {Count: 1}}}, want: []string{"mode: \x1b[32mapply\x1b[0m", "collected: \x1b[32mepochs=1\x1b[0m"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := writeGCText(&out, test.result, true); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("colored gc output missing %q: %q", want, out.String())
+				}
+			}
+		})
+	}
+}
 
 func TestPublicFullHistoryAndEventsRedactCheckpointAndCredentials(t *testing.T) {
 	ctx := context.Background()

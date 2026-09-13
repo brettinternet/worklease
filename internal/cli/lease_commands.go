@@ -93,13 +93,22 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 		}
 		return output.WriteSuccess(s.writer, operation, fields)
 	}
-	if operation == "status" {
-		return writeStatusText(s.writer, lease.Status{Claim: fields["claim"].(*lease.ClaimView), Resources: fields["resources"].([]lease.ResourceStatus)})
+	switch operation {
+	case "acquire":
+		return writeAcquireText(s.writer, fields)
+	case "status":
+		return writeStatusText(s.writer, lease.Status{Claim: fields["claim"].(*lease.ClaimView), Resources: fields["resources"].([]lease.ResourceStatus)}, output.ColorEnabled(s.writer))
+	case "list":
+		return writeListText(s.writer, fields["claims"].([]lease.ClaimView), cmd.Bool("full"), output.ColorEnabled(s.writer))
+	case "heartbeat", "checkpoint", "release":
+		return writeReceiptText(s.writer, fields["receipt"].(lease.Receipt))
+	case "transfer":
+		return writeTransferText(s.writer, fields)
+	case "verify":
+		return writeVerificationText(s.writer, fields["claim"].(*lease.ClaimView), fields["unknownOperations"].([]string))
+	default:
+		return output.WriteText(s.writer, operation, fields)
 	}
-	if operation == "list" {
-		return writeListText(s.writer, fields["claims"].([]lease.ClaimView))
-	}
-	return output.WriteText(s.writer, operation, fields)
 }
 func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -102,7 +103,15 @@ func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.R
 		}
 	}
 	if len(result.UnresolvedPredecessor) > 0 {
-		fields["unresolvedPredecessor"] = result.UnresolvedPredecessor
+		predecessors := make([]string, 0, len(result.UnresolvedPredecessor))
+		for _, predecessor := range result.UnresolvedPredecessor {
+			resources := make([]string, len(predecessor.Resources))
+			for i, value := range predecessor.Resources {
+				resources[i] = resourceText(value)
+			}
+			predecessors = append(predecessors, fmt.Sprintf("claim=%s operation=%s resources=%s", predecessor.ClaimID, predecessor.OperationID, strings.Join(resources, ",")))
+		}
+		fields["unresolvedPredecessor"] = strings.Join(predecessors, "; ")
 	}
 	if len(result.UnresolvedOperations) > 0 {
 		fields["unresolvedOperations"] = strings.Join(result.UnresolvedOperations, ",")

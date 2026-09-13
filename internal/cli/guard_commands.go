@@ -66,7 +66,7 @@ func execAction(s *boundary) func(context.Context, *urfave.Command) error {
 			if e := output.WriteSuccess(s.writer, "exec", fields); e != nil {
 				return e
 			}
-		} else if e := output.WriteText(s.writer, "exec", fields); e != nil {
+		} else if e := writeExecText(s.writer, result.Receipt, result.ExitCode); e != nil {
 			return e
 		}
 		if result.ExitCode != 0 {
@@ -121,7 +121,7 @@ func replaceFileAction(s *boundary) func(context.Context, *urfave.Command) error
 		if s.jsonRequested(cmd) {
 			return output.WriteSuccess(s.writer, "replace-file", fields)
 		}
-		return output.WriteText(s.writer, "replace-file", fields)
+		return writeReplaceText(s.writer, result.Receipt)
 	}
 }
 

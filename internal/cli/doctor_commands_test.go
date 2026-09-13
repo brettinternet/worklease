@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/doctor"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/store"
@@ -19,6 +20,19 @@ import (
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
 )
+
+func TestDoctorTextColorsStatuses(t *testing.T) {
+	checks := []doctor.Check{{ID: "good", Status: "ok", Detail: "ready"}, {ID: "caution", Status: "warn", Detail: "check"}, {ID: "bad", Status: "fail", Detail: "broken"}}
+	var out bytes.Buffer
+	if err := writeDoctorText(&out, checks, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\x1b[32mok\x1b[0m", "\x1b[33mwarn\x1b[0m", "\x1b[31mfail\x1b[0m"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("colored doctor output missing %q: %q", want, out.String())
+		}
+	}
+}
 
 func TestSetupFreePathLifecycleTextAndJSON(t *testing.T) {
 	clearWorkleaseEnvironment(t)

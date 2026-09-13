@@ -118,10 +118,13 @@ func TestKeyAndPolicyCommandsReportContractMetadata(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "policy", "list"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"resource", "provider", "capability", "scope", "identityScope", "localReplaceAllowed", "providerFencing"} {
+	for _, field := range []string{"PROVIDER", "SCOPE", "CAPABILITY", "IDENTITY", "backlog-md", "path"} {
 		if !strings.Contains(stdout.String(), field) {
 			t.Errorf("text policy list missing %s", field)
 		}
+	}
+	if strings.Contains(stdout.String(), "{\"") {
+		t.Fatalf("text policy list contains raw JSON: %q", stdout.String())
 	}
 	stdout.Reset()
 	if err := Run(context.Background(), []string{"worklease", "policy", "describe", "path", "--json"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
@@ -374,6 +377,72 @@ func TestContextualDefaultRunsCompleteLifecycle(t *testing.T) {
 	run("heartbeat", "--json", "--home", home, "--operation-id", strings.Repeat("1", 32))
 	run("checkpoint", "--json", "--home", home, "--operation-id", strings.Repeat("2", 32), "--data", `{"step":1}`)
 	run("release", "--json", "--home", home, "--operation-id", strings.Repeat("3", 32))
+}
+
+func TestAcquireTextPreservesUnresolvedPredecessorRecoveryIDs(t *testing.T) {
+	home := t.TempDir()
+	st, err := store.Open(context.Background(), home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	svc := lease.New(st, nil, nil, lease.Defaults{})
+	claimID, token, operationID := strings.Repeat("a", 32), strings.Repeat("b", 64), strings.Repeat("c", 32)
+	grant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Resources: []string{"recovery-resource"}, AgentID: "old", SessionID: "old", TTL: time.Minute, RequestNotAfter: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BeginOperation(context.Background(), lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claimID, Token: token, Revision: grant.Revision}, lease.OperationIntent{OperationID: operationID, Kind: "exec", Request: map[string]any{"argv": []string{"true"}}, TTL: time.Minute, RequestNotAfter: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(context.Background(), func(tx *store.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `UPDATE claims SET expires_at=? WHERE claim_id=?`, time.Now().Add(-time.Second).UnixMicro(), claimID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--home", home, "--resource", "recovery-resource"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"unknownOperations: [\"" + operationID + "\"]", "claim=" + claimID} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("acquire output missing %q: %q", want, out.String())
+		}
+	}
+}
+
+func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
+	home := t.TempDir()
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--home", home, "--resource", "summary-resource"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "acquired 1 resource as claim ") || !strings.Contains(got, "\nrevision: 1\n") || strings.Contains(got, "receipt:") || strings.Contains(got, "map[") {
+		t.Fatalf("acquire output=%q", got)
+	}
+	for _, test := range []struct {
+		args   []string
+		prefix string
+		detail string
+	}{
+		{args: []string{"checkpoint", "--data", `{"step":1}`}, prefix: "checkpointed claim ", detail: "\nrevision: 2\nexpiresAt: "},
+		{args: []string{"heartbeat"}, prefix: "renewed claim ", detail: "\nrevision: 3\nexpiresAt: "},
+		{args: []string{"release", "--reason", "completed"}, prefix: "released claim ", detail: "\nrevision: 4\nreason: completed\n"},
+	} {
+		out.Reset()
+		args := append([]string{"worklease"}, test.args...)
+		args = append(args, "--home", home)
+		if err := Run(context.Background(), args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); !strings.HasPrefix(got, test.prefix) || !strings.Contains(got, test.detail) || strings.Contains(got, "receipt:") || strings.Contains(got, "map[") {
+			t.Fatalf("%s output=%q", test.args[0], got)
+		}
+	}
 }
 
 func TestAcquireDerivesInputBeforeDispatch(t *testing.T) {
