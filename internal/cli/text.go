@@ -135,7 +135,7 @@ func writeStatusTextAt(w io.Writer, value lease.Status, full, color bool, now ti
 	lines := make([]string, 0, len(value.Resources))
 	for i, item := range value.Resources {
 		if full {
-			line := fmt.Sprintf("resource[%d]: %s state=%s", i+1, resourceText(item.Resource), styledState(item.State, color))
+			line := fmt.Sprintf("%d: %s state=%s", i+1, resourceText(item.Resource), styledState(item.State, color))
 			if item.Claim != nil {
 				line += " claimId=" + escapeTerminalCell(item.Claim.ClaimID) + " expiresAt=" + item.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
@@ -216,7 +216,7 @@ func writeAcquireText(w io.Writer, fields map[string]any) error {
 	if values, ok := fields["recovery"].([]lease.Recovery); ok && len(values) > 0 {
 		lines = append(lines, fmt.Sprintf("recovery: %d", len(values)))
 		for i, value := range values {
-			lines = append(lines, fmt.Sprintf("recovery[%d]: resource=%s claimId=%s checkpointPresent=%t", i+1, resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
+			lines = append(lines, fmt.Sprintf("%d: resource=%s claimId=%s checkpointPresent=%t", i+1, resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
 		}
 	}
 	return writeLines(w, fmt.Sprintf("acquired %d %s as claim %s", len(resources), resourceLabel, shortenOpaque(claimID, 24)), lines)
@@ -699,7 +699,7 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 			agent = escapeTerminalCell(output.RedactString(epoch.AgentID))
 			whenLabel, when = "acquiredAt", epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("epoch[%d]: claimId=%s agentId=%s status=%s %s=%s", i+1, claimID, agent, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
+		line := fmt.Sprintf("%d: claimId=%s agentId=%s status=%s %s=%s", i+1, claimID, agent, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
 		if full {
 			line += " sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
 			if epoch.EndedAt != nil {
@@ -778,7 +778,7 @@ func writeEventsTextAt(w io.Writer, page ledger.EventsPage, full, color bool, no
 			claimID = escapeTerminalCell(event.ClaimID)
 			when = event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color))
+		line := fmt.Sprintf("%d: sequence=%s kind=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color))
 		// Authority-wide events such as gc-applied have no resource or claim;
 		// omit the fields instead of printing empty placeholders.
 		if len(event.Resources) > 0 {

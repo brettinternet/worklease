@@ -190,6 +190,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	textOutput(historyCommand, "Without a resource the command shows the global lifecycle event feed; --resource shows retained claim epochs for exactly one resource, including how each ended and its operation activity. --full adds complete non-secret metadata and RFC3339 timestamps. Cursors appear only in --json.")
 
 	eventsCommand := jsonless("events", "show lifecycle events", "worklease events\n  worklease events --limit 20 --full", flag("cursor"), limitFlag(), full("show complete identifiers, event details, and absolute timestamps"))
+	eventsCommand.Aliases = []string{"event"}
 	eventsCommand.Action = eventsAction(s)
 	usageText(eventsCommand, "worklease events [--limit N] [--cursor CURSOR] [--full]")
 	textOutput(eventsCommand, "The default view shows compact events with their resources and relative timing; --full adds complete non-secret event metadata and RFC3339 timestamps. Cursors appear only in --json.")
