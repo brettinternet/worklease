@@ -12,7 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -225,7 +226,7 @@ func (d *Driver) write(ctx context.Context, probe func(context.Context, *sql.DB)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	resetTimeout, err := d.boundBusyTimeout(ctx)
+	resetTimeout, deadlineBound, err := d.boundBusyTimeout(ctx)
 	if err != nil {
 		return err
 	}
@@ -234,6 +235,12 @@ func (d *Driver) write(ctx context.Context, probe func(context.Context, *sql.DB)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
+		}
+		if deadlineBound && sqliteBusy(err) {
+			// SQLite's millisecond busy timeout can win the race with Go's
+			// deadline timer. The timeout was derived from this context, so a
+			// terminal SQLITE_BUSY has the same bounded-wait outcome.
+			return context.DeadlineExceeded
 		}
 		return err
 	}
@@ -287,30 +294,31 @@ func (d *Driver) Read(ctx context.Context, fn func(*sql.Tx) error) error {
 	return fn(tx)
 }
 
-func (d *Driver) boundBusyTimeout(ctx context.Context) (func(), error) {
+func (d *Driver) boundBusyTimeout(ctx context.Context) (func(), bool, error) {
 	milliseconds := int64(10000)
+	deadlineBound := false
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
-		milliseconds = remaining.Milliseconds()
-		if milliseconds < 1 {
-			milliseconds = 1
-		}
-		if milliseconds > 10000 {
-			milliseconds = 10000
-		}
+		deadlineBound = remaining <= 10*time.Second
+		milliseconds = timeoutMilliseconds(remaining)
 	}
 	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", milliseconds)); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	return func() {
 		// Reset using a fresh context: the operation may have consumed its
 		// deadline, but the connection must retain the D8 setting for the next
 		// operation.
 		_, _ = d.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10000")
-	}, nil
+	}, deadlineBound, nil
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func (d *Driver) classifyCommit(_ context.Context, probe func(context.Context, *sql.DB) (bool, error), commitErr error) error {
@@ -369,7 +377,7 @@ func sqliteDSNTimeout(path string, readOnly bool, busyTimeout int64) string {
 }
 
 func timeoutMilliseconds(remaining time.Duration) int64 {
-	milliseconds := remaining.Milliseconds()
+	milliseconds := int64((remaining + time.Millisecond - 1) / time.Millisecond)
 	if milliseconds < 1 {
 		return 1
 	}

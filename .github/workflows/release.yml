@@ -8,7 +8,7 @@ on:
       release_tag:
         description: Tag/version to validate without publication
         required: true
-        default: v0.10.0
+        default: v1.0.0
         type: string
 
 permissions:
@@ -115,3 +115,38 @@ jobs:
             dist/release/checksums.txt
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  mise-install:
+    name: mise latest (${{ matrix.platform }})
+    if: github.event_name == 'push'
+    needs: [publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: macos-15-intel
+            platform: macos-x64
+          - os: macos-14
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Install mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          install: false
+      - name: Install latest release through mise
+        env:
+          MISE_CACHE_DIR: ${{ runner.temp }}/mise-cache
+          MISE_DATA_DIR: ${{ runner.temp }}/mise-data
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+          MISE_STATE_DIR: ${{ runner.temp }}/mise-state
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          mise exec 'github:brettinternet/worklease@latest' -- worklease --json version \
+            | jq -e --arg version "$version" '.version == $version'
