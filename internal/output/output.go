@@ -23,6 +23,7 @@ type Envelope struct {
 	OK            bool           `json:"ok"`
 	Fields        map[string]any `json:"-"`
 	Error         *Failure       `json:"error,omitempty"`
+	public        bool
 }
 
 type Failure struct {
@@ -35,13 +36,13 @@ type Failure struct {
 func (e Envelope) MarshalJSON() ([]byte, error) {
 	value := make(map[string]any, len(e.Fields)+4)
 	value["schemaVersion"], value["operation"], value["ok"] = e.SchemaVersion, e.Operation, e.OK
-	for key, field := range redactMap(e.Fields) {
+	for key, field := range redactMap(e.Fields, e.public) {
 		if key != "schemaVersion" && key != "operation" && key != "ok" && key != "error" {
 			value[key] = field
 		}
 	}
 	if e.Error != nil {
-		value["error"] = Failure{Reason: e.Error.Reason, ExitCode: e.Error.ExitCode, Message: RedactString(e.Error.Message), Details: redactMap(e.Error.Details)}
+		value["error"] = Failure{Reason: e.Error.Reason, ExitCode: e.Error.ExitCode, Message: RedactString(e.Error.Message), Details: redactMap(e.Error.Details, true)}
 	}
 	return json.Marshal(value)
 }
@@ -51,10 +52,16 @@ func WriteSuccess(w io.Writer, operation string, fields map[string]any) error {
 	return write(w, Envelope{SchemaVersion: SchemaVersion, Operation: operation, OK: true, Fields: fields})
 }
 
+// WritePublicSuccess emits a public projection with private operation payloads
+// removed in addition to the bearer-material redaction applied to all output.
+func WritePublicSuccess(w io.Writer, operation string, fields map[string]any) error {
+	return write(w, Envelope{SchemaVersion: SchemaVersion, Operation: operation, OK: true, Fields: fields, public: true})
+}
+
 // WriteError emits exactly one redacted failure document.
 func WriteError(w io.Writer, operation string, err error) error {
 	failure := Classify(err)
-	return write(w, Envelope{SchemaVersion: SchemaVersion, Operation: operation, OK: false, Error: &failure})
+	return write(w, Envelope{SchemaVersion: SchemaVersion, Operation: operation, OK: false, Error: &failure, public: true})
 }
 
 func write(w io.Writer, envelope Envelope) error {
@@ -89,7 +96,7 @@ func Classify(err error) Failure {
 	if _, ok := details["commitState"]; !ok {
 		details["commitState"] = "not-committed"
 	}
-	return Failure{Reason: registeredReason(classified.Reason), ExitCode: classified.Code, Message: RedactString(classified.Message), Details: redactMap(details)}
+	return Failure{Reason: registeredReason(classified.Reason), ExitCode: classified.Code, Message: RedactString(classified.Message), Details: redactMap(details, true)}
 }
 
 func registeredReason(value string) string {
@@ -101,6 +108,15 @@ func registeredReason(value string) string {
 
 // WriteText writes deterministic human-readable key/value output.
 func WriteText(w io.Writer, operation string, fields map[string]any) error {
+	return writeText(w, operation, fields, false)
+}
+
+// WritePublicText is the text counterpart to WritePublicSuccess.
+func WritePublicText(w io.Writer, operation string, fields map[string]any) error {
+	return writeText(w, operation, fields, true)
+}
+
+func writeText(w io.Writer, operation string, fields map[string]any, public bool) error {
 	if w == nil {
 		return errors.New("nil output writer")
 	}
@@ -113,7 +129,7 @@ func WriteText(w io.Writer, operation string, fields map[string]any) error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "%s: %v\n", key, escapeText(fmt.Sprint(Redact(fields[key])))); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: %v\n", key, escapeText(fmt.Sprint(redact(fields[key], key, public)))); err != nil {
 			return err
 		}
 	}
@@ -175,28 +191,40 @@ func safeTextDetail(key string) bool {
 	}
 }
 
-// Redact recursively removes values under credential-like keys and replaces
-// strings that look like bearer tokens. This is defense in depth; callers must
-// still avoid putting private material in Details in the first place.
+// Redact applies the policy shared by invoking commands and authenticated
+// private inspection: bearer material is always removed, while argv,
+// checkpoints, evidence, and command output are allowed.
 func Redact(value any) any {
-	return redact(value, "")
+	return redact(value, "", false)
 }
 
-func redact(value any, key string) any {
-	if isSecretKey(key) {
+// RedactPublic additionally removes operation-private payloads. Public CLI
+// views, errors, and MCP projections use this policy.
+func RedactPublic(value any) any {
+	return redact(value, "", true)
+}
+
+func redact(value any, key string, public bool) any {
+	if isSecretKey(key) || public && isPrivatePayloadKey(key) {
 		return "[REDACTED]"
 	}
 	switch typed := value.(type) {
 	case map[string]any:
 		result := make(map[string]any, len(typed))
-		for name, child := range typed {
-			result[name] = redact(child, name)
+		names := make([]string, 0, len(typed))
+		for name := range typed {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			publicName := uniqueKey(RedactString(name), result)
+			result[publicName] = redact(typed[name], name, public)
 		}
 		return result
 	case []any:
 		result := make([]any, len(typed))
 		for i, child := range typed {
-			result[i] = redact(child, key)
+			result[i] = redact(child, key, public)
 		}
 		return result
 	case string:
@@ -204,11 +232,23 @@ func redact(value any, key string) any {
 			return typed
 		}
 		return RedactString(typed)
-	default:
-		// Typed structs are not traversed. Domain projections (receipts,
-		// claim views) are token-free by construction; this pass is defense
-		// in depth for loosely typed detail maps only.
+	case nil, bool, json.Number, float32, float64,
+		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return value
+	default:
+		// JSON normalization makes the policy independent of Go's concrete
+		// map, slice, and struct types. UseNumber preserves exact integers.
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return "[REDACTED]"
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.UseNumber()
+		var projected any
+		if err := decoder.Decode(&projected); err != nil {
+			return "[REDACTED]"
+		}
+		return redact(projected, key, public)
 	}
 }
 
@@ -221,10 +261,39 @@ func isPublicHexKey(key string) bool {
 	return strings.HasSuffix(lower, "sha256") || strings.HasSuffix(lower, "path")
 }
 
-func isSecretKey(key string) bool {
+func normalizedKey(key string) string {
 	key = strings.ToLower(strings.ReplaceAll(key, "_", ""))
-	key = strings.ReplaceAll(key, "-", "")
-	return key == "token" || key == "tokenhash" || key == "bearer" || key == "password" || key == "secret" || key == "credential" || key == "credentials" || key == "argv" || key == "rawrequest" || key == "rawreceipt" || key == "evidence" || key == "checkpoint" || key == "output"
+	return strings.ReplaceAll(key, "-", "")
+}
+
+func isSecretKey(key string) bool {
+	switch normalizedKey(key) {
+	case "token", "tokenhash", "bearer", "password", "secret", "credential", "credentials":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPrivatePayloadKey(key string) bool {
+	switch normalizedKey(key) {
+	case "argv", "rawrequest", "rawreceipt", "evidence", "checkpoint", "output":
+		return true
+	default:
+		return false
+	}
+}
+
+func uniqueKey(key string, values map[string]any) string {
+	if _, exists := values[key]; !exists {
+		return key
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", key, suffix)
+		if _, exists := values[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func RedactString(value string) string {
@@ -273,10 +342,10 @@ func copyMap(values map[string]any) map[string]any {
 	return result
 }
 
-func redactMap(values map[string]any) map[string]any {
+func redactMap(values map[string]any, public bool) map[string]any {
 	if values == nil {
 		return nil
 	}
-	redacted, _ := Redact(values).(map[string]any)
+	redacted, _ := redact(values, "", public).(map[string]any)
 	return redacted
 }

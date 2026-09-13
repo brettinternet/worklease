@@ -69,6 +69,23 @@ Guarded exec supervises its process group and records uncertain outcomes instead
 of claiming impossible fencing. Default native-hook claim coverage verifies a
 current claim only; opt-in path coverage requires exact claimed membership.
 
+## Output redaction policy
+
+Every emitted value is normalized through JSON before recursive redaction, so
+Go structs, named maps, and typed slices follow the same policy as loose JSON.
+Bearer material is always redacted: keys named `token`, `tokenHash`, `bearer`,
+`password`, `secret`, `credential`, or `credentials`, plus token-shaped values
+outside documented SHA-256 and path fields. Token-shaped JSON member names are
+redacted too; collisions receive deterministic suffixes rather than dropping a
+value.
+
+Operation-private keys (`argv`, `rawRequest`, `rawReceipt`, `checkpoint`,
+`evidence`, and `output`) are allowed only in the invoking checkpoint, exec, or
+replace-file result and in credential-authenticated `op inspect --full` output.
+Public CLI views, errors, and all MCP projections redact those keys. Other
+fields are public metadata; public producers still must not read private
+columns or treat redaction as authorization.
+
 ## Events, cursors, and retention
 
 The authority appends one ordered lifecycle event sequence. Events and history

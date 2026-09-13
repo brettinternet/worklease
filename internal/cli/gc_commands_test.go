@@ -21,14 +21,19 @@ func TestPublicFullHistoryAndEventsRedactCheckpointAndCredentials(t *testing.T) 
 	}
 	svc := lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
 	token := strings.Repeat("a", 64)
-	claim, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: strings.Repeat("1", 32), Token: token, Resources: []string{"opaque"}, AgentID: "agent", SessionID: "session", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
+	claim, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: strings.Repeat("1", 32), Token: token, Resources: []string{"opaque-" + token}, AgentID: "agent-" + token, SessionID: "session", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Checkpoint(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim.ClaimID, Token: token, Revision: claim.Revision}, lease.CheckpointRequest{OperationID: strings.Repeat("2", 32), Data: []byte(`{"private":"checkpoint-value"}`), RequestNotAfter: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"worklease", "--json", "--home", home, "status", "--resource", "opaque", "--full"}, {"worklease", "--json", "--home", home, "list", "--resource", "opaque", "--full"}} {
+	for _, args := range [][]string{
+		{"worklease", "--json", "--home", home, "status", "--resource", "opaque-" + token, "--full"},
+		{"worklease", "--json", "--home", home, "list", "--resource", "opaque-" + token, "--full"},
+		{"worklease", "--home", home, "status", "--resource", "opaque-" + token, "--full"},
+		{"worklease", "--home", home, "list", "--resource", "opaque-" + token, "--full"},
+	} {
 		var out bytes.Buffer
 		if err := Run(ctx, args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
@@ -41,7 +46,12 @@ func TestPublicFullHistoryAndEventsRedactCheckpointAndCredentials(t *testing.T) 
 		t.Fatal(err)
 	}
 	st.Close()
-	for _, args := range [][]string{{"worklease", "--json", "--home", home, "history", "--resource", "opaque", "--full"}, {"worklease", "--json", "--home", home, "events", "--full"}} {
+	for _, args := range [][]string{
+		{"worklease", "--json", "--home", home, "history", "--resource", "opaque-" + token, "--full"},
+		{"worklease", "--json", "--home", home, "events", "--full"},
+		{"worklease", "--home", home, "history", "--resource", "opaque-" + token, "--full"},
+		{"worklease", "--home", home, "events", "--full"},
+	} {
 		var out bytes.Buffer
 		if err := Run(ctx, args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
