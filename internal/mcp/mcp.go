@@ -607,9 +607,10 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	}
 	defer lk.Close()
 	deadline := s.deadline()
-	inputs := map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "wait": time.Duration(wait * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "coordinationOnly": co, "localReplaceAllowed": !co}
-	hash := hashValue(map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "localReplaceAllowed": !co, "coordinationOnly": co})
-	h := handle.Handle{SchemaVersion: 1, AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: randomToken(), Resources: resources, AgentID: agent, SessionID: session, LocalReplaceAllowed: !co, HoldUntil: time.Now().UTC().Add(time.Duration(hold * float64(time.Second))), AutoRenewOwner: func() string {
+	holdUntil := time.Now().UTC().Add(time.Duration(hold * float64(time.Second)))
+	inputs := map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "wait": time.Duration(wait * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "coordinationOnly": co, "localReplaceAllowed": !co}
+	hash := hashValue(map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "localReplaceAllowed": !co, "coordinationOnly": co})
+	h := handle.Handle{SchemaVersion: 1, AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: randomToken(), Resources: resources, AgentID: agent, SessionID: session, LocalReplaceAllowed: !co, HoldUntil: holdUntil, AutoRenewOwner: func() string {
 		if auto {
 			return opID()
 		}
@@ -634,7 +635,6 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	h.State = "ready"
 	h.Revision = g.Revision
 	h.ExpiresAt = g.ExpiresAt
-	h.HoldUntil = g.AcquiredAt.Add(time.Duration(hold * float64(time.Second)))
 	if auto {
 		h.AutoRenewOwner = opID()
 	}
@@ -686,7 +686,8 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	}
 	co, _ := p.Inputs["coordinationOnly"].(bool)
 	local := !co
-	g, err := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: h.HoldUntil})
+	holdUntil, legacyHash := pendingHoldUntil(p, h.HoldUntil)
+	g, err := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
 			_ = lk.ClearPending(path, &h)

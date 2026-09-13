@@ -14,6 +14,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/instructions"
+	"github.com/brettinternet/worklease/internal/lease"
 
 	"github.com/brettinternet/worklease/internal/testkit"
 )
@@ -140,17 +141,53 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority := bundle.st.AuthorityID()
-	_ = bundle.st.Close()
 	ref, claim, token := strings.Repeat("f", 32), strings.Repeat("e", 32), strings.Repeat("a", 64)
 	deadline := time.Now().UTC().Add(time.Hour)
+	legacyGrant, err := bundle.svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: authority, ClaimID: claim, Token: token, Resources: []string{"recovery-resource"}, AgentID: "agent", SessionID: "session", WorkKey: "recovery-resource", TTL: 2 * time.Second, RequestNotAfter: deadline, LocalReplaceAllowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bundle.st.Close()
 	inputs := map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claim, "resources": []string{"recovery-resource"}, "agentId": "agent", "sessionId": "session", "workKey": "recovery-resource", "ttl": int64(2 * time.Second / time.Microsecond), "wait": int64(0), "requestNotAfter": deadline.UnixMicro(), "coordinationOnly": false, "localReplaceAllowed": true}
-	pending := handle.Handle{SchemaVersion: 1, AuthorityID: authority, ClaimID: claim, Token: token, Resources: []string{"recovery-resource"}, AgentID: "agent", SessionID: "session", LocalReplaceAllowed: true, HoldUntil: time.Now().UTC().Add(time.Minute), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: authority, ClaimID: claim, RequestHash: hashValue(map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claim, "resources": []string{"recovery-resource"}, "agentId": "agent", "sessionId": "session", "workKey": "recovery-resource", "ttl": int64(2 * time.Second / time.Microsecond), "requestNotAfter": deadline.UnixMicro(), "localReplaceAllowed": true, "coordinationOnly": false}), RequestNotAfter: deadline, Inputs: inputs}}
+	pending := handle.Handle{SchemaVersion: 1, AuthorityID: authority, ClaimID: claim, Token: token, Resources: []string{"recovery-resource"}, AgentID: "agent", SessionID: "session", LocalReplaceAllowed: true, HoldUntil: time.Now().UTC().Add(time.Minute), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: authority, ClaimID: claim, RequestHash: legacyGrant.Receipt.RequestHash, RequestNotAfter: deadline, Inputs: inputs}}
 	if err := handle.Write(s.handlePath(ref), pending); err != nil {
 		t.Fatal(err)
 	}
 	replayed, err := s.Call(context.Background(), "acquire", map[string]any{"lease": ref})
 	if err != nil || replayed["isError"] == true {
 		t.Fatalf("pending acquire recovery: %v %v", replayed, err)
+	}
+}
+
+func TestMCPAcquireFixesHoldDeadlineBeforeWaiting(t *testing.T) {
+	home, _ := testkit.Home(t)
+	s, err := NewServer(Options{Home: home, AgentID: "waiter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := s.open(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().UTC().Add(time.Hour)
+	_, err = bundle.svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: bundle.st.AuthorityID(), ClaimID: strings.Repeat("1", 32), Token: strings.Repeat("a", 64), Resources: []string{"waited-resource"}, AgentID: "holder", SessionID: "holder", TTL: time.Second, RequestNotAfter: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bundle.st.Close()
+
+	started := time.Now().UTC()
+	acquired, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []any{"waited-resource"}, "ttl": float64(2), "wait": float64(2), "maxHold": float64(60), "autoHeartbeat": false})
+	if err != nil || acquired["isError"] == true {
+		t.Fatalf("waited acquire: %v %v", acquired, err)
+	}
+	content := acquired["structuredContent"].(map[string]any)
+	h, err := handle.Read(content["handlePath"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.HoldUntil.After(started.Add(60*time.Second + 500*time.Millisecond)) {
+		t.Fatalf("hold deadline moved with wait: started=%s hold=%s", started, h.HoldUntil)
 	}
 }
 
