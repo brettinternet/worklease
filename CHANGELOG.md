@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 - 2026-09-12
+
 ### Fixed
 
 - `worklease verify` no longer panics in text mode; the claim view is rendered as a concise verification summary.
