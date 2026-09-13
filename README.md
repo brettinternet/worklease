@@ -4,6 +4,8 @@ Provider-neutral, same-host coordination for humans and coding agents.
 Worklease prevents cooperating local loops from duplicating work. Your backlog
 or provider remains authoritative.
 
+![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
+
 ## Install
 
 Install the latest release with mise:
