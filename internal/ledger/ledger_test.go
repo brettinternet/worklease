@@ -43,7 +43,8 @@ func TestInspectPublicRedactionAuthenticatedFullStartedAndAmbiguousEpochs(t *tes
 	claim, token := strings.Repeat("1", 32), strings.Repeat("a", 64)
 	g := acquire(t, leaseSvc, st, claim, token, []string{"r"})
 	op := strings.Repeat("2", 32)
-	started, e := leaseSvc.BeginOperation(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: g.Revision}, lease.OperationIntent{OperationID: op, Kind: "exec", Request: map[string]any{"argv": []string{"secret"}}, TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
+	deadline := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
+	started, e := leaseSvc.BeginOperation(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: g.Revision}, lease.OperationIntent{OperationID: op, Kind: "exec", Request: map[string]any{"argv": []string{"secret"}}, TTL: time.Minute, RequestNotAfter: deadline})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -51,15 +52,23 @@ func TestInspectPublicRedactionAuthenticatedFullStartedAndAmbiguousEpochs(t *tes
 	if e != nil {
 		t.Fatal(e)
 	}
-	if public.State != "started" || public.RequestSHA256 != started.RequestHash || public.Receipt != nil || public.Evidence != nil {
+	if public.State != "started" || public.RequestSHA256 != started.RequestHash || public.RequestNotAfter != nil || public.Receipt != nil || public.Evidence != nil {
 		t.Fatalf("public=%+v", public)
+	}
+	publicJSON, e := json.Marshal(public)
+	if e != nil || strings.Contains(string(publicJSON), "requestNotAfter") {
+		t.Fatalf("public JSON=%s err=%v", publicJSON, e)
 	}
 	if _, e = ledgerSvc.Inspect(ctx, InspectRequest{OperationID: op, ClaimID: claim, Token: strings.Repeat("b", 64), Full: true}); reason.As(e) == nil || reason.As(e).Reason != reason.ReasonInvalidToken {
 		t.Fatalf("invalid token err=%v", e)
 	}
 	full, e := ledgerSvc.Inspect(ctx, InspectRequest{OperationID: op, ClaimID: claim, Token: token, Full: true})
-	if e != nil || full.ExpectedRevision != g.Revision {
+	if e != nil || full.ExpectedRevision != g.Revision || full.RequestNotAfter == nil || !full.RequestNotAfter.Equal(deadline) {
 		t.Fatalf("full=%+v err=%v", full, e)
+	}
+	fullJSON, e := json.Marshal(full)
+	if e != nil || !strings.Contains(string(fullJSON), `"requestNotAfter"`) {
+		t.Fatalf("full JSON=%s err=%v", fullJSON, e)
 	}
 	clock.Advance(2 * time.Minute)
 	newClaim, newToken := strings.Repeat("3", 32), strings.Repeat("b", 64)
@@ -175,6 +184,9 @@ func TestHistoryExactResourceCoverageAndNeverReturnsPrivatePayloads(t *testing.T
 	}
 	encoded, _ := json.Marshal(page)
 	text := string(encoded)
+	if strings.Contains(text, "requestNotAfter") {
+		t.Fatalf("history disclosed request deadline: %s", text)
+	}
 	if strings.Contains(text, "private") || strings.Contains(text, "receipt") || strings.Contains(text, "evidence") || strings.Contains(text, "checkpoint") {
 		t.Fatalf("history leaked private payload: %s", text)
 	}
