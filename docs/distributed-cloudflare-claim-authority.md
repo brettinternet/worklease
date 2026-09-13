@@ -10,6 +10,12 @@ the decisions already made, and the few decisions that remain open. The file
 name is historical: the first draft proposed a Cloudflare Durable Object
 authority, and that alternative is evaluated and rejected below.
 
+Resolve safety requirements in this design before remote implementation begins.
+Implement the mechanisms and executable acceptance scenarios only when that
+work is authorized; this design does not authorize changes to the local schema,
+CLI, service, or deployment. Documentation records intended behavior, not a
+shipped or verified guarantee.
+
 **Decision (2026-09-12, owner-authorized pivot).** The remote authority is the
 existing Go authority, served over authenticated HTTPS. One `worklease serve`
 process runs the same `lease.Service` and SQLite store that the local CLI uses,
@@ -23,7 +29,8 @@ transport. The difficulty is claim, replay, reconciliation, and garbage
 collection semantics, which already exist and are tested in Go. A second
 implementation of that logic in another language duplicates it forever, and its
 divergence fails silently as duplicate execution or a lost started operation.
-Hosting cost is a wash between the options and does not decide.
+Hosting cost does not decide this architecture; comparable cost remains an
+assumption until a deployment and workload are measured.
 
 Keep one end-user `worklease` CLI. There is no requirement to preserve Python
 classes, bundle commands, wire schemas, owner IDs, state files, or plugin
@@ -37,7 +44,7 @@ interfaces.
 | Cloudflare Containers, or Go compiled to Wasm inside a Worker | No durable per-instance disk, so state still lives in Durable Object storage behind a JavaScript API and the store is rewritten anyway. |
 | Turso or libSQL | Keeps the dialect but adds a network hop per statement and a vendor dependency without removing the single-writer server process. |
 | Managed Postgres behind the Go service | The escalation path if single-host durability ever becomes the binding constraint. It costs a Postgres port of the store, not a second authority. Not needed for a private deployment. |
-| SSH-forwarded authority, for example `ssh host worklease acquire ...` | No new code. The right vehicle for the demand validation below. Handles land on the wrong host, so credentials must flow through `--token-file` or `--token-fd`. Not a product architecture. |
+| SSH-forwarded authority, for example `ssh host worklease acquire ...` | Validates shared claim contention using existing commands. Handles and token files/descriptors belong to the host running the CLI; secure credential forwarding needs explicit setup. Does not provide client-local guarded execution against a remote authority. Not a product architecture. |
 
 ## Product value and validation
 
@@ -63,12 +70,21 @@ process runner, or exactly-once executor. Avoid adding those products to make th
 claim service appear more valuable.
 
 Before authorizing implementation, find two or three teams with recurring,
-costly cross-host duplicate execution. Run the SSH-forwarded validation first:
-two runtimes on two hosts sharing one existing tracker through one authority,
-including contention, a lost response, a crash, and a partition. It requires no
-new code. Measure onboarding effort, duplicate attempts avoided, time blocked on
-unknown outcomes, recovery effort, and request/storage usage. Compare against
-their actual scheduler or provider-native alternative. Stop if those
+costly cross-host duplicate execution. Start with SSH-forwarded claim contention:
+two runtimes on two hosts sharing one existing tracker through one authority.
+That narrow experiment needs no product changes. It does not validate the full
+guarded-operation recovery contract: the CLI exposes operation inspection and
+reconciliation, but not separate begin/complete commands, and `exec` runs its
+child where the CLI runs. Token files and descriptors are read on that host too.
+
+If contention validation supports proceeding, separately authorize a minimal
+validation harness over the existing Go service methods, with durable requests
+on each client and effects running on the client hosts. Exercise a lost start
+response, a crash, and a partition before treating remote recovery as validated.
+An SSH child running on the authority host is not evidence for those client
+failure boundaries. Measure onboarding effort, duplicate attempts avoided, time
+blocked on unknown outcomes, recovery effort, and request/storage usage. Compare
+against the actual scheduler or provider-native alternative. Stop if those
 alternatives already solve the problem with less operational burden.
 
 Cheap infrastructure is useful but is not evidence of product demand. Support,
@@ -130,39 +146,81 @@ authority behind a load balancer with more than one origin.
 A hosted deployment introduces one new invariant: a rolling deploy, blue-green
 cutover, or a hostname pointing at two machines must not create two writable
 databases with the same authorityId. Deploys are stop-before-start on one
-volume. At startup the server records an instance identity and a lease in the
-`meta` table beside `last_observed_at`, renewed while it runs, and refuses to
-open a database whose instance lease is held by another live process. A stale
-lease from a crashed instance is adopted only after it lapses. This guard is a
-local safety check for one volume; it is not a substitute for the deployment
-rule.
+volume. The server holds an exclusive process-lifetime OS lock for the hosted
+authority on that volume. All authority writers, including alternate CLI and
+maintenance entry points, must respect it; they cannot bypass the server to
+mutate a hosted authority. The lock remains held while a process is paused and
+is released when it exits. Keep the lock file stable while held; unlinking and
+recreating it must not admit a second holder.
 
-### Restore generation
+Do not use a startup-only expiring database lease: a paused server can resume
+after another server adopts it. SQLite transaction serialization alone does not
+enforce one serving process. The OS lock is a local safety check for one volume,
+not protection against independent writable clones or a substitute for the
+deployment rule. Stop-before-start upgrades must respect the same lock.
+
+### Restore incarnation and quarantine
 
 Replication is asynchronous, so losing the host loses the tail of committed
 writes, including recently committed started operations. Restore therefore is
-authority recreation, never resumption. Add an integer `restoreGeneration` to
-`meta`, starting at 1, and bind it into receipts, handles, requests, and
-cursors alongside authorityId. Any restore from a replica, database import, or
-recreation increments it.
+authority recreation, never resumption. Add a cryptographically random
+`restoreId` to `meta` at bootstrap and bind it into receipts, handles, requests,
+and cursors alongside authorityId. Every restore from a replica, database import,
+or recreation generates a fresh value before serving requests; an ordinary
+restart preserves it. Compare incarnations for equality, not ordering. A counter
+inside the backup is insufficient: restoring the same generation-1 backup twice
+would produce generation 2 twice and accept requests from rolled-back state.
+
+Asynchronous backup provides disaster recovery, not seamless failover or zero
+acknowledged-write loss. For example, [Litestream's replication](https://litestream.io/how-it-works/)
+copies WAL changes asynchronously. Set acceptable data loss and recovery downtime
+before choosing the deployment, and measure replication lag and restore drills
+against those targets. Safe reopening can remain blocked longer than a target
+if outcome or executor-cessation evidence is unavailable.
 
 After a restore the authority:
 
 1. ends every active claim with reason `restored`, effective at restore time,
    and leaves every started operation unresolved;
-2. rejects requests, replays, and cursors bound to an earlier generation with
-   `authority-restored`, returning the current generation so the client fails
-   closed and re-enrolls its pending work as unknown;
-3. admits no new acquisitions until an operator explicitly reopens the
-   namespace with an audited administrative action.
+2. rejects requests, replays, and cursors bound to another incarnation with
+   `authority-restored`, returning the current restoreId so the client fails
+   closed and preserves its old requests as recovery evidence;
+3. quarantines the namespace: permits authorized inspection, audited recovery
+   import, and bounded recovery-only claims and reconciliation, but rejects
+   normal admissions and new guarded effects until explicitly reopened.
 
-Within one generation, a linearizable absence read from the healthy authority
-proves that an unexpired request did not commit, as the local contract states.
-Across generations that inference is invalid: a client holding a pending request
-from an older generation treats absence as unknown outcome and reconciles rather
-than redispatching. Copying a live database to a second writable location is
-never a supported operation; a copy is usable only through the restore path
-under a new generation.
+The restored ledger cannot enumerate started operations lost from the backup
+tail. A client may have received start confirmation and dispatched a provider
+mutation before that start record was replicated; an offline client will not
+immediately report it. A clean restored ledger alone is not reopening evidence.
+
+Reopening requires an audited administrative action recording cessation of the
+old authority, an installation inventory and revocation state verified
+independently of the restored snapshot, and recovery evidence from those
+installations or equivalent independent evidence. Account for outstanding work,
+including confirmed starts, using saved requests and provider observations.
+An unavailable installation or missing evidence keeps the namespace quarantined
+unless equivalent evidence establishes its outcomes and executor cessation.
+
+Define audited recovery import as an explicit remote service extension. An admin
+request bound to the current incarnation records a missing operation as unknown,
+preserving its original authority/incarnation, claim and operation IDs, request
+hash, full resource set, and evidence provenance. Imports are idempotent for that
+original identity; conflicting evidence fails closed. They do not fabricate a
+successful receipt, revive old credentials, or authorize redispatch. Retain them
+as unresolved safety state and make them visible to the same overlap/recovery
+checks as restored started operations. Reconcile under current recovery-only
+ownership, with outcome and executor-cessation evidence. The current Go
+reconciliation method rejects missing targets, so import is required new work.
+Reopen normal admissions only after all inventoried uncertainty is reconciled.
+
+Within one incarnation, an unexpired request's absence from the same healthy
+authority establishes absence at that read, not cancellation of an in-flight
+dispatch. Only the identical saved request may be retried under exact replay.
+Across incarnations, absence cannot exclude a lost commit; recover rather than
+redispatch. Copying a live database to a second writable location is never a
+supported operation; a copy is usable only through the quarantined restore path
+under a fresh incarnation.
 
 ### Namespace deletion and cutover
 
@@ -308,6 +366,14 @@ requires the expected request hash and evidence of both outcome and cessation of
 the old executor. Evidence is a caller attestation, not proof produced by
 Worklease. A checkpoint is bounded recovery context, not verified provider state.
 
+Recovery-only claims are an explicit service extension used during restore,
+key migration, and capacity pressure. They cover the full required resource set
+under the same atomic ownership rules and 32-resource limit. Admission requires
+an unresolved recovery target, bounded TTL/hold limits, and reserved capacity.
+The authority rejects new guarded effects under these claims, preserves the
+restriction across renewal and transfer, and never upgrades them in place.
+Normal work requires a fresh ordinary claim after recovery and admission reopen.
+
 ### Access and delivery
 
 Remote reads require namespace authorization, including redacted views called
@@ -321,7 +387,7 @@ authenticated installation identity on every mutation, separately from the
 caller-supplied agent display label.
 
 Events, history, and watches retain authority/feed/filter-bound cursors and
-explicit retention gaps, extended with the restore generation. Consumers resume
+explicit retention gaps, extended with the restore incarnation. Consumers resume
 and deduplicate using sequence/cursor identity; delivery is not exactly once.
 Capture initial state and cursor coherently so the transition from snapshot to
 watch cannot lose intervening changes. Gaps require an explicit resnapshot.
@@ -350,13 +416,23 @@ volume that can grow. Never prune unknown operations to meet a quota or treat an
 exported record as permission to remove safety state.
 
 Backpressure protects existing ownership and recovery before storage or request
-exhaustion threatens them. Above an admission ceiling, acquire fails
-`capacity-exhausted` while renew, checkpoint, release, transfer, inspection, and
-reconciliation continue. Above a higher hard threshold, checkpoint writes are
-also rejected; renewals and reconciliation, which are small, continue until the
-disk is actually full. The two thresholds are deployment settings with defaults
-of 80 and 95 percent of the volume; tune them after measuring. No service can
-promise continued renewal after its underlying storage becomes unavailable.
+exhaustion threatens them. Above an admission ceiling, new ordinary acquisitions
+and operation starts fail `capacity-exhausted`; existing ownership lifecycle,
+inspection, operation completion, and reconciliation remain available. Reserve
+bounded capacity for recovery-only acquisitions and recovery imports too: an
+expired predecessor cannot be reconciled without a current resolver claim.
+Authenticate and validate authority/incarnation before recognizing exact replay;
+recover an existing receipt before applying new-admission checks. Crossing a
+capacity threshold must not turn a committed acquire into a failed new attempt.
+
+Above a higher hard threshold, new checkpoint writes are also rejected. Reserved
+headroom supports bounded recovery and essential lifecycle writes, not unlimited
+renewals or imports. Include WAL growth, pinned history, and backup lag in volume
+monitoring; measure operation sizes and bound recovery request/storage usage.
+The two thresholds have provisional defaults of 80 and 95 percent of the volume,
+to be validated under load. If the reserve cannot support safe recovery, expand
+storage and keep normal admissions closed. No service can promise continued
+renewal after its underlying storage becomes unavailable.
 
 Read replicas, dashboards, and object-storage exports are eventually consistent
 diagnostic projections. They cannot authorize claims, answer authoritative replay
@@ -404,9 +480,11 @@ protocol only when this feature is implemented; do not reserve URLs or
 schema-version numbers now.
 
 Lifecycle methods use bounded JSON request bodies over authenticated HTTPS,
-mapped one-to-one onto the existing typed service requests. Bind requests to
-authorityId and restore generation. Reject unsupported versions, unknown fields,
-invalid types, oversized bodies and responses, and return non-cacheable
+mapped onto the typed service requests. Recovery import, recovery-only admission,
+and transfer preparation require explicit extensions to that service contract;
+their transactional invariants cannot be implemented by independent HTTP writes.
+Bind requests to authorityId and restoreId. Reject unsupported versions, unknown
+fields, invalid types, oversized bodies and responses, and return non-cacheable
 responses. Resource keys and bearer tokens do not belong in URLs or logs.
 
 Clients retain generated claim/operation IDs, normalized defaults, credentials,
@@ -449,16 +527,19 @@ issuance are separate scope.
 
 A private deployment authenticates installations at the front door with
 Cloudflare Access service tokens, or an equivalent authenticated reverse proxy.
-The server validates the front door's identity assertion, for Access the JWT's
-issuer and audience, and maps the asserted installation identity to a namespace
-role stored in the authority database. The server accepts no unauthenticated
-request path except health.
+The server validates the front door's identity assertion: for Access, verify the
+JWT signature against trusted Access keys, expected issuer and application
+audience, token type, and expiry. Map the verified service-token `common_name`
+(Client ID), not `sub`, to an installation and its namespace role in the database.
+Cloudflare documents these claims in its [application token contract](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/).
+Check installation revocation on every request, including replay. The server
+accepts no unauthenticated request path except health.
 
 | Role | Grants |
 | --- | --- |
 | `read` | Redacted status, list, events, history, and watch for the namespace. |
 | `write` | `read` plus acquire, renew, checkpoint, transfer, release, operation begin/renew/complete, inspection of epochs it holds credentials for, and reconciliation. |
-| `admin` | `write` plus manifest and enrollment edits, installation enrollment and revocation, audited private inspection of ended epochs in the namespace, administrative claim revocation, GC apply, restore reopening, and namespace deletion. |
+| `admin` | `write` plus manifest and enrollment edits, installation enrollment and revocation, audited private inspection of ended epochs in the namespace, administrative claim revocation, GC apply, audited recovery import and restore reopening, and namespace deletion. |
 
 Namespace access is not fine-grained resource isolation against hostile
 members: start with one trusted cooperative team per namespace. Separate
@@ -504,24 +585,23 @@ region. Retention and deletion of private recovery context follow the same GC
 rules as the local authority; deletion beyond GC requires an `admin` action and
 is refused for unresolved operations. Replicas in object storage inherit the
 namespace's access controls and are readable only by the restore procedure.
-Backups are therefore covered by the restore generation rule and never by a
+Backups are therefore covered by the restore incarnation rule and never by a
 second live authority.
 
 ## Remaining decisions and release evidence
 
-The design above resolves architecture, authority identity, restore, single
-writer, canonical locators, admission, roles, revocation, transfer, time, and
-capacity behavior. Documentation coverage is not an implemented or tested
-remote guarantee. What remains open depends on evidence that does not exist yet:
+The architecture and safety requirements above are design decisions. Their
+mechanisms and failure behavior still require implementation and executable
+evidence when remote work is authorized. Sharding, fencing counters, and public
+hosting are explicit deferrals, not decisions blocking a private implementation.
+The following questions still require measurements or operating-team decisions:
 
 | Area | Open decision and what resolves it |
 | --- | --- |
 | Whether to build at all | The demand validation above. Two or three teams with measured cross-host duplicate execution that a scheduler or provider does not already solve. |
-| Availability and cost | Measured WAN latency, renewal margins, retry/watch bursts, and per-namespace write throughput on the validation deployment. These set the concrete alert thresholds and quotas. |
-| Hosting region and provider | A deployment choice made by the operating team; the design constrains it only to one always-on host with one volume and replication to object storage. |
-| Sharding and multi-namespace throughput | Deferred until one serialized writer per namespace is measured to be insufficient. |
-| Fencing counter | Deferred until a provider-side consumer can enforce it. |
-| Public hosting and multi-tenancy | Separate product after a private deployment demonstrates value. |
+| Recovery targets | The operating team sets acceptable acknowledged-write loss and recovery downtime before choosing deployment details. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
+| Capacity and cost | Measured WAN latency, renewal margins, retry/watch bursts, per-namespace write throughput, replication lag, and recovery storage demand. These validate thresholds, reserves, quotas, and cost assumptions. |
+| Hosting region and provider | An operating-team choice constrained by recovery targets, one always-on host, one persistent volume, and replication to object storage. |
 | Operational ownership | Named owners and runbooks for patching, restore, and reopening after restore. A private service does not ship without them. |
 
 Before private deployment, add executable scenarios covering at least:
@@ -545,12 +625,22 @@ Before private deployment, add executable scenarios covering at least:
 5. Snapshot/watch races, disconnect/reconnect, lazy expiry, cursor gaps, and a
    stuck predecessor pinning retention preserve recovery state. Capacity
    pressure rejects new admissions at the ceiling while renewals, release, and
-   reconciliation continue.
+   reconciliation continue. Start with an expired unresolved predecessor and no
+   resolver claim: recovery-only acquisition still succeeds within its reserve
+   and cannot start new effects, including after transfer. Replay an acquire
+   committed below the ceiling after crossing it; recover the original receipt.
+   Exhaust the recovery reserve and fail closed without pruning unknown state.
 6. Restart, rolling protocol/schema upgrades, and restore from a replica preserve
-   replay and unknown-operation semantics. Restore increments the generation,
-   ends active claims as `restored`, rejects earlier-generation cursors,
-   handles, and replays, and admits nothing until reopened. A second process
-   opening the same database is refused by the single writer guard.
+   replay and unknown-operation semantics. Restart preserves restoreId; restore
+   creates a fresh one, ends active claims as `restored`, and rejects old
+   incarnation cursors, handles, and replays. Restore the same backup twice and
+   reject requests from the first restored incarnation at the second. Lose a
+   confirmed start from the backup tail while its client is offline: quarantine
+   remains closed until independent evidence or client recovery accounts for it.
+   Exercise idempotent/conflicting imports, recovery-only claims before normal
+   reopening, and restored revocation-state verification. A paused server keeps
+   its OS lock: refuse a second server and alternate CLI writer, resume the first
+   safely, then permit takeover after exit. Verify stable lock-file identity.
 
 These are future acceptance scenarios, not assertions about shipped behavior.
 
@@ -561,17 +651,19 @@ modes, not because a second implementation needs a shared conformance suite.
 Deployment tooling owns the host, volume, replication, front door, and secrets;
 `worklease` remains the claim client and authority, not a provisioning tool.
 
-When the feature is authorized:
+Do not add preparatory remote code to the local release. When the feature is
+authorized:
 
 1. Amend the contract's remote section under its amendment procedure and freeze
-   the protocol as a one-to-one mapping of the typed service requests, with
-   authority time, restore generation, and the error reasons named above.
-2. Add the restore generation and instance lease to `meta`, and bind the
-   generation into receipts, handles, and cursors.
+   the protocol over the typed service requests and explicit recovery/transfer
+   extensions, with authority time, restoreId, and the error reasons named above.
+2. Add restoreId to `meta` and bind it into requests, receipts, handles, and
+   cursors. Implement the process-lifetime lock and quarantined restore path,
+   including audited unknown-operation import and reopening prerequisites.
 3. Implement `worklease serve`: HTTP handlers over the existing service methods,
    front-door identity validation and role mapping, bounded bodies,
    non-cacheable responses, no resource keys or tokens in URLs or logs, and the
-   admission ceiling.
+   admission ceiling with exact replay and bounded recovery reservations.
 4. Add the client-side local/remote selector, credential handling, two-step
    transfer, and the partition and lost-response tests. Keep guarded effects
    strictly local.
