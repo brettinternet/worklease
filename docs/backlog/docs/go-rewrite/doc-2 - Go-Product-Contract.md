@@ -3,7 +3,7 @@ id: doc-2
 title: Go Product Contract
 type: specification
 created_date: '2026-09-12 03:51'
-updated_date: '2026-09-13 00:20'
+updated_date: '2026-09-13 02:46'
 tags:
   - go-rewrite
   - contract
@@ -595,7 +595,7 @@ Create immutable random authorityId in local meta at bootstrap; include it in no
 
 Resources contend by exact bytes inside one authority namespace. One multi-resource claim must remain atomic within that namespace. Local path/backlog/Markdown keys are explicitly host-local: absolute git common directories are not portable repository identity. Future remote filesystem coordination needs a caller-selected stable repository/source namespace plus relative locator, not a silently guessed Git remote URL, login, session, or worktree ID. Portable opaque/provider keys remain usable today without adding namespace configuration.
 
-The deferred design in `docs/distributed-cloudflare-claim-authority.md` (historical file name) recommends serving this same Go authority (`lease.Service` plus the SQLite store) over authenticated HTTPS from one always-on host with one volume, asynchronous replication to object storage, and an authenticated front door such as Cloudflare Tunnel plus Access. A Durable Object reimplementation was rejected because it duplicates every safety invariant in a second language. Future authority authentication is separate from each claim credential; configured remote failures must never fall back to local claims. Multi-host transport must preserve exact request/replay and unknown-outcome semantics and explicitly handle network partitions. A hosted deployment adds two invariants before release: a restore generation in `meta` bound into receipts, handles, and cursors so a restore fails closed, and a single-writer instance guard so one database is never served by two live processes. Neither exists today and neither is added before the feature is authorized.
+The deferred design in `docs/distributed-cloudflare-claim-authority.md` (historical file name) recommends serving this same Go authority (`lease.Service` plus the SQLite store) over authenticated HTTPS from one always-on host with one volume, asynchronous replication to object storage, and an authenticated front door such as Cloudflare Tunnel plus Access. A Durable Object reimplementation was rejected because it duplicates every safety invariant in a second language. Future authority authentication is separate from each claim credential; configured remote failures must never fall back to local claims. Multi-host transport must preserve exact request/replay and unknown-outcome semantics and explicitly handle network partitions. A hosted deployment adds two invariants before release: a random restore incarnation identifier (`restoreId`) in `meta`, regenerated on every restore and bound into requests, receipts, handles, and cursors so a restore fails closed into a quarantined recovery state, and an exclusive process-lifetime OS lock so one database is never served by two live processes. Neither exists today and neither is added before the feature is authorized.
 
 Do not add a fencing counter now. A future provider-enforced fence must increase across epochs per resource, survive retention/restore, and be scoped to the authority namespace; the current per-claim revision and diagnostic event seq are neither such a fence nor provider evidence. Remote client-side exec remains coordination only. Remote replacement must be disabled unless a separately specified authority/provider-side adapter can enforce that operation’s boundary.
 

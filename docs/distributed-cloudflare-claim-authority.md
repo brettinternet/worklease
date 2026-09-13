@@ -151,7 +151,9 @@ authority on that volume. All authority writers, including alternate CLI and
 maintenance entry points, must respect it; they cannot bypass the server to
 mutate a hosted authority. The lock remains held while a process is paused and
 is released when it exits. Keep the lock file stable while held; unlinking and
-recreating it must not admit a second holder.
+recreating it must not admit a second holder. Reuse the pinned-handle technique
+from `internal/handle`: open the lock file, take `flock`, then verify the opened
+device and inode still match the directory entry before trusting the lock.
 
 Do not use a startup-only expiring database lease: a paused server can resume
 after another server adopts it. SQLite transaction serialization alone does not
