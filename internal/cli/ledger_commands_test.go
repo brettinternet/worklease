@@ -59,8 +59,16 @@ func TestHistoryWithoutResourceShowsRecentEventsAndTextOmitsCursor(t *testing.T)
 		t.Fatalf("text exposed opaque cursor: %q", eventsText)
 	}
 	eventsJSON := run("events", "--json", "--home", home)
-	if historyJSON := run("history", "--json", "--home", home); historyJSON != eventsJSON {
+	historyJSON := run("history", "--json", "--home", home)
+	if historyJSON != eventsJSON {
 		t.Fatalf("history=%q events=%q", historyJSON, eventsJSON)
+	}
+	var historyEnvelope map[string]any
+	if err := json.Unmarshal([]byte(historyJSON), &historyEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if historyEnvelope["operation"] != "events" || historyEnvelope["events"] == nil || historyEnvelope["epochs"] != nil {
+		t.Fatalf("history alias envelope=%#v", historyEnvelope)
 	}
 	if !strings.Contains(eventsJSON, `"nextCursor":"`) {
 		t.Fatalf("JSON omitted cursor: %q", eventsJSON)
