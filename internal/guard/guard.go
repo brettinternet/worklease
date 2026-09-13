@@ -234,7 +234,7 @@ type capture struct {
 	truncated bool
 }
 
-func readBounded(r io.Reader, done <-chan struct{}) capture {
+func readBounded(r io.Reader) capture {
 	var out capture
 	buf := make([]byte, 64*1024)
 	for {
@@ -254,11 +254,6 @@ func readBounded(r io.Reader, done <-chan struct{}) capture {
 		}
 		if e != nil {
 			return out
-		}
-		select {
-		case <-done:
-			return out
-		default:
 		}
 	}
 }
@@ -357,23 +352,30 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 	}
 	defer stdinFile.Close()
 	cmd.Stdin = stdinFile
-	stdoutPipe, e := cmd.StdoutPipe()
+	stdoutPipe, stdoutChild, e := os.Pipe()
 	if e != nil {
 		return preSpawnFailure(e)
 	}
-	stderrPipe, e := cmd.StderrPipe()
+	defer stdoutPipe.Close()
+	defer stdoutChild.Close()
+	stderrPipe, stderrChild, e := os.Pipe()
 	if e != nil {
 		return preSpawnFailure(e)
 	}
+	defer stderrPipe.Close()
+	defer stderrChild.Close()
+	cmd.Stdout = stdoutChild
+	cmd.Stderr = stderrChild
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	deadline := time.Now().Add(req.MaxDuration)
 	if e = cmd.Start(); e != nil {
 		return preSpawnFailure(e)
 	}
-	done := make(chan struct{})
+	_ = stdoutChild.Close()
+	_ = stderrChild.Close()
 	stdoutCh, stderrCh := make(chan capture, 1), make(chan capture, 1)
-	go func() { stdoutCh <- readBounded(stdoutPipe, done) }()
-	go func() { stderrCh <- readBounded(stderrPipe, done) }()
+	go func() { stdoutCh <- readBounded(stdoutPipe) }()
+	go func() { stderrCh <- readBounded(stderrPipe) }()
 	remaining := time.Until(deadline)
 	if remaining < 0 {
 		remaining = 0
@@ -416,8 +418,6 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 		select {
 		case waitErr = <-exited:
 			reapProcessGroup(cmd.Process.Pid)
-			_ = stdoutPipe.Close()
-			_ = stderrPipe.Close()
 			goto done
 		case <-timer.C:
 			timedOut = true
@@ -469,7 +469,6 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 		}
 	}
 done:
-	close(done)
 	if renewing {
 		// The child finished while a renewal was in flight. Completion must
 		// use the revision that renewal committed, otherwise the authority

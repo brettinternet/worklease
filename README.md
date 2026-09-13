@@ -6,7 +6,19 @@ or provider remains authoritative.
 
 ## Install
 
-Build from source with Go 1.27.1:
+Install the latest release with mise:
+
+```toml
+[tools]
+"github:brettinternet/worklease" = "latest"
+```
+
+```sh
+mise install
+worklease version
+```
+
+Or build from source with Go 1.27.1:
 
 ```sh
 mise run build
