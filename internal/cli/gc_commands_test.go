@@ -113,7 +113,7 @@ func TestGCEmptyPreviewJSONAndText(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "--home", home, "gc"}, "dev", "unknown", "unknown", &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "gc\n") || !strings.Contains(out.String(), "mode: preview") || !strings.Contains(out.String(), "hint:") {
+	if !strings.HasPrefix(out.String(), "garbage collection preview\n") || strings.HasPrefix(out.String(), "gc\n") || !strings.Contains(out.String(), "mode: preview") || !strings.Contains(out.String(), "hint:") {
 		t.Fatalf("text=%q", out.String())
 	}
 }

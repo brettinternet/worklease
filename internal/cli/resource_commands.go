@@ -10,12 +10,6 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-func writeResourceResult(s *boundary, cmd *urfave.Command, operation string, fields map[string]any) error {
-	if s.jsonRequested(cmd) {
-		return output.WriteSuccess(s.writer, operation, fields)
-	}
-	return output.WriteText(s.writer, operation, fields)
-}
 func keyFields(key resource.Key) map[string]any {
 	fields := map[string]any{"provider": key.Provider, "resource": key.Resource, "capability": key.Capability, "scope": key.Scope, "identityScope": key.IdentityScope, "localReplaceAllowed": key.LocalReplaceAllowed, "providerFencing": false, "genericExecutionGuarantee": "local-coordination"}
 	if key.Source != "" {
@@ -34,7 +28,10 @@ func (s *boundary) keyResult(cmd *urfave.Command) error {
 	if len(in.Keys) != 1 {
 		return s.handle(cmd, reason.New(reason.ReasonInvalidResource, "key requires exactly one resource"))
 	}
-	return writeResourceResult(s, cmd, "key", keyFields(in.Keys[0]))
+	if s.jsonRequested(cmd) {
+		return output.WriteSuccess(s.writer, "key", keyFields(in.Keys[0]))
+	}
+	return writeKeyText(s.writer, in.Keys[0])
 }
 func descriptorFields(d resource.Descriptor) map[string]any {
 	m := d.Map()

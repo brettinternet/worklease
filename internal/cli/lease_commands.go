@@ -91,7 +91,19 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 		if operation == "status" || operation == "list" {
 			return output.WritePublicSuccess(s.writer, operation, fields)
 		}
-		return output.WriteSuccess(s.writer, operation, fields)
+		jsonFields := fields
+		if operation == "checkpoint" || operation == "transfer" {
+			jsonFields = make(map[string]any, len(fields))
+			for key, value := range fields {
+				jsonFields[key] = value
+			}
+			delete(jsonFields, "checkpointBytes")
+			if operation == "transfer" {
+				delete(jsonFields, "resources")
+				delete(jsonFields, "successorHandle")
+			}
+		}
+		return output.WriteSuccess(s.writer, operation, jsonFields)
 	}
 	switch operation {
 	case "acquire":

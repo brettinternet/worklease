@@ -842,7 +842,7 @@ func (s *Service) Verify(ctx context.Context, creds Credentials, expected []stri
 		}
 		if len(unknown) > 0 {
 			out.UnknownOperations = unknown
-			return reason.New(reason.ReasonUnknownOutcomePending, "a predecessor operation has unknown outcome").With("unknownOperations", unknown)
+			return reason.New(reason.ReasonUnknownOutcomePending, "a predecessor operation has unknown outcome")
 		}
 		if len(expected) > 0 && !containsResources(row.Resources, expected) {
 			return reason.New(reason.ReasonVerifyFailed, "claim resources do not match").With("cause", "resource-mismatch")

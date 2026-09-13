@@ -41,26 +41,41 @@ claim or an authoritative provider checkpoint.
 One claim covers all `--resource` values atomically. Resources contend by exact
 bytes and are never silently normalized.
 
-`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table without
-an operation-name banner. Git-backed resources collapse to provider, repository,
-and item; coordination hashes use a short non-secret fingerprint. `list --full`
-shows unshortened resources, claim and agent IDs, and absolute expiry timestamps,
-subject to the normal bearer-shaped-value redaction policy.
-On an interactive terminal, headers are bold; healthy/available states are green,
-attention states are yellow, and failures are red. This styling applies to
-`list`, `status`, `doctor`, garbage-collection outcomes, and error guidance.
-Color is omitted when output is redirected, `TERM=dumb`, or `NO_COLOR` is set.
-JSON is never colored.
+Human-readable output uses outcome sentences or table headers rather than a
+standalone command-name banner. Key/value labels use lower camel case aligned
+with the JSON vocabulary (`claimId`, `expiresAt`, `nextCursor`); table headers
+use upper snake case (`CLAIM_ID`, `EXPIRES_AT`). JSON field names and envelopes
+are unchanged.
+
+`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table. Git-backed
+resources collapse to provider, repository, and item; coordination hashes use a
+short non-secret fingerprint. `list --full` shows unshortened resources, claim
+and agent IDs, and absolute expiry timestamps, subject to the normal
+bearer-shaped-value redaction policy. `status` similarly uses relative expiry in
+its compact view; `status --full` adds complete non-secret claim metadata and
+RFC3339 timestamps.
+
+On an interactive terminal, headers are bold; healthy/available states and event
+kinds are green, attention states are yellow, and failures are red. Styling is
+limited to semantic headers, states, kinds, garbage-collection outcomes, and
+error guidance; identifiers and timestamps are never colored. Color is omitted
+when output is redirected, `TERM=dumb`, or `NO_COLOR` is set. JSON is never
+colored.
 
 Successful lifecycle mutations name the action and claim, then show only
-operation-relevant fields. Checkpoint reports persisted byte size; transfer
-confirms the successor handle and complete resource set. Verification preserves
-full unresolved operation IDs needed for recovery.
+operation-relevant fields. In text, checkpoint reports persisted byte size and
+transfer confirms the successor handle and complete resource set. These additions
+do not change their stable JSON envelopes. Verification preserves full unresolved
+operation IDs needed for recovery.
 
 Guarded command streams and authenticated inspection payloads use indented,
-labeled blocks instead of escaped single lines. `--full` expands safe metadata
-for status, history, events, and policy descriptions. Use `--json` as the
-canonical complete structured output. Opaque event cursors appear only in JSON.
+labeled blocks instead of escaped single lines. Compact `history --resource`
+and `events` show shortened claim IDs and relative times; their `--full` views
+add complete non-secret metadata and absolute RFC3339 timestamps. `history`
+without a resource uses the event view. `policy describe --full` adds contract
+versions and fencing guarantees. `key`, `watch`, and `gc` use fixed
+command-specific field ordering. Use `--json` as the canonical complete
+structured output. Opaque event cursors appear only in JSON.
 
 ## Guarded and recovery operations
 

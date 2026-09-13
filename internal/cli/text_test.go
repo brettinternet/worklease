@@ -8,7 +8,23 @@ import (
 
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
+	"github.com/brettinternet/worklease/internal/resource"
 )
+
+func TestKeyTextUsesDeterministicSafeFieldsWithoutBanner(t *testing.T) {
+	value := resource.Key{Provider: "path", Source: "repo\x1b", Item: "TASK-99", Resource: "path:/tmp/file", Capability: "path-mutation", Scope: "host", IdentityScope: "path", LocalReplaceAllowed: true}
+	var first, second bytes.Buffer
+	if err := writeKeyText(&first, value); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKeyText(&second, value); err != nil {
+		t.Fatal(err)
+	}
+	want := "derived resource key\nprovider: path\nresource: path:/tmp/file\ncapability: path-mutation\nscope: host\nidentityScope: path\nsource: repo\\u001b\nitem: TASK-99\nlocalReplaceAllowed: true\nproviderFencing: false\ngenericExecutionGuarantee: local-coordination\n"
+	if got := first.String(); got != want || got != second.String() || strings.HasPrefix(got, "key\n") || strings.ContainsRune(got, '\x1b') || strings.Contains(got, "map[") {
+		t.Fatalf("key output=%q want=%q", got, want)
+	}
+}
 
 func TestOpaqueTextWidthAndShortening(t *testing.T) {
 	if displayWidth("a界e\u0301") != 4 || displayWidth("𠀀") != 2 {
@@ -62,42 +78,63 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
 	claim := &lease.ClaimView{ClaimID: claimID, Resources: []string{"exact-resource"}, AgentID: "agent", SessionID: "session", WorkKey: "work", Guarantee: "local-coordination", AuthorityID: strings.Repeat("d", 32), Revision: 4, AcquiredAt: now.Add(-time.Minute), HeartbeatAt: now, ExpiresAt: now.Add(time.Minute), Active: true, CheckpointPresent: true}
 	var compact, full bytes.Buffer
-	if err := writeStatusText(&compact, lease.Status{Claim: claim}, false, false); err != nil {
+	if err := writeStatusTextAt(&compact, lease.Status{Claim: claim}, false, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStatusText(&full, lease.Status{Claim: claim}, true, false); err != nil {
+	if err := writeStatusTextAt(&full, lease.Status{Claim: claim}, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), "sessionId:") || !strings.Contains(full.String(), "sessionId: session") || !strings.Contains(full.String(), "resources: exact-resource") {
+	if strings.Contains(compact.String(), "sessionId:") || strings.Contains(compact.String(), "expiresAt:") || !strings.Contains(compact.String(), "expires: 1m left") || !strings.Contains(full.String(), "sessionId: session") || !strings.Contains(full.String(), "expiresAt: 2026-09-13T02:14:09.000000Z") || !strings.Contains(full.String(), "resources: exact-resource") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
 	}
 
-	epoch := ledger.Epoch{ClaimID: claimID, AgentID: "agent", SessionID: "session", Resources: []string{"exact-resource"}, AcquiredAt: now, Status: "open", Operations: []ledger.Operation{{OperationID: operationID, Kind: "exec", State: "started", RequestSHA256: hash}}}
+	epoch := ledger.Epoch{ClaimID: claimID, AgentID: "agent", SessionID: "session", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-2 * time.Minute), Status: "open", Operations: []ledger.Operation{{OperationID: operationID, Kind: "exec", State: "started", RequestSHA256: hash}}}
 	page := ledger.HistoryPage{Resource: "exact-resource", Epochs: []ledger.Epoch{epoch}, NextCursor: "cursor", Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}}
 	compact.Reset()
 	full.Reset()
-	if err := writeHistoryText(&compact, page, false); err != nil {
+	if err := writeHistoryTextAt(&compact, page, false, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeHistoryText(&full, page, true); err != nil {
+	if err := writeHistoryTextAt(&full, page, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), hash) || !strings.Contains(full.String(), "requestSha256="+hash) || !strings.Contains(full.String(), "resources=exact-resource") {
+	if strings.Contains(compact.String(), hash) || !strings.Contains(compact.String(), "acquired=2m ago") || strings.Contains(compact.String(), "acquiredAt=") || !strings.Contains(full.String(), "acquiredAt=2026-09-13T02:11:09.000000Z") || !strings.Contains(full.String(), "requestSha256="+hash) || !strings.Contains(full.String(), "resources=exact-resource") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
 	}
 
 	revision := int64(4)
-	events := ledger.EventsPage{NextCursor: "cursor", Events: []ledger.Event{{Sequence: "1", At: now, Kind: "heartbeat", ClaimID: claimID, Resources: []string{"exact-resource"}, OperationID: operationID, Revision: &revision, AgentID: "agent", Detail: map[string]any{"reason": "renewed"}}}}
+	events := ledger.EventsPage{NextCursor: "cursor", Events: []ledger.Event{{Sequence: "1", At: now.Add(-30 * time.Second), Kind: "heartbeat", ClaimID: claimID, Resources: []string{"exact-resource"}, OperationID: operationID, Revision: &revision, AgentID: "agent", Detail: map[string]any{"reason": "renewed"}}}}
 	compact.Reset()
 	full.Reset()
-	if err := writeEventsText(&compact, events, false); err != nil {
+	if err := writeEventsTextAt(&compact, events, false, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeEventsText(&full, events, true); err != nil {
+	if err := writeEventsTextAt(&full, events, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), "exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
+	if strings.Contains(compact.String(), "exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(compact.String(), "at=30s ago") || !strings.Contains(full.String(), "at=2026-09-13T02:12:39.000000Z") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	}
+}
+
+func TestHistoryAndEventsColorOnlySemanticValues(t *testing.T) {
+	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
+	claimID := strings.Repeat("a", 32)
+	var out bytes.Buffer
+	page := ledger.HistoryPage{Resource: "resource", Epochs: []ledger.Epoch{{ClaimID: claimID, AcquiredAt: now, Status: "open"}}}
+	if err := writeHistoryTextAt(&out, page, true, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "status=\x1b[32mopen\x1b[0m") || !strings.Contains(got, "claimId="+claimID) || strings.Contains(got, "claimId=\x1b") || strings.Contains(got, "at=\x1b") {
+		t.Fatalf("history color scope=%q", got)
+	}
+	out.Reset()
+	events := ledger.EventsPage{Events: []ledger.Event{{Sequence: "1", At: now, Kind: "heartbeat", ClaimID: claimID}}}
+	if err := writeEventsTextAt(&out, events, true, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "kind=\x1b[32mheartbeat\x1b[0m") || !strings.Contains(got, "claimId="+claimID) || strings.Contains(got, "claimId=\x1b") || strings.Contains(got, "at=\x1b") {
+		t.Fatalf("event color scope=%q", got)
 	}
 }
 
@@ -134,10 +171,10 @@ func TestRemainingStructuredTextSummariesAvoidGoValueDumps(t *testing.T) {
 			"claimId": claimID, "resources": []string{"resource"}, "agentId": "agent", "sessionId": "session", "revision": int64(1), "expiresAt": now, "guarantee": "local-coordination",
 			"unknownOperations": []string{operationID}, "recovery": []lease.Recovery{{Resource: "resource", ClaimID: strings.Repeat("c", 32), CheckpointPresent: true}},
 		})
-	}, "unknownOperations: [\""+operationID+"\"]", "recovery[1]: resource=resource claim="+strings.Repeat("c", 32)+" checkpointPresent=true")
+	}, "unknownOperations: [\""+operationID+"\"]", "recovery[1]: resource=resource claimId="+strings.Repeat("c", 32)+" checkpointPresent=true")
 	assert("transfer", func(out *bytes.Buffer) error {
 		return writeTransferText(out, map[string]any{"claimId": claimID, "agentId": "next", "sessionId": "loop", "revision": int64(1), "expiresAt": now, "guarantee": "local-coordination"})
-	}, "transferred ownership", "agent: next", "revision: 1")
+	}, "transferred ownership", "agentId: next", "revision: 1")
 	assert("verify", func(out *bytes.Buffer) error {
 		return writeVerificationText(out, &lease.ClaimView{ClaimID: claimID, Resources: []string{"resource"}, Revision: 4, ExpiresAt: now}, []string{operationID})
 	}, "verified claim", "resources: resource", "revision: 4", "unknownOperations: [\""+operationID+"\"]")
