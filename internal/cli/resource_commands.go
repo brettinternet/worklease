@@ -63,7 +63,11 @@ func (s *boundary) policyDescribeResult(cmd *urfave.Command) error {
 	if err != nil {
 		return s.handle(cmd, err)
 	}
-	return writeResourceResult(s, cmd, "policy describe", descriptorFields(p.Describe()))
+	descriptor := p.Describe()
+	if s.jsonRequested(cmd) {
+		return output.WriteSuccess(s.writer, "policy describe", descriptorFields(descriptor))
+	}
+	return writePolicyDescribeText(s.writer, descriptor, cmd.Bool("full"))
 }
 func keyAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error { return s.keyResult(cmd) }

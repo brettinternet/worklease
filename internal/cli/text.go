@@ -100,24 +100,56 @@ func runeWidth(r rune) int {
 	return 1
 }
 
-func writeStatusText(w io.Writer, value lease.Status, color bool) error {
+func writeStatusText(w io.Writer, value lease.Status, full, color bool) error {
 	if value.Claim != nil {
-		state := stateForClaim(*value.Claim)
-		return writeLines(w, "status", []string{
-			"claim: " + shortenOpaque(value.Claim.ClaimID, 40),
-			"state: " + styledState(state, color),
-			"agent: " + shortenOpaque(value.Claim.AgentID, 40),
-			"expiresAt: " + value.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
-		})
+		claim := value.Claim
+		state := stateForClaim(*claim)
+		lines := []string{
+			"agent: " + shortenOpaque(claim.AgentID, 40),
+			"expiresAt: " + claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+		}
+		if full {
+			lines = append(lines,
+				"claimId: "+claim.ClaimID,
+				"resources: "+fullResources(claim.Resources),
+				"sessionId: "+escapeTerminalCell(output.RedactString(claim.SessionID)),
+				"workKey: "+escapeTerminalCell(output.RedactString(claim.WorkKey)),
+				fmt.Sprintf("revision: %d", claim.Revision),
+				"acquiredAt: "+claim.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+				"heartbeatAt: "+claim.HeartbeatAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+				"guarantee: "+claim.Guarantee,
+				"authorityId: "+claim.AuthorityID,
+				fmt.Sprintf("localReplaceAllowed: %t", claim.LocalReplaceAllowed),
+				fmt.Sprintf("checkpointPresent: %t", claim.CheckpointPresent),
+			)
+			if len(claim.UnknownOperations) > 0 {
+				lines = append(lines, "unknownOperations: "+textValue(output.Redact(claim.UnknownOperations)))
+			}
+		}
+		return writeLines(w, "claim "+shortenOpaque(claim.ClaimID, 24)+" is "+styledState(state, color), lines)
 	}
-	parts := make([]string, 0, len(value.Resources))
-	for _, item := range value.Resources {
-		parts = append(parts, shortenOpaque(item.Resource, 48)+"="+styledState(item.State, color))
+	lines := make([]string, 0, len(value.Resources))
+	for i, item := range value.Resources {
+		if full {
+			line := fmt.Sprintf("resource[%d]: %s state=%s", i+1, resourceText(item.Resource), styledState(item.State, color))
+			if item.Claim != nil {
+				line += " claim=" + item.Claim.ClaimID + " expiresAt=" + item.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+			}
+			lines = append(lines, line)
+		} else {
+			lines = append(lines, summarizeResource(item.Resource)+"="+styledState(item.State, color))
+		}
 	}
-	if len(parts) == 0 {
-		parts = append(parts, "none")
+	if !full {
+		if len(lines) == 0 {
+			return writeLines(w, "checked 0 resources", []string{"resources: none"})
+		}
+		return writeLines(w, fmt.Sprintf("checked %d resources", len(value.Resources)), []string{"resources: " + strings.Join(lines, ", ")})
 	}
-	return writeLines(w, "status", []string{"resources: " + strings.Join(parts, ", ")})
+	if len(lines) == 0 {
+		lines = append(lines, "resources: none")
+	}
+	return writeLines(w, fmt.Sprintf("checked %d resources", len(value.Resources)), lines)
 }
 func stateForClaim(value lease.ClaimView) string {
 	if value.Active {
@@ -136,7 +168,7 @@ func styledState(state string, color bool) string {
 	return output.Style(color, code, state)
 }
 
-func writeReceiptText(w io.Writer, receipt lease.Receipt) error {
+func writeReceiptText(w io.Writer, receipt lease.Receipt, fields map[string]any) error {
 	action := receipt.Kind
 	lines := []string{fmt.Sprintf("revision: %d", receipt.Revision)}
 	switch receipt.Kind {
@@ -146,6 +178,7 @@ func writeReceiptText(w io.Writer, receipt lease.Receipt) error {
 	case "checkpoint":
 		action = "checkpointed"
 		lines = appendResultLine(lines, receipt.Result, "expiresAt")
+		lines = appendFieldLine(lines, fields, "checkpointBytes", "checkpointBytes")
 	case "release":
 		action = "released"
 		lines = appendResultLine(lines, receipt.Result, "reason")
@@ -187,6 +220,10 @@ func writeAcquireText(w io.Writer, fields map[string]any) error {
 func writeTransferText(w io.Writer, fields map[string]any) error {
 	claimID, _ := fields["claimId"].(string)
 	lines := []string{}
+	lines = appendFieldLine(lines, fields, "successorHandle", "successorHandle")
+	if resources, ok := fields["resources"].([]string); ok {
+		lines = append(lines, "resources: "+fullResources(resources))
+	}
 	lines = appendFieldLine(lines, fields, "agentId", "agent")
 	lines = appendFieldLine(lines, fields, "sessionId", "session")
 	lines = appendFieldLine(lines, fields, "revision", "revision")
@@ -202,7 +239,7 @@ func writeVerificationText(w io.Writer, claim *lease.ClaimView, unknown []string
 		"expiresAt: " + claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
 	}
 	if len(unknown) > 0 {
-		lines = append(lines, fmt.Sprintf("unknownOperations: %d", len(unknown)))
+		lines = append(lines, "unknownOperations: "+textValue(output.Redact(unknown)))
 	}
 	return writeLines(w, "verified claim "+shortenOpaque(claim.ClaimID, 24), lines)
 }
@@ -210,7 +247,11 @@ func writeVerificationText(w io.Writer, claim *lease.ClaimView, unknown []string
 func writeExecText(w io.Writer, receipt lease.Receipt, exitCode int) error {
 	result, _ := output.Redact(receipt.Result).(map[string]any)
 	lines := []string{fmt.Sprintf("exitCode: %d", exitCode), fmt.Sprintf("revision: %d", receipt.Revision)}
-	for _, key := range []string{"argv", "executionDirectory", "stdout", "stderr", "stdoutBytes", "stderrBytes", "stdoutTruncated", "stderrTruncated", "guarantee"} {
+	lines = appendResultLine(lines, result, "argv")
+	if directory := executionDirectoryText(result["executionDirectory"]); directory != "" {
+		lines = append(lines, "directory: "+directory)
+	}
+	for _, key := range []string{"stdoutBytes", "stderrBytes", "stdoutTruncated", "stderrTruncated", "guarantee"} {
 		lines = appendResultLine(lines, result, key)
 	}
 	if receipt.Idempotent {
@@ -220,7 +261,17 @@ func writeExecText(w io.Writer, receipt lease.Receipt, exitCode int) error {
 	if exitCode != 0 {
 		action = "command failed for claim "
 	}
-	return writeLines(w, action+shortenOpaque(receipt.ClaimID, 24), lines)
+	if err := writeLines(w, action+shortenOpaque(receipt.ClaimID, 24), lines); err != nil {
+		return err
+	}
+	for _, stream := range []string{"stdout", "stderr"} {
+		if value, ok := result[stream].(string); ok && value != "" {
+			if err := writeTextBlock(w, stream, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func writeReplaceText(w io.Writer, receipt lease.Receipt) error {
@@ -257,13 +308,18 @@ func writeInspectionText(w io.Writer, operation ledger.Operation) error {
 	if operation.Outcome != "" {
 		lines = append(lines, "outcome: "+operation.Outcome)
 	}
+	if err := writeLines(w, "operation "+shortenOpaque(operation.OperationID, 24)+" is "+operation.State, lines); err != nil {
+		return err
+	}
 	if len(operation.Receipt) > 0 {
-		lines = append(lines, "receipt: "+inlineJSON(output.Redact(operation.Receipt)))
+		if err := writeJSONBlock(w, "receipt", output.Redact(operation.Receipt)); err != nil {
+			return err
+		}
 	}
 	if operation.Evidence != nil {
-		lines = append(lines, "evidence: "+inlineJSON(output.Redact(operation.Evidence)))
+		return writeJSONBlock(w, "evidence", output.Redact(operation.Evidence))
 	}
-	return writeLines(w, "operation "+shortenOpaque(operation.OperationID, 24)+" is "+operation.State, lines)
+	return nil
 }
 
 func writeReconciliationText(w io.Writer, receipt lease.ReconciliationReceipt) error {
@@ -279,6 +335,43 @@ func writeReconciliationText(w io.Writer, receipt lease.ReconciliationReceipt) e
 		lines = append(lines, "replayed: true")
 	}
 	return writeLines(w, "reconciled operation "+shortenOpaque(receipt.TargetOperationID, 24), lines)
+}
+
+func executionDirectoryText(value any) string {
+	directory, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	mode, _ := directory["mode"].(string)
+	path, _ := directory["path"].(string)
+	if path == "" {
+		return mode
+	}
+	return mode + " (" + escapeTerminalCell(path) + ")"
+}
+
+func writeTextBlock(w io.Writer, label, value string) error {
+	if _, err := fmt.Fprintln(w, label+":"); err != nil {
+		return err
+	}
+	lines := strings.Split(value, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintln(w, "  "+escapeTerminalCell(line)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeJSONBlock(w io.Writer, label string, value any) error {
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeTextBlock(w, label, string(encoded))
 }
 
 func appendResultLine(lines []string, values map[string]any, key string) []string {
@@ -323,6 +416,36 @@ func summarizeResources(resources []string) string {
 		values[i] = summarizeResource(resource)
 	}
 	return strings.Join(values, ", ")
+}
+
+func fullResources(resources []string) string {
+	if len(resources) == 0 {
+		return "none"
+	}
+	values := make([]string, len(resources))
+	for i, resource := range resources {
+		values[i] = resourceText(resource)
+	}
+	return strings.Join(values, ", ")
+}
+
+func writePolicyDescribeText(w io.Writer, value resource.Descriptor, full bool) error {
+	lines := []string{
+		"resource: " + escapeTerminalCell(value.Resource),
+		"scope: " + value.Scope,
+		"capability: " + value.Capability,
+		"identityScope: " + value.IdentityScope,
+	}
+	if full {
+		lines = append(lines,
+			fmt.Sprintf("localReplaceAllowed: %t", value.LocalReplaceAllowed),
+			fmt.Sprintf("providerFencing: %t", value.ProviderFencing),
+			fmt.Sprintf("contractVersion: %d", value.ContractVersion),
+			fmt.Sprintf("keyPolicyVersion: %d", value.KeyPolicyVersion),
+			"genericExecutionGuarantee: local-coordination",
+		)
+	}
+	return writeLines(w, "policy "+value.Name, lines)
 }
 
 func writePolicyListText(w io.Writer, values []resource.Descriptor, full, color bool) error {
@@ -466,7 +589,7 @@ func windowsPath(value string) bool {
 func escapeTerminalCell(value string) string {
 	var escaped strings.Builder
 	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
 			fmt.Fprintf(&escaped, `\u%04x`, r)
 		} else {
 			escaped.WriteRune(r)
@@ -518,23 +641,75 @@ func relativeDuration(value time.Duration) string {
 	return fmt.Sprintf("%dd", days)
 }
 
-func writeHistoryText(w io.Writer, page ledger.HistoryPage) error {
-	lines := []string{"resource: " + shortenOpaque(page.Resource, 48), fmt.Sprintf("epochs: %d", len(page.Epochs)), "prunedThroughSequence: " + page.Coverage.PrunedThroughSequence}
-	for _, epoch := range page.Epochs {
-		lines = append(lines, fmt.Sprintf("%s  %s  %s", shortenOpaque(epoch.ClaimID, 32), epoch.Status, epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")))
+func writeHistoryText(w io.Writer, page ledger.HistoryPage, full bool) error {
+	lines := []string{"prunedThroughSequence: " + page.Coverage.PrunedThroughSequence, "nextCursor: " + page.NextCursor}
+	if page.Gap {
+		lines = append(lines, "gap: true")
 	}
-	return writeLines(w, "history", lines)
+	for i, epoch := range page.Epochs {
+		claimID := shortenOpaque(epoch.ClaimID, 24)
+		if full {
+			claimID = epoch.ClaimID
+		}
+		line := fmt.Sprintf("epoch[%d]: claim=%s status=%s acquiredAt=%s", i+1, claimID, epoch.Status, epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"))
+		if full {
+			line += " agent=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) + " session=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
+			if epoch.EndedAt != nil {
+				line += " endedAt=" + epoch.EndedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+			}
+			if epoch.EndReason != "" {
+				line += " reason=" + escapeTerminalCell(output.RedactString(epoch.EndReason))
+			}
+			if epoch.FinalRevision != nil {
+				line += fmt.Sprintf(" finalRevision=%d", *epoch.FinalRevision)
+			}
+		}
+		lines = append(lines, line)
+		if full {
+			for _, operation := range epoch.Operations {
+				op := "  operation: id=" + operation.OperationID + " kind=" + operation.Kind + " state=" + operation.State
+				if operation.RequestSHA256 != "" {
+					op += " requestSha256=" + operation.RequestSHA256
+				}
+				lines = append(lines, op)
+			}
+		}
+	}
+	return writeLines(w, fmt.Sprintf("%d history epochs for %s", len(page.Epochs), summarizeResource(page.Resource)), lines)
 }
 func padCells(value string, width int) string {
 	return value + strings.Repeat(" ", width-displayWidth(value))
 }
 
-func writeEventsText(w io.Writer, page ledger.EventsPage) error {
-	lines := []string{fmt.Sprintf("events: %d", len(page.Events)), "gap: " + fmt.Sprint(page.Gap), "nextCursor: " + page.NextCursor}
-	for _, event := range page.Events {
-		lines = append(lines, fmt.Sprintf("%s  %s  %s", event.Sequence, event.Kind, shortenOpaque(event.ClaimID, 32)))
+func writeEventsText(w io.Writer, page ledger.EventsPage, full bool) error {
+	lines := []string{"nextCursor: " + page.NextCursor}
+	if page.Gap {
+		lines = append(lines, "gap: true")
 	}
-	return writeLines(w, "events", lines)
+	for i, event := range page.Events {
+		claimID := shortenOpaque(event.ClaimID, 24)
+		if full {
+			claimID = event.ClaimID
+		}
+		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s claim=%s", i+1, event.Sequence, event.Kind, claimID)
+		if full {
+			line += " at=" + event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00") + " resources=" + fullResources(event.Resources)
+			if event.OperationID != "" {
+				line += " operation=" + event.OperationID
+			}
+			if event.Revision != nil {
+				line += fmt.Sprintf(" revision=%d", *event.Revision)
+			}
+			if event.AgentID != "" {
+				line += " agent=" + escapeTerminalCell(output.RedactString(event.AgentID))
+			}
+			if len(event.Detail) > 0 {
+				line += " detail=" + inlineJSON(output.RedactPublic(event.Detail))
+			}
+		}
+		lines = append(lines, line)
+	}
+	return writeLines(w, fmt.Sprintf("%d events", len(page.Events)), lines)
 }
 func writeLines(w io.Writer, title string, lines []string) error {
 	if _, err := fmt.Fprintln(w, title); err != nil {

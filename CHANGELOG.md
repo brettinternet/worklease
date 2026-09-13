@@ -19,7 +19,7 @@
 
 ### Changed
 
-- Human CLI output now uses operation-specific summaries, deterministic fields, compact tables, and restrained TTY color instead of Go map or struct dumps across lifecycle, guarded, verification, inspection, reconciliation, policy, watch, GC, doctor, and error output; JSON envelopes are unchanged.
+- Human CLI output now uses operation-specific summaries, deterministic fields, compact tables, labeled payload blocks, meaningful `--full` views, and restrained TTY color instead of Go map or struct dumps across lifecycle, guarded, verification, inspection, reconciliation, policy, watch, GC, doctor, and error output. JSON remains canonical and structured; checkpoint and transfer add byte-count, successor-handle, and resource details.
 - Repointed generic repository gates, hooks, and CI to the Go implementation, including race, vulnerability, built-binary, documentation, and clean-checkout end-to-end checks.
 
 ### Added

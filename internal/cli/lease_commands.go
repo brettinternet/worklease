@@ -97,11 +97,11 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 	case "acquire":
 		return writeAcquireText(s.writer, fields)
 	case "status":
-		return writeStatusText(s.writer, lease.Status{Claim: fields["claim"].(*lease.ClaimView), Resources: fields["resources"].([]lease.ResourceStatus)}, output.ColorEnabled(s.writer))
+		return writeStatusText(s.writer, lease.Status{Claim: fields["claim"].(*lease.ClaimView), Resources: fields["resources"].([]lease.ResourceStatus)}, cmd.Bool("full"), output.ColorEnabled(s.writer))
 	case "list":
 		return writeListText(s.writer, fields["claims"].([]lease.ClaimView), cmd.Bool("full"), output.ColorEnabled(s.writer))
 	case "heartbeat", "checkpoint", "release":
-		return writeReceiptText(s.writer, fields["receipt"].(lease.Receipt))
+		return writeReceiptText(s.writer, fields["receipt"].(lease.Receipt), fields)
 	case "transfer":
 		return writeTransferText(s.writer, fields)
 	case "verify":
@@ -284,6 +284,9 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 }
 func acquireFields(g lease.Grant) map[string]any {
 	return map[string]any{"claimId": g.ClaimID, "resources": g.Resources, "agentId": g.AgentID, "sessionId": g.SessionID, "workKey": g.WorkKey, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee, "localReplaceAllowed": g.LocalReplaceAllowed, "receipt": g.Receipt, "recovery": g.Recovery, "unknownOperations": g.UnknownOperations}
+}
+func transferFields(g lease.Grant, successorHandle string) map[string]any {
+	return map[string]any{"claimId": g.ClaimID, "resources": g.Resources, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee, "successorHandle": successorHandle}
 }
 func randomHex(n int) string {
 	b := make([]byte, n)
@@ -779,7 +782,7 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 			if e = finishHandleMutation(hp, h, r, lk); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
 			}
-			return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
+			return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r, "checkpointBytes": len(data)})
 		}
 		if err := beginHandleMutation(hp, h, "checkpoint", op, deadline, inputs, lk); err != nil {
 			return s.handle(cmd, err)
@@ -794,7 +797,7 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		if err := finishHandleMutation(hp, h, r, lk); err != nil {
 			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
 		}
-		return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r})
+		return writeLeaseResult(s, cmd, "checkpoint", map[string]any{"receipt": r, "checkpointBytes": len(data)})
 	}
 }
 func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error {
@@ -1011,7 +1014,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 			if e := predecessorLock.Remove(hp); e != nil {
 				return s.handle(cmd, committedHandleFailure(e, g.Receipt, hp, c.ClaimID, p.OperationID))
 			}
-			return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
+			return writeLeaseResult(s, cmd, "transfer", transferFields(g, successorPath))
 		}
 		if explicit {
 			if _, statErr := os.Lstat(successorPath); statErr == nil {
@@ -1049,7 +1052,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				if e := successorLock.Write(successorPath, sh); e != nil {
 					return s.handle(cmd, committedHandleFailure(e, g.Receipt, successorPath, c.ClaimID, p.OperationID))
 				}
-				return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
+				return writeLeaseResult(s, cmd, "transfer", transferFields(g, successorPath))
 			} else if !os.IsNotExist(statErr) {
 				return s.handle(cmd, reason.New(reason.ReasonHandleUnsafe, "successor handle path is unsafe"))
 			}
@@ -1127,6 +1130,6 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 				return s.handle(cmd, committedHandleFailure(err, g.Receipt, hp, c.ClaimID, op))
 			}
 		}
-		return writeLeaseResult(s, cmd, "transfer", map[string]any{"claimId": g.ClaimID, "agentId": g.AgentID, "sessionId": g.SessionID, "revision": g.Revision, "expiresAt": g.ExpiresAt, "authorityId": g.AuthorityID, "guarantee": g.Guarantee})
+		return writeLeaseResult(s, cmd, "transfer", transferFields(g, successorPath))
 	}
 }

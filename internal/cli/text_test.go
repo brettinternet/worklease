@@ -33,7 +33,7 @@ func TestReceiptTextSummarizesHeartbeatAndRelease(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer
-			if err := writeReceiptText(&out, test.receipt); err != nil {
+			if err := writeReceiptText(&out, test.receipt, nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := out.String(); got != test.want || strings.Contains(got, "map[") || strings.Contains(got, "receipt:") {
@@ -46,13 +46,68 @@ func TestReceiptTextSummarizesHeartbeatAndRelease(t *testing.T) {
 func TestStatusTextColorsSemanticStates(t *testing.T) {
 	var out bytes.Buffer
 	status := lease.Status{Resources: []lease.ResourceStatus{{Resource: "available", State: "free"}, {Resource: "held", State: "claimed"}}}
-	if err := writeStatusText(&out, status, true); err != nil {
+	if err := writeStatusText(&out, status, false, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"available=\x1b[32mfree\x1b[0m", "held=\x1b[33mclaimed\x1b[0m"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("colored status missing %q: %q", want, out.String())
 		}
+	}
+}
+
+func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
+	claimID, operationID := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	hash := strings.Repeat("c", 64)
+	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
+	claim := &lease.ClaimView{ClaimID: claimID, Resources: []string{"exact-resource"}, AgentID: "agent", SessionID: "session", WorkKey: "work", Guarantee: "local-coordination", AuthorityID: strings.Repeat("d", 32), Revision: 4, AcquiredAt: now.Add(-time.Minute), HeartbeatAt: now, ExpiresAt: now.Add(time.Minute), Active: true, CheckpointPresent: true}
+	var compact, full bytes.Buffer
+	if err := writeStatusText(&compact, lease.Status{Claim: claim}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStatusText(&full, lease.Status{Claim: claim}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(compact.String(), "sessionId:") || !strings.Contains(full.String(), "sessionId: session") || !strings.Contains(full.String(), "resources: exact-resource") {
+		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	}
+
+	epoch := ledger.Epoch{ClaimID: claimID, AgentID: "agent", SessionID: "session", Resources: []string{"exact-resource"}, AcquiredAt: now, Status: "open", Operations: []ledger.Operation{{OperationID: operationID, Kind: "exec", State: "started", RequestSHA256: hash}}}
+	page := ledger.HistoryPage{Resource: "exact-resource", Epochs: []ledger.Epoch{epoch}, NextCursor: "cursor", Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}}
+	compact.Reset()
+	full.Reset()
+	if err := writeHistoryText(&compact, page, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHistoryText(&full, page, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(compact.String(), hash) || !strings.Contains(full.String(), "requestSha256="+hash) || !strings.Contains(full.String(), "resources=exact-resource") {
+		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	}
+
+	revision := int64(4)
+	events := ledger.EventsPage{NextCursor: "cursor", Events: []ledger.Event{{Sequence: "1", At: now, Kind: "heartbeat", ClaimID: claimID, Resources: []string{"exact-resource"}, OperationID: operationID, Revision: &revision, AgentID: "agent", Detail: map[string]any{"reason": "renewed"}}}}
+	compact.Reset()
+	full.Reset()
+	if err := writeEventsText(&compact, events, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEventsText(&full, events, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(compact.String(), "exact-resource") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
+		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	}
+}
+
+func TestPayloadBlocksEscapeTerminalControls(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeTextBlock(&out, "stdout", "safe\u009b2J\x1b[2J"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, `safe\u009b2J\u001b[2J`) || strings.ContainsRune(got, '\u009b') || strings.ContainsRune(got, '\x1b') {
+		t.Fatalf("unsafe payload block=%q", got)
 	}
 }
 
@@ -84,18 +139,18 @@ func TestRemainingStructuredTextSummariesAvoidGoValueDumps(t *testing.T) {
 		return writeTransferText(out, map[string]any{"claimId": claimID, "agentId": "next", "sessionId": "loop", "revision": int64(1), "expiresAt": now, "guarantee": "local-coordination"})
 	}, "transferred ownership", "agent: next", "revision: 1")
 	assert("verify", func(out *bytes.Buffer) error {
-		return writeVerificationText(out, &lease.ClaimView{ClaimID: claimID, Resources: []string{"resource"}, Revision: 4, ExpiresAt: now}, nil)
-	}, "verified claim", "resources: resource", "revision: 4")
+		return writeVerificationText(out, &lease.ClaimView{ClaimID: claimID, Resources: []string{"resource"}, Revision: 4, ExpiresAt: now}, []string{operationID})
+	}, "verified claim", "resources: resource", "revision: 4", "unknownOperations: [\""+operationID+"\"]")
 	result := map[string]any{"argv": []any{"printf", "ok"}, "executionDirectory": map[string]any{"mode": "caller"}, "stdout": "ok", "stderr": "", "stdoutBytes": 2, "stderrBytes": 0, "stdoutTruncated": false, "stderrTruncated": false, "guarantee": "local-coordination"}
 	assert("exec", func(out *bytes.Buffer) error {
 		return writeExecText(out, lease.Receipt{ClaimID: claimID, Revision: 5, Result: result}, 0)
-	}, "completed command", `argv: ["printf","ok"]`, `executionDirectory: {"mode":"caller"}`)
+	}, "completed command", `argv: ["printf","ok"]`, "directory: caller", "stdout:\n  ok")
 	assert("replace", func(out *bytes.Buffer) error {
 		return writeReplaceText(out, lease.Receipt{ClaimID: claimID, Revision: 6, Result: map[string]any{"path": "/tmp/file", "contentBytes": 12}})
 	}, "replaced file", "path: /tmp/file", "contentBytes: 12")
 	assert("inspect", func(out *bytes.Buffer) error {
 		return writeInspectionText(out, ledger.Operation{ClaimID: claimID, OperationID: operationID, Kind: "exec", State: "completed", StartedAt: now, Receipt: map[string]any{"returncode": 0}})
-	}, "operation bbbbbbbbbbb…bbbbbbbbbbbb is completed", `receipt: {"returncode":0}`)
+	}, "operation bbbbbbbbbbb…bbbbbbbbbbbb is completed", "receipt:\n  {\n    \"returncode\": 0\n  }")
 	assert("reconcile", func(out *bytes.Buffer) error {
 		return writeReconciliationText(out, lease.ReconciliationReceipt{TargetClaimID: claimID, TargetOperationID: operationID, Outcome: "observed-success", Revision: 7, ReconciledAt: now, ExpiresAt: now.Add(time.Minute)})
 	}, "reconciled operation", "outcome: observed-success", "revision: 7")
