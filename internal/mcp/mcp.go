@@ -166,7 +166,7 @@ func (s *Server) tools() []map[string]any {
 		"instructions": schema([]string{"topic"}, map[string]any{"topic": map[string]any{"type": "string", "enum": []string{"loop", "safety"}}}),
 	}
 	defs["key"]["oneOf"] = []any{map[string]any{"required": []string{"path"}}, map[string]any{"required": []string{"provider", "source", "item"}}}
-	defs["acquire"]["oneOf"] = []any{map[string]any{"required": []string{"lease"}}, map[string]any{"required": []string{"resources"}}, map[string]any{"required": []string{"provider", "source", "item"}}, map[string]any{"required": []string{"path"}}}
+	defs["acquire"]["oneOf"] = []any{map[string]any{"required": []string{"lease"}, "maxProperties": 1}, map[string]any{"required": []string{"resources"}}, map[string]any{"required": []string{"provider", "source", "item"}}, map[string]any{"required": []string{"path"}}}
 	defs["status"]["oneOf"] = []any{map[string]any{"required": []string{"lease"}}, map[string]any{"required": []string{"resources"}}}
 	defs["watch"]["oneOf"] = []any{map[string]any{"required": []string{"cursor"}}, map[string]any{"required": []string{"resources", "until"}}}
 	out := make([]map[string]any, 0, len(toolOrder))
@@ -366,10 +366,8 @@ func validateArgs(name string, a map[string]any) error {
 	}
 	if name == "acquire" {
 		if ref, hasLease := a["lease"]; hasLease && ref != "" {
-			for _, k := range []string{"resources", "path", "provider", "source", "item"} {
-				if _, ok := a[k]; ok {
-					return reason.New(reason.ReasonResourceInputConflict, "pending acquire replay cannot change resource input")
-				}
+			if len(a) != 1 {
+				return reason.New(reason.ReasonResourceInputConflict, "pending acquire replay accepts only the lease reference")
 			}
 		} else if err := exclusiveResourceMode(a, true); err != nil {
 			return err
