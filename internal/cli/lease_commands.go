@@ -220,6 +220,9 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			workKey = strings.Join(resources, ",")
 		}
 		inputs := acquireInputs(st.AuthorityID(), claimID, resources, cfg.AgentID, session, workKey, ttl, wait, poll, cmd.Bool("coordination-only"), in.Keys[0].LocalReplaceAllowed, deadline)
+		if h.State == "pending" {
+			bindPendingHold(inputs, h.PendingRequest)
+		}
 		requestHash := acquireRequestHash(inputs)
 		if h.State == "ready" && h.ExpiresAt.After(time.Now()) {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
@@ -232,7 +235,8 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			if p == nil || p.Kind != "acquire" || p.RequestHash != requestHash {
 				return s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs"))
 			}
-			g, replayErr := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: h.Resources, Token: h.Token, ClaimID: h.ClaimID, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: inputString(p.Inputs, "workKey"), TTL: inputDuration(p.Inputs, "ttl", ttl), Wait: inputDuration(p.Inputs, "wait", 0), PollInterval: inputDuration(p.Inputs, "pollInterval", poll), CoordinationOnly: inputBool(p.Inputs, "coordinationOnly"), LocalReplaceAllowed: h.LocalReplaceAllowed, RequestNotAfter: p.RequestNotAfter})
+			holdUntil, legacyHash := pendingHoldUntilCLI(p, &h)
+			g, replayErr := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), Resources: h.Resources, Token: h.Token, ClaimID: h.ClaimID, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: inputString(p.Inputs, "workKey"), TTL: inputDuration(p.Inputs, "ttl", ttl), Wait: inputDuration(p.Inputs, "wait", 0), PollInterval: inputDuration(p.Inputs, "pollInterval", poll), CoordinationOnly: inputBool(p.Inputs, "coordinationOnly"), LocalReplaceAllowed: h.LocalReplaceAllowed, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 			if replayErr != nil {
 				if isDefinitiveNoCommit(replayErr) {
 					_ = lock.Remove(path)
@@ -423,6 +427,10 @@ func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadlin
 	if deadline.IsZero() {
 		return reason.New(reason.ReasonReplayExpired, "request-not-after is required")
 	}
+	// Starting a fresh explicit CLI mutation takes the handle outside any MCP
+	// automatic hold budget. Clear the old ceiling before the pending write so
+	// interrupted CLI dispatch recovers the same unbounded intent.
+	h.HoldUntil = time.Time{}
 	h.State = "pending"
 	h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(inputs), RequestNotAfter: deadline, Inputs: inputs}
 	if len(locks) > 0 && locks[0] != nil {
@@ -469,7 +477,11 @@ func acquireInputs(authority, claim string, resources []string, agent, session, 
 	return map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "wait": wait.Microseconds(), "pollInterval": poll.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": local, "coordinationOnly": coordination}
 }
 func acquireRequestHash(in map[string]any) string {
-	return requestHashCLI(map[string]any{"kind": in["kind"], "authorityId": in["authorityId"], "claimId": in["claimId"], "resources": in["resources"], "agentId": in["agentId"], "sessionId": in["sessionId"], "workKey": in["workKey"], "ttl": in["ttl"], "requestNotAfter": in["requestNotAfter"], "localReplaceAllowed": in["localReplaceAllowed"], "coordinationOnly": in["coordinationOnly"]})
+	intent := map[string]any{"kind": in["kind"], "authorityId": in["authorityId"], "claimId": in["claimId"], "resources": in["resources"], "agentId": in["agentId"], "sessionId": in["sessionId"], "workKey": in["workKey"], "ttl": in["ttl"], "requestNotAfter": in["requestNotAfter"], "localReplaceAllowed": in["localReplaceAllowed"], "coordinationOnly": in["coordinationOnly"]}
+	if holdUntil := inputInt64(in, "holdUntil"); holdUntil != 0 {
+		intent["holdUntil"] = holdUntil
+	}
+	return requestHashCLI(intent)
 }
 func inputString(m map[string]any, key string) string {
 	if v, ok := m[key].(string); ok {
@@ -482,6 +494,19 @@ func inputBool(m map[string]any, key string) bool {
 		return v
 	}
 	return false
+}
+func inputInt64(m map[string]any, key string) int64 {
+	if v, ok := m[key].(float64); ok {
+		return int64(v)
+	}
+	if v, ok := m[key].(json.Number); ok {
+		n, _ := v.Int64()
+		return n
+	}
+	if v, ok := m[key].(int64); ok {
+		return v
+	}
+	return 0
 }
 func inputDuration(m map[string]any, key string, fallback time.Duration) time.Duration {
 	if v, ok := m[key].(float64); ok {
@@ -496,6 +521,25 @@ func inputDuration(m map[string]any, key string, fallback time.Duration) time.Du
 	}
 	return fallback
 }
+func bindPendingHold(inputs map[string]any, pending *handle.PendingRequest) {
+	if pending == nil {
+		return
+	}
+	if holdUntil := inputInt64(pending.Inputs, "holdUntil"); holdUntil != 0 {
+		inputs["holdUntil"] = holdUntil
+	}
+}
+
+func pendingHoldUntilCLI(p *handle.PendingRequest, h *handle.Handle) (time.Time, string) {
+	if holdUntil := inputInt64(p.Inputs, "holdUntil"); holdUntil != 0 {
+		return time.UnixMicro(holdUntil).UTC(), ""
+	}
+	if h != nil && !h.HoldUntil.IsZero() {
+		return h.HoldUntil, p.RequestHash
+	}
+	return time.Time{}, ""
+}
+
 func inputBytes(m map[string]any, key string) []byte {
 	if v, ok := m[key].(string); ok {
 		return []byte(v)
@@ -557,9 +601,11 @@ func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Cre
 	var err error
 	switch kind {
 	case "heartbeat":
-		r, err = svc.Heartbeat(ctx, c, lease.Renew{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), RequestNotAfter: p.RequestNotAfter})
+		holdUntil, legacyHash := pendingHoldUntilCLI(p, h)
+		r, err = svc.Heartbeat(ctx, c, lease.Renew{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "checkpoint":
-		r, err = svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), Data: inputBytes(p.Inputs, "checkpoint"), RequestNotAfter: p.RequestNotAfter})
+		holdUntil, legacyHash := pendingHoldUntilCLI(p, h)
+		r, err = svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: p.OperationID, TTL: inputDuration(p.Inputs, "ttl", 0), Data: inputBytes(p.Inputs, "checkpoint"), RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "release":
 		r, err = svc.Release(ctx, c, lease.ReleaseRequest{OperationID: p.OperationID, Reason: inputString(p.Inputs, "reason"), RequestNotAfter: p.RequestNotAfter})
 	default:
@@ -638,6 +684,7 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "heartbeat", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+		bindPendingHold(inputs, pending)
 		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
 				return s.handle(cmd, e)
@@ -715,6 +762,7 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "checkpoint", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(data), "requestNotAfter": deadline.UTC().UnixMicro()}
+		bindPendingHold(inputs, pending)
 		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
 				return s.handle(cmd, e)
