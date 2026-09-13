@@ -94,9 +94,9 @@ func writeWatchTextAt(w io.Writer, result watchpkg.Result, color bool, now time.
 	} else if result.Changed {
 		title = "resources changed"
 	}
-	lines := []string{
-		fmt.Sprintf("timedOut: %t", result.TimedOut),
-		fmt.Sprintf("gap: %t", result.Gap),
+	lines := []string{}
+	if result.Gap {
+		lines = append(lines, "gap: earlier events were collected; treat the current resource state as a fresh snapshot before resuming")
 	}
 	if len(result.Resources) > 0 {
 		states := make([]string, 0, len(result.Resources))

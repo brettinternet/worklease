@@ -205,7 +205,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	watchCommand.Action = watchAction(s)
 	usageText(watchCommand, "worklease watch --resource KEY... --until (free|change) [--timeout DURATION]", "worklease watch --cursor CURSOR [--timeout DURATION]")
 	detail(watchCommand, "Block until the watched resources reach --until, or until any lifecycle event lands after --cursor. A timeout is a normal outcome, not an error.")
-	textOutput(watchCommand, "The text view starts with the observed outcome, deterministic lowerCamelCase fields, relative expiry, and a copyable resume command carrying the next cursor.")
+	textOutput(watchCommand, "The text view starts with the observed outcome, omits routine false booleans, shows relative expiry and actionable gap guidance, and includes the next cursor only in a copyable resume command.")
 
 	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor\n  worklease doctor --json")
 	doctorCommand.Action = doctorAction(s)
