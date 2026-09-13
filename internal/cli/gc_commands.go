@@ -66,7 +66,8 @@ func writeGCText(w io.Writer, result gc.Result, color bool) error {
 	if result.DryRun {
 		fields["mode"] = "preview"
 	}
-	fields["cutoff"] = result.Cutoff
+	cutoff := result.Cutoff.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+	fields["cutoff"] = cutoff
 	fields["eligible"] = summaryCountText(result.Eligible)
 	fields["protected"] = summaryCountText(result.Protected)
 	if len(result.Retired) > 0 {
@@ -77,7 +78,7 @@ func writeGCText(w io.Writer, result gc.Result, color bool) error {
 	}
 	fields["prunedThroughSequence"] = result.PrunedThrough
 	if result.DryRun {
-		fields["hint"] = "re-run with --apply and this cutoff to collect"
+		fields["hint"] = "worklease gc --apply --cutoff " + cutoff
 	}
 	lines := make([]string, 0, len(fields))
 	for _, key := range sortedFieldNames(fields) {

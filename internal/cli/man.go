@@ -39,6 +39,15 @@ func WriteManPage(w io.Writer, root *urfavecli.Command, date string) error {
 		section(&page, "EXAMPLES")
 		literal(&page, strings.Join(examples, "\n"))
 	}
+	section(&page, "COMMANDS")
+	for _, category := range root.VisibleCategories() {
+		if category.Name() != "" {
+			fmt.Fprintf(&page, ".SS \"%s\"\n", roff(category.Name()))
+		}
+		for _, command := range category.VisibleCommands() {
+			definition(&page, command.Name, command.Usage)
+		}
+	}
 	section(&page, "COMMAND REFERENCE")
 	for _, command := range visibleCommands(root) {
 		fmt.Fprintf(&page, ".SS \"%s\"\n", roff(strings.Join(command.Path(), " ")))
@@ -128,15 +137,37 @@ func flags(page *bytes.Buffer, command *urfavecli.Command) {
 		}
 		usage := ""
 		if doc, ok := flag.(urfavecli.DocGenerationFlag); ok {
+			placeholder, text := flagPlaceholder(doc.GetUsage())
 			if doc.TakesValue() {
+				if placeholder == "" {
+					placeholder = strings.ToUpper(doc.TypeName())
+				}
 				for i := range names {
-					names[i] += " " + strings.ToUpper(doc.TypeName())
+					names[i] += " " + placeholder
 				}
 			}
-			usage = doc.GetUsage()
+			usage = text
+			if doc.IsDefaultVisible() && doc.GetDefaultText() != "" {
+				usage += " (default: " + doc.GetDefaultText() + ")"
+			}
 		}
 		definition(page, strings.Join(names, ", "), usage)
 	}
+}
+
+// flagPlaceholder mirrors urfave's convention: the first backquoted word in
+// a usage string names the value and is shown without the quotes.
+func flagPlaceholder(usage string) (string, string) {
+	start := strings.IndexByte(usage, '`')
+	if start < 0 {
+		return "", usage
+	}
+	end := strings.IndexByte(usage[start+1:], '`')
+	if end < 0 {
+		return "", usage
+	}
+	name := usage[start+1 : start+1+end]
+	return name, usage[:start] + name + usage[start+2+end:]
 }
 
 func section(page *bytes.Buffer, title string) { fmt.Fprintf(page, ".SH \"%s\"\n", roff(title)) }

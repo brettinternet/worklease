@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/reason"
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func TestVersionTextAndJSON(t *testing.T) {
@@ -72,7 +74,7 @@ func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 
 func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
-	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "mcp"}
+	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "mcp", "help"}
 	future := []string{}
 	got := map[string]bool{}
 	for _, command := range root.Commands {
@@ -172,7 +174,7 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "status", example: "worklease status", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "full"}},
 		{path: "list", example: "worklease list", flags: []string{"resource", "full"}},
 		{path: "heartbeat", example: "worklease heartbeat", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after"}},
-		{path: "checkpoint", example: "worklease checkpoint --data '{}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "data", "data-file"}},
+		{path: "checkpoint", example: "worklease checkpoint --data '{\"phase\":\"tests\"}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "data", "data-file"}},
 		{path: "release", example: "worklease release", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "reason"}},
 		{path: "exec", example: "worklease exec -- git status", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "max-duration", "cwd", "git-primary"}},
 		{path: "transfer", example: "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "to-agent", "to-session", "to-work-key", "successor-handle"}},
@@ -181,7 +183,7 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "history", example: "worklease history", flags: []string{"resource", "cursor", "limit", "full"}},
 		{path: "events", example: "worklease events", flags: []string{"cursor", "limit", "full"}},
 		{path: "watch", example: "worklease watch --resource RESOURCE --until free", flags: []string{"resource", "cursor", "until", "timeout"}},
-		{path: "gc", example: "worklease gc --retention-days 30", flags: []string{"retention-days", "cutoff", "apply"}},
+		{path: "gc", example: "worklease gc --apply --cutoff 2026-08-14T00:00:00Z", flags: []string{"retention-days", "cutoff", "apply"}},
 		{path: "doctor", example: "worklease doctor", flags: []string{}},
 		{path: "policy list", example: "worklease policy list", flags: []string{"full"}},
 		{path: "policy describe", example: "worklease policy describe path", flags: []string{"full"}},
@@ -203,8 +205,10 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 					t.Fatalf("missing command")
 				}
 			}
-			if command.UsageText != test.pathUsage() {
-				t.Fatalf("usage=%q want=%q", command.UsageText, test.pathUsage())
+			for _, line := range strings.Split(command.UsageText, "\n") {
+				if !strings.HasPrefix(line, test.pathUsage()) {
+					t.Fatalf("usage line %q does not start with %q", line, test.pathUsage())
+				}
 			}
 			if !strings.Contains(command.Description, test.example) {
 				t.Fatalf("description lacks executable example %q: %q", test.example, command.Description)
@@ -252,5 +256,187 @@ func TestExclusiveSelectionAndResourceBoundaries(t *testing.T) {
 	}
 	if selected, err := Select(SelectionInput{Session: "stable"}, true); err != nil || selected.Mode != "context" || selected.Session != "stable" {
 		t.Fatalf("context selection = %#v, %v", selected, err)
+	}
+}
+
+func TestEveryOptionHasOperationalHelpAndNoSentinelDefaults(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	checked := 0
+	for _, entry := range commandTree(root) {
+		for _, flag := range entry.command.VisibleFlags() {
+			name := flag.Names()[0]
+			if name == "help" {
+				continue
+			}
+			rendered := flag.String()
+			usage := strings.TrimSpace(rendered[strings.Index(rendered, "\t")+1:])
+			path := strings.Join(entry.path, " ")
+			if usage == "" || strings.EqualFold(usage, name) || strings.EqualFold(usage, strings.ReplaceAll(name, "-", " ")) {
+				t.Errorf("%s --%s has no operational help: %q", path, name, rendered)
+			}
+			if strings.Contains(rendered, "(default: 0") || strings.Contains(rendered, "`") {
+				t.Errorf("%s --%s exposes a sentinel default or raw placeholder quote: %q", path, name, rendered)
+			}
+			checked++
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("checked only %d flags", checked)
+	}
+	root = NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	acquire := root.Command("acquire")
+	for _, want := range []string{"--ttl DURATION, -T DURATION\tclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "--poll-interval DURATION\tDURATION between contention polls while waiting [$WORKLEASE_POLL_INTERVAL] (default: 250ms)", "--agent NAME, -a NAME\tagent identity NAME [$WORKLEASE_AGENT_ID] (default: login user)"} {
+		found := false
+		for _, flag := range acquire.Flags {
+			if flag.String() == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("acquire help lacks %q", want)
+		}
+	}
+	for path, want := range map[string]string{"exec": "(default: 1h)", "release": "(default: released)", "watch": "(default: 30s)", "events": "(default: 50)", "gc": "(default: 30)"} {
+		found := false
+		for _, flag := range root.Command(path).Flags {
+			if strings.Contains(flag.String(), want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s help lacks effective default %q", path, want)
+		}
+	}
+}
+
+func TestUsageLinesShowPositionalsAndAlternateForms(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	find := func(path string) *urfavecli.Command {
+		command := root
+		for _, name := range strings.Fields(path) {
+			command = command.Command(name)
+		}
+		return command
+	}
+	for path, wants := range map[string][]string{
+		"exec":            {"-- COMMAND [ARGS...]", "[selection]"},
+		"acquire":         {"(--path FILE | --resource KEY... | --provider NAME --source SOURCE --item ITEM)", "--no-handle --claim-id ID"},
+		"key":             {"(--path FILE | --resource KEY... | --provider NAME --source SOURCE --item ITEM)"},
+		"policy describe": {"worklease policy describe NAME"},
+		"op inspect":      {"(--operation-id ID | --claim-id ID | --resource KEY | [selection])", "--full [selection]"},
+		"history":         {"worklease history [--limit N] [--full]\nworklease history --resource KEY"},
+		"verify":          {"worklease verify [--resource KEY...] [selection]", "--hook claude-code [--coverage claim|path]"},
+		"checkpoint":      {"(--data JSON | --data-file FILE)"},
+		"watch":           {"--until (free|change)", "worklease watch --cursor CURSOR"},
+		"transfer":        {"--successor-handle PATH"},
+		"help":            {"worklease help [COMMAND [SUBCOMMAND]]\nworklease help --all"},
+	} {
+		command := find(path)
+		for _, want := range wants {
+			if !strings.Contains(command.UsageText, want) {
+				t.Errorf("%s usage %q lacks %q", path, command.UsageText, want)
+			}
+		}
+	}
+	for _, entry := range commandTree(root) {
+		if strings.Contains(entry.command.UsageText, "[selection]") && !strings.Contains(entry.command.Description, "Selection:") {
+			t.Errorf("%s uses [selection] without explaining it", strings.Join(entry.path, " "))
+		}
+	}
+}
+
+func TestRootHelpGroupsCommandsInWorkflowOrder(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--help"}, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	text := stdout.String()
+	lifecycle, inspection, admin := strings.Index(text, "Claim lifecycle:"), strings.Index(text, "Inspection and recovery:"), strings.Index(text, "Setup and administration:")
+	if lifecycle < 0 || inspection < lifecycle || admin < inspection {
+		t.Fatalf("categories are missing or out of order: %q", text)
+	}
+	within := func(name string, start, end int) bool {
+		index := strings.Index(text, "\n     "+name+" ")
+		return index > start && (end < 0 || index < end)
+	}
+	if !within("acquire", lifecycle, inspection) || !within("replace-file", lifecycle, inspection) || !within("history", inspection, admin) || !within("doctor", inspection, admin) || !within("setup", admin, -1) || !within("help, h", admin, -1) {
+		t.Fatalf("commands are not grouped as expected: %q", text)
+	}
+	if strings.Contains(text, "\x1b") {
+		t.Fatal("root help contains ANSI sequences")
+	}
+}
+
+func TestHelpAllCoversEveryCommandOnceReadOnly(t *testing.T) {
+	home := t.TempDir() + "/never-created"
+	render := func() string {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), []string{"worklease", "--home", home, "help", "--all"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+			t.Fatal(err)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr=%q", stderr.String())
+		}
+		return stdout.String()
+	}
+	first := render()
+	if first != render() {
+		t.Fatal("aggregate help is not deterministic")
+	}
+	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("help --all touched the authority home: %v", err)
+	}
+	if strings.Contains(first, "\x1b") {
+		t.Fatal("aggregate help contains ANSI sequences")
+	}
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	sections := 0
+	for _, entry := range commandTree(root) {
+		if entry.command.Name == "help" {
+			continue
+		}
+		header := "NAME:\n   " + strings.Join(entry.path, " ") + " - " + entry.command.Usage + "\n"
+		if count := strings.Count(first, header); count != 1 {
+			t.Errorf("%q appears %d times", header, count)
+		}
+		sections++
+	}
+	if got := strings.Count(first, "\nNAME:\n"); got != sections {
+		t.Fatalf("aggregate help has %d command sections, want %d", got, sections)
+	}
+	if !strings.HasPrefix(first, "NAME:\n   worklease - ") {
+		t.Fatalf("aggregate help does not start with root help: %q", first[:80])
+	}
+}
+
+func TestHelpCommandResolvesNestedPathsAndReportsUnknownInJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "help", "op", "inspect"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(stdout.String(), "NAME:\n   worklease op inspect - inspect an operation\n") || !strings.Contains(stdout.String(), "worklease op inspect (--operation-id ID") {
+		t.Fatalf("nested help=%q", stdout.String())
+	}
+	stdout.Reset()
+	if err := Run(context.Background(), []string{"worklease", "help", "policy"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "COMMANDS:") || !strings.Contains(stdout.String(), "describe") {
+		t.Fatalf("group help=%q", stdout.String())
+	}
+	stdout.Reset()
+	err := Run(context.Background(), []string{"worklease", "help", "bogus", "--json"}, "dev", "unknown", "unknown", &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected unknown command error")
+	}
+	var envelope map[string]any
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &envelope); decodeErr != nil {
+		t.Fatalf("%v (%q)", decodeErr, stdout.String())
+	}
+	if envelope["ok"] != false || envelope["operation"] != "help" || reason.As(err).ExitCode() != reason.ExitInvalid {
+		t.Fatalf("envelope=%#v err=%v", envelope, err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr=%q", stderr.String())
 	}
 }

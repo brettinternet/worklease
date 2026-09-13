@@ -438,6 +438,32 @@ func TestAcquireTextPreservesUnresolvedPredecessorRecoveryIDs(t *testing.T) {
 	}
 }
 
+func TestVerifyTextSummarizesContextualClaim(t *testing.T) {
+	home := t.TempDir()
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--home", home, "--resource", "verify-resource"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := Run(context.Background(), []string{"worklease", "verify", "--home", home}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatalf("verify: %v output=%q", err, out.String())
+	}
+	if got := out.String(); !strings.HasPrefix(got, "verified claim ") || !strings.Contains(got, "\nresources: verify-resource\n") || !strings.Contains(got, "\nrevision: 1\n") || !strings.Contains(got, "\nexpiresAt: ") {
+		t.Fatalf("verify output=%q", got)
+	}
+	out.Reset()
+	if err := Run(context.Background(), []string{"worklease", "verify", "--json", "--home", home}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if claim, ok := envelope["claim"].(map[string]any); !ok || claim["resources"] == nil || envelope["operation"] != "verify" {
+		t.Fatalf("verify JSON=%s", out.String())
+	}
+}
+
 func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
 	home := t.TempDir()
 	var out bytes.Buffer

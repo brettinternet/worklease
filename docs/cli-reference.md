@@ -1,7 +1,19 @@
 # CLI reference
 
 Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
-example.
+example. `worklease help --all` prints the root help followed by every
+command and subcommand once, in tree order, without touching any state; it is
+the one-shot onboarding read for people and agents. Top-level help groups
+commands into *Claim lifecycle*, *Inspection and recovery*, and *Setup and
+administration*.
+
+Usage lines show required inputs and alternate forms, for example
+`worklease exec [selection] ... -- COMMAND [ARGS...]`, `worklease policy describe
+NAME`, and the two `history` projections. `[selection]` stands for the shared
+claim-selection options that every contextual command accepts; each such
+command's help explains them. Option help shows effective runtime defaults
+(`--ttl` 15m, `--max-duration` 1h, `--limit` 50, `--timeout` 30s,
+`--retention-days` 30) and never a zero-value sentinel.
 
 ## Global interface
 
@@ -47,11 +59,14 @@ with the JSON vocabulary (`claimId`, `expiresAt`, `nextCursor`); table headers
 use upper snake case (`CLAIM_ID`, `EXPIRES_AT`). JSON field names and envelopes
 are unchanged.
 
-`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table. Git-backed
+`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table, or the
+single line `no current claims` when nothing matches (missing authority, empty
+authority, or a `--resource` filter with no match). Git-backed
 resources collapse to provider, repository, and item; coordination hashes use a
 short non-secret fingerprint. `list --full` shows unshortened resources, claim
 and agent IDs, and absolute expiry timestamps, subject to the normal
-bearer-shaped-value redaction policy. `status` similarly uses relative expiry in
+bearer-shaped-value redaction policy. `list --resource KEY` accepts exactly one
+exact resource. `status` similarly uses relative expiry in
 its compact view; `status --full` adds complete non-secret claim metadata and
 RFC3339 timestamps.
 
@@ -69,16 +84,27 @@ do not change their stable JSON envelopes. Verification preserves full unresolve
 operation IDs needed for recovery.
 
 Guarded command streams and authenticated inspection payloads use indented,
-labeled blocks instead of escaped single lines. Compact `history --resource`
-and `events` show shortened claim IDs and relative times; their `--full` views
-add complete non-secret metadata and absolute RFC3339 timestamps. `history`
-without a resource is an alias for the bounded global event feed. Its `--json`
-output is the canonical events envelope, including `operation: "events"`;
-`history --resource RESOURCE --json` instead returns the resource-scoped history
-envelope. `policy describe --full` adds contract versions and fencing guarantees.
-`key`, `watch`, and `gc` use fixed command-specific field ordering. Use `--json`
-as the canonical complete structured output. Opaque event cursors appear only in
-JSON.
+labeled blocks instead of escaped single lines. Compact `events` rows show the
+event kind, the compact resource set, a shortened claim ID, and relative time;
+authority-wide events such as `gc-applied` omit the resource and claim fields.
+Compact `history --resource` epochs show the agent, status, relative acquire
+time, how an ended epoch ended (`ended=released 2m ago`), and the ordered
+operation kinds with any non-completed state marked (`exec:started`). `--full`
+views add complete non-secret metadata, session IDs, per-operation rows, and
+absolute RFC3339 timestamps. `history` without a resource is an alias for the
+bounded global event feed. Its `--json` output is the canonical events envelope,
+including `operation: "events"`; `history --resource RESOURCE --json` instead
+returns the resource-scoped history envelope. `policy describe --full` adds
+contract versions and fencing guarantees. `key`, `watch`, and `gc` use fixed
+command-specific field ordering; a `gc` preview ends with the exact
+`worklease gc --apply --cutoff TIME` follow-up. Use `--json` as the canonical
+complete structured output.
+
+Cursor policy: text views never print a bare opaque cursor. `events` and
+`history` text omit cursors entirely; page with `--json` and `--cursor`. `watch`
+text shows relative expiry per resource and presents its resumption cursor only
+inside a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields
+are unchanged.
 
 ## Guarded and recovery operations
 

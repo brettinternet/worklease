@@ -515,6 +515,10 @@ func writeListText(w io.Writer, values []lease.ClaimView, full, color bool) erro
 }
 
 func writeListTextAt(w io.Writer, values []lease.ClaimView, full, color bool, now time.Time) error {
+	if len(values) == 0 {
+		_, err := fmt.Fprintln(w, "no current claims")
+		return err
+	}
 	headers := []string{"STATE", "RESOURCE", "LEASE"}
 	rows := make([][]string, 0, len(values))
 	if full {
@@ -672,21 +676,32 @@ func writeHistoryText(w io.Writer, page ledger.HistoryPage, full, color bool) er
 	return writeHistoryTextAt(w, page, full, color, time.Now())
 }
 
+// Text views never print opaque event or history cursors; --json carries
+// nextCursor for paging. Watch text is the one exception and shows its
+// resumption cursor only inside a copyable command (see writeWatchTextAt).
 func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, now time.Time) error {
-	lines := []string{"prunedThroughSequence: " + page.Coverage.PrunedThroughSequence, "nextCursor: " + page.NextCursor}
+	lines := []string{}
+	pruned := page.Coverage.PrunedThroughSequence
+	if full {
+		lines = append(lines, "prunedThroughSequence: "+escapeTerminalCell(pruned))
+	} else if pruned != "" && pruned != "0" {
+		lines = append(lines, "pruned: events through sequence "+escapeTerminalCell(pruned)+" were collected")
+	}
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}
 	for i, epoch := range page.Epochs {
 		claimID := shortenOpaque(epoch.ClaimID, 24)
+		agent := shortenOpaque(epoch.AgentID, 24)
 		whenLabel, when := "acquired", relativeTime(epoch.AcquiredAt, now)
 		if full {
 			claimID = escapeTerminalCell(epoch.ClaimID)
+			agent = escapeTerminalCell(output.RedactString(epoch.AgentID))
 			whenLabel, when = "acquiredAt", epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("epoch[%d]: claimId=%s status=%s %s=%s", i+1, claimID, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
+		line := fmt.Sprintf("epoch[%d]: claimId=%s agentId=%s status=%s %s=%s", i+1, claimID, agent, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
 		if full {
-			line += " agentId=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) + " sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
+			line += " sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
 			if epoch.EndedAt != nil {
 				line += " endedAt=" + epoch.EndedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
@@ -696,6 +711,15 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 			if epoch.FinalRevision != nil {
 				line += fmt.Sprintf(" finalRevision=%d", *epoch.FinalRevision)
 			}
+		} else if epoch.EndedAt != nil {
+			ended := relativeTime(*epoch.EndedAt, now)
+			if epoch.EndReason != "" {
+				ended = escapeTerminalCell(output.RedactString(epoch.EndReason)) + " " + ended
+			}
+			line += " ended=" + ended
+		}
+		if !full {
+			line += " operations=" + summarizeOperations(epoch.Operations)
 		}
 		lines = append(lines, line)
 		if full {
@@ -708,7 +732,31 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 			}
 		}
 	}
-	return writeLines(w, fmt.Sprintf("%d history epochs for %s", len(page.Epochs), summarizeResource(page.Resource)), lines)
+	return writeLines(w, fmt.Sprintf("%s for %s", countText(len(page.Epochs), "history epoch"), summarizeResource(page.Resource)), lines)
+}
+
+// summarizeOperations lists operation kinds in order, marking any operation
+// that did not complete so an unresolved guard is visible without --full.
+func summarizeOperations(operations []ledger.Operation) string {
+	if len(operations) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(operations))
+	for _, operation := range operations {
+		part := escapeTerminalCell(operation.Kind)
+		if operation.State != "" && operation.State != "completed" {
+			part += ":" + escapeTerminalCell(operation.State)
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ",")
+}
+
+func countText(count int, singular string) string {
+	if count == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %ss", count, singular)
 }
 func padCells(value string, width int) string {
 	return value + strings.Repeat(" ", width-displayWidth(value))
@@ -730,9 +778,21 @@ func writeEventsTextAt(w io.Writer, page ledger.EventsPage, full, color bool, no
 			claimID = escapeTerminalCell(event.ClaimID)
 			when = event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s claimId=%s at=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color), claimID, when)
+		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color))
+		// Authority-wide events such as gc-applied have no resource or claim;
+		// omit the fields instead of printing empty placeholders.
+		if len(event.Resources) > 0 {
+			if full {
+				line += " resources=" + fullResources(event.Resources)
+			} else {
+				line += " resources=" + summarizeResources(event.Resources)
+			}
+		}
+		if event.ClaimID != "" {
+			line += " claimId=" + claimID
+		}
+		line += " at=" + when
 		if full {
-			line += " resources=" + fullResources(event.Resources)
 			if event.OperationID != "" {
 				line += " operationId=" + escapeTerminalCell(event.OperationID)
 			}
@@ -748,11 +808,11 @@ func writeEventsTextAt(w io.Writer, page ledger.EventsPage, full, color bool, no
 		}
 		lines = append(lines, line)
 	}
-	return writeLines(w, fmt.Sprintf("%d events", len(page.Events)), lines)
+	return writeLines(w, countText(len(page.Events), "event"), lines)
 }
 func relativeTime(value, now time.Time) string {
 	delta := value.Sub(now)
-	if delta == 0 {
+	if delta > -time.Second && delta < time.Second {
 		return "now"
 	}
 	if delta > 0 {

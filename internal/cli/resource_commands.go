@@ -52,11 +52,14 @@ func (s *boundary) policyListResult(cmd *urfave.Command) error {
 	return writePolicyListText(s.writer, values, cmd.Bool("full"), output.ColorEnabled(s.writer))
 }
 func (s *boundary) policyDescribeResult(cmd *urfave.Command) error {
-	name := strings.TrimSpace(cmd.String("name"))
-	if name == "" && cmd.Args().Len() > 0 {
-		name = cmd.Args().First()
+	if cmd.Args().Len() != 1 {
+		names := make([]string, 0, len(resource.Descriptors()))
+		for _, d := range resource.Descriptors() {
+			names = append(names, d.Name)
+		}
+		return s.handle(cmd, reason.Invalid("policy describe requires exactly one policy NAME (available: "+strings.Join(names, ", ")+")"))
 	}
-	p, err := resource.Lookup(name)
+	p, err := resource.Lookup(strings.TrimSpace(cmd.Args().First()))
 	if err != nil {
 		return s.handle(cmd, err)
 	}

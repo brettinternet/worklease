@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/ledger"
@@ -72,11 +73,17 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 	}
 }
 
+func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
+	return writeWatchTextAt(w, result, color, time.Now())
+}
+
 func storeForWatch(ctx context.Context, home string) (*store.Store, error) {
 	return store.Open(ctx, home, store.Options{ReadOnly: true})
 }
 
-func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
+// writeWatchTextAt keeps the compact view relative and presents the durable
+// resumption cursor only as a copyable command, never as a bare value.
+func writeWatchTextAt(w io.Writer, result watchpkg.Result, color bool, now time.Time) error {
 	title := "lifecycle state observed"
 	if result.TimedOut {
 		title = "watch timed out"
@@ -88,7 +95,6 @@ func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
 		title = "resources changed"
 	}
 	lines := []string{
-		"nextCursor: " + escapeTerminalCell(result.NextCursor),
 		fmt.Sprintf("timedOut: %t", result.TimedOut),
 		fmt.Sprintf("gap: %t", result.Gap),
 	}
@@ -99,7 +105,7 @@ func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
 			value := summarizeResource(state.Resource) + "=" + styledState(state.State, color)
 			if !state.ExpiresAt.IsZero() {
 				expires = true
-				value += " (expiresAt " + state.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00") + ")"
+				value += " (expires " + relativeExpiry(state.ExpiresAt, now) + ")"
 			}
 			states = append(states, value)
 		}
@@ -126,5 +132,16 @@ func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
 		}
 		lines = append(lines, "unresolvedOperations: "+strings.Join(escaped, ","))
 	}
+	if result.NextCursor != "" {
+		lines = append(lines, "resume: worklease watch --cursor "+escapeTerminalCell(result.NextCursor))
+	}
 	return writeLines(w, title, lines)
+}
+
+func relativeExpiry(expiresAt, now time.Time) string {
+	delta := expiresAt.Sub(now)
+	if delta <= 0 {
+		return relativeDuration(-delta) + " ago"
+	}
+	return "in " + relativeDuration(delta)
 }
