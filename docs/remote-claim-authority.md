@@ -6,9 +6,9 @@ Future design. No remote authority, HTTP client or server, authentication
 setup, or deployment is part of the shipped Go release. The
 [Go Product Contract](backlog/docs/go-rewrite/doc-2%20-%20Go-Product-Contract.md)
 is normative for the current product; this document records the future design,
-the decisions already made, and the few decisions that remain open. The file
-name is historical: the first draft proposed a Cloudflare Durable Object
-authority, and that alternative is evaluated and rejected below.
+the decisions already made, and the few decisions that remain open. The first
+draft proposed a Cloudflare Durable Object authority; that historical alternative
+is evaluated and rejected below.
 
 The product decision is to make an opt-in, self-hosted remote authority
 available so users can experiment with cross-host coordination. Worklease will

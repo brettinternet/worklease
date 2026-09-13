@@ -151,7 +151,7 @@ See:
 - [Claim, operation, and recovery model](docs/claim-model.md)
 - [MCP and JSON](docs/mcp.md)
 - [Setup and native hooks](docs/setup.md)
-- [Deferred remote-authority proposal](docs/distributed-cloudflare-claim-authority.md)
+- [Remote authority design](docs/remote-claim-authority.md)
 
 ## Development
 
