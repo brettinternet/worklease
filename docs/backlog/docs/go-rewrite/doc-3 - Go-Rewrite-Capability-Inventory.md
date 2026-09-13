@@ -3,7 +3,7 @@ id: doc-3
 title: Go Rewrite Capability Inventory
 type: specification
 created_date: '2026-09-12 06:33'
-updated_date: '2026-09-12 06:39'
+updated_date: '2026-09-13 00:20'
 tags:
   - go-rewrite
   - inventory
@@ -122,6 +122,8 @@ Representative Python tests preserve failure evidence, not required names, fixtu
 `docs/distributed-cloudflare-claim-authority.md` is preserved as deferred design evidence. Contract section 20 keeps typed domain behavior independent of local CLI/MCP encoding and SQLite callbacks, but v1 adds no HTTP client, backend registry, Worker, authority credentials, deployment tooling, remote exec, or fencing counter. Configured remote failure must never silently fall back to local coordination in a future design.
 
 ## Safety-gap and amendment assessment
+
+This pre-implementation inventory does not assert that read-only SQLite opens are side-effect-free. TASK-88 later amended contract sections 8 and 13: read-only commands do not create the home or main database, but SQLite/modernc may recreate absent owner-private `-wal`/`-shm` sidecars for an existing WAL database in a writable directory.
 
 No material gap was found in the normative Go Product Contract at commit `6a92441`. Its section 21 assigns each identified concurrency, recovery, handle, cursor, GC, MCP, and guard counterexample to an owning task. The missing behavior observed in Python, including durable pending requests, eleven MCP tools, expiry-aware watches, static policies, one claim model, native verification, and predecessor reconciliation, is planned implementation work under TASK-85.2 through TASK-85.18 rather than a contract omission.
 

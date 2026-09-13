@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a094a4'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 08:56'
+updated_date: '2026-09-13 00:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -76,6 +76,16 @@ Independent adversarial review found path TOCTOU, handles-directory, bootstrap i
 
 Implementation commit: 4884501 (Implement secure Go authority store).
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @C3
+created: 2026-09-13 00:20
+---
+Correction after TASK-88: read-only authority access does not create the home or main database, but opening an existing WAL database in a writable directory may update shared-memory coordination state and recreate absent owner-private -wal/-shm sidecars. The amended Go Product Contract sections 8 and 13 are authoritative for AC #3 and the plan/notes wording.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 
