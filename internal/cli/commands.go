@@ -80,15 +80,6 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		c.OnUsageError = func(_ context.Context, cmd *urfavecli.Command, _ error, _ bool) error {
 			return s.handle(cmd, reason.New(reason.ReasonInvalidArgument, "invalid command-line arguments"))
 		}
-		c.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if name == "version" {
-				return s.versionResult(cmd)
-			}
-			return s.handle(cmd, reason.New(reason.ReasonInternal, name+" behavior is implemented by a later task"))
-		}
 		return c
 	}
 	// detail replaces the one-line summary at the top of a description with
@@ -219,8 +210,15 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	doctorCommand.Action = doctorAction(s)
 	detail(doctorCommand, "Check configuration, authority home safety, database schema, handles, clocks, Git, and MCP availability without writing anything. Exit status is non-zero when a check fails.")
 
+	versionCommand := jsonless("version", "print the version", "worklease version\n  worklease version --json")
+	versionCommand.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.versionResult(cmd)
+	}
 	commands := []*urfavecli.Command{
-		jsonless("version", "print the version", "worklease version\n  worklease version --json"), keyCommand, acquireCommand,
+		versionCommand, keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
 		verifyCommand, execCommand, replaceCommand,
 		historyCommand, eventsCommand, watchCommand, gcCommand, doctorCommand,
