@@ -18,6 +18,19 @@ import (
 
 type target struct{ goos, goarch, platform, assetArch string }
 
+type optionalString struct {
+	value string
+	set   bool
+}
+
+func (value *optionalString) Set(input string) error {
+	value.value = input
+	value.set = true
+	return nil
+}
+
+func (value *optionalString) String() string { return value.value }
+
 var targets = []target{
 	{"linux", "amd64", "linux", "x64"},
 	{"linux", "arm64", "linux", "arm64"},
@@ -31,9 +44,31 @@ func main() {
 	buildTime := flag.String("build-time", time.Now().UTC().Format(time.RFC3339), "build timestamp")
 	output := flag.String("output", "dist/release", "output directory")
 	current := flag.Bool("current", false, "build only the current OS and architecture")
+	changelog := flag.String("changelog", "CHANGELOG.md", "changelog path")
+	var prepareChangelog optionalString
+	var changelogNotes optionalString
+	flag.Var(&prepareChangelog, "prepare-changelog", "promote Unreleased using this YYYY-MM-DD date")
+	flag.Var(&changelogNotes, "changelog-notes", "write the matching version's release notes to this file")
 	flag.Parse()
 	if *version == "" || strings.HasPrefix(*version, "v") || strings.ContainsAny(*version, `/\\`) {
 		fatal(fmt.Errorf("version must be a bare release version"))
+	}
+	if err := validateChangelogModes(prepareChangelog, changelogNotes); err != nil {
+		fatal(err)
+	}
+	if prepareChangelog.set {
+		if err := apprelease.PrepareChangelog(*changelog, *version, prepareChangelog.value); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("promoted %s Unreleased notes to %s (%s)\n", *changelog, *version, prepareChangelog.value)
+		return
+	}
+	if changelogNotes.set {
+		if err := apprelease.WriteChangelogReleaseNotes(*changelog, changelogNotes.value, *version); err != nil {
+			fatal(err)
+		}
+		fmt.Println(changelogNotes.value)
+		return
 	}
 	if err := os.MkdirAll(*output, 0o755); err != nil {
 		fatal(err)
@@ -87,6 +122,19 @@ func main() {
 	if err := apprelease.VerifyChecksums(*output); err != nil {
 		fatal(err)
 	}
+}
+
+func validateChangelogModes(prepare, notes optionalString) error {
+	if prepare.set && prepare.value == "" {
+		return fmt.Errorf("--prepare-changelog requires a YYYY-MM-DD date")
+	}
+	if notes.set && notes.value == "" {
+		return fmt.Errorf("--changelog-notes requires an output path")
+	}
+	if prepare.set && notes.set {
+		return fmt.Errorf("--prepare-changelog and --changelog-notes cannot be used together")
+	}
+	return nil
 }
 
 func fatal(err error) {
