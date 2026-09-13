@@ -98,7 +98,11 @@ func writeGCText(w io.Writer, result gc.Result, color bool) error {
 		}
 		lines = append(lines, key+": "+value)
 	}
-	return writeLines(w, "gc", lines)
+	title := "garbage collection applied"
+	if result.DryRun {
+		title = "garbage collection preview"
+	}
+	return writeLines(w, title, lines)
 }
 
 func sortedFieldNames(fields map[string]any) []string {
