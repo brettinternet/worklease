@@ -117,7 +117,7 @@ func TestWatchTextPresentsCursorOnlyAsResumeCommand(t *testing.T) {
 	if err := writeWatchText(&out, watchpkg.Result{TimedOut: true, NextCursor: "opaque\x1bcursor"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "watch timed out\ntimedOut: true\ngap: false\nresume: worklease watch --cursor opaque\\u001bcursor\n" {
+	if got := out.String(); got != "watch timed out\nresume: worklease watch --cursor opaque\\u001bcursor\n" {
 		t.Fatalf("text=%q", got)
 	}
 	out.Reset()
@@ -126,6 +126,13 @@ func TestWatchTextPresentsCursorOnlyAsResumeCommand(t *testing.T) {
 	}
 	if got := out.String(); strings.Contains(got, "cursor") {
 		t.Fatalf("empty cursor leaked: %q", got)
+	}
+	out.Reset()
+	if err := writeWatchText(&out, watchpkg.Result{Gap: true, NextCursor: "reset"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "lifecycle state observed\ngap: earlier events were collected; treat the current resource state as a fresh snapshot before resuming\nresume: worklease watch --cursor reset\n" {
+		t.Fatalf("gap text=%q", got)
 	}
 }
 
@@ -210,7 +217,7 @@ func TestWatchTextTimeoutIncludesDurableCursor(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "watch", "--home", home, "--resource", "r", "--until", "change", "--timeout", "60ms"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "timedOut: true") || !strings.Contains(out.String(), "\nresume: worklease watch --cursor eyJ") || strings.Contains(out.String(), "nextCursor:") {
+	if !strings.HasPrefix(out.String(), "watch timed out\n") || !strings.Contains(out.String(), "resume: worklease watch --cursor eyJ") || strings.Contains(out.String(), "timedOut:") || strings.Contains(out.String(), "gap:") || strings.Contains(out.String(), "nextCursor:") {
 		t.Fatalf("text=%q", out.String())
 	}
 }

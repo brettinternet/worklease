@@ -120,9 +120,10 @@ complete structured output.
 
 Cursor policy: text views never print a bare opaque cursor. `events` and
 `history` text omit cursors entirely; page with `--json` and `--cursor`. `watch`
-text shows relative expiry per resource and presents its resumption cursor only
-inside a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields
-are unchanged.
+text omits routine false booleans, shows relative expiry per resource, reports a
+retention gap only when one exists, and presents its resumption cursor only inside
+a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields are
+unchanged.
 
 ## Guarded and recovery operations
 
