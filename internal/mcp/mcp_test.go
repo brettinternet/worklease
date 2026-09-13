@@ -90,13 +90,19 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 		t.Fatalf("server acquire recovery instructions are incomplete: %q", serverInstructions)
 	}
 	acquireDescription := ""
+	var acquireSchema map[string]any
 	for _, tool := range s.tools() {
 		if tool["name"] == "acquire" {
 			acquireDescription, _ = tool["description"].(string)
+			acquireSchema, _ = tool["inputSchema"].(map[string]any)
 		}
 	}
 	if !strings.Contains(acquireDescription, "Retry by reference only after an uncertain outcome") || !strings.Contains(acquireDescription, "definitive failure returns no reference") {
 		t.Fatalf("acquire tool recovery description is incomplete: %q", acquireDescription)
+	}
+	leaseReplay := acquireSchema["oneOf"].([]any)[0].(map[string]any)
+	if leaseReplay["maxProperties"] != 1 {
+		t.Fatalf("acquire lease replay schema accepts changed inputs: %v", leaseReplay)
 	}
 	bad, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []any{"r"}, "path": "x"})
 	if err != nil {
@@ -152,6 +158,13 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 	pending := handle.Handle{SchemaVersion: 1, AuthorityID: authority, ClaimID: claim, Token: token, Resources: []string{"recovery-resource"}, AgentID: "agent", SessionID: "session", LocalReplaceAllowed: true, HoldUntil: time.Now().UTC().Add(time.Minute), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: authority, ClaimID: claim, RequestHash: legacyGrant.Receipt.RequestHash, RequestNotAfter: deadline, Inputs: inputs}}
 	if err := handle.Write(s.handlePath(ref), pending); err != nil {
 		t.Fatal(err)
+	}
+	changed, err := s.Call(context.Background(), "acquire", map[string]any{"lease": ref, "ttl": float64(60)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed["isError"] != true {
+		t.Fatalf("pending acquire replay accepted changed ttl: %v", changed)
 	}
 	replayed, err := s.Call(context.Background(), "acquire", map[string]any{"lease": ref})
 	if err != nil || replayed["isError"] == true {
