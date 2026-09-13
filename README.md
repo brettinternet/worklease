@@ -27,7 +27,7 @@ sequenceDiagram
 | Choose | When |
 | --- | --- |
 | A lockfile | One process or file needs a critical section. You do not need lease ownership, expiry, history, or recovery. |
-| Worklease | Independent local workers claim tasks or resources and need TTLs, waiting, status, history, guarded commands, or recovery. |
+| Worklease | Independent local workers claim tasks or resources and need TTLs, waiting, status, history, guarded commands, or recovery (e.g. agentic loops). |
 
 Both coordinate cooperating processes on one host. Neither stops arbitrary
 external work.
