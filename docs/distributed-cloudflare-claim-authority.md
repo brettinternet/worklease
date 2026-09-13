@@ -19,8 +19,10 @@ shipped or verified guarantee.
 **Decision (2026-09-12, owner-authorized pivot).** The remote authority is the
 existing Go authority, served over authenticated HTTPS. One `worklease serve`
 process runs the same `lease.Service` and SQLite store that the local CLI uses,
-on one always-on host with one persistent volume. Continuous SQLite replication
-to object storage provides backup. An authenticated front door such as
+on one always-on host with one persistent volume. Optional continuous SQLite
+replication to object storage can provide disaster-recovery backups when a
+deployment's recovery targets require them; a simple `worklease serve` may rely
+on its persistent SQLite volume alone. An authenticated front door such as
 Cloudflare Tunnel plus Cloudflare Access terminates TLS and authenticates
 installations; where compute runs is decoupled from that front door.
 
@@ -588,7 +590,29 @@ rules as the local authority; deletion beyond GC requires an `admin` action and
 is refused for unresolved operations. Replicas in object storage inherit the
 namespace's access controls and are readable only by the restore procedure.
 Backups are therefore covered by the restore incarnation rule and never by a
-second live authority.
+second live authority. Object-storage replication is optional: disabling it
+removes replica-based disaster recovery but does not change the single-writer,
+identity, restart, or claim-safety rules. Any later database import still enters
+the quarantined restore path under a fresh incarnation.
+
+## Possible follow-ups
+
+These are separate opportunities, not requirements for the initial remote
+authority:
+
+- **Optional managed backup.** Package continuous replication and restore drills
+  for operators whose recovery targets justify them. Keep plain `worklease
+  serve` usable with only a persistent SQLite volume, with the absence of a
+  replica and its data-loss consequences explicit.
+- **Claim-scoped agent coordination.** Evaluate bounded structured handoff notes,
+  release or transfer requests, recovery-required notices, and annotations tied
+  to claim or operation IDs. Reuse checkpoints, events, and watches where their
+  existing safety and privacy boundaries fit.
+
+Do not turn the second follow-up into general chat, a durable message queue, task
+dispatch, remote commands, or transcript storage. Those belong in an external
+messaging or orchestration system, which can carry Worklease IDs for correlation
+while Worklease remains the authority for ownership and recovery.
 
 ## Remaining decisions and release evidence
 
@@ -603,7 +627,7 @@ The following questions still require measurements or operating-team decisions:
 | Whether to build at all | The demand validation above. Two or three teams with measured cross-host duplicate execution that a scheduler or provider does not already solve. |
 | Recovery targets | The operating team sets acceptable acknowledged-write loss and recovery downtime before choosing deployment details. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
 | Capacity and cost | Measured WAN latency, renewal margins, retry/watch bursts, per-namespace write throughput, replication lag, and recovery storage demand. These validate thresholds, reserves, quotas, and cost assumptions. |
-| Hosting region and provider | An operating-team choice constrained by recovery targets, one always-on host, one persistent volume, and replication to object storage. |
+| Hosting region and provider | An operating-team choice constrained by recovery targets, one always-on host, and one persistent volume. Object-storage replication is optional and selected when those targets require replica-based recovery. |
 | Operational ownership | Named owners and runbooks for patching, restore, and reopening after restore. A private service does not ship without them. |
 
 Before private deployment, add executable scenarios covering at least:
