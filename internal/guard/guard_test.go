@@ -35,6 +35,9 @@ func TestGuardHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.Write([]byte(strings.Repeat("x", MaxCaptureBytes+257)))
 	case "signal":
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		// Signal delivery is asynchronous on some platforms; do not let the
+		// successful helper exit race ahead of its own termination signal.
+		time.Sleep(time.Hour)
 	}
 	os.Exit(0)
 }

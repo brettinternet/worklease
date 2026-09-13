@@ -1,11 +1,11 @@
 ---
 id: TASK-98
 title: Release Go rewrite as v1.0.0
-status: Done
+status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-13 00:56'
-updated_date: '2026-09-13 01:20'
+updated_date: '2026-09-13 01:23'
 labels: []
 dependencies: []
 references:
@@ -52,6 +52,8 @@ Confirmed the existing release archive names and bin/worklease layout install su
 The first post-publication check exposed mise's intentional minimum-release-age filter: a clean latest lookup selected v0.9.1 immediately after publication. The release artifact itself installed successfully when that delay was disabled. Updated release verification to set MISE_MINIMUM_RELEASE_AGE=0 and to run on workflow_dispatch as well as tagged publication, allowing immediate post-release validation without changing users' simple latest declaration.
 
 Verification: local mise run ci passed all format, staticcheck, vet, unit, race, vulnerability, end-to-end, and manual-generation gates. Main CI runs 34729583689 (release commit ca97d51) and 34729975577 (pipeline follow-up d81e4bd) passed all four OS/architecture jobs. Release v1.0.0 publishes four archives plus checksums from ca97d51. Release validation run 34729978282 passed archive build/smoke/manual checks and clean latest mise installation on linux-x64, linux-arm64, macos-x64, and macos-arm64; its first attempt hit a transient macOS artifact-upload DNS failure and the failed attempt passed on rerun. GitHub latest resolves to v1.0.0.
+
+Final bookkeeping CI exposed one remaining macOS-only test race: the signal helper could call os.Exit(0) before its self-sent SIGTERM was delivered. Reopened to make the helper wait for signal delivery and restore a green final main commit.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
