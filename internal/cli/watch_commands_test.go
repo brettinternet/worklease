@@ -82,11 +82,11 @@ func TestWatchTextIncludesUnresolvedPredecessorMetadata(t *testing.T) {
 		NextCursor:            "cursor",
 		UnresolvedPredecessor: []watchpkg.Predecessor{{ClaimID: claimID, OperationID: operationID, Resources: []string{"first", "second"}}},
 		UnresolvedOperations:  []string{operationID},
-	}); err != nil {
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"unresolvedPredecessor:", "claim=" + claimID, "operation=" + operationID, "resources=first,second", "unresolvedOperations: " + operationID} {
+	for _, want := range []string{"unresolvedPredecessor:", "claimId=" + claimID, "operationId=" + operationID, "resources=first,second", "unresolvedOperations: " + operationID} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text missing %q: %q", want, text)
 		}
@@ -97,7 +97,7 @@ func TestWatchTextIncludesExpiryGuidance(t *testing.T) {
 	var out bytes.Buffer
 	if err := writeWatchText(&out, watchpkg.Result{Resources: []watchpkg.ResourceState{{
 		Resource: "task", State: "active", ExpiresAt: time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC),
-	}}}); err != nil {
+	}}}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()

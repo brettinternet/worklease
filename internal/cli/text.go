@@ -44,7 +44,7 @@ func wideRune(r rune) bool {
 }
 
 func shortenOpaque(value string, maxCells int) string {
-	value = output.RedactString(value)
+	value = escapeTerminalCell(output.RedactString(value))
 	if maxCells < 4 || displayWidth(value) <= maxCells {
 		return value
 	}
@@ -101,30 +101,34 @@ func runeWidth(r rune) int {
 }
 
 func writeStatusText(w io.Writer, value lease.Status, full, color bool) error {
+	return writeStatusTextAt(w, value, full, color, time.Now())
+}
+
+func writeStatusTextAt(w io.Writer, value lease.Status, full, color bool, now time.Time) error {
 	if value.Claim != nil {
 		claim := value.Claim
 		state := stateForClaim(*claim)
-		lines := []string{
-			"agent: " + shortenOpaque(claim.AgentID, 40),
-			"expiresAt: " + claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
-		}
+		lines := []string{"agentId: " + shortenOpaque(claim.AgentID, 40)}
 		if full {
 			lines = append(lines,
-				"claimId: "+claim.ClaimID,
+				"expiresAt: "+claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+				"claimId: "+escapeTerminalCell(claim.ClaimID),
 				"resources: "+fullResources(claim.Resources),
 				"sessionId: "+escapeTerminalCell(output.RedactString(claim.SessionID)),
 				"workKey: "+escapeTerminalCell(output.RedactString(claim.WorkKey)),
 				fmt.Sprintf("revision: %d", claim.Revision),
 				"acquiredAt: "+claim.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
 				"heartbeatAt: "+claim.HeartbeatAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
-				"guarantee: "+claim.Guarantee,
-				"authorityId: "+claim.AuthorityID,
+				"guarantee: "+escapeTerminalCell(claim.Guarantee),
+				"authorityId: "+escapeTerminalCell(claim.AuthorityID),
 				fmt.Sprintf("localReplaceAllowed: %t", claim.LocalReplaceAllowed),
 				fmt.Sprintf("checkpointPresent: %t", claim.CheckpointPresent),
 			)
 			if len(claim.UnknownOperations) > 0 {
 				lines = append(lines, "unknownOperations: "+textValue(output.Redact(claim.UnknownOperations)))
 			}
+		} else {
+			lines = append(lines, "expires: "+compactExpiry(*claim, now))
 		}
 		return writeLines(w, "claim "+shortenOpaque(claim.ClaimID, 24)+" is "+styledState(state, color), lines)
 	}
@@ -133,7 +137,7 @@ func writeStatusText(w io.Writer, value lease.Status, full, color bool) error {
 		if full {
 			line := fmt.Sprintf("resource[%d]: %s state=%s", i+1, resourceText(item.Resource), styledState(item.State, color))
 			if item.Claim != nil {
-				line += " claim=" + item.Claim.ClaimID + " expiresAt=" + item.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+				line += " claimId=" + escapeTerminalCell(item.Claim.ClaimID) + " expiresAt=" + item.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
 			lines = append(lines, line)
 		} else {
@@ -160,9 +164,10 @@ func stateForClaim(value lease.ClaimView) string {
 
 func styledState(state string, color bool) string {
 	code := output.Yellow
-	if state == "active" || state == "free" || state == "ok" {
+	switch state {
+	case "active", "free", "ok", "open", "completed", "acquired", "heartbeat", "checkpointed", "transferred":
 		code = output.Green
-	} else if state == "fail" || state == "error" {
+	case "fail", "failed", "error", "operation-failed":
 		code = output.Red
 	}
 	return output.Style(color, code, state)
@@ -211,7 +216,7 @@ func writeAcquireText(w io.Writer, fields map[string]any) error {
 	if values, ok := fields["recovery"].([]lease.Recovery); ok && len(values) > 0 {
 		lines = append(lines, fmt.Sprintf("recovery: %d", len(values)))
 		for i, value := range values {
-			lines = append(lines, fmt.Sprintf("recovery[%d]: resource=%s claim=%s checkpointPresent=%t", i+1, resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
+			lines = append(lines, fmt.Sprintf("recovery[%d]: resource=%s claimId=%s checkpointPresent=%t", i+1, resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
 		}
 	}
 	return writeLines(w, fmt.Sprintf("acquired %d %s as claim %s", len(resources), resourceLabel, shortenOpaque(claimID, 24)), lines)
@@ -224,8 +229,8 @@ func writeTransferText(w io.Writer, fields map[string]any) error {
 	if resources, ok := fields["resources"].([]string); ok {
 		lines = append(lines, "resources: "+fullResources(resources))
 	}
-	lines = appendFieldLine(lines, fields, "agentId", "agent")
-	lines = appendFieldLine(lines, fields, "sessionId", "session")
+	lines = appendFieldLine(lines, fields, "agentId", "agentId")
+	lines = appendFieldLine(lines, fields, "sessionId", "sessionId")
 	lines = appendFieldLine(lines, fields, "revision", "revision")
 	lines = appendFieldLine(lines, fields, "expiresAt", "expiresAt")
 	lines = appendFieldLine(lines, fields, "guarantee", "guarantee")
@@ -288,7 +293,7 @@ func writeReplaceText(w io.Writer, receipt lease.Receipt) error {
 
 func writeInspectionText(w io.Writer, operation ledger.Operation) error {
 	lines := []string{
-		"claim: " + shortenOpaque(operation.ClaimID, 32),
+		"claimId: " + shortenOpaque(operation.ClaimID, 32),
 		"kind: " + operation.Kind,
 		"state: " + operation.State,
 		"startedAt: " + operation.StartedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
@@ -324,8 +329,8 @@ func writeInspectionText(w io.Writer, operation ledger.Operation) error {
 
 func writeReconciliationText(w io.Writer, receipt lease.ReconciliationReceipt) error {
 	lines := []string{
-		"targetClaim: " + shortenOpaque(receipt.TargetClaimID, 32),
-		"targetOperation: " + shortenOpaque(receipt.TargetOperationID, 32),
+		"targetClaimId: " + shortenOpaque(receipt.TargetClaimID, 32),
+		"targetOperationId: " + shortenOpaque(receipt.TargetOperationID, 32),
 		"outcome: " + receipt.Outcome,
 		fmt.Sprintf("revision: %d", receipt.Revision),
 		"reconciledAt: " + receipt.ReconciledAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
@@ -429,12 +434,34 @@ func fullResources(resources []string) string {
 	return strings.Join(values, ", ")
 }
 
+func writeKeyText(w io.Writer, value resource.Key) error {
+	lines := []string{
+		"provider: " + escapeTerminalCell(value.Provider),
+		"resource: " + resourceText(value.Resource),
+		"capability: " + escapeTerminalCell(value.Capability),
+		"scope: " + escapeTerminalCell(value.Scope),
+		"identityScope: " + escapeTerminalCell(value.IdentityScope),
+	}
+	if value.Source != "" {
+		lines = append(lines, "source: "+escapeTerminalCell(output.RedactString(value.Source)))
+	}
+	if value.Item != "" {
+		lines = append(lines, "item: "+escapeTerminalCell(output.RedactString(value.Item)))
+	}
+	lines = append(lines,
+		fmt.Sprintf("localReplaceAllowed: %t", value.LocalReplaceAllowed),
+		fmt.Sprintf("providerFencing: %t", value.ProviderFencing),
+		"genericExecutionGuarantee: local-coordination",
+	)
+	return writeLines(w, "derived resource key", lines)
+}
+
 func writePolicyDescribeText(w io.Writer, value resource.Descriptor, full bool) error {
 	lines := []string{
 		"resource: " + escapeTerminalCell(value.Resource),
-		"scope: " + value.Scope,
-		"capability: " + value.Capability,
-		"identityScope: " + value.IdentityScope,
+		"scope: " + escapeTerminalCell(value.Scope),
+		"capability: " + escapeTerminalCell(value.Capability),
+		"identityScope: " + escapeTerminalCell(value.IdentityScope),
 	}
 	if full {
 		lines = append(lines,
@@ -445,7 +472,7 @@ func writePolicyDescribeText(w io.Writer, value resource.Descriptor, full bool) 
 			"genericExecutionGuarantee: local-coordination",
 		)
 	}
-	return writeLines(w, "policy "+value.Name, lines)
+	return writeLines(w, "policy "+escapeTerminalCell(value.Name), lines)
 }
 
 func writePolicyListText(w io.Writer, values []resource.Descriptor, full, color bool) error {
@@ -550,7 +577,7 @@ func renderTableRow(row []string, widths []int, color, header bool) string {
 func resourceText(value string) string {
 	redacted, _ := output.Redact(map[string]any{"resource": value}).(map[string]any)
 	if safe, ok := redacted["resource"].(string); ok {
-		return safe
+		return escapeTerminalCell(safe)
 	}
 	return "[REDACTED]"
 }
@@ -641,24 +668,30 @@ func relativeDuration(value time.Duration) string {
 	return fmt.Sprintf("%dd", days)
 }
 
-func writeHistoryText(w io.Writer, page ledger.HistoryPage, full bool) error {
+func writeHistoryText(w io.Writer, page ledger.HistoryPage, full, color bool) error {
+	return writeHistoryTextAt(w, page, full, color, time.Now())
+}
+
+func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, now time.Time) error {
 	lines := []string{"prunedThroughSequence: " + page.Coverage.PrunedThroughSequence, "nextCursor: " + page.NextCursor}
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}
 	for i, epoch := range page.Epochs {
 		claimID := shortenOpaque(epoch.ClaimID, 24)
+		whenLabel, when := "acquired", relativeTime(epoch.AcquiredAt, now)
 		if full {
-			claimID = epoch.ClaimID
+			claimID = escapeTerminalCell(epoch.ClaimID)
+			whenLabel, when = "acquiredAt", epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("epoch[%d]: claim=%s status=%s acquiredAt=%s", i+1, claimID, epoch.Status, epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"))
+		line := fmt.Sprintf("epoch[%d]: claimId=%s status=%s %s=%s", i+1, claimID, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
 		if full {
-			line += " agent=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) + " session=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
+			line += " agentId=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) + " sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
 			if epoch.EndedAt != nil {
 				line += " endedAt=" + epoch.EndedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
 			if epoch.EndReason != "" {
-				line += " reason=" + escapeTerminalCell(output.RedactString(epoch.EndReason))
+				line += " endReason=" + escapeTerminalCell(output.RedactString(epoch.EndReason))
 			}
 			if epoch.FinalRevision != nil {
 				line += fmt.Sprintf(" finalRevision=%d", *epoch.FinalRevision)
@@ -667,7 +700,7 @@ func writeHistoryText(w io.Writer, page ledger.HistoryPage, full bool) error {
 		lines = append(lines, line)
 		if full {
 			for _, operation := range epoch.Operations {
-				op := "  operation: id=" + operation.OperationID + " kind=" + operation.Kind + " state=" + operation.State
+				op := "  operation: operationId=" + escapeTerminalCell(operation.OperationID) + " kind=" + styledState(escapeTerminalCell(operation.Kind), color) + " state=" + styledState(escapeTerminalCell(operation.State), color)
 				if operation.RequestSHA256 != "" {
 					op += " requestSha256=" + operation.RequestSHA256
 				}
@@ -681,27 +714,33 @@ func padCells(value string, width int) string {
 	return value + strings.Repeat(" ", width-displayWidth(value))
 }
 
-func writeEventsText(w io.Writer, page ledger.EventsPage, full bool) error {
+func writeEventsText(w io.Writer, page ledger.EventsPage, full, color bool) error {
+	return writeEventsTextAt(w, page, full, color, time.Now())
+}
+
+func writeEventsTextAt(w io.Writer, page ledger.EventsPage, full, color bool, now time.Time) error {
 	lines := []string{}
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}
 	for i, event := range page.Events {
 		claimID := shortenOpaque(event.ClaimID, 24)
+		when := relativeTime(event.At, now)
 		if full {
-			claimID = event.ClaimID
+			claimID = escapeTerminalCell(event.ClaimID)
+			when = event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 		}
-		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s claim=%s", i+1, event.Sequence, event.Kind, claimID)
+		line := fmt.Sprintf("event[%d]: sequence=%s kind=%s claimId=%s at=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color), claimID, when)
 		if full {
-			line += " at=" + event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00") + " resources=" + fullResources(event.Resources)
+			line += " resources=" + fullResources(event.Resources)
 			if event.OperationID != "" {
-				line += " operation=" + event.OperationID
+				line += " operationId=" + escapeTerminalCell(event.OperationID)
 			}
 			if event.Revision != nil {
 				line += fmt.Sprintf(" revision=%d", *event.Revision)
 			}
 			if event.AgentID != "" {
-				line += " agent=" + escapeTerminalCell(output.RedactString(event.AgentID))
+				line += " agentId=" + escapeTerminalCell(output.RedactString(event.AgentID))
 			}
 			if len(event.Detail) > 0 {
 				line += " detail=" + inlineJSON(output.RedactPublic(event.Detail))
@@ -711,6 +750,17 @@ func writeEventsText(w io.Writer, page ledger.EventsPage, full bool) error {
 	}
 	return writeLines(w, fmt.Sprintf("%d events", len(page.Events)), lines)
 }
+func relativeTime(value, now time.Time) string {
+	delta := value.Sub(now)
+	if delta == 0 {
+		return "now"
+	}
+	if delta > 0 {
+		return "in " + relativeDuration(delta)
+	}
+	return relativeDuration(-delta) + " ago"
+}
+
 func writeLines(w io.Writer, title string, lines []string) error {
 	if _, err := fmt.Fprintln(w, title); err != nil {
 		return err

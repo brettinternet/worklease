@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
 	mcpserver "github.com/brettinternet/worklease/internal/mcp"
@@ -52,15 +53,24 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	resources := func() urfavecli.Flag {
 		return &urfavecli.StringSliceFlag{Name: "resource", Aliases: []string{"r"}, Usage: "resource"}
 	}
-	full := func() urfavecli.Flag {
-		return &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}, Usage: "include non-secret metadata"}
+	full := func(usage ...string) urfavecli.Flag {
+		description := "include non-secret metadata"
+		if len(usage) > 0 {
+			description = usage[0]
+		}
+		return &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}, Usage: description}
+	}
+	textOutput := func(command *urfavecli.Command, description string) {
+		command.Description = strings.Replace(command.Description, ".\n\nExamples:", ".\n\nOutput: "+description+" ANSI color is used only on interactive terminals and is disabled by NO_COLOR, TERM=dumb, redirection, and --json.\n\nExamples:", 1)
 	}
 	keyCommand := jsonless("key", "derive a resource key", "worklease key --path README.md", resource()...)
 	keyCommand.Action = keyAction(s)
+	textOutput(keyCommand, "The text view starts with the derived-key outcome and deterministic lowerCamelCase fields.")
 	acquireCommand := jsonless("acquire", "acquire a claim", "worklease acquire --path README.md", append(resource(), &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"T"}, Usage: "claim lifetime [$WORKLEASE_TTL]"}, &urfavecli.DurationFlag{Name: "wait", Aliases: []string{"W"}, Usage: "bounded wait"}, &urfavecli.DurationFlag{Name: "poll-interval", Usage: "poll interval [$WORKLEASE_POLL_INTERVAL]"}, flag("agent", "a"), flag("work-key", "w"), flag("session"), flag("handle"), flag("claim-id", "c"), flag("token-file", "F"), &urfavecli.IntFlag{Name: "token-fd", Aliases: []string{"D"}, Usage: "token descriptor"}, flag("request-not-after"), &urfavecli.BoolFlag{Name: "no-handle", Usage: "disable contextual handle"})...)
 	acquireCommand.Action = acquireActionReal(s)
-	statusCommand := jsonless("status", "show claim status", "worklease status", append(selection(), resources(), full())...)
+	statusCommand := jsonless("status", "show claim status", "worklease status", append(selection(), resources(), full("show complete identifiers, metadata, and absolute timestamps"))...)
 	statusCommand.Action = statusActionReal(s)
+	textOutput(statusCommand, "The default view shortens identifiers and shows relative expiry; --full shows complete non-secret metadata with RFC3339 timestamps.")
 	listCommand := jsonless("list", "list current claims", "worklease list", resources(), full())
 	listCommand.Action = listActionReal(s)
 	heartbeatCommand := jsonless("heartbeat", "renew the contextual claim", "worklease heartbeat", mutate()...)
@@ -71,12 +81,15 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	releaseCommand.Action = releaseActionReal(s)
 	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"))...)
 	transferCommand.Action = transferActionReal(s)
-	historyCommand := jsonless("history", "show recent lifecycle events or retained resource history", "worklease history", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
+	historyCommand := jsonless("history", "show recent lifecycle events or retained resource history", "worklease history", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full("show complete identifiers, operation metadata, and absolute timestamps"))
 	historyCommand.Action = historyAction(s)
-	eventsCommand := jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
+	textOutput(historyCommand, "Without a resource the command shows compact recent events; --resource shows compact claim epochs. --full adds complete non-secret metadata and RFC3339 timestamps.")
+	eventsCommand := jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full("show complete identifiers, event details, and absolute timestamps"))
 	eventsCommand.Action = eventsAction(s)
+	textOutput(eventsCommand, "The default view shows compact events with relative timing; --full adds complete non-secret event metadata and RFC3339 timestamps.")
 	gcCommand := jsonless("gc", "preview or apply retention", "worklease gc --retention-days 30", &urfavecli.Float64Flag{Name: "retention-days", Usage: "retention [$WORKLEASE_RETENTION_DAYS]"}, flag("cutoff"), &urfavecli.BoolFlag{Name: "apply", Usage: "apply retention"})
 	gcCommand.Action = gcAction(s)
+	textOutput(gcCommand, "The text view starts with a preview or applied outcome and deterministic lowerCamelCase fields.")
 	verifyCommand := jsonless("verify", "verify contextual ownership", "worklease verify", append(selection(), resources(), flag("hook"), flag("coverage"))...)
 	verifyCommand.Action = verifyAction(s)
 	execCommand := jsonless("exec", "run a guarded contextual command", "worklease exec -- git status", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "child limit [$WORKLEASE_MAX_DURATION]"}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "primary worktree"})...)
@@ -85,6 +98,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	replaceCommand.Action = replaceFileAction(s)
 	watchCommand := jsonless("watch", "wait for lifecycle changes", "worklease watch --resource RESOURCE --until free", resources(), flag("cursor"), flag("until"), &urfavecli.DurationFlag{Name: "timeout", Usage: "timeout (default 30s, maximum 1h)"})
 	watchCommand.Action = watchAction(s)
+	textOutput(watchCommand, "The text view starts with the observed outcome and deterministic lowerCamelCase fields.")
 	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor")
 	doctorCommand.Action = doctorAction(s)
 	commands := []*urfavecli.Command{
@@ -118,8 +132,9 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	policyList := jsonless("list", "list built-in policies", "worklease policy list", full())
 	policyList.Action = policyListAction(s)
-	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path", full())
+	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path", full("show contract versions and fencing guarantees"))
 	policyDescribe.Action = policyDescribeAction(s)
+	textOutput(policyDescribe, "The default view shows identity and capability fields; --full adds contract versions and fencing guarantees.")
 	policy := group("policy", "show built-in policies", "worklease policy list", policyList, policyDescribe)
 	inspectCommand := jsonless("inspect", "inspect an operation", "worklease op inspect --operation-id ID", append(selection(), resources(), flag("operation-id", "o"), &urfavecli.BoolFlag{Name: "full", Aliases: []string{"f"}})...)
 	inspectCommand.Action = inspectAction(s)
