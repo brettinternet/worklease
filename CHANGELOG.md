@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.1 - 2026-09-13
+
 ### Breaking
 
 - Short options are now reserved for common workflows: `-j/--json`, `-H/--home`, `-h/--help`, `-v/--version`, `-r/--resource`, `-s/--session`, `-t/--ttl`, `-w/--wait`, `-a/--agent`, `-f/--full`, and `-m/--reason`. Every other option is long-only; notably, `--source` and `--work-key` no longer use `-s` and `-w`.
