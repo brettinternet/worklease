@@ -112,8 +112,83 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if err := writeEventsTextAt(&full, events, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), "exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(compact.String(), "at=30s ago") || !strings.Contains(full.String(), "at=2026-09-13T02:12:39.000000Z") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
+	if !strings.Contains(compact.String(), "resources=exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(compact.String(), "at=30s ago") || !strings.Contains(full.String(), "at=2026-09-13T02:12:39.000000Z") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
+	}
+}
+
+func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
+	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
+	claimID, other := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	long := "backlog-md:%2FUsers%2Fbrett%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-101"
+
+	var events bytes.Buffer
+	page := ledger.EventsPage{NextCursor: "opaque-cursor", Events: []ledger.Event{
+		{Sequence: "7", At: now.Add(-90 * time.Second), Kind: "acquired", ClaimID: claimID, Resources: []string{long}},
+		{Sequence: "8", At: now, Kind: "released", ClaimID: other, Resources: []string{"first", "second"}},
+		{Sequence: "9", At: now, Kind: "gc-applied"},
+	}}
+	if err := writeEventsTextAt(&events, page, false, false, now); err != nil {
+		t.Fatal(err)
+	}
+	got := events.String()
+	for _, want := range []string{"3 events\n", "event[1]: sequence=7 kind=acquired resources=backlog-md:worklease:TASK-101 claimId=", "at=1m ago", "event[2]: sequence=8 kind=released resources=first, second claimId=", "at=now", "event[3]: sequence=9 kind=gc-applied at=now\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("events missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "opaque-cursor") || strings.Contains(got, "nextCursor") || strings.Contains(got, "claimId= ") || strings.Contains(got, "resources=none") {
+		t.Fatalf("events text leaked cursor: %q", got)
+	}
+
+	ended := now.Add(-2 * time.Minute)
+	final := int64(6)
+	history := ledger.HistoryPage{Resource: "exact-resource", NextCursor: "opaque-cursor", Coverage: ledger.HistoryCoverage{PrunedThroughSequence: "0"}, Epochs: []ledger.Epoch{
+		{ClaimID: claimID, AgentID: "alice", SessionID: "s1", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-10 * time.Minute), EndedAt: &ended, EndReason: "released", FinalRevision: &final, Status: "complete", Operations: []ledger.Operation{{Kind: "acquire", State: "completed"}, {Kind: "heartbeat", State: "completed"}, {Kind: "exec", State: "completed"}}},
+		{ClaimID: other, AgentID: "bob", Resources: []string{"exact-resource"}, AcquiredAt: now.Add(-time.Minute), Status: "open", Operations: []ledger.Operation{{Kind: "acquire", State: "completed"}, {Kind: "exec", State: "started"}}},
+	}}
+	var compact bytes.Buffer
+	if err := writeHistoryTextAt(&compact, history, false, false, now); err != nil {
+		t.Fatal(err)
+	}
+	got = compact.String()
+	for _, want := range []string{"2 history epochs for exact-resource\n", "agentId=alice status=complete acquired=10m ago ended=released 2m ago operations=acquire,heartbeat,exec\n", "agentId=bob status=open acquired=1m ago operations=acquire,exec:started\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("history missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "opaque-cursor") || strings.Contains(got, "nextCursor") || strings.Contains(got, "prunedThroughSequence") || strings.Contains(got, "s1") {
+		t.Fatalf("compact history leaked cursor, coverage sentinel, or session: %q", got)
+	}
+
+	compact.Reset()
+	history.Coverage.PrunedThroughSequence = "12"
+	history.Epochs = history.Epochs[:1]
+	if err := writeHistoryTextAt(&compact, history, false, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := compact.String(); !strings.HasPrefix(got, "1 history epoch for exact-resource\npruned: events through sequence 12 were collected\n") {
+		t.Fatalf("history coverage=%q", got)
+	}
+
+	var full bytes.Buffer
+	if err := writeHistoryTextAt(&full, history, true, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := full.String(); !strings.Contains(got, "prunedThroughSequence: 12\n") || strings.Contains(got, "opaque-cursor") || !strings.Contains(got, "endReason=released") || !strings.Contains(got, "finalRevision=6") || strings.Contains(got, "operations=") {
+		t.Fatalf("full history=%q", got)
+	}
+}
+
+func TestListTextExplicitEmptyState(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		var out bytes.Buffer
+		if err := writeListTextAt(&out, nil, full, true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "no current claims\n" {
+			t.Fatalf("full=%t output=%q", full, out.String())
+		}
 	}
 }
 

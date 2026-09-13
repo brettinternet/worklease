@@ -117,7 +117,9 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 	case "transfer":
 		return writeTransferText(s.writer, fields)
 	case "verify":
-		return writeVerificationText(s.writer, fields["claim"].(*lease.ClaimView), fields["unknownOperations"].([]string))
+		claim, _ := fields["claim"].(lease.ClaimView)
+		unknown, _ := fields["unknownOperations"].([]string)
+		return writeVerificationText(s.writer, &claim, unknown)
 	default:
 		return output.WriteText(s.writer, operation, fields)
 	}
@@ -377,12 +379,20 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 }
 func listActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
+		resources := cmd.StringSlice("resource")
+		if len(resources) > 1 {
+			return s.handle(cmd, reason.Invalid("list accepts at most one resource"))
+		}
+		filter := ""
+		if len(resources) == 1 {
+			filter = resources[0]
+		}
 		svc, st, _, err := serviceFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		defer st.Close()
-		v, err := svc.List(ctx, cmd.String("resource"))
+		v, err := svc.List(ctx, filter)
 		if err != nil {
 			return s.handle(cmd, err)
 		}

@@ -94,17 +94,38 @@ func TestWatchTextIncludesUnresolvedPredecessorMetadata(t *testing.T) {
 }
 
 func TestWatchTextIncludesExpiryGuidance(t *testing.T) {
+	now := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
-	if err := writeWatchText(&out, watchpkg.Result{Resources: []watchpkg.ResourceState{{
-		Resource: "task", State: "active", ExpiresAt: time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC),
-	}}}, false); err != nil {
+	if err := writeWatchTextAt(&out, watchpkg.Result{Resources: []watchpkg.ResourceState{{
+		Resource: "task", State: "active", ExpiresAt: now.Add(14*time.Minute + 30*time.Second),
+	}}}, false, now); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, phrase := range []string{"expiresAt", "nearest expiry", "verify ownership"} {
+	for _, phrase := range []string{"task=active (expires in 14m)", "nearest expiry", "verify ownership"} {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("watch text missing %q: %q", phrase, text)
 		}
+	}
+	if strings.Contains(text, "expiresAt") || strings.Contains(text, "2026-") || strings.Contains(text, "cursor") {
+		t.Fatalf("watch text is not compact: %q", text)
+	}
+}
+
+func TestWatchTextPresentsCursorOnlyAsResumeCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeWatchText(&out, watchpkg.Result{TimedOut: true, NextCursor: "opaque\x1bcursor"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "watch timed out\ntimedOut: true\ngap: false\nresume: worklease watch --cursor opaque\\u001bcursor\n" {
+		t.Fatalf("text=%q", got)
+	}
+	out.Reset()
+	if err := writeWatchText(&out, watchpkg.Result{Free: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "cursor") {
+		t.Fatalf("empty cursor leaked: %q", got)
 	}
 }
 
@@ -189,7 +210,7 @@ func TestWatchTextTimeoutIncludesDurableCursor(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "watch", "--home", home, "--resource", "r", "--until", "change", "--timeout", "60ms"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "timedOut: true") || !strings.Contains(out.String(), "nextCursor:") {
+	if !strings.Contains(out.String(), "timedOut: true") || !strings.Contains(out.String(), "\nresume: worklease watch --cursor eyJ") || strings.Contains(out.String(), "nextCursor:") {
 		t.Fatalf("text=%q", out.String())
 	}
 }

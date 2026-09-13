@@ -13,10 +13,18 @@ func TestWriteManPageDerivesRegisteredCommandsFlagsExamplesAndVersion(t *testing
 		t.Fatal(err)
 	}
 	page := output.String()
-	for _, want := range []string{`.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"`, ".SH \"COMMAND REFERENCE\"", "worklease acquire \\-\\-path README.md"} {
+	for _, want := range []string{`.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"`, ".SH \"COMMANDS\"", ".SS \"Claim lifecycle\"", ".SS \"Inspection and recovery\"", ".SS \"Setup and administration\"", ".SH \"COMMAND REFERENCE\"", "worklease acquire \\-\\-path README.md", ".B \\-\\-ttl DURATION, \\-T DURATION\nclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "worklease exec [selection] [\\-\\-max\\-duration DURATION] [\\-\\-cwd DIR | \\-\\-git\\-primary] \\-\\- COMMAND [ARGS...]"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("manual missing %q", want)
 		}
+	}
+	if strings.Contains(page, "(default: 0") || strings.Contains(page, "\\-\\-ttl DURATION\n`") || strings.Contains(page, ".B \\-\\-token\\-fd INT") {
+		t.Errorf("manual exposes sentinel defaults, raw placeholder quotes, or type names: %q", page)
+	}
+	commands := strings.Index(page, ".SH \"COMMANDS\"")
+	reference := strings.Index(page, ".SH \"COMMAND REFERENCE\"")
+	if commands < 0 || reference < commands || strings.Count(page[commands:reference], ".B acquire\n") != 1 {
+		t.Errorf("grouped COMMANDS section is missing or duplicates entries")
 	}
 	for _, flag := range root.VisibleFlags() {
 		if flag != nil && len(flag.Names()) > 0 && !strings.Contains(page, roff("--"+flag.Names()[0])) {

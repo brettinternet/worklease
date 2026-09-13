@@ -87,7 +87,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 	state := &boundary{writer: stdout, errWriter: stderr, version: version, commit: commit, buildTime: buildTime}
 	root := &urfavecli.Command{
 		Name: "worklease", Usage: "Coordinate local work ownership", UsageText: "worklease [global options] <command>",
-		Description: "Coordinate work safely on one host. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`.\n\nExamples:\n  worklease acquire --path README.md\n  worklease version --json",
+		Description: "Coordinate work safely on one host. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
 		Version:     version, HideVersion: true, Writer: stdout, ErrWriter: stderr,
 		Metadata: map[string]any{jsonStateKey: state}, ExitErrHandler: func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
@@ -228,6 +228,15 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 			names := flag.Names()
 			if len(names) == 0 {
 				return fmt.Errorf("unnamed flag in %s", cmd.Name)
+			}
+			if doc, ok := flag.(urfavecli.DocGenerationFlag); ok && names[0] != "help" {
+				usage := strings.ReplaceAll(strings.TrimSpace(doc.GetUsage()), "`", "")
+				if usage == "" || strings.EqualFold(usage, names[0]) || strings.EqualFold(usage, strings.ReplaceAll(names[0], "-", " ")) {
+					return fmt.Errorf("flag --%s in %s has no operational help", names[0], cmd.Name)
+				}
+				if rendered := flag.String(); strings.Contains(rendered, "(default: 0") {
+					return fmt.Errorf("flag --%s in %s exposes a zero-value sentinel default", names[0], cmd.Name)
+				}
 			}
 			for _, name := range names {
 				if previous, ok := seen[name]; ok {
