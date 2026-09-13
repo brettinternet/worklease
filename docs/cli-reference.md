@@ -31,6 +31,24 @@ handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberatel
 unsupported. Acquire persists a client-generated credential before dispatch and
 never returns it in text or JSON.
 
+## Short options
+
+Short options have exactly one meaning across the command tree and are available
+wherever the corresponding long option is supported:
+
+| Short | Long | Short | Long |
+| --- | --- | --- | --- |
+| `-j` | `--json` | `-H` | `--home` |
+| `-h` | `--help` | `-v` | `--version` |
+| `-r` | `--resource` | `-s` | `--session` |
+| `-t` | `--ttl` | `-w` | `--wait` |
+| `-a` | `--agent` | `-f` | `--full` |
+| `-m` | `--reason` | | |
+
+No other option has a short alias. In particular, `--source`, `--work-key`, the
+provider triple, handles and leases, explicit credentials, replay and polling
+controls, coordination-only mode, and guarded-operation tuning are long-only.
+
 ## Common lifecycle
 
 | Command | Purpose |
