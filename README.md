@@ -2,10 +2,12 @@
 
 Provider-neutral, same-host coordination for humans and coding agents.
 Worklease prevents cooperating local loops from duplicating work. Your backlog
-or provider remains authoritative. Just tell your team of agents to claim work with
-`worklease` to prevent them from competing for the same tasks or resources.
+or provider remains authoritative.
 
 ![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
+
+Or just tell your team of agents to claim work with `worklease` to prevent them
+from competing for the same tasks.
 
 ```mermaid
 sequenceDiagram
