@@ -13,7 +13,7 @@ func TestWriteManPageDerivesRegisteredCommandsFlagsExamplesAndVersion(t *testing
 		t.Fatal(err)
 	}
 	page := output.String()
-	for _, want := range []string{`.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"`, ".SH \"COMMANDS\"", ".SS \"Claim lifecycle\"", ".SS \"Inspection and recovery\"", ".SS \"Setup and administration\"", ".SH \"COMMAND REFERENCE\"", "worklease acquire \\-\\-path README.md", ".B \\-\\-ttl DURATION, \\-T DURATION\nclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "worklease exec [selection] [\\-\\-max\\-duration DURATION] [\\-\\-cwd DIR | \\-\\-git\\-primary] \\-\\- COMMAND [ARGS...]"} {
+	for _, want := range []string{`.TH WORKLEASE 1 "2026-09-12" "worklease 1.2.3"`, ".SH \"COMMANDS\"", ".SS \"Claim lifecycle\"", ".SS \"Inspection and recovery\"", ".SS \"Setup and administration\"", ".SH \"COMMAND REFERENCE\"", "worklease acquire \\-\\-path README.md", ".B \\-\\-ttl DURATION, \\-t DURATION\nclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", ".B \\-\\-wait DURATION, \\-w DURATION\nwait up to DURATION for a contended resource instead of failing\nimmediately", ".B \\-\\-session NAME, \\-s NAME\nsession NAME that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]", "worklease exec [selection] [\\-\\-max\\-duration DURATION] [\\-\\-cwd DIR | \\-\\-git\\-primary] \\-\\- COMMAND [ARGS...]"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("manual missing %q", want)
 		}

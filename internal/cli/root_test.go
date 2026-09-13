@@ -220,7 +220,7 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 			if strings.Join(got, "\x00") != strings.Join(test.flags, "\x00") {
 				t.Fatalf("flags=%v want=%v", got, test.flags)
 			}
-			aliases := map[string]string{"resource": "r", "provider": "p", "source": "s", "item": "i", "coordination-only": "C", "ttl": "T", "wait": "W", "agent": "a", "work-key": "w", "claim-id": "c", "token-file": "F", "token-fd": "D", "revision": "R", "operation-id": "o", "reason": "m", "max-duration": "M", "full": "f"}
+			aliases := map[string]string{"resource": "r", "session": "s", "ttl": "t", "wait": "w", "agent": "a", "reason": "m", "full": "f"}
 			for _, flag := range command.Flags {
 				wantNames := flag.Names()[0]
 				if alias := aliases[wantNames]; alias != "" {
@@ -231,6 +231,124 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSupportedShortOptionsMatchLongForms(t *testing.T) {
+	tests := []struct {
+		name, path, long, short, value string
+		boolean                        bool
+	}{
+		{name: "json", long: "json", short: "j", boolean: true},
+		{name: "home", long: "home", short: "H", value: "/tmp/worklease-alias-test"},
+		{name: "version", long: "version", short: "v", boolean: true},
+		{name: "resource", path: "key", long: "resource", short: "r", value: "resource-key"},
+		{name: "session", path: "status", long: "session", short: "s", value: "session-name"},
+		{name: "ttl", path: "heartbeat", long: "ttl", short: "t", value: "20m"},
+		{name: "wait", path: "acquire", long: "wait", short: "w", value: "2m"},
+		{name: "agent", path: "acquire", long: "agent", short: "a", value: "agent-name"},
+		{name: "full", path: "list", long: "full", short: "f", boolean: true},
+		{name: "reason", path: "release", long: "reason", short: "m", value: "completed"},
+	}
+	parse := func(test struct {
+		name, path, long, short, value string
+		boolean                        bool
+	}, option string) string {
+		t.Helper()
+		var captured string
+		root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+		target := root
+		args := []string{"worklease"}
+		if test.path != "" {
+			target = root.Command(test.path)
+			args = append(args, test.path)
+		}
+		target.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+			captured = cmd.String(test.long)
+			return nil
+		}
+		args = append(args, option)
+		if !test.boolean {
+			args = append(args, test.value)
+		}
+		if err := root.Run(context.Background(), args); err != nil {
+			t.Fatalf("%s: %v", option, err)
+		}
+		return captured
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			long := parse(test, "--"+test.long)
+			short := parse(test, "-"+test.short)
+			if short != long {
+				t.Fatalf("-%s parsed as %q, --%s parsed as %q", test.short, short, test.long, long)
+			}
+		})
+	}
+
+	var longHelp, shortHelp bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "status", "--help"}, "dev", "unknown", "unknown", &longHelp, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), []string{"worklease", "status", "-h"}, "dev", "unknown", "unknown", &shortHelp, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if shortHelp.String() != longHelp.String() {
+		t.Fatal("-h and --help produced different help")
+	}
+}
+
+func TestShortOptionNamespaceIsExactAndRemovedAliasesFail(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	if err := root.Run(context.Background(), []string{"worklease", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"j": "json", "H": "home", "h": "help", "v": "version", "r": "resource", "s": "session", "t": "ttl", "w": "wait", "a": "agent", "f": "full", "m": "reason"}
+	got := map[string]string{}
+	collect := func(flags []urfavecli.Flag) {
+		for _, flag := range flags {
+			for _, name := range flag.Names()[1:] {
+				if len(name) == 1 {
+					got[name] = flag.Names()[0]
+				}
+			}
+		}
+	}
+	collect(root.VisibleFlags())
+	for _, entry := range commandTree(root) {
+		collect(entry.command.VisibleFlags())
+	}
+	for short, long := range want {
+		if got[short] != long {
+			t.Errorf("-%s means %q, want %q", short, got[short], long)
+		}
+	}
+	for short, long := range got {
+		if want[short] != long {
+			t.Errorf("unexpected -%s/--%s", short, long)
+		}
+	}
+
+	removed := [][]string{
+		{"worklease", "key", "-p", "generic"},
+		{"worklease", "key", "-i", "item"},
+		{"worklease", "key", "-C"},
+		{"worklease", "key", "-s", "source"},
+		{"worklease", "heartbeat", "-c", "claim"},
+		{"worklease", "heartbeat", "-F", "token"},
+		{"worklease", "heartbeat", "-D", "3"},
+		{"worklease", "heartbeat", "-R", "1"},
+		{"worklease", "heartbeat", "-o", strings.Repeat("1", 32)},
+		{"worklease", "exec", "-M", "1m", "--", "true"},
+		{"worklease", "acquire", "-T", "1m", "--resource", "resource"},
+		{"worklease", "acquire", "-W", "1m", "--resource", "resource"},
+		{"worklease", "acquire", "--resource", "resource", "-w", "old-work-key"},
+	}
+	for _, args := range removed {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &stderr); err == nil {
+			t.Errorf("%v: removed alias was accepted", args)
+		}
 	}
 }
 
@@ -285,7 +403,7 @@ func TestEveryOptionHasOperationalHelpAndNoSentinelDefaults(t *testing.T) {
 	}
 	root = NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
 	acquire := root.Command("acquire")
-	for _, want := range []string{"--ttl DURATION, -T DURATION\tclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "--poll-interval DURATION\tDURATION between contention polls while waiting [$WORKLEASE_POLL_INTERVAL] (default: 250ms)", "--agent NAME, -a NAME\tagent identity NAME [$WORKLEASE_AGENT_ID] (default: login user)"} {
+	for _, want := range []string{"--ttl DURATION, -t DURATION\tclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "--wait DURATION, -w DURATION\twait up to DURATION for a contended resource instead of failing immediately", "--session NAME, -s NAME\tsession NAME that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]", "--poll-interval DURATION\tDURATION between contention polls while waiting [$WORKLEASE_POLL_INTERVAL] (default: 250ms)", "--agent NAME, -a NAME\tagent identity NAME [$WORKLEASE_AGENT_ID] (default: login user)"} {
 		found := false
 		for _, flag := range acquire.Flags {
 			if flag.String() == want {
