@@ -196,5 +196,5 @@ Concurrent sessions need distinct selectors even in one checkout.
 ## Deferred authority
 
 [`remote-claim-authority.md`](remote-claim-authority.md)
-is a proposal, not a shipped HTTP backend. Worklease uses one local SQLite
-authority. It has no remote fallback.
+records the future remote design; it is not a shipped HTTP backend. Worklease
+uses one local SQLite authority. It has no remote fallback.

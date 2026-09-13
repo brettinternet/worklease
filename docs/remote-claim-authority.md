@@ -516,8 +516,9 @@ volume and disconnect behavior are measured. The server never holds a storage
 transaction while waiting.
 
 The authority never blocks an acquire. `--wait` is a client loop of acquire
-attempts paced by watch long polls with jitter. There is no server-side queue,
-and atomic admission is not FIFO fairness.
+attempts paced by watch long polls with jitter, bounded by the same 60 s maximum
+as the local contract. There is no server-side queue, and atomic admission is
+not FIFO fairness.
 
 ### Local MCP adapter
 
@@ -776,9 +777,9 @@ between hosts remains unsupported and is not ownership transfer.
 
 ## Data governance
 
-Choose the hosting region at namespace creation and treat it as immutable. If
-the front door is Cloudflare, its logs record request metadata outside the
-region. Retention and deletion of private recovery context follow the same GC
+Choose the hosting region at namespace creation and treat it as immutable. A
+managed edge such as a tunnel, CDN, or hosted proxy records request metadata
+outside the region. Retention and deletion of private recovery context follow the same GC
 rules as the local authority; deletion beyond GC requires an `admin` action and
 is refused for unresolved operations. Replicas in object storage inherit the
 namespace's access controls and are readable only by the restore procedure.
@@ -905,6 +906,12 @@ implementation slice. When implementation begins:
    OAuth grants, and installation credentials. Implement the SQLite
    process-lifetime lock and quarantined restore path, including external admin
    bootstrap, audited unknown-operation import, and reopening prerequisites.
+   The new `meta` row and the `restored` and `revoked` epoch end reasons change
+   the shared SQLite schema: `epochs.end_reason` is CHECK-constrained to the
+   three local reasons today. Bump `store.SchemaVersion` with a one-way
+   in-place migration so the new binary upgrades a local home once and an older
+   binary refuses it with `schema-unsupported`; the local release shares this
+   store and cannot be exempted.
 3. Implement `worklease serve`: HTTP handlers over the existing service methods,
    standalone device authorization and headless installation authentication,
    role mapping, bounded unauthenticated/authenticated bodies, rate limits,
