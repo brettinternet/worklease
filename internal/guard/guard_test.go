@@ -48,8 +48,8 @@ func acquireExecTest(t *testing.T, resource, claim, token string) (*store.Store,
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := lease.New(st, nil, nil, lease.Defaults{TTL: 2 * time.Second})
-	grant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Resources: []string{resource}, AgentID: "agent", SessionID: "session", TTL: time.Second, RequestNotAfter: time.Now().Add(time.Hour)})
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: 20 * time.Second})
+	grant, err := svc.Acquire(context.Background(), lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Resources: []string{resource}, AgentID: "agent", SessionID: "session", TTL: 10 * time.Second, RequestNotAfter: time.Now().Add(time.Hour)})
 	if err != nil {
 		st.Close()
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestExecLiteralArgvBoundedInvalidUTF8SignalAndEnvironment(t *testing.T) {
 			st, svc, creds := acquireExecTest(t, tc.name, claim, token)
 			defer st.Close()
 			argv := append([]string{os.Args[0], "-test.run=TestGuardHelperProcess", "--"}, tc.args...)
-			result, err := Exec(context.Background(), svc, creds, ExecRequest{OperationID: fmt.Sprintf("%032x", i+20), Argv: argv, CWD: t.TempDir(), MaxDuration: 5 * time.Second, TTL: time.Second, RequestNotAfter: time.Now().Add(time.Hour)})
+			result, err := Exec(context.Background(), svc, creds, ExecRequest{OperationID: fmt.Sprintf("%032x", i+20), Argv: argv, CWD: t.TempDir(), MaxDuration: 10 * time.Second, TTL: 10 * time.Second, RequestNotAfter: time.Now().Add(time.Hour)})
 			if err != nil {
 				t.Fatal(err)
 			}

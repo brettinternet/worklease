@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-13 00:56'
-updated_date: '2026-09-13 01:23'
+updated_date: '2026-09-13 01:30'
 labels: []
 dependencies: []
 references:
@@ -15,6 +15,7 @@ modified_files:
   - .github/workflows/release.yml
   - README.md
   - internal/guard/guard.go
+  - internal/guard/guard_test.go
   - internal/store/driver.go
 priority: high
 type: chore
@@ -54,6 +55,8 @@ The first post-publication check exposed mise's intentional minimum-release-age 
 Verification: local mise run ci passed all format, staticcheck, vet, unit, race, vulnerability, end-to-end, and manual-generation gates. Main CI runs 34729583689 (release commit ca97d51) and 34729975577 (pipeline follow-up d81e4bd) passed all four OS/architecture jobs. Release v1.0.0 publishes four archives plus checksums from ca97d51. Release validation run 34729978282 passed archive build/smoke/manual checks and clean latest mise installation on linux-x64, linux-arm64, macos-x64, and macos-arm64; its first attempt hit a transient macOS artifact-upload DNS failure and the failed attempt passed on rerun. GitHub latest resolves to v1.0.0.
 
 Final bookkeeping CI exposed one remaining macOS-only test race: the signal helper could call os.Exit(0) before its self-sent SIGTERM was delivered. Reopened to make the helper wait for signal delivery and restore a green final main commit.
+
+CI run 34730446348 then exposed that the guarded-exec fixture used a one-second lease while the race detector under shared runner load took 1.86 seconds to start and finish a trivial helper. Increased only the test fixture lease/budget to ten seconds; production timeout behavior remains covered separately.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
