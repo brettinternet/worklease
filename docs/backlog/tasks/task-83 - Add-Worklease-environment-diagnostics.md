@@ -4,7 +4,7 @@ title: Add Worklease environment diagnostics
 status: Done
 assignee: []
 created_date: '2026-09-12 03:06'
-updated_date: '2026-09-12 04:45'
+updated_date: '2026-09-13 00:20'
 labels: []
 dependencies: []
 references:
@@ -36,6 +36,16 @@ Lease failures caused by separate authority homes, unsafe permissions, missing M
 <!-- SECTION:NOTES:BEGIN -->
 Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.14.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @C3
+created: 2026-09-13 00:20
+---
+Correction after TASK-88: the read-only doctor does not create the authority home, main database, handles, or claim state, but opening an existing WAL database in a writable directory may update shared-memory coordination state and recreate absent owner-private -wal/-shm sidecars. The amended Go Product Contract sections 8 and 13 are authoritative.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 
