@@ -1,13 +1,12 @@
 # worklease
 
-Provider-neutral, same-host coordination for humans and coding agents.
-Worklease prevents cooperating local loops from duplicating work. Your backlog
-or provider remains authoritative.
+Provider-neutral, same-host coordination for humans and coding agents. Worklease
+prevents cooperating local loops from duplicating work. Your backlog or provider
+remains authoritative.
 
 ![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
 
-Or just tell your team of agents to claim work with `worklease` to prevent them
-from competing for the same tasks.
+Tell each agent to claim work before starting and release it when done:
 
 ```mermaid
 sequenceDiagram
@@ -22,6 +21,16 @@ sequenceDiagram
     B->>W: acquire task:demo
     W-->>B: claim granted
 ```
+
+## Worklease or a lockfile?
+
+| Choose | When |
+| --- | --- |
+| A lockfile | One process or file needs a critical section. You do not need lease ownership, expiry, history, or recovery. |
+| Worklease | Independent local workers claim tasks or resources and need TTLs, waiting, status, history, guarded commands, or recovery. |
+
+Both coordinate cooperating processes on one host. Neither stops arbitrary
+external work.
 
 ## Install
 
@@ -60,23 +69,21 @@ worklease release
 ```
 <!-- worklease-example:end -->
 
-For a moderately advanced workflow, use a stable session to isolate this loop,
-wait briefly for a busy resource, run a guarded command, and record why the
-claim was released:
+Add a stable session, TTL, wait, guarded command, and release reason as needed:
 
 ```sh
+# Claim for 20 minutes; wait up to 2 minutes if busy.
 worklease acquire -r task:demo -s loop-a -t 20m -w 2m
+# Run only while loop-a holds the claim.
 worklease exec -s loop-a -- worklease version
 worklease release -s loop-a -m done
 ```
 
-Commands use an owner-private local SQLite authority. A stable session selector
-keeps concurrent loops in the same checkout from overwriting each other's
-handles. A contextual handle carries the claim ID, revision, authority ID, and
-private credential; output never carries the token.
+Claims live in an owner-private local SQLite authority. Each session has a
+private, authority-bound handle. Use a different `-s` for each concurrent loop
+in one checkout. Credentials are never printed.
 
-The complete short-option namespace is intentionally small and optimized for
-routine workflows:
+Common short options:
 
 | Short | Long | Short | Long |
 | --- | --- | --- | --- |
@@ -87,22 +94,24 @@ routine workflows:
 | `-a` | `--agent` | `-f` | `--full` |
 | `-m` | `--reason` | | |
 
-Each alias is available wherever its long option is supported. All other
-options are long-only, including `--source`, `--work-key`, provider inputs,
-explicit credentials, replay controls, polling controls, coordination-only
-mode, and guarded-operation tuning. Use `--path FILE` to derive exact
-repository/path membership. Native hooks confirm only a current claim by
-default; generate them with `--coverage path`
-to require every edited path. A direct `verify --resource RESOURCE` checks exact
-membership. Only expected-hash `replace-file` reports
-`mutationProtection: local-serialized-replace`; `exec` and provider calls remain
-`guarantee: local-coordination`.
+All other options are long-only. Notable safety behavior:
+
+- `--path FILE` derives exact repository/path membership.
+- Native hooks confirm a current claim. Generate them with `--coverage path` to
+  require every edited path.
+- `verify --resource RESOURCE` checks exact membership.
+- Expected-hash `replace-file` reports
+  `mutationProtection: local-serialized-replace`. `exec` and provider calls
+  report `guarantee: local-coordination`.
+
+See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
+polling, coordination-only, and guarded-operation options.
 
 ## JSON and MCP quick start
 
-Put `--json` before the command for one schema-version 2 envelope. Domain errors
-retain a stable `reason`, `exitCode`, and machine-readable `details`; contention
-is a normal structured outcome, not a parsing failure.
+Put `--json` before the command for one schema-version 2 envelope. Errors have a
+stable `reason`, `exitCode`, and `details`. Contention is a structured outcome,
+not a parsing failure.
 
 <!-- worklease-example:run json-two-loops -->
 ```sh
@@ -142,20 +151,20 @@ For the MCP tool boundary, see [MCP tools](docs/mcp.md).
 
 ## Recovery and safety
 
-Every mutation has an exact request and operation ID. Omit `--operation-id` for
-a fresh action. Supply one only to replay that same request after a lost
-response. A changed request conflicts. Started guarded operations have unknown
-outcomes until the authoritative effect and process cessation are established;
-inspect and reconcile them explicitly before continuing.
+| Situation | Rule |
+| --- | --- |
+| New mutation | Omit `--operation-id`. |
+| Lost response | Replay the exact request with its operation ID. A changed request conflicts. |
+| Started guarded operation | Treat the outcome as unknown until you establish the effect and process cessation, then reconcile it. |
+| Expired claim | Ownership ended. An external process may still be running. |
+| Copied state | Handles and cursors stay bound to their original authority ID. |
 
-Resources contend by exact bytes in one authority namespace. Local repository
-and path identities are host-local. Handles and event/watch cursors are bound to
-an immutable authority ID, so copied state cannot silently authorize another
-authority. Expiry ends ownership but does not prove an external process stopped.
+Resources match exact bytes within one authority. Repository and path identities
+are host-local.
 
-Credentials may come from a private handle, `--token-file`, or `--token-fd`.
-There is no argv bearer-token option. Never put credentials in output, logs,
-checkpoints, provider comments, or handoffs.
+Credentials come from a private handle, `--token-file`, or `--token-fd`, never
+an argv bearer token. Keep them out of output, logs, checkpoints, provider
+comments, and handoffs.
 
 See:
 
@@ -176,23 +185,17 @@ runs clean-checkout end-to-end smoke, and renders the manual.
 
 ## Release process
 
-Curate entries under `## Unreleased` in `CHANGELOG.md`, grouped and ordered as
-they should appear in the release. Promote those entries mechanically before
-committing and tagging the release:
+1. Curate and order `## Unreleased` in `CHANGELOG.md`.
+2. Create the dated release section:
 
-```sh
-go run ./cmd/worklease-release --version 1.2.0 --prepare-changelog 2026-09-13
-```
+   ```sh
+   go run ./cmd/worklease-release --version 1.2.0 --prepare-changelog 2026-09-13
+   ```
 
-This rejects an empty Unreleased section, invalid versions or dates, duplicate
-versions, and an existing target release. Review and commit the resulting fresh
-empty Unreleased section and dated version section, then tag that commit as
-`vVERSION`. The tagged release workflow requires exactly one matching non-empty
-changelog section and publishes its body verbatim instead of generating notes
-from commits. Archive preparation still uses:
+3. Review and commit the new section, then tag that commit as `vVERSION`.
+4. Prepare archives with `mise run release -- --version VERSION`.
 
-```sh
-mise run release -- --version VERSION
-```
-
-Tagging and publishing need separate owner authorization.
+The changelog command rejects empty entries, invalid versions or dates,
+duplicates, and existing releases. The tagged workflow publishes the matching
+changelog section verbatim. Tagging and publishing require separate owner
+authorization.
