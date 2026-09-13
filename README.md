@@ -48,6 +48,28 @@ worklease release --session human --reason "provider checkpoint verified"
 ```
 <!-- worklease-example:end -->
 
+The complete short-option namespace is intentionally small and optimized for
+routine workflows:
+
+| Short | Long | Short | Long |
+| --- | --- | --- | --- |
+| `-j` | `--json` | `-H` | `--home` |
+| `-h` | `--help` | `-v` | `--version` |
+| `-r` | `--resource` | `-s` | `--session` |
+| `-t` | `--ttl` | `-w` | `--wait` |
+| `-a` | `--agent` | `-f` | `--full` |
+| `-m` | `--reason` | | |
+
+Each alias is available wherever its long option is supported. All other
+options are long-only, including `--source`, `--work-key`, provider inputs,
+explicit credentials, replay controls, polling controls, coordination-only
+mode, and guarded-operation tuning. For example:
+
+```sh
+worklease -j acquire -r shared -s loop-a -t 20m -w 2m -a worker-a
+worklease release -s loop-a -m done
+```
+
 Use `--path FILE` to derive exact repository/path membership. Native hooks
 confirm only a current claim by default; generate them with `--coverage path`
 to require every edited path. A direct `verify --resource RESOURCE` checks exact

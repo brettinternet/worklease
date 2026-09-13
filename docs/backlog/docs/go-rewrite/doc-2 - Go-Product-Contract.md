@@ -3,7 +3,7 @@ id: doc-2
 title: Go Product Contract
 type: specification
 created_date: '2026-09-12 03:51'
-updated_date: '2026-09-13 02:46'
+updated_date: '2026-09-13 05:41'
 tags:
   - go-rewrite
   - contract
@@ -90,7 +90,7 @@ Shared files any task may edit minimally: `internal/cli/commands.go` (command re
 
 Global flags (every command): `--json`/`-j`, `--home DIR`/`-H`, `--config PATH`, `--help`/`-h`, `--version`/`-v` (root only).
 
-Claim selection uses exactly one mode: `--handle PATH` (or `WORKLEASE_HANDLE`), `--lease REF` for a private MCP handle, complete explicit credentials (`--claim-id`, exactly one token source, and `--revision` for mutations), or the contextual handle chosen by current directory and optional `--session` / `WORKLEASE_SESSION_ID`. Mixing explicit credentials with a handle/ref fails `credential-source-conflict`; explicit credentials bypass contextual discovery entirely. Handle fields are never overridden individually. Read-only `verify` accepts explicit credentials without a revision and compares it only when supplied. Public `status --claim-id ID` or `status -r R` requires no token and never proves ownership; multiple resources report each resource’s matching claim or absence without assuming one shared claim. Missing lifecycle selection fails `claim-selection-missing` (64). Resource input for `acquire` and `key` is exactly one of repeated `-r/--resource`, the provider triple `-p/--provider -s/--source -i/--item`, or `--path PATH`; mixing modes fails `resource-input-conflict` (64).
+Claim selection uses exactly one mode: `--handle PATH` (or `WORKLEASE_HANDLE`), `--lease REF` for a private MCP handle, complete explicit credentials (`--claim-id`, exactly one token source, and `--revision` for mutations), or the contextual handle chosen by current directory and optional `--session` / `WORKLEASE_SESSION_ID`. Mixing explicit credentials with a handle/ref fails `credential-source-conflict`; explicit credentials bypass contextual discovery entirely. Handle fields are never overridden individually. Read-only `verify` accepts explicit credentials without a revision and compares it only when supplied. Public `status --claim-id ID` or `status -r R` requires no token and never proves ownership; multiple resources report each resource’s matching claim or absence without assuming one shared claim. Missing lifecycle selection fails `claim-selection-missing` (64). Resource input for `acquire` and `key` is exactly one of repeated `-r/--resource`, the long-only provider triple `--provider --source --item`, or `--path PATH`; mixing modes fails `resource-input-conflict` (64).
 
 | Command | Purpose | Key flags | Mutates | Owner |
 | --- | --- | --- | --- | --- |
@@ -122,7 +122,7 @@ Claim selection uses exactly one mode: `--handle PATH` (or `WORKLEASE_HANDLE`), 
 
 All mutations accept the long option `--request-not-after` for explicit/stateless requests; normal handles retain it automatically. `--session`, `--handle`/`WORKLEASE_HANDLE`, and `--lease` apply wherever claim selection is supported.
 
-Short options have exactly one meaning across the tree: `-j` json, `-H` home, `-r` resource, `-p` provider, `-s` source, `-i` item, `-a` agent, `-w` work-key, `-T` ttl, `-W` wait, `-o` operation-id, `-m` reason, `-M` max-duration, `-F` token-file, `-D` token-fd, `-R` revision, `-c` claim-id, `-C` coordination-only, `-f` full, `-h` help, `-v` version. Do not add other short options.
+Short options have exactly one meaning across the tree and are available wherever their long option is supported: `-j/--json`, `-H/--home`, `-h/--help`, `-v/--version`, `-r/--resource`, `-s/--session`, `-t/--ttl`, `-w/--wait`, `-a/--agent`, `-f/--full`, and `-m/--reason`. Do not add other short options. `--source`, `--work-key`, provider metadata, handles and leases, explicit credentials, replay and polling controls, coordination-only mode, and guarded-operation tuning are long-only.
 
 Help text: every command has a one-line `Usage`, a `Description` with at least one example, and flag usage strings that name the environment variable in square brackets where one applies (hum style: `state directory [$WORKLEASE_HOME]`).
 

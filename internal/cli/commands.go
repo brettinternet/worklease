@@ -70,10 +70,10 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		return &urfavecli.StringFlag{Name: name, Aliases: aliases, Usage: usage}
 	}
 	ttlFlag := func() urfavecli.Flag {
-		return &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"T"}, Usage: "claim lifetime `DURATION` [$WORKLEASE_TTL]", DefaultText: durationText(config.DefaultTTL)}
+		return &urfavecli.DurationFlag{Name: "ttl", Aliases: []string{"t"}, Usage: "claim lifetime `DURATION` [$WORKLEASE_TTL]", DefaultText: durationText(config.DefaultTTL)}
 	}
 	tokenFDFlag := func() urfavecli.Flag {
-		return &urfavecli.IntFlag{Name: "token-fd", Aliases: []string{"D"}, Usage: "inherited file descriptor `N` holding the claim credential for explicit credentials", HideDefault: true}
+		return &urfavecli.IntFlag{Name: "token-fd", Usage: "inherited file descriptor `N` holding the claim credential for explicit credentials", HideDefault: true}
 	}
 	jsonless := func(name, usage, example string, flags ...urfavecli.Flag) *urfavecli.Command {
 		c := &urfavecli.Command{Name: name, Usage: usage, UsageText: "worklease " + name, Description: usage + ".\n\nExamples:\n  " + example, Flags: flags}
@@ -92,16 +92,16 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		command.UsageText = strings.Join(lines, "\n")
 	}
 	selection := func() []urfavecli.Flag {
-		return []urfavecli.Flag{flag("handle"), flag("lease"), flag("claim-id", "c"), flag("token-file", "F"), tokenFDFlag(), &urfavecli.Int64Flag{Name: "revision", Aliases: []string{"R"}, Usage: "expected claim revision `N` for explicit credentials; required for mutations", HideDefault: true}, flag("session")}
+		return []urfavecli.Flag{flag("handle"), flag("lease"), flag("claim-id"), flag("token-file"), tokenFDFlag(), &urfavecli.Int64Flag{Name: "revision", Usage: "expected claim revision `N` for explicit credentials; required for mutations", HideDefault: true}, flag("session", "s")}
 	}
 	resourceFlag := func(usage string) *urfavecli.StringSliceFlag {
 		return &urfavecli.StringSliceFlag{Name: "resource", Aliases: []string{"r"}, Usage: usage}
 	}
 	resource := func() []urfavecli.Flag {
-		return []urfavecli.Flag{resourceFlag("exact resource `KEY`; repeat for up to 32 resources in one claim"), flag("provider", "p"), flag("source", "s"), flag("item", "i"), &urfavecli.StringFlag{Name: "path", Usage: "file `PATH` resolved to a repository-relative path key"}, &urfavecli.BoolFlag{Name: "coordination-only", Aliases: []string{"C"}, Usage: "coordinate on the key without permitting guarded local replacement"}}
+		return []urfavecli.Flag{resourceFlag("exact resource `KEY`; repeat for up to 32 resources in one claim"), flag("provider"), flag("source"), flag("item"), &urfavecli.StringFlag{Name: "path", Usage: "file `PATH` resolved to a repository-relative path key"}, &urfavecli.BoolFlag{Name: "coordination-only", Usage: "coordinate on the key without permitting guarded local replacement"}}
 	}
 	mutate := func() []urfavecli.Flag {
-		return append(selection(), ttlFlag(), flag("operation-id", "o"), flag("request-not-after"))
+		return append(selection(), ttlFlag(), flag("operation-id"), flag("request-not-after"))
 	}
 	full := func(usage ...string) urfavecli.Flag {
 		description := "include non-secret metadata"
@@ -127,10 +127,10 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	acquireCommand := jsonless("acquire", "acquire a claim", "worklease acquire --path README.md\n  worklease acquire --resource KEY1 --resource KEY2 --ttl 30m\n  worklease acquire --path README.md --wait 2m",
 		append(resource(),
 			ttlFlag(),
-			&urfavecli.DurationFlag{Name: "wait", Aliases: []string{"W"}, Usage: "wait up to `DURATION` for a contended resource instead of failing immediately", HideDefault: true},
+			&urfavecli.DurationFlag{Name: "wait", Aliases: []string{"w"}, Usage: "wait up to `DURATION` for a contended resource instead of failing immediately", HideDefault: true},
 			&urfavecli.DurationFlag{Name: "poll-interval", Usage: "`DURATION` between contention polls while waiting [$WORKLEASE_POLL_INTERVAL]", DefaultText: durationText(config.DefaultPollInterval)},
 			&urfavecli.StringFlag{Name: "agent", Aliases: []string{"a"}, Usage: flagUsage["agent"], DefaultText: "login user"},
-			flag("work-key", "w"), flag("session"), flag("handle"), flag("claim-id", "c"), flag("token-file", "F"), tokenFDFlag(), flag("request-not-after"),
+			flag("work-key"), flag("session", "s"), flag("handle"), flag("claim-id"), flag("token-file"), tokenFDFlag(), flag("request-not-after"),
 			&urfavecli.BoolFlag{Name: "no-handle", Usage: "stateless acquire without a contextual handle; requires --claim-id, --session, and one token source"},
 		)...)
 	acquireCommand.Action = acquireActionReal(s)
@@ -174,7 +174,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(verifyCommand, "worklease verify [--resource KEY...] [selection]", "worklease verify --hook claude-code [--coverage claim|path] [selection] < hook-event.json")
 	detail(verifyCommand, "Verify that the selected claim is active and, when resources are given, covers each of them. The hook form reads a native editor event from stdin and exits 2 to block the edit when verification fails.\n\n"+selectionHelp)
 
-	execCommand := jsonless("exec", "run a guarded contextual command", "worklease exec -- git status\n  worklease exec --max-duration 10m -- mise run test", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Aliases: []string{"M"}, Usage: "kill the child after `DURATION` [$WORKLEASE_MAX_DURATION]", DefaultText: durationText(config.DefaultMaxDuration)}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "run in the primary Git worktree of the current repository; exclusive with --cwd"})...)
+	execCommand := jsonless("exec", "run a guarded contextual command", "worklease exec -- git status\n  worklease exec --max-duration 10m -- mise run test", append(mutate(), &urfavecli.DurationFlag{Name: "max-duration", Usage: "kill the child after `DURATION` [$WORKLEASE_MAX_DURATION]", DefaultText: durationText(config.DefaultMaxDuration)}, flag("cwd"), &urfavecli.BoolFlag{Name: "git-primary", Usage: "run in the primary Git worktree of the current repository; exclusive with --cwd"})...)
 	execCommand.Action = execAction(s)
 	usageText(execCommand, "worklease exec [selection] [--max-duration DURATION] [--cwd DIR | --git-primary] -- COMMAND [ARGS...]")
 	detail(execCommand, "Run COMMAND while the selected claim stays valid; everything after -- is the child argv. Ownership loss stops the child and the operation stays inspectable.\n\n"+selectionHelp)
@@ -255,7 +255,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	textOutput(policyDescribe, "The default view shows identity and capability fields; --full adds contract versions and fencing guarantees.")
 	policy := group("policy", "show built-in policies", "worklease policy list", policyList, policyDescribe)
 
-	inspectCommand := jsonless("inspect", "inspect an operation", "worklease op inspect --operation-id ID\n  worklease op inspect --resource KEY\n  worklease op inspect --operation-id ID --full", append(selection(), resourceFlag("latest operation for exact resource `KEY`"), flag("operation-id", "o"), full("include authenticated request metadata; requires the owning claim's handle or credentials"))...)
+	inspectCommand := jsonless("inspect", "inspect an operation", "worklease op inspect --operation-id ID\n  worklease op inspect --resource KEY\n  worklease op inspect --operation-id ID --full", append(selection(), resourceFlag("latest operation for exact resource `KEY`"), flag("operation-id"), full("include authenticated request metadata; requires the owning claim's handle or credentials"))...)
 	inspectCommand.Action = inspectAction(s)
 	usageText(inspectCommand, "worklease op inspect (--operation-id ID | --claim-id ID | --resource KEY | [selection])", "worklease op inspect --operation-id ID --full [selection]")
 	detail(inspectCommand, "Inspect a started or completed guarded operation. The public form redacts private payloads; --full authenticates with the owning claim and shows request metadata.\n\n"+selectionHelp)
@@ -286,7 +286,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		&urfavecli.StringFlag{Name: "client", Usage: "hook `CLIENT`: claude-code or generic (print only)", DefaultText: "claude-code"},
 		&urfavecli.StringFlag{Name: "scope", Usage: flagUsage["scope"], DefaultText: "project"},
 		&urfavecli.StringFlag{Name: "coverage", Usage: "hook coverage `MODE`: claim or path", DefaultText: "claim"},
-		flag("session"), flag("handle"), flag("lease"),
+		flag("session", "s"), flag("handle"), flag("lease"),
 		&urfavecli.BoolFlag{Name: "apply", Usage: "write the hook configuration atomically"},
 		&urfavecli.BoolFlag{Name: "remove", Usage: "remove the hook configuration"})
 	setupGuard.Action = setupAction(s, "guard")
