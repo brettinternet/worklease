@@ -71,7 +71,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	releaseCommand.Action = releaseActionReal(s)
 	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"))...)
 	transferCommand.Action = transferActionReal(s)
-	historyCommand := jsonless("history", "show retained history", "worklease history --resource RESOURCE", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
+	historyCommand := jsonless("history", "show recent lifecycle events or retained resource history", "worklease history", resources(), flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
 	historyCommand.Action = historyAction(s)
 	eventsCommand := jsonless("events", "show lifecycle events", "worklease events", flag("cursor"), &urfavecli.IntFlag{Name: "limit", Usage: "limit"}, full())
 	eventsCommand.Action = eventsAction(s)

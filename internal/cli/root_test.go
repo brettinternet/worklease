@@ -136,7 +136,7 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "transfer", example: "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "to-agent", "to-session", "to-work-key", "successor-handle"}},
 		{path: "replace-file", example: "worklease replace-file --path FILE --expected-sha256 SHA256 --content-file CONTENT", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "path", "expected-sha256", "content-file"}},
 		{path: "verify", example: "worklease verify", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "hook", "coverage"}},
-		{path: "history", example: "worklease history --resource RESOURCE", flags: []string{"resource", "cursor", "limit", "full"}},
+		{path: "history", example: "worklease history", flags: []string{"resource", "cursor", "limit", "full"}},
 		{path: "events", example: "worklease events", flags: []string{"cursor", "limit", "full"}},
 		{path: "watch", example: "worklease watch --resource RESOURCE --until free", flags: []string{"resource", "cursor", "until", "timeout"}},
 		{path: "gc", example: "worklease gc --retention-days 30", flags: []string{"retention-days", "cutoff", "apply"}},

@@ -60,7 +60,7 @@ full unresolved operation IDs needed for recovery.
 Guarded command streams and authenticated inspection payloads use indented,
 labeled blocks instead of escaped single lines. `--full` expands safe metadata
 for status, history, events, and policy descriptions. Use `--json` as the
-canonical complete structured output.
+canonical complete structured output. Opaque event cursors appear only in JSON.
 
 ## Guarded and recovery operations
 
@@ -70,7 +70,7 @@ canonical complete structured output.
 | `replace-file` | Verify an expected hash and atomically replace an exact claimed path. |
 | `op inspect` | Inspect a redacted started/completed operation. |
 | `op reconcile` | Resolve a predecessor unknown outcome with explicit evidence. |
-| `history` / `events` | Read redacted authority-bound lifecycle records. |
+| `history` / `events` | Show the latest global lifecycle events; add `history --resource RESOURCE` for retained epochs of one resource. |
 | `watch` | Wait for a resource state or event cursor change. |
 | `gc` | Preview or apply contiguous-prefix retention. |
 

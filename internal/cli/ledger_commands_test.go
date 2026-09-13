@@ -28,6 +28,48 @@ func TestEventsCLIRejectsMalformedCursorBeforeOpeningStorage(t *testing.T) {
 	}
 }
 
+func TestHistoryWithoutResourceShowsRecentEventsAndTextOmitsCursor(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	st, err := store.Open(ctx, home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: time.Minute})
+	if _, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: strings.Repeat("1", 32), Token: strings.Repeat("a", 64), Resources: []string{"r"}, AgentID: "agent", SessionID: "session", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := Run(ctx, append([]string{"worklease"}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	eventsText := run("events", "--home", home)
+	if historyText := run("history", "--home", home); historyText != eventsText {
+		t.Fatalf("history=%q events=%q", historyText, eventsText)
+	}
+	if strings.Contains(eventsText, "nextCursor:") {
+		t.Fatalf("text exposed opaque cursor: %q", eventsText)
+	}
+	eventsJSON := run("events", "--json", "--home", home)
+	if historyJSON := run("history", "--json", "--home", home); historyJSON != eventsJSON {
+		t.Fatalf("history=%q events=%q", historyJSON, eventsJSON)
+	}
+	if !strings.Contains(eventsJSON, `"nextCursor":"`) {
+		t.Fatalf("JSON omitted cursor: %q", eventsJSON)
+	}
+	if resourceHistory := run("history", "--json", "--home", home, "--resource", "r"); !strings.Contains(resourceHistory, `"operation":"history"`) || !strings.Contains(resourceHistory, `"epochs":[`) {
+		t.Fatalf("resource history=%q", resourceHistory)
+	}
+}
+
 func TestSameHandleReconciliationAdoptsCurrentRevisionAndRestoresLifecycle(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
