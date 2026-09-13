@@ -152,9 +152,9 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	var inputs map[string]any
 	switch kind {
 	case "heartbeat":
-		inputs = map[string]any{"kind": kind, "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttlDuration(ttlv).Microseconds(), "requestNotAfter": deadline.UnixMicro()}
+		inputs = map[string]any{"kind": kind, "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttlDuration(ttlv).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": h.HoldUntil.UTC().UnixMicro()}
 	case "checkpoint":
-		inputs = map[string]any{"kind": kind, "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttlDuration(ttlv).Microseconds(), "checkpoint": json.RawMessage(checkpointRaw), "requestNotAfter": deadline.UnixMicro()}
+		inputs = map[string]any{"kind": kind, "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttlDuration(ttlv).Microseconds(), "checkpoint": json.RawMessage(checkpointRaw), "requestNotAfter": deadline.UnixMicro(), "holdUntil": h.HoldUntil.UTC().UnixMicro()}
 	case "release":
 		r, _ := argString(a, "reason")
 		if strings.TrimSpace(r) == "" {
@@ -227,15 +227,16 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
 	}
 	ttl := time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond
+	holdUntil, legacyHash := pendingHoldUntil(p, h.HoldUntil)
 	var rec lease.Receipt
 	var err error
 	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}
 	switch kind {
 	case "heartbeat":
-		rec, err = b.svc.Heartbeat(ctx, creds, lease.Renew{OperationID: p.OperationID, TTL: ttl, RequestNotAfter: p.RequestNotAfter, HoldUntil: h.HoldUntil})
+		rec, err = b.svc.Heartbeat(ctx, creds, lease.Renew{OperationID: p.OperationID, TTL: ttl, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "checkpoint":
 		raw, _ := json.Marshal(p.Inputs["checkpoint"])
-		rec, err = b.svc.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: p.OperationID, TTL: ttl, Data: raw, RequestNotAfter: p.RequestNotAfter, HoldUntil: h.HoldUntil})
+		rec, err = b.svc.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: p.OperationID, TTL: ttl, Data: raw, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "release":
 		rec, err = b.svc.Release(ctx, creds, lease.ReleaseRequest{OperationID: p.OperationID, Reason: pendingString(p.Inputs, "reason"), RequestNotAfter: p.RequestNotAfter})
 	default:
@@ -276,6 +277,16 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 	s.mu.Unlock()
 	return map[string]any{"lease": ref, "receipt": rec, "autoHeartbeat": status, "holdUntil": h.HoldUntil}, nil
 }
+func pendingHoldUntil(p *handle.PendingRequest, fallback time.Time) (time.Time, string) {
+	if micros := pendingInt(p.Inputs, "holdUntil"); micros != 0 {
+		return time.UnixMicro(micros).UTC(), ""
+	}
+	if !fallback.IsZero() {
+		return fallback, p.RequestHash
+	}
+	return time.Time{}, ""
+}
+
 func pendingInt(m map[string]any, k string) int64 {
 	switch v := m[k].(type) {
 	case json.Number:

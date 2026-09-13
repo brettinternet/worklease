@@ -274,7 +274,7 @@ func (s *Service) authorize(row claimRow, c Credentials, now int64, allowStarted
 	}
 	return nil
 }
-func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash string, deadline time.Time, now time.Time, apply func(claimRow, int64) (map[string]any, error)) (Receipt, error) {
+func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash, legacyHash string, deadline time.Time, now time.Time, apply func(claimRow, int64) (map[string]any, error)) (Receipt, error) {
 	var row claimRow
 	ok, err := readClaim(tx, c.ClaimID, &row)
 	if err != nil {
@@ -287,7 +287,7 @@ func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash stri
 		if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(hashToken(c.Token))) != 1 {
 			return Receipt{}, reason.New(reason.ReasonInvalidToken, "credential is invalid")
 		}
-		if op.RequestHash != hash {
+		if !requestHashMatches(op.RequestHash, hash, legacyHash) {
 			return Receipt{}, reason.New(reason.ReasonOperationRequestMismatch, "request intent differs from the recorded operation")
 		}
 		if now.UnixMicro() >= op.RequestNotAfter {
@@ -466,6 +466,17 @@ func receiptFromOperation(op operationRow, idempotent bool, out *Receipt) (Recei
 	}
 	return r, nil
 }
+func lifecycleRequestHash(v map[string]any, holdUntil time.Time) string {
+	if !holdUntil.IsZero() {
+		v["holdUntil"] = holdUntil.UTC().UnixMicro()
+	}
+	return requestHash(v)
+}
+
+func requestHashMatches(recorded, current, legacy string) bool {
+	return recorded == current || (legacy != "" && recorded == legacy)
+}
+
 func requestHash(v map[string]any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

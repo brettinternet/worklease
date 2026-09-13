@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Hold deadlines now participate in exact acquire, heartbeat, and checkpoint intent identity, and MCP persists one fixed deadline across waits and recovery without constraining explicit CLI takeover.
 - Guarded `exec` now waits for its own in-flight renewal before recording completion, so a child that exits during a renewal no longer fails `stale-revision` and strands a finished command as an unresolved operation; only ownership or clock renewal failures terminate the child.
 - Guard failures after the started intent commits keep the exact pending request in the handle and report `commitState: unknown` instead of clearing it.
 - MCP heartbeat, checkpoint, release, recovery, and automatic renewal restore the ready handle after a definitive no-commit failure, and a contended MCP acquire removes its pending grant and reports `not-committed` instead of leaving orphan pending handles behind.
