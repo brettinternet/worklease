@@ -114,6 +114,19 @@ func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	}
 }
 
+func TestEventAliasShowsEventsHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "event", "--help"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "worklease events [--limit N]") {
+		t.Fatalf("event alias help=%q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestHistoryHelpDocumentsBothProjections(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := Run(context.Background(), []string{"worklease", "history", "--help"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
