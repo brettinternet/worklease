@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Compact `events` and resource `history` timelines omit synthetic row numbers, identifiers, sequence metadata, and redundant labels; `--full` retains complete non-secret diagnostics, and other collection details no longer use unstable row numbers.
+
 ## 1.1.1 - 2026-09-13
 
 ### Breaking

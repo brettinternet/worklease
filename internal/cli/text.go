@@ -133,9 +133,9 @@ func writeStatusTextAt(w io.Writer, value lease.Status, full, color bool, now ti
 		return writeLines(w, "claim "+shortenOpaque(claim.ClaimID, 24)+" is "+styledState(state, color), lines)
 	}
 	lines := make([]string, 0, len(value.Resources))
-	for i, item := range value.Resources {
+	for _, item := range value.Resources {
 		if full {
-			line := fmt.Sprintf("%d: %s state=%s", i+1, resourceText(item.Resource), styledState(item.State, color))
+			line := fmt.Sprintf("%s state=%s", resourceText(item.Resource), styledState(item.State, color))
 			if item.Claim != nil {
 				line += " claimId=" + escapeTerminalCell(item.Claim.ClaimID) + " expiresAt=" + item.Claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
@@ -215,8 +215,8 @@ func writeAcquireText(w io.Writer, fields map[string]any) error {
 	}
 	if values, ok := fields["recovery"].([]lease.Recovery); ok && len(values) > 0 {
 		lines = append(lines, fmt.Sprintf("recovery: %d", len(values)))
-		for i, value := range values {
-			lines = append(lines, fmt.Sprintf("%d: resource=%s claimId=%s checkpointPresent=%t", i+1, resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
+		for _, value := range values {
+			lines = append(lines, fmt.Sprintf("resource=%s claimId=%s checkpointPresent=%t", resourceText(value.Resource), value.ClaimID, value.CheckpointPresent))
 		}
 	}
 	return writeLines(w, fmt.Sprintf("acquired %d %s as claim %s", len(resources), resourceLabel, shortenOpaque(claimID, 24)), lines)
@@ -690,18 +690,18 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}
-	for i, epoch := range page.Epochs {
-		claimID := shortenOpaque(epoch.ClaimID, 24)
+	for _, epoch := range page.Epochs {
 		agent := shortenOpaque(epoch.AgentID, 24)
-		whenLabel, when := "acquired", relativeTime(epoch.AcquiredAt, now)
+		when := relativeTime(epoch.AcquiredAt, now)
+		var line string
 		if full {
-			claimID = escapeTerminalCell(epoch.ClaimID)
-			agent = escapeTerminalCell(output.RedactString(epoch.AgentID))
-			whenLabel, when = "acquiredAt", epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
-		}
-		line := fmt.Sprintf("%d: claimId=%s agentId=%s status=%s %s=%s", i+1, claimID, agent, styledState(escapeTerminalCell(epoch.Status), color), whenLabel, when)
-		if full {
-			line += " sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) + " resources=" + fullResources(epoch.Resources)
+			line = "claimId=" + escapeTerminalCell(epoch.ClaimID) +
+				" agentId=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) +
+				" status=" + styledState(escapeTerminalCell(epoch.Status), color) +
+				" acquiredAt=" + epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00") +
+				" sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) +
+				" workKey=" + escapeTerminalCell(output.RedactString(epoch.WorkKey)) +
+				" resources=" + fullResources(epoch.Resources)
 			if epoch.EndedAt != nil {
 				line += " endedAt=" + epoch.EndedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 			}
@@ -711,22 +711,26 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 			if epoch.FinalRevision != nil {
 				line += fmt.Sprintf(" finalRevision=%d", *epoch.FinalRevision)
 			}
-		} else if epoch.EndedAt != nil {
-			ended := relativeTime(*epoch.EndedAt, now)
-			if epoch.EndReason != "" {
-				ended = escapeTerminalCell(output.RedactString(epoch.EndReason)) + " " + ended
+		} else {
+			line = agent + " " + styledState(escapeTerminalCell(epoch.Status), color) + " acquired " + when
+			if epoch.EndedAt != nil {
+				line += " ended"
+				if epoch.EndReason != "" {
+					line += " " + escapeTerminalCell(output.RedactString(epoch.EndReason))
+				}
+				line += " " + relativeTime(*epoch.EndedAt, now)
 			}
-			line += " ended=" + ended
-		}
-		if !full {
-			line += " operations=" + summarizeOperations(epoch.Operations)
+			line += " operations " + summarizeOperations(epoch.Operations)
 		}
 		lines = append(lines, line)
 		if full {
 			for _, operation := range epoch.Operations {
-				op := "  operation: operationId=" + escapeTerminalCell(operation.OperationID) + " kind=" + styledState(escapeTerminalCell(operation.Kind), color) + " state=" + styledState(escapeTerminalCell(operation.State), color)
+				op := "  operation: operationId=" + escapeTerminalCell(operation.OperationID) + " kind=" + styledState(escapeTerminalCell(operation.Kind), color) + " state=" + styledState(escapeTerminalCell(operation.State), color) + " startedAt=" + operation.StartedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+				if operation.CompletedAt != nil {
+					op += " completedAt=" + operation.CompletedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+				}
 				if operation.RequestSHA256 != "" {
-					op += " requestSha256=" + operation.RequestSHA256
+					op += " requestSha256=" + escapeTerminalCell(operation.RequestSHA256)
 				}
 				lines = append(lines, op)
 			}
@@ -771,27 +775,30 @@ func writeEventsTextAt(w io.Writer, page ledger.EventsPage, full, color bool, no
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}
-	for i, event := range page.Events {
-		claimID := shortenOpaque(event.ClaimID, 24)
+	for _, event := range page.Events {
 		when := relativeTime(event.At, now)
+		line := styledState(escapeTerminalCell(event.Kind), color)
 		if full {
-			claimID = escapeTerminalCell(event.ClaimID)
 			when = event.At.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+			line = "sequence=" + escapeTerminalCell(event.Sequence) + " kind=" + line
 		}
-		line := fmt.Sprintf("%d: sequence=%s kind=%s", i+1, escapeTerminalCell(event.Sequence), styledState(escapeTerminalCell(event.Kind), color))
 		// Authority-wide events such as gc-applied have no resource or claim;
 		// omit the fields instead of printing empty placeholders.
 		if len(event.Resources) > 0 {
 			if full {
 				line += " resources=" + fullResources(event.Resources)
 			} else {
-				line += " resources=" + summarizeResources(event.Resources)
+				line += " " + summarizeResources(event.Resources)
 			}
 		}
-		if event.ClaimID != "" {
-			line += " claimId=" + claimID
+		if full && event.ClaimID != "" {
+			line += " claimId=" + escapeTerminalCell(event.ClaimID)
 		}
-		line += " at=" + when
+		if full {
+			line += " at=" + when
+		} else {
+			line += " " + when
+		}
 		if full {
 			if event.OperationID != "" {
 				line += " operationId=" + escapeTerminalCell(event.OperationID)

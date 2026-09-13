@@ -102,14 +102,15 @@ do not change their stable JSON envelopes. Verification preserves full unresolve
 operation IDs needed for recovery.
 
 Guarded command streams and authenticated inspection payloads use indented,
-labeled blocks instead of escaped single lines. Compact `events` rows show the
-event kind, the compact resource set, a shortened claim ID, and relative time;
-authority-wide events such as `gc-applied` omit the resource and claim fields.
-Compact `history --resource` epochs show the agent, status, relative acquire
-time, how an ended epoch ended (`ended=released 2m ago`), and the ordered
-operation kinds with any non-completed state marked (`exec:started`). `--full`
-views add complete non-secret metadata, session IDs, per-operation rows, and
-absolute RFC3339 timestamps. `history` without a resource is an alias for the
+labeled blocks instead of escaped single lines. Compact `events` rows show only
+the event kind, compact resource set when present, and relative time; authority-
+wide events such as `gc-applied` omit resource placeholders. Compact
+`history --resource` epochs show the agent, status, relative acquire and end
+times, end reason, and ordered operation kinds; a non-completed operation
+includes its state (`exec:started`). `--full` views add complete non-secret
+identifiers and metadata, per-operation rows, and absolute RFC3339 timestamps.
+Timeline rows, full resource-status rows, and acquire-recovery rows do not use
+synthetic row numbers. `history` without a resource is an alias for the
 bounded global event feed. Its `--json` output is the canonical events envelope,
 including `operation: "events"`; `history --resource RESOURCE --json` instead
 returns the resource-scoped history envelope. `policy describe --full` adds
