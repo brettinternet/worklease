@@ -112,6 +112,21 @@ func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	}
 }
 
+func TestHistoryHelpDocumentsBothProjections(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "history", "--help"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"worklease history\n", "worklease history --resource RESOURCE", "global lifecycle event feed", "retained claim epochs for exactly one resource"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("history help missing %q: %q", want, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestAffectedCommandHelpDescribesTextViewsAndColor(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
 	for _, path := range []string{"key", "status", "history", "events", "watch", "gc", "policy describe"} {
