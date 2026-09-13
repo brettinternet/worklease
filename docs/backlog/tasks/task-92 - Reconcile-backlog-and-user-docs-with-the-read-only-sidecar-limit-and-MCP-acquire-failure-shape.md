@@ -5,7 +5,7 @@ title: >-
   acquire failure shape
 status: Done
 assignee:
-  - '@pi-01a09812'
+  - '@brett'
 created_date: '2026-09-12 22:39'
 updated_date: '2026-09-13 00:35'
 labels:
@@ -70,6 +70,10 @@ Objective acceptance verification validated 18 required correction passages acro
 Independent review found that acquire replay accepted lease plus changed non-resource options and silently ignored them, contradicting the documented changed-intent conflict. Reopened TASK-92 to fix this item-scoped defect.
 
 Resolved independent review finding P2: lease-reference acquire recovery now rejects every additional acquire argument at runtime and declares maxProperties 1 for the lease schema branch, preventing ignored TTL, maxHold, identity, coordination, or resource changes. The regression test proves lease+ttl fails while lease-only recovery succeeds. Focused test, LSP diagnostics, git diff --check, and all lint/format/test/typecheck gates pass.
+
+Review-fix implementation commit: 274bcfa. Integrated on main with merge commit 4f22f71; post-merge mise run test passed.
+
+Correction: the review-fix integration merge is 415423d (not 4f22f71).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
