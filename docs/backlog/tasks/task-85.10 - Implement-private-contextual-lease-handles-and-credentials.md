@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-12 03:23'
-updated_date: '2026-09-12 12:31'
+updated_date: '2026-09-13 00:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -71,6 +71,16 @@ Validation evidence:
 - AC5: TestContextualDefaultRunsCompleteLifecycle; TestExplicitCredentialsCanTransferIntoPrivateSuccessorHandle; TestAcquireRejectsMixedHandleAndStatelessSelection; TestStatusRejectsMixedPrivateAndPublicSelection; TestAcquireDerivesInputBeforeDispatch; mise run ci-go.
 - Required repository gates also passed: mise run lint, format-check, test (339 Python tests), and typecheck (0 errors).
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @C3
+created: 2026-09-13 00:20
+---
+Correction after TASK-88: the no-file-creation statement applies to handle inspection/verification itself. Its read-only SQLite authority open may update shared-memory coordination state and recreate absent owner-private -wal/-shm sidecars for an existing WAL database in a writable directory; amended contract sections 8 and 13 are authoritative.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

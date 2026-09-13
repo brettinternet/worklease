@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-12 23:46'
+updated_date: '2026-09-13 00:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -96,6 +96,12 @@ TASK-85.18 final integration evidence: tracked Python runtime/SDK/packaging/test
 created: 2026-09-12 23:46
 ---
 Contract amendment (section 17, 2026-09-12): section 20 now recommends serving the existing Go authority over authenticated HTTPS instead of a Cloudflare Durable Object reimplementation, and names the restore generation and single-writer guard as pre-release remote invariants. Owner-authorized pivot; remote implementation stays deferred. Rationale in docs/distributed-cloudflare-claim-authority.md.
+---
+
+author: @C3
+created: 2026-09-13 00:20
+---
+Correction after TASK-88: WAL-visible read-only access leaves the main database unchanged, but SQLite may update coordination words in an existing -shm sidecar and may recreate absent owner-private -wal/-shm sidecars in a writable directory. The amended Go Product Contract sections 8 and 13 and TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars are authoritative.
 ---
 <!-- COMMENTS:END -->
 

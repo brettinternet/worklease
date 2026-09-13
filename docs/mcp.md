@@ -59,8 +59,11 @@ flight. Every MCP heartbeat, automatic or explicit, is capped by the original
 absolute `maxHold` deadline. The server keeps reading stdin so cancellation and
 EOF are prompt. Restarting does not auto-renew an old handle.
 
-Mutations persist exact pending requests before dispatch. A retry replays only
-the identical operation during its bounded window. Changed intent conflicts.
+Mutations persist exact pending requests before dispatch. Retry by opaque lease
+reference only when the outcome is uncertain and the error returns that
+reference; this replays only the identical operation during its bounded window.
+A definitive acquire failure removes the pending grant and returns no lease
+reference, so retry with a fresh `acquire` request. Changed intent conflicts.
 Started guarded effects are not exposed as MCP exec tools; advanced inspection,
 cessation evidence, and reconciliation remain explicit CLI operations described
 in [the claim model](claim-model.md).

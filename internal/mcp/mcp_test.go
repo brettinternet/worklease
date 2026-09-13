@@ -86,6 +86,18 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(serverInstructions, "uncertain outcome") || !strings.Contains(serverInstructions, "definitive failure") {
+		t.Fatalf("server acquire recovery instructions are incomplete: %q", serverInstructions)
+	}
+	acquireDescription := ""
+	for _, tool := range s.tools() {
+		if tool["name"] == "acquire" {
+			acquireDescription, _ = tool["description"].(string)
+		}
+	}
+	if !strings.Contains(acquireDescription, "Retry by reference only after an uncertain outcome") || !strings.Contains(acquireDescription, "definitive failure returns no reference") {
+		t.Fatalf("acquire tool recovery description is incomplete: %q", acquireDescription)
+	}
 	bad, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []any{"r"}, "path": "x"})
 	if err != nil {
 		t.Fatal(err)
