@@ -2,7 +2,7 @@
 
 ## Status and decision
 
-Deferred design. No remote authority, HTTP client or server, authentication
+Future design. No remote authority, HTTP client or server, authentication
 setup, or deployment is part of the shipped Go release. The
 [Go Product Contract](backlog/docs/go-rewrite/doc-2%20-%20Go-Product-Contract.md)
 is normative for the current product; this document records the future design,
@@ -10,21 +10,23 @@ the decisions already made, and the few decisions that remain open. The file
 name is historical: the first draft proposed a Cloudflare Durable Object
 authority, and that alternative is evaluated and rejected below.
 
-Resolve safety requirements in this design before remote implementation begins.
-Implement the mechanisms and executable acceptance scenarios only when that
-work is authorized; this design does not authorize changes to the local schema,
-CLI, service, or deployment. Documentation records intended behavior, not a
-shipped or verified guarantee.
+The product decision is to make an opt-in, self-hosted remote authority
+available so users can experiment with cross-host coordination. Worklease will
+not provision or operate that deployment and makes no high-availability claim.
+Implementation still requires an explicit contract amendment and executable
+acceptance evidence. Documentation records intended behavior, not a shipped or
+verified guarantee.
 
-**Decision (2026-09-12, owner-authorized pivot).** The remote authority is the
-existing Go authority, served over authenticated HTTPS. One `worklease serve`
-process runs the same `lease.Service` and SQLite store that the local CLI uses,
-on one always-on host with one persistent volume. Optional continuous SQLite
-replication to object storage can provide disaster-recovery backups when a
-deployment's recovery targets require them; a simple `worklease serve` may rely
-on its persistent SQLite volume alone. An authenticated front door such as
-Cloudflare Tunnel plus Cloudflare Access terminates TLS and authenticates
-installations; where compute runs is decoupled from that front door.
+**Decision (2026-09-12, owner-authorized pivot; refined 2026-09-13).** The remote
+authority is the existing Go authority, served over authenticated HTTPS. One
+`worklease serve` process initially runs the same `lease.Service` and SQLite
+store that the local CLI uses, on one always-on host with one persistent volume.
+Optional continuous SQLite replication to object storage can provide
+disaster-recovery backups when a deployment's recovery targets require them; a
+simple `worklease serve` may rely on its persistent SQLite volume alone. A
+reverse proxy or tunnel may terminate TLS and may authenticate the browser
+activation page, but Worklease owns installation credentials, roles, and API
+authorization. Where compute runs is decoupled from the TLS or identity edge.
 
 The single strongest reason is that nothing hard about this system is
 transport. The difficulty is claim, replay, reconciliation, and garbage
@@ -34,9 +36,37 @@ divergence fails silently as duplicate execution or a lost started operation.
 Hosting cost does not decide this architecture; comparable cost remains an
 assumption until a deployment and workload are measured.
 
-Keep one end-user `worklease` CLI. There is no requirement to preserve Python
-classes, bundle commands, wire schemas, owner IDs, state files, or plugin
-interfaces.
+Keep one end-user `worklease` binary. The shell CLI and local stdio MCP adapter
+act as clients; `worklease serve` runs the remote HTTP authority. Guarded child
+processes and edits always remain on the client host.
+
+```text
+shell/scripts -------- CLI -------+
+                                  |
+IDE/agent ----- stdio MCP --------+--> local worklease client state
+                                        | handles, pending requests,
+                                        | installation and claim credentials
+                                        |
+                                        +--- authenticated HTTPS ---> worklease serve
+                                                                         |
+                                                                    lease.Service
+                                                                         |
+                                                              SQLite + persistent volume
+                                                                         |
+                                                              optional async object backup
+```
+
+The standard release includes client and server code, but opens no listener and
+performs no remote work unless a remote profile or `serve` is explicitly used.
+Do not add a thin-build release matrix initially. A representative stripped
+macOS arm64 probe added about 4.4 MiB uncompressed and 1.7 MiB gzip-compressed
+for HTTPS client/server and RSA/X.509 primitives; omitting only `serve` while
+retaining the remote client saved less than 1 MiB uncompressed. Re-measure the
+implemented release on all targets and add a local-only build only for concrete
+artifact, SBOM, or policy demand.
+
+There is no requirement to preserve Python classes, bundle commands, wire
+schemas, owner IDs, state files, or plugin interfaces.
 
 ### Alternatives considered
 
@@ -45,7 +75,7 @@ interfaces.
 | One SQLite-backed Cloudflare Durable Object per namespace behind a Worker | Reimplements every safety invariant in TypeScript plus a cross-language conformance suite. Input/output gates and write coalescing are a different serialization model than the tested `BEGIN IMMEDIATE` boundary. Per-object storage is a hard vendor cap that conflicts with a retention model that must never prune unknown operations. Its real advantages, near-zero patching and 30-day point-in-time recovery, do not outweigh a permanent second implementation. |
 | Cloudflare Containers, or Go compiled to Wasm inside a Worker | No durable per-instance disk, so state still lives in Durable Object storage behind a JavaScript API and the store is rewritten anyway. |
 | Turso or libSQL | Keeps the dialect but adds a network hop per statement and a vendor dependency without removing the single-writer server process. |
-| Managed Postgres behind the Go service | The escalation path if single-host durability ever becomes the binding constraint. It costs a Postgres port of the store, not a second authority. Not needed for a private deployment. |
+| Managed Postgres behind the Go service | The planned escalation path when measured write throughput, managed-database durability, or stateless server replicas become requirements. It is a second storage implementation of the same authority contract, not a second claim service. Do not pay its abstraction and conformance cost before one of those triggers exists. |
 | SSH-forwarded authority, for example `ssh host worklease acquire ...` | Validates shared claim contention using existing commands. Handles and token files/descriptors belong to the host running the CLI; secure credential forwarding needs explicit setup. Does not provide client-local guarded execution against a remote authority. Not a product architecture. |
 
 ## Product value and validation
@@ -71,23 +101,20 @@ This is not a tracker, scheduler, durable job queue, dependency engine, remote
 process runner, or exactly-once executor. Avoid adding those products to make the
 claim service appear more valuable.
 
-Before authorizing implementation, find two or three teams with recurring,
-costly cross-host duplicate execution. Start with SSH-forwarded claim contention:
-two runtimes on two hosts sharing one existing tracker through one authority.
-That narrow experiment needs no product changes. It does not validate the full
-guarded-operation recovery contract: the CLI exposes operation inspection and
-reconciliation, but not separate begin/complete commands, and `exec` runs its
-child where the CLI runs. Token files and descriptors are read on that host too.
+Making the capability available for experimentation is itself an accepted
+product goal; prior adoption by two or three teams is no longer an implementation
+gate. Demand validation still determines promotion, support promises, and later
+investment. An SSH-forwarded authority remains a cheap discovery experiment,
+but it does not validate the full client failure boundary because handles,
+credentials, and guarded effects execute on the authority host.
 
-If contention validation supports proceeding, separately authorize a minimal
-validation harness over the existing Go service methods, with durable requests
-on each client and effects running on the client hosts. Exercise a lost start
-response, a crash, and a partition before treating remote recovery as validated.
-An SSH child running on the authority host is not evidence for those client
-failure boundaries. Measure onboarding effort, duplicate attempts avoided, time
-blocked on unknown outcomes, recovery effort, and request/storage usage. Compare
-against the actual scheduler or provider-native alternative. Stop if those
-alternatives already solve the problem with less operational burden.
+Before presenting remote recovery as reliable, run a two-host harness over the
+HTTP service with durable requests and effects on the client hosts. Exercise a
+lost start response, a crash, and a partition. Measure onboarding effort,
+duplicate attempts avoided, time blocked on unknown outcomes, recovery effort,
+WAN latency, write throughput, and request/storage usage. Compare against the
+actual scheduler or provider-native alternative; the feature remains useful
+only where cooperating executors need coordination outside those systems.
 
 Cheap infrastructure is useful but is not evidence of product demand. Support,
 authentication, recovery, upgrades, and integrations dominate hosting costs.
@@ -111,19 +138,23 @@ transaction. Do not build a second authority backend.
 | Explicit operation protection and unresolved predecessor visibility | Renewals do not imply that an old process or provider request has stopped. |
 | Static, cgo-free binary | The server is the same artifact as the CLI, cross-compiled for the host. |
 
-Do not add a backend registry, unused transport interface, remote config flags,
-fencing counters, or server scaffolding before the remote work is authorized.
-The server needs no interface extraction: it calls the lease service directly.
-Only the client needs a local/remote selector, added when the feature is built.
+Do not add a generic backend registry or storage interface solely in anticipation
+of Postgres. The HTTP server calls the typed lease service, and only the client
+needs a local/remote authority selector. Keep HTTP, authentication, MCP, and
+configuration code from depending on SQLite types. When a second storage backend
+is authorized, extract the narrow transaction/repository boundary from the two
+real implementations and run one behavioral conformance suite against both.
+Fencing counters remain deferred until an enforcing consumer exists.
 
 ## Authority, namespace, and process
 
-An authority is one SQLite database served by exactly one process. The
+An initial authority is one SQLite database served by exactly one process. The
 authority identity is the immutable random authorityId already created at
-bootstrap. An endpoint URL and a database path locate it; neither is identity.
-Clients validate authorityId on every response, so an endpoint can move without
-retargeting credentials or continuations. Two endpoints serving the same
-authorityId is the clone problem below and is prohibited.
+bootstrap; it is independent of database engine. An endpoint URL and a database
+path or DSN locate it; none is identity. Clients validate authorityId on every
+response, so an endpoint can move without retargeting credentials or
+continuations. Two independently writable stores serving the same authorityId
+is the clone problem below and is prohibited.
 
 A namespace is an authority. Start with one namespace for a private deployment.
 One `serve` process may host several namespaces as separate databases with
@@ -138,10 +169,10 @@ partition by explicit tenant or repository namespace and keep the one-namespace
 atomicity boundary. One serialized writer per namespace is the throughput
 ceiling; measure before deciding it is a problem.
 
-SQLite is authoritative. Nothing depends on process memory surviving a restart.
-Expiry is evaluated lazily from authority time; a background task may perform
-retention work, but expiry never depends on a timer firing. Never place the
-authority behind a load balancer with more than one origin.
+The configured database is authoritative. Nothing depends on process memory
+surviving a restart. Expiry is evaluated lazily from authority time; a background
+task may perform retention work, but expiry never depends on a timer firing. A
+SQLite authority must never sit behind a load balancer with more than one origin.
 
 ### Single writer guard
 
@@ -162,6 +193,55 @@ after another server adopts it. SQLite transaction serialization alone does not
 enforce one serving process. The OS lock is a local safety check for one volume,
 not protection against independent writable clones or a substitute for the
 deployment rule. Stop-before-start upgrades must respect the same lock.
+
+### Storage backend and Postgres evolution
+
+SQLite is the initial and default backend. Authority mutations are short, and
+one serialized writer is also the easiest way to preserve atomic multi-resource
+claims, exact replay, ledger projection updates, and admission decisions. The
+expected private and small-team workload is unlikely to make SQLite the first
+bottleneck; measure transactions per second, p95/p99 write latency, WAL growth,
+and long-poll/read pressure before changing engines.
+
+Cluster operators may nevertheless prefer managed Postgres for operational
+reasons before raw throughput requires it: durable managed storage, automated
+backups, rolling application deploys, and several stateless `serve` replicas.
+Postgres is therefore an intended future backend, but not part of the initial
+remote release.
+
+Do not create a lowest-common-denominator SQL abstraction now. The current
+service/store code uses real SQLite transaction behavior, and a speculative
+interface would hide rather than solve the differences in locking, commit
+ambiguity, sequences, time, and restore. Preserve the future path by keeping the
+wire protocol and typed domain requests/results storage-neutral, keeping new
+HTTP/authentication code outside `internal/store`, and centralizing backend SQL
+and transaction mechanics below the service boundary. Extract an
+operation-oriented store interface only while implementing Postgres, from the
+needs demonstrated by both backends.
+
+A Postgres backend must preserve the same observable authority contract. At a
+minimum it must:
+
+- serialize every mutation for one namespace, for example by locking one
+  authority row or taking a transaction-scoped namespace advisory lock;
+- atomically update claims, resources, operations, replay records, ledger
+  projections, manifest revision, and admission state;
+- classify uncertain commits through durable request/result read-back;
+- use authoritative database time consistently and retain authorityId and
+  restoreId across ordinary restarts;
+- regenerate restoreId and enter quarantine after any restore, import, or
+  promotion/failover that can lose acknowledged writes; transparent failover is
+  permitted only with demonstrated synchronous no-acknowledged-write-loss
+  durability and split-brain prevention;
+- reserve connection and storage capacity for ownership lifecycle and recovery;
+- run the same backend-neutral failure and replay scenarios as SQLite.
+
+Only a shared transactional Postgres database can authorize multiple stateless
+`serve` replicas. Application replicas must not use process memory, local locks,
+or notifications as correctness state; `LISTEN/NOTIFY` may only accelerate a
+recheck. Multi-replica service is a separate release claim requiring concurrent
+and failover evidence. Do not expose a public backend registry or promise DSN
+compatibility until Postgres exists.
 
 ### Restore incarnation and quarantine
 
@@ -296,12 +376,41 @@ still compares exact bytes. The manifest also stores key-policy versions, the
 admission policy below, and TTL/hold bounds. Administrative updates require an
 expected manifest revision and produce an audit record.
 
-Each installation bootstraps with an explicitly trusted endpoint, the expected
-authorityId, and an authentication source. The downloaded manifest cannot change
-those trust anchors or supply executable commands, hooks, provider credentials,
-claim tokens, or host-local absolute paths. Remote defaults cannot weaken
-server-enforced bounds. Local credential handles stay local; copying them between
-hosts is not ownership transfer.
+Each installation bootstraps with an explicitly trusted endpoint, expected
+authorityId, and authentication method. Client configuration has three distinct
+layers:
+
+1. optional machine policy constrains HTTPS, allowed endpoints and authentication
+   modes and cannot be weakened by lower layers;
+2. user configuration stores named trusted authority profiles and the default
+   profile, but no bearer credentials;
+3. a versioned, non-secret project file proposes a profile and enrolled
+   repository identity; a user-side trust record binds that exact local project
+   identity to the proposed tuple before it can select a remote authority.
+
+Explicit `--profile`, then `WORKLEASE_PROFILE`, then an approved project binding,
+then the user default chooses the candidate profile. Every remote project use
+still requires a user-side binding between the canonical local project identity,
+profile, and repository identity; the safe unbound default is local. An explicit
+profile flag may authorize one attended invocation but does not create that
+binding. A project file must not select another already-trusted profile merely
+because it knows its name, or silently introduce or override an endpoint,
+expected authorityId, OAuth issuer, or credential source. It may carry an
+endpoint and authorityId as an onboarding proposal, but first use performs no
+authentication or network request and fails closed until an explicit trust
+command records the profile and project binding in user configuration. This
+prevents a cloned repository from redirecting existing installation credentials,
+mutating another namespace, or disclosing private coordination metadata. Server
+configuration is a separate deployment-owned file and never reads project
+configuration.
+
+The downloaded manifest cannot change trust anchors or supply executable
+commands, hooks, provider credentials, claim tokens, or host-local absolute
+paths. Remote defaults cannot weaken server-enforced bounds. OAuth access and
+refresh credentials belong in the OS credential store, with an owner-private
+file or descriptor source for headless environments; they never belong in YAML,
+a repository, argv, MCP configuration, or logs. Local claim handles stay local;
+copying them between hosts is not ownership transfer.
 
 For example, a laptop checkout at `/Users/dev/project` and a CI checkout at
 `/workspace/project` explicitly enroll as the same repository identity. Their
@@ -350,9 +459,10 @@ blocked rather than discarding the unknown operation.
 
 The ledger is shared operational memory across hosts within one namespace. Claim
 state, epochs, operation records, checkpoints, and lifecycle events stay in the
-authoritative SQLite database, and each state transition commits with its ledger
-record in one transaction, exactly as today. There is no total order across
-namespaces and no remote child-process execution.
+authoritative database, and each state transition commits with its ledger record
+in one transaction, exactly as today. SQLite is the initial implementation;
+future backends preserve this observable atomicity. There is no total order
+across namespaces and no remote child-process execution.
 
 Before a guarded effect, the client durably saves its exact request and
 credentials locally and receives confirmation for that original start dispatch.
@@ -408,6 +518,27 @@ transaction while waiting.
 The authority never blocks an acquire. `--wait` is a client loop of acquire
 attempts paced by watch long polls with jitter. There is no server-side queue,
 and atomic admission is not FIFO fairness.
+
+### Local MCP adapter
+
+Keep `worklease mcp` as a local stdio server. It resolves the same trusted
+project/profile configuration as the CLI and calls either the local service or
+the remote HTTPS client. The remote authority is not initially an MCP endpoint.
+This keeps compatibility independent of each MCP host's remote transport and
+OAuth support.
+
+The adapter keeps installation credentials, claim credentials, handles, and
+pending requests on the client host; MCP exposes only opaque lease references.
+It refreshes authentication, renews claims, and performs watch long polls without
+putting secrets in MCP configuration or model-visible results. It never launches
+an interactive browser from a tool call. Missing or irrecoverable credentials
+return structured `authentication-required` guidance directing the person to
+run `worklease auth login PROFILE`.
+
+Project-scoped MCP setup binds the project root or explicit profile when the MCP
+host cannot provide a trustworthy workspace root. A user-global MCP process must
+not guess a repository from arbitrary request content. Guarded execution and
+native edit checks remain client-local; remote `replace-file` remains disabled.
 
 ### Retention and capacity
 
@@ -523,21 +654,65 @@ response validation.
 
 ## Authentication, roles, and revocation
 
-Authority authentication and claim credentials are different secrets. The
-former authenticates an installation and authorizes a namespace role; the
-latter authorizes one ownership epoch. Use separate secure credential sources and
-redact both. Public multi-tenant administration, billing, quotas and credential
-issuance are separate scope.
+Authority authentication and claim credentials are different secrets. OAuth
+access and refresh credentials authenticate one installation and authorize a
+namespace role; a claim credential authorizes one ownership epoch. Store, rotate,
+and redact them independently. Worklease owns this authentication implementation
+in this repository. An OAuth implementation from another project may be used as
+source material, but Worklease has no runtime, data, identity, protocol, or
+compatibility dependency on that project.
 
-A private deployment authenticates installations at the front door with
-Cloudflare Access service tokens, or an equivalent authenticated reverse proxy.
-The server validates the front door's identity assertion: for Access, verify the
-JWT signature against trusted Access keys, expected issuer and application
-audience, token type, and expiry. Map the verified service-token `common_name`
-(Client ID), not `sub`, to an installation and its namespace role in the database.
-Cloudflare documents these claims in its [application token contract](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/).
-Check installation revocation on every request, including replay. The server
-accepts no unauthenticated request path except health.
+The initial human flow is OAuth 2.0 device authorization owned by `worklease
+serve`:
+
+1. `worklease auth login PROFILE` requests a short-lived device and user code,
+   prints the activation URL, and may open the system browser;
+2. a minimal server-rendered `/activate` page shows the requesting installation
+   and requires an authenticated person to approve or deny it;
+3. the CLI polls the token endpoint and, after approval, stores access and
+   refresh credentials in the OS credential store;
+4. the local CLI and MCP adapter refresh access without further UI.
+
+The initial OAuth surface is limited to authorization-server metadata, device
+code, token, revocation, and activation endpoints. There is no Worklease
+application dashboard, dynamic client registration, billing, or general account
+system. The built-in CLI/MCP adapter is one registered public client. Device
+codes expire after about ten minutes; access credentials are short-lived and
+refresh credentials are longer-lived and hash-only at rest. Because issuer and
+resource server are the same authority, opaque random access credentials are
+preferred initially over JWT/JWKS. Bind every grant to authorityId, restoreId,
+installation, namespace, and granted role.
+
+Credential issuance and refresh must survive a committed response that is lost.
+Before device initiation, the client generates and durably saves its initial
+refresh credential and authentication request ID; the authority receives the
+credential through the authenticated TLS exchange and stores only its hash. A
+refresh similarly saves a client-generated successor before dispatch. Device
+token polling and refresh are exact, idempotent operations: replay of the same
+request may mint another short-lived access credential for the same grant but
+must not rotate state again, while changed intent conflicts. The predecessor
+refresh hash remains only as bounded replay authentication after rotation.
+Recognizing its exact replay is not reuse; using it for another request is reuse
+and revokes or blocks the grant. The server never needs to retain a recoverable
+refresh secret.
+
+OAuth does not itself provide the human identity used to approve `/activate`.
+The initial deployment supports a cryptographically authenticated reverse-proxy
+identity and an externally held one-time admin bootstrap/enrollment secret. The
+server verifies signed proxy assertions and never trusts an unsigned identity
+header. A narrowly configured upstream OIDC login may be added later; local
+passwords, email delivery, MFA recovery, and a full user directory are not part
+of the claim authority. The activation page is the only required UI.
+
+Headless CI and cloud executors use an admin-issued installation credential from
+a secret manager. They do not emulate browser login, and the MCP server never
+starts an interactive flow. OAuth client credentials or workload OIDC federation
+may replace the static machine secret later when a concrete environment requires
+them. The authority stores only installation credential hashes and checks
+installation revocation on every request, including replay. Except for health,
+OAuth metadata/device initiation, token exchange, and the activation flow, API
+routes require authentication. Apply rate limits and bounded bodies to all
+unauthenticated routes.
 
 | Role | Grants |
 | --- | --- |
@@ -545,23 +720,41 @@ accepts no unauthenticated request path except health.
 | `write` | `read` plus acquire, renew, checkpoint, transfer, release, operation begin/renew/complete, inspection of epochs it holds credentials for, and reconciliation. |
 | `admin` | `write` plus manifest and enrollment edits, installation enrollment and revocation, audited private inspection of ended epochs in the namespace, administrative claim revocation, GC apply, audited recovery import and restore reopening, and namespace deletion. |
 
-Namespace access is not fine-grained resource isolation against hostile
-members: start with one trusted cooperative team per namespace. Separate
-namespaces trade away cross-boundary atomic claims; finer ACLs need their own
-requirement.
+A verified browser identity does not choose its own role. Server-side enrollment
+policy or an admin invitation maps it to an installation and namespace role.
+Two machines used by the same person are separate installations so either can be
+audited and revoked independently. Namespace access is not fine-grained resource
+isolation against hostile members: start with one trusted cooperative team per
+namespace. Separate namespaces trade away cross-boundary atomic claims; finer
+ACLs need their own requirement.
 
-Credential rotation overlaps: enroll the new installation credential before
-revoking the old one. Revocation of an installation takes effect on its next
-request, including pending exact replays, which fail `installation-revoked`.
-Claims held by a revoked installation are not force-released, because that
-would erase unknown-outcome state; they expire lazily or an admin revokes them
-explicitly. Administrative claim revocation ends the epoch with reason
-`revoked`, leaves started operations unresolved, and appends a public event. It
-is not executor termination and must never be described as one. Another
-`write` installation then recovers through ordinary acquire-after-expiry plus
-reconciliation, using the public request hash and, where needed, an admin's
-audited private inspection. Removing a compromised installation therefore never
-requires granting it access again.
+Credential rotation overlaps: obtain and durably store the new installation
+credential before revoking the old one. Coordinate refresh rotation across
+concurrent CLI/MCP processes with a local lock. Revocation of an installation
+takes effect on its next request, including pending exact replays, which fail
+`installation-revoked`. Claims held by a revoked installation are not
+force-released, because that would erase unknown-outcome state; they expire
+lazily or an admin revokes them explicitly.
+
+Administrative claim revocation ends the epoch with reason `revoked`, leaves
+started operations unresolved, and appends a public event. It is not executor
+termination and must never be described as one. Another `write` installation
+then recovers through ordinary acquire-after-expiry plus reconciliation, using
+the public request hash and, where needed, an admin's audited private inspection.
+Removing a compromised installation therefore never requires granting it access
+again.
+
+An ordinary restart preserves OAuth state. A restored or imported authority
+changes restoreId, invalidates Worklease browser sessions, device codes, access
+credentials, and refresh credentials from the old incarnation, and remains
+quarantined. An external reverse proxy session may still be valid, so quarantine
+rejects ordinary device initiation, approval, token issuance, refresh, and
+installation enrollment regardless of that identity. Only externally
+bootstrapped recovery administration may first restore the independently
+verified installation inventory and revocation state, then explicitly authorize
+bounded recovery-only re-enrollment. Normal authentication admissions reopen
+only with the namespace. Restoring rolled-back authentication rows or retaining
+a proxy session must never resurrect revoked access.
 
 ### Cross-host transfer
 
@@ -604,6 +797,10 @@ authority:
   for operators whose recovery targets justify them. Keep plain `worklease
   serve` usable with only a persistent SQLite volume, with the absence of a
   replica and its data-loss consequences explicit.
+- **Managed Postgres backend.** Add it when measurements or deployment demand
+  require managed durability, stateless replicas, or more write throughput.
+  Extract the storage interface from SQLite and Postgres together, and require
+  both to pass the same authority conformance scenarios.
 - **Claim-scoped agent coordination.** Evaluate bounded structured handoff notes,
   release or transfer requests, recovery-required notices, and annotations tied
   to claim or operation IDs. Reuse checkpoints, events, and watches where their
@@ -618,24 +815,30 @@ while Worklease remains the authority for ownership and recovery.
 
 The architecture and safety requirements above are design decisions. Their
 mechanisms and failure behavior still require implementation and executable
-evidence when remote work is authorized. Sharding, fencing counters, and public
-hosting are explicit deferrals, not decisions blocking a private implementation.
-The following questions still require measurements or operating-team decisions:
+evidence. The product goal—an opt-in self-hosted authority for experimentation—is
+decided. Sharding, fencing counters, managed hosting, and Postgres implementation
+remain explicit deferrals. The following questions still require measurements or
+operator choices:
 
 | Area | Open decision and what resolves it |
 | --- | --- |
-| Whether to build at all | The demand validation above. Two or three teams with measured cross-host duplicate execution that a scheduler or provider does not already solve. |
-| Recovery targets | The operating team sets acceptable acknowledged-write loss and recovery downtime before choosing deployment details. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
-| Capacity and cost | Measured WAN latency, renewal margins, retry/watch bursts, per-namespace write throughput, replication lag, and recovery storage demand. These validate thresholds, reserves, quotas, and cost assumptions. |
-| Hosting region and provider | An operating-team choice constrained by recovery targets, one always-on host, and one persistent volume. Object-storage replication is optional and selected when those targets require replica-based recovery. |
-| Operational ownership | Named owners and runbooks for patching, restore, and reopening after restore. A private service does not ship without them. |
+| Browser identity | Select and document the first supported signed reverse-proxy assertion and bootstrap procedure. Generic upstream OIDC waits for concrete deployment demand. |
+| Recovery targets | The operator sets acceptable acknowledged-write loss and recovery downtime before choosing deployment details. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
+| SQLite to Postgres trigger | Measured write latency/throughput, a requirement for managed-database durability, or a requirement for stateless `serve` replicas. Preference alone does not create a speculative abstraction, but cluster deployments are expected to be the strongest trigger. |
+| Capacity and cost | Measured WAN latency, renewal margins, retry/watch bursts, per-namespace write throughput, replication lag, OAuth request load, and recovery storage demand. These validate thresholds, reserves, quotas, and cost assumptions. |
+| Hosting region and provider | An operator choice constrained by recovery targets. SQLite requires one always-on host and one persistent volume; object-storage replication is optional. |
+| Operational ownership | Deployment owners supply runbooks for patching, credential bootstrap/rotation, restore, and reopening. Worklease ships the capability, not an operating service or SLA. |
 
 Before private deployment, add executable scenarios covering at least:
 
-1. Two hosts with different checkout roots resolve the same enrolled identity and
-   contend; deliberately separate scopes do not. Unknown aliases, host-local
-   keys, stale managed requests, and unsafe locators fail with
-   `resource-not-enrolled` without claiming another key.
+1. Two hosts with different checkout roots and explicitly approved project
+   bindings to the same trusted profile resolve the same enrolled identity and
+   contend; deliberately separate scopes do not. An unbound project and a project
+   selecting a different existing trusted profile fail before authentication or
+   network use. A project cannot redirect an existing profile or credential to
+   an untrusted endpoint. Unknown aliases, host-local keys, stale managed
+   requests, and unsafe locators fail with `resource-not-enrolled` without
+   claiming another key.
 2. Manifest edits during acquire do not split contention. A key migration with
    active claims or unknown predecessors is rejected. Exact replay after a
    manifest update recovers the old receipt without new effects or ownership.
@@ -644,9 +847,15 @@ Before private deployment, add executable scenarios covering at least:
    client effects and never creates local fallback ownership. An old provider
    request completing after expiry remains an explicit recovery problem.
    Renewal scheduling uses authority time and is conservative by one round trip.
-4. Role isolation, redacted feeds, admin private reads, credential rotation,
-   installation revocation with pending replays, and administrative claim
-   revocation obey the roles table. Two-step transfer succeeds without a bearer
+4. Device authorization succeeds through the minimal activation page, denies
+   expired/reused codes, and never exposes credentials to MCP. Initial issuance
+   and refresh recover after a committed response is dropped and the client
+   restarts, using the exact saved request and client-generated refresh successor
+   without a second rotation; changed use of the predecessor triggers reuse
+   protection. Signed browser identity, admin bootstrap, headless installation
+   credentials, role isolation, redacted feeds, installation revocation with
+   pending replays, and administrative claim revocation obey the authentication
+   contract and roles table. Two-step transfer succeeds without a claim bearer
    crossing hosts; an unprepared or expired successor is rejected.
 5. Snapshot/watch races, disconnect/reconnect, lazy expiry, cursor gaps, and a
    stuck predecessor pinning retention preserve recovery state. Capacity
@@ -664,9 +873,17 @@ Before private deployment, add executable scenarios covering at least:
    confirmed start from the backup tail while its client is offline: quarantine
    remains closed until independent evidence or client recovery accounts for it.
    Exercise idempotent/conflicting imports, recovery-only claims before normal
-   reopening, and restored revocation-state verification. A paused server keeps
-   its OS lock: refuse a second server and alternate CLI writer, resume the first
-   safely, then permit takeover after exit. Verify stable lock-file identity.
+   reopening, and restored revocation-state verification. Old-incarnation device
+   codes, Worklease browser sessions, access credentials, and refresh credentials
+   all fail; a still-valid reverse-proxy session cannot approve or enroll during
+   quarantine. An external bootstrap re-establishes administration without
+   resurrecting a revoked installation. A paused SQLite server keeps its OS lock:
+   refuse a second server and alternate CLI writer, resume the first safely, then
+   permit takeover after exit. Verify stable lock-file identity. When Postgres is
+   added, run these backend-neutral scenarios against both implementations; lose
+   an acknowledged start during standby promotion and require a fresh restoreId
+   plus quarantine, while transparent failover passes only under proven
+   synchronous durability and split-brain prevention.
 
 These are future acceptance scenarios, not assertions about shipped behavior.
 
@@ -677,26 +894,35 @@ modes, not because a second implementation needs a shared conformance suite.
 Deployment tooling owns the host, volume, replication, front door, and secrets;
 `worklease` remains the claim client and authority, not a provisioning tool.
 
-Do not add preparatory remote code to the local release. When the feature is
-authorized:
+Do not add preparatory remote code to the local release outside an authorized
+implementation slice. When implementation begins:
 
 1. Amend the contract's remote section under its amendment procedure and freeze
    the protocol over the typed service requests and explicit recovery/transfer
-   extensions, with authority time, restoreId, and the error reasons named above.
-2. Add restoreId to `meta` and bind it into requests, receipts, handles, and
-   cursors. Implement the process-lifetime lock and quarantined restore path,
-   including audited unknown-operation import and reopening prerequisites.
+   extensions, with authority time, restoreId, authentication errors, and the
+   other error reasons named above.
+2. Add restoreId to `meta` and bind it into requests, receipts, handles, cursors,
+   OAuth grants, and installation credentials. Implement the SQLite
+   process-lifetime lock and quarantined restore path, including external admin
+   bootstrap, audited unknown-operation import, and reopening prerequisites.
 3. Implement `worklease serve`: HTTP handlers over the existing service methods,
-   front-door identity validation and role mapping, bounded bodies,
-   non-cacheable responses, no resource keys or tokens in URLs or logs, and the
-   admission ceiling with exact replay and bounded recovery reservations.
-4. Add the client-side local/remote selector, credential handling, two-step
-   transfer, and the partition and lost-response tests. Keep guarded effects
-   strictly local.
-5. Run the six scenario groups against a real two-host deployment behind the
-   front door, including a replica restore, before offering the service to a
-   second team.
+   standalone device authorization and headless installation authentication,
+   role mapping, bounded unauthenticated/authenticated bodies, rate limits,
+   non-cacheable responses, no resource keys or credentials in URLs or logs, and
+   the admission ceiling with exact replay and bounded recovery reservations.
+   Keep transport and authentication independent of SQLite implementation types.
+4. Add layered trusted authority profiles, safe project selection, explicit
+   trust onboarding, OS credential storage, the client-side local/remote
+   selector, two-step transfer, and partition/lost-response tests. Keep guarded
+   effects strictly local and never fall back from a configured remote profile.
+5. Adapt `worklease mcp` as the local stdio adapter over that same client,
+   preserving opaque lease references and local pending-request durability. Add
+   authentication-required recovery without interactive tool-call login.
+6. Run the six scenario groups against a real two-host SQLite deployment behind
+   its TLS/identity edge, including a replica restore, before promoting the
+   experimental capability.
 
 Remote implementation is not made ready by this document. Sharding, a fencing
-counter, provider-executed mutations, managed Postgres, and a public hosted
-product stay deferred until each has a concrete requirement.
+counter, provider-executed mutations, managed Postgres implementation,
+multi-replica serving, generic upstream OIDC, and a public hosted product stay
+deferred until each has a concrete requirement.
