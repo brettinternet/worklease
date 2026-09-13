@@ -72,10 +72,13 @@ Guarded command streams and authenticated inspection payloads use indented,
 labeled blocks instead of escaped single lines. Compact `history --resource`
 and `events` show shortened claim IDs and relative times; their `--full` views
 add complete non-secret metadata and absolute RFC3339 timestamps. `history`
-without a resource uses the event view. `policy describe --full` adds contract
-versions and fencing guarantees. `key`, `watch`, and `gc` use fixed
-command-specific field ordering. Use `--json` as the canonical complete
-structured output. Opaque event cursors appear only in JSON.
+without a resource is an alias for the bounded global event feed. Its `--json`
+output is the canonical events envelope, including `operation: "events"`;
+`history --resource RESOURCE --json` instead returns the resource-scoped history
+envelope. `policy describe --full` adds contract versions and fencing guarantees.
+`key`, `watch`, and `gc` use fixed command-specific field ordering. Use `--json`
+as the canonical complete structured output. Opaque event cursors appear only in
+JSON.
 
 ## Guarded and recovery operations
 
