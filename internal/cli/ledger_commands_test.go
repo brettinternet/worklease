@@ -208,6 +208,26 @@ func TestLedgerCLIJSONAndPendingHandleReconciliationRecovery(t *testing.T) {
 	if !strings.Contains(inspection.String(), `"inspection"`) || strings.Contains(inspection.String(), "executorStopped") {
 		t.Fatalf("inspection=%s", inspection.String())
 	}
+	tokenDir := t.TempDir()
+	if err := os.Chmod(tokenDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(tokenDir, "token")
+	if err := os.WriteFile(tokenPath, []byte(oldToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"worklease", "op", "inspect", "--json", "--home", home, "--claim-id", oldID, "--operation-id", target, "--token-file", tokenPath, "--full"},
+		{"worklease", "op", "inspect", "--home", home, "--claim-id", oldID, "--operation-id", target, "--token-file", tokenPath, "--full"},
+	} {
+		var privateInspection bytes.Buffer
+		if err := Run(ctx, args, "dev", "unknown", "unknown", &privateInspection, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(privateInspection.String(), "executorStopped") || strings.Contains(privateInspection.String(), oldToken) {
+			t.Fatalf("private inspection=%s", privateInspection.String())
+		}
+	}
 	var events bytes.Buffer
 	if err := Run(ctx, []string{"worklease", "events", "--json", "--home", home, "--limit", "10"}, "dev", "unknown", "unknown", &events, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,38 @@ import (
 	"github.com/brettinternet/worklease/internal/resource"
 )
 
+func TestInvokingExecReturnsArgvAndOutputInJSONAndText(t *testing.T) {
+	home := t.TempDir()
+	handlePath := filepath.Join(home, "handles", "exec.json")
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--home", home, "--handle", handlePath, "--resource", "exec-output"}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		json bool
+	}{
+		{"json", true},
+		{"text", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"worklease", "exec", "--home", home, "--handle", handlePath}
+			if test.json {
+				args = append(args, "--json")
+			}
+			args = append(args, "--", "printf", "allowed-output")
+			var out bytes.Buffer
+			if err := Run(context.Background(), args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"printf", "allowed-output"} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("output missing %q: %s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
 func TestHookTargetsAcceptNativeFileEditorsAndRejectBash(t *testing.T) {
 	tests := []struct {
 		tool  string

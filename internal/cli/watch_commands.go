@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -59,13 +58,9 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 			return s.handle(cmd, err)
 		}
 		if s.jsonRequested(cmd) {
-			event, projectionErr := watchEventProjection(result.Event)
-			if projectionErr != nil {
-				return s.handle(cmd, reason.New(reason.ReasonInternal, "project watch event"))
-			}
-			return output.WriteSuccess(s.writer, "watch", map[string]any{
+			return output.WritePublicSuccess(s.writer, "watch", map[string]any{
 				"authorityId": result.AuthorityID, "cursor": result.Cursor, "nextCursor": result.NextCursor,
-				"event": event, "timedOut": result.TimedOut, "gap": result.Gap,
+				"event": result.Event, "timedOut": result.TimedOut, "gap": result.Gap,
 				"resetCursor": result.ResetCursor, "free": result.Free, "changed": result.Changed,
 				"resources": result.Resources, "unresolvedPredecessor": result.UnresolvedPredecessor,
 				"unresolvedOperations": result.UnresolvedOperations,
@@ -77,23 +72,6 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 
 func storeForWatch(ctx context.Context, home string) (*store.Store, error) {
 	return store.Open(ctx, home, store.Options{ReadOnly: true})
-}
-
-// watchEventProjection converts the typed event into JSON-shaped maps and
-// slices so output's recursive credential redaction reaches every public field.
-func watchEventProjection(event *ledger.Event) (any, error) {
-	if event == nil {
-		return nil, nil
-	}
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		return nil, err
-	}
-	var projected map[string]any
-	if err := json.Unmarshal(encoded, &projected); err != nil {
-		return nil, err
-	}
-	return projected, nil
 }
 
 func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.Result) error {
@@ -129,5 +107,5 @@ func writeWatchText(w interface{ Write([]byte) (int, error) }, result watchpkg.R
 	if len(result.UnresolvedOperations) > 0 {
 		fields["unresolvedOperations"] = strings.Join(result.UnresolvedOperations, ",")
 	}
-	return output.WriteText(w, "watch", fields)
+	return output.WritePublicText(w, "watch", fields)
 }

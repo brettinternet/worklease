@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -82,6 +83,71 @@ func TestInvalidUTF8IsRedacted(t *testing.T) {
 	t.Parallel()
 	if got := RedactString(string([]byte{0xff})); got != "[REDACTED]" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestTypedPrivateAndPublicOutputPolicies(t *testing.T) {
+	t.Parallel()
+	type receipt struct {
+		Token      string         `json:"token"`
+		Argv       []string       `json:"argv"`
+		Checkpoint map[string]any `json:"checkpoint"`
+		Evidence   map[string]any `json:"evidence"`
+		Output     string         `json:"output"`
+		Revision   int64          `json:"revision"`
+	}
+	token := strings.Repeat("a", 64)
+	value := receipt{
+		Token: token, Argv: []string{"printf", "allowed"},
+		Checkpoint: map[string]any{"phase": "allowed", token: "first", strings.Repeat("b", 64): "second"},
+		Evidence:   map[string]any{"executorStopped": true}, Output: "allowed",
+		Revision: 9007199254740993,
+	}
+	private := Redact(value).(map[string]any)
+	if private["token"] != "[REDACTED]" || private["output"] != "allowed" {
+		t.Fatalf("private policy = %#v", private)
+	}
+	if argv := private["argv"].([]any); argv[1] != "allowed" {
+		t.Fatalf("private argv = %#v", argv)
+	}
+	if private["revision"].(json.Number).String() != "9007199254740993" {
+		t.Fatalf("revision lost precision: %#v", private["revision"])
+	}
+	encoded, err := json.Marshal(private)
+	if err != nil || strings.Contains(string(encoded), token) || !strings.Contains(string(encoded), `"[REDACTED]-2":"second"`) {
+		t.Fatalf("map key redaction was unsafe or lossy: %s (%v)", encoded, err)
+	}
+	public := RedactPublic(value).(map[string]any)
+	for _, key := range []string{"token", "argv", "checkpoint", "evidence", "output"} {
+		if public[key] != "[REDACTED]" {
+			t.Fatalf("public %s = %#v", key, public[key])
+		}
+	}
+}
+
+func TestJSONAndTextWritersApplySelectedPolicy(t *testing.T) {
+	t.Parallel()
+	fields := map[string]any{"checkpoint": map[string]string{"phase": "allowed"}}
+	for _, test := range []struct {
+		name   string
+		write  func(io.Writer, string, map[string]any) error
+		public bool
+	}{
+		{"private-json", WriteSuccess, false},
+		{"private-text", WriteText, false},
+		{"public-json", WritePublicSuccess, true},
+		{"public-text", WritePublicText, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := test.write(&out, "test", fields); err != nil {
+				t.Fatal(err)
+			}
+			contains := strings.Contains(out.String(), "allowed")
+			if contains == test.public {
+				t.Fatalf("public=%v output=%q", test.public, out.String())
+			}
+		})
 	}
 }
 

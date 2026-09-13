@@ -9,6 +9,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
+	"github.com/brettinternet/worklease/internal/output"
 )
 
 // displayWidth counts terminal cells without depending on a layout package.
@@ -36,6 +37,7 @@ func wideRune(r rune) bool {
 }
 
 func shortenOpaque(value string, maxCells int) string {
+	value = output.RedactString(value)
 	if maxCells < 4 || displayWidth(value) <= maxCells {
 		return value
 	}
