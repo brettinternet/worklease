@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a0936c'
 created_date: '2026-09-12 02:01'
-updated_date: '2026-09-12 03:05'
+updated_date: '2026-09-13 00:20'
 labels:
   - cli
   - ux
@@ -96,6 +96,16 @@ Implemented the events feed with per-source bounded keyset queries and an intern
 
 Validation: mise run lint; mise run format-check; mise run test (308 tests); mise run typecheck. All passed. One initial full-suite run had a timing-only MCP heartbeat failure (0.170s vs 0.150s); the isolated test and the subsequent full suite passed unchanged.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @C3
+created: 2026-09-13 00:20
+---
+Historical clarification after TASK-88: read-only events creates no authority home or main database and performs no logical provider mutation, but an existing WAL database open may update shared-memory coordination state and recreate absent owner-private -wal/-shm sidecars in a writable directory. The amended Go Product Contract sections 8 and 13 describe the current SQLite limit.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

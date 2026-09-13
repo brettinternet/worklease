@@ -61,6 +61,8 @@ func (s *Server) open(ctx context.Context, write bool) (serviceBundle, error) {
 
 var toolOrder = []string{"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions"}
 
+const serverInstructions = "Worklease local lease authority. Use the opaque lease returned by a successful acquire. Retry acquire by lease reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
+
 func (s *Server) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
 	if v := requestVersion(req); v != "" && v != ModernVersion && v != LegacyVersion {
 		return nil, unsupportedVersion(v)
@@ -108,7 +110,7 @@ func (s *Server) initialize(req rpcRequest) (any, *rpcError) {
 	version, _ := p["protocolVersion"].(string)
 	if version == ModernVersion || requestVersion(req) == ModernVersion {
 		s.modern = true
-		return map[string]any{"protocolVersion": ModernVersion, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]any{"name": "worklease", "version": "dev"}, "instructions": "Worklease local lease authority; use the opaque lease returned by acquire."}, nil
+		return map[string]any{"protocolVersion": ModernVersion, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]any{"name": "worklease", "version": "dev"}, "instructions": serverInstructions}, nil
 	}
 	if version != "" && version != LegacyVersion {
 		return nil, unsupportedVersion(version)
@@ -117,7 +119,7 @@ func (s *Server) initialize(req rpcRequest) (any, *rpcError) {
 	s.legacy = true
 	s.legacyReady = make(chan struct{})
 	s.mu.Unlock()
-	return map[string]any{"protocolVersion": LegacyVersion, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]any{"name": "worklease", "version": "dev"}, "instructions": "Worklease local lease authority; use the opaque lease returned by acquire."}, nil
+	return map[string]any{"protocolVersion": LegacyVersion, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]any{"name": "worklease", "version": "dev"}, "instructions": serverInstructions}, nil
 }
 func requestVersion(req rpcRequest) string {
 	var m map[string]any
@@ -169,7 +171,11 @@ func (s *Server) tools() []map[string]any {
 	defs["watch"]["oneOf"] = []any{map[string]any{"required": []string{"cursor"}}, map[string]any{"required": []string{"resources", "until"}}}
 	out := make([]map[string]any, 0, len(toolOrder))
 	for _, name := range toolOrder {
-		out = append(out, map[string]any{"name": name, "description": "Worklease " + name + " operation", "inputSchema": defs[name]})
+		description := "Worklease " + name + " operation"
+		if name == "acquire" {
+			description = "Acquire a claim and return an opaque lease reference on success. Retry by reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
+		}
+		out = append(out, map[string]any{"name": name, "description": description, "inputSchema": defs[name]})
 	}
 	return out
 }

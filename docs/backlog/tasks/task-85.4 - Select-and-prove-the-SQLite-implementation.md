@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi-01a09478'
 created_date: '2026-09-12 03:22'
-updated_date: '2026-09-12 08:02'
+updated_date: '2026-09-13 00:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -76,6 +76,16 @@ Implementation and backlog evidence committed as 80b348c (Prove modernc SQLite d
 
 After rebasing onto main with completed TASK-85.5, the implementation commit is 76120ac and its verification record is 4368ff0.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @C3
+created: 2026-09-13 00:20
+---
+Correction after TASK-88: the amended Go Product Contract sections 8 and 13 are normative. Read-only opens do not create the home or main database, but for an existing WAL database in a writable directory SQLite/modernc may update shared-memory coordination state and recreate absent owner-private -wal/-shm sidecars. The original description, AC #3 wording, and final-summary test name do not establish a no-sidecar guarantee; TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars records the actual limit.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 
