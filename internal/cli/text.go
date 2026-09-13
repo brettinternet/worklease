@@ -682,7 +682,7 @@ func padCells(value string, width int) string {
 }
 
 func writeEventsText(w io.Writer, page ledger.EventsPage, full bool) error {
-	lines := []string{"nextCursor: " + page.NextCursor}
+	lines := []string{}
 	if page.Gap {
 		lines = append(lines, "gap: true")
 	}

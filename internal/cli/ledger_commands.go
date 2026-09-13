@@ -66,8 +66,11 @@ func eventsAction(s *boundary) func(context.Context, *urfave.Command) error {
 func historyAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
 		resources := cmd.StringSlice("resource")
+		if len(resources) == 0 {
+			return eventsAction(s)(ctx, cmd)
+		}
 		if len(resources) != 1 {
-			return s.handle(cmd, reason.Invalid("history requires exactly one resource"))
+			return s.handle(cmd, reason.Invalid("history accepts at most one resource"))
 		}
 		resource := resources[0]
 		cursor := strings.TrimSpace(cmd.String("cursor"))

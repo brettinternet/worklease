@@ -96,7 +96,7 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if err := writeEventsText(&full, events, true); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), "exact-resource") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
+	if strings.Contains(compact.String(), "exact-resource") || strings.Contains(compact.String(), "nextCursor:") || strings.Contains(full.String(), "nextCursor:") || !strings.Contains(full.String(), "resources=exact-resource") || !strings.Contains(full.String(), "detail={\"reason\":\"renewed\"}") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
 	}
 }
