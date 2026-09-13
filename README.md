@@ -151,6 +151,27 @@ mise run ci
 ```
 
 `ci` formats, vets, tests, race-tests, scans vulnerabilities, builds the binary,
-runs clean-checkout end-to-end smoke, and renders the manual. Release preparation
-builds four CGO-disabled archives and verifies their checksums. Publishing needs
-separate owner authorization.
+runs clean-checkout end-to-end smoke, and renders the manual.
+
+## Release process
+
+Curate entries under `## Unreleased` in `CHANGELOG.md`, grouped and ordered as
+they should appear in the release. Promote those entries mechanically before
+committing and tagging the release:
+
+```sh
+go run ./cmd/worklease-release --version 1.2.0 --prepare-changelog 2026-09-13
+```
+
+This rejects an empty Unreleased section, invalid versions or dates, duplicate
+versions, and an existing target release. Review and commit the resulting fresh
+empty Unreleased section and dated version section, then tag that commit as
+`vVERSION`. The tagged release workflow requires exactly one matching non-empty
+changelog section and publishes its body verbatim instead of generating notes
+from commits. Archive preparation still uses:
+
+```sh
+mise run release -- --version VERSION
+```
+
+Tagging and publishing need separate owner authorization.
