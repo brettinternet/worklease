@@ -74,7 +74,7 @@ func doctorAction(s *boundary) func(context.Context, *urfave.Command) error {
 			}
 			return output.WriteSuccess(s.writer, "doctor", map[string]any{"checks": checks})
 		}
-		if err := writeDoctorText(s.writer, checks); err != nil {
+		if err := writeDoctorText(s.writer, checks, output.ColorEnabled(s.writer)); err != nil {
 			return err
 		}
 		if failed {
@@ -88,9 +88,10 @@ func currentWorkingDirectory() (string, error) {
 	return os.Getwd()
 }
 
-func writeDoctorText(w io.Writer, checks []doctor.Check) error {
+func writeDoctorText(w io.Writer, checks []doctor.Check, color bool) error {
 	for _, check := range checks {
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s", escapeDiagnosticText(check.ID), escapeDiagnosticText(check.Status), escapeDiagnosticText(check.Detail)); err != nil {
+		status := styledState(escapeDiagnosticText(check.Status), color)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s", escapeDiagnosticText(check.ID), status, escapeDiagnosticText(check.Detail)); err != nil {
 			return err
 		}
 		if strings.TrimSpace(check.Hint) != "" {

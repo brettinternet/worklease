@@ -41,6 +41,22 @@ claim or an authoritative provider checkpoint.
 One claim covers all `--resource` values atomically. Resources contend by exact
 bytes and are never silently normalized.
 
+`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table without
+an operation-name banner. Git-backed resources collapse to provider, repository,
+and item; coordination hashes use a short non-secret fingerprint. `list --full`
+shows unshortened resources, claim and agent IDs, and absolute expiry timestamps,
+subject to the normal bearer-shaped-value redaction policy.
+On an interactive terminal, headers are bold; healthy/available states are green,
+attention states are yellow, and failures are red. This styling applies to
+`list`, `status`, `doctor`, garbage-collection outcomes, and error guidance.
+Color is omitted when output is redirected, `TERM=dumb`, or `NO_COLOR` is set.
+JSON is never colored.
+
+Successful lifecycle mutations name the action and claim, then show only
+operation-relevant fields such as revision, expiry, release reason, successor,
+or guarded command result. Verification and operation inspection follow the same
+summary-first format. Use `--json` for complete structured envelopes.
+
 ## Guarded and recovery operations
 
 | Command | Purpose |

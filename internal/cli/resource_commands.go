@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/output"
@@ -46,11 +45,6 @@ func descriptorFields(d resource.Descriptor) map[string]any {
 }
 func (s *boundary) policyListResult(cmd *urfave.Command) error {
 	values := resource.Descriptors()
-	encoded := make([]string, 0, len(values))
-	for _, d := range values {
-		b, _ := json.Marshal(descriptorFields(d))
-		encoded = append(encoded, string(b))
-	}
 	if s.jsonRequested(cmd) {
 		out := make([]any, 0, len(values))
 		for _, d := range values {
@@ -58,7 +52,7 @@ func (s *boundary) policyListResult(cmd *urfave.Command) error {
 		}
 		return output.WriteSuccess(s.writer, "policy list", map[string]any{"policies": out})
 	}
-	return output.WriteText(s.writer, "policy list", map[string]any{"policies": strings.Join(encoded, "\n")})
+	return writePolicyListText(s.writer, values, cmd.Bool("full"), output.ColorEnabled(s.writer))
 }
 func (s *boundary) policyDescribeResult(cmd *urfave.Command) error {
 	name := strings.TrimSpace(cmd.String("name"))

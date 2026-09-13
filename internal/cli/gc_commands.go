@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,11 +57,11 @@ func gcAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return output.WriteSuccess(s.writer, "gc", map[string]any{"dryRun": result.DryRun, "capturedAt": result.CapturedAt, "cutoff": result.Cutoff, "retentionDays": result.RetentionDays, "eligible": result.Eligible, "protected": result.Protected, "retired": result.Retired, "collected": result.Collected, "prunedThroughSequence": result.PrunedThrough, "lastEventSequence": result.LastEventSequence})
 		}
-		return writeGCText(s.writer, result)
+		return writeGCText(s.writer, result, output.ColorEnabled(s.writer))
 	}
 }
 
-func writeGCText(w io.Writer, result gc.Result) error {
+func writeGCText(w io.Writer, result gc.Result, color bool) error {
 	fields := map[string]any{"mode": "apply"}
 	if result.DryRun {
 		fields["mode"] = "preview"
@@ -78,7 +79,35 @@ func writeGCText(w io.Writer, result gc.Result) error {
 	if result.DryRun {
 		fields["hint"] = "re-run with --apply and this cutoff to collect"
 	}
-	return output.WriteText(w, "gc", fields)
+	lines := make([]string, 0, len(fields))
+	for _, key := range sortedFieldNames(fields) {
+		value := output.RedactString(fmt.Sprint(fields[key]))
+		switch key {
+		case "mode":
+			code := output.Green
+			if result.DryRun {
+				code = output.Yellow
+			}
+			value = output.Style(color, code, value)
+		case "collected", "retired":
+			value = output.Style(color, output.Green, value)
+		case "protected":
+			if value != "none" {
+				value = output.Style(color, output.Yellow, value)
+			}
+		}
+		lines = append(lines, key+": "+value)
+	}
+	return writeLines(w, "gc", lines)
+}
+
+func sortedFieldNames(fields map[string]any) []string {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func summaryCountText(values map[string]gc.Summary) string {

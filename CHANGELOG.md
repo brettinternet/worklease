@@ -19,6 +19,7 @@
 
 ### Changed
 
+- Human CLI output now uses operation-specific summaries, deterministic fields, compact tables, and restrained TTY color instead of Go map or struct dumps across lifecycle, guarded, verification, inspection, reconciliation, policy, watch, GC, doctor, and error output; JSON envelopes are unchanged.
 - Repointed generic repository gates, hooks, and CI to the Go implementation, including race, vulnerability, built-binary, documentation, and clean-checkout end-to-end checks.
 
 ### Added

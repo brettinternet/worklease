@@ -159,11 +159,16 @@ func escapeText(value string) string {
 // WriteTextError writes the human error format to stderr. It never includes
 // the rejected credential itself.
 func WriteTextError(w io.Writer, err error) error {
+	return writeTextError(w, err, ColorEnabled(w))
+}
+
+func writeTextError(w io.Writer, err error, color bool) error {
 	if w == nil {
 		return errors.New("nil output writer")
 	}
 	failure := Classify(err)
-	if _, writeErr := fmt.Fprintf(w, "error: %s: %s\n", failure.Reason, RedactString(failure.Message)); writeErr != nil {
+	label := Style(color, Red, "error: "+failure.Reason+":")
+	if _, writeErr := fmt.Fprintf(w, "%s %s\n", label, RedactString(failure.Message)); writeErr != nil {
 		return writeErr
 	}
 	keys := make([]string, 0, len(failure.Details))
@@ -175,6 +180,9 @@ func WriteTextError(w io.Writer, err error) error {
 	sort.Strings(keys)
 	for _, key := range keys {
 		value := escapeText(fmt.Sprint(Redact(failure.Details[key])))
+		if key == "recoveryHint" {
+			value = Style(color, Yellow, value)
+		}
 		if _, writeErr := fmt.Fprintf(w, "%s: %s\n", key, value); writeErr != nil {
 			return writeErr
 		}

@@ -55,6 +55,22 @@ func TestErrorsAndNestedValuesAreRedacted(t *testing.T) {
 	}
 }
 
+func TestWriteTextErrorColorsReasonAndRecoveryHint(t *testing.T) {
+	var out bytes.Buffer
+	err := reason.New(reason.ReasonUnknownOutcome, "result is uncertain").With("recoveryHint", "inspect the operation")
+	if writeErr := writeTextError(&out, err, true); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	for _, want := range []string{"\x1b[31merror: unknown-outcome:\x1b[0m", "recoveryHint: \x1b[33minspect the operation\x1b[0m"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("colored error missing %q: %q", want, out.String())
+		}
+	}
+	if ColorEnabled(&bytes.Buffer{}) {
+		t.Fatal("non-terminal buffer enabled color")
+	}
+}
+
 func TestWriteTextErrorIncludesSafeHolderMetadata(t *testing.T) {
 	var out bytes.Buffer
 	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "task").With("holder", map[string]any{
