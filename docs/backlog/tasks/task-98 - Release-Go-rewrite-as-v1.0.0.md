@@ -1,11 +1,11 @@
 ---
 id: TASK-98
 title: Release Go rewrite as v1.0.0
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-13 00:56'
-updated_date: '2026-09-13 01:30'
+updated_date: '2026-09-13 01:35'
 labels: []
 dependencies: []
 references:
@@ -57,10 +57,12 @@ Verification: local mise run ci passed all format, staticcheck, vet, unit, race,
 Final bookkeeping CI exposed one remaining macOS-only test race: the signal helper could call os.Exit(0) before its self-sent SIGTERM was delivered. Reopened to make the helper wait for signal delivery and restore a green final main commit.
 
 CI run 34730446348 then exposed that the guarded-exec fixture used a one-second lease while the race detector under shared runner load took 1.86 seconds to start and finish a trivial helper. Increased only the test fixture lease/budget to ten seconds; production timeout behavior remains covered separately.
+
+Final CI verification: main CI run 34730733395 for commit ea66c25 passed all four jobs (ubuntu-latest, ubuntu-24.04-arm, macos-14, and macos-15-intel), including repository hooks, quality gates, race tests, end-to-end smoke, and generated-manual validation.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Released the Go rewrite as v1.0.0 with checksummed cross-platform archives, fixed the CI flakes that blocked the release, preserved and documented the simple mise latest declaration, and added four-platform post-publication mise installation checks. Local gates, both main CI commits, release archive validation, and clean latest mise installs all pass.
+Released the Go rewrite as v1.0.0 with checksummed cross-platform archives, fixed the CI flakes that blocked the release, preserved and documented the simple mise latest declaration, and added four-platform post-publication mise installation checks. Local gates, release validation, clean latest mise installs, and final main CI run 34730733395 on all four configured runners pass.
 <!-- SECTION:FINAL_SUMMARY:END -->
