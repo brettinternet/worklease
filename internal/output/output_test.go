@@ -95,6 +95,15 @@ func TestClassifyUnexpectedErrorIsSafe(t *testing.T) {
 	}
 }
 
+func TestSuccessorHandlePreservesContextualPathButNotCredential(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	token := strings.Repeat("b", 64)
+	projected := Redact(map[string]any{"successorHandle": "/tmp/ctx-" + digest + ".json", "token": token}).(map[string]any)
+	if projected["successorHandle"] != "/tmp/ctx-"+digest+".json" || projected["token"] != "[REDACTED]" {
+		t.Fatalf("projection=%#v", projected)
+	}
+}
+
 func TestInvalidUTF8IsRedacted(t *testing.T) {
 	t.Parallel()
 	if got := RedactString(string([]byte{0xff})); got != "[REDACTED]" {

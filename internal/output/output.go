@@ -146,7 +146,7 @@ func escapeText(value string) string {
 		case '\t':
 			b.WriteString(`\\t`)
 		default:
-			if r < 0x20 {
+			if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
 				fmt.Fprintf(&b, `\\u%04x`, r)
 			} else {
 				b.WriteRune(r)
@@ -192,7 +192,7 @@ func writeTextError(w io.Writer, err error, color bool) error {
 
 func safeTextDetail(key string) bool {
 	switch key {
-	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint":
+	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint", "unknownOperations":
 		return true
 	default:
 		return false
@@ -266,7 +266,7 @@ func redact(value any, key string, public bool) any {
 // those would destroy the recovery pointers the contract requires.
 func isPublicHexKey(key string) bool {
 	lower := strings.ToLower(key)
-	return strings.HasSuffix(lower, "sha256") || strings.HasSuffix(lower, "path")
+	return strings.HasSuffix(lower, "sha256") || strings.HasSuffix(lower, "path") || lower == "successorhandle"
 }
 
 func normalizedKey(key string) string {

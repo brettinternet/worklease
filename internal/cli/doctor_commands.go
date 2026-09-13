@@ -120,7 +120,7 @@ func escapeDiagnosticText(value string) string {
 		case '\t':
 			escaped.WriteString(`\\t`)
 		default:
-			if r < 0x20 || r == 0x7f {
+			if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
 				fmt.Fprintf(&escaped, `\\u%04x`, r)
 			} else {
 				escaped.WriteRune(r)

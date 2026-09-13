@@ -53,9 +53,14 @@ Color is omitted when output is redirected, `TERM=dumb`, or `NO_COLOR` is set.
 JSON is never colored.
 
 Successful lifecycle mutations name the action and claim, then show only
-operation-relevant fields such as revision, expiry, release reason, successor,
-or guarded command result. Verification and operation inspection follow the same
-summary-first format. Use `--json` for complete structured envelopes.
+operation-relevant fields. Checkpoint reports persisted byte size; transfer
+confirms the successor handle and complete resource set. Verification preserves
+full unresolved operation IDs needed for recovery.
+
+Guarded command streams and authenticated inspection payloads use indented,
+labeled blocks instead of escaped single lines. `--full` expands safe metadata
+for status, history, events, and policy descriptions. Use `--json` as the
+canonical complete structured output.
 
 ## Guarded and recovery operations
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/store"
 )
 
@@ -143,9 +144,21 @@ func TestKeyAndPolicyCommandsReportContractMetadata(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "policy", "describe", "path"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"resource:", "provider:", "identityScope:", "localReplaceAllowed:", "providerFencing:"} {
+	for _, field := range []string{"policy path", "resource:", "scope:", "capability:", "identityScope:"} {
 		if !strings.Contains(stdout.String(), field) {
 			t.Errorf("text description missing %s: %q", field, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "localReplaceAllowed:") {
+		t.Fatalf("compact policy description included full metadata: %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := Run(context.Background(), []string{"worklease", "policy", "describe", "path", "--full"}, "dev", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"localReplaceAllowed:", "providerFencing:", "contractVersion:", "keyPolicyVersion:"} {
+		if !strings.Contains(stdout.String(), field) {
+			t.Errorf("full text description missing %s: %q", field, stdout.String())
 		}
 	}
 }
@@ -226,11 +239,14 @@ func TestExplicitCredentialsCanTransferIntoPrivateSuccessorHandle(t *testing.T) 
 	if err := Run(context.Background(), []string{"worklease", "acquire", "--json", "--home", home, "--resource", "explicit-transfer", "--no-handle", "--claim-id", claimID, "--session", "stateless-session", "--token-file", tokenPath, "--request-not-after", deadline}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	successor := filepath.Join(home, "handles", "successor.json")
+	successor := filepath.Join(home, "handles", "ctx-"+strings.Repeat("d", 64)+".json")
 	var out bytes.Buffer
 	err := Run(context.Background(), []string{"worklease", "transfer", "--json", "--home", home, "--claim-id", claimID, "--token-file", tokenPath, "--revision", "1", "--operation-id", strings.Repeat("2", 32), "--request-not-after", deadline, "--successor-handle", successor, "--to-agent", "next", "--to-session", "next-session"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
 	if err != nil || strings.Contains(out.String(), "token") {
 		t.Fatalf("explicit transfer err=%v output=%q", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"successorHandle":"`+successor+`"`) || !strings.Contains(out.String(), `"resources":["explicit-transfer"]`) {
+		t.Fatalf("explicit transfer omitted structured successor details: %q", out.String())
 	}
 	if _, err := os.Stat(successor); err != nil {
 		t.Fatal(err)
@@ -350,9 +366,14 @@ func TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs(t *
 		return out.String()
 	}
 	run("acquire", "--json", "--home", home, "--handle", current, "--resource", "transfer-resource")
-	transferred := run("transfer", "--json", "--home", home, "--handle", current, "--successor-handle", successor, "--to-agent", "next", "--to-session", "next-session")
+	transferred := run("transfer", "--home", home, "--handle", current, "--successor-handle", successor, "--to-agent", "next", "--to-session", "next-session")
 	if strings.Contains(transferred, "token") {
 		t.Fatal("transfer exposed a bearer token")
+	}
+	for _, want := range []string{"transferred ownership", "successorHandle: " + successor, "resources: transfer-resource", "agent: next", "session: next-session"} {
+		if !strings.Contains(transferred, want) {
+			t.Fatalf("transfer output missing %q: %q", want, transferred)
+		}
 	}
 	if _, err := os.Stat(current); !os.IsNotExist(err) {
 		t.Fatalf("predecessor handle still exists: %v", err)
@@ -375,7 +396,10 @@ func TestContextualDefaultRunsCompleteLifecycle(t *testing.T) {
 		t.Fatal("contextual acquire exposed token")
 	}
 	run("heartbeat", "--json", "--home", home, "--operation-id", strings.Repeat("1", 32))
-	run("checkpoint", "--json", "--home", home, "--operation-id", strings.Repeat("2", 32), "--data", `{"step":1}`)
+	checkpoint := run("checkpoint", "--json", "--home", home, "--operation-id", strings.Repeat("2", 32), "--data", `{"step":1}`)
+	if !strings.Contains(checkpoint, `"checkpointBytes":10`) {
+		t.Fatalf("checkpoint omitted byte count: %q", checkpoint)
+	}
 	run("release", "--json", "--home", home, "--operation-id", strings.Repeat("3", 32))
 }
 
@@ -413,6 +437,17 @@ func TestAcquireTextPreservesUnresolvedPredecessorRecoveryIDs(t *testing.T) {
 			t.Fatalf("acquire output missing %q: %q", want, out.String())
 		}
 	}
+	verifyErr := Run(context.Background(), []string{"worklease", "verify", "--home", home}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	if verifyErr == nil {
+		t.Fatal("verify unexpectedly accepted unresolved predecessor")
+	}
+	var rendered bytes.Buffer
+	if err := output.WriteTextError(&rendered, verifyErr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "unknownOperations: ["+operationID+"]") {
+		t.Fatalf("verify error omitted recovery operation ID: %q", rendered.String())
+	}
 }
 
 func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
@@ -428,8 +463,9 @@ func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
 		args   []string
 		prefix string
 		detail string
+		extra  string
 	}{
-		{args: []string{"checkpoint", "--data", `{"step":1}`}, prefix: "checkpointed claim ", detail: "\nrevision: 2\nexpiresAt: "},
+		{args: []string{"checkpoint", "--data", `{"step":1}`}, prefix: "checkpointed claim ", detail: "\nrevision: 2\nexpiresAt: ", extra: "\ncheckpointBytes: 10\n"},
 		{args: []string{"heartbeat"}, prefix: "renewed claim ", detail: "\nrevision: 3\nexpiresAt: "},
 		{args: []string{"release", "--reason", "completed"}, prefix: "released claim ", detail: "\nrevision: 4\nreason: completed\n"},
 	} {
@@ -439,7 +475,7 @@ func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
 		if err := Run(context.Background(), args, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
-		if got := out.String(); !strings.HasPrefix(got, test.prefix) || !strings.Contains(got, test.detail) || strings.Contains(got, "receipt:") || strings.Contains(got, "map[") {
+		if got := out.String(); !strings.HasPrefix(got, test.prefix) || !strings.Contains(got, test.detail) || test.extra != "" && !strings.Contains(got, test.extra) || strings.Contains(got, "receipt:") || strings.Contains(got, "map[") {
 			t.Fatalf("%s output=%q", test.args[0], got)
 		}
 	}
