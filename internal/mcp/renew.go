@@ -84,7 +84,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		if err == nil && h.State == "ready" && h.HoldUntil.After(time.Now()) {
 			deadline := time.Now().UTC().Add(24 * time.Hour)
 			id := opID()
-			inputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UnixMicro()}
+			inputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": h.HoldUntil.UTC().UnixMicro()}
 			h.State = "pending"
 			h.PendingRequest = &handle.PendingRequest{OperationID: id, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(inputs), RequestNotAfter: deadline, Inputs: inputs}
 			if err = lk.Write(r.path, h); err == nil {
