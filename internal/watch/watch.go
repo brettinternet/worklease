@@ -16,7 +16,7 @@ import (
 
 const (
 	DefaultTimeout = 30 * time.Second
-	MaxTimeout     = time.Hour
+	MaxTimeout     = time.Hour // Bounds polling cost and orphan lifetime; longer waits resume from NextCursor.
 	DefaultPoll    = 250 * time.Millisecond
 	MinPoll        = 50 * time.Millisecond
 	MaxPoll        = 500 * time.Millisecond
