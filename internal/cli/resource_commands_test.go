@@ -403,6 +403,44 @@ func TestAcquireDerivesInputBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestInterruptedCLITakeoverDoesNotRestoreMCPHold(t *testing.T) {
+	home := t.TempDir()
+	handlePath := filepath.Join(home, "handles", "takeover.json")
+	run := func(args ...string) {
+		var out bytes.Buffer
+		if err := Run(context.Background(), append([]string{"worklease"}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v output=%q", args, err, out.String())
+		}
+	}
+	run("acquire", "--json", "--home", home, "--handle", handlePath, "--resource", "takeover")
+	h, err := handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formerHold := time.Now().Add(time.Minute).UTC()
+	h.HoldUntil = formerHold
+	deadline := time.Now().Add(time.Hour).UTC()
+	inputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": int64((15 * time.Minute) / time.Microsecond), "requestNotAfter": deadline.UnixMicro()}
+	if err := beginHandleMutation(handlePath, &h, "heartbeat", strings.Repeat("c", 32), deadline, inputs); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending.HoldUntil.IsZero() {
+		t.Fatalf("fresh CLI pending request retained MCP hold: %s", pending.HoldUntil)
+	}
+	run("heartbeat", "--json", "--home", home, "--handle", handlePath)
+	recovered, err := handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered.HoldUntil.IsZero() || !recovered.ExpiresAt.After(formerHold) {
+		t.Fatalf("CLI recovery restored MCP hold: expires=%s hold=%s former=%s", recovered.ExpiresAt, recovered.HoldUntil, formerHold)
+	}
+}
+
 func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
 	home := t.TempDir()
 	handlePath := filepath.Join(home, "handles", "recovery.json")
@@ -417,6 +455,7 @@ func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.HoldUntil = time.Now().Add(time.Minute).UTC()
 	deadline := time.Now().Add(time.Hour).UTC()
 	firstOp := strings.Repeat("d", 32)
 	firstInputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": int64((15 * time.Minute) / time.Microsecond), "requestNotAfter": deadline.UnixMicro()}
@@ -427,8 +466,8 @@ func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
 	}
 	run("heartbeat", "--json", "--home", home, "--handle", handlePath)
 	h, err = handle.Read(handlePath)
-	if err != nil || h.Revision != 2 || h.PendingRequest != nil {
-		t.Fatalf("pre-dispatch recovery=%#v err=%v", h, err)
+	if err != nil || h.Revision != 2 || h.PendingRequest != nil || h.ExpiresAt.After(h.HoldUntil) {
+		t.Fatalf("pre-dispatch legacy hold recovery=%#v err=%v", h, err)
 	}
 	secondOp := strings.Repeat("e", 32)
 	secondDeadline := time.Now().Add(time.Hour).UTC()
@@ -453,6 +492,9 @@ func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
 	h, err = handle.Read(handlePath)
 	if err != nil || h.Revision != 3 || h.PendingRequest != nil {
 		t.Fatalf("post-dispatch recovery=%#v err=%v", h, err)
+	}
+	if !h.ExpiresAt.After(h.HoldUntil) {
+		t.Fatalf("explicit CLI takeover unexpectedly retained MCP hold: expires=%s hold=%s", h.ExpiresAt, h.HoldUntil)
 	}
 	releaseOp := strings.Repeat("f", 32)
 	releaseDeadline := time.Now().Add(time.Hour).UTC()

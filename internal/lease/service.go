@@ -96,7 +96,10 @@ type AcquireRequest struct {
 	LocalReplaceAllowed         bool
 	CoordinationOnly            bool
 	// HoldUntil is an authority-enforced expiry ceiling for handle-backed leases.
-	HoldUntil          time.Time
+	HoldUntil time.Time
+	// LegacyRequestHash permits only an adapter-recorded pre-hold-binding request
+	// to replay. New operations always persist the hold-bound request hash.
+	LegacyRequestHash  string
 	Wait, PollInterval time.Duration
 }
 type Grant struct {
@@ -158,14 +161,16 @@ type Renew struct {
 	TTL             time.Duration
 	RequestNotAfter time.Time
 	// HoldUntil prevents a renewal from extending beyond the client's durable hold.
-	HoldUntil time.Time
+	HoldUntil         time.Time
+	LegacyRequestHash string
 }
 type CheckpointRequest struct {
-	OperationID     string
-	TTL             time.Duration
-	Data            json.RawMessage
-	RequestNotAfter time.Time
-	HoldUntil       time.Time
+	OperationID       string
+	TTL               time.Duration
+	Data              json.RawMessage
+	RequestNotAfter   time.Time
+	HoldUntil         time.Time
+	LegacyRequestHash string
 }
 type ReleaseRequest struct {
 	OperationID, Reason string
@@ -305,7 +310,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 	if authority != s.st.AuthorityID() {
 		return Grant{}, reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
 	}
-	hash := requestHash(map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claimID, "resources": req.Resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": req.LocalReplaceAllowed, "coordinationOnly": req.CoordinationOnly})
+	hash := lifecycleRequestHash(map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claimID, "resources": req.Resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": req.LocalReplaceAllowed, "coordinationOnly": req.CoordinationOnly}, req.HoldUntil)
 	tokenHash := hashToken(req.Token)
 	var result Grant
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
@@ -324,7 +329,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(tokenHash)) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
 			}
-			if op.RequestHash != hash {
+			if !requestHashMatches(op.RequestHash, hash, req.LegacyRequestHash) {
 				return reason.New(reason.ReasonOperationRequestMismatch, "request intent differs from the recorded operation")
 			}
 			if effective.UnixMicro() >= op.RequestNotAfter {
@@ -565,7 +570,7 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := requestHash(map[string]any{"kind": "heartbeat", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()})
+	hash := lifecycleRequestHash(map[string]any{"kind": "heartbeat", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}, req.HoldUntil)
 	var receipt Receipt
 	var err error
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
@@ -573,7 +578,7 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 		if e != nil {
 			return e
 		}
-		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "heartbeat", hash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "heartbeat", hash, req.LegacyRequestHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
@@ -633,14 +638,14 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := requestHash(map[string]any{"kind": "checkpoint", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()})
+	hash := lifecycleRequestHash(map[string]any{"kind": "checkpoint", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()}, req.HoldUntil)
 	var receipt Receipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, e := s.effectiveNow(tx, now)
 		if e != nil {
 			return e
 		}
-		receipt, e = s.mutateCurrent(tx, creds, req.OperationID, "checkpoint", hash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		receipt, e = s.mutateCurrent(tx, creds, req.OperationID, "checkpoint", hash, req.LegacyRequestHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
@@ -687,7 +692,7 @@ func (s *Service) Release(ctx context.Context, creds Credentials, req ReleaseReq
 		if err != nil {
 			return err
 		}
-		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "release", hash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "release", hash, "", deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			pending, _ := hasStarted(tx, row.ClaimID)
 			if pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
@@ -754,7 +759,7 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 				return reason.New(reason.ReasonOperationRequestMismatch, "successor credential differs from the recorded transfer")
 			}
 		}
-		receipt, err := s.mutateCurrent(tx, creds, req.OperationID, "transfer", hash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		receipt, err := s.mutateCurrent(tx, creds, req.OperationID, "transfer", hash, "", deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			pending, _ := hasStarted(tx, row.ClaimID)
 			if pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")

@@ -136,6 +136,81 @@ func TestReplayAuthenticatesEndedEpochAndRejectsChangedIntent(t *testing.T) {
 	}
 }
 
+func TestHoldDeadlineIsPartOfAcquireHeartbeatAndCheckpointIntent(t *testing.T) {
+	svc, st, clock := openLeaseTest(t)
+	ctx := context.Background()
+	deadline := clock.Now().Add(time.Hour)
+	hold := clock.Now().Add(10 * time.Minute)
+	changedHold := hold.Add(time.Minute)
+	id := strings.Repeat("1", 32)
+	token := strings.Repeat("a", 64)
+	acquire := req("r", id, token)
+	acquire.RequestNotAfter = deadline
+	acquire.HoldUntil = hold
+	grant, err := svc.Acquire(ctx, acquire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquire.HoldUntil = changedHold
+	if _, err = svc.Acquire(ctx, acquire); !isReason(err, reason.ReasonOperationRequestMismatch) {
+		t.Fatalf("changed acquire hold=%v", err)
+	}
+
+	creds := credentials(st, id, token, grant.Revision)
+	heartbeat := Renew{OperationID: strings.Repeat("2", 32), TTL: 2 * time.Second, RequestNotAfter: deadline, HoldUntil: hold}
+	receipt, err := svc.Heartbeat(ctx, creds, heartbeat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat.HoldUntil = changedHold
+	if _, err = svc.Heartbeat(ctx, creds, heartbeat); !isReason(err, reason.ReasonOperationRequestMismatch) {
+		t.Fatalf("changed heartbeat hold=%v", err)
+	}
+
+	creds.Revision = receipt.Revision
+	checkpoint := CheckpointRequest{OperationID: strings.Repeat("3", 32), TTL: 2 * time.Second, Data: []byte(`{"step":1}`), RequestNotAfter: deadline, HoldUntil: hold}
+	if _, err = svc.Checkpoint(ctx, creds, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.HoldUntil = changedHold
+	if _, err = svc.Checkpoint(ctx, creds, checkpoint); !isReason(err, reason.ReasonOperationRequestMismatch) {
+		t.Fatalf("changed checkpoint hold=%v", err)
+	}
+}
+
+func isReason(err error, want string) bool {
+	e := reason.As(err)
+	return e != nil && e.Reason == want
+}
+
+func TestLegacyLifecycleHashReplaysOnlyWhenExplicitlySupplied(t *testing.T) {
+	svc, st, clock := openLeaseTest(t)
+	ctx := context.Background()
+	deadline := clock.Now().Add(time.Hour)
+	id := strings.Repeat("1", 32)
+	token := strings.Repeat("a", 64)
+	acquire := req("r", id, token)
+	acquire.RequestNotAfter = deadline
+	grant, err := svc.Acquire(ctx, acquire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials(st, id, token, grant.Revision)
+	op := strings.Repeat("2", 32)
+	legacy, err := svc.Heartbeat(ctx, creds, Renew{OperationID: op, TTL: 2 * time.Second, RequestNotAfter: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := clock.Now().Add(10 * time.Minute)
+	if _, err = svc.Heartbeat(ctx, creds, Renew{OperationID: op, TTL: 2 * time.Second, RequestNotAfter: deadline, HoldUntil: hold}); !isReason(err, reason.ReasonOperationRequestMismatch) {
+		t.Fatalf("unmarked legacy replay=%v", err)
+	}
+	replay, err := svc.Heartbeat(ctx, creds, Renew{OperationID: op, TTL: 2 * time.Second, RequestNotAfter: deadline, HoldUntil: hold, LegacyRequestHash: legacy.RequestHash})
+	if err != nil || !replay.Idempotent || replay.RequestHash != legacy.RequestHash {
+		t.Fatalf("explicit legacy replay=%+v err=%v", replay, err)
+	}
+}
+
 func TestClockForwardExpirySmallRollbackAndLargeRegression(t *testing.T) {
 	svc, _, clock := openLeaseTest(t)
 	id := strings.Repeat("1", 32)
