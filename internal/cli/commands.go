@@ -88,7 +88,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor")
 	doctorCommand.Action = doctorAction(s)
 	commands := []*urfavecli.Command{
-		jsonless("version", "print version metadata", "worklease version --json"), keyCommand, acquireCommand,
+		jsonless("version", "print the version", "worklease version --json"), keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
 		verifyCommand, execCommand, replaceCommand,
 		historyCommand, eventsCommand, watchCommand, gcCommand, doctorCommand,
