@@ -7,6 +7,25 @@
 - `worklease verify` no longer panics in text mode; the claim view is rendered as a concise verification summary.
 - `worklease list --resource KEY` now applies the filter instead of silently listing every claim, and rejects more than one resource.
 - `gc` text prints its cutoff as an RFC3339 timestamp and its preview hint is the exact `worklease gc --apply --cutoff TIME` follow-up command.
+
+### Changed
+
+- Every CLI option now has operational help with a value placeholder and, where meaningful, the effective runtime default (`--ttl` 15m, `--max-duration` 1h, `--limit` 50, `--timeout` 30s, `--retention-days` 30, `--reason` released, `--agent` login user); zero-value sentinels are no longer shown. Usage lines show required inputs and alternate forms, including `exec ... -- COMMAND [ARGS...]`, `policy describe NAME`, `op inspect` selectors, both `history` projections, and the `verify --hook` form, and `[selection]` is explained in every command that accepts it. Top-level help and the manual group commands into claim lifecycle, inspection and recovery, and setup and administration.
+- Compact `events` rows identify the affected resource set and omit empty claim or resource fields for authority-wide events; compact `history --resource` epochs show the agent, how ended epochs ended, and the ordered operation kinds with any non-completed state marked. Counts are pluralized correctly and sub-second times read as `now`.
+- Human text never prints a bare opaque cursor: `events` and `history` text omit cursors and empty coverage fields, and `watch` text shows relative expiry and presents its resumption cursor only inside a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields are unchanged.
+- `worklease list` text states `no current claims` instead of printing a bare table header when nothing matches.
+- `policy describe` without a name reports the available policy names instead of an unknown empty policy.
+- `worklease history` without a resource now shows the bounded recent global event feed, while `history --resource RESOURCE` retains its resource epoch projection. Event cursors are emitted only in JSON output.
+- Human CLI output now uses operation-specific summaries, deterministic fields, compact relative timing, labeled payload blocks, meaningful `--full` views with RFC3339 timestamps, and restrained TTY color instead of Go map or struct dumps across lifecycle, guarded, verification, inspection, reconciliation, policy, watch, GC, doctor, and error output. JSON envelopes remain unchanged; text checkpoint and transfer results add byte-count, successor-handle, and resource details.
+
+### Added
+
+- `worklease help --all` prints the root help and every command and subcommand once, in tree order, without touching state; `worklease help COMMAND [SUBCOMMAND]` resolves nested commands and reports unknown names as a JSON error under `--json`.
+
+## 1.0.0 - 2026-09-12
+
+### Fixed
+
 - Hold deadlines now participate in exact acquire, heartbeat, and checkpoint intent identity, and MCP persists one fixed deadline across waits and recovery without constraining explicit CLI takeover.
 - Guarded `exec` now waits for its own in-flight renewal before recording completion, so a child that exits during a renewal no longer fails `stale-revision` and strands a finished command as an unresolved operation; only ownership or clock renewal failures terminate the child.
 - Guard failures after the started intent commits keep the exact pending request in the handle and report `commitState: unknown` instead of clearing it.
@@ -22,18 +41,10 @@
 
 ### Changed
 
-- Every CLI option now has operational help with a value placeholder and, where meaningful, the effective runtime default (`--ttl` 15m, `--max-duration` 1h, `--limit` 50, `--timeout` 30s, `--retention-days` 30, `--reason` released, `--agent` login user); zero-value sentinels are no longer shown. Usage lines show required inputs and alternate forms, including `exec ... -- COMMAND [ARGS...]`, `policy describe NAME`, `op inspect` selectors, both `history` projections, and the `verify --hook` form, and `[selection]` is explained in every command that accepts it. Top-level help and the manual group commands into claim lifecycle, inspection and recovery, and setup and administration.
-- Compact `events` rows identify the affected resource set and omit empty claim or resource fields for authority-wide events; compact `history --resource` epochs show the agent, how ended epochs ended, and the ordered operation kinds with any non-completed state marked. Counts are pluralized correctly and sub-second times read as `now`.
-- Human text never prints a bare opaque cursor: `events` and `history` text omit cursors and empty coverage fields, and `watch` text shows relative expiry and presents its resumption cursor only inside a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields are unchanged.
-- `worklease list` text states `no current claims` instead of printing a bare table header when nothing matches.
-- `policy describe` without a name reports the available policy names instead of an unknown empty policy.
-- `worklease history` without a resource now shows the bounded recent global event feed, while `history --resource RESOURCE` retains its resource epoch projection. Event cursors are emitted only in JSON output.
-- Human CLI output now uses operation-specific summaries, deterministic fields, compact relative timing, labeled payload blocks, meaningful `--full` views with RFC3339 timestamps, and restrained TTY color instead of Go map or struct dumps across lifecycle, guarded, verification, inspection, reconciliation, policy, watch, GC, doctor, and error output. JSON envelopes remain unchanged; text checkpoint and transfer results add byte-count, successor-handle, and resource details.
 - Repointed generic repository gates, hooks, and CI to the Go implementation, including race, vulnerability, built-binary, documentation, and clean-checkout end-to-end checks.
 
 ### Added
 
-- `worklease help --all` prints the root help and every command and subcommand once, in tree order, without touching state; `worklease help COMMAND [SUBCOMMAND]` resolves nested commands and reports unknown names as a JSON error under `--json`.
 - Bootstrapped the Go CLI, typed configuration, stable error/output contracts, and additive Go quality gates.
 - Added deterministic, race-safe Go test helpers for clocks, identities, isolated environments, CLI invocation, and bounded subprocesses.
 - Added deterministic Go resource policies, canonical keys, and key/policy inspection commands.
