@@ -6,6 +6,20 @@ or provider remains authoritative.
 
 ![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
 
+```mermaid
+sequenceDiagram
+    participant A as Worker A
+    participant W as Worklease
+    participant B as Worker B
+    A->>W: acquire task:demo
+    W-->>A: claim granted
+    B->>W: acquire task:demo
+    W-->>B: already claimed
+    A->>W: release
+    B->>W: acquire task:demo
+    W-->>B: claim granted
+```
+
 ## Install
 
 Install the latest release with mise:
@@ -31,22 +45,32 @@ Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
 and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
 `checksums.txt`.
 
-## Human CLI quick start
+## Quick start
+
+Claim a resource, do the work, then release it:
+
+<!-- worklease-example:run quick-start -->
+```sh
+worklease acquire -r task:demo
+# do the work
+worklease release
+```
+<!-- worklease-example:end -->
+
+For a moderately advanced workflow, use a stable session to isolate this loop,
+wait briefly for a busy resource, run a guarded command, and record why the
+claim was released:
+
+```sh
+worklease acquire -r task:demo -s loop-a -t 20m -w 2m
+worklease exec -s loop-a -- worklease version
+worklease release -s loop-a -m done
+```
 
 Commands use an owner-private local SQLite authority. A stable session selector
 keeps concurrent loops in the same checkout from overwriting each other's
 handles. A contextual handle carries the claim ID, revision, authority ID, and
 private credential; output never carries the token.
-
-<!-- worklease-example:run human-quick-start -->
-```sh
-worklease acquire --resource human-quick-start --session human
-worklease verify --session human
-worklease exec --session human -- worklease version
-worklease checkpoint --session human --data '{"phase":"verified"}'
-worklease release --session human --reason "provider checkpoint verified"
-```
-<!-- worklease-example:end -->
 
 The complete short-option namespace is intentionally small and optimized for
 routine workflows:
@@ -63,15 +87,9 @@ routine workflows:
 Each alias is available wherever its long option is supported. All other
 options are long-only, including `--source`, `--work-key`, provider inputs,
 explicit credentials, replay controls, polling controls, coordination-only
-mode, and guarded-operation tuning. For example:
-
-```sh
-worklease -j acquire -r shared -s loop-a -t 20m -w 2m -a worker-a
-worklease release -s loop-a -m done
-```
-
-Use `--path FILE` to derive exact repository/path membership. Native hooks
-confirm only a current claim by default; generate them with `--coverage path`
+mode, and guarded-operation tuning. Use `--path FILE` to derive exact
+repository/path membership. Native hooks confirm only a current claim by
+default; generate them with `--coverage path`
 to require every edited path. A direct `verify --resource RESOURCE` checks exact
 membership. Only expected-hash `replace-file` reports
 `mutationProtection: local-serialized-replace`; `exec` and provider calls remain
