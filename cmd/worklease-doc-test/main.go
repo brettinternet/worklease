@@ -23,7 +23,7 @@ func main() {
 		fatal(err)
 	}
 	examples := runnableExamples(string(readme))
-	for _, required := range []string{"human-quick-start", "json-two-loops", "mcp-discovery"} {
+	for _, required := range []string{"quick-start", "json-two-loops", "mcp-discovery"} {
 		body, ok := examples[required]
 		if !ok {
 			fatal(fmt.Errorf("README missing runnable example %s", required))
