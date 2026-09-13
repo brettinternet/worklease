@@ -96,6 +96,11 @@ func Classify(err error) Failure {
 	if _, ok := details["commitState"]; !ok {
 		details["commitState"] = "not-committed"
 	}
+	if classified.Reason == reason.ReasonHomeUnsafe {
+		if _, ok := details["recoveryHint"]; !ok {
+			details["recoveryHint"] = "run worklease doctor"
+		}
+	}
 	return Failure{Reason: registeredReason(classified.Reason), ExitCode: classified.Code, Message: RedactString(classified.Message), Details: redactMap(details, true)}
 }
 
