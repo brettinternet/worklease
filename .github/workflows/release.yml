@@ -118,8 +118,8 @@ jobs:
 
   mise-install:
     name: mise latest (${{ matrix.platform }})
-    if: github.event_name == 'push'
-    needs: [publish]
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
+    needs: [go-assets, publish]
     strategy:
       fail-fast: false
       matrix:
@@ -145,8 +145,10 @@ jobs:
           MISE_CACHE_DIR: ${{ runner.temp }}/mise-cache
           MISE_DATA_DIR: ${{ runner.temp }}/mise-data
           MISE_GITHUB_TOKEN: ${{ github.token }}
+          MISE_MINIMUM_RELEASE_AGE: "0"
           MISE_STATE_DIR: ${{ runner.temp }}/mise-state
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${RELEASE_TAG#v}
           mise exec 'github:brettinternet/worklease@latest' -- worklease --json version \
             | jq -e --arg version "$version" '.version == $version'
