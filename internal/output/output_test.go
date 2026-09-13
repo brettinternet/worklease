@@ -71,6 +71,17 @@ func TestWriteTextErrorColorsReasonAndRecoveryHint(t *testing.T) {
 	}
 }
 
+func TestWriteTextErrorSuggestsDoctorForUnsafeHome(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := WriteTextError(&out, reason.New(reason.ReasonHomeUnsafe, "authority home is unsafe")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "recoveryHint: run worklease doctor") {
+		t.Fatalf("unsafe-home error missing recovery hint: %q", out.String())
+	}
+}
+
 func TestWriteTextErrorIncludesSafeHolderMetadata(t *testing.T) {
 	var out bytes.Buffer
 	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "task").With("holder", map[string]any{
