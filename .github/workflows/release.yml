@@ -41,6 +41,12 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with: { cache: true }
+      - name: Validate curated release notes
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          version=${RELEASE_TAG#v}
+          go run ./cmd/worklease-release --version "$version" --changelog-notes "$RUNNER_TEMP/release-notes.md"
       - name: Build CGO-disabled archive
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
@@ -88,6 +94,15 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
+      - name: Install mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with: { cache: true }
+      - name: Validate and extract curated release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=${RELEASE_TAG#v}
+          go run ./cmd/worklease-release --version "$version" --changelog-notes "$RUNNER_TEMP/release-notes.md"
       - name: Verify CI passed for tag commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,7 +129,7 @@ jobs:
             dist/release/worklease-*.tar.gz
             dist/release/checksums.txt
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
 
   mise-install:
     name: mise latest (${{ matrix.platform }})
