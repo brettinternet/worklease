@@ -83,27 +83,6 @@ Claims live in an owner-private local SQLite authority. Each session has a
 private, authority-bound handle. Use a different `-s` for each concurrent loop
 in one checkout. Credentials are never printed.
 
-Common short options:
-
-| Short | Long | Short | Long |
-| --- | --- | --- | --- |
-| `-j` | `--json` | `-H` | `--home` |
-| `-h` | `--help` | `-v` | `--version` |
-| `-r` | `--resource` | `-s` | `--session` |
-| `-t` | `--ttl` | `-w` | `--wait` |
-| `-a` | `--agent` | `-f` | `--full` |
-| `-m` | `--reason` | | |
-
-All other options are long-only. Notable safety behavior:
-
-- `--path FILE` derives exact repository/path membership.
-- Native hooks confirm a current claim. Generate them with `--coverage path` to
-  require every edited path.
-- `verify --resource RESOURCE` checks exact membership.
-- Expected-hash `replace-file` reports
-  `mutationProtection: local-serialized-replace`. `exec` and provider calls
-  report `guarantee: local-coordination`.
-
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
 
