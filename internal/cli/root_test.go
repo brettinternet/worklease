@@ -28,14 +28,21 @@ func TestVersionTextAndJSON(t *testing.T) {
 			t.Fatalf("stderr = %q", stderr.String())
 		}
 	}
-	var text bytes.Buffer
-	if err := Run(context.Background(), []string{"worklease", "version"}, "dev", "unknown", "unknown", &text, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	for _, part := range []string{"worklease dev", "commit: unknown", "schemaVersion: 2"} {
-		if !strings.Contains(text.String(), part) {
-			t.Errorf("text output missing %q: %q", part, text.String())
-		}
+	for _, test := range []struct {
+		name, version, commit, buildTime, want string
+	}{
+		{name: "release", version: "1.0.0", commit: "ca97d51936e447ef33d1eb01610543c32a345dbf", buildTime: "2026-09-13T01:08:03Z", want: "worklease 1.0.0 (ca97d51, built 2026-09-13T01:08:03Z)\n"},
+		{name: "development", version: "dev", commit: "unknown", buildTime: "unknown", want: "worklease dev\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var text bytes.Buffer
+			if err := Run(context.Background(), []string{"worklease", "version"}, test.version, test.commit, test.buildTime, &text, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			if text.String() != test.want {
+				t.Fatalf("text output = %q, want %q", text.String(), test.want)
+			}
+		})
 	}
 }
 

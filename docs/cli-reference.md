@@ -23,7 +23,7 @@ never returns it in text or JSON.
 
 | Command | Purpose |
 | --- | --- |
-| `version` | Print build version, commit, build time, Go version, and schema version. |
+| `version` | Print a concise version, short commit, and build time. Use `--json` for full build and output-schema metadata. |
 | `key` | Derive an exact built-in resource key. |
 | `acquire` | Atomically claim one to 32 ordered, unique resources. |
 | `status` / `list` | Read current non-secret claim state. |

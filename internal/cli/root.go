@@ -94,7 +94,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 			&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "output one JSON envelope"},
 			&urfavecli.StringFlag{Name: "home", Aliases: []string{"H"}, Usage: "state directory [$WORKLEASE_HOME]"},
 			&urfavecli.StringFlag{Name: "config", Usage: "configuration file [$WORKLEASE_CONFIG]"},
-			&urfavecli.BoolFlag{Name: "version", Aliases: []string{"v"}, Usage: "show version metadata", Local: true},
+			&urfavecli.BoolFlag{Name: "version", Aliases: []string{"v"}, Usage: "show version", Local: true},
 		},
 		Commands: newCommands(state),
 		OnUsageError: func(ctx context.Context, cmd *urfavecli.Command, err error, _ bool) error {
@@ -168,7 +168,22 @@ func (s *boundary) versionResult(cmd *urfavecli.Command) error {
 	if s.jsonRequested(cmd) {
 		return output.WriteSuccess(s.writer, "version", fields)
 	}
-	_, err := fmt.Fprintf(s.writer, "worklease %s\ncommit: %s\nbuildTime: %s\ngoVersion: %s\nschemaVersion: %d\n", s.version, s.commit, s.buildTime, runtime.Version(), output.SchemaVersion)
+	details := make([]string, 0, 2)
+	if s.commit != "" && s.commit != "unknown" {
+		commit := s.commit
+		if len(commit) > 7 {
+			commit = commit[:7]
+		}
+		details = append(details, commit)
+	}
+	if s.buildTime != "" && s.buildTime != "unknown" {
+		details = append(details, "built "+s.buildTime)
+	}
+	if len(details) == 0 {
+		_, err := fmt.Fprintf(s.writer, "worklease %s\n", s.version)
+		return err
+	}
+	_, err := fmt.Fprintf(s.writer, "worklease %s (%s)\n", s.version, strings.Join(details, ", "))
 	return err
 }
 
