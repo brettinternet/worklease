@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-13 05:33'
-updated_date: '2026-09-13 06:12'
+updated_date: '2026-09-13 06:13'
 labels: []
 dependencies: []
 references:
@@ -55,6 +55,8 @@ The Go release cutover removed the previous changelog-aware release automation. 
 Implemented strict changelog promotion and exact release-note extraction, exposed both through cmd/worklease-release, wired dispatch/tag validation and curated GitHub release bodies, added tests and release documentation. Initial independent review found seven edge cases; fixed source/output alias protection, fenced-code heading parsing, malformed duplicate detection, tab heading emptiness, explicit empty mode flags, workflow-dispatch validation, and concurrent main changelog preservation. Verification after fixes: focused release tests passed; mise run lint, format-check, test, and typecheck passed; release.yml parsed as YAML; promotion and extraction command smokes passed.
 
 Independent reviewer re-review: PASS with no remaining findings. Rebased implementation onto current main and preserved TASK-105 Unreleased notes. Implementation commit: c320c1b.
+
+Integrated into main with merge commit 3831e1c. Post-merge mise run lint, format-check, test, and typecheck all passed against current main.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
