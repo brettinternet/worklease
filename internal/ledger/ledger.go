@@ -382,7 +382,7 @@ type Operation struct {
 	State            string         `json:"state"`
 	RequestSHA256    string         `json:"requestSha256,omitempty"`
 	ExpectedRevision int64          `json:"expectedRevision,omitempty"`
-	RequestNotAfter  time.Time      `json:"requestNotAfter,omitempty"`
+	RequestNotAfter  *time.Time     `json:"requestNotAfter,omitempty"`
 	StartedAt        time.Time      `json:"startedAt"`
 	CompletedAt      *time.Time     `json:"completedAt,omitempty"`
 	Receipt          map[string]any `json:"receipt,omitempty"`
@@ -455,7 +455,8 @@ func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, e
 			if subtle.ConstantTimeCompare([]byte(tokenHash), []byte(hashToken(req.Token))) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
 			}
-			result.ExpectedRevision, result.RequestNotAfter = expected, time.UnixMicro(deadline).UTC()
+			requestNotAfter := time.UnixMicro(deadline).UTC()
+			result.ExpectedRevision, result.RequestNotAfter = expected, &requestNotAfter
 			if receipt != "" && json.Unmarshal([]byte(receipt), &result.Receipt) != nil {
 				return storage(errors.New("invalid operation receipt"))
 			}
