@@ -14,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfave "github.com/urfave/cli/v3"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,7 +30,7 @@ func profileCommands(s *boundary) []*urfave.Command {
 	bind := leaf("bind", "bind this checkout to a remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
 	unbind := leaf("unbind", "remove this checkout's remote authority binding", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
 	profile := &urfave.Command{Name: "profile", Usage: "manage trusted remote authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>", Description: "Manage owner-private remote authority profiles and checkout bindings.\n\nExamples:\n  worklease profile list", Commands: []*urfave.Command{add, list, show, remove, def, bind, unbind}}
-	enroll := &urfave.Command{Name: "enroll", Usage: "enroll this installation with a remote authority", UsageText: "worklease enroll --profile NAME (--invite-file FILE | --invite-fd N) [--label TEXT]", Description: "Redeem an invitation without exposing either bearer in argv or output.\n\nExamples:\n  worklease enroll --profile team --invite-file invite.secret", Flags: []urfave.Flag{&urfave.StringFlag{Name: "invite-file", Usage: "owner-private invite `FILE`"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited invite descriptor `N`", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "installation label `TEXT`"}}, Action: enrollAction(s)}
+	enroll := &urfave.Command{Name: "enroll", Usage: "enroll this installation with a remote authority", UsageText: "worklease enroll --profile NAME [--invite-file FILE | --invite-fd N] [--label TEXT]", Description: "Redeem an invitation without exposing either bearer in argv or output. Without an invite option, an interactive terminal prompts without echo.\n\nExamples:\n  worklease enroll --profile team --invite-file invite.secret", Flags: []urfave.Flag{&urfave.StringFlag{Name: "invite-file", Usage: "owner-private invite `FILE`"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited invite descriptor `N`", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "installation label `TEXT`"}}, Action: enrollAction(s)}
 	return []*urfave.Command{profile, enroll}
 }
 
@@ -232,12 +233,41 @@ func profileBindAction(s *boundary, remove bool) func(context.Context, *urfave.C
 	}
 }
 
+var readHiddenInvite = func() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return "", reason.New(reason.ReasonCredentialSourceConflict, "invite source is required when stdin is not a terminal")
+	}
+	if _, err := fmt.Fprint(os.Stderr, "Invite: "); err != nil {
+		return "", reason.New(reason.ReasonCredentialUnsafe, "invite prompt is unavailable")
+	}
+	value, err := term.ReadPassword(fd)
+	_, _ = fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", reason.New(reason.ReasonCredentialUnsafe, "invite prompt could not be read")
+	}
+	invite := strings.TrimSpace(string(value))
+	if err := validateTokenCLI(invite); err != nil {
+		return "", err
+	}
+	return invite, nil
+}
+
+func inviteFromCommand(cmd *urfave.Command) (string, error) {
+	path := strings.TrimSpace(cmd.String("invite-file"))
+	fdSet := cmd.IsSet("invite-fd")
+	if path != "" || fdSet {
+		return tokenFromCommand(cmd, "invite-file", "invite-fd")
+	}
+	return readHiddenInvite()
+}
+
 func enrollAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
 		if strings.TrimSpace(cmd.String("profile")) == "" {
 			return s.handle(cmd, reason.Invalid("enroll requires --profile"))
 		}
-		invite, err := tokenFromCommand(cmd, "invite-file", "invite-fd")
+		invite, err := inviteFromCommand(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
 		}

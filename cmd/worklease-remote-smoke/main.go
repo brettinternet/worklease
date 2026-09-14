@@ -39,6 +39,8 @@ import (
 
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/creack/pty"
 
 	_ "modernc.org/sqlite"
 )
@@ -110,6 +112,9 @@ type harness struct {
 	report                                                          report
 	realHost                                                        bool
 	supportingTests                                                 []supportingTestEvidence
+	immutableEnrollmentClient                                       client
+	immutableEnrollmentID, immutableEnrollmentInvite                string
+	immutableEnrollmentBefore                                       authority.PendingRequest
 }
 
 type client struct {
@@ -121,6 +126,30 @@ type client struct {
 type cliFailureResult struct {
 	result map[string]any
 	err    error
+}
+
+type promptCapture struct {
+	mu      sync.Mutex
+	buffer  bytes.Buffer
+	prompt  chan struct{}
+	noticed bool
+}
+
+func (c *promptCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, err := c.buffer.Write(p)
+	if !c.noticed && bytes.Contains(c.buffer.Bytes(), []byte("Invite: ")) {
+		c.noticed = true
+		close(c.prompt)
+	}
+	return n, err
+}
+
+func (c *promptCapture) Bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.buffer.Bytes()...)
 }
 
 func writeProviderSubmission(path, effectID string) (err error) {
@@ -166,6 +195,9 @@ func main() {
 			_, _, err = client.ReplayEnrollment(context.Background(), os.Args[5], strings.TrimSpace(string(invite)), paths)
 		}
 		if err != nil {
+			if classified := reason.As(err); classified != nil {
+				fatal(fmt.Errorf("%s: %w", classified.Reason, err))
+			}
 			fatal(err)
 		}
 		return
@@ -1927,6 +1959,49 @@ func (h *harness) newLocalEnrollmentClient(label, endpoint string) (client, erro
 	return c, nil
 }
 
+func (h *harness) cliHiddenInvite(c client, invitePath string, args ...string) error {
+	if c.remote {
+		return errors.New("hidden invite acceptance client must run on the orchestrator host")
+	}
+	invite, err := os.ReadFile(invitePath)
+	if err != nil {
+		return err
+	}
+	h.logCommand(c.name, append([]string{"worklease", "--json"}, args...))
+	cmd := exec.Command(h.binary, append([]string{"--json"}, args...)...)
+	cmd.Env, cmd.Dir = c.env, c.checkout
+	terminal, err := pty.Start(cmd)
+	if err != nil {
+		return err
+	}
+	capture := &promptCapture{prompt: make(chan struct{})}
+	copied := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(capture, terminal)
+		close(copied)
+	}()
+	select {
+	case <-capture.prompt:
+		_, err = fmt.Fprintln(terminal, strings.TrimSpace(string(invite)))
+	case <-time.After(5 * time.Second):
+		err = errors.New("hidden invite prompt timed out")
+	}
+	waitErr := cmd.Wait()
+	_ = terminal.Close()
+	<-copied
+	output := capture.Bytes()
+	if bytes.Contains(output, bytes.TrimSpace(invite)) {
+		return errors.New("hidden invite was echoed by the terminal prompt")
+	}
+	if err != nil {
+		return fmt.Errorf("hidden invite enrollment: %w", err)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("hidden invite enrollment failed: %w", waitErr)
+	}
+	return nil
+}
+
 func (h *harness) cliFailureWithInviteFD(c client, invitePath string, args ...string) (map[string]any, error) {
 	if c.remote {
 		return nil, errors.New("descriptor acceptance client must run on the orchestrator host")
@@ -1964,6 +2039,21 @@ func (h *harness) replayPending(c client, requestID string, inviteFile ...string
 		return fmt.Errorf("replay pending %s: %w: %s", requestID, err, output)
 	}
 	return nil
+}
+
+func (h *harness) replayPendingFailure(c client, requestID string, inviteFile string) ([]byte, error) {
+	if c.remote {
+		return nil, errors.New("pending replay helper requires an orchestrator-local client")
+	}
+	args := []string{"replay-pending", c.config, c.home, "team", requestID, inviteFile}
+	h.logCommand(c.name+" expected-failure", append([]string{"harness-helper"}, args...))
+	cmd := exec.Command(h.self, args...)
+	cmd.Env = c.env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return output, errors.New("pending enrollment replay unexpectedly succeeded")
+	}
+	return output, nil
 }
 
 func singlePendingID(home, profile, kind string) (string, error) {
@@ -2074,6 +2164,34 @@ func verifyExactFaultReplay(logPath, path, requestID string) error {
 	return nil
 }
 
+func verifyDroppedFaultCommit(logPath, path, requestID, requestSHA256 string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	matches := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		values := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if values["path"] != path || values["requestId"] != requestID {
+			continue
+		}
+		matches++
+		if values["requestSha256"] != requestSHA256 || values["dropped"] != "true" || values["status"] != "200" || values["historicalResultSha256"] == "" {
+			return fmt.Errorf("dropped fault did not commit request %s: %v", requestID, values)
+		}
+	}
+	if matches != 1 {
+		return fmt.Errorf("dropped fault request %s matched %d dispatches", requestID, matches)
+	}
+	return nil
+}
+
 func requireSecretValuesAbsent(paths []string, secrets ...[]byte) error {
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
@@ -2162,6 +2280,46 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 	if err := verifyExactFaultReplay(faultLog, "/v1/enroll", enrollmentID); err != nil {
 		return err
 	}
+	immutableInvite := filepath.Join(h.root, "secrets", ".immutable-incarnation.invite")
+	if _, err := h.cli(admin, "--profile", "team", "invite", "issue", "--role", "write", "--invite-file", immutableInvite, "--label", "immutable-incarnation"); err != nil {
+		return err
+	}
+	immutableClient, err := h.newLocalEnrollmentClient("immutable-incarnation", h.faultEndpoint)
+	if err != nil {
+		return err
+	}
+	if err := h.armFault("/v1/enroll"); err != nil {
+		return err
+	}
+	lostImmutable, err := h.cliFailure(immutableClient, "enroll", "--profile", "team", "--invite-file", immutableInvite, "--label", "immutable-incarnation")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(lostImmutable, "unknown-outcome"); err != nil {
+		return err
+	}
+	immutableID, err := singlePendingID(immutableClient.home, "team", "enroll")
+	if err != nil {
+		return err
+	}
+	immutablePending, err := authority.NewFilePendingStore(filepath.Join(immutableClient.home, "pending", "team")).Load(immutableID)
+	if err != nil {
+		return err
+	}
+	var immutableBody struct {
+		ExpectedRestoreID string `json:"expectedRestoreId"`
+	}
+	if err := json.Unmarshal(immutablePending.Request, &immutableBody); err != nil || immutableBody.ExpectedRestoreID != immutablePending.ExpectedRestoreID {
+		return fmt.Errorf("pending enrollment incarnation mismatch body=%q record=%q err=%v", immutableBody.ExpectedRestoreID, immutablePending.ExpectedRestoreID, err)
+	}
+	h.immutableEnrollmentClient = immutableClient
+	h.immutableEnrollmentID = immutableID
+	h.immutableEnrollmentInvite = immutableInvite
+	h.immutableEnrollmentBefore = immutablePending
+	immutableEvidence, _ := json.MarshalIndent(map[string]string{"requestId": immutableID, "authorityId": immutablePending.AuthorityID, "expectedRestoreId": immutablePending.ExpectedRestoreID, "requestSha256": immutablePending.RequestSHA256}, "", "  ")
+	if err := os.WriteFile(filepath.Join(evidence, "immutable-enrollment-before-restore.json"), append(immutableEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
 
 	noBurnInvite := filepath.Join(h.root, "secrets", ".no-burn.invite")
 	if _, err := h.cli(admin, "--profile", "team", "invite", "issue", "--role", "read", "--invite-file", noBurnInvite, "--label", "no-burn"); err != nil {
@@ -2206,14 +2364,38 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 	if _, err := h.cli(noBurnClient, "enroll", "--profile", "team", "--invite-file", noBurnInvite, "--label", "no-burn"); err != nil {
 		return fmt.Errorf("invite was burned by mismatched enrollment: %w", err)
 	}
+	hiddenInvite := filepath.Join(h.root, "secrets", ".hidden-prompt.invite")
+	if _, err := h.cli(admin, "--profile", "team", "invite", "issue", "--role", "read", "--invite-file", hiddenInvite, "--label", "hidden-prompt"); err != nil {
+		return err
+	}
+	hiddenClient, err := h.newLocalEnrollmentClient("hidden-prompt", h.endpoint)
+	if err != nil {
+		return err
+	}
+	if err := h.cliHiddenInvite(hiddenClient, hiddenInvite, "enroll", "--profile", "team", "--label", "hidden-prompt"); err != nil {
+		return err
+	}
+	hiddenInventory, err := h.cli(admin, "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
+		return err
+	}
+	if !installationLabelExists(hiddenInventory, "hidden-prompt") {
+		return errors.New("hidden invite enrollment did not create its installation")
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := verifyDroppedFaultCommit(faultLog, "/v1/enroll", immutableID, immutablePending.RequestSHA256); err != nil {
+		return err
+	}
 	scannedPaths := []string{h.commandLog, filepath.Join(evidence, "authority.log"), faultLog, mismatchEvidence, inventoryEvidence}
-	if err := requireSecretsAbsent(scannedPaths, issueInvite, noBurnInvite); err != nil {
+	if err := requireSecretsAbsent(scannedPaths, issueInvite, immutableInvite, noBurnInvite, hiddenInvite); err != nil {
 		return err
 	}
 	if err := requireSecretValuesAbsent(scannedPaths, mismatchCredential); err != nil {
 		return err
 	}
-	observation := "lost invite issuance replayed exact request=" + issueID + "\nlost descriptor enrollment replayed exact retained request=" + enrollmentID + "\nwrong restore incarnation did not burn invite or insert installation\n"
+	observation := "lost invite issuance replayed exact request=" + issueID + "\nlost descriptor enrollment replayed exact retained request=" + enrollmentID + "\nretained enrollment for restore-incarnation check=" + immutableID + "\nwrong restore incarnation did not burn invite or insert installation\nhidden prompt, file, and descriptor invite inputs succeeded without secret disclosure\n"
 	return os.WriteFile(filepath.Join(evidence, "enrollment-replay.txt"), []byte(observation), 0o600)
 }
 
@@ -2325,7 +2507,7 @@ func (h *harness) group3(evidence string) error {
 	if _, err := h.cli(b, "--profile", "team", "release", "--handle", rotatedHandle, "--reason", "rotation observed"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "lost invite issuance and descriptor-based enrollment responses replay exact retained requests; an incarnation mismatch does not burn the invite; file-based roles, rotation, and revocation remain isolated", Commands: []string{"drop and replay invite issuance response", "drop and replay descriptor enrollment response", "reject mismatched incarnation then redeem the same invite", "enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden-file rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), rotationInvite}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "hidden, file, and descriptor invite sources work without disclosure; lost invite issuance and enrollment responses retain exact requests; an incarnation mismatch does not burn the invite; roles, rotation, and revocation remain isolated", Commands: []string{"enroll through hidden prompt", "drop and replay invite issuance response", "drop and replay descriptor enrollment response", "retain dropped enrollment across restore", "reject mismatched incarnation then redeem the same invite", "enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden-file rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "immutable-enrollment-before-restore.json"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), rotationInvite}, Passed: true})
 	return nil
 }
 
@@ -2390,14 +2572,22 @@ func (h *harness) group5(evidence string) error {
 	start := time.Now()
 	restoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", cutoff.Format(time.RFC3339Nano), "--loss-interval-start", cutoff.Format(time.RFC3339Nano), "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, restoreArgs...))
-	var err error
+	var (
+		restoreResult map[string]any
+		err           error
+	)
 	if h.realHost {
-		_, err = h.remoteJSON(h.remoteBinary, restoreArgs...)
+		restoreResult, err = h.remoteJSON(h.remoteBinary, restoreArgs...)
 	} else {
-		_, err = runJSON(nil, "", h.binary, restoreArgs...)
+		restoreResult, err = runJSON(nil, "", h.binary, restoreArgs...)
 	}
 	if err != nil {
 		return err
+	}
+	restoredAuthorityID, _ := restoreResult["authorityId"].(string)
+	restoredRestoreID, _ := restoreResult["restoreId"].(string)
+	if restoredAuthorityID != h.report.Authority || restoredRestoreID == "" || restoredRestoreID == h.immutableEnrollmentBefore.ExpectedRestoreID {
+		return fmt.Errorf("restore identity did not rotate on the same authority: authority=%q restore=%q", restoredAuthorityID, restoredRestoreID)
 	}
 	h.report.RestoreTime = time.Since(start).String()
 	localMutation := []string{"--json", "--home", authorityDBRoot(h), "--local", "acquire", "--handle", filepath.Join(authorityDBRoot(h), "forbidden-local-handle.json"), "--resource", "coordination:forbidden-local", "--ttl", "1s"}
@@ -2405,6 +2595,35 @@ func (h *harness) group5(evidence string) error {
 		return err
 	}
 	if err := h.restartServer(evidence); err != nil {
+		return err
+	}
+	if h.immutableEnrollmentID == "" {
+		return errors.New("immutable enrollment fixture is missing")
+	}
+	replayOutput, err := h.replayPendingFailure(h.immutableEnrollmentClient, h.immutableEnrollmentID, h.immutableEnrollmentInvite)
+	if err != nil {
+		return err
+	}
+	if invite, readErr := os.ReadFile(h.immutableEnrollmentInvite); readErr != nil {
+		return readErr
+	} else if bytes.Contains(replayOutput, bytes.TrimSpace(invite)) {
+		return errors.New("restored enrollment replay disclosed its invite")
+	}
+	if !bytes.Contains(replayOutput, []byte("authority-restored")) {
+		return errors.New("restored enrollment replay did not report authority-restored")
+	}
+	afterPending, err := authority.NewFilePendingStore(filepath.Join(h.immutableEnrollmentClient.home, "pending", "team")).Load(h.immutableEnrollmentID)
+	if err != nil {
+		return err
+	}
+	beforeData, _ := json.Marshal(h.immutableEnrollmentBefore)
+	afterData, _ := json.Marshal(afterPending)
+	if !bytes.Equal(beforeData, afterData) {
+		return errors.New("restored enrollment replay mutated the retained request incarnation")
+	}
+	immutableEvidence := fmt.Sprintf("request-id=%s\nauthority-id=%s\noriginal-restore-id=%s\nnew-restore-id=%s\ninitial-dispatch-committed-and-response-dropped=true\nreplay-after-restore=authority-restored\nretained-request-sha256=%s\npending-record-unchanged=true\n", h.immutableEnrollmentID, restoredAuthorityID, afterPending.ExpectedRestoreID, restoredRestoreID, afterPending.RequestSHA256)
+	immutableEvidencePath := filepath.Join(evidence, "immutable-enrollment-after-restore.txt")
+	if err := os.WriteFile(immutableEvidencePath, []byte(immutableEvidence), 0o600); err != nil {
 		return err
 	}
 	if err := h.requireServerStartFailure("hosted-lock-held"); err != nil {
@@ -2427,7 +2646,7 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
 	return nil
 }
 
@@ -2534,9 +2753,9 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.8", "late acknowledgment without redispatch", 2),
 		live("AC4.9", "asynchronous provider effect continuing after terminal completion", 2),
 		blocked("AC5.1", "bootstrap crash ordering and redaction"),
-		blocked("AC5.2", "hidden, file, and descriptor invite input"),
+		live("AC5.2", "hidden, file, and descriptor invite input", 3),
 		live("AC5.3", "dropped invite and redemption responses", 3),
-		blocked("AC5.4", "immutable request incarnation"),
+		live("AC5.4", "immutable request incarnation", 5),
 		live("AC5.5", "no-burn mismatch", 3),
 		live("AC5.6", "role isolation", 3),
 		live("AC5.7", "credential rotation", 3),
