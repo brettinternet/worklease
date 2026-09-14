@@ -3,11 +3,11 @@ id: TASK-107.4
 title: >-
   Extend the lease service with incarnation binding, admission bounds, and
   recovery mode
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 03:23'
+updated_date: '2026-09-14 04:03'
 labels:
   - remote-authority
 dependencies:
@@ -36,19 +36,19 @@ Persist each claim's admitted maximum TTL and absolute hold deadline. Every exte
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Remote service calls use a trusted actor context and enforce installation, role, authority, incarnation, epoch credential where applicable, retained replay, and new-admission checks in the frozen order inside one serialized transaction; local calls continue without remote identity or policy fields.
-- [ ] #2 After successful installation authentication and role authorization, every installation-authenticated remote mutation fails with the frozen incarnation reason before replay or write when `expectedRestoreId` differs. Authenticated reads validate authority and incarnation against one coherent snapshot. Every response carries fresh `restoreId` and `authorityTime`, every cursor carries `restoreId`, and an old-incarnation cursor fails `authority-restored`.
-- [ ] #3 Admission accepts only configured delimiter-terminated portable prefixes, always rejects reserved host-local prefixes, rejects rather than clamps excessive TTL or hold, and persists admitted limits that constrain heartbeat, begin, renew, and same-host transfer; transfer inherits the predecessor limits.
-- [ ] #4 Changing configured prefixes or bounds affects new admission while retained exact replay and existing lifecycle, recovery, and same-host transfer continue under persisted limits.
-- [ ] #5 Recovery mode refuses new operation starts. A recovery acquire must cover the full transitive unresolved resource closure atomically and fails when that closure exceeds 32 resources rather than splitting it; retired-prefix recovery remains allowed.
-- [ ] #6 Retained exact replay is resolved before recovery or new-admission rejection. Completed operations return their retained receipts, and retained started operations return `unknown-outcome` without authorizing execution.
-- [ ] #7 Administrative claim revocation records reason `revoked`, preserves unresolved started operations, appends the required public event, and makes the resource available under ordinary contention rules without claiming executor cessation.
-- [ ] #8 Typed administrative reopening atomically validates reconciled retained rows and a complete private attestation, records its bounded references and gaps, and clears recovery mode. A selected durable cutoff and lost-history bound may be recorded as unknown only when exhaustive independent inventory, pending-set or equivalent coverage, outcomes, and cessation coverage are still established. Missing coverage keeps recovery mode active.
+- [x] #1 Remote service calls use a trusted actor context and enforce installation, role, authority, incarnation, epoch credential where applicable, retained replay, and new-admission checks in the frozen order inside one serialized transaction; local calls continue without remote identity or policy fields.
+- [x] #2 After successful installation authentication and role authorization, every installation-authenticated remote mutation fails with the frozen incarnation reason before replay or write when `expectedRestoreId` differs. Authenticated reads validate authority and incarnation against one coherent snapshot. Every response carries fresh `restoreId` and `authorityTime`, every cursor carries `restoreId`, and an old-incarnation cursor fails `authority-restored`.
+- [x] #3 Admission accepts only configured delimiter-terminated portable prefixes, always rejects reserved host-local prefixes, rejects rather than clamps excessive TTL or hold, and persists admitted limits that constrain heartbeat, begin, renew, and same-host transfer; transfer inherits the predecessor limits.
+- [x] #4 Changing configured prefixes or bounds affects new admission while retained exact replay and existing lifecycle, recovery, and same-host transfer continue under persisted limits.
+- [x] #5 Recovery mode refuses new operation starts. A recovery acquire must cover the full transitive unresolved resource closure atomically and fails when that closure exceeds 32 resources rather than splitting it; retired-prefix recovery remains allowed.
+- [x] #6 Retained exact replay is resolved before recovery or new-admission rejection. Completed operations return their retained receipts, and retained started operations return `unknown-outcome` without authorizing execution.
+- [x] #7 Administrative claim revocation records reason `revoked`, preserves unresolved started operations, appends the required public event, and makes the resource available under ordinary contention rules without claiming executor cessation.
+- [x] #8 Typed administrative reopening atomically validates reconciled retained rows and a complete private attestation, records its bounded references and gaps, and clears recovery mode. A selected durable cutoff and lost-history bound may be recorded as unknown only when exhaustive independent inventory, pending-set or equivalent coverage, outcomes, and cessation coverage are still established. Missing coverage keeps recovery mode active.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci` passes on the final commit
+- [x] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -66,4 +66,12 @@ Persist each claim's admitted maximum TTL and absolute hold deadline. Every exte
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented typed remote actor/policy and response identity boundaries; persisted installation/restore/admitted-limit provenance across claims, epochs, operations, reconciliation, and events; enforced replay-first prefix/bound/recovery behavior across lease lifecycle and exact remote operation renewal; added administrative claim revocation, recovery status, evidence-validated atomic reopening, and restore-bound cursors. Focused and repository checks pass: go test ./internal/lease ./internal/ledger ./internal/watch; mise run lint; mise run format-check; mise run test; mise run typecheck.
+
+Final verification: independent verifier reported all acceptance criteria PASS after focused remote, ledger, and watch tests; mise run ci passed on commit 70d9c37, including unit, race, staticcheck, vet, e2e, formatting, documentation generation, and vulnerability checks. The adversarial reviewer transport failed twice without findings; parent review and independent verification covered the frozen ordering, replay, bounds, recovery, cursor, and compatibility risks.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented TASK-107.4 remote lease-domain invariants in commit 70d9c37: trusted installation context and serialized incarnation checks, portable-prefix and persisted TTL/hold admission, replay-safe remote operation renewal, recovery closure/start gating, administrative claim revocation, evidence-validated reopening, provenance persistence, and restore-bound cursors. Verified with focused tests, independent acceptance verification, pre-commit hooks, and mise run ci.
+<!-- SECTION:FINAL_SUMMARY:END -->
