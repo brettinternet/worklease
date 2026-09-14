@@ -1,11 +1,11 @@
 ---
 id: TASK-107.10
 title: Adapt the stdio MCP adapter to the remote client
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 11:27'
+updated_date: '2026-09-14 11:28'
 labels:
   - remote-authority
 dependencies:
@@ -54,7 +54,7 @@ Adapt the local stdio MCP adapter to the shared authority interface in parallel 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci` passes on the final commit
+- [x] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -75,4 +75,12 @@ Implemented shared-authority routing for all authority-backed MCP tools while pr
 Verification passed: focused remote MCP integration tests; mise run lint; mise run format-check; mise run test; mise run typecheck. Independent review found five remote edge cases (contended acquire recovery, definitive failure cleanup, stale authority time, 60-second watches, and missing-credential mutation preflight); all were fixed and relevant regression coverage was added.
 
 The initial lease expired during the long independent review; reacquired ownership as claim 2e30c40c25b13099ee32385ca4e1e915 and re-read the authoritative task before final delivery.
+
+Delivery commit b11014e passed mise run ci (format-check, generated man page, staticcheck, go vet, e2e, full tests, race tests, and govulncheck).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Adapted the stdio MCP server to the selected local or remote shared authority without changing its 11-tool contract. Remote operation state, credentials, hold caps, renewal, recovery, and watch loops remain client-local; authentication failures provide CLI enrollment guidance and public results remain redacted. Verified by remote MCP integration/regression tests, independent review, all focused quality gates, hooks, and mise run ci on commit b11014e.
+<!-- SECTION:FINAL_SUMMARY:END -->
