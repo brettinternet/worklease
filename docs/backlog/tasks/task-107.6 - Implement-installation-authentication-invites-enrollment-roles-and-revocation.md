@@ -71,4 +71,6 @@ Implemented service-layer authentication with client-side 256-bit secret generat
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Implemented installation authentication, invite issuance/enrollment replay, role enforcement, revocation, and recovery bootstrap restrictions. Credentials remain client-generated and hash-only at rest; authenticated identity is re-derived inside each transaction before replay or mutation. Added verified schema-v2 admin replay completion plus expiry, recovery, revocation-ordering, clock, redaction, and compatibility regressions. Independent review findings were fixed, and mise run ci passed.
+
+Delivery commit: 8131148 (Implement installation authentication).
 <!-- SECTION:FINAL_SUMMARY:END -->
