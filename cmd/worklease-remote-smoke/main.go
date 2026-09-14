@@ -5,13 +5,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -21,6 +24,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +33,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -94,6 +100,8 @@ type harness struct {
 	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey string
 	commandLog                                                      string
 	server                                                          *exec.Cmd
+	faultProxy                                                      *exec.Cmd
+	faultEndpoint, faultControl, faultLog                           string
 	clients                                                         [2]client
 	report                                                          report
 	realHost                                                        bool
@@ -120,6 +128,36 @@ func main() {
 			err = closeErr
 		}
 		if err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "delayed-effect" {
+		if len(os.Args) != 4 {
+			fatal(errors.New("delayed-effect requires a duration and path"))
+		}
+		delay, err := time.ParseDuration(os.Args[2])
+		if err != nil {
+			fatal(err)
+		}
+		time.Sleep(delay)
+		file, err := os.OpenFile(os.Args[3], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, err = io.WriteString(file, "dispatch\n")
+			if closeErr := file.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "fault-proxy" {
+		if len(os.Args) != 9 {
+			fatal(errors.New("fault-proxy requires listen, backend, cert, key, control, log, and pid file"))
+		}
+		if err := serveFaultProxy(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6], os.Args[7], os.Args[8]); err != nil {
 			fatal(err)
 		}
 		return
@@ -264,6 +302,7 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 		h.report.RenewalMargins = []string{"guarded start exercised with 10m TTL", "real-host renewal margin unmeasured"}
 		h.report.RecoveryBounds = "development fixture only; real-host recovery bounds remain unmeasured"
 	}
+	defer h.stopFaultProxy()
 	defer h.stopServer()
 	if err := h.provision(evidence); err != nil {
 		return err
@@ -555,6 +594,207 @@ func (h *harness) startServer(evidence string) error {
 	return waitHealthy(h.endpoint, h.cert)
 }
 
+type faultProxyHandler struct {
+	backend *url.URL
+	client  *http.Client
+	control string
+	log     string
+	mu      sync.Mutex
+}
+
+func serveFaultProxy(listen, backend, certPath, keyPath, control, logPath, pidPath string) error {
+	backendURL, err := url.Parse(backend)
+	if err != nil {
+		return err
+	}
+	certificate, err := os.ReadFile(certPath)
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificate) {
+		return errors.New("fault proxy certificate contains no trusted certificate")
+	}
+	handler := &faultProxyHandler{backend: backendURL, client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}, control: control, log: logPath}
+	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}, TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(pidPath)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	go func() {
+		<-signals
+		_ = server.Close()
+	}()
+	err = server.ListenAndServeTLS(certPath, keyPath)
+	signal.Stop(signals)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+var errDropResponse = errors.New("injected response loss")
+
+func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	digest := sha256.Sum256(body)
+	requestHash := hex.EncodeToString(digest[:])
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(p.backend)
+			request.Out.Host = p.backend.Host
+		},
+		Transport: p.client.Transport,
+		ModifyResponse: func(response *http.Response) error {
+			if !p.consume(r.URL.Path, response.StatusCode, requestHash) {
+				return nil
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			return errDropResponse
+		},
+		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
+			if errors.Is(proxyErr, errDropResponse) {
+				if hijacker, ok := writer.(http.Hijacker); ok {
+					connection, _, err := hijacker.Hijack()
+					if err == nil {
+						_ = connection.Close()
+						return
+					}
+				}
+				panic(http.ErrAbortHandler)
+			}
+			http.Error(writer, proxyErr.Error(), http.StatusBadGateway)
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func (p *faultProxyHandler) consume(path string, status int, requestHash string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	armed, _ := os.ReadFile(p.control)
+	drop := strings.TrimSpace(string(armed)) == path
+	if drop {
+		_ = os.WriteFile(p.control, nil, 0o600)
+	}
+	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t at=%s\n", path, status, requestHash, drop, time.Now().UTC().Format(time.RFC3339Nano))
+	if file, err := os.OpenFile(p.log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+		_, _ = io.WriteString(file, entry)
+		_ = file.Close()
+	}
+	return drop
+}
+
+func (h *harness) startFaultProxy(evidence string) error {
+	port, err := freePort()
+	if h.realHost {
+		var output string
+		output, err = runSSH(h.remoteHost, h.remoteHelper, "free-port")
+		if err == nil {
+			port, err = strconv.Atoi(strings.TrimSpace(output))
+		}
+	}
+	if err != nil {
+		return err
+	}
+	listen, cert, key, helper := fmt.Sprintf("127.0.0.1:%d", port), h.cert, filepath.Join(h.root, "secrets", "tls.key"), h.self
+	h.faultControl, h.faultLog = filepath.Join(h.root, "fault-control"), filepath.Join(evidence, "fault-proxy.log")
+	pidPath := filepath.Join(h.root, "fault-proxy.pid")
+	if h.realHost {
+		listen, cert, key, helper = fmt.Sprintf("0.0.0.0:%d", port), h.remoteCert, h.remoteKey, h.remoteHelper
+		h.faultControl, h.faultLog = filepath.Join(h.remoteRoot, "fault-control"), filepath.Join(h.remoteRoot, "fault-proxy.log")
+		pidPath = filepath.Join(h.remoteRoot, "fault-proxy.pid")
+		h.faultEndpoint = fmt.Sprintf("https://%s:%d", h.remoteAddress, port)
+		h.faultProxy = exec.Command("ssh", h.remoteHost, helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
+	} else {
+		h.faultEndpoint = "https://" + listen
+		h.faultProxy = exec.Command(helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
+	}
+	if err := h.faultProxy.Start(); err != nil {
+		return err
+	}
+	return waitHealthy(h.faultEndpoint, h.cert)
+}
+
+func (h *harness) stopFaultProxy() {
+	if h.faultProxy == nil || h.faultProxy.Process == nil {
+		return
+	}
+	if h.realHost {
+		_, _ = runSSH(h.remoteHost, h.remoteHelper, "stop-server", filepath.Join(h.remoteRoot, "fault-proxy.pid"))
+	} else {
+		_ = h.faultProxy.Process.Signal(os.Interrupt)
+	}
+	_, _ = h.faultProxy.Process.Wait()
+	h.faultProxy = nil
+}
+
+func (h *harness) armFault(path string) error {
+	if !h.realHost {
+		return os.WriteFile(h.faultControl, []byte(path+"\n"), 0o600)
+	}
+	local := filepath.Join(h.root, "fault-control-next")
+	if err := os.WriteFile(local, []byte(path+"\n"), 0o600); err != nil {
+		return err
+	}
+	return runSCP(h.remoteHost, local, h.faultControl)
+}
+
+func (h *harness) collectFaultLog(evidence string) error {
+	if h.realHost {
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+h.faultLog, filepath.Join(evidence, "fault-proxy.log")); err != nil {
+			return err
+		}
+	}
+	return verifyFaultReplays(filepath.Join(evidence, "fault-proxy.log"), []string{"/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete"})
+}
+
+func verifyFaultReplays(logPath string, paths []string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		droppedHash := ""
+		replayed := false
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || fields[0] != "path="+path {
+				continue
+			}
+			hash := strings.TrimPrefix(fields[2], "requestSha256=")
+			if fields[3] == "dropped=true" {
+				if droppedHash != "" {
+					return fmt.Errorf("multiple injected response losses for %s", path)
+				}
+				droppedHash = hash
+			} else if droppedHash != "" && hash == droppedHash {
+				replayed = true
+			}
+		}
+		if droppedHash == "" || !replayed {
+			return fmt.Errorf("fault path %s has no exact same-body replay", path)
+		}
+	}
+	return nil
+}
+
+func (h *harness) switchProfileEndpoint(c client, endpoint string) error {
+	if _, err := h.cli(c, "profile", "remove", "team"); err != nil {
+		return err
+	}
+	_, err := h.cli(c, "profile", "add", "team", "--endpoint", endpoint, "--authority-id", h.report.Authority)
+	return err
+}
+
 func (h *harness) serverConfig(prefixes []string, maxTTL, maxHold string) string {
 	listen, cert, key := strings.TrimPrefix(h.endpoint, "https://"), h.cert, filepath.Join(h.root, "secrets", "tls.key")
 	if h.realHost {
@@ -688,18 +928,87 @@ func (h *harness) group1(evidence string) error {
 }
 
 func (h *harness) group2(evidence string) error {
-	if _, err := h.cli(h.clients[0], "--profile", "team", "acquire", "--resource", "coordination:guarded-effect", "--ttl", "5s"); err != nil {
+	if err := h.startFaultProxy(evidence); err != nil {
 		return err
 	}
-	effect := filepath.Join(evidence, "guarded-effects.log")
-	if _, err := h.cli(h.clients[0], "--profile", "team", "exec", "--ttl", "5s", "--", h.self, "effect", effect); err != nil {
+	a := h.clients[0]
+	if err := h.switchProfileEndpoint(a, h.faultEndpoint); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(effect)
-	if err != nil || string(data) != "dispatch\n" {
-		return fmt.Errorf("guarded effect dispatch count: content=%q err=%v", data, err)
+	defer func() {
+		_ = h.switchProfileEndpoint(a, h.endpoint)
+		h.stopFaultProxy()
+	}()
+
+	beginHandle := filepath.Join(a.home, "handles", "lost-begin.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", beginHandle, "--resource", "coordination:lost-begin", "--ttl", "5s"); err != nil {
+		return err
 	}
-	h.report.EffectDispatchCounts[filepath.Base(effect)] = strings.Count(string(data), "dispatch\n")
+	beginEffect := filepath.Join(evidence, "lost-begin-effect.log")
+	beginOperation := strings.Repeat("1", 32)
+	if err := h.armFault("/v1/operations/begin"); err != nil {
+		return err
+	}
+	if _, err := h.cliFailure(a, "--profile", "team", "exec", "--handle", beginHandle, "--operation-id", beginOperation, "--ttl", "5s", "--", h.self, "effect", beginEffect); err != nil {
+		return err
+	}
+	if _, err := os.Stat(beginEffect); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("lost begin dispatched before replay: %v", err)
+	}
+	replayedBegin, err := h.cliFailure(a, "--profile", "team", "exec", "--handle", beginHandle, "--operation-id", beginOperation, "--ttl", "5s", "--", h.self, "effect", beginEffect)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(replayedBegin, "unknown-outcome"); err != nil {
+		return err
+	}
+	if _, err := os.Stat(beginEffect); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("replayed unknown begin dispatched an effect: %v", err)
+	}
+	h.report.EffectDispatchCounts[filepath.Base(beginEffect)] = 0
+
+	renewHandle := filepath.Join(a.home, "handles", "lost-renew.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", renewHandle, "--resource", "coordination:lost-renew", "--ttl", "2s"); err != nil {
+		return err
+	}
+	renewEffect := filepath.Join(evidence, "lost-renew-effect.log")
+	if err := h.armFault("/v1/operations/renew"); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "exec", "--handle", renewHandle, "--operation-id", strings.Repeat("2", 32), "--ttl", "2s", "--max-duration", "6s", "--", h.self, "delayed-effect", "3s", renewEffect); err != nil {
+		return err
+	}
+
+	completeHandle := filepath.Join(a.home, "handles", "lost-complete.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", completeHandle, "--resource", "coordination:lost-complete", "--ttl", "5s"); err != nil {
+		return err
+	}
+	completeEffect := filepath.Join(evidence, "lost-complete-effect.log")
+	completeOperation := strings.Repeat("3", 32)
+	if err := h.armFault("/v1/operations/complete"); err != nil {
+		return err
+	}
+	if _, err := h.cliFailure(a, "--profile", "team", "exec", "--handle", completeHandle, "--operation-id", completeOperation, "--ttl", "5s", "--", h.self, "effect", completeEffect); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "exec", "--handle", completeHandle, "--operation-id", completeOperation, "--ttl", "5s", "--", h.self, "effect", completeEffect); err != nil {
+		return err
+	}
+	for _, effect := range []string{renewEffect, completeEffect} {
+		data, err := os.ReadFile(effect)
+		if err != nil || string(data) != "dispatch\n" {
+			return fmt.Errorf("faulted effect dispatch count %s: content=%q err=%v", filepath.Base(effect), data, err)
+		}
+		h.report.EffectDispatchCounts[filepath.Base(effect)] = strings.Count(string(data), "dispatch\n")
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
+		return err
+	}
+	h.stopFaultProxy()
+
 	h.stopServer()
 	partitionHandle := filepath.Join(h.clients[1].home, "handles", "partition.json")
 	_, partitionErr := h.cliFailure(h.clients[1], "--profile", "team", "acquire", "--handle", partitionHandle, "--resource", "coordination:partition", "--max-wait", "100ms")
@@ -717,7 +1026,8 @@ func (h *harness) group2(evidence string) error {
 	if err := h.restartServer(evidence); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "guarded effect dispatched exactly once on the client and an authority partition created no local fallback", Commands: []string{"client-a guarded exec", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{effect, "dispatch-count=1"}, Passed: true})
+	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1"}, Passed: true})
 	return nil
 }
 
@@ -1025,7 +1335,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC3.3", "raw and misconfigured reserved-prefix rejection", 1),
 		live("AC3.4", "configuration restart behavior", 1),
 		live("AC3.5", "persisted admission limits on every extension path", 1),
-		blocked("AC4.1", "exact replay after lost start, renewal, and completion responses"),
+		live("AC4.1", "exact replay after lost start, renewal, and completion responses", 2),
 		supported("AC4.2", "coexistence of request-scoped recovery records with original guarded-effect evidence"),
 		live("AC4.3", "no local fallback during partition", 2),
 		blocked("AC4.4", "race ordering for revocation and policy changes"),

@@ -465,18 +465,22 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 		req.Header.Set("Worklease-New-Claim-Authorization", "Bearer "+newClaim)
 	}
 	claim := s.ClaimCredential
-	if claim == "" && s.ClaimCredentialPath != "" {
-		claim, err = handle.ReadCredential(s.ClaimCredentialPath)
-		if err != nil {
-			return Response{}, err
-		}
-	}
+	// A contextual handle is the authoritative claim credential source. A
+	// secondary pending request may also retain the installation credential
+	// path used for HTTP authentication; it must never be mistaken for the
+	// claim bearer during exact replay.
 	if claim == "" && s.ClaimHandlePath != "" {
 		h, e := handle.Read(s.ClaimHandlePath)
 		if e != nil {
 			return Response{}, e
 		}
 		claim = h.Token
+	}
+	if claim == "" && s.ClaimCredentialPath != "" {
+		claim, err = handle.ReadCredential(s.ClaimCredentialPath)
+		if err != nil {
+			return Response{}, err
+		}
 	}
 	if claim != "" {
 		req.Header.Set("Worklease-Claim-Authorization", "Bearer "+claim)
