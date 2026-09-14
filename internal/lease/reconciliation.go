@@ -20,9 +20,11 @@ const maxEvidence = 8 * 1024
 var beforeReconciliationCommit func() error
 
 type ReconcileRequest struct {
-	OperationID           string
-	TargetClaimID         string
-	TargetOperationID     string
+	OperationID       string
+	TargetClaimID     string
+	TargetOperationID string
+	// TargetHandlePath identifies client-local pending evidence to clear after confirmed remote reconciliation.
+	TargetHandlePath      string
 	ExpectedRequestSHA256 string
 	Outcome               string
 	Evidence              json.RawMessage
