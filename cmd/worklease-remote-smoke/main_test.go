@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestValidateSSHHostRejectsShellSyntax(t *testing.T) {
@@ -32,6 +33,61 @@ func TestVerifyFaultReplaysRequiresMatchingBody(t *testing.T) {
 	}
 	if err := verifyFaultReplays(logPath, []string{"/v1/operations/complete"}); err == nil {
 		t.Fatal("missing replay accepted")
+	}
+}
+
+func TestVerifyFaultGatesRequiresMatchedRequestHashes(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	log := "path=/v1/claims/acquire phase=held requestSha256=aaa at=now\n" +
+		"path=/v1/claims/acquire phase=released requestSha256=aaa at=now\n" +
+		"path=/v1/claims/acquire phase=held requestSha256=bbb at=now\n" +
+		"path=/v1/claims/acquire phase=released requestSha256=bbb at=now\n"
+	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFaultGates(logPath, "/v1/claims/acquire", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFaultGates(logPath, "/v1/claims/acquire", 1); err == nil {
+		t.Fatal("wrong gate count accepted")
+	}
+}
+
+func TestFaultProxyHoldsBeforeForwardingUntilReleased(t *testing.T) {
+	dir := t.TempDir()
+	control := filepath.Join(dir, "control")
+	handler := &faultProxyHandler{control: control, log: filepath.Join(dir, "fault.log")}
+	if err := os.WriteFile(control, []byte("hold /v1/claims/acquire\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- handler.waitIfHeld("/v1/claims/acquire", "request-hash") }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err := os.ReadFile(control)
+		if err == nil && string(data) == "held /v1/claims/acquire\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("proxy did not report held request")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("held request returned before release: %v", err)
+	default:
+	}
+	if err := os.WriteFile(control, []byte("release /v1/claims/acquire\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not release held request")
 	}
 }
 

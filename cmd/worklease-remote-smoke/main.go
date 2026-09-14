@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -114,6 +115,11 @@ type client struct {
 	remote                       bool
 }
 
+type cliFailureResult struct {
+	result map[string]any
+	err    error
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "effect" {
 		if len(os.Args) != 3 {
@@ -161,6 +167,27 @@ func main() {
 			fatal(err)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "wait-file" {
+		if len(os.Args) != 6 {
+			fatal(errors.New("wait-file requires a path, two exact content fields, and timeout"))
+		}
+		expected := os.Args[3] + " " + os.Args[4]
+		timeout, err := time.ParseDuration(os.Args[5])
+		if err != nil {
+			fatal(err)
+		}
+		deadline := time.Now().Add(timeout)
+		for {
+			data, readErr := os.ReadFile(os.Args[2])
+			if readErr == nil && strings.TrimSpace(string(data)) == expected {
+				return
+			}
+			if time.Now().After(deadline) {
+				fatal(fmt.Errorf("timed out waiting for %s to contain %q", os.Args[2], expected))
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "owner-marker" {
 		if len(os.Args) != 3 || !strings.HasPrefix(os.Args[2], "/private/tmp/worklease-acceptance-") {
@@ -646,6 +673,10 @@ func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	digest := sha256.Sum256(body)
 	requestHash := hex.EncodeToString(digest[:])
+	if err := p.waitIfHeld(r.URL.Path, requestHash); err != nil {
+		http.Error(w, err.Error(), http.StatusGatewayTimeout)
+		return
+	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(p.backend)
@@ -677,19 +708,50 @@ func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (p *faultProxyHandler) consume(path string, status int, requestHash string) bool {
+func (p *faultProxyHandler) waitIfHeld(path, requestHash string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	armed, _ := os.ReadFile(p.control)
-	drop := strings.TrimSpace(string(armed)) == path
-	if drop {
-		_ = os.WriteFile(p.control, nil, 0o600)
+	hold := strings.TrimSpace(string(armed)) == "hold "+path
+	if hold {
+		_ = os.WriteFile(p.control, []byte("held "+path+"\n"), 0o600)
+		p.appendLog(fmt.Sprintf("path=%s phase=held requestSha256=%s at=%s\n", path, requestHash, time.Now().UTC().Format(time.RFC3339Nano)))
 	}
-	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t at=%s\n", path, status, requestHash, drop, time.Now().UTC().Format(time.RFC3339Nano))
+	p.mu.Unlock()
+	if !hold {
+		return nil
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		armed, _ := os.ReadFile(p.control)
+		if strings.TrimSpace(string(armed)) == "release "+path {
+			p.mu.Lock()
+			_ = os.WriteFile(p.control, nil, 0o600)
+			p.appendLog(fmt.Sprintf("path=%s phase=released requestSha256=%s at=%s\n", path, requestHash, time.Now().UTC().Format(time.RFC3339Nano)))
+			p.mu.Unlock()
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out holding %s", path)
+}
+
+func (p *faultProxyHandler) appendLog(entry string) {
 	if file, err := os.OpenFile(p.log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		_, _ = io.WriteString(file, entry)
 		_ = file.Close()
 	}
+}
+
+func (p *faultProxyHandler) consume(path string, status int, requestHash string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	armed, _ := os.ReadFile(p.control)
+	drop := strings.TrimSpace(string(armed)) == "drop "+path
+	if drop {
+		_ = os.WriteFile(p.control, nil, 0o600)
+	}
+	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t at=%s\n", path, status, requestHash, drop, time.Now().UTC().Format(time.RFC3339Nano))
+	p.appendLog(entry)
 	return drop
 }
 
@@ -737,15 +799,44 @@ func (h *harness) stopFaultProxy() {
 	h.faultProxy = nil
 }
 
-func (h *harness) armFault(path string) error {
+func (h *harness) setFaultControl(command string) error {
 	if !h.realHost {
-		return os.WriteFile(h.faultControl, []byte(path+"\n"), 0o600)
+		return os.WriteFile(h.faultControl, []byte(command+"\n"), 0o600)
 	}
 	local := filepath.Join(h.root, "fault-control-next")
-	if err := os.WriteFile(local, []byte(path+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(local, []byte(command+"\n"), 0o600); err != nil {
 		return err
 	}
 	return runSCP(h.remoteHost, local, h.faultControl)
+}
+
+func (h *harness) armFault(path string) error {
+	return h.setFaultControl("drop " + path)
+}
+
+func (h *harness) holdFault(path string) error {
+	return h.setFaultControl("hold " + path)
+}
+
+func (h *harness) releaseFault(path string) error {
+	return h.setFaultControl("release " + path)
+}
+
+func (h *harness) waitFaultHeld(path string) error {
+	expected := "held " + path
+	if h.realHost {
+		_, err := runSSH(h.remoteHost, h.remoteHelper, "wait-file", h.faultControl, "held", path, "10s")
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(h.faultControl)
+		if err == nil && strings.TrimSpace(string(data)) == expected {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for held fault %s", path)
 }
 
 func (h *harness) collectFaultLog(evidence string) error {
@@ -755,6 +846,38 @@ func (h *harness) collectFaultLog(evidence string) error {
 		}
 	}
 	return verifyFaultReplays(filepath.Join(evidence, "fault-proxy.log"), []string{"/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete"})
+}
+
+func verifyFaultGates(logPath, path string, want int) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	held, released := map[string]int{}, map[string]int{}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "path="+path {
+			continue
+		}
+		phase := strings.TrimPrefix(fields[1], "phase=")
+		hash := strings.TrimPrefix(fields[2], "requestSha256=")
+		switch phase {
+		case "held":
+			held[hash]++
+		case "released":
+			released[hash]++
+		}
+	}
+	pairs := 0
+	for hash, count := range held {
+		if count == 1 && released[hash] == 1 {
+			pairs++
+		}
+	}
+	if pairs != want {
+		return fmt.Errorf("fault path %s has %d matched hold/release pairs, want %d", path, pairs, want)
+	}
+	return nil
 }
 
 func verifyFaultReplays(logPath string, paths []string) error {
@@ -793,6 +916,63 @@ func (h *harness) switchProfileEndpoint(c client, endpoint string) error {
 	}
 	_, err := h.cli(c, "profile", "add", "team", "--endpoint", endpoint, "--authority-id", h.report.Authority)
 	return err
+}
+
+func (h *harness) provisionRaceClient(label string) (client, string, error) {
+	root := filepath.Join(h.root, label)
+	c := client{name: label, home: filepath.Join(root, "home"), config: filepath.Join(root, "config"), checkout: filepath.Join(root, "checkout")}
+	if h.realHost {
+		root = filepath.Join(h.remoteRoot, label)
+		c = client{name: label, home: filepath.Join(root, "home"), config: filepath.Join(root, "config"), checkout: filepath.Join(root, "checkout"), remote: true}
+		if _, err := runSSH(h.remoteHost, "mkdir", "-p", c.home, c.config, c.checkout); err != nil {
+			return client{}, "", err
+		}
+		if _, err := runSSH(h.remoteHost, "git", "init", "--quiet", c.checkout); err != nil {
+			return client{}, "", err
+		}
+	} else {
+		if err := os.MkdirAll(c.checkout, 0o700); err != nil {
+			return client{}, "", err
+		}
+		if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
+			return client{}, "", fmt.Errorf("git init %s: %w: %s", label, err, output)
+		}
+		c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+label, "WORKLEASE_SESSION_ID="+label+"-session")
+	}
+	if _, err := h.cli(c, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority); err != nil {
+		return client{}, "", err
+	}
+	invite := filepath.Join(h.root, "secrets", label+".invite")
+	if _, err := h.cli(h.clients[0], "--profile", "team", "invite", "issue", "--role", "write", "--invite-file", invite, "--label", label); err != nil {
+		return client{}, "", err
+	}
+	clientInvite := invite
+	if h.realHost {
+		clientInvite = filepath.Join(root, label+".invite")
+		if err := runSCP(h.remoteHost, invite, clientInvite); err != nil {
+			return client{}, "", err
+		}
+	}
+	if _, err := h.cli(c, "enroll", "--profile", "team", "--invite-file", clientInvite, "--label", label); err != nil {
+		return client{}, "", err
+	}
+	installations, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
+		return client{}, "", err
+	}
+	installationID, err := installationIDByLabel(installations, label)
+	return c, installationID, err
+}
+
+func claimsContain(result map[string]any, claimID string) bool {
+	claims, _ := result["claims"].([]any)
+	for _, raw := range claims {
+		claim, _ := raw.(map[string]any)
+		if claim["claimId"] == claimID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *harness) serverConfig(prefixes []string, maxTTL, maxHold string) string {
@@ -1007,6 +1187,15 @@ func (h *harness) group2(evidence string) error {
 	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
 		return err
 	}
+	if err := h.raceOrdering(evidence); err != nil {
+		return err
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := verifyFaultGates(filepath.Join(evidence, "fault-proxy.log"), "/v1/claims/acquire", 2); err != nil {
+		return err
+	}
 	h.stopFaultProxy()
 
 	h.stopServer()
@@ -1027,8 +1216,128 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1"}, Passed: true})
 	return nil
+}
+
+func (h *harness) raceOrdering(evidence string) error {
+	const acquirePath = "/v1/claims/acquire"
+	admin := h.clients[0]
+	if err := h.writeServerConfig([]string{"coordination:", "alternate:"}, "1h", "1h"); err != nil {
+		return err
+	}
+	h.stopServer()
+	if err := h.restartServer(evidence); err != nil {
+		return err
+	}
+
+	revocationFirst, revocationFirstID, err := h.provisionRaceClient("race-revocation-first")
+	if err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(revocationFirst, h.faultEndpoint); err != nil {
+		return err
+	}
+	if err := h.holdFault(acquirePath); err != nil {
+		return err
+	}
+	revocationResult := make(chan cliFailureResult, 1)
+	go func() {
+		result, callErr := h.cliFailureTimeout(revocationFirst, 45*time.Second, "--profile", "team", "acquire", "--handle", filepath.Join(revocationFirst.home, "handles", "held.json"), "--resource", "coordination:revocation-first", "--ttl", "1m")
+		revocationResult <- cliFailureResult{result: result, err: callErr}
+	}()
+	if err := h.waitFaultHeld(acquirePath); err != nil {
+		return err
+	}
+	if _, err := h.cli(admin, "--profile", "team", "installation", "revoke", "--installation-id", revocationFirstID, "--reason", "acceptance revocation-first ordering"); err != nil {
+		return err
+	}
+	if err := h.releaseFault(acquirePath); err != nil {
+		return err
+	}
+	failed := <-revocationResult
+	if failed.err != nil {
+		return failed.err
+	}
+	if err := requireReason(failed.result, "installation-revoked"); err != nil {
+		return err
+	}
+
+	commitFirst, commitFirstID, err := h.provisionRaceClient("race-commit-first")
+	if err != nil {
+		return err
+	}
+	commitHandle := filepath.Join(commitFirst.home, "handles", "committed.json")
+	committed, err := h.cli(commitFirst, "--profile", "team", "acquire", "--handle", commitHandle, "--resource", "coordination:commit-first", "--ttl", "1m")
+	if err != nil {
+		return err
+	}
+	claimID, _ := committed["claimId"].(string)
+	if claimID == "" {
+		return errors.New("commit-first acquire returned no claim ID")
+	}
+	if _, err := h.cli(admin, "--profile", "team", "installation", "revoke", "--installation-id", commitFirstID, "--reason", "acceptance commit-first ordering"); err != nil {
+		return err
+	}
+	claims, err := h.cli(admin, "--profile", "team", "list", "--full")
+	if err != nil {
+		return err
+	}
+	if !claimsContain(claims, claimID) {
+		return errors.New("installation revocation removed the mutation committed first")
+	}
+	revokedHeartbeat, err := h.cliFailure(commitFirst, "--profile", "team", "heartbeat", "--handle", commitHandle, "--ttl", "1m")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(revokedHeartbeat, "installation-revoked"); err != nil {
+		return err
+	}
+
+	policyClient := h.clients[1]
+	beforeHandle := filepath.Join(policyClient.home, "handles", "before-policy-withdrawal.json")
+	if _, err := h.cli(policyClient, "--profile", "team", "acquire", "--handle", beforeHandle, "--resource", "alternate:commit-first", "--ttl", "1m"); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(policyClient, h.faultEndpoint); err != nil {
+		return err
+	}
+	if err := h.holdFault(acquirePath); err != nil {
+		return err
+	}
+	policyResult := make(chan cliFailureResult, 1)
+	go func() {
+		result, callErr := h.cliFailureTimeout(policyClient, 45*time.Second, "--profile", "team", "acquire", "--handle", filepath.Join(policyClient.home, "handles", "after-policy-withdrawal.json"), "--resource", "alternate:withdrawn-first", "--ttl", "1m")
+		policyResult <- cliFailureResult{result: result, err: callErr}
+	}()
+	if err := h.waitFaultHeld(acquirePath); err != nil {
+		return err
+	}
+	if err := h.writeServerConfig([]string{"coordination:"}, "1h", "1h"); err != nil {
+		return err
+	}
+	h.stopServer()
+	if err := h.restartServer(evidence); err != nil {
+		return err
+	}
+	if err := h.releaseFault(acquirePath); err != nil {
+		return err
+	}
+	failed = <-policyResult
+	if failed.err != nil {
+		return failed.err
+	}
+	if err := requireReason(failed.result, "resource-not-enrolled"); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(policyClient, h.endpoint); err != nil {
+		return err
+	}
+	if _, err := h.cli(policyClient, "--profile", "team", "heartbeat", "--handle", beforeHandle, "--ttl", "1m"); err != nil {
+		return err
+	}
+	observation := "revocation-first held acquire=installation-revoked\ncommit-first claim retained after installation revocation=" + claimID + "\nwithdrawal-first held acquire=resource-not-enrolled\ncommit-first claim heartbeat after prefix withdrawal=success\n"
+	return os.WriteFile(filepath.Join(evidence, "race-ordering.txt"), []byte(observation), 0o600)
 }
 
 func (h *harness) group3(evidence string) error {
@@ -1338,7 +1647,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.1", "exact replay after lost start, renewal, and completion responses", 2),
 		supported("AC4.2", "coexistence of request-scoped recovery records with original guarded-effect evidence"),
 		live("AC4.3", "no local fallback during partition", 2),
-		blocked("AC4.4", "race ordering for revocation and policy changes"),
+		live("AC4.4", "race ordering for revocation and policy changes", 2),
 		blocked("AC4.5", "fresh response identity and time"),
 		blocked("AC4.6", "clock-bound edge cases"),
 		blocked("AC4.7", "pre-dispatch persistence failure"),
@@ -1433,6 +1742,36 @@ func (h *harness) cli(c client, args ...string) (map[string]any, error) {
 		return h.remoteClientJSON(c, args...)
 	}
 	return runJSON(c.env, c.checkout, h.binary, append([]string{"--json"}, args...)...)
+}
+
+func (h *harness) cliFailureTimeout(c client, timeout time.Duration, args ...string) (map[string]any, error) {
+	h.logCommand(c.name+hostSuffix(c)+" expected-failure", append([]string{"worklease", "--json"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var cmd *exec.Cmd
+	if c.remote {
+		remoteEnv := []string{"WORKLEASE_HOME=" + c.home, "XDG_CONFIG_HOME=" + c.config, "SSL_CERT_FILE=" + h.remoteCert, "WORKLEASE_AGENT_ID=" + c.name, "WORKLEASE_SESSION_ID=" + c.name + "-session"}
+		sshArgs := []string{h.remoteHost, "env"}
+		sshArgs = append(sshArgs, remoteEnv...)
+		sshArgs = append(sshArgs, h.remoteBinary, "--json")
+		sshArgs = append(sshArgs, args...)
+		cmd = exec.CommandContext(ctx, "ssh", sshArgs...)
+	} else {
+		cmd = exec.CommandContext(ctx, h.binary, append([]string{"--json"}, args...)...)
+		cmd.Env, cmd.Dir = c.env, c.checkout
+	}
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("command timed out after %s: %w", timeout, ctx.Err())
+	}
+	if err == nil {
+		return nil, fmt.Errorf("command unexpectedly succeeded: %s", strings.Join(args, " "))
+	}
+	var result map[string]any
+	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil || result["ok"] != false {
+		return nil, fmt.Errorf("invalid failure envelope: %v: %s", jsonErr, output)
+	}
+	return result, nil
 }
 
 func (h *harness) cliFailure(c client, args ...string) (map[string]any, error) {
