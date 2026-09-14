@@ -27,9 +27,26 @@ const (
 	MaxLimit     = 1000
 )
 
-type Service struct{ st *store.Store }
+type TransactionCheck func(context.Context, *store.Tx) error
+
+type Service struct {
+	st    *store.Store
+	check TransactionCheck
+}
 
 func New(st *store.Store) *Service { return &Service{st: st} }
+
+// NewChecked applies check inside every ledger read transaction.
+func NewChecked(st *store.Store, check TransactionCheck) *Service {
+	return &Service{st: st, check: check}
+}
+
+func (s *Service) checked(ctx context.Context, tx *store.Tx) error {
+	if s.check == nil {
+		return nil
+	}
+	return s.check(ctx, tx)
+}
 
 type Cursor struct {
 	Version     int    `json:"version"`
@@ -219,6 +236,9 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 	}
 	page := EventsPage{AuthorityID: s.st.AuthorityID(), Events: []Event{}}
 	err = s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.checked(ctx, tx); err != nil {
+			return err
+		}
 		last, pruned, err := watermarks(ctx, tx)
 		if err != nil {
 			return err
@@ -298,6 +318,9 @@ func (s *Service) ScanEvents(ctx context.Context, cursor, filter string) (Events
 	}
 	result := EventsScan{Events: []Event{}, InspectedSequence: strconv.FormatInt(position, 10)}
 	err = s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.checked(ctx, tx); err != nil {
+			return err
+		}
 		last, pruned, err := watermarks(ctx, tx)
 		if err != nil {
 			return err
@@ -396,6 +419,7 @@ type Operation struct {
 type InspectRequest struct {
 	OperationID, ClaimID, Resource, Token string
 	Full                                  bool
+	TrustedFull                           bool
 }
 
 func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, error) {
@@ -404,6 +428,9 @@ func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, e
 	}
 	var result Operation
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.checked(ctx, tx); err != nil {
+			return err
+		}
 		claim := req.ClaimID
 		if claim == "" {
 			query := `SELECT DISTINCT o.claim_id FROM operations o`
@@ -456,7 +483,7 @@ func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, e
 			result.CompletedAt = &t
 		}
 		if req.Full {
-			if subtle.ConstantTimeCompare([]byte(tokenHash), []byte(hashToken(req.Token))) != 1 {
+			if !req.TrustedFull && subtle.ConstantTimeCompare([]byte(tokenHash), []byte(hashToken(req.Token))) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
 			}
 			requestNotAfter := time.UnixMicro(deadline).UTC()
@@ -492,11 +519,12 @@ type HistoryCoverage struct {
 	PrunedThroughSequence    string  `json:"prunedThroughSequence"`
 }
 type HistoryPage struct {
-	AuthorityID, Resource string
-	Coverage              HistoryCoverage `json:"coverage"`
-	Epochs                []Epoch         `json:"epochs"`
-	NextCursor            string          `json:"nextCursor"`
-	Gap                   bool            `json:"gap"`
+	AuthorityID string          `json:"authorityId"`
+	Resource    string          `json:"resource"`
+	Coverage    HistoryCoverage `json:"coverage"`
+	Epochs      []Epoch         `json:"epochs"`
+	NextCursor  string          `json:"nextCursor"`
+	Gap         bool            `json:"gap"`
 }
 
 func (s *Service) History(ctx context.Context, resource, cursor string, limit int, full bool) (HistoryPage, error) {
@@ -513,6 +541,9 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 	}
 	page := HistoryPage{AuthorityID: s.st.AuthorityID(), Resource: resource, Epochs: []Epoch{}}
 	e = s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.checked(ctx, tx); err != nil {
+			return err
+		}
 		last, pruned, err := watermarks(ctx, tx)
 		if err != nil {
 			return err

@@ -1,10 +1,11 @@
 ---
 id: TASK-107.7
 title: Implement worklease serve
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:43'
+updated_date: '2026-09-14 08:00'
 labels:
   - remote-authority
 dependencies:
@@ -47,3 +48,19 @@ The server configuration supplies the listen address, TLS material or an explici
 <!-- DOD:BEGIN -->
 - [ ] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a strict, bounded HTTP transport package with deployment-owned server configuration, protocol envelopes, authentication-header extraction, error/status mapping, rate limits, safe logging, and graceful shutdown.
+2. Bind every frozen V1 route to the existing lease, ledger, watch, and GC services through typed request adapters while preserving domain-side authorization and replay checks.
+3. Register worklease serve --server-config FILE [--dev-http], opening only a ready marked hosted home under its process-lifetime lock before listening.
+4. Add transport and CLI tests for config/TLS safety, envelopes and bounds, authentication, lifecycle/admin routing, watch cancellation, redaction, lock lifetime, and shutdown.
+5. Run focused tests, independent review, repository quality gates, then finalize and commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented the frozen worklease-http/1 server transport, strict deployment configuration, hosted lock lifecycle, TLS/dev HTTP safety, bounded JSON and response projection, public endpoint rate limiting, authentication headers, route bindings, durable admin GC replay, transaction-coherent authenticated reads, graceful shutdown, cancellable 30-second watch polling, and redacted access logs. Added focused integration tests covering metadata, enrollment, acquire, distinct installation/claim bearers, heartbeat, strict fields, watch cancellation, GC replay mismatch, lock lifetime, and shutdown. Focused race tests and lint/format/test/typecheck gates pass.
+<!-- SECTION:NOTES:END -->
