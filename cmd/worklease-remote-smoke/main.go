@@ -918,6 +918,22 @@ func (h *harness) releaseFault(path string) error {
 	return h.setFaultControl("release " + path)
 }
 
+func (h *harness) requireFaultStillArmed(path string) error {
+	expected := "hold " + path
+	if h.realHost {
+		_, err := runSSH(h.remoteHost, h.remoteHelper, "wait-file", h.faultControl, "hold", path, "250ms")
+		return err
+	}
+	data, err := os.ReadFile(h.faultControl)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) != expected {
+		return fmt.Errorf("fault reached proxy before client persistence: control=%q", strings.TrimSpace(string(data)))
+	}
+	return nil
+}
+
 func (h *harness) waitFaultHeld(path string) error {
 	expected := "held " + path
 	if h.realHost {
@@ -942,6 +958,46 @@ func (h *harness) collectFaultLog(evidence string) error {
 		}
 	}
 	return verifyFaultReplays(filepath.Join(evidence, "fault-proxy.log"), []string{"/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete"})
+}
+
+func verifyNoFaultDispatch(logPath, path string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		values := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if values["path"] == path {
+			return fmt.Errorf("pre-dispatch persistence failure reached %s", path)
+		}
+	}
+	return nil
+}
+
+func withBlockedPendingRoot(root string, run func() error) (err error) {
+	backup := root + ".acceptance-backup"
+	if _, statErr := os.Lstat(backup); !errors.Is(statErr, os.ErrNotExist) {
+		if statErr == nil {
+			return fmt.Errorf("pending backup path already exists: %s", backup)
+		}
+		return statErr
+	}
+	if err := os.Rename(root, backup); err != nil {
+		return err
+	}
+	if err := os.WriteFile(root, []byte("injected pending persistence failure\n"), 0o600); err != nil {
+		return errors.Join(err, os.Rename(backup, root))
+	}
+	defer func() {
+		err = errors.Join(err, os.Remove(root), os.Rename(backup, root))
+	}()
+	return run()
 }
 
 func verifyFaultGates(logPath, path string, want int) error {
@@ -1448,6 +1504,38 @@ func (h *harness) group2(evidence string) error {
 	if err := os.WriteFile(clockEvidence, []byte("asymmetric metadata response delay=1.2s\ninjected authority/client wall-clock skew=-1h\nrequest window=authority lower bound + 24h\nexpired short window dispatches=0\nlate successful start response dispatches=0\n"), 0o600); err != nil {
 		return err
 	}
+
+	const preDispatchPath = "/v1/admin/gc"
+	if err := h.holdFault(preDispatchPath); err != nil {
+		return err
+	}
+	pendingRoot := filepath.Join(a.home, "pending", "team")
+	if err := withBlockedPendingRoot(pendingRoot, func() error {
+		failed, callErr := h.cliFailure(a, "--profile", "team", "gc", "--apply")
+		if callErr != nil {
+			return callErr
+		}
+		return requireReason(failed, "storage-failure")
+	}); err != nil {
+		return err
+	}
+	if err := h.requireFaultStillArmed(preDispatchPath); err != nil {
+		return err
+	}
+	if err := h.setFaultControl(""); err != nil {
+		return err
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := verifyNoFaultDispatch(filepath.Join(evidence, "fault-proxy.log"), preDispatchPath); err != nil {
+		return err
+	}
+	preDispatchEvidence := filepath.Join(evidence, "pre-dispatch-persistence.txt")
+	if err := os.WriteFile(preDispatchEvidence, []byte("pending root replaced by regular file\nclient result=storage-failure\nproxy pre-forward gate remained armed\nauthority dispatch count=0\n"), 0o600); err != nil {
+		return err
+	}
+
 	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
 		return err
 	}
@@ -1480,7 +1568,7 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; a failed client pending-store write returns storage-failure before authority dispatch; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "replace pending root with a regular file and attempt remote GC", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), preDispatchEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "pre-dispatch persistence authority dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
 	return nil
 }
 
@@ -1914,7 +2002,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.4", "race ordering for revocation and policy changes", 2),
 		live("AC4.5", "fresh response identity and time", 2),
 		live("AC4.6", "clock-bound edge cases", 2),
-		blocked("AC4.7", "pre-dispatch persistence failure"),
+		live("AC4.7", "pre-dispatch persistence failure", 2),
 		blocked("AC4.8", "late acknowledgment without redispatch"),
 		blocked("AC4.9", "asynchronous provider effect continuing after terminal completion"),
 		blocked("AC5.1", "bootstrap crash ordering and redaction"),

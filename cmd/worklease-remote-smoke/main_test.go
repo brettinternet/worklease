@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -77,6 +78,45 @@ func TestVerifyClockBoundEvidenceRequiresLowerBoundAndNoExpiredDispatch(t *testi
 	}
 	if err := verifyClockBoundEvidence(logPath, generated, expired, late, 2*time.Second); err == nil {
 		t.Fatal("expired request dispatch accepted")
+	}
+}
+
+func TestVerifyNoFaultDispatchRejectsMatchingPath(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	if err := os.WriteFile(logPath, []byte("path=/v1/admin/gc status=200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyNoFaultDispatch(logPath, "/v1/claims/acquire"); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyNoFaultDispatch(logPath, "/v1/admin/gc"); err == nil {
+		t.Fatal("matching authority dispatch accepted")
+	}
+}
+
+func TestWithBlockedPendingRootRestoresDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "pending")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "retained")
+	if err := os.WriteFile(marker, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := withBlockedPendingRoot(root, func() error {
+		info, err := os.Stat(root)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("pending root was not blocked by a regular file")
+		}
+		return errors.New("injected callback failure")
+	}); err == nil || err.Error() != "injected callback failure" {
+		t.Fatalf("callback error not preserved: %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "ok" {
+		t.Fatalf("pending root was not restored: data=%q err=%v", data, err)
 	}
 }
 
