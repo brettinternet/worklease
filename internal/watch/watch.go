@@ -134,6 +134,9 @@ func Wait(ctx context.Context, st *store.Store, req Request) (Result, error) {
 		if st.AuthorityID() == "" || cursor.AuthorityID != st.AuthorityID() || cursor.Feed != "events" || cursor.Filter != filter {
 			return Result{}, reason.New(reason.ReasonCursorInvalid, "cursor is invalid")
 		}
+		if cursor.RestoreID != st.RestoreID() {
+			return Result{}, reason.New(reason.ReasonAuthorityRestored, "authority was restored").With("restoreId", st.RestoreID())
+		}
 	}
 	// Establish the monotonic deadline before the initial snapshot. Every
 	// storage operation receives this deadline, including the first read.
@@ -294,7 +297,7 @@ func positionCursor(st *store.Store, filter string, position int64) string {
 	if st.AuthorityID() == "" {
 		return ""
 	}
-	return ledger.EncodeCursor(st.AuthorityID(), "events", filter, position)
+	return ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", filter, position)
 }
 func scanPosition(scan ledger.EventsScan, fallback string) int64 {
 	if scan.InspectedSequence == "" {
@@ -358,6 +361,9 @@ func snapshot(ctx context.Context, st *store.Store, resources []string, cursor, 
 			}
 			if c.AuthorityID != st.AuthorityID() || c.Feed != "events" || c.Filter != filter {
 				return reason.New(reason.ReasonCursorInvalid, "cursor is invalid")
+			}
+			if c.RestoreID != st.RestoreID() {
+				return reason.New(reason.ReasonAuthorityRestored, "authority was restored").With("restoreId", st.RestoreID())
 			}
 			if _, err := fmtSscanfDecimal(c.Sequence, &position); err != nil {
 				return reason.New(reason.ReasonCursorInvalid, "cursor is invalid")

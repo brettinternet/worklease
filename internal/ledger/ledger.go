@@ -34,6 +34,7 @@ func New(st *store.Store) *Service { return &Service{st: st} }
 type Cursor struct {
 	Version     int    `json:"version"`
 	AuthorityID string `json:"authorityId"`
+	RestoreID   string `json:"restoreId,omitempty"`
 	Feed        string `json:"feed"`
 	Filter      string `json:"filter"`
 	Sequence    string `json:"sequence"`
@@ -60,7 +61,7 @@ func ParseCursor(value string) (Cursor, error) {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Cursor{}, cursorInvalid()
 	}
-	if c.Version != 1 || !validID(c.AuthorityID) || (c.Feed != "events" && c.Feed != "history") || c.Sequence == "" {
+	if c.Version != 1 || !validID(c.AuthorityID) || !validID(c.RestoreID) || (c.Feed != "events" && c.Feed != "history") || c.Sequence == "" {
 		return Cursor{}, cursorInvalid()
 	}
 	if _, err := parseSequence(c.Sequence); err != nil {
@@ -146,15 +147,15 @@ func parseSequence(v string) (int64, error) {
 	}
 	return n, nil
 }
-func encodeCursor(authority, feed, filter string, seq int64) string {
-	b, _ := json.Marshal(Cursor{Version: 1, AuthorityID: authority, Feed: feed, Filter: filter, Sequence: strconv.FormatInt(seq, 10)})
+func encodeCursor(authority, restore, feed, filter string, seq int64) string {
+	b, _ := json.Marshal(Cursor{Version: 1, AuthorityID: authority, RestoreID: restore, Feed: feed, Filter: filter, Sequence: strconv.FormatInt(seq, 10)})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // EncodeCursor creates the opaque cursor used by every ledger feed. Callers
 // should preserve the filter exactly when continuing a filtered feed.
-func EncodeCursor(authority, feed, filter string, seq int64) string {
-	return encodeCursor(authority, feed, filter, seq)
+func EncodeCursor(authority, restore, feed, filter string, seq int64) string {
+	return encodeCursor(authority, restore, feed, filter, seq)
 }
 
 // ResourcesFilter is the canonical cursor filter for a resource watch. JSON is
@@ -166,13 +167,16 @@ func ResourcesFilter(resources []string) string {
 	b, _ := json.Marshal(resources)
 	return string(b)
 }
-func bindCursor(value, authority, feed, filter string) (int64, error) {
+func bindCursor(value, authority, restore, feed, filter string) (int64, error) {
 	if value == "" {
 		return 0, nil
 	}
 	c, err := ParseCursor(value)
 	if err != nil || c.AuthorityID != authority || c.Feed != feed || c.Filter != filter {
 		return 0, cursorInvalid()
+	}
+	if c.RestoreID != restore {
+		return 0, reason.New(reason.ReasonAuthorityRestored, "authority was restored").With("restoreId", restore)
 	}
 	return parseSequence(c.Sequence)
 }
@@ -209,7 +213,7 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 	if err != nil {
 		return EventsPage{}, err
 	}
-	position, err := bindCursor(cursor, s.st.AuthorityID(), "events", "")
+	position, err := bindCursor(cursor, s.st.AuthorityID(), s.st.RestoreID(), "events", "")
 	if err != nil {
 		return EventsPage{}, err
 	}
@@ -220,7 +224,7 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 			return err
 		}
 		if cursor != "" && position < pruned {
-			page.Gap, page.NextCursor = true, encodeCursor(s.st.AuthorityID(), "events", "", pruned)
+			page.Gap, page.NextCursor = true, encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "events", "", pruned)
 			return nil
 		}
 		query, args := `SELECT seq,at,kind,coalesce(claim_id,''),resources,coalesce(operation_id,''),revision,coalesce(agent_id,''),detail FROM events`, []any{}
@@ -262,7 +266,7 @@ func (s *Service) Events(ctx context.Context, cursor string, limit int) (EventsP
 		} else if cursor == "" {
 			next = last
 		}
-		page.NextCursor = encodeCursor(s.st.AuthorityID(), "events", "", next)
+		page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "events", "", next)
 		return nil
 	})
 	return page, err
@@ -282,7 +286,7 @@ type EventsScan struct {
 // applies the resource intersection filter while still inspecting every row,
 // rather than using a page limit that could skip a later match.
 func (s *Service) ScanEvents(ctx context.Context, cursor, filter string) (EventsScan, error) {
-	position, err := bindCursor(cursor, s.st.AuthorityID(), "events", filter)
+	position, err := bindCursor(cursor, s.st.AuthorityID(), s.st.RestoreID(), "events", filter)
 	if err != nil {
 		return EventsScan{}, err
 	}
@@ -300,7 +304,7 @@ func (s *Service) ScanEvents(ctx context.Context, cursor, filter string) (Events
 		}
 		if cursor != "" && position < pruned {
 			result.Gap = true
-			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, pruned)
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "events", filter, pruned)
 			result.InspectedSequence = strconv.FormatInt(pruned, 10)
 			return nil
 		}
@@ -334,9 +338,9 @@ func (s *Service) ScanEvents(ctx context.Context, cursor, filter string) (Events
 		}
 		inspected, _ := parseSequence(result.InspectedSequence)
 		if matched {
-			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, inspected)
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "events", filter, inspected)
 		} else {
-			result.NextCursor = encodeCursor(s.st.AuthorityID(), "events", filter, last)
+			result.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "events", filter, last)
 		}
 		return nil
 	})
@@ -503,7 +507,7 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 	if e != nil {
 		return HistoryPage{}, e
 	}
-	pos, e := bindCursor(cursor, s.st.AuthorityID(), "history", resource)
+	pos, e := bindCursor(cursor, s.st.AuthorityID(), s.st.RestoreID(), "history", resource)
 	if e != nil {
 		return HistoryPage{}, e
 	}
@@ -524,7 +528,7 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 		}
 		if cursor != "" && pos < pruned {
 			page.Gap = true
-			page.NextCursor = encodeCursor(s.st.AuthorityID(), "history", resource, pruned)
+			page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history", resource, pruned)
 			return nil
 		}
 		q := `SELECT e.claim_id,e.agent_id,e.session_id,e.work_key,e.acquired_at,coalesce(e.ended_at,0),coalesce(e.end_reason,''),e.final_revision,e.acquired_seq,coalesce(c.expires_at,0) FROM epochs e JOIN epoch_resources er ON er.claim_id=e.claim_id LEFT JOIN claims c ON c.claim_id=e.claim_id WHERE er.resource=?`
@@ -584,7 +588,7 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 		} else if cursor == "" {
 			next = last
 		}
-		page.NextCursor = encodeCursor(s.st.AuthorityID(), "history", resource, next)
+		page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history", resource, next)
 		return rows.Err()
 	})
 	return page, e

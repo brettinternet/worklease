@@ -117,7 +117,7 @@ func TestEventsCursorBindingPaginationWatermarkAndGap(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	zero := encodeCursor(st.AuthorityID(), "events", "", 0)
+	zero := encodeCursor(st.AuthorityID(), st.RestoreID(), "events", "", 0)
 	gap, e := ledgerSvc.Events(ctx, zero, 1)
 	if e != nil {
 		t.Fatal(e)

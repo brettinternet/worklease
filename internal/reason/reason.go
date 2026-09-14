@@ -63,6 +63,13 @@ const (
 	ReasonHostedLockHeld                 = "hosted-lock-held"
 	ReasonHandleWriteFailed              = "handle-write-failed"
 	ReasonAuthorityMismatch              = "authority-mismatch"
+	ReasonAuthorityRestored              = "authority-restored"
+	ReasonAuthenticationRequired         = "authentication-required"
+	ReasonInstallationRevoked            = "installation-revoked"
+	ReasonAuthorizationDenied            = "authorization-denied"
+	ReasonResourceNotEnrolled            = "resource-not-enrolled"
+	ReasonRecoveryRequired               = "recovery-required"
+	ReasonRecoveryClosed                 = "recovery-closed"
 	ReasonClockRegression                = "clock-regression"
 	ReasonChildTimeout                   = "child-timeout"
 	ReasonInterrupted                    = "interrupted"
@@ -162,8 +169,12 @@ var registry = map[string]int{
 	ReasonHomeUnsafe: ExitAuthority, ReasonStorageFailure: ExitAuthority, ReasonSchemaUnsupported: ExitAuthority,
 	ReasonSchemaCorrupt: ExitAuthority, ReasonHostedHomeRequiresRemote: ExitAuthority, ReasonHostedLockHeld: ExitAuthority,
 	ReasonHandleWriteFailed: ExitAuthority,
-	ReasonAuthorityMismatch: ExitAuthority, ReasonClockRegression: ExitAuthority,
-	ReasonChildTimeout: ExitChildTimeout, ReasonInterrupted: ExitInterrupted,
+	ReasonAuthorityMismatch: ExitAuthority, ReasonAuthorityRestored: ExitAuthority,
+	ReasonAuthenticationRequired: ExitOwnership, ReasonInstallationRevoked: ExitOwnership,
+	ReasonAuthorizationDenied: ExitOwnership, ReasonResourceNotEnrolled: ExitInvalid,
+	ReasonRecoveryRequired: ExitLedger, ReasonRecoveryClosed: ExitLedger,
+	ReasonClockRegression: ExitAuthority,
+	ReasonChildTimeout:    ExitChildTimeout, ReasonInterrupted: ExitInterrupted,
 }
 
 // DefinitiveNoCommit reports whether err proves the requested mutation did
@@ -191,7 +202,7 @@ func OwnershipRenewalFailure(err error) bool {
 		return false
 	}
 	switch e.Reason {
-	case ReasonStaleClaim, ReasonInvalidToken, ReasonClaimExpired, ReasonStaleRevision, ReasonOwnershipLost, ReasonClockRegression, ReasonAuthorityMismatch, ReasonOperationNotFound:
+	case ReasonStaleClaim, ReasonInvalidToken, ReasonClaimExpired, ReasonStaleRevision, ReasonOwnershipLost, ReasonClockRegression, ReasonAuthorityMismatch, ReasonAuthorityRestored, ReasonAuthenticationRequired, ReasonInstallationRevoked, ReasonAuthorizationDenied, ReasonOperationNotFound:
 		return true
 	}
 	return false

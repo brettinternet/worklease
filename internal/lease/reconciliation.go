@@ -99,13 +99,16 @@ func (s *Service) reconcile(ctx context.Context, creds Credentials, req Reconcil
 		return ReconciliationReceipt{}, err
 	}
 	intent := map[string]any{"kind": "reconcile", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "targetClaimId": req.TargetClaimID, "targetOperationId": req.TargetOperationID, "expectedRequestSha256": req.ExpectedRequestSHA256, "outcome": req.Outcome, "evidence": json.RawMessage(canonical), "ttl": ttl.Microseconds(), "requestNotAfter": req.RequestNotAfter.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
 	hash, err := checkedRequestHash(intent)
 	if err != nil {
 		return ReconciliationReceipt{}, err
 	}
 	var result ReconciliationReceipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, e := s.effectiveNow(tx, now)
+		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
@@ -116,6 +119,9 @@ func (s *Service) reconcile(ctx context.Context, creds Credentials, req Reconcil
 		} else if found {
 			if subtle.ConstantTimeCompare([]byte(replay.TokenHash), []byte(hashToken(creds.Token))) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+			}
+			if replay.Remote && (creds.Actor == nil || creds.Actor.InstallationID != replay.InstallationID) {
+				return reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 			}
 			if replay.Kind != "reconcile" || replay.RequestHash != hash {
 				return reason.New(reason.ReasonReconciliationConflict, "reconciliation operation ID was used for different intent")
@@ -192,17 +198,24 @@ func (s *Service) reconcile(ctx context.Context, creds Credentials, req Reconcil
 			return storage(e)
 		}
 		revision := resolver.Revision + 1
-		expires := effective.Add(ttl).UnixMicro()
+		expires, e := extensionExpiry(resolver, effective.UnixMicro(), ttl, time.Time{})
+		if e != nil {
+			return e
+		}
 		targetReceipt := map[string]any{"reconciled": true, "outcome": req.Outcome, "resolverClaimId": resolver.ClaimID, "revision": revision}
 		targetJSON, _ := json.Marshal(targetReceipt)
-		seq, e := tx.AppendEvent(store.Event{At: effective, Kind: "reconciled", ClaimID: req.TargetClaimID, Resources: targetResources, OperationID: req.TargetOperationID, Revision: &revision, AgentID: resolver.AgentID, Detail: map[string]any{"outcome": req.Outcome}})
+		event := store.Event{At: effective, Kind: "reconciled", ClaimID: req.TargetClaimID, Resources: targetResources, OperationID: req.TargetOperationID, Revision: &revision, AgentID: resolver.AgentID, Detail: map[string]any{"outcome": req.Outcome}}
+		if resolver.Remote {
+			event.InstallationID, event.RestoreID, event.Remote = resolver.InstallationID, resolver.RestoreID, true
+		}
+		seq, e := tx.AppendEvent(event)
 		if e != nil {
 			return storage(e)
 		}
 		if _, e = tx.ExecContext(ctx, `UPDATE operations SET state='reconciled',receipt=?,completed_at=?,completed_seq=? WHERE claim_id=? AND operation_id=? AND state='started'`, string(targetJSON), effective.UnixMicro(), seq, req.TargetClaimID, req.TargetOperationID); e != nil {
 			return storage(e)
 		}
-		if _, e = tx.ExecContext(ctx, `INSERT INTO reconciliations(claim_id,operation_id,outcome,evidence,request_hash,reconcile_operation_id,resolver_claim_id,resolver_agent_id,resolver_session_id,recorded_at,recorded_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, req.TargetClaimID, req.TargetOperationID, req.Outcome, string(canonical), req.ExpectedRequestSHA256, req.OperationID, resolver.ClaimID, resolver.AgentID, resolver.SessionID, effective.UnixMicro(), seq); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO reconciliations(claim_id,operation_id,outcome,evidence,request_hash,reconcile_operation_id,resolver_claim_id,resolver_agent_id,resolver_session_id,recorded_at,recorded_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.TargetClaimID, req.TargetOperationID, req.Outcome, string(canonical), req.ExpectedRequestSHA256, req.OperationID, resolver.ClaimID, resolver.AgentID, resolver.SessionID, effective.UnixMicro(), seq, nullString(resolver.InstallationID), nullString(resolver.RestoreID), boolInt(resolver.Remote)); e != nil {
 			return storage(e)
 		}
 		if _, e = tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, revision, ttl.Microseconds(), effective.UnixMicro(), expires, resolver.ClaimID); e != nil {
@@ -215,7 +228,7 @@ func (s *Service) reconcile(ctx context.Context, creds Credentials, req Reconcil
 			}
 		}
 		receiptJSON, _ := json.Marshal(result)
-		if _, e = tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, resolver.ClaimID, req.OperationID, "reconcile", hash, req.RequestNotAfter.UnixMicro(), resolver.Revision, "completed", string(receiptJSON), effective.UnixMicro(), seq, effective.UnixMicro(), seq); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, resolver.ClaimID, req.OperationID, "reconcile", hash, req.RequestNotAfter.UnixMicro(), resolver.Revision, "completed", string(receiptJSON), effective.UnixMicro(), seq, effective.UnixMicro(), seq, nullString(resolver.InstallationID), nullString(resolver.RestoreID), boolInt(resolver.Remote)); e != nil {
 			return storage(e)
 		}
 		return nil
