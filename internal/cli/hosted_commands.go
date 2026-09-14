@@ -22,6 +22,8 @@ import (
 // database grant commits but before the finalization marker is durable.
 var beforeHostedReadyHook func() error
 
+const acceptanceCrashBeforeHostedReady = "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY"
+
 func hostedCommands(s *boundary) *urfave.Command {
 	secret := &urfave.StringFlag{Name: "bootstrap-invite-file", Usage: "owner-private bootstrap invite `FILE`"}
 	initCommand := &urfave.Command{
@@ -229,6 +231,11 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err != nil {
 		_ = st.Close()
 		return hostedError(s, cmd, err)
+	}
+	// The acceptance harness uses a real subprocess exit to prove recovery at
+	// the committed-grant/before-ready durability boundary.
+	if os.Getenv(acceptanceCrashBeforeHostedReady) == "1" {
+		os.Exit(86)
 	}
 	if err := finalizeHostedReady(lock); err != nil {
 		_ = st.Close()

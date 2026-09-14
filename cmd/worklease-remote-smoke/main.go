@@ -40,6 +40,7 @@ import (
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/store"
 	"github.com/creack/pty"
 
 	_ "modernc.org/sqlite"
@@ -126,6 +127,14 @@ type client struct {
 type cliFailureResult struct {
 	result map[string]any
 	err    error
+}
+
+type bootstrapState struct {
+	ReadyMarker    bool   `json:"readyMarker"`
+	BootstrapReady bool   `json:"bootstrapReady"`
+	ActiveInvites  int    `json:"activeInvites"`
+	RevokedInvites int    `json:"revokedInvites"`
+	SecretMode     string `json:"secretMode"`
 }
 
 type promptCapture struct {
@@ -325,6 +334,19 @@ func main() {
 			fatal(errors.New("backup requires source and destination"))
 		}
 		if err := backupSQLite(os.Args[2], os.Args[3]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap-state" {
+		if len(os.Args) != 4 {
+			fatal(errors.New("bootstrap-state requires a hosted home and secret path"))
+		}
+		state, err := readBootstrapState(os.Args[2], os.Args[3])
+		if err != nil {
+			fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(state); err != nil {
 			fatal(err)
 		}
 		return
@@ -2219,6 +2241,119 @@ func requireSecretsAbsent(paths []string, secretFiles ...string) error {
 	return requireSecretValuesAbsent(paths, secrets...)
 }
 
+func (h *harness) group3BootstrapCrash(evidence string) error {
+	home := filepath.Join(h.root, "bootstrap-crash-authority")
+	invite := filepath.Join(h.root, "secrets", ".bootstrap-crash.invite")
+	binary, helper, config := h.binary, h.self, h.configPath
+	if h.realHost {
+		home = filepath.Join(h.remoteRoot, "bootstrap-crash-authority")
+		invite = filepath.Join(h.remoteRoot, ".bootstrap-crash.invite")
+		binary, helper, config = h.remoteBinary, h.remoteHelper, h.remoteConfig
+	}
+	args := []string{"--json", "hosted", "init", "--home", home, "--server-config", config, "--bootstrap-invite-file", invite}
+	h.logCommand("bootstrap-crash-boundary", append([]string{"env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", "worklease"}, args...))
+	crashCtx, cancelCrash := context.WithTimeout(context.Background(), 30*time.Second)
+	var crashCommand *exec.Cmd
+	if h.realHost {
+		crashCommand = exec.CommandContext(crashCtx, "ssh", append([]string{h.remoteHost, "env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", binary}, args...)...)
+	} else {
+		crashCommand = exec.CommandContext(crashCtx, binary, args...)
+		crashCommand.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1")
+	}
+	crashOutput, crashErr := crashCommand.CombinedOutput()
+	cancelCrash()
+	var exitErr *exec.ExitError
+	if !errors.As(crashErr, &exitErr) || exitErr.ExitCode() != 86 {
+		return fmt.Errorf("bootstrap crash exit=%v output-bytes=%d", crashErr, len(crashOutput))
+	}
+	crashOutputPath := filepath.Join(evidence, "bootstrap-crash-output.txt")
+	stateOutput, err := h.bootstrapState(helper, home, invite)
+	if err != nil {
+		return err
+	}
+	var before bootstrapState
+	if err := json.Unmarshal(stateOutput, &before); err != nil {
+		return err
+	}
+	if before.ReadyMarker || !before.BootstrapReady || before.ActiveInvites != 1 || before.RevokedInvites != 0 || before.SecretMode != "0600" {
+		return fmt.Errorf("unexpected bootstrap state after crash: %+v", before)
+	}
+	secretCopy := invite
+	if h.realHost {
+		secretCopy = filepath.Join(h.root, "secrets", ".bootstrap-crash.remote.invite")
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+invite, secretCopy); err != nil {
+			return err
+		}
+	}
+	secret, err := os.ReadFile(secretCopy)
+	if err != nil {
+		return err
+	}
+	secret = bytes.TrimSpace(secret)
+	if len(secret) == 0 || bytes.Contains(crashOutput, secret) {
+		return errors.New("bootstrap crash output disclosed the staged secret")
+	}
+	if err := os.WriteFile(crashOutputPath, crashOutput, 0o600); err != nil {
+		return err
+	}
+	h.logCommand("bootstrap-recovery", append([]string{"worklease"}, args...))
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 30*time.Second)
+	var recoveryCommand *exec.Cmd
+	if h.realHost {
+		recoveryCommand = exec.CommandContext(recoveryCtx, "ssh", append([]string{h.remoteHost, binary}, args...)...)
+	} else {
+		recoveryCommand = exec.CommandContext(recoveryCtx, binary, args...)
+	}
+	recoveryOutput, err := recoveryCommand.CombinedOutput()
+	cancelRecovery()
+	if bytes.Contains(recoveryOutput, secret) {
+		return errors.New("bootstrap recovery output disclosed the staged secret")
+	}
+	if err != nil {
+		return fmt.Errorf("bootstrap recovery: %w; output-bytes=%d", err, len(recoveryOutput))
+	}
+	recoveryOutputPath := filepath.Join(evidence, "bootstrap-recovery-output.json")
+	if err := os.WriteFile(recoveryOutputPath, recoveryOutput, 0o600); err != nil {
+		return err
+	}
+	stateOutput, err = h.bootstrapState(helper, home, invite)
+	if err != nil {
+		return err
+	}
+	var after bootstrapState
+	if err := json.Unmarshal(stateOutput, &after); err != nil {
+		return err
+	}
+	if !after.ReadyMarker || !after.BootstrapReady || after.ActiveInvites != 1 || after.RevokedInvites != 0 || after.SecretMode != "0600" {
+		return fmt.Errorf("unexpected bootstrap state after recovery: %+v", after)
+	}
+	stateEvidence := filepath.Join(evidence, "bootstrap-crash-ordering.json")
+	ordered, err := json.MarshalIndent(map[string]any{"crashExitCode": 86, "afterCrash": before, "afterRecovery": after}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(stateEvidence, append(ordered, '\n'), 0o600); err != nil {
+		return err
+	}
+	return requireSecretsAbsent([]string{h.commandLog, crashOutputPath, recoveryOutputPath, stateEvidence}, secretCopy)
+}
+
+func (h *harness) bootstrapState(helper, home, invite string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var command *exec.Cmd
+	if h.realHost {
+		command = exec.CommandContext(ctx, "ssh", h.remoteHost, helper, "bootstrap-state", home, invite)
+	} else {
+		command = exec.CommandContext(ctx, helper, "bootstrap-state", home, invite)
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("read bootstrap state: %w; output-bytes=%d", err, len(output))
+	}
+	return output, nil
+}
+
 func (h *harness) group3EnrollmentFaults(evidence string) error {
 	if err := h.startFaultProxy(evidence); err != nil {
 		return err
@@ -2400,6 +2535,9 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 }
 
 func (h *harness) group3(evidence string) error {
+	if err := h.group3BootstrapCrash(evidence); err != nil {
+		return err
+	}
 	if err := h.group3EnrollmentFaults(evidence); err != nil {
 		return err
 	}
@@ -2424,6 +2562,7 @@ func (h *harness) group3(evidence string) error {
 		return renameErr
 	}
 	missingCredential, err := h.cliFailure(b, "--profile", "team", "installation", "list")
+	missingMCP, missingMCPErr := h.mcpToolCall(b, "list", map[string]any{})
 	if h.realHost {
 		_, renameErr = runSSH(h.remoteHost, "mv", saved, credential)
 	} else {
@@ -2434,6 +2573,9 @@ func (h *harness) group3(evidence string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if missingMCPErr != nil {
+		return missingMCPErr
 	}
 	if err := requireReason(missingCredential, "credential-unsafe", "authentication-required"); err != nil {
 		return err
@@ -2486,6 +2628,33 @@ func (h *harness) group3(evidence string) error {
 	if err := requireReason(revoked, "installation-revoked"); err != nil {
 		return err
 	}
+	revokedMCP, err := h.mcpToolCall(b, "list", map[string]any{})
+	if err != nil {
+		return err
+	}
+	guidance := map[string]any{"missingCredential": missingMCP, "revokedInstallation": revokedMCP}
+	for state, expected := range map[string]string{"missingCredential": "authentication-required", "revokedInstallation": "installation-revoked"} {
+		fields, _ := guidance[state].(map[string]any)
+		errorFields, _ := fields["error"].(map[string]any)
+		details, _ := errorFields["details"].(map[string]any)
+		action, _ := details["action"].(string)
+		if errorFields["reason"] != expected || details["profile"] != "team" || !strings.Contains(action, "worklease enroll --profile team --invite-file FILE") {
+			return fmt.Errorf("MCP %s guidance=%v", state, fields)
+		}
+	}
+	missingAction := guidance["missingCredential"].(map[string]any)["error"].(map[string]any)["details"].(map[string]any)["action"]
+	revokedAction := guidance["revokedInstallation"].(map[string]any)["error"].(map[string]any)["details"].(map[string]any)["action"]
+	if missingAction == revokedAction || !strings.Contains(fmt.Sprint(revokedAction), "request a new invite") {
+		return fmt.Errorf("MCP authentication guidance is not distinct: %v", guidance)
+	}
+	guidancePath := filepath.Join(evidence, "mcp-authentication-guidance.json")
+	guidanceData, err := json.MarshalIndent(guidance, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(guidancePath, append(guidanceData, '\n'), 0o600); err != nil {
+		return err
+	}
 	if h.realHost {
 		_, renameErr = runSSH(h.remoteHost, "mv", credential, oldCredential)
 		if renameErr == nil {
@@ -2507,7 +2676,7 @@ func (h *harness) group3(evidence string) error {
 	if _, err := h.cli(b, "--profile", "team", "release", "--handle", rotatedHandle, "--reason", "rotation observed"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "hidden, file, and descriptor invite sources work without disclosure; lost invite issuance and enrollment responses retain exact requests; an incarnation mismatch does not burn the invite; roles, rotation, and revocation remain isolated", Commands: []string{"enroll through hidden prompt", "drop and replay invite issuance response", "drop and replay descriptor enrollment response", "retain dropped enrollment across restore", "reject mismatched incarnation then redeem the same invite", "enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden-file rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "immutable-enrollment-before-restore.json"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), rotationInvite}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "a real subprocess crash after the bootstrap grant commit recovers exactly once without disclosure; hidden, file, and descriptor invite sources work; lost enrollment responses retain exact requests; an incarnation mismatch does not burn the invite; MCP distinguishes missing and revoked installation guidance; roles and rotation remain isolated", Commands: []string{"crash hosted init after committed bootstrap grant", "resume hosted init with staged secret", "enroll through hidden prompt", "drop and replay invite issuance response", "drop and replay descriptor enrollment response", "retain dropped enrollment across restore", "reject mismatched incarnation then redeem the same invite", "remove credential and inspect MCP guidance", "rotate and revoke worker installation", "inspect revoked MCP guidance", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "bootstrap-crash-ordering.json"), filepath.Join(evidence, "bootstrap-crash-output.txt"), filepath.Join(evidence, "bootstrap-recovery-output.json"), filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "immutable-enrollment-before-restore.json"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), filepath.Join(evidence, "mcp-authentication-guidance.json"), rotationInvite}, Passed: true})
 	return nil
 }
 
@@ -2752,7 +2921,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.7", "pre-dispatch persistence failure", 2),
 		live("AC4.8", "late acknowledgment without redispatch", 2),
 		live("AC4.9", "asynchronous provider effect continuing after terminal completion", 2),
-		blocked("AC5.1", "bootstrap crash ordering and redaction"),
+		live("AC5.1", "bootstrap crash ordering and redaction", 3),
 		live("AC5.2", "hidden, file, and descriptor invite input", 3),
 		live("AC5.3", "dropped invite and redemption responses", 3),
 		live("AC5.4", "immutable request incarnation", 5),
@@ -2760,7 +2929,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC5.6", "role isolation", 3),
 		live("AC5.7", "credential rotation", 3),
 		live("AC5.8", "credential revocation", 3),
-		blocked("AC5.9", "distinct MCP authentication guidance"),
+		live("AC5.9", "distinct MCP authentication guidance", 3),
 		blocked("AC6.1", "snapshot/watch races"),
 		blocked("AC6.2", "disconnect and reconnect"),
 		blocked("AC6.3", "cursor incarnation and retention gaps"),
@@ -2932,6 +3101,93 @@ func requireReason(result map[string]any, expected ...string) error {
 		}
 	}
 	return fmt.Errorf("failure reason=%q, want one of %v", got, expected)
+}
+
+func (h *harness) mcpToolCall(c client, name string, arguments map[string]any) (map[string]any, error) {
+	h.logCommand(c.name+hostSuffix(c), []string{"worklease", "mcp", "--profile", "team", "tools/call", name})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var cmd *exec.Cmd
+	if c.remote {
+		remoteEnv := []string{"WORKLEASE_HOME=" + c.home, "XDG_CONFIG_HOME=" + c.config, "SSL_CERT_FILE=" + h.remoteCert, "WORKLEASE_AGENT_ID=" + c.name, "WORKLEASE_SESSION_ID=" + c.name + "-mcp-session"}
+		sshArgs := []string{h.remoteHost, "env"}
+		sshArgs = append(sshArgs, remoteEnv...)
+		sshArgs = append(sshArgs, h.remoteBinary, "mcp", "--profile", "team")
+		cmd = exec.CommandContext(ctx, "ssh", sshArgs...)
+	} else {
+		cmd = exec.CommandContext(ctx, h.binary, "mcp", "--profile", "team")
+		cmd.Env, cmd.Dir = c.env, c.checkout
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	finished := false
+	defer func() {
+		if !finished && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	encoder, scanner := json.NewEncoder(stdin), bufio.NewScanner(stdout)
+	if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25"}}); err != nil {
+		return nil, err
+	}
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("MCP initialize returned no response: %s", stderr.String())
+	}
+	var initialized map[string]any
+	initializeResult := map[string]any(nil)
+	if err := json.Unmarshal(scanner.Bytes(), &initialized); err == nil {
+		initializeResult, _ = initialized["result"].(map[string]any)
+	}
+	if fmt.Sprint(initialized["id"]) != "1" || initialized["error"] != nil || initializeResult == nil {
+		return nil, fmt.Errorf("MCP initialize returned an invalid response")
+	}
+	if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}); err != nil {
+		return nil, err
+	}
+	if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments}}); err != nil {
+		return nil, err
+	}
+	var fields map[string]any
+	for scanner.Scan() {
+		var message map[string]any
+		if json.Unmarshal(scanner.Bytes(), &message) != nil || fmt.Sprint(message["id"]) != "2" {
+			continue
+		}
+		if message["error"] != nil {
+			return nil, fmt.Errorf("MCP %s returned a protocol error", name)
+		}
+		result, ok := message["result"].(map[string]any)
+		if !ok || result["isError"] != true {
+			return nil, fmt.Errorf("MCP %s did not return a tool failure", name)
+		}
+		fields, _ = result["structuredContent"].(map[string]any)
+		break
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	_ = stdin.Close()
+	waitErr := cmd.Wait()
+	finished = true
+	if waitErr != nil {
+		return nil, fmt.Errorf("MCP %s failed: %w: %s", name, waitErr, stderr.String())
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("MCP %s returned no structured content", name)
+	}
+	return fields, nil
 }
 
 func (h *harness) mcpRoundTrip(c client) error {
@@ -3149,6 +3405,37 @@ func authorityDBRoot(h *harness) string {
 		return filepath.Join(h.remoteRoot, "authority")
 	}
 	return filepath.Join(h.root, "authority")
+}
+
+func readBootstrapState(home, secretPath string) (bootstrapState, error) {
+	ready, err := store.HostedReady(home)
+	if err != nil {
+		return bootstrapState{}, err
+	}
+	database, err := sql.Open("sqlite", "file:"+filepath.Join(home, store.DatabaseFileName)+"?mode=ro")
+	if err != nil {
+		return bootstrapState{}, err
+	}
+	defer database.Close()
+	secretInfo, err := os.Stat(secretPath)
+	if err != nil {
+		return bootstrapState{}, err
+	}
+	var state bootstrapState
+	state.ReadyMarker = ready
+	state.SecretMode = fmt.Sprintf("%04o", secretInfo.Mode().Perm())
+	var bootstrapReady int
+	if err := database.QueryRow(`SELECT bootstrap_ready FROM recovery_state WHERE singleton=1`).Scan(&bootstrapReady); err != nil {
+		return bootstrapState{}, err
+	}
+	state.BootstrapReady = bootstrapReady == 1
+	if err := database.QueryRow(`SELECT count(*) FROM invites WHERE bootstrap=1 AND state='active'`).Scan(&state.ActiveInvites); err != nil {
+		return bootstrapState{}, err
+	}
+	if err := database.QueryRow(`SELECT count(*) FROM invites WHERE bootstrap=1 AND state='revoked'`).Scan(&state.RevokedInvites); err != nil {
+		return bootstrapState{}, err
+	}
+	return state, nil
 }
 
 func backupSQLite(source, destination string) error {
