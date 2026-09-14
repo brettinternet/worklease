@@ -27,7 +27,7 @@ var eventKinds = map[string]bool{
 	"exec-started": true, "exec-completed": true, "replace-started": true,
 	"replace-completed": true, "reconciled": true, "transferred": true,
 	"released": true, "expired-replaced": true, "expired-retired": true,
-	"gc-applied": true,
+	"restored": true, "revoked": true, "gc-applied": true,
 }
 
 // These are intentionally non-secret scalar fields suitable for public feeds.

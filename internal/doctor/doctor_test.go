@@ -110,6 +110,7 @@ func TestDiagnoseReportsMetadataStatusesDetailsAndHints(t *testing.T) {
 	assertCheck("agent.identity", "fail", "unavailable", "WORKLEASE_AGENT_ID")
 	assertCheck("clock.authority", "unknown", "watermark is unavailable", "")
 	assertCheck("authority.identity", "unknown", "identity is unavailable until state exists", "")
+	assertCheck("restore.identity", "unknown", "identity is unavailable until state exists", "")
 	assertCheck("mcp.available", "ok", "MCP stdio server is available", "")
 	if strings.Contains(fmt.Sprint(checks), "secret") {
 		t.Fatal("diagnostics exposed sensitive content")
@@ -146,12 +147,17 @@ func TestDiagnoseReportsPythonEraStateAndAuthorityIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorityID := st.AuthorityID()
+	restoreID := st.RestoreID()
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
 	identity := checkByID(Diagnose(context.Background(), testConfig(home), home), "authority.identity")
 	if identity.Status != "ok" || !strings.Contains(identity.Detail, "authority identity: "+authorityID) || identity.Hint != "" {
 		t.Fatalf("authority identity=%+v", identity)
+	}
+	restore := checkByID(Diagnose(context.Background(), testConfig(home), home), "restore.identity")
+	if restore.Status != "ok" || !strings.Contains(restore.Detail, "restore identity: "+restoreID) || restore.Hint != "" {
+		t.Fatalf("restore identity=%+v", restore)
 	}
 }
 
@@ -204,8 +210,8 @@ func TestDiagnoseDeletedContextStillReturnsEveryCheck(t *testing.T) {
 	}
 	deleted := filepath.Join(t.TempDir(), "deleted")
 	checks := Diagnose(context.Background(), testConfig(home), deleted)
-	if len(checks) != 15 {
-		t.Fatalf("checks=%d want 15", len(checks))
+	if len(checks) != 16 {
+		t.Fatalf("checks=%d want 16", len(checks))
 	}
 	if got := checkByID(checks, "context.root"); got.Status != "fail" {
 		t.Fatalf("context.root=%+v", got)

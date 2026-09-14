@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +21,9 @@ func TestOpenBootstrapsNormativeSchemaAndStableAuthority(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "nested", "home")
 	st := openStore(t, home, false)
 	id := st.AuthorityID()
-	if !validAuthorityID(id) {
-		t.Fatalf("authority ID = %q", id)
+	restoreID := st.RestoreID()
+	if !validAuthorityID(id) || !validAuthorityID(restoreID) || restoreID == id {
+		t.Fatalf("authority ID = %q, restore ID = %q", id, restoreID)
 	}
 	if st.db() == nil {
 		t.Fatal("write store has no database")
@@ -36,8 +38,8 @@ func TestOpenBootstrapsNormativeSchemaAndStableAuthority(t *testing.T) {
 	st.Close()
 	reopened := openStore(t, home, false)
 	defer reopened.Close()
-	if reopened.AuthorityID() != id {
-		t.Fatalf("authority ID changed: %q -> %q", id, reopened.AuthorityID())
+	if reopened.AuthorityID() != id || reopened.RestoreID() != restoreID {
+		t.Fatalf("identities changed: authority %q -> %q, restore %q -> %q", id, reopened.AuthorityID(), restoreID, reopened.RestoreID())
 	}
 	for name := range requiredTables {
 		assertSQLiteObject(t, reopened.db(), name, "table")
@@ -46,7 +48,7 @@ func TestOpenBootstrapsNormativeSchemaAndStableAuthority(t *testing.T) {
 		assertSQLiteObject(t, reopened.db(), name, "index")
 	}
 	var version int64
-	if err := reopened.db().QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+	if err := reopened.db().QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("schema version = %d, err=%v", version, err)
 	}
 }
@@ -211,6 +213,19 @@ func TestWriteRollbackReadDeferredAndAppendEventBoundary(t *testing.T) {
 	var watermark string
 	if err := st.db().QueryRow("SELECT value FROM meta WHERE key='last_event_seq'").Scan(&watermark); err != nil || watermark != "1" {
 		t.Fatalf("event watermark = %q, err=%v", watermark, err)
+	}
+}
+
+func TestAppendEventAcceptsRestoreAndRevocationKinds(t *testing.T) {
+	st := openStore(t, filepath.Join(t.TempDir(), "home"), false)
+	defer st.Close()
+	for _, kind := range []string{"restored", "revoked"} {
+		if err := st.Write(context.Background(), func(tx *Tx) error {
+			_, err := tx.AppendEvent(Event{At: time.Now(), Kind: kind, ClaimID: strings.Repeat("a", 32), Resources: []string{"r"}, Detail: map[string]any{"reason": kind}})
+			return err
+		}); err != nil {
+			t.Fatalf("%s event: %v", kind, err)
+		}
 	}
 }
 
