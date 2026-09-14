@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 07:11'
+updated_date: '2026-09-14 07:12'
 labels:
   - remote-authority
 dependencies:
@@ -70,6 +70,8 @@ The private bootstrap secret file and database transaction cannot commit atomica
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented lock-bound offline administration with durable secret-before-grant ordering and a hosted.ready fail-closed marker. Restore installs an owner-private backup under the retained lock, rotates the incarnation, ends claims, preserves unresolved starts, revokes authentication state, enters recovery, and creates a new bootstrap grant. Retirement streams bounded redacted records with count/hash omission detection before removal. Independent verifier passed all previously identified gaps. Validation: focused hosted tests, mise run lint, format-check, test, typecheck, and mise run ci all passed.
+
+Implementation commit: 4ac4717 (Implement offline hosted administration). Post-commit mise run ci passed on that commit.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
