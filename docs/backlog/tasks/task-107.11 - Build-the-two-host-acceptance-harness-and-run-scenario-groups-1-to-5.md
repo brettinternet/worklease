@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 16:35'
+updated_date: '2026-09-14 16:57'
 labels:
   - remote-authority
 dependencies:
@@ -118,4 +118,8 @@ Resumed under Worklease claim task-107-11-loop-3 at AC4.6 clock-bound edge cases
 Implemented AC4.6 authority-time acceptance. Remote default request deadlines now come from the sampled authority lower bound rather than client wall time; the client counts asymmetric response latency and wall elapsed across suspend, and refuses a newly acknowledged guarded effect at the three-quarter-TTL stop-new-work boundary. The TLS fault proxy injects a 1.2s asymmetric response delay plus a one-hour authority/client skew, proves the wire deadline is the sampled lower bound plus 24h, proves an expired short window sends nothing, and proves a delayed successful begin dispatches no effect. Local objective evidence: dist/remote-acceptance/ac4-clock-local-test-6/report.json, coverage.json, fault-proxy.log, and clock-bounds.txt; AC4.6 is local live-pass. The real-host rerun remains blocked during baseline provisioning by remote-host invite issuance returning unknown-outcome before Group 2. Independent review found suspend elapsed-time, three-quarter-TTL, and false-positive deadline-evidence defects; all were fixed before commit. Next resumable step: AC4.7 pre-dispatch persistence failure, with a remote-host rerun when baseline transport is stable.
 
 Committed AC4.6 as 04bbd1e (Enforce remote authority time bounds). Quality gates mise run lint, format-check, test, typecheck, ci, and staged hooks passed.
+
+Resumed on main at AC4.7 pre-dispatch persistence failure; dependencies and prior evidence revalidated.
+
+Implemented AC4.7 pre-dispatch persistence failure. The harness replaces client A's pending root with a regular file, arms a pre-forward /v1/admin/gc proxy gate, requires storage-failure, proves the gate remained armed and no GC request appears in the proxy log, then restores the pending directory. Local objective evidence: dist/remote-acceptance/ac4-persistence-local-test-3/report.json, coverage.json, fault-proxy.log, and pre-dispatch-persistence.txt. A real-host rerun reached and passed this slice with evidence under dist/remote-acceptance/ac4-persistence-real-test/ before the existing later race-client enrollment credential-unsafe failure; no complete real-host report is claimed. Independent verification passed focused tests, local smoke, and this real-host slice. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC4.8 late acknowledgment without redispatch.
 <!-- SECTION:NOTES:END -->
