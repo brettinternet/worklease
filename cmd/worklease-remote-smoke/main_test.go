@@ -61,6 +61,77 @@ func TestHistoricalResultHashIgnoresReplayMarker(t *testing.T) {
 	}
 }
 
+func TestVerifyLateAcknowledgmentEvidenceRequiresExactReplayAndLateResponse(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	replayed, late := strings.Repeat("1", 32), strings.Repeat("6", 32)
+	log := "path=/v1/operations/begin status=200 requestSha256=aaa dropped=true responseDelay=0s requestId=" + replayed + " at=now\n" +
+		"path=/v1/operations/begin status=200 requestSha256=aaa dropped=false responseDelay=0s requestId=" + replayed + " at=now\n" +
+		"path=/v1/operations/begin status=200 requestSha256=bbb dropped=false responseDelay=1.7s requestId=" + late + " at=now\n"
+	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyLateAcknowledgmentEvidence(logPath, replayed, late, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalidLine := range map[string]string{
+		"missing":             "",
+		"application failure": "path=/v1/operations/begin status=422 requestSha256=bbb dropped=false responseDelay=1.7s requestId=" + late + " at=now\n",
+		"lost response":       "path=/v1/operations/begin status=200 requestSha256=bbb dropped=true responseDelay=1.7s requestId=" + late + " at=now\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := strings.Join(strings.Split(log, "\n")[:2], "\n") + "\n" + invalidLine
+			if err := os.WriteFile(logPath, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyLateAcknowledgmentEvidence(logPath, replayed, late, 2*time.Second); err == nil {
+				t.Fatal("invalid late acknowledgment accepted")
+			}
+		})
+	}
+}
+
+func TestWriteProviderSubmissionRefusesDuplicateDispatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-submitted.txt")
+	effectID := strings.Repeat("7", 32)
+	if err := writeProviderSubmission(path, effectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProviderSubmission(path, effectID); err == nil {
+		t.Fatal("duplicate provider submission accepted")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "provider-submitted "+effectID+"\n" {
+		t.Fatalf("submission evidence=%q err=%v", data, err)
+	}
+}
+
+func TestVerifyProviderEffectLogRequiresExactlyOneCompletionAfterReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-completed.log")
+	effectID := strings.Repeat("7", 32)
+	receipt := time.Now().UTC()
+	completed := receipt.Add(time.Second)
+	line := "provider-completed " + effectID + " at=" + completed.Format(time.RFC3339Nano) + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := verifyProviderEffectLog(path, effectID, receipt)
+	if err != nil || !observed.Equal(completed) {
+		t.Fatalf("observed=%s err=%v", observed, err)
+	}
+	if err := os.WriteFile(path, []byte(line+line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyProviderEffectLog(path, effectID, receipt); err == nil {
+		t.Fatal("duplicate provider completion accepted")
+	}
+	if err := os.WriteFile(path, []byte("provider-completed "+effectID+" at="+receipt.Add(-time.Second).Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyProviderEffectLog(path, effectID, receipt); err == nil {
+		t.Fatal("provider completion before receipt accepted")
+	}
+}
+
 func TestVerifyClockBoundEvidenceRequiresLowerBoundAndNoExpiredDispatch(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "fault.log")
 	generated, expired, late := strings.Repeat("4", 32), strings.Repeat("5", 32), strings.Repeat("6", 32)
