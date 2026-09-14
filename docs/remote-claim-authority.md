@@ -47,8 +47,8 @@ processes and edits always remain on the client host.
 shell/scripts -------- CLI -------+
                                   |
 IDE/agent ----- stdio MCP --------+--> local worklease client state
-                                        | handles, pending requests,
-                                        | installation and claim credentials
+                                        | handles, pending requests, journal,
+                                        | request incarnation and credentials
                                         |
                                         +--- authenticated HTTPS ---> worklease serve
                                                                          |
@@ -65,11 +65,11 @@ portable keys only, with admitted prefixes and TTL/hold bounds in the server
 configuration file; invite-based enrollment with client-generated installation
 credentials and three roles; a namespace-level recovery mode used by restore and
 reopened by an operator record; the single-writer OS lock; same-host transfer;
-and the local stdio MCP adapter as a remote client. Repository enrollment,
-cross-host transfer, audited recovery import, admission backpressure, browser
-login and a control plane, and multi-namespace serving are recorded follow-ups
-with named triggers. Request incarnation binding remains the one protocol-level
-dispute recorded below.
+immutable request incarnation binding; a durable client recovery journal; and
+the local stdio MCP adapter as a remote client. Repository enrollment, cross-host
+transfer, audited recovery import, admission backpressure, browser login and a
+control plane, and multi-namespace serving are recorded follow-ups with named
+triggers.
 
 The standard release includes client and server code, but opens no listener and
 performs no remote work unless a remote profile or `serve` is explicitly used.
@@ -281,19 +281,31 @@ A counter inside the backup is insufficient: restoring the same generation-1
 backup twice would produce generation 2 twice and accept requests from
 rolled-back state.
 
-The current draft detects an incarnation change from Worklease application
-responses rather than request input. This decision remains disputed in the
-architecture recommendations below and must be resolved before the protocol is
-frozen. Every Worklease application response carries the current `restoreId`,
-and cursors embed it so the authority can distinguish an old-incarnation
-sequence from a future one. The client keeps one last-observed value per profile;
-when a response carries a different value it fails closed with
-`authority-restored`, stops dispatching for that profile, and preserves saved
-recovery evidence. Proxy and network failures do not carry this envelope.
-Receipts may record the issuing incarnation as provenance. A stateless
-`--no-handle` caller has no profile state and therefore may see `stale-claim`,
-`installation-revoked`, or `authentication-required`, depending on which rows
-survived the restore.
+Every authenticated request carries the `expectedRestoreId` from its immutable
+saved remote request envelope. Handle and pending-request origin metadata retain
+it, and remote replay identity includes it. After authenticating the installation
+and role, the authority checks `authorityId` and `expectedRestoreId` in the
+serialized boundary before replay or mutation. A correctly authenticated request
+naming another incarnation fails `authority-restored`, returns the current
+`restoreId`, and performs no replay or mutation. A retained revoked installation
+instead fails `installation-revoked`; a credential whose row is absent fails
+`authentication-required`. Both errors use a fresh current-incarnation response
+envelope.
+
+Retry, profile refresh, credential rotation, and re-enrollment never rewrite the
+original `expectedRestoreId`. After re-enrollment, recovery and administration
+use new current-incarnation requests while old pending requests remain evidence
+bound to their origin. Only initial read-only metadata discovery may omit
+`expectedRestoreId`. Enrollment first reads the trusted endpoint, saves the
+current value in its pending request and journal, and sends it with redemption.
+The resulting profile pins `restoreId` before ordinary dispatch. `--no-handle`,
+CI, and custom clients still carry the immutable binding and meet the journal
+contract below. Every Worklease application response and cursor carries the
+current `restoreId`; original
+receipts and replay records retain issuing-incarnation provenance inside a fresh
+response identity and authority-time envelope. Claim and installation secret
+formats do not change. This check blocks stale admission but does not stop an old
+executor or a delayed old response, so cessation evidence remains required.
 
 Asynchronous backup provides disaster recovery, not seamless failover or zero
 acknowledged-write loss. For example, [Litestream's replication](https://litestream.io/how-it-works/)
@@ -327,25 +339,28 @@ mode is an ordinary claim and may start effects after the namespace reopens.
 Entering recovery mode cannot stop effects already dispatched on client hosts.
 There is no recovery-only claim attribute to carry through renewal and transfer.
 
-The restored ledger and client pending requests cannot enumerate the lost tail.
-A start, its effect, and its completion may all occur after the backup cutoff;
-the client can then clear its pending request while the backup contains no row.
-Installation enrollment or revocation can be lost in the same interval. A clean
-restored ledger and an empty pending set are therefore not reopening evidence.
+The restored ledger alone cannot enumerate the lost tail. A start, its effect,
+and its completion may all occur after the backup cutoff, as may installation
+enrollment or revocation. The required client journal preserves dispatched and
+completed work beyond pending-state cleanup, but the installation roster and
+administrative records must also live outside the rolled-back snapshot. A clean
+restored ledger or empty pending set is not reopening evidence.
 
-Reopening requires independently retained operator, provider, or executor
-records covering the chosen restore horizon from the restored durable cutoff to
-cessation of the old authority. The evidence must account for potentially lost
-dispatched and completed work, installation enrollment and revocation, outcomes,
-and executor cessation. Missing evidence keeps the namespace in recovery mode.
-This is initially an operator procedure and does not silently add a client
-journal. The bounded private reopening record contains the attestation and
-private references to external evidence, never credentials, argv, or evidence
-dumps in public feeds. The authority serializes reopening against current
-recovery state, verifies that every retained unresolved operation is reconciled
-and the operator attestation is complete, then atomically records the action and
-opens ordinary admission. The attestation records responsibility; it cannot
-mechanically prove external truth.
+Reopening requires the journal, independent installation inventory, operator
+records, and provider or executor evidence to exhaustively cover the chosen
+restore horizon from the restored durable cutoff through cessation of the old
+authority, including asynchronous provider outcomes after cessation. External
+exhaustive evidence may fill a missing record but is supplementary rather than
+the default replacement for the journal. Missing journal, roster, outcome, or
+cessation evidence keeps the namespace in recovery mode.
+
+The bounded private reopening record contains the attestation and private
+references to evidence, never credentials, argv, or evidence dumps in public
+feeds. The authority serializes reopening against current recovery state,
+verifies that every retained unresolved operation is reconciled and the operator
+attestation is complete, then atomically records the action and opens ordinary
+admission. The attestation records responsibility; it cannot mechanically prove
+external truth.
 
 Audited recovery import remains a follow-up triggered by a restore drill in
 which manual accounting proves insufficient. It can make an already identified
@@ -510,8 +525,37 @@ in one transaction, exactly as today. SQLite is the initial implementation;
 future backends preserve this observable atomicity. There is no total order
 across namespaces and no remote child-process execution.
 
-Before a guarded effect, the client durably saves its exact request and
-credentials locally and receives confirmation for that original start dispatch.
+### Client recovery journal
+
+Every remote client keeps a private durable recovery journal for its
+installations, independent of the authority SQLite database. Before any remote
+mutation dispatch, including invite, enrollment, and installation
+administration, append the original authority and incarnation and, where
+applicable, installation identity, request, claim and operation IDs, request kind
+and hash, full resource set, and dispatch intent. Reuse per-handle pending intent
+for exact retry, but retain bounded recovery records after completion, handle
+release or removal, credential rotation, re-enrollment, and client restart.
+Secrets remain in credential and handle stores; the journal is not another
+bearer store.
+
+For guarded work, retain the original start plus known external-effect outcome
+and executor-cessation evidence or private references to it. Before clearing
+pending state or removing a handle after completion, durably append the terminal
+receipt, outcome, or uncertainty. A pre-dispatch journal failure blocks dispatch.
+If a journal write fails after a request or effect may have happened, preserve
+the durable unresolved intent, stop new work pending recovery, and never
+re-execute. A local terminal receipt is not independent proof of external-effect
+completion or provider cessation.
+
+The CLI and MCP adapter use the same journal. Remote `--no-handle`, CI, and
+custom clients meet the same evidence contract. An ephemeral runner exports and
+retains its journal outside its ephemeral filesystem before teardown; missing or
+unavailable records keep reopening blocked. This requirement does not prescribe
+a storage technology, public journal API, index, or distributed journal service.
+
+Before a guarded effect, the client durably saves its exact request in pending
+state, keeps credentials in the existing handle store, and receives confirmation
+for that original start dispatch.
 A lost start response requires inspection or exact replay, not another execution.
 A retained started result remains unknown; discovering it is not permission to
 execute its effect. Work still runs on the host. If completion cannot be reported
@@ -571,9 +615,10 @@ the remote HTTPS client. The remote authority is not initially an MCP endpoint.
 This keeps compatibility independent of each MCP host's remote transport and
 authentication support.
 
-The adapter keeps installation credentials, claim credentials, handles, and
-pending requests on the client host; MCP exposes only opaque lease references.
-It renews claims and performs watch long polls without putting secrets in MCP
+The adapter keeps installation credentials, claim credentials, handles, pending
+requests, and the shared recovery journal on the client host; MCP exposes only
+opaque lease references. It renews claims and performs watch long polls without
+putting secrets in MCP
 configuration or model-visible results. It never enrolls or redeems an invite
 from a tool call. A missing or revoked installation credential returns the
 distinct `authentication-required` or `installation-revoked` reason with
@@ -593,6 +638,21 @@ constraint is now volume size rather than a vendor cap, the deployment budgets
 for this explicitly: a disk usage alert wired to the retention model, and a
 volume that can grow. Never prune unknown operations to meet a quota or treat an
 exported record as permission to remove safety state.
+
+Journal durability is independent of the server's 24-hour replay window and
+ledger GC. Before cleanup, the operator declares the oldest supported restore
+point and backup horizon. Never delete an unresolved journal entry. A completed
+entry may be pruned only when its whole request and effect interval predates
+every supported restore cutoff, no outstanding recovery needs it, and known
+backup and installation inventory covers it. Apply the same rule to enrollment
+and revocation records. An authority acknowledgment or wall-clock age does not
+prove replication.
+
+When the cutoff is unknown or an older backup remains restorable, retain the
+evidence or explicitly retire that restore point first. Cutoff and coverage
+evidence is initially operator-owned; this does not add a backup control plane.
+Recovery import remains deferred and cannot replace journal, inventory, outcome,
+or cessation evidence.
 
 There is no admission ceiling or reserved recovery capacity initially. A full
 volume fails writes with `storage-failure`, exactly as the local authority
@@ -662,31 +722,36 @@ The initial administrative service also covers invites, installation and claim
 revocation, restore reopening, bounded private inspection, GC apply, and database
 retirement. Recovery import and cross-host transfer preparation are follow-up
 extensions whose transactional invariants cannot be implemented by independent
-HTTP writes. Bind requests to authorityId; every Worklease application response
-carries `restoreId` and `authorityTime`. Reject unsupported versions, unknown
-fields, invalid types, oversized bodies and responses, and return non-cacheable
-responses. Resource keys and bearer credentials do not belong in URLs or logs.
+HTTP writes. Every authenticated request carries `authorityId` and immutable
+`expectedRestoreId`; invite-authenticated enrollment carries both as well. Only
+initial read-only metadata discovery may omit the latter. Every Worklease
+application response carries current `restoreId` and fresh `authorityTime`.
+Reject unsupported versions, unknown fields, invalid types, oversized bodies
+and responses, and return non-cacheable responses. Resource keys and bearer
+credentials do not belong in URLs or logs.
 
-Every authenticated remote mutation validates the current installation, role,
-and authority before exact replay. Claim-operation replay also authenticates the
-original epoch credential. Only a request that is not a replay proceeds to
-new-admission checks for recovery state, prefix, and bounds. Recheck current
-installation revocation, namespace policy, and recovery state in the same
-serialized mutation transaction, rather than relying on HTTP middleware.
-Current revocation may refuse replay; otherwise resolve retained replay before
-new-admission checks even after policy changes. A completed operation returns
-its receipt, while an operation retained as started returns `unknown-outcome`
-and never renewed permission to execute. Recovery mode refuses a new start.
-Enrollment has its separate atomic invite-redemption replay rules below.
+Every authenticated remote mutation authenticates the current installation,
+validates its role, then checks `authorityId` and `expectedRestoreId` in the
+serialized boundary before replay or mutation. Claim-operation replay also
+authenticates the original epoch credential. Only a request that is not a replay
+proceeds to new-admission checks for recovery state, prefix, and bounds. Recheck
+current installation revocation, namespace policy, and recovery state in that
+same transaction rather than relying on HTTP middleware. Current revocation may
+refuse replay; otherwise resolve retained replay before new-admission checks even
+after policy changes. A completed operation returns its receipt, while an
+operation retained as started returns `unknown-outcome` and never renewed
+permission to execute. Recovery mode refuses a new start. Enrollment has its
+separate atomic invite-redemption replay rules below.
 
 Clients retain generated claim/operation IDs, normalized defaults, credentials,
-request hashes and retry deadlines before dispatch. Acquire and initial
-same-host transfer send client-generated fresh claim credentials through the
-authenticated channel; the authority stores hashes and returns token-free
-receipts. Exact replay authenticates the original epoch even after release or
-same-host transfer. Exact replay of acquire and same-host transfer returns the
-original result; operation replay follows the retained state described above. A
-changed request conflicts.
+request hashes, retry deadlines, and original `expectedRestoreId` before
+dispatch. Retry, refresh, rotation, and re-enrollment never rewrite that saved
+incarnation. Acquire and initial same-host transfer send client-generated fresh
+claim credentials through the authenticated channel; the authority stores hashes
+and returns token-free receipts. Exact replay authenticates the original epoch
+even after release or same-host transfer. Exact replay of acquire and same-host
+transfer returns the original result; operation replay follows the retained
+state described above. A changed request conflicts.
 
 A timeout after dispatch has an unknown commit outcome. Inspect or retry the
 exact stored request within the supported replay window; never mint a new claim
@@ -744,13 +809,17 @@ installation credentials in argv or logs.
    second invite. The authority never stores the code.
 2. The redeemer supplies the code through a hidden prompt, `--invite-file`, or
    `--invite-fd`. It also supplies the trusted HTTPS endpoint and expected
-   authorityId received from the issuer. The client generates and durably stores
-   an installation credential before dispatch; a descriptor can read an already
-   persisted secret but is not durable storage.
-3. The authority atomically burns the invite, inserts an immutable installation
-   ID and credential hash, and stores the immutable redemption replay result.
-   The client finalizes the profile only after confirmed or recovered enrollment
-   and preserves pending enrollment plus older recovery evidence until then.
+   authorityId received from the issuer. The client reads the endpoint's current
+   `restoreId`, saves it in the pending enrollment and journal, then generates
+   and durably stores an installation credential before dispatch; a descriptor
+   can read an already persisted secret but is not durable storage.
+3. Using invite authentication, the authority validates authorityId and
+   `expectedRestoreId` before it atomically burns the invite, inserts an
+   immutable installation ID and credential hash, and stores the immutable
+   redemption replay result.
+   After confirmed or recovered enrollment, the client pins the returned
+   `restoreId` before ordinary dispatch and finalizes the profile. It preserves
+   pending enrollment plus older recovery evidence until then.
 4. Every later request sends the installation bearer to the authority over
    trusted TLS. The authority looks up its hash, checks revocation, and applies
    the role.
@@ -762,7 +831,9 @@ credential conflicts; installation revocation overrides replay. After replay
 retention, a burned invite can never enroll again. There is no access/refresh
 split, token endpoint, browser page, or session. Rotate by enrolling a new
 immutable installation ID and revoking the old ID. Labels are nonunique
-diagnostics, never revocation selectors.
+diagnostics, never revocation selectors. Metadata refresh never rewrites a saved
+redemption incarnation. After restore, enrollment uses a fresh
+current-incarnation invite and request while retaining the old evidence.
 
 First-start initialization under the lock durably creates one admin bootstrap
 invite before serving. It writes the invite to an owner-private file and prints
@@ -849,10 +920,12 @@ Copying a handle between hosts remains unsupported and is not ownership transfer
 Choose the hosting region at namespace creation and treat it as immutable. A
 managed edge such as a tunnel, CDN, or hosted proxy may process request metadata
 outside the region, depending on its deployment. Retention and deletion of
-private recovery context follow the same GC rules as the local authority;
-deletion beyond GC requires an `admin` action and is refused for unresolved
-operations. The operator must configure object-backup IAM, encryption, region,
-and restore access explicitly; API roles do not carry over to object storage.
+authority-held private recovery context follow the same GC rules as the local
+authority; deletion beyond GC requires an `admin` action and is refused for
+unresolved operations. Client journal retention follows the restore-horizon
+rules above and may outlive server replay and ledger rows. The operator must
+configure object-backup IAM, encryption, region, and restore access explicitly;
+API roles do not carry over to object storage.
 Backups are therefore covered by the restore incarnation rule and never by a
 second live authority. Object-storage replication is optional: disabling it
 removes replica-based disaster recovery but does not change the single-writer,
@@ -905,40 +978,29 @@ dispatch, remote commands, or transcript storage. Those belong in an external
 messaging or orchestration system, which can carry Worklease IDs for correlation
 while Worklease remains the authority for ownership and recovery.
 
-## Architecture review recommendations
+## Adopted architecture review decisions
 
-The narrow core is sound. Reuse the Go service, keep one SQLite writer and one
-namespace per server, admit explicit portable prefixes, enroll installations by
-invite, and use ordinary claims under namespace recovery mode. Do not add
-initial capacity tiers, recovery import, or cross-host transfer.
+**Decision (2026-09-13).** Every authenticated request is bound to its expected
+restore incarnation, and every remote client maintains the durable recovery
+journal defined above. The rest of the narrow core remains unchanged: reuse the
+Go service, keep one SQLite writer and one namespace per server, admit explicit
+portable prefixes, enroll by invite, and use ordinary claims under namespace
+recovery mode. Capacity tiers, recovery import, and cross-host transfer remain
+deferred.
 
-Two decisions remain disputed and must be resolved before the remote protocol is
-frozen.
+Response-only restore detection was rejected because it can admit stale intent.
+An unacknowledged acquire saved under R0 can be absent from the restored
+snapshot, then arrive after re-enrollment under R1 with a new installation
+bearer. Without `expectedRestoreId`, the server has no R0 row to recognize and
+its R1 response matches the refreshed profile. Immutable request binding rejects
+that request before replay or write.
 
-1. **Request incarnation binding.** Prefer an `expectedRestoreId` in the
-   immutable saved remote request envelope and in handle or pending-request
-   origin metadata. The server checks it before replay or mutation and binds it
-   to the stored replay result or its digest. Responses and cursors continue to
-   carry `restoreId`; secret formats do not change. Otherwise, an unacknowledged
-   acquire saved under restore R0 can be absent from the restored snapshot, then
-   sent after re-enrollment under R1 with the new installation bearer. The
-   server has no R0 row to recognize and can commit after reopening, or during
-   recovery if it covers a surviving unknown. Its R1 response matches the
-   profile, so response-only detection misses the stale request. The alternative
-   is response-only detection with every old request and handle bound to an
-   immutable installation credential generation that cannot be reused with a
-   fresh credential; the profile's latest value alone is insufficient. Choose
-   one design, not both. Neither design terminates an old executor or prevents a
-   delayed successful response, so cessation evidence remains required.
-2. **Restore evidence.** If routine reopening is intended, prefer durable,
-   independently retained history of dispatched and completed work for the
-   supported backup horizon. The minimal initial alternative is manual external
-   operator or provider evidence, with an explicit inability to reopen when
-   exhaustive enumeration, outcome, or cessation evidence is absent. A client
-   journal or synchronous acknowledged-write durability is a future option, not
-   an implicit initial requirement. Recovery import cannot supply missing
-   evidence. A fully completed operation lost from the backup tail demonstrates
-   the evidence gap even when it creates no concurrent effect by itself.
+Pending-only recovery evidence was rejected because successful completion and
+handle removal can clear pending state while every corresponding authority row
+remains outside the backup. The durable journal keeps both dispatched and
+completed work across that gap. It still cannot prove provider outcome or
+executor cessation by itself, so independent inventory and evidence remain part
+of reopening.
 
 ## Remaining decisions and release evidence
 
@@ -951,7 +1013,7 @@ operator choices:
 
 | Area | Open decision and what resolves it |
 | --- | --- |
-| Recovery targets | The operator sets acceptable acknowledged-write loss and recovery downtime before choosing deployment details. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
+| Recovery targets | The operator sets acceptable acknowledged-write loss, recovery downtime, oldest supported restore point, and backup horizon before deployment and journal cleanup. Async backup is not high availability; missing recovery evidence can block reopening indefinitely. |
 | SQLite to Postgres trigger | Measured write latency/throughput, a requirement for managed-database durability, or a requirement for stateless `serve` replicas. Preference alone does not create a speculative abstraction, but cluster deployments are expected to be the strongest trigger. |
 | Capacity and cost | Measured WAN latency, renewal margins, retry/watch bursts, per-namespace write throughput, replication lag, and storage growth under pinned history. These decide whether admission backpressure is needed and validate cost assumptions. |
 | Hosting region and provider | An operator choice constrained by recovery targets. SQLite requires one always-on host and one persistent volume; object-storage replication is optional. |
@@ -979,27 +1041,37 @@ Before private deployment, add executable scenarios covering at least:
    Exercise asymmetric request latency, drift margin, the 24-hour lower-bound
    formula, required initial reads, restart and suspend resampling, an expired
    short window, and a late successful start response that must not dispatch.
+   A pre-dispatch journal failure sends nothing; a failure after a request or
+   effect may have occurred preserves unresolved intent, stops new work, and
+   never re-executes.
 3. First-start initialization durably writes one protected admin invite file.
    Test hidden, file, and descriptor input without argv or log disclosure;
    trusted endpoint and authority matching; no credential-bearing redirect; and
-   final profile activation only after recovered enrollment. Drop invite
-   issuance and redemption responses, including across expiry, replay retention,
-   mismatch, and revocation. Verify atomic burn, immutable installation IDs,
-   rotation and revocation by ID, role isolation, and distinct
+   enrollment's initial metadata read, saved `expectedRestoreId`, and final
+   profile activation only after recovered enrollment. Drop invite issuance and
+   redemption responses, including across expiry, replay retention, incarnation
+   mismatch, and revocation. Verify no burn or installation insert on mismatch,
+   atomic redemption, immutable installation IDs, rotation and revocation by ID,
+   role isolation, and distinct
    `authentication-required` and `installation-revoked` MCP guidance.
 4. Snapshot/watch races, disconnect/reconnect, lazy expiry, cursor gaps, and a
    stuck predecessor pinning retention preserve recovery state. A full volume
-   fails writes with `storage-failure` and prunes nothing.
+   fails writes with `storage-failure` and prunes nothing. Journal cleanup keeps
+   unresolved entries pinned, respects every supported restore cutoff and backup
+   inventory, and blocks when coverage is unknown.
 5. Restart, rolling protocol/schema upgrades, and restore from a replica preserve
    replay and unknown-operation semantics. Restart preserves `restoreId`;
    restore creates a fresh one, ends active claims as `restored`, revokes retained
    old rows, rejects old cursors, and returns `authentication-required` for a
    credential whose row was lost. Restore the same backup twice and reject the
-   first restored incarnation at the second. Exercise the selected
-   request-incarnation design with an R0 pending acquire sent after R1
-   re-enrollment. Lose both a
-   confirmed start and a fully completed operation from the backup tail and keep
-   recovery closed until evidence covers the full cutoff-to-cessation interval.
+   first restored incarnation at the second. Send an R0 pending acquire with a
+   new R1 installation bearer and reject it before replay or write; profile
+   refresh, rotation, and re-enrollment never rewrite its `expectedRestoreId`.
+   Lose a full start, effect, and completion from the backup tail after pending
+   cleanup and handle removal. Verify journal survival across client restart and
+   rotation, required export before ephemeral runner teardown, and recovery
+   closure when journal, roster, outcome, cessation, or cutoff coverage is
+   missing.
    Verify transitive recovery closure, new-start refusal, and retained replay:
    completed operations return receipts while still-started operations return
    `unknown-outcome` and never permission to execute. Verify the sole bootstrap
@@ -1026,23 +1098,24 @@ Deployment tooling owns the host, volume, replication, front door, and secrets;
 Do not add preparatory remote code to the local release outside an authorized
 implementation slice. When implementation begins:
 
-1. Resolve request-incarnation binding, then amend the contract's section 20
-   under its amendment procedure. Replace the "front door such as Cloudflare
-   Tunnel plus Access" wording because Worklease owns API authorization and a
-   trusted edge terminates TLS. Do not declare the existing `restoreId` request,
-   receipt, handle, and cursor binding superseded before choosing one disputed
-   alternative above. Freeze an explicit allowed field mapping over the typed
-   service requests plus the administrative surface named here, excluding local
-   compatibility fields such as `LegacyRequestHash`, with `authorityTime`,
-   `restoreId`, and the error reasons named here:
+1. Amend the contract's section 20 under its amendment procedure. Codify
+   `authorityId` and `expectedRestoreId` request binding, immutable receipt,
+   handle and cursor incarnation provenance, and the mandatory client recovery
+   journal. Replace the "front door such as Cloudflare Tunnel plus Access"
+   wording because Worklease owns API authorization and a trusted edge terminates
+   TLS. Freeze an explicit allowed field mapping over the typed service requests
+   plus the administrative surface named here, excluding local compatibility
+   fields such as `LegacyRequestHash`, with `authorityTime`, `restoreId`, and the
+   error reasons named here:
    `authority-restored`, `installation-revoked`, `authentication-required`,
    `resource-not-enrolled`, and the `restored` and `revoked` end reasons.
 2. Add `restoreId` to `meta`, return it and `authorityTime` on every Worklease
-   application response, embed it in cursors, and implement the selected request
-   binding. Implement the hosted SQLite process-lifetime lock without changing
-   normal concurrent local CLI behavior; the restore procedure; transitive
-   recovery admission; serialized mutation rechecks and ordering; persisted TTL
-   and hold limits on every extension path; and atomic reopening.
+   application response, embed it in cursors and replay provenance, and enforce
+   immutable `expectedRestoreId` before replay or mutation. Implement the hosted
+   SQLite process-lifetime lock without changing normal concurrent local CLI
+   behavior; the restore procedure; transitive recovery admission; serialized
+   mutation rechecks and ordering; persisted TTL and hold limits on every
+   extension path; and atomic reopening.
    The new `meta` row and the `restored` and `revoked` epoch end reasons change
    the shared SQLite schema: `epochs.end_reason` is CHECK-constrained to the
    three local reasons today. Bump `store.SchemaVersion` with a one-way
@@ -1058,14 +1131,15 @@ implementation slice. When implementation begins:
    transport and authentication independent of SQLite implementation types.
 4. Add authority profiles, user-side project bindings, OS credential storage
    with file and descriptor sources, hidden invite input plus `--invite-file` and
-   `--invite-fd`, the client-side local/remote selector, authority-time bounds,
-   and partition/lost-response tests. Keep
+   `--invite-fd`, immutable request-incarnation envelopes, the durable recovery
+   journal and ephemeral export requirement, the client-side local/remote
+   selector, authority-time bounds, and partition/lost-response tests. Keep
    guarded effects strictly local and never fall back from a configured remote
    profile.
 5. Adapt `worklease mcp` as the local stdio adapter over that same client,
-   preserving opaque lease references and local pending-request durability. Add
-   distinct `authentication-required` and `installation-revoked` guidance
-   without enrolling from a tool call.
+   preserving opaque lease references, pending-request durability, and the same
+   recovery journal. Add distinct `authentication-required` and
+   `installation-revoked` guidance without enrolling from a tool call.
 6. Run the five scenario groups against a real two-host SQLite deployment behind
    its TLS edge, including a replica restore, before promoting the experimental
    capability.
