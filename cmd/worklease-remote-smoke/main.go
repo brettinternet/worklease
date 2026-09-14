@@ -363,7 +363,7 @@ func main() {
 	binary := flag.String("binary", "bin/worklease", "built worklease binary")
 	evidence := flag.String("evidence", "", "evidence directory (default: dist/remote-acceptance/TIMESTAMP)")
 	keep := flag.Bool("keep", false, "keep temporary authority and client state")
-	remoteHost := flag.String("remote-host", "", "run authority and client B on this SSH host (for example remote-host)")
+	remoteHost := flag.String("remote-host", "", "run authority and client B on this SSH host (for example lima-worklease-remote)")
 	flag.Parse()
 	if err := run(*binary, *evidence, *keep, *remoteHost); err != nil {
 		fatal(err)
@@ -2458,12 +2458,12 @@ func (h *harness) runRemoteSupportingTests(evidence string) []supportingTestEvid
 		logPath := filepath.Join(evidence, name+"-build.log")
 		_ = os.WriteFile(logPath, buildOutput, 0o600)
 		if buildErr != nil {
-			results = append(results, supportingTestEvidence{Command: strings.Join(command, " "), Scope: "remote-host build", Status: "failed", Log: logPath})
+			results = append(results, supportingTestEvidence{Command: strings.Join(command, " "), Scope: "remote build", Status: "failed", Log: logPath})
 			continue
 		}
 		remoteBinary := filepath.Join(h.remoteRoot, name)
 		if copyErr := runSCP(h.remoteHost, localBinary, remoteBinary); copyErr != nil {
-			results = append(results, supportingTestEvidence{Command: strings.Join(command, " "), Scope: "remote-host copy", Status: "failed", Log: logPath})
+			results = append(results, supportingTestEvidence{Command: strings.Join(command, " "), Scope: "remote copy", Status: "failed", Log: logPath})
 			continue
 		}
 		runCommand := []string{"ssh", h.remoteHost, remoteBinary, "-test.v"}
@@ -2474,13 +2474,13 @@ func (h *harness) runRemoteSupportingTests(evidence string) []supportingTestEvid
 		}
 		h.logCommand("supporting-test@"+h.remoteHost, runCommand)
 		output, runErr := runSSH(h.remoteHost, append([]string{remoteBinary}, runArgs...)...)
-		remoteLog := filepath.Join(evidence, name+"-remote-host.log")
+		remoteLog := filepath.Join(evidence, name+"-remote.log")
 		_ = os.WriteFile(remoteLog, []byte(output), 0o600)
 		status := "supporting-test-pass"
 		if runErr != nil {
 			status = "failed"
 		}
-		results = append(results, supportingTestEvidence{Command: strings.Join(runCommand, " "), Scope: "remote-host", Status: status, Log: remoteLog})
+		results = append(results, supportingTestEvidence{Command: strings.Join(runCommand, " "), Scope: "remote", Status: status, Log: remoteLog})
 	}
 	return results
 }
