@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 14:46'
+updated_date: '2026-09-14 14:51'
 labels:
   - remote-authority
 dependencies:
@@ -88,4 +88,10 @@ Takeover started under Worklease claim session task-107-11-takeover. Continuing 
 Completed the live Group 1 admission/configuration slice. The unchanged harness now rejects raw host-local resources, rejects a reserved-prefix server configuration at startup, proves config rewrites do not affect the running process until restart, enforces a reduced TTL ceiling for new claims, and proves the originally persisted claim limits continue through heartbeat, guarded exec, and transfer. Also normalized explicit evidence paths to absolute paths so guarded effects are independent of client checkout cwd.
 
 Objective evidence: local report dist/remote-acceptance/ac3-local-test-4/report.json; real-host report dist/remote-acceptance/20260914T144421.181833000Z/report.json and coverage.json; retained workspace remote-host:/private/tmp/worklease-acceptance-eZVAQp. AC3.3-AC3.5 are live-pass. Quality gates mise run lint, format-check, test, and typecheck passed.
+
+Committed Group 1 admission/configuration acceptance as b0cb24a (Expand remote admission acceptance).
+
+Extended the real-host harness with credential rotation/revocation and hosted-lock boundary observations. Group 3 now rotates the worker through an owner-private hidden invite, revokes the old installation, proves the old bearer returns installation-revoked, and proves the replacement bearer remains usable. Group 5 now proves direct local mutation is refused against a marked hosted home while the lock is free, and proves second serve, bootstrap reissue, and retire are refused while the server holds the lock.
+
+Objective evidence: local reports dist/remote-acceptance/group3-local-test/report.json and lock-local-test/report.json; real-host report dist/remote-acceptance/20260914T145035.814268000Z/report.json and coverage.json; retained workspace remote-host:/private/tmp/worklease-acceptance-tj1wkd. AC5.7, AC5.8, AC7.19, and AC7.20 are live-pass. Quality gates lint, format-check, test, and typecheck passed.
 <!-- SECTION:NOTES:END -->
