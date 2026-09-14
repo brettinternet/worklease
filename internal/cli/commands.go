@@ -10,6 +10,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	mcpserver "github.com/brettinternet/worklease/internal/mcp"
 	"github.com/brettinternet/worklease/internal/reason"
+	workleaseserver "github.com/brettinternet/worklease/internal/server"
 	urfavecli "github.com/urfave/cli/v3"
 )
 
@@ -311,7 +312,27 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 
 	hosted := hostedCommands(s)
-	all := append(commands, policy, op, instructions, setup, hosted, mcp, helpCommand(s))
+	serve := jsonless("serve", "serve a hosted remote authority", "worklease serve --server-config server.yaml [--dev-http]",
+		&urfavecli.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE`"},
+		&urfavecli.BoolFlag{Name: "dev-http", Usage: "allow cleartext HTTP on a loopback address for development only"})
+	serve.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+		path := strings.TrimSpace(cmd.String("server-config"))
+		if path == "" {
+			return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "--server-config is required"))
+		}
+		cfg, err := workleaseserver.LoadConfig(path)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		srv, err := workleaseserver.New(ctx, cfg, cmd.Bool("dev-http"), nil)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		return srv.Serve(ctx, cmd.Bool("dev-http"))
+	}
+	usageText(serve, "worklease serve --server-config FILE [--dev-http]")
+	detail(serve, "Serve one marked hosted authority over the frozen Worklease HTTP protocol. TLS is required unless --dev-http is explicitly used on loopback.")
+	all := append(commands, policy, op, instructions, setup, hosted, serve, mcp, helpCommand(s))
 	for _, command := range all {
 		switch command.Name {
 		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":

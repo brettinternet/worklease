@@ -163,9 +163,9 @@ type ResourceStatus struct {
 	Claim    *ClaimView `json:"claim,omitempty"`
 }
 type Status struct {
-	Claim     *ClaimView
-	Claims    []ClaimView
-	Resources []ResourceStatus
+	Claim     *ClaimView       `json:"claim,omitempty"`
+	Claims    []ClaimView      `json:"claims"`
+	Resources []ResourceStatus `json:"resources"`
 }
 type Renew struct {
 	OperationID     string
@@ -204,8 +204,8 @@ type Receipt struct {
 	Result      map[string]any `json:"result,omitempty"`
 }
 type Verification struct {
-	Claim             ClaimView
-	UnknownOperations []string
+	Claim             ClaimView `json:"claim"`
+	UnknownOperations []string  `json:"unknownOperations,omitempty"`
 }
 type OperationIntent struct {
 	OperationID, Kind, RequestHash string
@@ -214,11 +214,13 @@ type OperationIntent struct {
 	TTL                            time.Duration
 }
 type Started struct {
-	OperationID, ClaimID, Kind string
-	Revision                   int64
-	RequestHash                string
-	Completed                  bool
-	Receipt                    *Receipt
+	OperationID string   `json:"operationId"`
+	ClaimID     string   `json:"claimId"`
+	Kind        string   `json:"kind"`
+	Revision    int64    `json:"revision"`
+	RequestHash string   `json:"requestSha256"`
+	Completed   bool     `json:"completed"`
+	Receipt     *Receipt `json:"receipt,omitempty"`
 }
 
 func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error) {

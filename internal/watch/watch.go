@@ -34,6 +34,7 @@ type Request struct {
 	Timeout      time.Duration
 	PollInterval time.Duration
 	Clock        Clock
+	Check        ledger.TransactionCheck
 }
 
 type ResourceState struct {
@@ -144,7 +145,7 @@ func Wait(ctx context.Context, st *store.Store, req Request) (Result, error) {
 	watchCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	result := Result{AuthorityID: st.AuthorityID(), Cursor: req.Cursor, NextCursor: req.Cursor, Resources: []ResourceState{}}
-	position, initial, gap, err := snapshot(watchCtx, st, req.Resources, req.Cursor, filter, clock.Now())
+	position, initial, gap, err := snapshot(watchCtx, st, req.Resources, req.Cursor, filter, clock.Now(), req.Check)
 	if err != nil {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -181,7 +182,7 @@ func Wait(ctx context.Context, st *store.Store, req Request) (Result, error) {
 			return result, nil
 		}
 		if canScanEvents && (req.Cursor != "" || req.Until != "") {
-			scan, scanErr := ledger.New(st).ScanEvents(watchCtx, result.NextCursor, filter)
+			scan, scanErr := ledger.NewChecked(st, req.Check).ScanEvents(watchCtx, result.NextCursor, filter)
 			if scanErr != nil {
 				if ctx.Err() != nil {
 					return result, ctx.Err()
@@ -220,7 +221,7 @@ func Wait(ctx context.Context, st *store.Store, req Request) (Result, error) {
 			}
 		}
 		if req.Until != "" {
-			observation, stateErr := readState(watchCtx, st, req.Resources, clock.Now())
+			observation, stateErr := readState(watchCtx, st, req.Resources, clock.Now(), req.Check)
 			if stateErr != nil {
 				if ctx.Err() != nil {
 					return result, ctx.Err()
@@ -335,11 +336,16 @@ type observation struct {
 	Now        time.Time
 }
 
-func snapshot(ctx context.Context, st *store.Store, resources []string, cursor, filter string, now time.Time) (int64, observation, bool, error) {
+func snapshot(ctx context.Context, st *store.Store, resources []string, cursor, filter string, now time.Time, check ledger.TransactionCheck) (int64, observation, bool, error) {
 	position := int64(0)
 	gap := false
 	observed := freeObservation(resources, now)
 	err := st.Read(ctx, func(tx *store.Tx) error {
+		if check != nil {
+			if err := check(ctx, tx); err != nil {
+				return err
+			}
+		}
 		var last, pruned string
 		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='last_event_seq'`).Scan(&last); err != nil {
 			return err
@@ -423,9 +429,14 @@ func effectiveObservationNow(ctx context.Context, tx *store.Tx, now time.Time) (
 	return now, nil
 }
 
-func readState(ctx context.Context, st *store.Store, resources []string, now time.Time) (observation, error) {
+func readState(ctx context.Context, st *store.Store, resources []string, now time.Time, check ledger.TransactionCheck) (observation, error) {
 	result := freeObservation(resources, now)
 	err := st.Read(ctx, func(tx *store.Tx) error {
+		if check != nil {
+			if err := check(ctx, tx); err != nil {
+				return err
+			}
+		}
 		var err error
 		result, err = readStateTx(ctx, tx, resources, now)
 		return err

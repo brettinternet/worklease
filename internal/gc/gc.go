@@ -44,13 +44,19 @@ type Result struct {
 	LastEventSequence string             `json:"lastEventSequence"`
 }
 
-type Service struct{ st *store.Store }
+type Service struct {
+	st *store.Store
+	tx *store.Tx
+}
 
 func New(st *store.Store) *Service { return &Service{st: st} }
 
+// NewTransaction runs retention inside a caller-owned serialized transaction.
+func NewTransaction(tx *store.Tx) *Service { return &Service{tx: tx} }
+
 // Collect previews or applies retention in one authority transaction.
 func (s *Service) Collect(ctx context.Context, req Request) (Result, error) {
-	if s == nil || s.st == nil {
+	if s == nil || (s.st == nil && s.tx == nil) {
 		return Result{}, reason.New(reason.ReasonStorageFailure, "authority is not available")
 	}
 	now := req.Now
@@ -149,7 +155,9 @@ func (s *Service) Collect(ctx context.Context, req Request) (Result, error) {
 		result.Collected = collected
 		return nil
 	}
-	if req.Apply {
+	if s.tx != nil {
+		err = work(s.tx)
+	} else if req.Apply {
 		err = s.st.WriteAt(ctx, now, work)
 	} else {
 		err = s.st.Read(ctx, work)

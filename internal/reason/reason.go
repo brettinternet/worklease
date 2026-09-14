@@ -77,6 +77,12 @@ const (
 	ReasonChildTimeout                   = "child-timeout"
 	ReasonInterrupted                    = "interrupted"
 	ReasonHookInputInvalid               = "hook-input-invalid"
+	ReasonProtocolVersionUnsupported     = "protocol-version-unsupported"
+	ReasonRateLimited                    = "rate-limited"
+	ReasonRequestTooLarge                = "request-too-large"
+	ReasonResponseTooLarge               = "response-too-large"
+	ReasonOperationKindUnsupported       = "operation-kind-unsupported"
+	ReasonCancelled                      = "cancelled"
 )
 
 // Error is a structured application error. Details must contain only
@@ -169,6 +175,9 @@ var registry = map[string]int{
 	ReasonCredentialSourceConflict: ExitInvalid, ReasonAgentIDRequired: ExitInvalid,
 	ReasonUnsupportedCoordinationReplace: ExitInvalid, ReasonCursorInvalid: ExitInvalid,
 	ReasonSetupConfigMalformed: ExitInvalid, ReasonHookInputInvalid: ExitInvalid,
+	ReasonProtocolVersionUnsupported: ExitInvalid, ReasonRateLimited: ExitInvalid,
+	ReasonRequestTooLarge: ExitInvalid, ReasonResponseTooLarge: ExitInvalid,
+	ReasonOperationKindUnsupported: ExitInvalid, ReasonCancelled: ExitInterrupted,
 	ReasonHomeUnsafe: ExitAuthority, ReasonStorageFailure: ExitAuthority, ReasonSchemaUnsupported: ExitAuthority,
 	ReasonSchemaCorrupt: ExitAuthority, ReasonHostedHomeRequiresRemote: ExitAuthority, ReasonHostedLockHeld: ExitAuthority,
 	ReasonHandleWriteFailed: ExitAuthority,
