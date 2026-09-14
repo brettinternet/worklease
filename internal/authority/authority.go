@@ -178,6 +178,9 @@ func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id str
 	if len(refs) > 5 {
 		spec.TargetHandlePath = refs[5]
 	}
+	if len(refs) > 6 {
+		spec.AutoRenewOwner = refs[6]
+	}
 	r, e := a.Client.Call(ctx, spec)
 	if e != nil {
 		return nil, e
@@ -268,7 +271,7 @@ func (a *RemoteAuthority) Acquire(ctx context.Context, r lease.AcquireRequest) (
 	q := common(a.Client, id)
 	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["resources"], q["agentId"], q["sessionId"], q["workKey"], q["ttlMicros"], q["maxHoldMicros"], q["coordinationOnly"] = r.ClaimID, r.Resources, r.AgentID, r.SessionID, r.WorkKey, r.TTL.Microseconds(), r.MaxHold.Microseconds(), r.CoordinationOnly
-	b, e := a.request(ctx, "/v1/claims/acquire", "acquire", id, q, true, false, "", r.Token, r.HandlePath, r.HandlePath, "", "", r.CredentialPath)
+	b, e := a.request(ctx, "/v1/claims/acquire", "acquire", id, q, true, false, "", r.Token, r.HandlePath, r.HandlePath, "", "", r.CredentialPath, "", r.AutoRenewOwner)
 	if e != nil {
 		return lease.Grant{}, e
 	}

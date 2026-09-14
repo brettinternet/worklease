@@ -110,7 +110,9 @@ type AcquireRequest struct {
 	// MaxHold is remote new-admission input. Remote lifecycle derives the
 	// resulting absolute deadline from authority time and persists it.
 	MaxHold time.Duration
-	Actor   *RemoteActor
+	// AutoRenewOwner is client-local handle state and is never sent to an authority.
+	AutoRenewOwner string
+	Actor          *RemoteActor
 	// LegacyRequestHash permits only an adapter-recorded pre-hold-binding request
 	// to replay. New operations always persist the hold-bound request hash.
 	LegacyRequestHash  string

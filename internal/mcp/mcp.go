@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
@@ -18,11 +20,14 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
+	watchpkg "github.com/brettinternet/worklease/internal/watch"
 )
 
 type Options struct {
 	Home, AgentID, SessionID string
 	TTL, PollInterval        time.Duration
+	Profile                  *config.Profile
+	ProfileName              string
 }
 type runtimeLease struct {
 	ref, path string
@@ -43,25 +48,76 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.PollInterval == 0 {
 		opts.PollInterval = config.DefaultPollInterval
 	}
-	return &Server{options: opts, requests: map[string]*requestState{}, seen: map[string]struct{}{}, leases: map[string]*runtimeLease{}}, nil
+	s := &Server{options: opts, requests: map[string]*requestState{}, seen: map[string]struct{}{}, leases: map[string]*runtimeLease{}}
+	if opts.Profile != nil {
+		profile := *opts.Profile
+		pending := authority.NewFilePendingStore(filepath.Join(opts.Home, "pending", opts.ProfileName))
+		client, err := authority.NewHTTPClient(profile, pending, nil)
+		if err != nil {
+			return nil, err
+		}
+		remote, err := authority.NewRemoteAuthority(client)
+		if err != nil {
+			return nil, err
+		}
+		s.remote, s.remoteClient, s.profile = remote, client, &profile
+	}
+	return s, nil
 }
 
 type serviceBundle struct {
-	svc *lease.Service
-	st  *store.Store
+	authority authority.Authority
+	svc       *lease.Service
+	st        *store.Store
+	id        string
+	remote    bool
+}
+
+func (b serviceBundle) Close() {
+	if b.st != nil {
+		_ = b.st.Close()
+	}
+}
+
+func (s *Server) ensureRemoteCredential() error {
+	if s.profile != nil {
+		if _, err := os.Stat(s.profile.Credential.Path); os.IsNotExist(err) {
+			return reason.New(reason.ReasonAuthenticationRequired, "remote installation is not enrolled")
+		}
+	}
+	return nil
+}
+
+func (s *Server) remoteUpperNow(ctx context.Context) (time.Time, error) {
+	if _, err := s.remoteClient.Metadata(ctx); err != nil {
+		return time.Time{}, err
+	}
+	return s.remoteClient.Clock().UpperBound()
 }
 
 func (s *Server) open(ctx context.Context, write bool) (serviceBundle, error) {
+	if s.remote != nil {
+		if err := s.ensureRemoteCredential(); err != nil {
+			return serviceBundle{}, err
+		}
+		return serviceBundle{authority: s.remote, id: s.profile.AuthorityID, remote: true}, nil
+	}
 	st, e := store.Open(ctx, s.options.Home, store.Options{ReadOnly: !write})
 	if e != nil {
 		return serviceBundle{}, e
 	}
-	return serviceBundle{lease.New(st, nil, nil, lease.Defaults{TTL: s.options.TTL, PollInterval: s.options.PollInterval}), st}, nil
+	svc := lease.New(st, nil, nil, lease.Defaults{TTL: s.options.TTL, PollInterval: s.options.PollInterval})
+	local, e := authority.NewLocalAuthority(svc, st, s.options.PollInterval)
+	if e != nil {
+		_ = st.Close()
+		return serviceBundle{}, e
+	}
+	return serviceBundle{authority: local, svc: svc, st: st, id: st.AuthorityID()}, nil
 }
 
 var toolOrder = []string{"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions"}
 
-const serverInstructions = "Worklease local lease authority. Use the opaque lease returned by a successful acquire. Retry acquire by lease reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
+const serverInstructions = "Worklease claim authority. Use the opaque lease returned by a successful acquire. Retry acquire by lease reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
 
 func (s *Server) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
 	if v := requestVersion(req); v != "" && v != ModernVersion && v != LegacyVersion {
@@ -96,11 +152,11 @@ func (s *Server) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
 		return nil, protocolError(-32601, "unknown tool", nil)
 	}
 	if err := validateArgs(p.Name, p.Arguments); err != nil {
-		return toolFailure(err), nil
+		return toolFailure(s.guideError(err)), nil
 	}
 	value, err := s.callTool(ctx, p.Name, p.Arguments)
 	if err != nil {
-		return toolFailure(err), nil
+		return toolFailure(s.guideError(err)), nil
 	}
 	return toolSuccess(value), nil
 }
@@ -253,15 +309,33 @@ func (s *Server) Call(ctx context.Context, name string, a map[string]any) (map[s
 		a = map[string]any{}
 	}
 	if err := validateArgs(name, a); err != nil {
-		return toolFailure(err), nil
+		return toolFailure(s.guideError(err)), nil
 	}
 	v, err := s.callTool(ctx, name, a)
 	if err != nil {
-		return toolFailure(err), nil
+		return toolFailure(s.guideError(err)), nil
 	}
 	return toolSuccess(v), nil
 }
 func (s *Server) Close() { s.stopAllRenewals() }
+
+func (s *Server) guideError(err error) error {
+	classified := reason.As(err)
+	if classified == nil || s.profile == nil {
+		return err
+	}
+	profile := s.options.ProfileName
+	if profile == "" {
+		profile = s.profile.Name
+	}
+	switch classified.Reason {
+	case reason.ReasonAuthenticationRequired:
+		classified.With("profile", profile).With("action", "worklease enroll --profile "+profile+" --invite-file FILE")
+	case reason.ReasonInstallationRevoked:
+		classified.With("profile", profile).With("action", "request a new invite, then run worklease enroll --profile "+profile+" --invite-file FILE")
+	}
+	return err
+}
 
 func (s *Server) callTool(ctx context.Context, name string, a map[string]any) (any, error) {
 	switch name {
@@ -546,7 +620,7 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
+	defer b.Close()
 	ttlv, e := argNumber(a, "ttl", s.options.TTL.Seconds())
 	if e != nil || ttlv <= 0 || ttlv > 3600 {
 		return nil, reason.Invalid("ttl must be between 1s and 1h")
@@ -555,7 +629,11 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil || wait < 0 || wait > 60 {
 		return nil, reason.Invalid("wait must be between 0 and 60s")
 	}
-	hold, e := argNumber(a, "maxHold", 4*3600)
+	defaultHold := float64(4 * 3600)
+	if b.remote {
+		defaultHold = 3600
+	}
+	hold, e := argNumber(a, "maxHold", defaultHold)
 	if e != nil || hold < 60 || hold > 24*3600 {
 		return nil, reason.Invalid("maxHold must be between 1m and 24h")
 	}
@@ -597,6 +675,9 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	ref := opID()
 	claim := opID()
 	path := s.handlePath(ref)
+	if b.remote {
+		return s.acquireRemote(ctx, b, ref, path, claim, resources, agent, session, work, ttlDuration(ttlv), time.Duration(wait*float64(time.Second)), time.Duration(hold*float64(time.Second)), co, auto)
+	}
 	// The reference is private until returned, but the handle lock is still
 	// the contract boundary from pending write through dispatch and update.
 	lk, e := handle.AcquireLock(ctx, path+".lock")
@@ -606,18 +687,18 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	defer lk.Close()
 	deadline := s.deadline()
 	holdUntil := time.Now().UTC().Add(time.Duration(hold * float64(time.Second)))
-	inputs := map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "wait": time.Duration(wait * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "coordinationOnly": co, "localReplaceAllowed": !co}
-	hash := hashValue(map[string]any{"kind": "acquire", "authorityId": b.st.AuthorityID(), "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "localReplaceAllowed": !co, "coordinationOnly": co})
-	h := handle.Handle{SchemaVersion: 1, AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: randomToken(), Resources: resources, AgentID: agent, SessionID: session, LocalReplaceAllowed: !co, HoldUntil: holdUntil, AutoRenewOwner: func() string {
+	inputs := map[string]any{"kind": "acquire", "authorityId": b.id, "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "wait": time.Duration(wait * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "coordinationOnly": co, "localReplaceAllowed": !co}
+	hash := hashValue(map[string]any{"kind": "acquire", "authorityId": b.id, "claimId": claim, "resources": resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": time.Duration(ttlv * float64(time.Second)).Microseconds(), "requestNotAfter": deadline.UnixMicro(), "holdUntil": holdUntil.UnixMicro(), "localReplaceAllowed": !co, "coordinationOnly": co})
+	h := handle.Handle{SchemaVersion: 1, AuthorityID: b.id, ClaimID: claim, Token: randomToken(), Resources: resources, AgentID: agent, SessionID: session, LocalReplaceAllowed: !co, HoldUntil: holdUntil, AutoRenewOwner: func() string {
 		if auto {
 			return opID()
 		}
 		return ""
-	}(), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: b.st.AuthorityID(), ClaimID: claim, RequestHash: hash, RequestNotAfter: deadline, Inputs: inputs}}
+	}(), State: "pending", PendingRequest: &handle.PendingRequest{OperationID: claim, Kind: "acquire", AuthorityID: b.id, ClaimID: claim, RequestHash: hash, RequestNotAfter: deadline, Inputs: inputs}}
 	if e = lk.Write(path, h); e != nil {
 		return nil, e
 	}
-	g, e := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: b.st.AuthorityID(), ClaimID: claim, Token: h.Token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: time.Duration(ttlv * float64(time.Second)), Wait: time.Duration(wait * float64(time.Second)), CoordinationOnly: co, LocalReplaceAllowed: !co, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
+	g, e := b.authority.Acquire(ctx, lease.AcquireRequest{AuthorityID: b.id, ClaimID: claim, Token: h.Token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: time.Duration(ttlv * float64(time.Second)), Wait: time.Duration(wait * float64(time.Second)), CoordinationOnly: co, LocalReplaceAllowed: !co, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	if e != nil {
 		if reason.DefinitiveNoCommit(e) {
 			// A grant that provably never committed leaves no recoverable
@@ -658,6 +739,13 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 		return nil, err
 	}
 	defer lk.Close()
+	if h.SchemaVersion == handle.RemoteSchemaVersion {
+		_ = lk.Close()
+		if err := s.ensureRemoteCredential(); err != nil {
+			return nil, err
+		}
+		return s.recoverRemoteAcquire(ctx, ref, path, h)
+	}
 	if h.State != "pending" || h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
 		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs")
 	}
@@ -665,7 +753,7 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer b.st.Close()
+	defer b.Close()
 	p := h.PendingRequest
 	resources, ok := p.Inputs["resources"].([]any)
 	var rs []string
@@ -685,7 +773,7 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	co, _ := p.Inputs["coordinationOnly"].(bool)
 	local := !co
 	holdUntil, legacyHash := pendingHoldUntil(p, h.HoldUntil)
-	g, err := b.svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
+	g, err := b.authority.Acquire(ctx, lease.AcquireRequest{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Resources: rs, AgentID: h.AgentID, SessionID: h.SessionID, WorkKey: pendingString(p.Inputs, "workKey"), TTL: time.Duration(pendingInt(p.Inputs, "ttl")) * time.Microsecond, Wait: time.Duration(pendingInt(p.Inputs, "wait")) * time.Microsecond, CoordinationOnly: co, LocalReplaceAllowed: local, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
 			_ = lk.ClearPending(path, &h)
@@ -711,6 +799,108 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 		status = "active"
 	}
 	return map[string]any{"lease": ref, "authorityId": g.AuthorityID, "handlePath": path, "claim": gClaim(g), "autoHeartbeat": status, "holdUntil": h.HoldUntil}, nil
+}
+
+func (s *Server) acquireRemote(ctx context.Context, b serviceBundle, ref, path, claim string, resources []string, agent, session, work string, ttl, wait, maxHold time.Duration, coordinationOnly, auto bool) (any, error) {
+	token := randomToken()
+	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	autoOwner := ""
+	if auto {
+		autoOwner = opID()
+	}
+	request := lease.AcquireRequest{AuthorityID: b.id, ClaimID: claim, Token: token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: ttl, MaxHold: maxHold, CoordinationOnly: coordinationOnly, HandlePath: path, AutoRenewOwner: autoOwner}
+	waitUntil := time.Now().Add(wait)
+	for {
+		grant, err := b.authority.Acquire(ctx, request)
+		if err == nil {
+			holdUntil := grant.AcquiredAt.Add(maxHold)
+			if err := s.finishRemoteAcquire(path, grant, holdUntil, auto); err != nil {
+				return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", claim).With("operationId", claim).With("commitState", "committed")
+			}
+			status := "disabled"
+			if auto {
+				status = "active"
+				s.startRenewal(ref, ttl, holdUntil)
+			}
+			return map[string]any{"lease": ref, "authorityId": grant.AuthorityID, "handlePath": path, "claim": gClaim(grant), "autoHeartbeat": status, "holdUntil": holdUntil}, nil
+		}
+		classified := reason.As(err)
+		if wait == 0 || classified == nil || classified.Reason != reason.ReasonAlreadyClaimed || !time.Now().Before(waitUntil) {
+			if reason.DefinitiveNoCommit(err) {
+				_ = handle.Remove(path)
+			}
+			if x := reason.As(err); x != nil && !reason.DefinitiveNoCommit(err) {
+				x.With("lease", ref)
+			}
+			return nil, mutationError(err, claim, claim, path)
+		}
+		pending, readErr := handle.Read(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if clearErr := handle.ClearPending(path, &pending); clearErr != nil {
+			return nil, clearErr
+		}
+		remaining := time.Until(waitUntil)
+		if remaining > 30*time.Second {
+			remaining = 30 * time.Second
+		}
+		if _, watchErr := b.authority.Watch(ctx, watchpkg.Request{Resources: resources, Until: "free", Timeout: remaining}); watchErr != nil {
+			return nil, watchErr
+		}
+	}
+}
+
+func (s *Server) finishRemoteAcquire(path string, grant lease.Grant, holdUntil time.Time, auto bool) error {
+	lock, err := handle.AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	h, err := lock.Read(path)
+	if err != nil {
+		return err
+	}
+	h.HoldUntil = holdUntil
+	if h.ExpiresAt.After(holdUntil) {
+		h.ExpiresAt = holdUntil
+	}
+	if auto && h.AutoRenewOwner == "" {
+		h.AutoRenewOwner = opID()
+	}
+	return lock.Write(path, h)
+}
+
+func (s *Server) recoverRemoteAcquire(ctx context.Context, ref, path string, before handle.Handle) (any, error) {
+	if before.State != "pending" || before.PendingRequest == nil || before.PendingRequest.Kind != "acquire" {
+		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs")
+	}
+	response, err := s.remoteClient.ReplayHandle(ctx, path)
+	if err != nil {
+		return nil, mutationError(err, before.ClaimID, before.PendingRequest.OperationID, path)
+	}
+	var grant lease.Grant
+	if err := json.Unmarshal(response.Result, &grant); err != nil {
+		return nil, reason.Invalid("remote acquire result is invalid")
+	}
+	var request struct {
+		MaxHoldMicros int64 `json:"maxHoldMicros"`
+		TTLMicros     int64 `json:"ttlMicros"`
+	}
+	_ = json.Unmarshal(before.PendingRequest.Request, &request)
+	holdUntil := grant.AcquiredAt.Add(time.Duration(request.MaxHoldMicros) * time.Microsecond)
+	auto := before.AutoRenewOwner != ""
+	if err := s.finishRemoteAcquire(path, grant, holdUntil, auto); err != nil {
+		return nil, err
+	}
+	status := "disabled"
+	if auto {
+		status = "active"
+		s.startRenewal(ref, time.Duration(request.TTLMicros)*time.Microsecond, holdUntil)
+	}
+	return map[string]any{"lease": ref, "authorityId": grant.AuthorityID, "handlePath": path, "claim": gClaim(grant), "autoHeartbeat": status, "holdUntil": holdUntil}, nil
 }
 
 func randomToken() string {
