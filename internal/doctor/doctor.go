@@ -31,7 +31,7 @@ type Check struct {
 // Diagnose performs only metadata and read-only authority observations. It
 // never reads a handle or database payload and never creates filesystem state.
 func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
-	checks := make([]Check, 0, 15)
+	checks := make([]Check, 0, 16)
 	add := func(id, status, detail, hint string) {
 		checks = append(checks, Check{ID: id, Status: status, Detail: output.RedactString(detail), Hint: output.RedactString(hint)})
 	}
@@ -172,8 +172,10 @@ func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
 	}
 	if st == nil || st.Empty() {
 		add("authority.identity", "unknown", "authority identity is unavailable until state exists", "")
+		add("restore.identity", "unknown", "restore identity is unavailable until state exists", "")
 	} else {
 		add("authority.identity", "ok", "authority identity: "+st.AuthorityID(), "")
+		add("restore.identity", "ok", "restore identity: "+st.RestoreID(), "")
 	}
 	add("mcp.available", "ok", "MCP stdio server is available; doctor does not verify remote hosts or provider-side fencing", "")
 

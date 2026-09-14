@@ -175,10 +175,10 @@ func TestInstructionsAndDoctorAreReadOnly(t *testing.T) {
 	if err := json.Unmarshal(text.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if !envelope.OK || len(envelope.Checks) != 15 {
+	if !envelope.OK || len(envelope.Checks) != 16 {
 		t.Fatalf("doctor envelope=%s", text.String())
 	}
-	want := []string{"config.sources", "home.path", "home.permissions", "db.open", "db.schema", "context.root", "handle.present", "handle.permissions", "agent.identity", "git.available", "clock.monotonic", "clock.authority", "authority.identity", "mcp.available", "state.python-era"}
+	want := []string{"config.sources", "home.path", "home.permissions", "db.open", "db.schema", "context.root", "handle.present", "handle.permissions", "agent.identity", "git.available", "clock.monotonic", "clock.authority", "authority.identity", "restore.identity", "mcp.available", "state.python-era"}
 	for i, id := range want {
 		if envelope.Checks[i].ID != id {
 			t.Fatalf("check %d=%q want %q", i, envelope.Checks[i].ID, id)

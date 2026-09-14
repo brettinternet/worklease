@@ -16,7 +16,7 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
-const SchemaVersion int64 = 1
+const SchemaVersion int64 = 2
 
 // beforeHomeOpenHook is test-only instrumentation for an adversarial path
 // replacement between validation and descriptor open.
@@ -32,6 +32,7 @@ type Store struct {
 	home      *os.File
 	homePath  string
 	authority string
+	restoreID string
 	readOnly  bool
 }
 
@@ -125,66 +126,72 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		_ = st.Close()
 		return nil, schemaCorrupt(err)
 	}
-	if version == 0 {
+	if version == 0 || version == 1 {
 		if opts.ReadOnly {
 			_ = st.Close()
-			return nil, reason.New(reason.ReasonSchemaCorrupt, "empty database has no schema")
+			if version == 0 {
+				return nil, reason.New(reason.ReasonSchemaCorrupt, "empty database has no schema")
+			}
+			return nil, unsupportedSchema(version)
 		}
 		authority, err := newAuthorityID()
 		if err != nil {
 			_ = st.Close()
 			return nil, reason.New(reason.ReasonStorageFailure, "generate authority identity")
 		}
+		restoreID, err := newAuthorityID()
+		if err != nil {
+			_ = st.Close()
+			return nil, reason.New(reason.ReasonStorageFailure, "generate restore identity")
+		}
 		if err := driver.Write(ctx, func(tx *sql.Tx) error {
 			// Re-read under BEGIN IMMEDIATE: another opener may have
-			// completed bootstrap after our initial version probe.
+			// completed bootstrap or migration after our initial probe.
 			var current int64
 			if err := tx.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
 				return err
 			}
-			if current == 1 {
+			switch current {
+			case SchemaVersion:
 				return nil
+			case 1:
+				return migrateSchemaV1(tx, restoreID)
+			case 0:
+				var objects int
+				if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'").Scan(&objects); err != nil {
+					return err
+				}
+				if objects != 0 {
+					return reason.New(reason.ReasonSchemaCorrupt, "database has objects but no schema version")
+				}
+				return createSchema(tx, authority, restoreID, time.Now().UnixMicro())
+			default:
+				return unsupportedSchema(current)
 			}
-			if current != 0 {
-				return reason.New(reason.ReasonSchemaUnsupported, fmt.Sprintf("unsupported schema version %d", current))
-			}
-			var objects int
-			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'").Scan(&objects); err != nil {
-				return err
-			}
-			if objects != 0 {
-				return reason.New(reason.ReasonSchemaCorrupt, "database has objects but no schema version")
-			}
-			return createSchema(tx, authority, time.Now().UnixMicro())
 		}); err != nil {
 			_ = st.Close()
 			return nil, err
 		}
-		if err := verifySchema(driver.DB()); err != nil {
-			_ = st.Close()
-			return nil, err
-		}
-		authority, err = readMeta(driver.DB(), "authority_id")
-		if err != nil || !validAuthorityID(authority) {
-			_ = st.Close()
-			return nil, reason.New(reason.ReasonSchemaCorrupt, "authority identity is missing or invalid")
-		}
-		st.authority = authority
 	} else if version != SchemaVersion {
 		_ = st.Close()
-		return nil, reason.New(reason.ReasonSchemaUnsupported, fmt.Sprintf("unsupported schema version %d", version)).With("supportedVersion", SchemaVersion).With("foundVersion", version)
-	} else {
-		if err := verifySchema(driver.DB()); err != nil {
-			_ = st.Close()
-			return nil, err
-		}
-		authority, err := readMeta(driver.DB(), "authority_id")
-		if err != nil || !validAuthorityID(authority) {
-			_ = st.Close()
-			return nil, reason.New(reason.ReasonSchemaCorrupt, "authority identity is missing or invalid")
-		}
-		st.authority = authority
+		return nil, unsupportedSchema(version)
 	}
+	if err := verifySchema(driver.DB()); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	authority, err := readMeta(driver.DB(), "authority_id")
+	if err != nil || !validAuthorityID(authority) {
+		_ = st.Close()
+		return nil, reason.New(reason.ReasonSchemaCorrupt, "authority identity is missing or invalid")
+	}
+	restoreID, err := readMeta(driver.DB(), "restore_id")
+	if err != nil || !validAuthorityID(restoreID) {
+		_ = st.Close()
+		return nil, reason.New(reason.ReasonSchemaCorrupt, "restore identity is missing or invalid")
+	}
+	st.authority = authority
+	st.restoreID = restoreID
 	return st, nil
 }
 
@@ -216,6 +223,7 @@ func (s *Store) db() *sql.DB {
 func (s *Store) Path() string        { return filepath.Join(s.homePath, DatabaseFileName) }
 func (s *Store) Home() string        { return s.homePath }
 func (s *Store) AuthorityID() string { return s.authority }
+func (s *Store) RestoreID() string   { return s.restoreID }
 func (s *Store) Empty() bool         { return s.driver == nil }
 
 // LastObservedAt returns the authority wall-clock watermark without changing
@@ -356,6 +364,9 @@ func userVersion(db *sql.DB) (int64, error) {
 	var v int64
 	err := db.QueryRow("PRAGMA user_version").Scan(&v)
 	return v, err
+}
+func unsupportedSchema(found int64) error {
+	return reason.New(reason.ReasonSchemaUnsupported, fmt.Sprintf("unsupported schema version %d", found)).With("supportedVersion", SchemaVersion).With("foundVersion", found)
 }
 func readMeta(db *sql.DB, key string) (string, error) {
 	var value string
