@@ -310,7 +310,8 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		return server.Serve(ctx, os.Stdin, s.writer)
 	}
 
-	all := append(commands, policy, op, instructions, setup, mcp, helpCommand(s))
+	hosted := hostedCommands(s)
+	all := append(commands, policy, op, instructions, setup, hosted, mcp, helpCommand(s))
 	for _, command := range all {
 		switch command.Name {
 		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":
