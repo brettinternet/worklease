@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 02:34'
+updated_date: '2026-09-14 02:36'
 labels:
   - remote-authority
 dependencies:
@@ -64,6 +64,8 @@ The restore identifier is cryptographically random and compared only for equalit
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented schema v2 and one-way v1 migration. The migration verifies v1 inside the same BEGIN IMMEDIATE transaction, preserves active claims, started/completed operation replay, checkpoints, event/cursor watermarks, and retained epochs, and verifies v2 before commit. Added restore identity, recovery/authentication/invite/reopening/renewal replay storage, admitted-limit and provenance fields, strict state and unique-index verification, doctor reporting, and restored/revoked event validation. Independent review found weak unique-index verification and an invite revocation-state gap; both were fixed with regression coverage. Validation: focused store/doctor/CLI tests passed; mise run ci passed including format, staticcheck, vet, all tests, race tests, man generation, govulncheck, and e2e.
+
+Delivery commit: 32b8be0 (Migrate authority store to schema v2).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
