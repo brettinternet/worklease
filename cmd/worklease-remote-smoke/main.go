@@ -88,7 +88,7 @@ type report struct {
 }
 
 type harness struct {
-	binary, self, root, endpoint, cert                              string
+	binary, self, root, endpoint, cert, configPath, authorityHome   string
 	remoteHost, remoteRoot, remoteAddress                           string
 	remotePort                                                      int
 	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey string
@@ -237,10 +237,11 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	}
 	if evidence == "" {
 		stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
-		evidence, err = filepath.Abs(filepath.Join("dist", "remote-acceptance", stamp))
-		if err != nil {
-			return err
-		}
+		evidence = filepath.Join("dist", "remote-acceptance", stamp)
+	}
+	evidence, err = filepath.Abs(evidence)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(evidence, 0o700); err != nil {
 		return err
@@ -351,7 +352,8 @@ func (h *harness) provision(evidence string) error {
 	_ = listener.Close()
 	h.endpoint = "https://" + address
 	configPath := filepath.Join(secretDir, "server.yaml")
-	config := fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n  - 'coordination:'\nmaxTTL: 1h\nmaxHold: 24h\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", authorityHome, address, cert, key)
+	h.configPath, h.authorityHome = configPath, authorityHome
+	config := h.serverConfig([]string{"coordination:"}, "1h", "24h")
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return err
 	}
@@ -467,8 +469,8 @@ func (h *harness) provisionRemote(evidence string) error {
 	h.remotePort = port
 	authorityHome := filepath.Join(h.remoteRoot, "authority")
 	h.remoteConfig = filepath.Join(h.remoteRoot, "server.yaml")
-	addressPort := fmt.Sprintf("0.0.0.0:%d", port)
-	config := fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n  - 'coordination:'\nmaxTTL: 1h\nmaxHold: 24h\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", authorityHome, addressPort, h.remoteCert, h.remoteKey)
+	h.configPath, h.authorityHome = h.remoteConfig, authorityHome
+	config := h.serverConfig([]string{"coordination:"}, "1h", "24h")
 	configLocal := filepath.Join(secretDir, "server.yaml")
 	if err := os.WriteFile(configLocal, []byte(config), 0o600); err != nil {
 		return err
@@ -553,9 +555,55 @@ func (h *harness) startServer(evidence string) error {
 	return waitHealthy(h.endpoint, h.cert)
 }
 
+func (h *harness) serverConfig(prefixes []string, maxTTL, maxHold string) string {
+	listen, cert, key := strings.TrimPrefix(h.endpoint, "https://"), h.cert, filepath.Join(h.root, "secrets", "tls.key")
+	if h.realHost {
+		listen = fmt.Sprintf("0.0.0.0:%d", h.remotePort)
+		cert, key = h.remoteCert, h.remoteKey
+	}
+	var admitted strings.Builder
+	for _, prefix := range prefixes {
+		fmt.Fprintf(&admitted, "  - %q\n", prefix)
+	}
+	return fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n%smaxTTL: %s\nmaxHold: %s\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", h.authorityHome, listen, cert, key, admitted.String(), maxTTL, maxHold)
+}
+
+func (h *harness) writeServerConfig(prefixes []string, maxTTL, maxHold string) error {
+	config := []byte(h.serverConfig(prefixes, maxTTL, maxHold))
+	if !h.realHost {
+		return os.WriteFile(h.configPath, config, 0o600)
+	}
+	local := filepath.Join(h.root, "secrets", "server-next.yaml")
+	if err := os.WriteFile(local, config, 0o600); err != nil {
+		return err
+	}
+	return runSCP(h.remoteHost, local, h.configPath)
+}
+
+func (h *harness) requireServerStartFailure(expected ...string) error {
+	args := []string{"--json", "serve", "--server-config", h.configPath}
+	h.logCommand("authority@"+h.remoteHost+" expected-failure", append([]string{"worklease"}, args...))
+	var output []byte
+	var err error
+	if h.realHost {
+		output, err = exec.Command("ssh", append([]string{h.remoteHost, h.remoteBinary}, args...)...).CombinedOutput()
+	} else {
+		output, err = exec.Command(h.binary, args...).CombinedOutput()
+	}
+	if err == nil {
+		return errors.New("misconfigured server unexpectedly started")
+	}
+	var result map[string]any
+	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil || result["ok"] != false {
+		return fmt.Errorf("invalid server failure envelope: %v: %s", jsonErr, output)
+	}
+	return requireReason(result, expected...)
+}
+
 func (h *harness) group1(evidence string) error {
 	a, b := h.clients[0], h.clients[1]
-	if _, err := h.cli(a, "--profile", "team", "acquire", "--resource", "coordination:shared", "--ttl", "10m"); err != nil {
+	sharedHandle := filepath.Join(a.home, "handles", "shared.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", sharedHandle, "--resource", "coordination:shared", "--ttl", "10m"); err != nil {
 		return err
 	}
 	contentionHandle := filepath.Join(b.home, "handles", "contention.json")
@@ -573,18 +621,75 @@ func (h *harness) group1(evidence string) error {
 	if err := h.mcpRoundTrip(b); err != nil {
 		return err
 	}
+	reserved, err := h.cliFailure(b, "--profile", "team", "acquire", "--handle", filepath.Join(b.home, "handles", "reserved.json"), "--resource", "path:/tmp/remote-forbidden")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(reserved, "resource-not-enrolled"); err != nil {
+		return err
+	}
+	if err := h.writeServerConfig([]string{"coordination:", "alternate:"}, "5s", "1h"); err != nil {
+		return err
+	}
+	beforeRestart, err := h.cliFailure(b, "--profile", "team", "acquire", "--handle", filepath.Join(b.home, "handles", "before-restart.json"), "--resource", "alternate:before-restart")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(beforeRestart, "resource-not-enrolled"); err != nil {
+		return err
+	}
+	h.stopServer()
+	if err := h.writeServerConfig([]string{"path:"}, "5s", "1h"); err != nil {
+		return err
+	}
+	if err := h.requireServerStartFailure("resource-not-enrolled", "invalid-argument"); err != nil {
+		return err
+	}
+	if err := h.writeServerConfig([]string{"coordination:", "alternate:"}, "5s", "1h"); err != nil {
+		return err
+	}
+	if err := h.restartServer(evidence); err != nil {
+		return err
+	}
+	alternateHandle := filepath.Join(b.home, "handles", "alternate.json")
+	if _, err := h.cli(b, "--profile", "team", "acquire", "--handle", alternateHandle, "--resource", "alternate:after-restart", "--ttl", "5s"); err != nil {
+		return err
+	}
+	tooLong, err := h.cliFailure(b, "--profile", "team", "acquire", "--handle", filepath.Join(b.home, "handles", "too-long.json"), "--resource", "coordination:too-long", "--ttl", "10s")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(tooLong, "invalid-argument"); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "heartbeat", "--handle", sharedHandle, "--ttl", "10m"); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "exec", "--handle", sharedHandle, "--ttl", "10m", "--", h.self, "effect", filepath.Join(evidence, "admission-effect.log")); err != nil {
+		return err
+	}
+	successorHandle := filepath.Join(a.home, "handles", "successor.json")
+	if _, err := h.cli(a, "--profile", "team", "transfer", "--handle", sharedHandle, "--successor-handle", successorHandle, "--ttl", "10m", "--to-agent", "client-a-successor", "--to-session", "successor-session", "--to-work-key", "admission-transfer"); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "release", "--handle", successorHandle, "--reason", "admission limits observed"); err != nil {
+		return err
+	}
 	latencyStart := time.Now()
 	if _, err := h.cli(b, "--profile", "team", "list"); err != nil {
 		return err
 	}
 	h.report.LatencyMillis = time.Since(latencyStart).Milliseconds()
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 1, Observation: "distinct checkout and credential roots contend through CLI while a separate scope and stdio MCP lifecycle succeed", Commands: []string{"client-a acquire coordination:shared", "client-b contended acquire", "client-b acquire coordination:separate", "client-b worklease mcp"}, Evidence: []string{filepath.Join(evidence, "authority.log")}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 1, Observation: "distinct roots contend through CLI and MCP; reserved resources and reserved server prefixes fail closed; policy changes apply only after restart; persisted claim admission limits govern heartbeat, guarded execution, and transfer", Commands: []string{"cross-host acquire/contention/separate scope", "MCP acquire/release", "reserved resource rejection", "rewrite config before restart", "reserved-prefix server startup rejection", "restart with lower limits", "acquire ceiling rejection", "existing claim heartbeat/exec/transfer"}, Evidence: []string{filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "admission-effect.log")}, Passed: true})
 	return nil
 }
 
 func (h *harness) group2(evidence string) error {
+	if _, err := h.cli(h.clients[0], "--profile", "team", "acquire", "--resource", "coordination:guarded-effect", "--ttl", "5s"); err != nil {
+		return err
+	}
 	effect := filepath.Join(evidence, "guarded-effects.log")
-	if _, err := h.cli(h.clients[0], "--profile", "team", "exec", "--", h.self, "effect", effect); err != nil {
+	if _, err := h.cli(h.clients[0], "--profile", "team", "exec", "--ttl", "5s", "--", h.self, "effect", effect); err != nil {
 		return err
 	}
 	data, err := os.ReadFile(effect)
@@ -823,9 +928,9 @@ func (h *harness) coverageMatrix() []coverageEntry {
 	return []coverageEntry{
 		live("AC3.1", "cross-host contention and separate scopes", 1),
 		live("AC3.2", "repository-independent profile selection", 1),
-		blocked("AC3.3", "raw and misconfigured reserved-prefix rejection"),
-		blocked("AC3.4", "configuration restart behavior"),
-		blocked("AC3.5", "persisted admission limits on every extension path"),
+		live("AC3.3", "raw and misconfigured reserved-prefix rejection", 1),
+		live("AC3.4", "configuration restart behavior", 1),
+		live("AC3.5", "persisted admission limits on every extension path", 1),
 		blocked("AC4.1", "exact replay after lost start, renewal, and completion responses"),
 		supported("AC4.2", "coexistence of request-scoped recovery records with original guarded-effect evidence"),
 		live("AC4.3", "no local fallback during partition", 2),
