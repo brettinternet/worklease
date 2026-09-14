@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 22:13'
+updated_date: '2026-09-14 22:15'
 labels:
   - remote-authority
 dependencies:
@@ -140,4 +140,6 @@ Implemented the next reachable Group 3 enrollment fault slices. AC5.3 now drops 
 Objective local evidence: dist/remote-acceptance/ac5-enrollment-local-final-2/report.json, coverage.json, fault-proxy.log, enrollment-replay.txt, enrollment-incarnation-mismatch.json, and post-mismatch-installations.json. The unchanged real-host attempt at dist/remote-acceptance/ac5-enrollment-real-test/ was blocked before Group 3 by the existing remote-host race-client enrollment credential-unsafe failure. Independent review findings for result verification, mismatch credential redaction, remote-helper misuse, full inventory comparison, and overstated AC5.4 coverage were fixed. Quality gates and final CI are rerun before commit. Next resumable step: retain a dropped enrollment pending record across restore for AC5.4, then add bootstrap crash/redaction and hidden invite input for AC5.1-AC5.2.
 
 Final CI exposed an intermittent descriptor-enrollment failure. Root cause: ReadCredentialFD both closed the duplicated descriptor directly and left an owning os.File for finalization, allowing a later finalizer to close a reused descriptor. The descriptor now has one os.File owner and closes exactly once; added regression coverage. This fix also addresses the recurring real-host credential-unsafe symptom's descriptor-lifetime class, though the remote-host harness must still be rerun.
+
+Committed AC5.3 and AC5.5 slices as f07733b (Exercise remote enrollment replay faults). Final verification passed: mise run lint, format-check, test, typecheck, ci, and staged hooks. Local smoke passed repeatedly after the descriptor ownership fix, including dist/remote-acceptance/ac5-descriptor-fix-2/report.json and CI evidence dist/remote-acceptance/20260914T221359.558406000Z/report.json.
 <!-- SECTION:NOTES:END -->
