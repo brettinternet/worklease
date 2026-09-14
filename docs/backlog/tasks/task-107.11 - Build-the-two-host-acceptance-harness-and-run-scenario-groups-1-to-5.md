@@ -2,10 +2,9 @@
 id: TASK-107.11
 title: Build the two-host acceptance harness and run scenario groups 1 to 5
 status: In Progress
-assignee:
-  - '@pi'
+assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 14:15'
+updated_date: '2026-09-14 14:32'
 labels:
   - remote-authority
 dependencies:
@@ -80,4 +79,6 @@ Extended cmd/worklease-remote-smoke with an opt-in --remote-host topology. A rea
 Real-host evidence: dist/remote-acceptance/20260914T141254.154954000Z/report.json and coverage.json; retained workspace remote-host:/private/tmp/worklease-acceptance-iulAlh. The explicit AC #3-#7 matrix currently records 6 live passes, 1 supporting-test pass, and 42 still-blocked clauses, so this evidence does not close the task. mise run ci passed after the real-host run. Reviewer automation was incomplete due its read budget; direct review fixed remote port selection, report latency labeling, append-only server logs, and local/remote evidence classification.
 
 Committed the real-host smoke and explicit coverage matrix as d95b6c8 (Run remote smoke across two hosts).
+
+Handoff / next resumable step: start with coverage entries AC3.3-AC3.5 in cmd/worklease-remote-smoke: add real-host raw and reserved-prefix rejection, rewrite the remote server configuration and verify changes apply only after restart, then exercise persisted TTL/hold limits through acquire, heartbeat, begin/renew operation, and same-host transfer. Rerun with --remote-host remote-host and update coverage.json only from objective observations. Continue in coverage order; 42 entries remain still-blocked. The remote-host workspaces are intentionally owner-marked and retained; do not infer cleanup ownership from names.
 <!-- SECTION:NOTES:END -->
