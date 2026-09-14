@@ -22,7 +22,7 @@ func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	actor := RemoteActor{InstallationID: strings.Repeat("9", 32), AuthorityID: st.AuthorityID(), ExpectedRestoreID: st.RestoreID()}
+	actor := RemoteActor{InstallationID: strings.Repeat("9", 32), AuthorityID: st.AuthorityID(), ExpectedRestoreID: st.RestoreID(), Credential: strings.Repeat("9", 64)}
 	insertInstallation(t, st, actor.InstallationID, "admin", st.RestoreID())
 	svc, err := NewRemote(st, clock, &testIDs{}, Defaults{TTL: 5 * time.Second}, RemotePolicy{Prefixes: []string{"github:", "coordination:generic:"}, MaxTTL: 10 * time.Second, MaxHold: time.Minute})
 	if err != nil {
@@ -34,7 +34,7 @@ func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, 
 func insertInstallation(t *testing.T, st *store.Store, id, role, restore string) {
 	t.Helper()
 	err := st.Write(context.Background(), func(tx *store.Tx) error {
-		_, err := tx.ExecContext(context.Background(), `INSERT INTO installations(installation_id,credential_hash,role,label,enrolled_at,restore_id,enrolled_by_invite_id,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?)`, id, strings.Repeat(id[:1], 64), role, "test", time.Now().UnixMicro(), restore, "invite-"+id, "request-"+id, "hash-"+id)
+		_, err := tx.ExecContext(context.Background(), `INSERT INTO installations(installation_id,credential_hash,role,label,enrolled_at,restore_id,enrolled_by_invite_id,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?)`, id, hashToken(strings.Repeat(id[:1], 64)), role, "test", time.Now().UnixMicro(), restore, "invite-"+id, "request-"+id, "hash-"+id)
 		return err
 	})
 	if err != nil {
@@ -44,6 +44,83 @@ func insertInstallation(t *testing.T, st *store.Store, id, role, restore string)
 
 func remoteAcquire(st *store.Store, clock *testkit.Clock, actor RemoteActor, digit string) AcquireRequest {
 	return AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: strings.Repeat(digit, 32), Token: strings.Repeat(digit, 64), Resources: []string{"github:org/repo#42"}, AgentID: "agent", SessionID: "session", TTL: 5 * time.Second, MaxHold: 30 * time.Second, RequestNotAfter: clock.Now().Add(time.Hour), Actor: &actor}
+}
+
+func TestRemoteBlankActorInstallationCanonicalizesMutationHashes(t *testing.T) {
+	svc, st, clock, actor := openRemoteLeaseTest(t)
+	blank := actor
+	blank.InstallationID = ""
+	request := remoteAcquire(st, clock, blank, "1")
+	grant, err := svc.Acquire(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{AuthorityID: st.AuthorityID(), ClaimID: grant.ClaimID, Token: request.Token, Revision: grant.Revision, Actor: &blank}
+	intent := OperationIntent{OperationID: strings.Repeat("2", 32), Kind: "exec", Request: map[string]any{"argv": []string{"true"}}, TTL: 5 * time.Second, RequestNotAfter: clock.Now().Add(time.Hour)}
+	started, err := svc.BeginOperation(context.Background(), creds, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.RequestHash == "" {
+		t.Fatal("remote operation hash is empty")
+	}
+	creds.Revision = started.Revision
+	done, err := svc.CompleteOperation(context.Background(), creds, intent.OperationID, map[string]any{"exitStatus": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds.Revision = done.Revision
+	replayed, err := svc.BeginOperation(context.Background(), creds, intent)
+	if err != nil || !replayed.Completed || replayed.RequestHash != started.RequestHash {
+		t.Fatalf("begin replay=%+v err=%v", replayed, err)
+	}
+	released, err := svc.Release(context.Background(), creds, ReleaseRequest{OperationID: strings.Repeat("3", 32), RequestNotAfter: clock.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.RequestHash == "" {
+		t.Fatal("remote release hash is empty")
+	}
+	if err := st.Write(context.Background(), func(tx *store.Tx) error {
+		var installation string
+		if err := tx.QueryRowContext(context.Background(), `SELECT installation_id FROM operations WHERE claim_id=? AND operation_id=?`, grant.ClaimID, intent.OperationID).Scan(&installation); err != nil {
+			return err
+		}
+		if installation != actor.InstallationID {
+			return fmt.Errorf("operation installation=%q, want %q", installation, actor.InstallationID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondRequest := remoteAcquire(st, clock, blank, "4")
+	second, err := svc.Acquire(context.Background(), secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transferred, err := svc.Transfer(context.Background(), Credentials{AuthorityID: st.AuthorityID(), ClaimID: second.ClaimID, Token: secondRequest.Token, Revision: second.Revision, Actor: &blank}, TransferRequest{OperationID: strings.Repeat("6", 32), SuccessorClaimID: strings.Repeat("5", 32), SuccessorToken: strings.Repeat("5", 64), ToAgent: "next", ToSession: "next-session", RequestNotAfter: clock.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transferred.ClaimID != strings.Repeat("5", 32) || transferred.Receipt.RequestHash == "" {
+		t.Fatalf("transfer=%+v", transferred)
+	}
+	if err := st.Write(context.Background(), func(tx *store.Tx) error {
+		var installation string
+		if err := tx.QueryRowContext(context.Background(), `SELECT installation_id FROM operations WHERE claim_id=? AND operation_id=?`, second.ClaimID, strings.Repeat("6", 32)).Scan(&installation); err != nil {
+			return err
+		}
+		if installation != actor.InstallationID {
+			return fmt.Errorf("transfer installation=%q, want %q", installation, actor.InstallationID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Release(context.Background(), Credentials{AuthorityID: st.AuthorityID(), ClaimID: transferred.ClaimID, Token: strings.Repeat("5", 64), Revision: transferred.Revision, Actor: &blank}, ReleaseRequest{OperationID: strings.Repeat("7", 32), RequestNotAfter: clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRemoteAcquireBindsActorIncarnationAdmissionAndPersistedLimits(t *testing.T) {

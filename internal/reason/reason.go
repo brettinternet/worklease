@@ -70,6 +70,9 @@ const (
 	ReasonResourceNotEnrolled            = "resource-not-enrolled"
 	ReasonRecoveryRequired               = "recovery-required"
 	ReasonRecoveryClosed                 = "recovery-closed"
+	ReasonInviteInvalid                  = "invite-invalid"
+	ReasonInviteExpired                  = "invite-expired"
+	ReasonInviteUsed                     = "invite-used"
 	ReasonClockRegression                = "clock-regression"
 	ReasonChildTimeout                   = "child-timeout"
 	ReasonInterrupted                    = "interrupted"
@@ -173,6 +176,7 @@ var registry = map[string]int{
 	ReasonAuthenticationRequired: ExitOwnership, ReasonInstallationRevoked: ExitOwnership,
 	ReasonAuthorizationDenied: ExitOwnership, ReasonResourceNotEnrolled: ExitInvalid,
 	ReasonRecoveryRequired: ExitLedger, ReasonRecoveryClosed: ExitLedger,
+	ReasonInviteInvalid: ExitOwnership, ReasonInviteExpired: ExitOwnership, ReasonInviteUsed: ExitOwnership,
 	ReasonClockRegression: ExitAuthority,
 	ReasonChildTimeout:    ExitChildTimeout, ReasonInterrupted: ExitInterrupted,
 }

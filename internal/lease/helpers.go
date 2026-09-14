@@ -494,6 +494,9 @@ func receiptFromOperation(op operationRow, idempotent bool, out *Receipt) (Recei
 	return r, nil
 }
 func lifecycleRequestHash(v map[string]any, holdUntil time.Time) string {
+	if _, remote := v["expectedRestoreId"]; remote {
+		v["protocolVersion"] = "worklease-http/1"
+	}
 	if !holdUntil.IsZero() {
 		v["holdUntil"] = holdUntil.UTC().UnixMicro()
 	}
@@ -505,6 +508,9 @@ func requestHashMatches(recorded, current, legacy string) bool {
 }
 
 func requestHash(v map[string]any) string {
+	if _, remote := v["expectedRestoreId"]; remote {
+		v["protocolVersion"] = "worklease-http/1"
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		panic("internal request is not JSON-serializable: " + err.Error())

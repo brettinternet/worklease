@@ -2,6 +2,7 @@ package lease
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ type RemoteActor struct {
 	InstallationID    string
 	AuthorityID       string
 	ExpectedRestoreID string
+	// Credential is the installation bearer. It is accepted only at the
+	// service boundary and is never persisted or included in a result.
+	Credential string
 }
 
 // RemotePolicy is immutable for one Service process. Prefixes are exact,
@@ -104,21 +108,57 @@ func roleAllows(actual, required string) bool {
 }
 
 func (s *Service) authorizeRemote(tx *store.Tx, actor *RemoteActor, required string) error {
+	return s.authorizeRemoteContext(context.Background(), tx, actor, required)
+}
+
+func (s *Service) authorizeRemoteContext(ctx context.Context, tx *store.Tx, actor *RemoteActor, required string) error {
 	if actor == nil {
 		return nil
 	}
 	if s.remote == nil {
 		return reason.New(reason.ReasonAuthorizationDenied, "remote service policy is not configured")
 	}
-	var role string
+	// Authentication is deliberately performed from the bearer hash inside the
+	// serialized transaction. Do not trust an installation id supplied beside
+	// the bearer, and do not use SQL equality for the secret comparison.
+	credential := actor.Credential
+	if credential == "" {
+		return reason.New(reason.ReasonAuthenticationRequired, "installation authentication is required")
+	}
+	if err := validateCredential(credential); err != nil {
+		return reason.New(reason.ReasonAuthenticationRequired, "installation authentication is required")
+	}
+	hash := hashSecret(credential)
+	var installation, role string
 	var revokedAt any
-	err := tx.QueryRowContext(context.Background(), `SELECT role,revoked_at FROM installations WHERE installation_id=?`, actor.InstallationID).Scan(&role, &revokedAt)
+	rows, err := tx.QueryContext(ctx, `SELECT installation_id,credential_hash,role,revoked_at FROM installations`)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no rows") {
-			return reason.New(reason.ReasonAuthenticationRequired, "installation authentication is required")
-		}
 		return storage(err)
 	}
+	matched := false
+	for rows.Next() {
+		var id, storedHash, candidateRole string
+		var candidateRevoked any
+		if err := rows.Scan(&id, &storedHash, &candidateRole, &candidateRevoked); err != nil {
+			rows.Close()
+			return storage(err)
+		}
+		match := subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash))
+		if match == 1 {
+			installation, role, revokedAt, matched = id, candidateRole, candidateRevoked, true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return storage(err)
+	}
+	if err := rows.Close(); err != nil {
+		return storage(err)
+	}
+	if !matched {
+		return reason.New(reason.ReasonAuthenticationRequired, "installation authentication is required")
+	}
+	actor.InstallationID = installation
 	if revokedAt != nil {
 		return reason.New(reason.ReasonInstallationRevoked, "installation is revoked")
 	}
@@ -297,19 +337,21 @@ func (s *Service) RevokeClaim(ctx context.Context, actor RemoteActor, req Revoke
 		return Receipt{}, err
 	}
 	now := s.clock.Now().UTC()
-	if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
-		return Receipt{}, err
-	}
-	hash := requestHash(map[string]any{"kind": "claim-revoke", "authorityId": actor.AuthorityID, "expectedRestoreId": actor.ExpectedRestoreID, "installationId": actor.InstallationID, "operationId": req.OperationID, "claimId": req.ClaimID, "reason": text, "requestNotAfter": req.RequestNotAfter.UnixMicro()})
+	var hash string
 	var out Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		if err := s.authorizeRemote(tx, &actor, "admin"); err != nil {
+		if err := s.authorizeRemoteContext(ctx, tx, &actor, "admin"); err != nil {
 			return err
 		}
 		effective, err := s.effectiveNow(tx, now)
 		if err != nil {
 			return err
 		}
+		now = effective
+		if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
+			return err
+		}
+		hash = requestHash(map[string]any{"protocolVersion": "worklease-http/1", "kind": "claim-revoke", "authorityId": actor.AuthorityID, "expectedRestoreId": actor.ExpectedRestoreID, "installationId": actor.InstallationID, "operationId": req.OperationID, "claimId": req.ClaimID, "reason": text, "requestNotAfter": req.RequestNotAfter.UnixMicro()})
 		var existing operationRow
 		if found, err := readOperation(tx, req.ClaimID, req.OperationID, &existing); err != nil {
 			return err
@@ -439,19 +481,21 @@ func (s *Service) ReopenRecovery(ctx context.Context, actor RemoteActor, req Reo
 		return ReopenResult{}, err
 	}
 	now := s.clock.Now().UTC()
-	if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
-		return ReopenResult{}, err
-	}
-	hash := requestHash(map[string]any{"kind": "recovery-reopen", "authorityId": actor.AuthorityID, "expectedRestoreId": actor.ExpectedRestoreID, "installationId": actor.InstallationID, "operationId": req.OperationID, "expectedRecoveryRevision": req.ExpectedRecoveryRevision, "attestation": json.RawMessage(attestation), "requestNotAfter": req.RequestNotAfter.UnixMicro()})
+	var hash string
 	var out ReopenResult
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		if err := s.authorizeRemote(tx, &actor, "admin"); err != nil {
+		if err := s.authorizeRemoteContext(ctx, tx, &actor, "admin"); err != nil {
 			return err
 		}
 		effective, err := s.effectiveNow(tx, now)
 		if err != nil {
 			return err
 		}
+		now = effective
+		if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
+			return err
+		}
+		hash = requestHash(map[string]any{"protocolVersion": "worklease-http/1", "kind": "recovery-reopen", "authorityId": actor.AuthorityID, "expectedRestoreId": actor.ExpectedRestoreID, "installationId": actor.InstallationID, "operationId": req.OperationID, "expectedRecoveryRevision": req.ExpectedRecoveryRevision, "attestation": json.RawMessage(attestation), "requestNotAfter": req.RequestNotAfter.UnixMicro()})
 		var recordedHash string
 		var deadline, reopened int64
 		var revision int64
