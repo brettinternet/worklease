@@ -684,12 +684,18 @@ func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		Transport: p.client.Transport,
 		ModifyResponse: func(response *http.Response) error {
-			if !p.consume(r.URL.Path, response.StatusCode, requestHash) {
-				return nil
-			}
-			_, _ = io.Copy(io.Discard, response.Body)
+			responseBody, readErr := io.ReadAll(response.Body)
 			_ = response.Body.Close()
-			return errDropResponse
+			if readErr != nil {
+				return readErr
+			}
+			drop := p.consume(r.URL.Path, response.StatusCode, requestHash, responseBody)
+			if drop {
+				return errDropResponse
+			}
+			response.Body = io.NopCloser(bytes.NewReader(responseBody))
+			response.ContentLength = int64(len(responseBody))
+			return nil
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 			if errors.Is(proxyErr, errDropResponse) {
@@ -742,7 +748,7 @@ func (p *faultProxyHandler) appendLog(entry string) {
 	}
 }
 
-func (p *faultProxyHandler) consume(path string, status int, requestHash string) bool {
+func (p *faultProxyHandler) consume(path string, status int, requestHash string, responseBody []byte) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	armed, _ := os.ReadFile(p.control)
@@ -750,7 +756,17 @@ func (p *faultProxyHandler) consume(path string, status int, requestHash string)
 	if drop {
 		_ = os.WriteFile(p.control, nil, 0o600)
 	}
-	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t at=%s\n", path, status, requestHash, drop, time.Now().UTC().Format(time.RFC3339Nano))
+	responseFields := ""
+	var envelope struct {
+		AuthorityID   string          `json:"authorityId"`
+		RestoreID     string          `json:"restoreId"`
+		AuthorityTime time.Time       `json:"authorityTime"`
+		Result        json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(responseBody, &envelope) == nil && envelope.AuthorityID != "" && envelope.RestoreID != "" && !envelope.AuthorityTime.IsZero() {
+		responseFields = fmt.Sprintf(" authorityId=%s restoreId=%s authorityTime=%s historicalResultSha256=%s", envelope.AuthorityID, envelope.RestoreID, envelope.AuthorityTime.UTC().Format(time.RFC3339Nano), historicalResultHash(envelope.Result))
+	}
+	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t%s at=%s\n", path, status, requestHash, drop, responseFields, time.Now().UTC().Format(time.RFC3339Nano))
 	p.appendLog(entry)
 	return drop
 }
@@ -908,6 +924,72 @@ func verifyFaultReplays(logPath string, paths []string) error {
 		}
 	}
 	return nil
+}
+
+func historicalResultHash(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil {
+		return ""
+	}
+	delete(result, "idempotent")
+	normalized, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(normalized)
+	return hex.EncodeToString(digest[:])
+}
+
+func verifyFreshReplayEnvelope(logPath, path, authorityID string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	type observation struct {
+		requestHash, authorityID, restoreID, resultHash string
+		authorityTime                                   time.Time
+		dropped                                         bool
+	}
+	var first *observation
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 || fields[0] != "path="+path {
+			continue
+		}
+		values := map[string]string{}
+		for _, field := range fields {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		observedTime, parseErr := time.Parse(time.RFC3339Nano, values["authorityTime"])
+		if parseErr != nil {
+			continue
+		}
+		current := &observation{requestHash: values["requestSha256"], authorityID: values["authorityId"], restoreID: values["restoreId"], resultHash: values["historicalResultSha256"], authorityTime: observedTime, dropped: values["dropped"] == "true"}
+		if current.dropped {
+			first = current
+			continue
+		}
+		if first == nil || current.requestHash != first.requestHash {
+			continue
+		}
+		if first.authorityID != authorityID || current.authorityID != authorityID || first.restoreID == "" || current.restoreID != first.restoreID {
+			return fmt.Errorf("replay response identity changed: first=%s/%s replay=%s/%s", first.authorityID, first.restoreID, current.authorityID, current.restoreID)
+		}
+		if first.resultHash == "" || current.resultHash != first.resultHash {
+			return errors.New("replay did not preserve the historical result")
+		}
+		if !current.authorityTime.After(first.authorityTime) {
+			return fmt.Errorf("replay authority time was not fresh: first=%s replay=%s", first.authorityTime, current.authorityTime)
+		}
+		return nil
+	}
+	return fmt.Errorf("fault path %s has no dropped response and matching fresh replay envelope", path)
 }
 
 func (h *harness) switchProfileEndpoint(c client, endpoint string) error {
@@ -1184,6 +1266,9 @@ func (h *harness) group2(evidence string) error {
 	if err := h.collectFaultLog(evidence); err != nil {
 		return err
 	}
+	if err := verifyFreshReplayEnvelope(filepath.Join(evidence, "fault-proxy.log"), "/v1/operations/complete", h.report.Authority); err != nil {
+		return err
+	}
 	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
 		return err
 	}
@@ -1216,7 +1301,7 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
 	return nil
 }
 
@@ -1648,7 +1733,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		supported("AC4.2", "coexistence of request-scoped recovery records with original guarded-effect evidence"),
 		live("AC4.3", "no local fallback during partition", 2),
 		live("AC4.4", "race ordering for revocation and policy changes", 2),
-		blocked("AC4.5", "fresh response identity and time"),
+		live("AC4.5", "fresh response identity and time", 2),
 		blocked("AC4.6", "clock-bound edge cases"),
 		blocked("AC4.7", "pre-dispatch persistence failure"),
 		blocked("AC4.8", "late acknowledgment without redispatch"),
