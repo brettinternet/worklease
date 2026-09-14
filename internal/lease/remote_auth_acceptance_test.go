@@ -65,6 +65,44 @@ func TestEnrollmentExpiryDoesNotBurnInviteOrInsert(t *testing.T) {
 	}
 }
 
+func TestEnrollmentIdentityMismatchDoesNotBurnInviteOrInsert(t *testing.T) {
+	svc, st, clock, actor := openRemoteLeaseTest(t)
+	invite, _ := GenerateInviteCode()
+	credential, _ := GenerateInstallationCredential()
+	_, err := svc.IssueInvite(context.Background(), actor, IssueInviteRequest{InviteID: strings.Repeat("1", 32), OperationID: strings.Repeat("1", 32), RequestNotAfter: clock.Now().Add(time.Hour), Role: "write", Label: "worker", InviteSha256: HashSecret(invite)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := EnrollRequest{AuthorityID: strings.Repeat("0", 32), ExpectedRestoreID: st.RestoreID(), RequestID: strings.Repeat("2", 32), RequestNotAfter: clock.Now().Add(time.Hour), InstallationID: strings.Repeat("3", 32), Invite: invite, Credential: credential, Label: "worker"}
+	if _, err := svc.Enroll(context.Background(), req); !isReason(err, reason.ReasonAuthorityMismatch) {
+		t.Fatalf("authority mismatch=%v", err)
+	}
+	req.AuthorityID, req.ExpectedRestoreID = st.AuthorityID(), strings.Repeat("0", 32)
+	if _, err := svc.Enroll(context.Background(), req); !isReason(err, reason.ReasonAuthorityRestored) {
+		t.Fatalf("restore mismatch=%v", err)
+	}
+	var state string
+	var installations, redemptions int
+	if err := st.Read(context.Background(), func(tx *store.Tx) error {
+		if err := tx.QueryRowContext(context.Background(), `SELECT state FROM invites WHERE invite_hash=?`, HashSecret(invite)).Scan(&state); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(context.Background(), `SELECT count(*) FROM installations WHERE installation_id=?`, req.InstallationID).Scan(&installations); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(context.Background(), `SELECT count(*) FROM invite_redemptions WHERE invite_id=(SELECT invite_id FROM invites WHERE invite_hash=?)`, HashSecret(invite)).Scan(&redemptions)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || installations != 0 || redemptions != 0 {
+		t.Fatalf("identity mismatch mutated invite: state=%s installations=%d redemptions=%d", state, installations, redemptions)
+	}
+	req.ExpectedRestoreID = st.RestoreID()
+	if _, err := svc.Enroll(context.Background(), req); err != nil {
+		t.Fatalf("invite was not redeemable after identity mismatch: %v", err)
+	}
+}
+
 func TestEnrollmentReplayRevocationAndMissingInstallationPrecedence(t *testing.T) {
 	svc, st, clock, actor := openRemoteLeaseTest(t)
 	invite, _ := GenerateInviteCode()

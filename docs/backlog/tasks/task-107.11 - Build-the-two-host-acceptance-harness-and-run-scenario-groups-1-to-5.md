@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 20:11'
+updated_date: '2026-09-14 22:13'
 labels:
   - remote-authority
 dependencies:
@@ -22,8 +22,8 @@ documentation:
   - docs/remote-claim-authority.md
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
 modified_files:
-  - cmd/worklease-remote-smoke/main.go
-  - cmd/worklease-remote-smoke/main_test.go
+  - internal/handle/handle.go
+  - internal/handle/handle_test.go
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -64,6 +64,10 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 4. Rerun mise run ci and the unchanged real-host harness, review failures, and close only after all objective evidence passes.
 
 5. Add objective AC4.8 late-acknowledgment coverage that proves a retained start acknowledgment never redispatches the guarded effect, then add the next coherent Group 2 slice if the existing lifecycle supports it; run local and real-host harnesses, review, quality gates, and commit task evidence.
+
+6. Implement the next coherent Group 3 enrollment slice: AC5.1 bootstrap crash/redaction, AC5.2 alternate invite inputs, AC5.3 dropped invite/redemption replay, AC5.4 immutable request incarnation, and AC5.5 no-burn mismatch; add objective local/real-host evidence where reachable, review, run quality gates, and commit.
+
+7. Preserve AC5.1, the hidden-prompt portion of AC5.2, and AC5.4 as explicit blockers rather than overstating this slice; commit the completed AC5.3 and AC5.5 evidence, then resume with retained enrollment evidence across restore.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -130,4 +134,10 @@ Committed AC4.7 as dc2dbba (Verify pre-dispatch persistence failure). Staged hoo
 Implemented AC4.8 and AC4.9. Group 2 now separately requires a successful undropped late start acknowledgment beyond the safe dispatch window plus client-side refusal and zero dispatch, and combines it with exact retained-start replay evidence. Added a managed asynchronous-provider fixture: guarded exec submits one atomically unique provider request, reaches terminal completion, then the harness releases the provider; an append-only uniquely identified completion log must contain exactly one effect after the receipt barrier. Local objective evidence: dist/remote-acceptance/ac4-late-provider-local-final/report.json, coverage.json, late-acknowledgment.txt, asynchronous-provider-effect.txt, provider-submitted.txt, and provider-completed.log. The unchanged real-host run also passed both new slices with partial evidence under dist/remote-acceptance/ac4-late-provider-real-test-2/ before the pre-existing race-client enrollment credential-unsafe failure, so no complete real-host report is claimed. Two independent reviews found false-pass risks in HTTP acknowledgment validation, dispatch counting, receipt ordering, worker cleanup, and duplicate submissions; all were fixed. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC5.1 bootstrap crash ordering and redaction.
 
 Committed AC4.8 and AC4.9 as d8c0580 (Exercise late and asynchronous effects). Staged hooks passed.
+
+Implemented the next reachable Group 3 enrollment fault slices. AC5.3 now drops and exactly replays invite issuance and descriptor-based enrollment responses, requiring identical request and historical result hashes. AC5.5 now sends a wrong restore incarnation, snapshots the complete installation inventory before/after, proves the invite remains redeemable, scans evidence for invite and generated credential disclosure, and adds direct service coverage for zero invite/redemption/installation mutation. AC5.4 remains still-blocked because the harness has not yet retained enrollment pending evidence across an actual restore; AC5.1 and the hidden-prompt portion of AC5.2 also remain blocked.
+
+Objective local evidence: dist/remote-acceptance/ac5-enrollment-local-final-2/report.json, coverage.json, fault-proxy.log, enrollment-replay.txt, enrollment-incarnation-mismatch.json, and post-mismatch-installations.json. The unchanged real-host attempt at dist/remote-acceptance/ac5-enrollment-real-test/ was blocked before Group 3 by the existing remote-host race-client enrollment credential-unsafe failure. Independent review findings for result verification, mismatch credential redaction, remote-helper misuse, full inventory comparison, and overstated AC5.4 coverage were fixed. Quality gates and final CI are rerun before commit. Next resumable step: retain a dropped enrollment pending record across restore for AC5.4, then add bootstrap crash/redaction and hidden invite input for AC5.1-AC5.2.
+
+Final CI exposed an intermittent descriptor-enrollment failure. Root cause: ReadCredentialFD both closed the duplicated descriptor directly and left an owning os.File for finalization, allowing a later finalizer to close a reused descriptor. The descriptor now has one os.File owner and closes exactly once; added regression coverage. This fix also addresses the recurring real-host credential-unsafe symptom's descriptor-lifetime class, though the remote-host harness must still be rerun.
 <!-- SECTION:NOTES:END -->

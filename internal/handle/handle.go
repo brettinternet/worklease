@@ -957,9 +957,14 @@ func ReadCredentialFD(fd int) (string, error) {
 	if e != nil {
 		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
 	}
-	defer unix.Close(dup)
 	unix.CloseOnExec(dup)
-	return readCredential(os.NewFile(uintptr(dup), "credential"))
+	file := os.NewFile(uintptr(dup), "credential")
+	if file == nil {
+		_ = unix.Close(dup)
+		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
+	}
+	defer file.Close()
+	return readCredential(file)
 }
 func readCredential(r io.Reader) (string, error) {
 	b, e := io.ReadAll(io.LimitReader(r, MaxCredentialBytes+1))

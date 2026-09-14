@@ -37,6 +37,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/authority"
+	"github.com/brettinternet/worklease/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -131,6 +134,42 @@ func writeProviderSubmission(path, effectID string) (err error) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "replay-pending" {
+		if len(os.Args) != 6 && len(os.Args) != 7 {
+			fatal(errors.New("replay-pending requires config root, home, profile, request ID, and optional invite file"))
+		}
+		paths := config.UserProfilePaths(func(name string) string {
+			if name == "XDG_CONFIG_HOME" {
+				return os.Args[2]
+			}
+			return ""
+		})
+		profiles, _, err := config.LoadProfiles(paths)
+		if err != nil {
+			fatal(err)
+		}
+		profile, ok := profiles[os.Args[4]]
+		if !ok {
+			fatal(fmt.Errorf("profile %q is missing", os.Args[4]))
+		}
+		client, err := authority.NewHTTPClient(profile, authority.NewFilePendingStore(filepath.Join(os.Args[3], "pending", os.Args[4])), nil)
+		if err != nil {
+			fatal(err)
+		}
+		if len(os.Args) == 6 {
+			_, err = client.Replay(context.Background(), os.Args[5])
+		} else {
+			invite, readErr := os.ReadFile(os.Args[6])
+			if readErr != nil {
+				fatal(readErr)
+			}
+			_, _, err = client.ReplayEnrollment(context.Background(), os.Args[5], strings.TrimSpace(string(invite)), paths)
+		}
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "effect" {
 		if len(os.Args) != 3 {
 			fatal(errors.New("effect requires a path"))
@@ -859,12 +898,16 @@ func (p *faultProxyHandler) consume(path string, status int, requestHash string,
 	}
 	responseFields := ""
 	var request struct {
+		RequestID       string    `json:"requestId"`
 		OperationID     string    `json:"operationId"`
 		ClaimID         string    `json:"claimId"`
 		RequestNotAfter time.Time `json:"requestNotAfter"`
 	}
 	if json.Unmarshal(requestBody, &request) == nil {
-		requestID := request.OperationID
+		requestID := request.RequestID
+		if requestID == "" {
+			requestID = request.OperationID
+		}
 		if requestID == "" {
 			requestID = request.ClaimID
 		}
@@ -1860,7 +1903,324 @@ func (h *harness) raceOrdering(evidence string) error {
 	return os.WriteFile(filepath.Join(evidence, "race-ordering.txt"), []byte(observation), 0o600)
 }
 
+func randomRequestID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func (h *harness) newLocalEnrollmentClient(label, endpoint string) (client, error) {
+	root := filepath.Join(h.root, label)
+	c := client{name: label, home: filepath.Join(root, "home"), config: filepath.Join(root, "config"), checkout: filepath.Join(root, "checkout")}
+	if err := os.MkdirAll(c.checkout, 0o700); err != nil {
+		return client{}, err
+	}
+	if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
+		return client{}, fmt.Errorf("git init %s: %w: %s", label, err, output)
+	}
+	c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+label, "WORKLEASE_SESSION_ID="+label+"-session")
+	if _, err := h.cli(c, "profile", "add", "team", "--endpoint", endpoint, "--authority-id", h.report.Authority); err != nil {
+		return client{}, err
+	}
+	return c, nil
+}
+
+func (h *harness) cliFailureWithInviteFD(c client, invitePath string, args ...string) (map[string]any, error) {
+	if c.remote {
+		return nil, errors.New("descriptor acceptance client must run on the orchestrator host")
+	}
+	invite, err := os.Open(invitePath)
+	if err != nil {
+		return nil, err
+	}
+	defer invite.Close()
+	h.logCommand(c.name+" expected-failure", append([]string{"worklease", "--json"}, args...))
+	cmd := exec.Command(h.binary, append([]string{"--json"}, args...)...)
+	cmd.Env, cmd.Dir, cmd.ExtraFiles = c.env, c.checkout, []*os.File{invite}
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil, fmt.Errorf("command unexpectedly succeeded: %s", strings.Join(args, " "))
+	}
+	var result map[string]any
+	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil || result["ok"] != false {
+		return nil, fmt.Errorf("invalid failure envelope: %v: %s", jsonErr, output)
+	}
+	return result, nil
+}
+
+func (h *harness) replayPending(c client, requestID string, inviteFile ...string) error {
+	if c.remote {
+		return errors.New("pending replay helper requires an orchestrator-local client")
+	}
+	args := []string{"replay-pending", c.config, c.home, "team", requestID}
+	args = append(args, inviteFile...)
+	h.logCommand(c.name, append([]string{"harness-helper"}, args...))
+	cmd := exec.Command(h.self, args...)
+	cmd.Env = c.env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("replay pending %s: %w: %s", requestID, err, output)
+	}
+	return nil
+}
+
+func singlePendingID(home, profile, kind string) (string, error) {
+	records, err := authority.NewFilePendingStore(filepath.Join(home, "pending", profile)).List()
+	if err != nil {
+		return "", err
+	}
+	var id string
+	for _, record := range records {
+		if record.Kind != kind {
+			continue
+		}
+		if id != "" {
+			return "", fmt.Errorf("multiple pending %s requests", kind)
+		}
+		id = record.RequestID
+	}
+	if id == "" {
+		return "", fmt.Errorf("pending %s request is missing", kind)
+	}
+	return id, nil
+}
+
+func unexpectedEnrollmentResponseError(status int, envelope map[string]any) error {
+	errorFields, _ := envelope["error"].(map[string]any)
+	reasonValue, _ := errorFields["reason"].(string)
+	return fmt.Errorf("mismatched enrollment status=%d reason=%q", status, reasonValue)
+}
+
+func (h *harness) mismatchedEnrollment(inviteFile, label, evidencePath string) (string, []byte, error) {
+	invite, err := os.ReadFile(inviteFile)
+	if err != nil {
+		return "", nil, err
+	}
+	requestID, err := randomRequestID()
+	if err != nil {
+		return "", nil, err
+	}
+	credential := make([]byte, 32)
+	if _, err := rand.Read(credential); err != nil {
+		return "", nil, err
+	}
+	credentialText := []byte(hex.EncodeToString(credential))
+	body, _ := json.Marshal(map[string]any{"protocolVersion": "worklease-http/1", "authorityId": h.report.Authority, "expectedRestoreId": strings.Repeat("0", 32), "requestId": requestID, "requestNotAfter": time.Now().UTC().Add(time.Hour), "installationId": requestID, "label": label})
+	pool := x509.NewCertPool()
+	certificate, err := os.ReadFile(h.cert)
+	if err != nil || !pool.AppendCertsFromPEM(certificate) {
+		return "", nil, errors.New("cannot load acceptance TLS certificate")
+	}
+	request, _ := http.NewRequest(http.MethodPost, h.endpoint+"/v1/enroll", bytes.NewReader(body))
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
+	request.Header.Set("Worklease-Protocol-Version", "worklease-http/1")
+	request.Header.Set("Authorization", "Invite "+strings.TrimSpace(string(invite)))
+	request.Header.Set("Worklease-New-Installation-Authorization", "Bearer "+string(credentialText))
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}).Do(request)
+	if err != nil {
+		return "", nil, err
+	}
+	defer response.Body.Close()
+	var envelope map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		return "", nil, err
+	}
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		return "", nil, unexpectedEnrollmentResponseError(response.StatusCode, envelope)
+	}
+	if err := requireReason(envelope, "authority-restored"); err != nil {
+		return "", nil, unexpectedEnrollmentResponseError(response.StatusCode, envelope)
+	}
+	recorded, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	if bytes.Contains(recorded, bytes.TrimSpace(invite)) || bytes.Contains(recorded, credentialText) {
+		return "", nil, errors.New("mismatched enrollment response disclosed a bearer secret")
+	}
+	if err := os.WriteFile(evidencePath, append(recorded, '\n'), 0o600); err != nil {
+		return "", nil, err
+	}
+	return requestID, credentialText, nil
+}
+
+func verifyExactFaultReplay(logPath, path, requestID string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	var hashes, drops, statuses, results []string
+	for _, line := range strings.Split(string(data), "\n") {
+		values := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if values["path"] == path && values["requestId"] == requestID {
+			hashes = append(hashes, values["requestSha256"])
+			drops = append(drops, values["dropped"])
+			statuses = append(statuses, values["status"])
+			results = append(results, values["historicalResultSha256"])
+		}
+	}
+	if len(hashes) != 2 || hashes[0] == "" || hashes[0] != hashes[1] || drops[0] != "true" || drops[1] != "false" || statuses[0] != "200" || statuses[1] != "200" || results[0] == "" || results[0] != results[1] {
+		return fmt.Errorf("%s replay evidence hashes=%v drops=%v statuses=%v results=%v", path, hashes, drops, statuses, results)
+	}
+	return nil
+}
+
+func requireSecretValuesAbsent(paths []string, secrets ...[]byte) error {
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, secret := range secrets {
+			if len(secret) > 0 && bytes.Contains(data, secret) {
+				return fmt.Errorf("secret leaked into %s", path)
+			}
+		}
+	}
+	return nil
+}
+
+func requireSecretsAbsent(paths []string, secretFiles ...string) error {
+	secrets := make([][]byte, 0, len(secretFiles))
+	for _, path := range secretFiles {
+		secret, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		secrets = append(secrets, bytes.TrimSpace(secret))
+	}
+	return requireSecretValuesAbsent(paths, secrets...)
+}
+
+func (h *harness) group3EnrollmentFaults(evidence string) error {
+	if err := h.startFaultProxy(evidence); err != nil {
+		return err
+	}
+	admin := h.clients[0]
+	issueID, err := randomRequestID()
+	if err != nil {
+		return err
+	}
+	issueInvite := filepath.Join(h.root, "secrets", ".lost-issue.invite")
+	if err := h.switchProfileEndpoint(admin, h.faultEndpoint); err != nil {
+		return err
+	}
+	if err := h.armFault("/v1/admin/invites/issue"); err != nil {
+		return err
+	}
+	lostIssue, err := h.cliFailure(admin, "--profile", "team", "invite", "issue", "--operation-id", issueID, "--role", "write", "--invite-file", issueInvite, "--label", "lost-issue")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(lostIssue, "unknown-outcome"); err != nil {
+		return err
+	}
+	if err := h.replayPending(admin, issueID); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(admin, h.endpoint); err != nil {
+		return err
+	}
+
+	redeemer, err := h.newLocalEnrollmentClient("enrollment-replay", h.faultEndpoint)
+	if err != nil {
+		return err
+	}
+	if err := h.armFault("/v1/enroll"); err != nil {
+		return err
+	}
+	lostEnrollment, err := h.cliFailureWithInviteFD(redeemer, issueInvite, "enroll", "--profile", "team", "--invite-fd", "3", "--label", "enrollment-replay")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(lostEnrollment, "unknown-outcome"); err != nil {
+		return err
+	}
+	enrollmentID, err := singlePendingID(redeemer.home, "team", "enroll")
+	if err != nil {
+		return err
+	}
+	if err := h.replayPending(redeemer, enrollmentID, issueInvite); err != nil {
+		return err
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	faultLog := filepath.Join(evidence, "fault-proxy.log")
+	if err := verifyExactFaultReplay(faultLog, "/v1/admin/invites/issue", issueID); err != nil {
+		return err
+	}
+	if err := verifyExactFaultReplay(faultLog, "/v1/enroll", enrollmentID); err != nil {
+		return err
+	}
+
+	noBurnInvite := filepath.Join(h.root, "secrets", ".no-burn.invite")
+	if _, err := h.cli(admin, "--profile", "team", "invite", "issue", "--role", "read", "--invite-file", noBurnInvite, "--label", "no-burn"); err != nil {
+		return err
+	}
+	beforeInventory, err := h.cli(admin, "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
+		return err
+	}
+	beforeInventoryData, err := json.Marshal(beforeInventory)
+	if err != nil {
+		return err
+	}
+	mismatchEvidence := filepath.Join(evidence, "enrollment-incarnation-mismatch.json")
+	mismatchedInstallationID, mismatchCredential, err := h.mismatchedEnrollment(noBurnInvite, "mismatched-incarnation", mismatchEvidence)
+	if err != nil {
+		return err
+	}
+	inventory, err := h.cli(admin, "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
+		return err
+	}
+	afterInventoryData, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(beforeInventoryData, afterInventoryData) || installationLabelExists(inventory, "mismatched-incarnation") || installationIDExists(inventory, mismatchedInstallationID) {
+		return errors.New("mismatched enrollment changed the installation inventory")
+	}
+	inventoryEvidence := filepath.Join(evidence, "post-mismatch-installations.json")
+	inventoryData, err := json.MarshalIndent(inventory, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(inventoryEvidence, append(inventoryData, '\n'), 0o600); err != nil {
+		return err
+	}
+	noBurnClient, err := h.newLocalEnrollmentClient("no-burn", h.endpoint)
+	if err != nil {
+		return err
+	}
+	if _, err := h.cli(noBurnClient, "enroll", "--profile", "team", "--invite-file", noBurnInvite, "--label", "no-burn"); err != nil {
+		return fmt.Errorf("invite was burned by mismatched enrollment: %w", err)
+	}
+	scannedPaths := []string{h.commandLog, filepath.Join(evidence, "authority.log"), faultLog, mismatchEvidence, inventoryEvidence}
+	if err := requireSecretsAbsent(scannedPaths, issueInvite, noBurnInvite); err != nil {
+		return err
+	}
+	if err := requireSecretValuesAbsent(scannedPaths, mismatchCredential); err != nil {
+		return err
+	}
+	observation := "lost invite issuance replayed exact request=" + issueID + "\nlost descriptor enrollment replayed exact retained request=" + enrollmentID + "\nwrong restore incarnation did not burn invite or insert installation\n"
+	return os.WriteFile(filepath.Join(evidence, "enrollment-replay.txt"), []byte(observation), 0o600)
+}
+
 func (h *harness) group3(evidence string) error {
+	if err := h.group3EnrollmentFaults(evidence); err != nil {
+		return err
+	}
 	a, b := h.clients[0], h.clients[1]
 	installations, err := h.cli(a, "--profile", "team", "installation", "list", "--include-revoked")
 	if err != nil {
@@ -1965,7 +2325,7 @@ func (h *harness) group3(evidence string) error {
 	if _, err := h.cli(b, "--profile", "team", "release", "--handle", rotatedHandle, "--reason", "rotation observed"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "file-based enrollment keeps roles isolated; hidden invite rotation installs a new credential; revocation rejects the old bearer while the rotated bearer remains usable", Commands: []string{"enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), rotationInvite}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "lost invite issuance and descriptor-based enrollment responses replay exact retained requests; an incarnation mismatch does not burn the invite; file-based roles, rotation, and revocation remain isolated", Commands: []string{"drop and replay invite issuance response", "drop and replay descriptor enrollment response", "reject mismatched incarnation then redeem the same invite", "enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden-file rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), rotationInvite}, Passed: true})
 	return nil
 }
 
@@ -2175,9 +2535,9 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.9", "asynchronous provider effect continuing after terminal completion", 2),
 		blocked("AC5.1", "bootstrap crash ordering and redaction"),
 		blocked("AC5.2", "hidden, file, and descriptor invite input"),
-		blocked("AC5.3", "dropped invite and redemption responses"),
+		live("AC5.3", "dropped invite and redemption responses", 3),
 		blocked("AC5.4", "immutable request incarnation"),
-		blocked("AC5.5", "no-burn mismatch"),
+		live("AC5.5", "no-burn mismatch", 3),
 		live("AC5.6", "role isolation", 3),
 		live("AC5.7", "credential rotation", 3),
 		live("AC5.8", "credential revocation", 3),
@@ -2326,6 +2686,22 @@ func installationIDByLabel(result map[string]any, label string) (string, error) 
 		}
 	}
 	return "", fmt.Errorf("installation label %q not found", label)
+}
+
+func installationLabelExists(result map[string]any, label string) bool {
+	_, err := installationIDByLabel(result, label)
+	return err == nil
+}
+
+func installationIDExists(result map[string]any, installationID string) bool {
+	installations, _ := result["installations"].([]any)
+	for _, raw := range installations {
+		installation, _ := raw.(map[string]any)
+		if installation["installationId"] == installationID {
+			return true
+		}
+	}
+	return false
 }
 
 func requireReason(result map[string]any, expected ...string) error {
