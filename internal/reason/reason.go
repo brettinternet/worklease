@@ -59,6 +59,8 @@ const (
 	ReasonStorageFailure                 = "storage-failure"
 	ReasonSchemaUnsupported              = "schema-unsupported"
 	ReasonSchemaCorrupt                  = "schema-corrupt"
+	ReasonHostedHomeRequiresRemote       = "hosted-home-requires-remote"
+	ReasonHostedLockHeld                 = "hosted-lock-held"
 	ReasonHandleWriteFailed              = "handle-write-failed"
 	ReasonAuthorityMismatch              = "authority-mismatch"
 	ReasonClockRegression                = "clock-regression"
@@ -158,7 +160,8 @@ var registry = map[string]int{
 	ReasonUnsupportedCoordinationReplace: ExitInvalid, ReasonCursorInvalid: ExitInvalid,
 	ReasonSetupConfigMalformed: ExitInvalid, ReasonHookInputInvalid: ExitInvalid,
 	ReasonHomeUnsafe: ExitAuthority, ReasonStorageFailure: ExitAuthority, ReasonSchemaUnsupported: ExitAuthority,
-	ReasonSchemaCorrupt: ExitAuthority, ReasonHandleWriteFailed: ExitAuthority,
+	ReasonSchemaCorrupt: ExitAuthority, ReasonHostedHomeRequiresRemote: ExitAuthority, ReasonHostedLockHeld: ExitAuthority,
+	ReasonHandleWriteFailed: ExitAuthority,
 	ReasonAuthorityMismatch: ExitAuthority, ReasonClockRegression: ExitAuthority,
 	ReasonChildTimeout: ExitChildTimeout, ReasonInterrupted: ExitInterrupted,
 }

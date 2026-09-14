@@ -23,17 +23,22 @@ const SchemaVersion int64 = 2
 var beforeHomeOpenHook func(string)
 
 // Options controls authority opening.
-type Options struct{ ReadOnly bool }
+type Options struct {
+	ReadOnly     bool
+	HostedWriter bool
+}
 
 // Store is the local SQLite authority. A read-only Store may represent an
 // empty authority when its home or database does not exist.
 type Store struct {
-	driver    *Driver
-	home      *os.File
-	homePath  string
-	authority string
-	restoreID string
-	readOnly  bool
+	driver     *Driver
+	home       *os.File
+	homePath   string
+	authority  string
+	restoreID  string
+	readOnly   bool
+	hosted     bool
+	hostedLock *hostedLock
 }
 
 // Open opens an authority under home. Read-only opens never create or chmod
@@ -67,6 +72,27 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	st := &Store{home: dir, homePath: resolved, readOnly: opts.ReadOnly}
+	marked, err := hostedMarker(dir)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	st.hosted = marked
+	if marked && !opts.ReadOnly {
+		if !opts.HostedWriter {
+			_ = st.Close()
+			return nil, reason.New(reason.ReasonHostedHomeRequiresRemote, "hosted authority mutations require a remote profile or an explicit offline hosted command")
+		}
+		st.hostedLock, err = acquireHostedLock(ctx, dir)
+		if err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+		if err := verifyHostedHomePath(dir, resolved); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+	}
 	if !opts.ReadOnly {
 		handles, _, err := secureHome(filepath.Join(resolved, "handles"), false)
 		if err != nil {
@@ -85,7 +111,7 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 	if opts.ReadOnly {
 		if _, err := os.Lstat(database); errors.Is(err, os.ErrNotExist) {
 			_ = st.Close()
-			return &Store{homePath: resolved, readOnly: true}, nil
+			return &Store{homePath: resolved, readOnly: true, hosted: marked}, nil
 		} else if err != nil {
 			_ = st.Close()
 			return nil, homeUnsafe(err)
@@ -119,6 +145,12 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		if identity != after {
 			_ = st.Close()
 			return nil, reason.New(reason.ReasonHomeUnsafe, "SQLite opened a replaced authority database")
+		}
+	}
+	if st.hostedLock != nil {
+		if err := verifyHostedHomePath(dir, resolved); err != nil {
+			_ = st.Close()
+			return nil, err
 		}
 	}
 	version, err := userVersion(driver.DB())
@@ -195,11 +227,16 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 	return st, nil
 }
 
-// Close releases the database and the pinned home directory descriptor.
+// Close releases the database, hosted writer lock, and pinned home descriptor.
 func (s *Store) Close() error {
 	var first error
 	if s.driver != nil {
 		if err := s.driver.Close(); err != nil {
+			first = err
+		}
+	}
+	if s.hostedLock != nil {
+		if err := s.hostedLock.close(); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -225,6 +262,7 @@ func (s *Store) Home() string        { return s.homePath }
 func (s *Store) AuthorityID() string { return s.authority }
 func (s *Store) RestoreID() string   { return s.restoreID }
 func (s *Store) Empty() bool         { return s.driver == nil }
+func (s *Store) Hosted() bool        { return s.hosted }
 
 // LastObservedAt returns the authority wall-clock watermark without changing
 // state. A missing read-only authority has no watermark.
