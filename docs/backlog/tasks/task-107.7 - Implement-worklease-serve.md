@@ -1,11 +1,11 @@
 ---
 id: TASK-107.7
 title: Implement worklease serve
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 08:00'
+updated_date: '2026-09-14 08:03'
 labels:
   - remote-authority
 dependencies:
@@ -18,6 +18,21 @@ references:
 documentation:
   - docs/remote-claim-authority.md
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
+modified_files:
+  - internal/cli/commands.go
+  - internal/gc/gc.go
+  - internal/lease/remote_authz.go
+  - internal/lease/service.go
+  - internal/ledger/ledger.go
+  - internal/reason/reason.go
+  - internal/remoteadmin/gc.go
+  - internal/server/admin.go
+  - internal/server/handlers.go
+  - internal/server/reconcile.go
+  - internal/server/routes.go
+  - internal/server/server.go
+  - internal/server/server_test.go
+  - internal/watch/watch.go
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -34,19 +49,19 @@ The server configuration supplies the listen address, TLS material or an explici
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease serve --server-config FILE` recognizes the hosted home and takes its lock before opening or migrating the database, serves one namespace, drains in-flight requests for a bounded shutdown deadline on SIGTERM, then cancels pending requests and long polls and releases the lock after shutdown.
-- [ ] #2 Health and bounded identity-only metadata discovery are public and disclose only authority identity, restore identity, supported protocol information, authority time, and health. Health, metadata, and enrollment have explicit rate and body limits. Enrollment requires invite authentication; all other routes require an installation bearer.
-- [ ] #3 Handlers reject unknown fields, unsupported versions, oversized bodies or responses, invalid structure, and cancellation according to every frozen error mapping. Every application response is validated, carries fresh `authorityId`, `restoreId`, and `authorityTime`, and uses `Cache-Control: no-store`.
-- [ ] #4 Early transport validation does not replace transaction checks. Authenticated mutations recheck bearer state, role, authority, incarnation, epoch credential, replay, recovery state, and admission policy through the service in the frozen order.
-- [ ] #5 The server opens a marked hosted home only through the remote service configuration, so no permissive local admission path can serve or mutate it. Hosted migrations occur through this approved locked entry point.
-- [ ] #6 The watch route returns a coherent snapshot and incarnation-bound cursor, waits at most 30 seconds without holding a storage transaction, and reports retention gaps explicitly. An old-incarnation cursor fails `authority-restored`, and `--wait` remains a client-side loop.
-- [ ] #7 TLS is required outside the explicit development flag. Configuration updates require stop and start; changed prefixes and bounds affect new admission while persisted limits, existing lifecycle, recovery, transfer, and replay remain valid.
-- [ ] #8 The transport has no SQLite row dependency and exposes no server-side provider or child-process execution. Resource keys occur only in authorized structured content, private fields only in authorized private projections, and resource keys and bearers never appear in URLs or access logs. Bearer secrets never appear in any response or error. TLS and rate limiting add no runtime dependency outside contract D2 without an amendment.
+- [x] #1 `worklease serve --server-config FILE` recognizes the hosted home and takes its lock before opening or migrating the database, serves one namespace, drains in-flight requests for a bounded shutdown deadline on SIGTERM, then cancels pending requests and long polls and releases the lock after shutdown.
+- [x] #2 Health and bounded identity-only metadata discovery are public and disclose only authority identity, restore identity, supported protocol information, authority time, and health. Health, metadata, and enrollment have explicit rate and body limits. Enrollment requires invite authentication; all other routes require an installation bearer.
+- [x] #3 Handlers reject unknown fields, unsupported versions, oversized bodies or responses, invalid structure, and cancellation according to every frozen error mapping. Every application response is validated, carries fresh `authorityId`, `restoreId`, and `authorityTime`, and uses `Cache-Control: no-store`.
+- [x] #4 Early transport validation does not replace transaction checks. Authenticated mutations recheck bearer state, role, authority, incarnation, epoch credential, replay, recovery state, and admission policy through the service in the frozen order.
+- [x] #5 The server opens a marked hosted home only through the remote service configuration, so no permissive local admission path can serve or mutate it. Hosted migrations occur through this approved locked entry point.
+- [x] #6 The watch route returns a coherent snapshot and incarnation-bound cursor, waits at most 30 seconds without holding a storage transaction, and reports retention gaps explicitly. An old-incarnation cursor fails `authority-restored`, and `--wait` remains a client-side loop.
+- [x] #7 TLS is required outside the explicit development flag. Configuration updates require stop and start; changed prefixes and bounds affect new admission while persisted limits, existing lifecycle, recovery, transfer, and replay remain valid.
+- [x] #8 The transport has no SQLite row dependency and exposes no server-side provider or child-process execution. Resource keys occur only in authorized structured content, private fields only in authorized private projections, and resource keys and bearers never appear in URLs or access logs. Bearer secrets never appear in any response or error. TLS and rate limiting add no runtime dependency outside contract D2 without an amendment.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci` passes on the final commit
+- [x] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -64,3 +79,9 @@ The server configuration supplies the listen address, TLS material or an explici
 <!-- SECTION:NOTES:BEGIN -->
 Implemented the frozen worklease-http/1 server transport, strict deployment configuration, hosted lock lifecycle, TLS/dev HTTP safety, bounded JSON and response projection, public endpoint rate limiting, authentication headers, route bindings, durable admin GC replay, transaction-coherent authenticated reads, graceful shutdown, cancellable 30-second watch polling, and redacted access logs. Added focused integration tests covering metadata, enrollment, acquire, distinct installation/claim bearers, heartbeat, strict fields, watch cancellation, GC replay mismatch, lock lifetime, and shutdown. Focused race tests and lint/format/test/typecheck gates pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented worklease serve and the frozen worklease-http/1 transport in commit 6d5f529. The server holds the hosted writer lock for its lifetime, enforces TLS or loopback-only development HTTP, strictly bounds and validates requests/responses, authenticates every protected route, preserves domain transaction ordering and replay, rate-limits public discovery/enrollment, projects non-cacheable redacted envelopes, and provides cancellable 30-second watch polling plus bounded graceful shutdown. Verified by end-to-end server tests for enrollment, distinct bearer scopes, lifecycle mutation, cancellation, replay, lock lifetime, and shutdown; focused race tests; transport dependency inspection; hooks; and mise run ci on commit 6d5f529.
+<!-- SECTION:FINAL_SUMMARY:END -->
