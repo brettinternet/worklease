@@ -3,10 +3,11 @@ id: TASK-107.8
 title: >-
   Implement the remote client: profiles, enrollment, credentials, and authority
   time
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:03'
+updated_date: '2026-09-14 08:06'
 labels:
   - remote-authority
 dependencies:
@@ -51,3 +52,14 @@ Profiles bind a trusted endpoint, expected authority, and pinned restore incarna
 <!-- DOD:BEGIN -->
 - [ ] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a narrow client-facing local/remote authority contract with a fake, leaving CLI and MCP consumer routing to TASK-107.9 and TASK-107.10.
+2. Add trusted user-side profiles and project bindings with explicit/env/binding/default/local precedence, HTTPS enforcement, and owner-private credential descriptors/storage.
+3. Implement strict remote HTTP envelopes, metadata discovery, enrollment, and exact durable request recovery for handleless and secondary mutations without redirect or local fallback.
+4. Extend remote handles/pending evidence so guarded starts remain unresolved until terminal or reconciled, while later lifecycle recovery cannot overwrite the parent effect.
+5. Add conservative authority-time sampling and half/three-quarter/deadline scheduling behavior.
+6. Add focused contract tests, run repository quality gates, independently review and verify all acceptance criteria.
+<!-- SECTION:PLAN:END -->

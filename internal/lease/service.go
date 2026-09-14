@@ -88,6 +88,10 @@ type Credentials struct {
 	AuthorityID, ClaimID, Token string
 	Revision                    int64
 	Actor                       *RemoteActor
+	// HandlePath identifies the durable named-handle credential source used for recovery.
+	HandlePath string
+	// CredentialPath identifies the durable owner-private token source for handleless recovery.
+	CredentialPath string
 }
 type AcquireRequest struct {
 	AuthorityID, ClaimID, Token string
@@ -99,6 +103,10 @@ type AcquireRequest struct {
 	CoordinationOnly            bool
 	// HoldUntil is an authority-enforced expiry ceiling for handle-backed leases.
 	HoldUntil time.Time
+	// HandlePath identifies the durable named-handle slot for exact recovery.
+	HandlePath string
+	// CredentialPath identifies the durable owner-private new-claim token source for handleless recovery.
+	CredentialPath string
 	// MaxHold is remote new-admission input. Remote lifecycle derives the
 	// resulting absolute deadline from authority time and persists it.
 	MaxHold time.Duration
@@ -192,6 +200,10 @@ type TransferRequest struct {
 	ToAgent, ToSession, ToWorkKey                 string
 	TTL                                           time.Duration
 	RequestNotAfter                               time.Time
+	// SuccessorCredentialPath is the durable token source used for exact remote replay.
+	SuccessorCredentialPath string
+	// SuccessorHandlePath is the client-local destination for the confirmed successor claim.
+	SuccessorHandlePath string
 }
 type Receipt struct {
 	OperationID string         `json:"operationId"`

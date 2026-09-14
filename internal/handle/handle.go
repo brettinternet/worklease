@@ -2,6 +2,7 @@
 package handle
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	SchemaVersion      = 1
-	MaxBytes           = 64 * 1024
-	MaxCredentialBytes = 4096
+	SchemaVersion       = 1
+	RemoteSchemaVersion = 2
+	MaxBytes            = 64 * 1024
+	RemoteMaxBytes      = 1 * 1024 * 1024
+	MaxCredentialBytes  = 4096
 )
 
 type GitRunner func(cwd string, args ...string) (string, error)
@@ -88,14 +90,18 @@ func ContextualPath(home, root, sessionSelector string) string {
 }
 
 type PendingRequest struct {
-	OperationID     string         `json:"operationId,omitempty"`
-	Kind            string         `json:"kind"`
-	AuthorityID     string         `json:"authorityId"`
-	ClaimID         string         `json:"claimId,omitempty"`
-	RequestHash     string         `json:"requestSha256,omitempty"`
-	RequestNotAfter time.Time      `json:"requestNotAfter,omitempty"`
-	Inputs          map[string]any `json:"inputs,omitempty"`
-	SuccessorToken  string         `json:"successorToken,omitempty"`
+	OperationID       string          `json:"operationId,omitempty"`
+	Kind              string          `json:"kind"`
+	AuthorityID       string          `json:"authorityId"`
+	ClaimID           string          `json:"claimId,omitempty"`
+	RequestHash       string          `json:"requestSha256,omitempty"`
+	RequestNotAfter   time.Time       `json:"requestNotAfter,omitempty"`
+	ExpectedRestoreID string          `json:"expectedRestoreId,omitempty"`
+	Request           []byte          `json:"request,omitempty"`
+	ParentRequestID   string          `json:"parentRequestId,omitempty"`
+	EffectEvidence    json.RawMessage `json:"effectEvidence,omitempty"`
+	Inputs            map[string]any  `json:"inputs,omitempty"`
+	SuccessorToken    string          `json:"successorToken,omitempty"`
 }
 type RecoveryRequest struct {
 	OperationID       string          `json:"operationId"`
@@ -146,7 +152,7 @@ func validResource(v string) bool {
 	return utf8.ValidString(v) && len(v) > 0 && len([]byte(v)) <= 1024 && !strings.ContainsAny(v, "\x00\r\n") && strings.TrimSpace(v) == v
 }
 func validateHandle(h Handle) error {
-	if h.SchemaVersion != SchemaVersion || (h.State != "pending" && h.State != "ready") || !validID(h.AuthorityID) || !validID(h.ClaimID) {
+	if (h.SchemaVersion != SchemaVersion && h.SchemaVersion != RemoteSchemaVersion) || (h.State != "pending" && h.State != "ready") || !validID(h.AuthorityID) || !validID(h.ClaimID) {
 		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if err := validateToken(h.Token); err != nil {
@@ -172,7 +178,7 @@ func validateHandle(h Handle) error {
 		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if p := h.PendingRequest; p != nil {
-		if !validID(p.OperationID) || !validID(p.AuthorityID) || p.AuthorityID != h.AuthorityID || !validID(p.ClaimID) || p.ClaimID != h.ClaimID || p.RequestHash == "" || !validHash(p.RequestHash) || p.RequestNotAfter.IsZero() || p.Inputs == nil {
+		if !validID(p.OperationID) || !validID(p.AuthorityID) || p.AuthorityID != h.AuthorityID || !validID(p.ClaimID) || p.ClaimID != h.ClaimID || (p.ExpectedRestoreID != "" && !validID(p.ExpectedRestoreID)) || p.RequestHash == "" || !validHash(p.RequestHash) || p.RequestNotAfter.IsZero() || p.Inputs == nil || len(p.Request) > MaxBytes {
 			return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 		}
 		switch p.Kind {
@@ -268,6 +274,43 @@ func canonicalPath(path string) (string, error) {
 	return absolute, nil
 }
 
+// EnsureOwnerPrivateDir creates a directory tree without following a
+// symlink and verifies the final directory is owner-private.
+func EnsureOwnerPrivateDir(path string) error {
+	absolute, err := canonicalPath(path)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(strings.TrimPrefix(absolute, "/"), "/")
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(e, unix.ENOENT) {
+			if e = unix.Mkdirat(fd, part, 0700); e == nil {
+				next, e = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			}
+		}
+		_ = unix.Close(fd)
+		if e != nil {
+			return newHandleError(reason.ReasonHandleUnsafe, "private directory is unsafe")
+		}
+		fd = next
+	}
+	f := os.NewFile(uintptr(fd), absolute)
+	defer f.Close()
+	if err = f.Chmod(0700); err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "private directory is unsafe")
+	}
+	_, err = validateParentFD(f)
+	return err
+}
+
 func openParent(path string) (*os.File, string, string, error) {
 	absolute, err := canonicalPath(path)
 	if err != nil {
@@ -356,8 +399,8 @@ func readAt(parent *os.File, name string) (Handle, error) {
 	if err := validateLeafStat(&st, true); err != nil {
 		return Handle{}, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))
-	if err != nil || len(b) > MaxBytes {
+	b, err := io.ReadAll(io.LimitReader(f, RemoteMaxBytes+1))
+	if err != nil || len(b) > RemoteMaxBytes {
 		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
 	}
 	if err := rejectDuplicateJSONKeys(b); err != nil {
@@ -376,6 +419,13 @@ func readAt(parent *os.File, name string) (Handle, error) {
 	}
 	if err := validateHandle(h); err != nil {
 		return Handle{}, err
+	}
+	limit := MaxBytes
+	if h.SchemaVersion == RemoteSchemaVersion {
+		limit = RemoteMaxBytes
+	}
+	if len(b) > limit {
+		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
 	}
 	current, err := statAt(parent, name)
 	if err != nil || validateLeafStat(&current, true) != nil || !sameIdentity(identity(&st), identity(&current)) {
@@ -473,7 +523,11 @@ func encoded(h Handle) ([]byte, error) {
 		return nil, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	b = append(b, '\n')
-	if len(b) > MaxBytes {
+	limit := MaxBytes
+	if h.SchemaVersion == RemoteSchemaVersion {
+		limit = RemoteMaxBytes
+	}
+	if len(b) > limit {
 		return nil, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
 	}
 	return b, nil
@@ -889,24 +943,11 @@ func (l *Lock) Close() error {
 }
 
 func ReadCredential(path string) (string, error) {
-	parent := filepath.Dir(path)
-	parentInfo, e := os.Lstat(parent)
-	if e != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode()&0o077 != 0 || parentInfo.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential source directory is unsafe")
-	}
-	st, e := os.Lstat(path)
-	if e != nil {
+	b, err := ReadOwnerPrivate(path, MaxCredentialBytes)
+	if err != nil {
 		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential source cannot be read safely")
 	}
-	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode()&0o077 != 0 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) || st.Sys().(*syscall.Stat_t).Nlink != 1 {
-		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential source is unsafe")
-	}
-	f, e := os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if e != nil {
-		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential source cannot be read safely")
-	}
-	defer f.Close()
-	return readCredential(f)
+	return readCredential(bytes.NewReader(b))
 }
 func ReadCredentialFD(fd int) (string, error) {
 	if fd < 0 {
@@ -945,6 +986,178 @@ func ResolveCredential(path string, fd *int) (string, error) {
 		return ReadCredentialFD(*fd)
 	}
 	return ReadCredential(path)
+}
+
+// StoreCredential durably creates an owner-private credential file. The
+// plaintext is accepted only in memory and is never part of a profile or
+// request record.
+func StoreCredential(path, credential string) error {
+	if err := validateToken(credential); err != nil {
+		return err
+	}
+	parent := filepath.Dir(path)
+	if err := EnsureOwnerPrivateDir(parent); err != nil {
+		return newHandleError(reason.ReasonCredentialUnsafe, "credential source directory is unsafe")
+	}
+	return WriteOwnerPrivate(path, []byte(credential+"\n"), MaxCredentialBytes+1)
+}
+
+// ReadOwnerPrivate reads a bounded owner-private regular file without
+// following a replaced leaf and while pinning the opened parent.
+func ReadOwnerPrivate(path string, max int64) ([]byte, error) {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return nil, err
+	}
+	if err = verifyParentPath(absolute, identity(&st)); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, os.ErrNotExist
+		}
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
+	}
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
+	leaf, err := statFD(f)
+	if err != nil || validateLeafStat(&leaf, true) != nil {
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil || int64(len(b)) > max {
+		return nil, newHandleError(reason.ReasonHandleMalformed, "private file is oversized")
+	}
+	if err = verifyParentPath(absolute, identity(&st)); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// WriteOwnerPrivate atomically writes a bounded owner-private file using the
+// pinned parent descriptor. The parent must already be owner-private.
+func WriteOwnerPrivate(path string, data []byte, max int64) error {
+	return writeOwnerPrivate(path, data, max, false)
+}
+
+// WriteOwnerPrivateNoReplace atomically creates a private file and fails if
+// another record already occupies the leaf.
+func WriteOwnerPrivateNoReplace(path string, data []byte, max int64) error {
+	return writeOwnerPrivate(path, data, max, true)
+}
+func writeOwnerPrivate(path string, data []byte, max int64, noReplace bool) error {
+	if int64(len(data)) > max {
+		return newHandleError(reason.ReasonHandleWriteFailed, "private file is oversized")
+	}
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "private path is unsafe")
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return err
+	}
+	if err = verifyParentPath(absolute, identity(&st)); err != nil {
+		return err
+	}
+	tmpName := "." + name + ".tmp-" + randomName()
+	fd, err := unix.Openat(int(parent.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
+	}
+	tmp := os.NewFile(uintptr(fd), tmpName)
+	defer unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+	if _, err = tmp.Write(data); err == nil {
+		err = tmp.Sync()
+	}
+	if ce := tmp.Close(); err == nil {
+		err = ce
+	}
+	if err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
+	}
+	if noReplace {
+		err = unix.Linkat(int(parent.Fd()), tmpName, int(parent.Fd()), name, 0)
+		if err == nil {
+			err = unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+		}
+	} else {
+		err = unix.Renameat(int(parent.Fd()), tmpName, int(parent.Fd()), name)
+	}
+	if err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
+	}
+	if err = parent.Sync(); err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
+	}
+	return verifyParentPath(absolute, identity(&st))
+}
+
+// RemoveOwnerPrivate removes an owner-private file through its pinned parent.
+// ListOwnerPrivateNames returns the names of regular private files in an
+// owner-private directory while pinning that directory's identity.
+func ListOwnerPrivateNames(path string) ([]string, error) {
+	if !filepath.IsAbs(path) {
+		return nil, newHandleError(reason.ReasonHandleUnsafe, "private directory must be absolute")
+	}
+	parent, _, absolute, err := openParent(filepath.Join(path, ".list"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := parent.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyParentPath(absolute, identity(&st)); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
+
+func RemoveOwnerPrivate(path string) error {
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return newHandleError(reason.ReasonHandleUnsafe, "private path is unsafe")
+	}
+	defer parent.Close()
+	st, err := validateParentFD(parent)
+	if err != nil {
+		return err
+	}
+	if err = verifyParentPath(absolute, identity(&st)); err != nil {
+		return err
+	}
+	if err = removeAt(parent, name); err != nil {
+		return err
+	}
+	return verifyParentPath(absolute, identity(&st))
 }
 
 // ClearPending restores a handle after its pending request provably did not

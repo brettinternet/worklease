@@ -420,6 +420,8 @@ type InspectRequest struct {
 	OperationID, ClaimID, Resource, Token string
 	Full                                  bool
 	TrustedFull                           bool
+	// HandlePath or CredentialPath identifies a durable claim token source for remote private inspection.
+	HandlePath, CredentialPath string
 }
 
 func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, error) {
