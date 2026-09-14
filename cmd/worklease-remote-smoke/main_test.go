@@ -85,6 +85,37 @@ func TestVerifyExactFaultReplayRequiresOneDroppedIdenticalReplay(t *testing.T) {
 	}
 }
 
+func TestVerifyDroppedFaultCommitRequiresOneCommittedDispatch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	requestID := strings.Repeat("b", 32)
+	valid := "path=/v1/enroll status=200 requestSha256=body dropped=true historicalResultSha256=result requestId=" + requestID + "\n"
+	if err := os.WriteFile(logPath, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDroppedFaultCommit(logPath, "/v1/enroll", requestID, "body"); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]string{
+		"wrong body":    valid,
+		"not dropped":   strings.Replace(valid, "dropped=true", "dropped=false", 1),
+		"not committed": strings.Replace(valid, "status=200", "status=500", 1),
+		"duplicate":     valid + valid,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(logPath, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			expectedHash := "body"
+			if name == "wrong body" {
+				expectedHash = "other"
+			}
+			if err := verifyDroppedFaultCommit(logPath, "/v1/enroll", requestID, expectedHash); err == nil {
+				t.Fatal("invalid dropped commit evidence accepted")
+			}
+		})
+	}
+}
+
 func TestVerifyFreshReplayEnvelopeRequiresStableResultAndNewerTime(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "fault.log")
 	log := "path=/v1/operations/complete status=200 requestSha256=aaa dropped=true authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:00Z historicalResultSha256=result at=now\n" +

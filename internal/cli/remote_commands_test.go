@@ -18,6 +18,7 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
+	urfave "github.com/urfave/cli/v3"
 )
 
 func remoteCLIFixture(t *testing.T) (string, string, string) {
@@ -72,6 +73,17 @@ func runRemoteCLI(t *testing.T, args ...string) (string, error) {
 	var out, stderr bytes.Buffer
 	err := Run(context.Background(), append([]string{"worklease"}, args...), "test", "unknown", "unknown", &out, &stderr)
 	return out.String(), err
+}
+
+func TestInviteFromCommandUsesHiddenPromptWithoutInviteOption(t *testing.T) {
+	original := readHiddenInvite
+	readHiddenInvite = func() (string, error) { return strings.Repeat("a", 64), nil }
+	t.Cleanup(func() { readHiddenInvite = original })
+	command := &urfave.Command{}
+	invite, err := inviteFromCommand(command)
+	if err != nil || invite != strings.Repeat("a", 64) {
+		t.Fatalf("hidden invite=%q err=%v", invite, err)
+	}
 }
 
 func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {

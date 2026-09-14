@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 22:24'
+updated_date: '2026-09-14 22:51'
 labels:
   - remote-authority
 dependencies:
@@ -149,4 +149,6 @@ Objective local evidence: dist/remote-acceptance/ac5-enrollment-local-final-2/re
 Final CI exposed an intermittent descriptor-enrollment failure. Root cause: ReadCredentialFD both closed the duplicated descriptor directly and left an owning os.File for finalization, allowing a later finalizer to close a reused descriptor. The descriptor now has one os.File owner and closes exactly once; added regression coverage. This fix also addresses the recurring real-host credential-unsafe symptom's descriptor-lifetime class, though the remote host harness must still be rerun.
 
 Committed AC5.3 and AC5.5 slices as f07733b (Exercise remote enrollment replay faults). Final verification passed: mise run lint, format-check, test, typecheck, ci, and staged hooks. Local smoke passed repeatedly after the descriptor ownership fix, including dist/remote-acceptance/ac5-descriptor-fix-2/report.json and CI evidence dist/remote-acceptance/20260914T221359.558406000Z/report.json.
+
+Implemented the next Group 3 slices for AC5.2 and AC5.4. Enrollment now supports a no-echo interactive invite prompt in addition to owner-private file and descriptor sources; the harness drives the real terminal path through a PTY, verifies the installation exists, and scans retained evidence for disclosure. A second dropped enrollment is proven committed exactly once by the fault proxy, retained locally through the actual asynchronous SQLite backup/restore, rejected as authority-restored against the same authority's new restore ID, and byte-identical afterward. Local objective evidence: dist/remote-acceptance/ac5-next-local-final/report.json, coverage.json, fault-proxy.log, enrollment-replay.txt, immutable-enrollment-before-restore.json, and immutable-enrollment-after-restore.txt. The real-host attempt at dist/remote-acceptance/ac5-next-real-test/ remained blocked before Group 3 by the existing race-revocation-first credential-unsafe enrollment failure. Independent review defects in synthetic bootstrap claims, terminal portability/failure propagation, secret-bearing error interpolation, initial dispatch proof, and restore-identity proof were addressed; AC5.1 remains explicitly still-blocked rather than claiming synthetic crash-state evidence. Next resumable step: implement deterministic real subprocess bootstrap crash injection for AC5.1, then AC5.9 distinct MCP authentication guidance.
 <!-- SECTION:NOTES:END -->
