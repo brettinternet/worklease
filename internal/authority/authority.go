@@ -385,6 +385,22 @@ func (a *RemoteAuthority) Verify(ctx context.Context, c lease.Credentials, expec
 	return out, e
 }
 func (a *RemoteAuthority) BeginOperation(ctx context.Context, c lease.Credentials, r lease.OperationIntent) (lease.Started, error) {
+	// A prior executor may have completed locally while its completion response
+	// was lost. Replay that exact terminal request before consulting the retained
+	// begin so a new invocation cannot bypass or strand completion evidence.
+	if pending, ok, err := a.pendingFor("operations/complete", r.OperationID); err != nil {
+		return lease.Started{}, err
+	} else if ok {
+		response, replayErr := a.Client.Replay(ctx, pending.RequestID)
+		var receipt lease.Receipt
+		if replayErr == nil {
+			replayErr = decodeResult(response.Result, &receipt)
+		}
+		if replayErr == nil {
+			replayErr = updateHandleRevision(c.HandlePath, receipt.Revision)
+		}
+		return lease.Started{OperationID: r.OperationID, ClaimID: c.ClaimID, Kind: r.Kind, Revision: receipt.Revision, RequestHash: receipt.RequestHash, Completed: replayErr == nil, Receipt: &receipt}, replayErr
+	}
 	if c.HandlePath != "" {
 		if h, err := handle.Read(c.HandlePath); err == nil && h.PendingRequest != nil && h.PendingRequest.OperationID == r.OperationID {
 			response, replayErr := a.Client.ReplayHandle(ctx, c.HandlePath)
@@ -470,7 +486,7 @@ func (a *RemoteAuthority) RenewOperation(ctx context.Context, c lease.Credential
 	}
 	q := common(a.Client, id)
 	q["claimId"], q["revision"], q["renewalId"], q["ttlMicros"] = c.ClaimID, c.Revision, renewalID, ttl.Microseconds()
-	b, e := a.request(ctx, "/v1/operations/renew", "operations/renew", renewalID, q, true, false, c.Token, "", "", "", id, c.CredentialPath)
+	b, e := a.request(ctx, "/v1/operations/renew", "operations/renew", renewalID, q, true, false, c.Token, "", c.HandlePath, "", id, c.CredentialPath)
 	var out lease.Receipt
 	if e == nil {
 		e = finish(a.Client, renewalID, "", renewalID, c.ClaimID, b, &out)
@@ -500,7 +516,7 @@ func (a *RemoteAuthority) CompleteOperation(ctx context.Context, c lease.Credent
 	}
 	q := common(a.Client, id)
 	q["claimId"], q["revision"], q["receipt"] = c.ClaimID, c.Revision, r
-	b, e := a.request(ctx, "/v1/operations/complete", "operations/complete", completionID, q, true, false, c.Token, "", "", "", id, c.CredentialPath, "", c.HandlePath)
+	b, e := a.request(ctx, "/v1/operations/complete", "operations/complete", completionID, q, true, false, c.Token, "", c.HandlePath, "", id, c.CredentialPath, "", c.HandlePath)
 	var out lease.Receipt
 	if e == nil {
 		e = finish(a.Client, completionID, "", id, c.ClaimID, b, &out)

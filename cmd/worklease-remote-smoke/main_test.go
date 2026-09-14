@@ -20,6 +20,21 @@ func TestValidateSSHHostRejectsShellSyntax(t *testing.T) {
 	}
 }
 
+func TestVerifyFaultReplaysRequiresMatchingBody(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	log := "path=/v1/operations/begin status=200 requestSha256=aaa dropped=true at=now\n" +
+		"path=/v1/operations/begin status=422 requestSha256=aaa dropped=false at=now\n"
+	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFaultReplays(logPath, []string{"/v1/operations/begin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFaultReplays(logPath, []string{"/v1/operations/complete"}); err == nil {
+		t.Fatal("missing replay accepted")
+	}
+}
+
 func TestWriteCertificateIncludesRemoteAddressSAN(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")

@@ -3,9 +3,9 @@ id: TASK-107.11
 title: Build the two-host acceptance harness and run scenario groups 1 to 5
 status: In Progress
 assignee:
-  - '@brett'
+  - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 14:52'
+updated_date: '2026-09-14 15:29'
 labels:
   - remote-authority
 dependencies:
@@ -24,8 +24,10 @@ documentation:
 modified_files:
   - cmd/worklease-remote-smoke/main.go
   - cmd/worklease-remote-smoke/main_test.go
-  - scripts/test-e2e.sh
-  - mise.toml
+  - internal/authority/authority.go
+  - internal/authority/http.go
+  - internal/guard/guard.go
+  - internal/guard/remote_test.go
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -98,4 +100,8 @@ Objective evidence: local reports dist/remote-acceptance/group3-local-test/repor
 Committed credential and hosted-lock acceptance as e6d9314 (Exercise remote credential and lock boundaries).
 
 Next resumable step: implement transport fault injection for AC4.1 and AC4.4-AC4.8, beginning with lost start/renewal/completion responses and exact replay. The latest matrix still intentionally leaves every unobserved clause still-blocked; do not close the task from supporting tests.
+
+Resumed under Worklease claim task-107-11-loop at AC4.1 transport fault injection; dependencies and prior evidence revalidated.
+
+Implemented AC4.1 one-shot TLS response-loss injection for begin, renewal, and completion. The harness records request-body hashes and requires an identical replay; lost begin remains unknown with zero dispatch, while renewal and completion replay with one effect. Acceptance exposed and fixed secondary pending replay sourcing the installation bearer instead of the contextual claim handle, completion replay being bypassed by begin replay, replayed JSON-number exit codes, and a finished-child/in-flight renewal race. Local objective evidence: dist/remote-acceptance/ac4-local-test-8/report.json and fault-proxy.log. A post-review real-host rerun is temporarily blocked by repeated baseline remote-host transport unknown-outcome failures before Group 2; the earlier pre-review run passed but is not used as final AC4.1 evidence.
 <!-- SECTION:NOTES:END -->

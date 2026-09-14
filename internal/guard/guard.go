@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -413,7 +414,7 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 		receipt lease.Receipt
 		err     error
 	}, 1)
-	renewing := false
+	renewing, immediateRenewRetry := false, false
 	startRenew := func() {
 		if renewing {
 			return
@@ -449,6 +450,7 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 			}
 			leaseTimer.Reset(time.Until(lastLeaseDeadline))
 		case <-ticker.C:
+			immediateRenewRetry = false
 			startRenew()
 		case result := <-renewResults:
 			renewing = false
@@ -457,6 +459,13 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 				// A transient storage error leaves the last confirmed deadline
 				// in force; the lease timer terminates the child if it passes.
 				if !reason.OwnershipRenewalFailure(result.err) {
+					// A response may be lost after the authority commits. Retry
+					// once immediately so the exact retained renewal can replay
+					// before the last confirmed lease deadline.
+					if !immediateRenewRetry {
+						immediateRenewRetry = true
+						startRenew()
+					}
 					continue
 				}
 				ownershipLost = true
@@ -489,9 +498,17 @@ done:
 		// rejects the completion as stale and strands a finished child as an
 		// unresolved operation.
 		result := <-renewResults
-		if result.err == nil {
-			current.Revision = result.receipt.Revision
+		if result.err != nil && !reason.OwnershipRenewalFailure(result.err) {
+			// Recover a response lost after commit from the exact pending renewal
+			// before attempting completion with an uncertain revision.
+			result.receipt, result.err = svc.RenewOperation(ctx, current, req.OperationID, req.TTL)
 		}
+		if result.err != nil {
+			err := postStart(result.err, req.OperationID)
+			failLifecycle(req.Lifecycle, err, true)
+			return ExecResult{}, err
+		}
+		current.Revision = result.receipt.Revision
 	}
 	var stdout, stderr capture
 	captureDeadline := time.NewTimer(time.Until(deadline))
@@ -565,6 +582,11 @@ func receiptExit(r lease.Receipt) int {
 	}
 	if v, ok := r.Result["returncode"].(int); ok {
 		return v
+	}
+	if v, ok := r.Result["returncode"].(json.Number); ok {
+		if code, err := v.Int64(); err == nil {
+			return int(code)
+		}
 	}
 	return 1
 }
