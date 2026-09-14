@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 11:47'
+updated_date: '2026-09-14 11:48'
 labels:
   - remote-authority
 dependencies:
@@ -71,4 +71,6 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 Implemented the local-development acceptance probe in cmd/worklease-remote-smoke and wired it into scripts/test-e2e.sh plus mise run remote-smoke. The probe launches the shipped TLS server, creates two isolated checkout/config/credential/home roots, exercises CLI contention, stdio MCP, a client-local guarded effect with dispatch count 1, partition fail-closed behavior, enrollment/credential failure, snapshot/watch, and an online SQLite backup followed by restore. It writes owner-private command, measurement, backup, pending-inventory, and per-group report evidence under dist/remote-acceptance/TIMESTAMP/.
 
 Local evidence: dist/remote-acceptance/20260914T114650.483809000Z/report.json. mise run ci passed on 2026-09-14. This is explicitly development evidence only: the complete fault matrix and unchanged real-host run remain blocking, including measured WAN latency/throughput, real host/process/filesystem boundaries, external asynchronous provider effects, and deployment backup/restore bounds.
+
+Committed local-development harness as a87b3f0 (Add remote authority development smoke).
 <!-- SECTION:NOTES:END -->
