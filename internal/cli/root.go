@@ -94,6 +94,8 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 			&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "output one JSON envelope"},
 			&urfavecli.StringFlag{Name: "home", Aliases: []string{"H"}, Usage: "state directory [$WORKLEASE_HOME]"},
 			&urfavecli.StringFlag{Name: "config", Usage: "configuration file [$WORKLEASE_CONFIG]"},
+			&urfavecli.StringFlag{Name: "profile", Usage: "trusted remote authority profile `NAME` [$WORKLEASE_PROFILE]"},
+			&urfavecli.BoolFlag{Name: "local", Usage: "use the local authority even when a default or project profile is configured"},
 			&urfavecli.BoolFlag{Name: "version", Aliases: []string{"v"}, Usage: "show version", Local: true},
 		},
 		Commands: newCommands(state),

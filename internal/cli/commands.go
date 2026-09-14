@@ -332,7 +332,10 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	usageText(serve, "worklease serve --server-config FILE [--dev-http]")
 	detail(serve, "Serve one marked hosted authority over the frozen Worklease HTTP protocol. TLS is required unless --dev-http is explicitly used on loopback.")
-	all := append(commands, policy, op, instructions, setup, hosted, serve, mcp, helpCommand(s))
+	all := append(commands, policy, op, instructions, setup)
+	all = append(all, profileCommands(s)...)
+	all = append(all, remoteAdminCommands(s)...)
+	all = append(all, hosted, serve, mcp, helpCommand(s))
 	for _, command := range all {
 		switch command.Name {
 		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":

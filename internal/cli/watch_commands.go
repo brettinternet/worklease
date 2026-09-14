@@ -7,11 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
-	"github.com/brettinternet/worklease/internal/store"
 	watchpkg "github.com/brettinternet/worklease/internal/watch"
 	urfave "github.com/urfave/cli/v3"
 )
@@ -44,19 +42,15 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if timeout < 0 || timeout > watchpkg.MaxTimeout {
 			return s.handle(cmd, reason.Invalid("timeout must be between 1s and 1h"))
 		}
-		cfg, err := config.Load(config.Input{Flags: map[string]string{
-			"home": cmd.String("home"), "config": cmd.String("config"),
-			"poll_interval": cmd.String("poll-interval"),
-		}})
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		st, err := storeForWatch(ctx, cfg.Home)
-		if err != nil {
-			return s.handle(cmd, err)
+		defer backend.Close()
+		if backend.Remote && cmd.IsSet("poll-interval") {
+			return s.handle(cmd, reason.Invalid("poll-interval is local-only"))
 		}
-		defer st.Close()
-		result, err := watchpkg.Wait(ctx, st, watchpkg.Request{Cursor: cursor, Resources: resources, Until: until, Timeout: timeout, PollInterval: cfg.PollInterval})
+		result, err := backend.API.Watch(ctx, watchpkg.Request{Cursor: cursor, Resources: resources, Until: until, Timeout: timeout, PollInterval: backend.Config.PollInterval})
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -75,10 +69,6 @@ func watchAction(s *boundary) func(context.Context, *urfave.Command) error {
 
 func writeWatchText(w io.Writer, result watchpkg.Result, color bool) error {
 	return writeWatchTextAt(w, result, color, time.Now())
-}
-
-func storeForWatch(ctx context.Context, home string) (*store.Store, error) {
-	return store.Open(ctx, home, store.Options{ReadOnly: true})
 }
 
 // writeWatchTextAt keeps the compact view relative and presents the durable

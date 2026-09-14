@@ -40,6 +40,7 @@ type ExecRequest struct {
 	MaxDuration     time.Duration
 	TTL             time.Duration
 	RequestNotAfter time.Time
+	LeaseExpiresAt  time.Time
 	Lifecycle       *OperationLifecycle
 }
 type ExecResult struct {
@@ -285,7 +286,13 @@ func terminateAndWait(cmd *exec.Cmd, exited <-chan error) error {
 	}
 }
 
-func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req ExecRequest) (ExecResult, error) {
+type ExecAuthority interface {
+	BeginOperation(context.Context, lease.Credentials, lease.OperationIntent) (lease.Started, error)
+	RenewOperation(context.Context, lease.Credentials, string, time.Duration) (lease.Receipt, error)
+	CompleteOperation(context.Context, lease.Credentials, string, map[string]any) (lease.Receipt, error)
+}
+
+func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req ExecRequest) (ExecResult, error) {
 	if e := validExec(req.Argv); e != nil {
 		return ExecResult{}, e
 	}
@@ -300,7 +307,14 @@ func Exec(ctx context.Context, svc *lease.Service, creds lease.Credentials, req 
 		return ExecResult{}, e
 	}
 	if req.TTL == 0 {
-		req.TTL = svc.DefaultTTL()
+		if defaults, ok := svc.(interface{ DefaultTTL() time.Duration }); ok {
+			req.TTL = defaults.DefaultTTL()
+		} else {
+			req.TTL = 15 * time.Minute
+		}
+	}
+	if !req.LeaseExpiresAt.IsZero() && time.Until(req.LeaseExpiresAt) <= req.TTL/4 {
+		return ExecResult{}, reason.New(reason.ReasonOwnershipLost, "claim is too close to expiry to start guarded work")
 	}
 	intent := map[string]any{"argv": req.Argv, "cwd": cwd, "gitPrimary": req.GitPrimary, "maxDuration": req.MaxDuration.Microseconds()}
 	operation := lease.OperationIntent{OperationID: req.OperationID, Kind: "exec", Request: intent, RequestNotAfter: req.RequestNotAfter, TTL: req.TTL}

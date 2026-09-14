@@ -1,10 +1,11 @@
 ---
 id: TASK-107.9
 title: Route the CLI lifecycle and administration through the remote client
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:03'
+updated_date: '2026-09-14 10:42'
 labels:
   - remote-authority
 dependencies:
@@ -51,3 +52,22 @@ CLI administration covers API invite issuance, installation revocation, administ
 <!-- DOD:BEGIN -->
 - [ ] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Introduce one profile-aware CLI authority context that selects local or remote without fallback and keeps remote handles/pending requests client-local.
+2. Route lifecycle, ledger, watch, verification, and reconciliation commands through authority.Authority while preserving local behavior and exact remote replay.
+3. Generalize guarded exec over the authority contract, enforce conservative renewal/termination, and reject remote replace-file before any file effect.
+4. Add remote profile/enrollment/admin/recovery/GC commands and profile-aware doctor checks with protected secret handling.
+5. Add focused remote CLI, guard, admin, and doctor tests; run unchanged local guard/replace tests and all repository quality gates.
+6. Independently review acceptance-critical safety boundaries, fix findings, finalize Backlog evidence, and commit on main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Selected as the earliest dependency-ready high-priority item. Claimed with Worklease local coordination; providerMutationFenced=false. Discovery confirmed TASK-107.8 supplied the authority client foundation while CLI consumers remain local-only.
+
+Implemented profile-aware CLI authority construction and routed lifecycle, ledger, watch, verification, inspection, reconciliation, transfer, and guarded exec through the local/remote authority contract. Added client-local remote handle/pending behavior, exact request deadline reuse, child-operation pending coexistence/replay, remote replace-file refusal, profile/enrollment/admin/recovery/GC commands, and remote doctor checks. Added real hosted-server CLI coverage for acquire/status/list/events/history/watch/verify/checkpoint/heartbeat/transfer/exec/release, doctor redaction, invite secret handling, and replace refusal. Focused and full Go tests pass; staticcheck issue from an obsolete local watch helper was removed.
+<!-- SECTION:NOTES:END -->

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -33,6 +34,7 @@ type Authority interface {
 	CompleteOperation(context.Context, lease.Credentials, string, map[string]any) (lease.Receipt, error)
 	Inspect(context.Context, ledger.InspectRequest) (ledger.Operation, error)
 	Reconcile(context.Context, lease.Credentials, lease.ReconcileRequest) (lease.ReconciliationReceipt, error)
+	ReconcileAtCurrentRevision(context.Context, lease.Credentials, lease.ReconcileRequest) (lease.ReconciliationReceipt, error)
 	Events(context.Context, string, int) (ledger.EventsPage, error)
 	History(context.Context, string, string, int, bool) (ledger.HistoryPage, error)
 	Watch(context.Context, watch.Request) (watch.Result, error)
@@ -114,6 +116,9 @@ func (a *LocalAuthority) Inspect(c context.Context, r ledger.InspectRequest) (le
 func (a *LocalAuthority) Reconcile(c context.Context, x lease.Credentials, r lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
 	return a.Service.Reconcile(c, x, r)
 }
+func (a *LocalAuthority) ReconcileAtCurrentRevision(c context.Context, x lease.Credentials, r lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
+	return a.Service.ReconcileAtCurrentRevision(c, x, r)
+}
 
 // RemoteAuthority adapts the frozen HTTP routes to Authority. Its only durable
 // state is profile credentials and pending records owned by HTTPClient.
@@ -132,11 +137,17 @@ func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id str
 		}
 	}
 	if m, ok := body.(map[string]any); ok && mutating {
-		d, e := a.Client.clock.RequestNotAfter()
-		if e != nil {
-			return nil, reason.New(reason.ReasonClockRegression, "authority time is unsampled")
+		missing := m["requestNotAfter"] == nil
+		if value, isTime := m["requestNotAfter"].(time.Time); isTime && value.IsZero() {
+			missing = true
 		}
-		m["requestNotAfter"] = d
+		if missing {
+			d, e := a.Client.clock.RequestNotAfter()
+			if e != nil {
+				return nil, reason.New(reason.ReasonClockRegression, "authority time is unsampled")
+			}
+			m["requestNotAfter"] = d
+		}
 	}
 	b, e := json.Marshal(body)
 	if e != nil {
@@ -193,6 +204,9 @@ func finish(c *HTTPClient, id, handlePath, expectedOperation, expectedClaim stri
 	case *lease.Receipt:
 		if x.OperationID != expectedOperation || (expectedClaim != "" && x.ClaimID != expectedClaim) {
 			return reason.Invalid("remote receipt does not match request")
+		}
+		if err := updateHandleRevision(handlePath, x.Revision); err != nil {
+			return err
 		}
 	case *lease.Grant:
 		if x.ClaimID != expectedClaim || x.Receipt.OperationID != expectedOperation || x.Receipt.ClaimID != expectedClaim {
@@ -252,6 +266,7 @@ func (a *RemoteAuthority) Acquire(ctx context.Context, r lease.AcquireRequest) (
 		return lease.Grant{}, reason.Invalid("claim ID is required")
 	}
 	q := common(a.Client, id)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["resources"], q["agentId"], q["sessionId"], q["workKey"], q["ttlMicros"], q["maxHoldMicros"], q["coordinationOnly"] = r.ClaimID, r.Resources, r.AgentID, r.SessionID, r.WorkKey, r.TTL.Microseconds(), r.MaxHold.Microseconds(), r.CoordinationOnly
 	b, e := a.request(ctx, "/v1/claims/acquire", "acquire", id, q, true, false, "", r.Token, r.HandlePath, r.HandlePath, "", "", r.CredentialPath)
 	if e != nil {
@@ -300,6 +315,7 @@ func (a *RemoteAuthority) List(ctx context.Context, r string, x *lease.RemoteAct
 }
 func (a *RemoteAuthority) Heartbeat(ctx context.Context, c lease.Credentials, r lease.Renew) (lease.Receipt, error) {
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["ttlMicros"] = c.ClaimID, c.Revision, r.TTL.Microseconds()
 	b, e := a.request(ctx, "/v1/claims/heartbeat", "heartbeat", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", "", c.CredentialPath)
 	var out lease.Receipt
@@ -310,6 +326,7 @@ func (a *RemoteAuthority) Heartbeat(ctx context.Context, c lease.Credentials, r 
 }
 func (a *RemoteAuthority) Checkpoint(ctx context.Context, c lease.Credentials, r lease.CheckpointRequest) (lease.Receipt, error) {
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["ttlMicros"], q["data"] = c.ClaimID, c.Revision, r.TTL.Microseconds(), r.Data
 	b, e := a.request(ctx, "/v1/claims/checkpoint", "checkpoint", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", "", c.CredentialPath)
 	var out lease.Receipt
@@ -320,6 +337,7 @@ func (a *RemoteAuthority) Checkpoint(ctx context.Context, c lease.Credentials, r
 }
 func (a *RemoteAuthority) Release(ctx context.Context, c lease.Credentials, r lease.ReleaseRequest) (lease.Receipt, error) {
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["reason"] = c.ClaimID, c.Revision, r.Reason
 	b, e := a.request(ctx, "/v1/claims/release", "release", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", "", c.CredentialPath)
 	var out lease.Receipt
@@ -333,6 +351,7 @@ func (a *RemoteAuthority) Transfer(ctx context.Context, c lease.Credentials, r l
 		return lease.Grant{}, reason.Invalid("remote named transfer requires a successor handle path")
 	}
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["successorClaimId"], q["toAgent"], q["toSession"], q["toWorkKey"], q["ttlMicros"] = c.ClaimID, c.Revision, r.SuccessorClaimID, r.ToAgent, r.ToSession, r.ToWorkKey, r.TTL.Microseconds()
 	b, e := a.request(ctx, "/v1/claims/transfer", "transfer", r.OperationID, q, true, false, c.Token, r.SuccessorToken, c.HandlePath, r.SuccessorHandlePath, "", c.CredentialPath, r.SuccessorCredentialPath)
 	var out lease.Grant
@@ -363,7 +382,30 @@ func (a *RemoteAuthority) Verify(ctx context.Context, c lease.Credentials, expec
 	return out, e
 }
 func (a *RemoteAuthority) BeginOperation(ctx context.Context, c lease.Credentials, r lease.OperationIntent) (lease.Started, error) {
+	if c.HandlePath != "" {
+		if h, err := handle.Read(c.HandlePath); err == nil && h.PendingRequest != nil && h.PendingRequest.OperationID == r.OperationID {
+			response, replayErr := a.Client.ReplayHandle(ctx, c.HandlePath)
+			var out lease.Started
+			if replayErr == nil {
+				replayErr = decodeResult(response.Result, &out)
+			}
+			if replayErr == nil {
+				replayErr = validateResult(&out)
+			}
+			if replayErr == nil && (out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind) {
+				replayErr = reason.Invalid("remote operation result does not match request")
+			}
+			if replayErr == nil {
+				replayErr = updateHandleRevision(c.HandlePath, out.Revision)
+			}
+			if replayErr == nil && out.Completed {
+				replayErr = a.Client.finalize(r.OperationID, c.HandlePath)
+			}
+			return out, replayErr
+		}
+	}
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["kind"], q["request"], q["requestSha256"], q["ttlMicros"] = c.ClaimID, c.Revision, r.Kind, r.Request, r.RequestHash, r.TTL.Microseconds()
 	b, e := a.request(ctx, "/v1/operations/begin", "operations/begin", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", "", c.CredentialPath)
 	var out lease.Started
@@ -373,36 +415,95 @@ func (a *RemoteAuthority) BeginOperation(ctx context.Context, c lease.Credential
 	if e == nil {
 		e = validateResult(&out)
 	}
-	if e == nil && (out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind || out.RequestHash != r.RequestHash) {
+	if e == nil && (out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind || r.RequestHash != "" && out.RequestHash != r.RequestHash) {
 		e = reason.Invalid("remote operation result does not match request")
+	}
+	if e == nil {
+		e = updateHandleRevision(c.HandlePath, out.Revision)
+	}
+	if e == nil && out.Completed {
+		e = a.Client.finalize(r.OperationID, c.HandlePath)
 	}
 	return out, e
 }
+func (a *RemoteAuthority) pendingFor(kind, target string) (PendingRequest, bool, error) {
+	records, err := a.Client.pending.List()
+	if err != nil {
+		return PendingRequest{}, false, err
+	}
+	var found *PendingRequest
+	for i := range records {
+		if records[i].Kind == kind && records[i].TargetOperationID == target {
+			if found != nil {
+				return PendingRequest{}, false, reason.New(reason.ReasonOperationInProgress, "multiple pending requests require explicit recovery")
+			}
+			copy := records[i]
+			found = &copy
+		}
+	}
+	if found == nil {
+		return PendingRequest{}, false, nil
+	}
+	return *found, true, nil
+}
+
 func (a *RemoteAuthority) RenewOperation(ctx context.Context, c lease.Credentials, id string, ttl time.Duration) (lease.Receipt, error) {
+	if pending, ok, err := a.pendingFor("operations/renew", id); err != nil {
+		return lease.Receipt{}, err
+	} else if ok {
+		response, err := a.Client.Replay(ctx, pending.RequestID)
+		var out lease.Receipt
+		if err == nil {
+			err = decodeResult(response.Result, &out)
+		}
+		if err == nil {
+			err = updateHandleRevision(c.HandlePath, out.Revision)
+		}
+		return out, err
+	}
 	renewalID, e := newID()
 	if e != nil {
 		return lease.Receipt{}, e
 	}
 	q := common(a.Client, id)
 	q["claimId"], q["revision"], q["renewalId"], q["ttlMicros"] = c.ClaimID, c.Revision, renewalID, ttl.Microseconds()
-	b, e := a.request(ctx, "/v1/operations/renew", "operations/renew", renewalID, q, true, false, c.Token, "", c.HandlePath, "", id, c.CredentialPath)
+	b, e := a.request(ctx, "/v1/operations/renew", "operations/renew", renewalID, q, true, false, c.Token, "", "", "", id, c.CredentialPath)
 	var out lease.Receipt
 	if e == nil {
-		e = finish(a.Client, renewalID, c.HandlePath, renewalID, c.ClaimID, b, &out)
+		e = finish(a.Client, renewalID, "", renewalID, c.ClaimID, b, &out)
+	}
+	if e == nil {
+		e = updateHandleRevision(c.HandlePath, out.Revision)
 	}
 	return out, e
 }
 func (a *RemoteAuthority) CompleteOperation(ctx context.Context, c lease.Credentials, id string, r map[string]any) (lease.Receipt, error) {
+	if pending, ok, err := a.pendingFor("operations/complete", id); err != nil {
+		return lease.Receipt{}, err
+	} else if ok {
+		response, err := a.Client.Replay(ctx, pending.RequestID)
+		var out lease.Receipt
+		if err == nil {
+			err = decodeResult(response.Result, &out)
+		}
+		if err == nil {
+			err = updateHandleRevision(c.HandlePath, out.Revision)
+		}
+		return out, err
+	}
 	completionID, e := newID()
 	if e != nil {
 		return lease.Receipt{}, e
 	}
 	q := common(a.Client, id)
 	q["claimId"], q["revision"], q["receipt"] = c.ClaimID, c.Revision, r
-	b, e := a.request(ctx, "/v1/operations/complete", "operations/complete", completionID, q, true, false, c.Token, "", c.HandlePath, "", id, c.CredentialPath)
+	b, e := a.request(ctx, "/v1/operations/complete", "operations/complete", completionID, q, true, false, c.Token, "", "", "", id, c.CredentialPath, "", c.HandlePath)
 	var out lease.Receipt
 	if e == nil {
-		e = finish(a.Client, completionID, c.HandlePath, id, c.ClaimID, b, &out)
+		e = finish(a.Client, completionID, "", id, c.ClaimID, b, &out)
+	}
+	if e == nil {
+		e = updateHandleRevision(c.HandlePath, out.Revision)
 	}
 	if e == nil {
 		e = a.Client.finalize(id, c.HandlePath)
@@ -428,8 +529,13 @@ func (a *RemoteAuthority) Inspect(ctx context.Context, r ledger.InspectRequest) 
 
 func (a *RemoteAuthority) Reconcile(ctx context.Context, c lease.Credentials, r lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
 	q := common(a.Client, r.OperationID)
+	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["targetClaimId"], q["targetOperationId"], q["expectedRequestSha256"], q["outcome"], q["evidence"], q["ttlMicros"] = c.ClaimID, c.Revision, r.TargetClaimID, r.TargetOperationID, r.ExpectedRequestSHA256, r.Outcome, r.Evidence, r.TTL.Microseconds()
-	b, err := a.request(ctx, "/v1/operations/reconcile", "operations/reconcile", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", r.TargetOperationID, c.CredentialPath, "", r.TargetHandlePath)
+	targetHandle := r.TargetHandlePath
+	if targetHandle == "" && r.TargetClaimID == c.ClaimID {
+		targetHandle = c.HandlePath
+	}
+	b, err := a.request(ctx, "/v1/operations/reconcile", "operations/reconcile", r.OperationID, q, true, false, c.Token, "", "", "", r.TargetOperationID, c.CredentialPath, "", targetHandle)
 	var out lease.ReconciliationReceipt
 	if err == nil {
 		err = decodeResult(b, &out)
@@ -438,16 +544,19 @@ func (a *RemoteAuthority) Reconcile(ctx context.Context, c lease.Credentials, r 
 		err = reason.Invalid("remote reconciliation does not match request")
 	}
 	if err == nil {
-		err = a.Client.finalize(r.OperationID, c.HandlePath)
+		err = a.Client.finalize(r.OperationID, "")
 	}
 	if err == nil {
-		handlePath := r.TargetHandlePath
-		if handlePath == "" && r.TargetClaimID == c.ClaimID {
-			handlePath = c.HandlePath
-		}
-		err = a.Client.finalize(r.TargetOperationID, handlePath)
+		err = updateHandleRevision(c.HandlePath, out.CurrentRevision)
+	}
+	if err == nil {
+		err = a.Client.finalize(r.TargetOperationID, targetHandle)
 	}
 	return out, err
+}
+
+func (a *RemoteAuthority) ReconcileAtCurrentRevision(ctx context.Context, c lease.Credentials, r lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
+	return a.Reconcile(ctx, c, r)
 }
 
 func (a *RemoteAuthority) Events(ctx context.Context, cursor string, limit int) (ledger.EventsPage, error) {
@@ -541,6 +650,10 @@ func (f *FakeAuthority) Inspect(context.Context, ledger.InspectRequest) (ledger.
 }
 func (f *FakeAuthority) Reconcile(context.Context, lease.Credentials, lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
 	f.record("reconcile")
+	return lease.ReconciliationReceipt{}, nil
+}
+func (f *FakeAuthority) ReconcileAtCurrentRevision(context.Context, lease.Credentials, lease.ReconcileRequest) (lease.ReconciliationReceipt, error) {
+	f.record("reconcile-current")
 	return lease.ReconciliationReceipt{}, nil
 }
 func (f *FakeAuthority) Events(context.Context, string, int) (ledger.EventsPage, error) {

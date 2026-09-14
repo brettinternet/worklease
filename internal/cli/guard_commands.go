@@ -57,7 +57,11 @@ func execAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if max == 0 {
 			max = time.Hour
 		}
-		result, err := guard.Exec(ctx, svc, creds, guard.ExecRequest{OperationID: op, Argv: argv, CWD: cmd.String("cwd"), GitPrimary: cmd.Bool("git-primary"), MaxDuration: max, TTL: ttl, RequestNotAfter: deadline, Lifecycle: guardLifecycle(hp, h, lock)})
+		leaseExpiresAt := time.Time{}
+		if h != nil && h.SchemaVersion == handle.RemoteSchemaVersion {
+			leaseExpiresAt = h.ExpiresAt
+		}
+		result, err := guard.Exec(ctx, svc, creds, guard.ExecRequest{OperationID: op, Argv: argv, CWD: cmd.String("cwd"), GitPrimary: cmd.Bool("git-primary"), MaxDuration: max, TTL: ttl, RequestNotAfter: deadline, LeaseExpiresAt: leaseExpiresAt, Lifecycle: guardLifecycle(hp, h, lock)})
 		if err != nil {
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, hp))
 		}
@@ -81,6 +85,13 @@ func replaceFileAction(s *boundary) func(context.Context, *urfave.Command) error
 		path, content := strings.TrimSpace(cmd.String("path")), strings.TrimSpace(cmd.String("content-file"))
 		if path == "" || content == "" {
 			return s.handle(cmd, reason.Invalid("replace-file requires --path and --content-file"))
+		}
+		selected, err := profileSelection(cmd)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		if selected.Profile != nil {
+			return s.handle(cmd, reason.New(reason.ReasonOperationKindUnsupported, "replace-file is unavailable for remote authorities"))
 		}
 		creds, svc, st, lock, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
@@ -113,7 +124,11 @@ func replaceFileAction(s *boundary) func(context.Context, *urfave.Command) error
 		if pending != nil {
 			requestHash = pending.RequestHash
 		}
-		result, err := guard.ReplaceFile(ctx, svc, creds, guard.ReplaceRequest{OperationID: op, Path: path, ExpectedSHA256: strings.ToLower(strings.TrimSpace(cmd.String("expected-sha256"))), ContentFile: content, TTL: ttl, RequestNotAfter: deadline, RequestHash: requestHash, Lifecycle: guardLifecycle(hp, h, lock)})
+		local, ok := svc.(interface{ LocalService() *lease.Service })
+		if !ok {
+			return s.handle(cmd, reason.New(reason.ReasonOperationKindUnsupported, "replace-file requires the local authority"))
+		}
+		result, err := guard.ReplaceFile(ctx, local.LocalService(), creds, guard.ReplaceRequest{OperationID: op, Path: path, ExpectedSHA256: strings.ToLower(strings.TrimSpace(cmd.String("expected-sha256"))), ContentFile: content, TTL: ttl, RequestNotAfter: deadline, RequestHash: requestHash, Lifecycle: guardLifecycle(hp, h, lock)})
 		if err != nil {
 			return s.handle(cmd, mutationFailure(err, creds.ClaimID, op, hp))
 		}
@@ -149,6 +164,16 @@ func (c lockAndStore) Close() error {
 func guardLifecycle(path string, h *handle.Handle, locks ...*handle.Lock) *guard.OperationLifecycle {
 	if h == nil {
 		return nil
+	}
+	if h.SchemaVersion == handle.RemoteSchemaVersion {
+		return &guard.OperationLifecycle{
+			Prepare: func(intent lease.OperationIntent) error {
+				if h.PendingRequest != nil && h.PendingRequest.OperationID != intent.OperationID {
+					return reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+				}
+				return nil
+			},
+		}
 	}
 	return &guard.OperationLifecycle{
 		Prepare: func(intent lease.OperationIntent) error {
@@ -199,35 +224,35 @@ func hookTargets(ev hookEvent) ([]string, error) {
 	}
 	return []string{p}, nil
 }
-func verifyCreds(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lease.Service, io.Closer, *handle.Handle, error) {
+func verifyCreds(ctx context.Context, cmd *urfave.Command) (lease.Credentials, commandAuthority, io.Closer, *handle.Handle, error) {
 	return verifyCredsAt(ctx, cmd, "")
 }
-func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD string) (lease.Credentials, *lease.Service, io.Closer, *handle.Handle, error) {
+func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD string) (lease.Credentials, commandAuthority, io.Closer, *handle.Handle, error) {
 	if err := ValidateSelection(cmd, false); err != nil {
 		return lease.Credentials{}, nil, nil, nil, err
 	}
-	cfg, err := configForCommand(cmd)
+	backend, err := authorityFor(ctx, cmd, false)
 	if err != nil {
 		return lease.Credentials{}, nil, nil, nil, err
 	}
-	st, err := storeForCommand(ctx, cfg, false)
-	if err != nil {
-		return lease.Credentials{}, nil, nil, nil, err
-	}
-	svc := lease.New(st, nil, nil, lease.Defaults{TTL: cfg.TTL, PollInterval: cfg.PollInterval})
+	cfg := backend.Config
 	explicit := strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision")
 	if explicit {
 		tok, e := tokenFromCommand(cmd, "token-file", "token-fd")
 		if e != nil {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, e
 		}
-		return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: tok, Revision: cmd.Int64("revision")}, svc, st, nil, nil
+		credentialPath := ""
+		if backend.Remote {
+			credentialPath = backend.Profile.Credential.Path
+		}
+		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: tok, Revision: cmd.Int64("revision"), CredentialPath: credentialPath}, backend.API, backend, nil, nil
 	}
 	path := strings.TrimSpace(cmd.String("handle"))
 	if ref := strings.TrimSpace(cmd.String("lease")); ref != "" {
 		if len(ref) != 32 || strings.Trim(ref, "0123456789abcdef") != "" {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, reason.Invalid("lease reference must be 32 lowercase hex characters")
 		}
 		path = filepath.Join(cfg.Home, "handles", "mcp-"+ref+".json")
@@ -235,7 +260,7 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 	if path == "" && strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) == "" && contextualCWD != "" {
 		root, rootErr := handle.ContextRoot(contextualCWD, nil)
 		if rootErr != nil {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, rootErr
 		}
 		path = handle.ContextualPath(cfg.Home, root, cfg.SessionID)
@@ -243,27 +268,39 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 	if path == "" {
 		path, err = acquireHandlePath(cmd, cfg)
 		if err != nil {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, err
 		}
 	}
+	if backend.Remote {
+		h, e := handle.Read(path)
+		if e != nil {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonVerifyFailed, "selected handle is unavailable").With("cause", "missing-handle")
+		}
+		if h.AuthorityID != backend.AuthorityID() {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match")
+		}
+		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path, CredentialPath: backend.Profile.Credential.Path}, backend.API, backend, &h, nil
+	}
 	lock, e := handle.AcquireExistingLock(ctx, path+".lock")
 	if e != nil {
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, e
 	}
 	h, e := lock.Read(path)
 	if e != nil {
 		lock.Close()
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonVerifyFailed, "selected handle is unavailable").With("cause", "missing-handle")
 	}
-	if h.AuthorityID != st.AuthorityID() {
+	if h.AuthorityID != backend.AuthorityID() {
 		lock.Close()
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match")
 	}
-	return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, svc, lockAndStore{Closer: lock, Store: st}, &h, nil
+	return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path}, backend.API, lockAndStore{Closer: lock, Store: backend.Store}, &h, nil
 }
 func configForCommand(cmd *urfave.Command) (config.Config, error) {
 	return config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "agent": cmd.String("agent"), "session": cmd.String("session"), "ttl": cmd.String("ttl"), "poll_interval": cmd.String("poll-interval"), "config": cmd.String("config")}})
