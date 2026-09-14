@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 11:48'
+updated_date: '2026-09-14 14:14'
 labels:
   - remote-authority
 dependencies:
@@ -23,6 +23,7 @@ documentation:
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
 modified_files:
   - cmd/worklease-remote-smoke/main.go
+  - cmd/worklease-remote-smoke/main_test.go
   - scripts/test-e2e.sh
   - mise.toml
 parent_task_id: TASK-107
@@ -73,4 +74,8 @@ Implemented the local-development acceptance probe in cmd/worklease-remote-smoke
 Local evidence: dist/remote-acceptance/20260914T114650.483809000Z/report.json. mise run ci passed on 2026-09-14. This is explicitly development evidence only: the complete fault matrix and unchanged real-host run remain blocking, including measured WAN latency/throughput, real host/process/filesystem boundaries, external asynchronous provider effects, and deployment backup/restore bounds.
 
 Committed local-development harness as a87b3f0 (Add remote authority development smoke).
+
+Extended cmd/worklease-remote-smoke with an opt-in --remote-host topology. A real run used the local machine as client A/orchestrator and an SSH host as the TLS authority plus client B, with separate checkout, config, credential, home, and pending roots. The runner copies owner-private binaries/TLS material, chooses a port on the authority host, exercises remote CLI and stdio MCP, measures end-to-end remote-command latency, performs an online authority-host SQLite backup and restore, preserves exact dispatch counts, and retains an owner-marked remote workspace instead of deleting it.
+
+Real-host evidence: dist/remote-acceptance/20260914T141254.154954000Z/report.json and coverage.json; retained workspace remote-host:/private/tmp/worklease-acceptance-iulAlh. The explicit AC #3-#7 matrix currently records 6 live passes, 1 supporting-test pass, and 42 still-blocked clauses, so this evidence does not close the task. mise run ci passed after the real-host run. Reviewer automation was incomplete due its read budget; direct review fixed remote port selection, report latency labeling, append-only server logs, and local/remote evidence classification.
 <!-- SECTION:NOTES:END -->
