@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 16:57'
+updated_date: '2026-09-14 16:58'
 labels:
   - remote-authority
 dependencies:
@@ -122,4 +122,6 @@ Committed AC4.6 as 04bbd1e (Enforce remote authority time bounds). Quality gates
 Resumed on main at AC4.7 pre-dispatch persistence failure; dependencies and prior evidence revalidated.
 
 Implemented AC4.7 pre-dispatch persistence failure. The harness replaces client A's pending root with a regular file, arms a pre-forward /v1/admin/gc proxy gate, requires storage-failure, proves the gate remained armed and no GC request appears in the proxy log, then restores the pending directory. Local objective evidence: dist/remote-acceptance/ac4-persistence-local-test-3/report.json, coverage.json, fault-proxy.log, and pre-dispatch-persistence.txt. A real-host rerun reached and passed this slice with evidence under dist/remote-acceptance/ac4-persistence-real-test/ before the existing later race-client enrollment credential-unsafe failure; no complete real-host report is claimed. Independent verification passed focused tests, local smoke, and this real-host slice. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC4.8 late acknowledgment without redispatch.
+
+Committed AC4.7 as dc2dbba (Verify pre-dispatch persistence failure). Staged hooks passed.
 <!-- SECTION:NOTES:END -->
