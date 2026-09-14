@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 15:54'
+updated_date: '2026-09-14 16:01'
 labels:
   - remote-authority
 dependencies:
@@ -106,4 +106,8 @@ Committed AC4.1 transport-fault acceptance and replay fixes as fd58e45. Next res
 Implemented deterministic AC4.4 ordering gates in the shared local/real-host harness. The TLS fault proxy can now hold an acquire before forwarding and records matched request-hash hold/release evidence. Group 2 proves installation revocation serialized first rejects a held mutation, a mutation committed first remains retained after revocation, prefix withdrawal serialized first rejects a held admission, and a claim admitted first can heartbeat after withdrawal. Held client commands are process-bounded. Local objective evidence: dist/remote-acceptance/ac4-race-local-test-3/report.json, coverage.json, fault-proxy.log, and race-ordering.txt. Focused tests and the full local harness pass. The real-host run remains blocked before Group 2 by the pre-existing remote-host baseline invite-issue unknown-outcome during provisioning; no AC4.4 real-host pass is claimed. Reviewer findings for SSH argument splitting, stale copied proxy evidence, and unbounded held commands were fixed.
 
 Committed AC4.4 ordering acceptance as d77735a (Exercise remote policy race ordering). Independent review found three concrete harness defects; all were fixed before commit and the reviewer reported no additional findings. Next resumable step: AC4.5 fresh response identity and authority time. The remote-host provisioning transport must be stable before any new real-host coverage can be promoted.
+
+Resumed under Worklease claim task-107-11-loop-2 at AC4.5 fresh response identity and authority time; dependencies, prior evidence, and clean main checkout revalidated.
+
+Implemented AC4.5 fresh replay envelopes. The fault proxy now records redacted authorityId, restoreId, authorityTime, and a canonical historical-result hash for application responses. Group 2 requires an exact completion replay to retain the historical result and current authority/restore identity while advancing authority time. Local objective evidence: dist/remote-acceptance/20260914T155938.260367000Z/report.json, coverage.json, and fault-proxy.log; AC4.5 is local live-pass. The real-host rerun reached Group 1 but remote-host again returned a baseline heartbeat unknown-outcome before Group 2, so no real-host AC4.5 pass is claimed. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC4.6 clock-bound edge cases; rerun AC4.5 on remote-host when baseline transport is stable.
 <!-- SECTION:NOTES:END -->

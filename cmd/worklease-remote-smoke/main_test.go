@@ -36,6 +36,29 @@ func TestVerifyFaultReplaysRequiresMatchingBody(t *testing.T) {
 	}
 }
 
+func TestVerifyFreshReplayEnvelopeRequiresStableResultAndNewerTime(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	log := "path=/v1/operations/complete status=200 requestSha256=aaa dropped=true authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:00Z historicalResultSha256=result at=now\n" +
+		"path=/v1/operations/complete status=200 requestSha256=aaa dropped=false authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:01Z historicalResultSha256=result at=now\n"
+	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFreshReplayEnvelope(logPath, "/v1/operations/complete", "authority"); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFreshReplayEnvelope(logPath, "/v1/operations/complete", "other"); err == nil {
+		t.Fatal("wrong authority identity accepted")
+	}
+}
+
+func TestHistoricalResultHashIgnoresReplayMarker(t *testing.T) {
+	first := historicalResultHash([]byte(`{"operationId":"abc","idempotent":false,"result":{"exitStatus":0}}`))
+	replay := historicalResultHash([]byte(`{"result":{"exitStatus":0},"idempotent":true,"operationId":"abc"}`))
+	if first == "" || first != replay {
+		t.Fatalf("historical hashes differ: first=%q replay=%q", first, replay)
+	}
+}
+
 func TestVerifyFaultGatesRequiresMatchedRequestHashes(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "fault.log")
 	log := "path=/v1/claims/acquire phase=held requestSha256=aaa at=now\n" +
