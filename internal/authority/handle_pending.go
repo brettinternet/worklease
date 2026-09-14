@@ -118,6 +118,25 @@ func activateGrantHandle(path string, grant lease.Grant) error {
 	return lock.Write(path, h)
 }
 
+func updateHandleRevision(path string, revision int64) error {
+	if path == "" || revision == 0 {
+		return nil
+	}
+	lock, err := handle.AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	h, err := lock.Read(path)
+	if err != nil {
+		return err
+	}
+	if revision > h.Revision {
+		h.Revision = revision
+	}
+	return lock.Write(path, h)
+}
+
 func clearHandleRequest(path, requestID string) error {
 	lock, err := handle.AcquireLock(context.Background(), path+".lock")
 	if err != nil {

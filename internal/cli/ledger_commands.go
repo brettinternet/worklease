@@ -7,13 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
-	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
 )
 
@@ -51,12 +49,12 @@ func eventsAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err := ledger.ValidateCursor(cursor, "events", ""); err != nil {
 			return s.handle(cmd, err)
 		}
-		_, st, _, err := serviceFor(ctx, cmd, false)
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
-		page, err := ledger.New(st).Events(ctx, cursor, cmd.Int("limit"))
+		defer backend.Close()
+		page, err := backend.API.Events(ctx, cursor, cmd.Int("limit"))
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -77,12 +75,12 @@ func historyAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if err := ledger.ValidateCursor(cursor, "history", resource); err != nil {
 			return s.handle(cmd, err)
 		}
-		_, st, _, err := serviceFor(ctx, cmd, false)
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
-		page, err := ledger.New(st).History(ctx, resource, cursor, cmd.Int("limit"), cmd.Bool("full"))
+		defer backend.Close()
+		page, err := backend.API.History(ctx, resource, cursor, cmd.Int("limit"), cmd.Bool("full"))
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -97,15 +95,12 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 				return s.handle(cmd, err)
 			}
 		}
-		cfg, err := config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "session": cmd.String("session"), "config": cmd.String("config")}})
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		st, err := store.Open(ctx, cfg.Home, store.Options{ReadOnly: true})
-		if err != nil {
-			return s.handle(cmd, err)
-		}
-		defer st.Close()
+		defer backend.Close()
+		cfg := backend.Config
 		req := ledger.InspectRequest{OperationID: strings.TrimSpace(cmd.String("operation-id")), ClaimID: strings.TrimSpace(cmd.String("claim-id")), Full: cmd.Bool("full")}
 		resources := cmd.StringSlice("resource")
 		if len(resources) > 1 {
@@ -137,7 +132,7 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 				if e != nil {
 					return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "operation inspection requires a claim or resource"))
 				}
-				if h.AuthorityID != st.AuthorityID() {
+				if h.AuthorityID != backend.AuthorityID() {
 					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 				}
 				req.ClaimID = h.ClaimID
@@ -149,6 +144,9 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 				if err != nil {
 					return s.handle(cmd, err)
 				}
+			} else if backend.Remote && strings.TrimSpace(cmd.String("handle")) == "" && strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) == "" {
+				// Administrative remote inspection authenticates with the installation
+				// credential and deliberately sends no target claim bearer.
 			} else {
 				path := strings.TrimSpace(cmd.String("handle"))
 				if path == "" {
@@ -164,16 +162,20 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 				if e != nil {
 					return s.handle(cmd, e)
 				}
-				if h.AuthorityID != st.AuthorityID() {
+				if h.AuthorityID != backend.AuthorityID() {
 					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 				}
 				req.Token = h.Token
+				req.HandlePath = path
+				if backend.Remote {
+					req.CredentialPath = backend.Profile.Credential.Path
+				}
 				if req.ClaimID == "" {
 					req.ClaimID = h.ClaimID
 				}
 			}
 		}
-		view, err := ledger.New(st).Inspect(ctx, req)
+		view, err := backend.API.Inspect(ctx, req)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -190,6 +192,9 @@ func reconcileAction(s *boundary) func(context.Context, *urfave.Command) error {
 		defer st.Close()
 		if lock != nil {
 			defer lock.Close()
+		}
+		if h != nil && h.SchemaVersion == handle.RemoteSchemaVersion {
+			h = nil // the remote authority owns request-scoped recovery records
 		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {

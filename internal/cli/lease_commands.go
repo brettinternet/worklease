@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
-	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
 )
 
@@ -32,17 +32,6 @@ func writeHandle(lock *handle.Lock, path string, h handle.Handle) error {
 	return handle.Write(path, h)
 }
 
-func serviceFor(ctx context.Context, cmd *urfave.Command, write bool) (*lease.Service, *store.Store, config.Config, error) {
-	cfg, err := config.Load(config.Input{Flags: map[string]string{"home": cmd.String("home"), "agent": cmd.String("agent"), "session": cmd.String("session"), "ttl": cmd.String("ttl"), "poll_interval": cmd.String("poll-interval"), "config": cmd.String("config")}})
-	if err != nil {
-		return nil, nil, cfg, err
-	}
-	st, err := store.Open(ctx, cfg.Home, store.Options{ReadOnly: !write})
-	if err != nil {
-		return nil, nil, cfg, err
-	}
-	return lease.New(st, nil, nil, lease.Defaults{TTL: cfg.TTL, PollInterval: cfg.PollInterval}), st, cfg, nil
-}
 func tokenFromCommand(cmd *urfave.Command, fileFlag, fdFlag string) (string, error) {
 	path := strings.TrimSpace(cmd.String(fileFlag))
 	fdSet := fdFlag != "" && cmd.IsSet(fdFlag)
@@ -134,14 +123,18 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if cmd.Bool("no-handle") && explicitHandle {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "--no-handle cannot be mixed with a handle"))
 		}
-		svc, st, cfg, err := serviceFor(ctx, cmd, true)
+		backend, err := authorityFor(ctx, cmd, true)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
+		defer backend.Close()
+		svc, st, cfg := backend.Local, backend.Store, backend.Config
 		resources := make([]string, 0, len(in.Keys))
 		for _, key := range in.Keys {
 			resources = append(resources, key.Resource)
+		}
+		if backend.Remote {
+			return remoteAcquire(ctx, s, cmd, backend, resources, in.Keys[0].LocalReplaceAllowed)
 		}
 		// --no-handle is the deliberately explicit stateless escape hatch.
 		if cmd.Bool("no-handle") {
@@ -345,11 +338,12 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 		if selectedHandle != "" && (claimID != "" || len(resources) > 0) {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "handle and public status selection are exclusive"))
 		}
-		svc, st, cfg, err := serviceFor(ctx, cmd, false)
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
+		defer backend.Close()
+		cfg := backend.Config
 		if selectedHandle != "" || (claimID == "" && len(resources) == 0) {
 			path := selectedHandle
 			if path == "" {
@@ -362,7 +356,7 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 			if e != nil {
 				return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "selected handle is unavailable"))
 			}
-			if h.AuthorityID != st.AuthorityID() {
+			if h.AuthorityID != backend.AuthorityID() {
 				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 			}
 			claimID = h.ClaimID
@@ -370,7 +364,7 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 		if claimID == "" && len(resources) == 0 {
 			return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "status requires claim-id or resource selection"))
 		}
-		v, err := svc.Status(ctx, lease.Selector{ClaimID: claimID, Resources: resources})
+		v, err := backend.API.Status(ctx, lease.Selector{ClaimID: claimID, Resources: resources})
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -387,38 +381,39 @@ func listActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 		if len(resources) == 1 {
 			filter = resources[0]
 		}
-		svc, st, _, err := serviceFor(ctx, cmd, false)
+		backend, err := authorityFor(ctx, cmd, false)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
-		v, err := svc.List(ctx, filter)
+		defer backend.Close()
+		v, err := backend.API.List(ctx, filter, nil)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
 		return writeLeaseResult(s, cmd, "list", map[string]any{"claims": v})
 	}
 }
-func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lease.Service, *store.Store, *handle.Lock, *handle.Handle, string, error) {
+func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, commandAuthority, io.Closer, *handle.Lock, *handle.Handle, string, error) {
 	if err := ValidateSelection(cmd, true); err != nil {
 		return lease.Credentials{}, nil, nil, nil, nil, "", err
 	}
-	svc, st, cfg, err := serviceFor(ctx, cmd, true)
+	backend, err := authorityFor(ctx, cmd, true)
 	if err != nil {
 		return lease.Credentials{}, nil, nil, nil, nil, "", err
 	}
+	cfg := backend.Config
 	// Explicit credentials are the only stateless lifecycle mode. With no
 	// explicit credential source, ordinary commands select the contextual file.
 	if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision") {
 		token, e := tokenFromCommand(cmd, "token-file", "token-fd")
 		if e != nil {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, nil, "", e
 		}
-		return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}, svc, st, nil, nil, "", nil
+		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}, backend.API, backend, nil, nil, "", nil
 	}
 	if strings.TrimSpace(cmd.String("lease")) != "" {
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonInvalidArgument, "private lease references are only available through MCP")
 	}
 	path := strings.TrimSpace(cmd.String("handle"))
@@ -426,30 +421,42 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, *lea
 	if path == "" {
 		path, e = acquireHandlePath(cmd, cfg)
 		if e != nil {
-			st.Close()
+			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, nil, "", e
 		}
 	}
+	if backend.Remote {
+		h, e := handle.Read(path)
+		if e != nil {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, nil, "", e
+		}
+		if h.AuthorityID != backend.AuthorityID() {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match")
+		}
+		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path, CredentialPath: backend.Profile.Credential.Path}, backend.API, backend, nil, &h, path, nil
+	}
 	lk, e := handle.AcquireLock(ctx, path+".lock")
 	if e != nil {
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, nil, "", e
 	}
 	h, e := lk.Read(path)
 	if e != nil {
 		lk.Close()
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, nil, "", e
 	}
-	if h.AuthorityID != st.AuthorityID() {
+	if h.AuthorityID != backend.AuthorityID() {
 		lk.Close()
-		st.Close()
+		backend.Close()
 		return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match")
 	}
-	return lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, svc, st, lk, &h, path, nil
+	return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path}, backend.API, backend, lk, &h, path, nil
 }
 func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadline time.Time, inputs map[string]any, locks ...*handle.Lock) error {
-	if h == nil {
+	if h == nil || h.SchemaVersion == handle.RemoteSchemaVersion {
 		return nil
 	}
 	if h.PendingRequest != nil || h.RecoveryRequest != nil {
@@ -611,6 +618,9 @@ func committedHandleFailure(err error, receipt lease.Receipt, path, claim, op st
 	return e
 }
 func clearPending(path string, h *handle.Handle, locks ...*handle.Lock) {
+	if h != nil && h.SchemaVersion == handle.RemoteSchemaVersion {
+		return
+	}
 	if len(locks) > 0 && locks[0] != nil {
 		_ = locks[0].ClearPending(path, h)
 		return
@@ -620,8 +630,8 @@ func clearPending(path string, h *handle.Handle, locks ...*handle.Lock) {
 
 // recoverPendingMutation replays only the exact request retained in a handle.
 // It never constructs a new operation or deadline.
-func recoverPendingMutation(ctx context.Context, svc *lease.Service, c lease.Credentials, path string, h *handle.Handle, kind string, currentHash string, locks ...*handle.Lock) (lease.Receipt, bool, error) {
-	if h == nil || h.State != "pending" {
+func recoverPendingMutation(ctx context.Context, svc commandAuthority, c lease.Credentials, path string, h *handle.Handle, kind string, currentHash string, locks ...*handle.Lock) (lease.Receipt, bool, error) {
+	if h == nil || h.SchemaVersion == handle.RemoteSchemaVersion || h.State != "pending" {
 		return lease.Receipt{}, false, nil
 	}
 	p := h.PendingRequest
@@ -659,7 +669,7 @@ func requestHashCLI(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 func finishHandleMutation(path string, h *handle.Handle, r lease.Receipt, locks ...*handle.Lock) error {
-	if h == nil {
+	if h == nil || h.SchemaVersion == handle.RemoteSchemaVersion {
 		return nil
 	}
 	h.State = "ready"
@@ -710,7 +720,7 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 		if h != nil {
 			pending = h.PendingRequest
 		}
-		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+		if h == nil && c.HandlePath == "" && strings.TrimSpace(cmd.String("operation-id")) == "" {
 			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
 		}
 		op, err := operationID(cmd, pending)
@@ -788,7 +798,7 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		if h != nil {
 			pending = h.PendingRequest
 		}
-		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+		if h == nil && c.HandlePath == "" && strings.TrimSpace(cmd.String("operation-id")) == "" {
 			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
 		}
 		op, err := operationID(cmd, pending)
@@ -858,7 +868,7 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if h != nil {
 			pending = h.PendingRequest
 		}
-		if h == nil && strings.TrimSpace(cmd.String("operation-id")) == "" {
+		if h == nil && c.HandlePath == "" && strings.TrimSpace(cmd.String("operation-id")) == "" {
 			return s.handle(cmd, reason.Invalid("stateless mutations require --operation-id"))
 		}
 		op, err := operationID(cmd, pending)
@@ -886,8 +896,14 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
 		}
 		if h != nil {
-			if err := lk.Remove(hp); err != nil {
-				return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
+			var removeErr error
+			if lk != nil {
+				removeErr = lk.Remove(hp)
+			} else {
+				removeErr = handle.Remove(hp)
+			}
+			if removeErr != nil {
+				return s.handle(cmd, committedHandleFailure(removeErr, r, hp, c.ClaimID, op))
 			}
 		}
 		return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
@@ -914,12 +930,16 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		svc, st, cfg, err := serviceFor(ctx, cmd, true)
+		backend, err := authorityFor(ctx, cmd, true)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		defer st.Close()
+		defer backend.Close()
+		svc, st, cfg := backend.Local, backend.Store, backend.Config
 		successorPath := filepath.Clean(strings.TrimSpace(cmd.String("successor-handle")))
+		if backend.Remote {
+			return remoteTransfer(ctx, s, cmd, backend, successorPath, deadline)
+		}
 		explicit := strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision")
 		predecessorPath := ""
 		if !explicit {

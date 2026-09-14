@@ -199,10 +199,10 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 		}
 	}
 	if err != nil {
-		if s.Mutating {
+		if s.Mutating && (resp.AuthorityID == "" || !reason.DefinitiveNoCommit(err)) {
 			return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote request outcome is uncertain")
 		}
-		return Response{}, err
+		return resp, err
 	}
 	return resp, nil
 }
@@ -316,6 +316,9 @@ func (c *HTTPClient) Replay(ctx context.Context, id string) (Response, error) {
 		handlePath := p.TargetHandleRef
 		if p.Kind == "operations/complete" {
 			handlePath = p.ClaimHandleRef
+			if handlePath == "" {
+				handlePath = p.TargetHandleRef
+			}
 		}
 		if err := c.finalize(p.TargetOperationID, handlePath); err != nil {
 			return Response{}, err

@@ -18,6 +18,13 @@ import (
 
 func gcAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
+		selected, selectionErr := profileSelection(cmd)
+		if selectionErr != nil {
+			return s.handle(cmd, selectionErr)
+		}
+		if selected.Profile != nil {
+			return remoteGCAction(s)(ctx, cmd)
+		}
 		cutoffText := strings.TrimSpace(cmd.String("cutoff"))
 		if cutoffText != "" && cmd.IsSet("retention-days") {
 			return s.handle(cmd, reason.Invalid("retention-days and cutoff are mutually exclusive"))
