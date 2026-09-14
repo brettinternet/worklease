@@ -2,9 +2,10 @@
 id: TASK-107.11
 title: Build the two-host acceptance harness and run scenario groups 1 to 5
 status: In Progress
-assignee: []
+assignee:
+  - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 14:32'
+updated_date: '2026-09-14 14:46'
 labels:
   - remote-authority
 dependencies:
@@ -81,4 +82,10 @@ Real-host evidence: dist/remote-acceptance/20260914T141254.154954000Z/report.jso
 Committed the real-host smoke and explicit coverage matrix as d95b6c8 (Run remote smoke across two hosts).
 
 Handoff / next resumable step: start with coverage entries AC3.3-AC3.5 in cmd/worklease-remote-smoke: add real-host raw and reserved-prefix rejection, rewrite the remote server configuration and verify changes apply only after restart, then exercise persisted TTL/hold limits through acquire, heartbeat, begin/renew operation, and same-host transfer. Rerun with --remote-host remote-host and update coverage.json only from objective observations. Continue in coverage order; 42 entries remain still-blocked. The remote-host workspaces are intentionally owner-marked and retained; do not infer cleanup ownership from names.
+
+Takeover started under Worklease claim session task-107-11-takeover. Continuing from AC3.3 in coverage order; authoritative provider and dependencies revalidated.
+
+Completed the live Group 1 admission/configuration slice. The unchanged harness now rejects raw host-local resources, rejects a reserved-prefix server configuration at startup, proves config rewrites do not affect the running process until restart, enforces a reduced TTL ceiling for new claims, and proves the originally persisted claim limits continue through heartbeat, guarded exec, and transfer. Also normalized explicit evidence paths to absolute paths so guarded effects are independent of client checkout cwd.
+
+Objective evidence: local report dist/remote-acceptance/ac3-local-test-4/report.json; real-host report dist/remote-acceptance/20260914T144421.181833000Z/report.json and coverage.json; retained workspace remote-host:/private/tmp/worklease-acceptance-eZVAQp. AC3.3-AC3.5 are live-pass. Quality gates mise run lint, format-check, test, and typecheck passed.
 <!-- SECTION:NOTES:END -->
