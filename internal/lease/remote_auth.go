@@ -69,6 +69,37 @@ func validateSecretHash(hash string, invalid string) error {
 	return nil
 }
 
+// insertOfflineBootstrap is the authentication-owned primitive used by offline
+// initialization, restore, and reissue after the plaintext secret is durable.
+func insertOfflineBootstrap(ctx context.Context, tx *store.Tx, now time.Time, restoreID, secret string) (string, time.Time, error) {
+	if err := validateCredential(secret); err != nil {
+		return "", time.Time{}, err
+	}
+	inviteID, operationID := RandomIDs{}.Generate(), RandomIDs{}.Generate()
+	expires := now.Add(inviteLifetime)
+	inviteHash := HashSecret(secret)
+	requestHash := HashSecret(operationID + restoreID + inviteHash)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invites(invite_id,invite_hash,role,label,issued_at,expires_at,restore_id,issued_by_installation_id,issue_operation_id,issue_request_hash,request_not_after,bootstrap,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'active')`, inviteID, inviteHash, "admin", "bootstrap", now.UnixMicro(), expires.UnixMicro(), restoreID, nil, operationID, requestHash, now.Add(inviteReplayLifetime).UnixMicro(), 1); err != nil {
+		return "", time.Time{}, storage(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE recovery_state SET bootstrap_invite_id=?,bootstrap_ready=1 WHERE singleton=1`, inviteID); err != nil {
+		return "", time.Time{}, storage(err)
+	}
+	return inviteID, expires.UTC(), nil
+}
+
+// revokeAuthenticationForRestore invalidates every retained usable bearer in
+// the caller's restore transaction while preserving authentication history.
+func revokeAuthenticationForRestore(ctx context.Context, tx *store.Tx, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE installations SET revoked_at=?,revoke_reason='authority-restored' WHERE revoked_at IS NULL`, now.UnixMicro()); err != nil {
+		return storage(err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE invites SET state='revoked',revoked_at=?,revoked_by_installation_id=NULL WHERE state='active'`, now.UnixMicro()); err != nil {
+		return storage(err)
+	}
+	return nil
+}
+
 // IssueInviteRequest contains only the hash of the client-generated invite.
 type IssueInviteRequest struct {
 	OperationID     string

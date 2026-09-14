@@ -24,8 +24,12 @@ var beforeHomeOpenHook func(string)
 
 // Options controls authority opening.
 type Options struct {
-	ReadOnly     bool
-	HostedWriter bool
+	ReadOnly           bool
+	HostedWriter       bool
+	RequireHostedReady bool
+	// HostedLock is an already-acquired lock used by offline operations that
+	// must replace or initialize SQLite without releasing the writer fence.
+	HostedLock *HostedLock
 }
 
 // Store is the local SQLite authority. A read-only Store may represent an
@@ -78,15 +82,39 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	st.hosted = marked
-	if marked && !opts.ReadOnly {
-		if !opts.HostedWriter {
+	if marked && opts.RequireHostedReady {
+		ready, readyErr := hostedReady(dir)
+		if readyErr != nil {
 			_ = st.Close()
-			return nil, reason.New(reason.ReasonHostedHomeRequiresRemote, "hosted authority mutations require a remote profile or an explicit offline hosted command")
+			return nil, readyErr
 		}
-		st.hostedLock, err = acquireHostedLock(ctx, dir)
-		if err != nil {
+		if !ready {
 			_ = st.Close()
-			return nil, err
+			return nil, reason.New(reason.ReasonStorageFailure, "hosted authority initialization is incomplete")
+		}
+	}
+	if marked && !opts.ReadOnly {
+		if opts.HostedLock != nil {
+			info, statErr := dir.Stat()
+			var stat *syscall.Stat_t
+			if statErr == nil {
+				stat, _ = info.Sys().(*syscall.Stat_t)
+			}
+			if opts.HostedLock.dir == nil || stat == nil || uint64(stat.Dev) != opts.HostedLock.dev || uint64(stat.Ino) != opts.HostedLock.ino {
+				_ = st.Close()
+				return nil, homeUnsafe(errors.New("hosted lock belongs to another home"))
+			}
+			st.hostedLock = opts.HostedLock
+		} else {
+			if !opts.HostedWriter {
+				_ = st.Close()
+				return nil, reason.New(reason.ReasonHostedHomeRequiresRemote, "hosted authority mutations require a remote profile or an explicit offline hosted command")
+			}
+			st.hostedLock, err = acquireHostedLock(ctx, dir)
+			if err != nil {
+				_ = st.Close()
+				return nil, err
+			}
 		}
 		if err := verifyHostedHomePath(dir, resolved); err != nil {
 			_ = st.Close()
@@ -239,6 +267,28 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 	return st, nil
 }
 
+// CloseDatabase releases SQLite and the home descriptor but retains the
+// hosted lock for an offline operation's final filesystem transition.
+func (s *Store) CloseDatabase() error {
+	if s == nil {
+		return nil
+	}
+	var first error
+	if s.driver != nil {
+		if err := s.driver.Close(); err != nil {
+			first = err
+		}
+		s.driver = nil
+	}
+	if s.home != nil {
+		if err := s.home.Close(); err != nil && first == nil {
+			first = err
+		}
+		s.home = nil
+	}
+	return first
+}
+
 // Close releases the database, hosted writer lock, and pinned home descriptor.
 func (s *Store) Close() error {
 	var first error
@@ -273,8 +323,12 @@ func (s *Store) Path() string        { return filepath.Join(s.homePath, Database
 func (s *Store) Home() string        { return s.homePath }
 func (s *Store) AuthorityID() string { return s.authority }
 func (s *Store) RestoreID() string   { return s.restoreID }
-func (s *Store) Empty() bool         { return s.driver == nil }
-func (s *Store) Hosted() bool        { return s.hosted }
+
+// SetRestoreID refreshes the in-memory incarnation after an offline restore
+// transaction has committed.
+func (s *Store) SetRestoreID(value string) { s.restoreID = value }
+func (s *Store) Empty() bool               { return s.driver == nil }
+func (s *Store) Hosted() bool              { return s.hosted }
 
 // LastObservedAt returns the authority wall-clock watermark without changing
 // state. A missing read-only authority has no watermark.

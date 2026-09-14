@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -266,6 +267,52 @@ func rawUserVersion(t *testing.T, home string) int64 {
 		t.Fatal(err)
 	}
 	return version
+}
+
+func TestHostedSecretFsyncFailureLeavesNoStagedGrant(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "secrets")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "bootstrap")
+	afterHostedSecretSyncHook = func() error { return errors.New("injected directory durability failure") }
+	t.Cleanup(func() { afterHostedSecretSyncHook = nil })
+	if err := WriteHostedSecret(path, strings.Repeat("a", 64)); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+		t.Fatalf("secret fsync error=%v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed secret remained visible: %v", err)
+	}
+}
+
+func TestHostedReadyRequirementFailsClosed(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "hosted")
+	if err := MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(context.Background(), home, Options{HostedWriter: true, RequireHostedReady: true}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonStorageFailure {
+		t.Fatalf("incomplete hosted open error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incomplete hosted open touched database: %v", err)
+	}
+	lock, err := AcquireHostedLock(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteHostedReady(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceHostedDatabase(lock, filepath.Join(t.TempDir(), "missing.db")); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+		t.Fatalf("missing backup error=%v", err)
+	}
+	st, err := Open(context.Background(), home, Options{HostedWriter: true, RequireHostedReady: true, HostedLock: lock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func hostedWriterHelper(t *testing.T) {

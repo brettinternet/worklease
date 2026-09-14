@@ -74,7 +74,7 @@ func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 
 func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
-	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "mcp", "help"}
+	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "hosted", "mcp", "help"}
 	future := []string{}
 	got := map[string]bool{}
 	for _, command := range root.Commands {
@@ -207,6 +207,10 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "setup mcp", example: "worklease setup mcp --client claude-code --scope project", flags: []string{"client", "scope", "agent", "apply", "remove"}},
 		{path: "setup guard", example: "worklease setup guard --client claude-code --coverage claim", flags: []string{"client", "scope", "coverage", "session", "handle", "lease", "apply", "remove"}},
 		{path: "setup instructions", example: "worklease setup instructions", flags: []string{}},
+		{path: "hosted init", example: "worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE", flags: []string{"server-config", "bootstrap-invite-file"}},
+		{path: "hosted restore", example: "worklease hosted restore --home DIR --from FILE", flags: []string{"from", "selected-cutoff", "loss-interval-start", "loss-interval-end", "cutoff-unknown", "bootstrap-invite-file"}},
+		{path: "hosted bootstrap-reissue", example: "worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE", flags: []string{"bootstrap-invite-file"}},
+		{path: "hosted retire", example: "worklease hosted retire --home DIR", flags: []string{"force", "unresolved-export"}},
 		{path: "mcp", example: "worklease mcp", flags: []string{}},
 	}
 	for _, test := range tests {
