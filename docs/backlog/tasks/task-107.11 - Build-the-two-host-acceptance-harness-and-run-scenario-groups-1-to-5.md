@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 20:10'
+updated_date: '2026-09-14 20:11'
 labels:
   - remote-authority
 dependencies:
@@ -128,4 +128,6 @@ Implemented AC4.7 pre-dispatch persistence failure. The harness replaces client 
 Committed AC4.7 as dc2dbba (Verify pre-dispatch persistence failure). Staged hooks passed.
 
 Implemented AC4.8 and AC4.9. Group 2 now separately requires a successful undropped late start acknowledgment beyond the safe dispatch window plus client-side refusal and zero dispatch, and combines it with exact retained-start replay evidence. Added a managed asynchronous-provider fixture: guarded exec submits one atomically unique provider request, reaches terminal completion, then the harness releases the provider; an append-only uniquely identified completion log must contain exactly one effect after the receipt barrier. Local objective evidence: dist/remote-acceptance/ac4-late-provider-local-final/report.json, coverage.json, late-acknowledgment.txt, asynchronous-provider-effect.txt, provider-submitted.txt, and provider-completed.log. The unchanged real-host run also passed both new slices with partial evidence under dist/remote-acceptance/ac4-late-provider-real-test-2/ before the pre-existing race-client enrollment credential-unsafe failure, so no complete real-host report is claimed. Two independent reviews found false-pass risks in HTTP acknowledgment validation, dispatch counting, receipt ordering, worker cleanup, and duplicate submissions; all were fixed. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC5.1 bootstrap crash ordering and redaction.
+
+Committed AC4.8 and AC4.9 as d8c0580 (Exercise late and asynchronous effects). Staged hooks passed.
 <!-- SECTION:NOTES:END -->
