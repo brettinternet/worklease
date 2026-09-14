@@ -4,7 +4,7 @@ title: Freeze the remote protocol and administrative surface
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies: []
@@ -24,17 +24,22 @@ ordinal: 133000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The design defers freezing the wire protocol until implementation begins so the field mapping reflects the real typed requests in `internal/lease` rather than a guess. The server and client tasks both need one authoritative mapping before they start, or they will disagree on fields, envelopes, and error reasons.
+Freeze one authoritative remote protocol specification before client or server implementation. Map the actual typed requests and results in `internal/lease`, plus the required typed administrative extensions, into explicit wire fields. The specification owns the exact routes, flags, protocol version, envelopes, error mapping, cancellation behavior, size limits, replay rules, and serialization order. It must not expose SQLite details or reserve wire names elsewhere before this task settles them.
 
-Produce the protocol specification as a Backlog document. For each lifecycle method (acquire, heartbeat, checkpoint, release, same-host transfer, begin/renew/complete operation, inspect, reconcile, status, list, events, history, watch) and each administrative action (invite issuance, enroll, installation revocation, administrative claim revocation, reopening, bounded private inspection, GC apply) record the explicit allowed subset of request and result fields mapped field by field onto the Go types, the request envelope (`authorityId`, `expectedRestoreId`, protocol version), the response envelope (`restoreId`, `authorityTime`), error reasons with their HTTP mapping, body and response size limits, and the watch long-poll bound. Local compatibility fields such as `LegacyRequestHash` are excluded from client-selectable input. Then amend contract section 20 through the section 15 procedure to freeze the protocol by reference. Do not reserve URLs or version numbers anywhere else before this document exists.
+The specification distinguishes bounded unauthenticated metadata discovery and health from invite-authenticated enrollment and installation-authenticated API calls. Metadata discovery exposes only `authorityId`, `restoreId`, supported protocol version information, and authority time. Enrollment authenticates with the invite and carries `authorityId` plus immutable `expectedRestoreId`. Every other API route, including reads and cursor use, requires an installation bearer and incarnation binding. For mutations, the serialized order is authenticated installation and role, authority and restore incarnation, epoch credential where applicable, retained exact replay, then new-admission checks.
+
+Enumerate which operations are offline-only, client-local, HTTP, CLI-only, or exposed through the existing MCP adapter so the protocol cannot imply remote provider execution, a retirement route, enrollment through MCP, or remote `replace-file`. Assign data and replay ownership to TASK-107.2, domain and admission ownership to TASK-107.4, offline lifecycle ownership to TASK-107.5, and authentication ownership to TASK-107.6. Then freeze the specification by reference through the section 15 amendment procedure and record the required TASK-85 comment.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A Backlog document specifies every route with request and response fields mapped field by field onto `internal/lease` request and result types, and names each field that is deliberately not exposed, including `LegacyRequestHash`.
-- [ ] #2 The document enumerates `authority-restored`, `installation-revoked`, `authentication-required`, `resource-not-enrolled`, `unknown-outcome` on replay of a still-started operation, and the `restored` and `revoked` end reasons, each with its trigger and HTTP status mapping.
-- [ ] #3 The document fixes the envelope rules: `authorityId` and `expectedRestoreId` on every authenticated request with only read-only metadata discovery allowed to omit the latter, `restoreId` and `authorityTime` on every application response, `restoreId` embedded in cursors, no resource keys or bearer credentials in URLs, non-cacheable responses, and the 30 s watch long-poll bound.
-- [ ] #4 Contract section 17 gains an amendment entry freezing the protocol by reference to that document and TASK-85 carries the summary comment.
+- [ ] #1 A Backlog protocol document maps every supported lifecycle, read, watch, authentication, and administrative request and result field onto real `internal/lease` types or named typed extensions, and identifies excluded local compatibility fields including `LegacyRequestHash`.
+- [ ] #2 The document fixes exact routes and flags, protocol and version handling, request and response size bounds, cancellation behavior, non-cacheable responses, the 30-second watch long poll, cursor incarnation binding, and every error-to-HTTP mapping including unsupported version, authentication, authorization, cancellation, conflict, recovery, and storage failures.
+- [ ] #3 The unauthenticated surface is limited to health and bounded identity-only metadata discovery. Enrollment uses invite authentication with `authorityId` and immutable `expectedRestoreId`; every other route, including reads and cursors, requires a valid installation bearer and incarnation check.
+- [ ] #4 The document fixes mutation ordering inside the serialized boundary as installation and role, authority and incarnation, epoch credential where applicable, retained exact replay, then new-admission checks, with revoked and absent credentials taking precedence as specified.
+- [ ] #5 A matrix identifies offline-only, client-local, HTTP, CLI-only, and existing MCP operations. It excludes a retirement HTTP route, server-side effect execution, remote `replace-file`, MCP enrollment, recovery import, and cross-host transfer.
+- [ ] #6 The specification assigns schema and replay data to TASK-107.2, domain invariants to TASK-107.4, offline lifecycle composition to TASK-107.5, and authentication primitives to TASK-107.6 without exposing SQLite structures on the wire.
+- [ ] #7 Contract section 20 is amended through section 15 to freeze this document by reference, section 17 records the amendment, and TASK-85 receives the matching summary comment.
 <!-- AC:END -->
 
 ## Definition of Done

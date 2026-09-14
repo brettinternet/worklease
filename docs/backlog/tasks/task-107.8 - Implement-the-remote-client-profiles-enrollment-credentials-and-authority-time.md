@@ -6,11 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies:
-  - TASK-107.7
+  - TASK-107.1
 references:
   - internal/config
   - internal/handle
@@ -28,19 +28,23 @@ ordinal: 140000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The CLI and MCP adapter need one client library that carries the safety rules the design places on the client side: trusted profiles with an expected `authorityId` and pinned `restoreId`; user-side project bindings with the fixed precedence `--profile`, then `WORKLEASE_PROFILE`, then project binding, then user default, else local; no repository-committed configuration of any kind; credentials in the OS credential store or an owner-private file or descriptor; hidden, file, or descriptor invite input; no redirect following on credential-bearing requests; HTTPS required outside an explicit development mode; an immutable `expectedRestoreId` in every saved request envelope; the two-bound authority-time estimate (upper bound for expiry and renewal, lower bound plus 24 h for `requestNotAfter`) driving renewal at half the TTL and stop-new-work at three quarters; pending state saved before dispatch and cleared only on a confirmed terminal response; an optional best-effort receipt log; and never falling back to local state when a remote profile is configured.
+Implement one narrow shared authority interface for the actual CLI, MCP, and guard consumers, with local and remote implementations. The remote implementation owns trusted profiles, explicit profile selection, enrollment, credentials, immutable request envelopes, authority-time bounds, exact pending recovery, and fail-closed transport. When a remote profile is selected, consumers do not open client SQLite for authority state. The existing local service continues to use SQLite directly through the same consumer-facing interface. Do not add a backend registry. Contract fakes allow CLI and MCP work before a live server exists.
 
-Contract D2 restricts dependencies: OS credential store integration must either shell out to platform tools (macOS `security`, Linux `secret-tool`) or record a D2 amendment for a keyring module; the owner-private file and descriptor sources reuse the existing `--token-file`/`--token-fd` handling.
+Every built-in remote mutation durably saves the exact request before dispatch, including enrollment, administration, and `--no-handle`. Claim operations reuse handle pending state. A guarded operation retains its original start and effect evidence until the operation is terminal or reconciled; a successful begin or renewal response does not make the parent effect terminal. Renewal, completion, reconciliation, and other requests use bounded request-scoped profile recovery records when the handle pending slot is occupied, so their recovery cannot overwrite or erase the original unresolved effect. Requests without a named handle also use bounded request-scoped profile recovery records. A credential descriptor supplies a secret but is not durable recovery storage. Pending uncertainty clears only after a confirmed terminal response for that request, reconciliation, or definitive proof that the original dispatch did not commit. Authentication, revocation, incarnation errors, timeout, age, GC, replay expiry, profile refresh, and credential rotation do not clear or rewrite it. Local `--no-handle` behavior remains unchanged.
+
+Profiles bind a trusted endpoint, expected authority, and pinned restore incarnation. The precedence is `--profile`, `WORKLEASE_PROFILE`, user-side project binding, user default, then local. Repository content cannot select or redirect a profile, and a configured remote profile never falls back to local state. The client uses fresh authority-time samples to schedule renewals at half TTL, stop new guarded work at three quarters, and compute `requestNotAfter` from the lower bound plus 24 hours. OS credential-store integration follows contract D2 and requires an amendment before adding any new runtime module; no platform-command implementation is mandated.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease profile add NAME --endpoint URL --authority ID` with hidden, `--invite-file`, or `--invite-fd` input reads the endpoint current `restoreId`, generates and durably stores an installation credential before dispatch, redeems the invite, pins `authorityId` and `restoreId`, and activates the profile only after confirmed or recovered enrollment; a dropped redemption response is recovered by exact replay without a second credential.
-- [ ] #2 Profile selection follows the fixed precedence; `worklease profile bind NAME` writes a user-side binding for the canonical project identity; nothing in a repository checkout can select or redirect a profile; an unbound checkout with no flag, environment, or default uses the local authority and makes no network request.
-- [ ] #3 Credentials live in the OS credential store or an owner-private file or descriptor, never in YAML, argv, or logs; credential-bearing requests do not follow redirects; plaintext HTTP is refused without an explicit development flag; changing an endpoint requires an explicit configuration action and a mismatched `authorityId` fails before any mutation.
-- [ ] #4 Every saved remote request carries its origin `authorityId` and `expectedRestoreId`, which retry, refresh, rotation, and re-enrollment never rewrite; an `authority-restored` response fails closed, stops dispatch for that profile, and preserves pending requests as evidence.
-- [ ] #5 Authority time is sampled from every response; renewal is scheduled at half the TTL and new guarded work stops at three quarters using the upper-bound estimate; `requestNotAfter` uses the lower-bound estimate plus 24 h; tests cover asymmetric latency, restart and suspend resampling, an expired short window, and a late start response that must not dispatch.
-- [ ] #6 A configured remote profile never falls back to local state on any failure; a pre-dispatch pending-state write failure sends nothing; a failure after dispatch preserves unresolved intent and stops new work; pending state is never cleared by age, GC, or replay-window expiry.
+- [ ] #1 One narrow authority interface serves the actual CLI, MCP, and guard consumers through the existing local SQLite service or the remote client. Remote-selected consumers do not open local SQLite authority state, local mode retains its current SQLite behavior, no backend registry is added, and contract fakes work without a live server.
+- [ ] #2 Profile selection follows the fixed precedence, repository content cannot select or redirect a profile, and an unbound invocation with no explicit profile, environment selection, or default uses local state without network access.
+- [ ] #3 Enrollment uses bounded public metadata discovery, saves immutable authority and restore identity plus exact pending state, generates and durably stores the installation credential before dispatch, replays a dropped response exactly, and activates the profile only after confirmed or recovered success.
+- [ ] #4 Credentials use the OS credential store or owner-private file storage, with descriptors only reading an already durable secret. Credentials never enter profile YAML, argv, logs, or redirects, HTTPS is required outside explicit development mode, and any new credential-store runtime module requires a contract D2 amendment.
+- [ ] #5 Every built-in remote mutation has durable exact pending state before dispatch, including admin and no-handle requests. Named claims reuse handle pending state; renewal, completion, reconciliation, and other requests use bounded profile recovery records when that slot is occupied; a failed pre-dispatch write sends nothing.
+- [ ] #6 Pending state retains each original request, authority, and `expectedRestoreId`. Guarded start and effect evidence remains until the operation is terminal or reconciled; a successful begin or renewal acknowledgment does not clear it, and recovering a later request cannot overwrite it. Each request record clears only after its confirmed terminal response, reconciliation, or definitive no-commit proof. Auth, revocation, incarnation, timeout, age, GC, replay expiry, refresh, and rotation preserve uncertainty.
+- [ ] #7 A configured remote profile never falls back locally. An uncertain dispatch preserves evidence and stops dependent new work. Retained replay of a started operation never permits execution, and a late acknowledgment received after the safe dispatch window cannot cause first dispatch; a timely confirmed original start may dispatch its effect once.
+- [ ] #8 Authority-time tests cover asymmetric latency, restart and suspend resampling, renewal at half TTL, stop-new-work at three quarters, the lower-bound 24-hour request deadline, expired short windows, and a late successful start response that does not dispatch an effect.
 <!-- AC:END -->
 
 ## Definition of Done

@@ -4,7 +4,7 @@ title: Route the CLI lifecycle and administration through the remote client
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies:
@@ -27,16 +27,24 @@ ordinal: 141000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-With the client library in place, every existing lifecycle command must behave identically against a remote profile, and the administrative actions the roles table grants need commands. The guarded `exec` supervisor stays on the client host, driving remote `BeginOperation`, `RenewOperation`, and `CompleteOperation` while the child runs locally; `replace-file` is disabled for remote profiles because its serialized replacement boundary is local only. Administrative commands cover invite issuance (the admin client generates the code and writes it to a file or hidden output), installation revocation by id, administrative claim revocation, reopening with an attestation record, bounded private inspection, and GC apply. `doctor` gains remote checks. Reopening is refused while any retained unresolved operation is unreconciled or the attestation is incomplete, and it records the completed lost-tail audit gap rather than blocking on it.
+Route existing CLI lifecycle and supported administration through the shared authority interface. Keep all effects on the client host. Remote guarded `exec` belongs in `internal/guard/guard.go` and `internal/cli/guard_commands.go`: it begins, renews, and completes the operation through the remote authority while supervising the local process group. `replace-file` remains unsupported for remote profiles because its replacement boundary is local. No client callback, child process, provider request, or SQL callback executes through server HTTP.
+
+Renew at half TTL and stop admitting new local guarded work at three quarters. Once termination is required, begin bounded process-group termination immediately on confirmed ownership, authentication, or incarnation loss, or no later than the conservative known lease expiry when renewal remains uncertain. Do not claim that termination completes at three quarters or that a lease revision fences an escaped process or asynchronous provider. Late responses and replay recover state but never cause effect redispatch.
+
+CLI administration covers API invite issuance, installation revocation, administrative claim revocation, reopening with its bounded private attestation, private inspection, and GC. Offline initialization, restore, bootstrap reissue, and retirement remain offline commands under the hosted lock.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `acquire`, `heartbeat`, `checkpoint`, `release`, same-host `transfer`, `status`, `list`, `events`, `history`, `watch`, `verify`, `inspect-operation`, and `reconcile` behave identically against a remote profile, keep handles and pending requests on the client host, and report the remote authority in `authorityId` and coordination scope.
-- [ ] #2 `exec` under a remote profile runs the child locally, renews through the remote authority, terminates the process group and fails `ownership-lost` when renewal is not confirmed by the three-quarter mark, and leaves the operation `started`; `replace-file` under a remote profile fails with a distinct reason and performs no write.
-- [ ] #3 `worklease admin invite --role ROLE --label LABEL` writes the generated code to a 0600 file or hidden output and never to argv or logs; `admin revoke-installation ID`, `admin revoke-claim`, `admin reopen`, `admin inspect`, and `admin gc` are role-checked and produce the audit events the design names.
-- [ ] #4 `admin reopen` is refused while any retained unresolved operation is unreconciled or the attestation is incomplete; on success it atomically records the reopening, including any declared audit gap, and clears recovery mode.
-- [ ] #5 `doctor` under a remote profile reports endpoint reachability, authority and incarnation match, credential presence without reading the secret, and recovery-mode state; `mise run ci` passes.
+- [ ] #1 Existing CLI acquire, heartbeat, checkpoint, release, same-host transfer, status, list, events, history, watch, verify, inspection, and reconciliation use the shared local or remote authority interface while handles, claim credentials, and pending records remain on the client host.
+- [ ] #2 Remote guarded `exec` runs the child only on the client, renews at half TTL, stops new guarded work at three quarters, and begins bounded process-group termination immediately on confirmed ownership, authentication, or incarnation loss or by conservative known expiry when confirmation remains unavailable.
+- [ ] #3 Guard output does not claim fencing or guaranteed cessation. Async provider work and escaped descendants remain subject to explicit outcome and cessation evidence even after a terminal receipt or empty pending set.
+- [ ] #4 Replay, dropped start, renewal, or completion responses, and late acknowledgments recover the original request without redispatching the local effect. Renewal and completion recovery records coexist with the original guarded start and effect evidence and cannot overwrite or prematurely clear it; a retained started result remains unknown until terminal completion or reconciliation.
+- [ ] #5 Remote `replace-file` returns the frozen unsupported reason and performs no local or remote write. `BeginOperation` may carry bounded private argv for hashing and authorized ledger inspection, but the server never receives or executes an effect callback, provider dispatch, file replacement callback, or SQL callback.
+- [ ] #6 API admin commands implement invitation, installation and claim revocation, bounded private inspection, GC, and typed reopen. Offline init, restore, bootstrap reissue, and retirement are not HTTP administration.
+- [ ] #7 Reopen submits the complete structured attestation and remains refused when retained reconciliation, inventory, pending-set or equivalent coverage, lost-tail outcomes, or namespace-wide cessation coverage is missing. An unknown selected cutoff or history bound is recorded as unknown and does not excuse missing coverage.
+- [ ] #8 Remote `doctor` reports redacted credential presence without loading the secret for that check. Its authenticated reachability, current authority and restore identity, and recovery-mode checks load and use the credential normally without exposing it. Invite issuance writes the raw code only to a protected file or hidden secret channel and never to argv, ordinary output, or logs.
+- [ ] #9 Existing local guarded-execution and replace-file tests remain unchanged and pass.
 <!-- AC:END -->
 
 ## Definition of Done

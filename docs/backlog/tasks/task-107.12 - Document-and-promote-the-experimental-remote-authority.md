@@ -4,7 +4,7 @@ title: Document and promote the experimental remote authority
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies:
@@ -28,15 +28,21 @@ ordinal: 144000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Once the harness passes, the capability is promoted as experimental. Users need a remote setup guide (profiles, enrollment, MCP), operators need a `serve` guide with the deployment rules the design imposes (one process per namespace, stop-before-start upgrades, single-host filesystem, optional replication, restore and reopening procedure, retirement, no high-availability claim), and the normative documents must stop describing the invariants as non-existent. `docs/remote-claim-authority.md` becomes the design record with a shipped-experimental status; contract section 20 is amended through section 15; README, CHANGELOG, skills, and the release job follow.
+Document the measured implementation and label the validated local capability experimental after the real-host harness passes. User docs cover profiles, enrollment, CLI, and MCP. Operator docs cover one process and one namespace per SQLite authority, stop-before-start changes, a single-host filesystem, optional asynchronous backup, hosted locks, offline initialization and restore, selected backup cutoffs, unknown lost-history bounds, pending and installation evidence, indefinite recovery when evidence is missing, reopening attestations, retirement, and the lack of high availability. Remote `replace-file`, provider execution, recovery import, completed-history journaling, and cross-host transfer remain unsupported.
+
+Update the design and normative contract to describe only measured shipped behavior. Document that the binary permanently opens no listener and makes no network request unless the user explicitly invokes remote profile management, selects a remote profile, or runs `serve`; local reads remain setup-free. Public publication, tags, pushes, and release execution remain separate owner-authorized actions.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `docs/` gains a remote setup guide and a `serve` operator guide covering deployment rules, a restore and reopen runbook outline, and the explicit non-goals; `docs/cli-reference.md` and `docs/mcp.md` document every new command, flag, reason, and exit family; `cmd/worklease-doc-test` validates the new guides.
-- [ ] #2 `docs/remote-claim-authority.md` states a shipped-experimental status with the follow-up list intact, and contract section 20 no longer says the invariants do not exist, recorded through a section 17 entry and a TASK-85 comment.
-- [ ] #3 README and CHANGELOG describe the experimental remote authority, its opt-in nature, and the measured binary-size delta on every release target; the release job builds and smoke-tests `serve` on each target.
-- [ ] #4 `skills/worklease-workflow` reflects remote profile selection without changing the provider-neutral coordination contract.
+- [ ] #1 Remote setup, CLI, MCP, and operator guides document the implemented commands, flags, reasons, roles, configuration restart procedure, hosted lock, restore and reopen workflow, private evidence handling, and explicit unsupported operations; `cmd/worklease-doc-test` validates the new guides.
+- [ ] #2 The recovery runbook requires independent active, retired, and ephemeral installation inventory; enumerable pending sets or equivalent verified coverage; retained and lost-tail outcomes; provider and executor cessation even after terminal receipts or empty pending state; selected durable backup cutoff; the interval through old-authority cessation; unknown bounds; and indefinite recovery when coverage is missing.
+- [ ] #3 The runbook explains that a fully missing completed operation may remain an attested history gap only with independent evidence of no residual effect, and that recovery import and a completed-history journal remain deferred until a drill shows required evidence or a recovery target cannot be established.
+- [ ] #4 The design, contract section 20 amendment, section 17 entry, TASK-85 comment, README, CHANGELOG, CLI reference, MCP guide, and `skills/worklease-workflow` describe the same measured experimental capability, retain the deferred follow-ups and triggers, and leave the provider-neutral coordination contract unchanged.
+- [ ] #5 Release documentation states that the standard binary opens no listener and performs no network request unless remote profile management, a selected remote profile, or `serve` is explicitly invoked; local reads remain setup-free.
+- [ ] #6 Release artifacts are built and smoke-tested on matching target runners for every supported target, with measured binary-size deltas and no claim that cross-architecture artifacts were executed on the build host.
+- [ ] #7 The real-host harness report is linked with its measured results and remaining limits. No documentation claims high availability, fencing, provider cessation from completion, or recovery reliability beyond that evidence.
+- [ ] #8 The validated local documentation and artifacts label the capability experimental. Public publication, tags, pushes, and release execution occur only under separate owner authorization.
 <!-- AC:END -->
 
 ## Definition of Done

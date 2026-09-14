@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:08'
 labels:
   - remote-authority
 dependencies:
@@ -28,18 +28,21 @@ ordinal: 136000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The remote authority reuses `lease.Service`, but several server-enforced invariants belong below the HTTP layer so they hold for every caller inside one serialized transaction rather than in middleware. From the design: check `authorityId` and `expectedRestoreId` before replay lookup or mutation; return `restoreId` and authority time in results; embed `restoreId` in cursors; admit only listed delimiter-terminated portable prefixes and always reject the reserved host-local prefixes; reject over-bound TTL or hold without rewriting hashed intent and persist the admitted maximum TTL and absolute hold deadline so every extension path enforces them; in recovery mode refuse new `BeginOperation` and admit an acquire only when it covers the transitive closure of an unresolved predecessor; resolve retained replay before new-admission checks; record the authenticated installation on every mutation separately from the agent label; and end an epoch with `revoked` on administrative claim revocation.
+Extend the typed lease service with remote domain invariants that must hold inside one serialized mutation. Accept a trusted actor context supplied by the authenticated boundary, keep caller installation identity separate from `agentId`, bind remote calls to `authorityId` and immutable `expectedRestoreId`, wrap responses with current restore identity and authority time, bind cursors to the restore incarnation, enforce portable-prefix and TTL/hold admission, and implement namespace recovery behavior. Authenticated remote reads enforce authority and incarnation against one coherent snapshot. Local callers use their existing local policy and do not need a remote restore identifier or remote admission configuration.
 
-These are typed-service extensions and must stay storage-neutral: no HTTP or SQLite row types in request or result structs. Local callers continue to work with a local-only admission policy that admits every key, so local behavior is unchanged.
+Persist each claim's admitted maximum TTL and absolute hold deadline. Every extension path and same-host transfer enforces those original limits. Administrative claim revocation preserves unresolved operations. Typed administrative reopening validates retained reconciliation and the structured private attestation, including installation coverage, pending-set coverage or an independently verified equivalent, known outcomes, old-authority and provider cessation, the selected durable backup cutoff or its explicitly unknown value, the interval through cessation or its unknown bounds, and permitted completed-history gaps. Unknown bounds do not waive exhaustive independent coverage. TASK-107.6 supplies authentication primitives and wires their current result into the same transaction so authorization cannot race the mutation.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every mutating service method accepts an expected incarnation and fails `authority-restored` with the current `restoreId` when it differs, before any replay lookup or write; results carry `restoreId` and `authorityTime`; cursors embed `restoreId` and an old-incarnation cursor fails with the frozen reason instead of silently restarting.
-- [ ] #2 An admission policy (allowed delimiter-terminated prefixes, TTL bound, hold bound) is evaluated inside the acquire transaction: an unlisted prefix or a reserved `path:`, `backlog-md:`, or `markdown:` prefix fails `resource-not-enrolled` before any write even through raw input or a misconfigured allowlist; over-bound TTL or hold is rejected, not clamped; changing bounds leaves existing leases and their exact replay untouched.
-- [ ] #3 The admitted maximum TTL and absolute hold deadline are persisted per claim; heartbeat, `BeginOperation`, `RenewOperation`, and same-host transfer cannot extend expiry past them, and a same-host successor inherits the predecessor deadline.
-- [ ] #4 With recovery mode set, `BeginOperation` fails for every claim, an acquire that does not cover the full transitive resource set of an unresolved predecessor is refused, replay of a completed operation returns its receipt while a still-started one returns `unknown-outcome`, and clearing recovery mode restores ordinary admission without modifying existing claims.
-- [ ] #5 Administrative revocation ends an active epoch with reason `revoked`, leaves started operations unresolved, appends a public event, and leaves the resource immediately acquirable; every mutation records the caller installation identity separately from `agentId`, and replay authentication order is installation, role, authority and incarnation, then epoch credential.
+- [ ] #1 Remote service calls use a trusted actor context and enforce installation, role, authority, incarnation, epoch credential where applicable, retained replay, and new-admission checks in the frozen order inside one serialized transaction; local calls continue without remote identity or policy fields.
+- [ ] #2 After successful installation authentication and role authorization, every installation-authenticated remote mutation fails with the frozen incarnation reason before replay or write when `expectedRestoreId` differs. Authenticated reads validate authority and incarnation against one coherent snapshot. Every response carries fresh `restoreId` and `authorityTime`, every cursor carries `restoreId`, and an old-incarnation cursor fails `authority-restored`.
+- [ ] #3 Admission accepts only configured delimiter-terminated portable prefixes, always rejects reserved host-local prefixes, rejects rather than clamps excessive TTL or hold, and persists admitted limits that constrain heartbeat, begin, renew, and same-host transfer; transfer inherits the predecessor limits.
+- [ ] #4 Changing configured prefixes or bounds affects new admission while retained exact replay and existing lifecycle, recovery, and same-host transfer continue under persisted limits.
+- [ ] #5 Recovery mode refuses new operation starts. A recovery acquire must cover the full transitive unresolved resource closure atomically and fails when that closure exceeds 32 resources rather than splitting it; retired-prefix recovery remains allowed.
+- [ ] #6 Retained exact replay is resolved before recovery or new-admission rejection. Completed operations return their retained receipts, and retained started operations return `unknown-outcome` without authorizing execution.
+- [ ] #7 Administrative claim revocation records reason `revoked`, preserves unresolved started operations, appends the required public event, and makes the resource available under ordinary contention rules without claiming executor cessation.
+- [ ] #8 Typed administrative reopening atomically validates reconciled retained rows and a complete private attestation, records its bounded references and gaps, and clears recovery mode. A selected durable cutoff and lost-history bound may be recorded as unknown only when exhaustive independent inventory, pending-set or equivalent coverage, outcomes, and cessation coverage are still established. Missing coverage keeps recovery mode active.
 <!-- AC:END -->
 
 ## Definition of Done
