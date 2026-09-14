@@ -120,6 +120,16 @@ type cliFailureResult struct {
 	err    error
 }
 
+func writeProviderSubmission(path, effectID string) (err error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	_, err = fmt.Fprintf(file, "provider-submitted %s\n", effectID)
+	return err
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "effect" {
 		if len(os.Args) != 3 {
@@ -158,6 +168,46 @@ func main() {
 			fatal(err)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "submit-provider-effect" {
+		if len(os.Args) != 4 {
+			fatal(errors.New("submit-provider-effect requires a path and effect ID"))
+		}
+		if err := writeProviderSubmission(os.Args[2], os.Args[3]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "provider-effect-worker" {
+		if len(os.Args) != 6 {
+			fatal(errors.New("provider-effect-worker requires submitted, release, completed, and effect ID paths"))
+		}
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			submitted, submitErr := os.ReadFile(os.Args[2])
+			release, releaseErr := os.ReadFile(os.Args[3])
+			if submitErr == nil && releaseErr == nil && strings.TrimSpace(string(submitted)) == "provider-submitted "+os.Args[5] {
+				if _, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(release))); parseErr != nil {
+					fatal(parseErr)
+				}
+				file, err := os.OpenFile(os.Args[4], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+				if err == nil {
+					_, err = fmt.Fprintf(file, "provider-completed %s at=%s\n", os.Args[5], time.Now().UTC().Format(time.RFC3339Nano))
+					if closeErr := file.Close(); err == nil {
+						err = closeErr
+					}
+				}
+				if err != nil {
+					fatal(err)
+				}
+				return
+			}
+			if submitErr != nil && !errors.Is(submitErr, os.ErrNotExist) || releaseErr != nil && !errors.Is(releaseErr, os.ErrNotExist) {
+				fatal(errors.Join(submitErr, releaseErr))
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		fatal(errors.New("timed out waiting to release provider effect"))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "fault-proxy" {
 		if len(os.Args) != 9 {
@@ -1128,6 +1178,72 @@ func verifyFreshReplayEnvelope(logPath, path, authorityID string) error {
 	return fmt.Errorf("fault path %s has no dropped response and matching fresh replay envelope", path)
 }
 
+func verifyLateAcknowledgmentEvidence(logPath, replayedStartID, lateStartID string, lateStartTTL time.Duration) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	var droppedHash string
+	replayed, late := false, false
+	for _, line := range strings.Split(string(data), "\n") {
+		values := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if values["path"] != "/v1/operations/begin" {
+			continue
+		}
+		if values["requestId"] == replayedStartID {
+			if values["dropped"] == "true" {
+				droppedHash = values["requestSha256"]
+			} else if droppedHash != "" && values["requestSha256"] == droppedHash {
+				replayed = true
+			}
+		}
+		if values["requestId"] == lateStartID {
+			delay, _ := time.ParseDuration(values["responseDelay"])
+			late = values["status"] == "200" && values["dropped"] == "false" && delay >= lateStartTTL*3/4
+		}
+	}
+	if droppedHash == "" || !replayed {
+		return errors.New("retained started request did not replay exactly")
+	}
+	if !late {
+		return errors.New("late start acknowledgment was not observed beyond the safe dispatch window")
+	}
+	return nil
+}
+
+func verifyProviderEffectLog(path, effectID string, after time.Time) (time.Time, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	prefix := "provider-completed " + effectID + " at="
+	count := 0
+	var observed time.Time
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		count++
+		observed, err = time.Parse(time.RFC3339Nano, strings.TrimPrefix(line, prefix))
+		if err != nil {
+			return time.Time{}, err
+		}
+	}
+	if count != 1 {
+		return time.Time{}, fmt.Errorf("provider effect %s completed %d times, want exactly 1", effectID, count)
+	}
+	if !observed.After(after) {
+		return time.Time{}, fmt.Errorf("provider effect completed at %s before terminal receipt release at %s", observed, after)
+	}
+	return observed, nil
+}
+
 func verifyClockBoundEvidence(logPath, generatedDeadlineID, expiredID, lateStartID string, lateStartTTL time.Duration) error {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -1500,6 +1616,15 @@ func (h *harness) group2(evidence string) error {
 	if err := verifyClockBoundEvidence(filepath.Join(evidence, "fault-proxy.log"), generatedDeadlineID, expiredID, lateStartID, lateStartTTL); err != nil {
 		return err
 	}
+	if err := verifyLateAcknowledgmentEvidence(filepath.Join(evidence, "fault-proxy.log"), beginOperation, lateStartID, lateStartTTL); err != nil {
+		return err
+	}
+	lateAcknowledgmentEvidence := filepath.Join(evidence, "late-acknowledgment.txt")
+	lateError, _ := late["error"].(map[string]any)
+	lateReason, _ := lateError["reason"].(string)
+	if err := os.WriteFile(lateAcknowledgmentEvidence, []byte("retained start replay dispatches=0\nlate start HTTP status=200 dropped=false\nlate start client result="+lateReason+"\nlate start acknowledgment dispatches=0\n"), 0o600); err != nil {
+		return err
+	}
 	clockEvidence := filepath.Join(evidence, "clock-bounds.txt")
 	if err := os.WriteFile(clockEvidence, []byte("asymmetric metadata response delay=1.2s\ninjected authority/client wall-clock skew=-1h\nrequest window=authority lower bound + 24h\nexpired short window dispatches=0\nlate successful start response dispatches=0\n"), 0o600); err != nil {
 		return err
@@ -1536,6 +1661,49 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 
+	providerHandle := filepath.Join(a.home, "handles", "asynchronous-provider.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", providerHandle, "--resource", "coordination:asynchronous-provider", "--ttl", "5s"); err != nil {
+		return err
+	}
+	providerSubmitted := filepath.Join(evidence, "provider-submitted.txt")
+	providerRelease := filepath.Join(evidence, "provider-release.txt")
+	providerCompleted := filepath.Join(evidence, "provider-completed.log")
+	providerEffectID := strings.Repeat("7", 32)
+	providerWorker := exec.Command(h.self, "provider-effect-worker", providerSubmitted, providerRelease, providerCompleted, providerEffectID)
+	var providerWorkerError bytes.Buffer
+	providerWorker.Stderr = &providerWorkerError
+	if err := providerWorker.Start(); err != nil {
+		return err
+	}
+	providerWorkerDone := make(chan error, 1)
+	go func() { providerWorkerDone <- providerWorker.Wait() }()
+	defer func() { _ = providerWorker.Process.Kill() }()
+	if _, err := h.cli(a, "--profile", "team", "exec", "--handle", providerHandle, "--operation-id", providerEffectID, "--ttl", "5s", "--", h.self, "submit-provider-effect", providerSubmitted, providerEffectID); err != nil {
+		return err
+	}
+	terminalReceiptAt := time.Now().UTC()
+	if err := os.WriteFile(providerRelease, []byte(terminalReceiptAt.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		return err
+	}
+	select {
+	case err := <-providerWorkerDone:
+		if err != nil {
+			return fmt.Errorf("asynchronous provider fixture failed: %w: %s", err, providerWorkerError.String())
+		}
+	case <-time.After(10 * time.Second):
+		return errors.New("timed out waiting for asynchronous provider fixture")
+	}
+	providerCompletedAt, err := verifyProviderEffectLog(providerCompleted, providerEffectID, terminalReceiptAt)
+	if err != nil {
+		return err
+	}
+	providerEvidence := filepath.Join(evidence, "asynchronous-provider-effect.txt")
+	providerObservation := fmt.Sprintf("terminal-receipt-observed-at=%s\nprovider-effect-released-after-receipt-at=%s\nprovider-effect-completed-at=%s\nprovider effect remained unfenced after terminal completion\n", terminalReceiptAt.Format(time.RFC3339Nano), terminalReceiptAt.Format(time.RFC3339Nano), providerCompletedAt.Format(time.RFC3339Nano))
+	if err := os.WriteFile(providerEvidence, []byte(providerObservation), 0o600); err != nil {
+		return err
+	}
+	h.report.EffectDispatchCounts[filepath.Base(providerCompleted)] = 1
+
 	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
 		return err
 	}
@@ -1568,7 +1736,7 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; a failed client pending-store write returns storage-failure before authority dispatch; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "replace pending root with a regular file and attempt remote GC", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), preDispatchEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "pre-dispatch persistence authority dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; retained and late start acknowledgments never redispatch an effect; terminal completion does not fence an external asynchronous provider effect; a failed client pending-store write returns storage-failure before authority dispatch; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "run external asynchronous provider effect through terminal completion", "replace pending root with a regular file and attempt remote GC", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), lateAcknowledgmentEvidence, providerSubmitted, providerCompleted, providerEvidence, preDispatchEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "asynchronous provider completion dispatch-count=1 after terminal receipt", "pre-dispatch persistence authority dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
 	return nil
 }
 
@@ -2003,8 +2171,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.5", "fresh response identity and time", 2),
 		live("AC4.6", "clock-bound edge cases", 2),
 		live("AC4.7", "pre-dispatch persistence failure", 2),
-		blocked("AC4.8", "late acknowledgment without redispatch"),
-		blocked("AC4.9", "asynchronous provider effect continuing after terminal completion"),
+		live("AC4.8", "late acknowledgment without redispatch", 2),
+		live("AC4.9", "asynchronous provider effect continuing after terminal completion", 2),
 		blocked("AC5.1", "bootstrap crash ordering and redaction"),
 		blocked("AC5.2", "hidden, file, and descriptor invite input"),
 		blocked("AC5.3", "dropped invite and redemption responses"),

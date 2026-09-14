@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 16:58'
+updated_date: '2026-09-14 20:10'
 labels:
   - remote-authority
 dependencies:
@@ -62,6 +62,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 2. Add deployment-owned real-host orchestration around the same scenario operations, including independent fault dispatch/effect counters and asynchronous backup selection.
 3. Complete every Group 1-5 case against one authority and two real client hosts; retain redacted commands, environment, measurements, cutoffs, recovery bounds, and owning observations.
 4. Rerun mise run ci and the unchanged real-host harness, review failures, and close only after all objective evidence passes.
+
+5. Add objective AC4.8 late-acknowledgment coverage that proves a retained start acknowledgment never redispatches the guarded effect, then add the next coherent Group 2 slice if the existing lifecycle supports it; run local and real-host harnesses, review, quality gates, and commit task evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -124,4 +126,6 @@ Resumed on main at AC4.7 pre-dispatch persistence failure; dependencies and prio
 Implemented AC4.7 pre-dispatch persistence failure. The harness replaces client A's pending root with a regular file, arms a pre-forward /v1/admin/gc proxy gate, requires storage-failure, proves the gate remained armed and no GC request appears in the proxy log, then restores the pending directory. Local objective evidence: dist/remote-acceptance/ac4-persistence-local-test-3/report.json, coverage.json, fault-proxy.log, and pre-dispatch-persistence.txt. A real-host rerun reached and passed this slice with evidence under dist/remote-acceptance/ac4-persistence-real-test/ before the existing later race-client enrollment credential-unsafe failure; no complete real-host report is claimed. Independent verification passed focused tests, local smoke, and this real-host slice. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC4.8 late acknowledgment without redispatch.
 
 Committed AC4.7 as dc2dbba (Verify pre-dispatch persistence failure). Staged hooks passed.
+
+Implemented AC4.8 and AC4.9. Group 2 now separately requires a successful undropped late start acknowledgment beyond the safe dispatch window plus client-side refusal and zero dispatch, and combines it with exact retained-start replay evidence. Added a managed asynchronous-provider fixture: guarded exec submits one atomically unique provider request, reaches terminal completion, then the harness releases the provider; an append-only uniquely identified completion log must contain exactly one effect after the receipt barrier. Local objective evidence: dist/remote-acceptance/ac4-late-provider-local-final/report.json, coverage.json, late-acknowledgment.txt, asynchronous-provider-effect.txt, provider-submitted.txt, and provider-completed.log. The unchanged real-host run also passed both new slices with partial evidence under dist/remote-acceptance/ac4-late-provider-real-test-2/ before the pre-existing race-client enrollment credential-unsafe failure, so no complete real-host report is claimed. Two independent reviews found false-pass risks in HTTP acknowledgment validation, dispatch counting, receipt ordering, worker cleanup, and duplicate submissions; all were fixed. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC5.1 bootstrap crash ordering and redaction.
 <!-- SECTION:NOTES:END -->
