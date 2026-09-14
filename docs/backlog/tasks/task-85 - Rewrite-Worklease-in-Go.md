@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-13 00:20'
+updated_date: '2026-09-14 00:31'
 labels:
   - go-rewrite
 milestone: m-0
@@ -102,6 +102,12 @@ author: @C3
 created: 2026-09-13 00:20
 ---
 Correction after TASK-88: WAL-visible read-only access leaves the main database unchanged, but SQLite may update coordination words in an existing -shm sidecar and may recreate absent owner-private -wal/-shm sidecars in a writable directory. The amended Go Product Contract sections 8 and 13 and TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars are authoritative.
+---
+
+author: brett
+created: 2026-09-14 00:31
+---
+Owner-requested amendment recorded in contract sections 17 and 20 (no task): the deferred remote design now serves the Go authority behind a TLS-only edge with Worklease-owned invite-based installation authentication and read/write/admin roles, one namespace per serve process, portable keys with server-configured bounds, an immutable expectedRestoreId in every authenticated request plus restoreId on responses and cursors, a namespace recovery mode in place of a recovery-only claim type, a hosted-volume process-lifetime lock, and client pending state as recovery evidence. Rationale, rejected alternatives, and deferred follow-ups (repository enrollment, cross-host transfer, recovery import, client journal, backpressure, browser login, multi-namespace serve) are in docs/remote-claim-authority.md. No shipped behavior changes; remote implementation stays deferred.
 ---
 <!-- COMMENTS:END -->
 
