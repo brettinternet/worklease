@@ -58,6 +58,7 @@ type Service struct {
 	clock    Clock
 	ids      IDGenerator
 	defaults Defaults
+	remote   *RemotePolicy
 }
 
 func New(st *store.Store, clock Clock, ids IDGenerator, defaults Defaults) *Service {
@@ -86,6 +87,7 @@ func NormalizeCheckpoint(data []byte) ([]byte, error) { return strictCheckpoint(
 type Credentials struct {
 	AuthorityID, ClaimID, Token string
 	Revision                    int64
+	Actor                       *RemoteActor
 }
 type AcquireRequest struct {
 	AuthorityID, ClaimID, Token string
@@ -97,6 +99,10 @@ type AcquireRequest struct {
 	CoordinationOnly            bool
 	// HoldUntil is an authority-enforced expiry ceiling for handle-backed leases.
 	HoldUntil time.Time
+	// MaxHold is remote new-admission input. Remote lifecycle derives the
+	// resulting absolute deadline from authority time and persists it.
+	MaxHold time.Duration
+	Actor   *RemoteActor
 	// LegacyRequestHash permits only an adapter-recorded pre-hold-binding request
 	// to replay. New operations always persist the hold-bound request hash.
 	LegacyRequestHash  string
@@ -118,6 +124,8 @@ type Grant struct {
 	Receipt             Receipt    `json:"receipt"`
 	Recovery            []Recovery `json:"recovery,omitempty"`
 	UnknownOperations   []string   `json:"unknownOperations,omitempty"`
+	InstallationID      string     `json:"installationId,omitempty"`
+	RestoreID           string     `json:"restoreId,omitempty"`
 }
 type Recovery struct {
 	Resource          string `json:"resource"`
@@ -128,6 +136,7 @@ type Recovery struct {
 type Selector struct {
 	AuthorityID, ClaimID, Resource string
 	Resources                      []string
+	Actor                          *RemoteActor
 }
 type ClaimView struct {
 	ClaimID             string    `json:"claimId"`
@@ -145,6 +154,8 @@ type ClaimView struct {
 	Active              bool      `json:"active"`
 	CheckpointPresent   bool      `json:"checkpointPresent"`
 	UnknownOperations   []string  `json:"unknownOperations,omitempty"`
+	InstallationID      string    `json:"installationId,omitempty"`
+	RestoreID           string    `json:"restoreId,omitempty"`
 }
 type ResourceStatus struct {
 	Resource string     `json:"resource"`
@@ -271,6 +282,9 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 	if err := validateTTL(ttl); err != nil {
 		return Grant{}, err
 	}
+	if req.Actor != nil && (req.Wait != 0 || req.PollInterval != 0 || req.LocalReplaceAllowed || !req.HoldUntil.IsZero() || req.LegacyRequestHash != "") {
+		return Grant{}, reason.Invalid("remote acquire contains local-only fields")
+	}
 	now := s.clock.Now()
 	deadline := req.RequestNotAfter
 	if !deadline.After(now) || deadline.After(now.Add(24*time.Hour)) {
@@ -307,16 +321,23 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 	if authority == "" {
 		return Grant{}, reason.Invalid("authority ID is required for stateless acquisition")
 	}
-	if authority != s.st.AuthorityID() {
+	if req.Actor == nil && authority != s.st.AuthorityID() {
 		return Grant{}, reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
 	}
-	hash := lifecycleRequestHash(map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claimID, "resources": req.Resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": req.LocalReplaceAllowed, "coordinationOnly": req.CoordinationOnly}, req.HoldUntil)
+	intent := map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claimID, "resources": req.Resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": req.LocalReplaceAllowed, "coordinationOnly": req.CoordinationOnly}
+	if req.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"], intent["maxHold"] = req.Actor.ExpectedRestoreID, req.Actor.InstallationID, req.MaxHold.Microseconds()
+	}
+	hash := lifecycleRequestHash(intent, req.HoldUntil)
 	tokenHash := hashToken(req.Token)
 	var result Grant
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, err := s.effectiveNow(tx, now)
+		effective, err := s.effectiveRemoteNow(tx, req.Actor, "write", now)
 		if err != nil {
 			return err
+		}
+		if req.Actor != nil && req.AuthorityID != req.Actor.AuthorityID {
+			return reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
 		}
 		// Acquire is idempotent on claim ID. Authenticate a replay against the
 		// retained epoch even when the current claim has already ended.
@@ -328,6 +349,9 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 		if found {
 			if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(tokenHash)) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+			}
+			if op.Remote && (req.Actor == nil || req.Actor.InstallationID != op.InstallationID) {
+				return reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 			}
 			if !requestHashMatches(op.RequestHash, hash, req.LegacyRequestHash) {
 				return reason.New(reason.ReasonOperationRequestMismatch, "request intent differs from the recorded operation")
@@ -341,6 +365,33 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			}
 			return err
 		}
+		unknown, required, err := unresolvedRecoveryClosure(tx, req.Resources)
+		if err != nil {
+			return err
+		}
+		inRecovery, _, err := recoveryMode(tx)
+		if err != nil {
+			return err
+		}
+		if req.Actor != nil && inRecovery && len(unknown) == 0 {
+			return reason.New(reason.ReasonRecoveryRequired, "recovery acquire must cover unresolved predecessor work")
+		}
+		if len(required) > 32 {
+			return reason.New(reason.ReasonRecoveryRequired, "recovery closure exceeds 32 resources").With("requiredResources", required).With("operations", unknown)
+		}
+		if !sameResourceMembers(req.Resources, required) {
+			return reason.New(reason.ReasonOperationInProgress, "acquire must cover every resource of unresolved predecessor operations").With("requiredResources", required).With("operations", unknown)
+		}
+		if req.Actor != nil {
+			if inRecovery {
+				if err := s.remoteAdmissionLimits(ttl, req.MaxHold); err != nil {
+					return err
+				}
+			} else if _, err := s.remoteAdmission(req.Resources, ttl, req.MaxHold); err != nil {
+				return err
+			}
+		}
+		result.UnknownOperations = append(result.UnknownOperations, unknown...)
 		// Preflight the entire request before changing any projection. Preserve
 		// caller order for contention and recovery while retiring each distinct
 		// expired predecessor only once.
@@ -377,14 +428,6 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 				result.Recovery = append(result.Recovery, Recovery{Resource: resource, ClaimID: old.ClaimID})
 			}
 		}
-		unknown, required, err := unresolvedRecoveryClosure(tx, req.Resources)
-		if err != nil {
-			return err
-		}
-		if !sameResourceMembers(req.Resources, required) {
-			return reason.New(reason.ReasonOperationInProgress, "acquire must cover every resource of unresolved predecessor operations").With("requiredResources", required).With("operations", unknown)
-		}
-		result.UnknownOperations = append(result.UnknownOperations, unknown...)
 		for _, oldID := range expiredOrder {
 			if err := endClaim(tx, expired[oldID], effective.UnixMicro(), "expired", "expired-replaced", nil); err != nil {
 				return err
@@ -392,13 +435,22 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 		}
 		acquired := effective.UnixMicro()
 		expires := acquired + ttl.Microseconds()
-		if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
+		admittedTTL, admittedHold := int64(0), int64(0)
+		installation, restore, remote := "", "", 0
+		if req.Actor != nil {
+			admittedTTL = s.remote.MaxTTL.Microseconds()
+			admittedHold = acquired + req.MaxHold.Microseconds()
+			installation, restore, remote = req.Actor.InstallationID, s.st.RestoreID(), 1
+			if expires > admittedHold {
+				expires = admittedHold
+			}
+		} else if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
 			expires = req.HoldUntil.UnixMicro()
 		}
 		if expires <= acquired {
 			return reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,checkpoint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)`, claimID, tokenHash, 1, agent, session, work, "local-coordination", boolInt(req.LocalReplaceAllowed && !req.CoordinationOnly), acquired, ttl.Microseconds(), acquired, expires); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,checkpoint,admitted_ttl_us,admitted_hold_until,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?)`, claimID, tokenHash, 1, agent, session, work, "local-coordination", boolInt(req.LocalReplaceAllowed && !req.CoordinationOnly), acquired, ttl.Microseconds(), acquired, expires, nullInt(admittedTTL), nullInt(admittedHold), nullString(installation), nullString(restore), remote); err != nil {
 			return storage(err)
 		}
 		for i, resource := range req.Resources {
@@ -411,7 +463,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 				return storage(err)
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs(claim_id,token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,acquired_seq,checkpoint) VALUES(?,?,?,?,?,?,?,?,?,NULL)`, claimID, tokenHash, agent, session, work, "local-coordination", boolInt(req.LocalReplaceAllowed && !req.CoordinationOnly), acquired, 0); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs(claim_id,token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,acquired_seq,checkpoint,admitted_ttl_us,admitted_hold_until,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?)`, claimID, tokenHash, agent, session, work, "local-coordination", boolInt(req.LocalReplaceAllowed && !req.CoordinationOnly), acquired, 0, nullInt(admittedTTL), nullInt(admittedHold), nullString(installation), nullString(restore), remote); err != nil {
 			return storage(err)
 		}
 		for i, resource := range req.Resources {
@@ -420,7 +472,11 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			}
 		}
 		rev := int64(1)
-		seq, err := tx.AppendEvent(store.Event{At: time.UnixMicro(acquired), Kind: "acquired", ClaimID: claimID, Resources: req.Resources, Revision: &rev, AgentID: agent})
+		event := store.Event{At: time.UnixMicro(acquired), Kind: "acquired", ClaimID: claimID, Resources: req.Resources, Revision: &rev, AgentID: agent}
+		if req.Actor != nil {
+			event.InstallationID, event.RestoreID, event.Remote = installation, restore, true
+		}
+		seq, err := tx.AppendEvent(event)
 		if err != nil {
 			return storage(err)
 		}
@@ -435,12 +491,12 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			receipt["unknownOperations"] = result.UnknownOperations
 		}
 		encoded, _ := json.Marshal(receipt)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, claimID, claimID, "acquire", hash, deadline.UnixMicro(), 1, "completed", string(encoded), acquired, seq, acquired, seq); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, claimID, claimID, "acquire", hash, deadline.UnixMicro(), 1, "completed", string(encoded), acquired, seq, acquired, seq, nullString(installation), nullString(restore), remote); err != nil {
 			return storage(err)
 		}
 		result.ClaimID = claimID
 		result.Resources = append([]string(nil), req.Resources...)
-		result = Grant{ClaimID: claimID, Resources: append([]string(nil), req.Resources...), UnknownOperations: append([]string(nil), result.UnknownOperations...), Recovery: append([]Recovery(nil), result.Recovery...), AgentID: agent, SessionID: session, WorkKey: work, Revision: 1, AcquiredAt: time.UnixMicro(acquired).UTC(), ExpiresAt: time.UnixMicro(expires).UTC(), Guarantee: "local-coordination", AuthorityID: authority, LocalReplaceAllowed: req.LocalReplaceAllowed && !req.CoordinationOnly, Active: true, Receipt: Receipt{OperationID: claimID, ClaimID: claimID, Kind: "acquire", RequestHash: hash, Revision: 1, Committed: true, Result: receipt}}
+		result = Grant{ClaimID: claimID, Resources: append([]string(nil), req.Resources...), UnknownOperations: append([]string(nil), result.UnknownOperations...), Recovery: append([]Recovery(nil), result.Recovery...), AgentID: agent, SessionID: session, WorkKey: work, Revision: 1, AcquiredAt: time.UnixMicro(acquired).UTC(), ExpiresAt: time.UnixMicro(expires).UTC(), Guarantee: "local-coordination", AuthorityID: authority, LocalReplaceAllowed: req.LocalReplaceAllowed && !req.CoordinationOnly, Active: true, InstallationID: installation, RestoreID: restore, Receipt: Receipt{OperationID: claimID, ClaimID: claimID, Kind: "acquire", RequestHash: hash, Revision: 1, Committed: true, Result: receipt}}
 		return nil
 	})
 	if err != nil {
@@ -450,11 +506,17 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 }
 
 func (s *Service) Status(ctx context.Context, sel Selector) (Status, error) {
-	if sel.AuthorityID != "" && sel.AuthorityID != s.st.AuthorityID() {
+	if sel.Actor == nil && sel.AuthorityID != "" && sel.AuthorityID != s.st.AuthorityID() {
 		return Status{}, reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
 	}
 	var out Status
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.authorizeRemote(tx, sel.Actor, "read"); err != nil {
+			return err
+		}
+		if sel.Actor != nil && sel.AuthorityID != sel.Actor.AuthorityID {
+			return reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
+		}
 		if sel.ClaimID != "" {
 			var row claimRow
 			ok, err := readClaim(tx, sel.ClaimID, &row)
@@ -516,10 +578,17 @@ func (s *Service) Status(ctx context.Context, sel Selector) (Status, error) {
 	})
 	return out, err
 }
-func (s *Service) List(ctx context.Context, filter string) ([]ClaimView, error) {
+func (s *Service) List(ctx context.Context, filter string, actors ...*RemoteActor) ([]ClaimView, error) {
+	var actor *RemoteActor
+	if len(actors) > 0 {
+		actor = actors[0]
+	}
 	var out []ClaimView
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
-		q := `SELECT DISTINCT c.claim_id,c.token_hash,c.revision,c.agent_id,c.session_id,c.work_key,c.guarantee,c.local_replace_allowed,c.acquired_at,c.ttl_us,c.heartbeat_at,c.expires_at,coalesce(c.checkpoint,'') FROM claims c JOIN claim_resources cr ON cr.claim_id=c.claim_id`
+		if err := s.authorizeRemote(tx, actor, "read"); err != nil {
+			return err
+		}
+		q := `SELECT DISTINCT c.claim_id,c.token_hash,c.revision,c.agent_id,c.session_id,c.work_key,c.guarantee,c.local_replace_allowed,c.acquired_at,c.ttl_us,c.heartbeat_at,c.expires_at,coalesce(c.checkpoint,''),coalesce(c.admitted_ttl_us,0),coalesce(c.admitted_hold_until,0),coalesce(c.installation_id,''),coalesce(c.restore_id,''),c.remote FROM claims c JOIN claim_resources cr ON cr.claim_id=c.claim_id`
 		var args []any
 		if filter != "" {
 			q += ` WHERE cr.resource=?`
@@ -570,11 +639,15 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := lifecycleRequestHash(map[string]any{"kind": "heartbeat", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}, req.HoldUntil)
+	intent := map[string]any{"kind": "heartbeat", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
+	hash := lifecycleRequestHash(intent, req.HoldUntil)
 	var receipt Receipt
 	var err error
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, e := s.effectiveNow(tx, now)
+		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
@@ -582,12 +655,9 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
-			expires := effective.UnixMicro() + ttl.Microseconds()
-			if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
-				expires = req.HoldUntil.UnixMicro()
-			}
-			if expires <= effective.UnixMicro() {
-				return nil, reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
+			expires, e := extensionExpiry(row, effective.UnixMicro(), ttl, req.HoldUntil)
+			if e != nil {
+				return nil, e
 			}
 			if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, row.ClaimID); e != nil {
 				return nil, storage(e)
@@ -638,10 +708,14 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := lifecycleRequestHash(map[string]any{"kind": "checkpoint", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()}, req.HoldUntil)
+	intent := map[string]any{"kind": "checkpoint", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
+	hash := lifecycleRequestHash(intent, req.HoldUntil)
 	var receipt Receipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, e := s.effectiveNow(tx, now)
+		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
@@ -649,12 +723,9 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
-			expires := effective.UnixMicro() + ttl.Microseconds()
-			if !req.HoldUntil.IsZero() && expires > req.HoldUntil.UnixMicro() {
-				expires = req.HoldUntil.UnixMicro()
-			}
-			if expires <= effective.UnixMicro() {
-				return nil, reason.New(reason.ReasonClaimExpired, "lease hold deadline has passed")
+			expires, e := extensionExpiry(row, effective.UnixMicro(), ttl, req.HoldUntil)
+			if e != nil {
+				return nil, e
 			}
 			if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=?,checkpoint=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, string(canonical), row.ClaimID); e != nil {
 				return nil, storage(e)
@@ -685,10 +756,14 @@ func (s *Service) Release(ctx context.Context, creds Credentials, req ReleaseReq
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := requestHash(map[string]any{"kind": "release", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()})
+	intent := map[string]any{"kind": "release", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
+	hash := requestHash(intent)
 	var receipt Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, err := s.effectiveNow(tx, now)
+		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
 		}
@@ -740,10 +815,14 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 		return Grant{}, err
 	}
 	deadline := req.RequestNotAfter
-	hash := requestHash(map[string]any{"kind": "transfer", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "successorClaimId": req.SuccessorClaimID, "toAgent": req.ToAgent, "toSession": req.ToSession, "toWorkKey": req.ToWorkKey, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()})
+	intent := map[string]any{"kind": "transfer", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "successorClaimId": req.SuccessorClaimID, "toAgent": req.ToAgent, "toSession": req.ToSession, "toWorkKey": req.ToWorkKey, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
+	hash := requestHash(intent)
 	var grant Grant
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, err := s.effectiveNow(tx, now)
+		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
 		}
@@ -767,15 +846,18 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 			if req.SuccessorClaimID == row.ClaimID {
 				return nil, reason.Invalid("successor claim must differ from predecessor")
 			}
-			expires := effective.UnixMicro() + ttl.Microseconds()
+			expires, err := extensionExpiry(row, effective.UnixMicro(), ttl, time.Time{})
+			if err != nil {
+				return nil, err
+			}
 			successorHash := hashToken(req.SuccessorToken)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,checkpoint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.SuccessorClaimID, successorHash, 1, req.ToAgent, req.ToSession, req.ToWorkKey, row.Guarantee, row.LocalReplaceAllowed, effective.UnixMicro(), ttl.Microseconds(), effective.UnixMicro(), expires, nullString(row.Checkpoint)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,checkpoint,admitted_ttl_us,admitted_hold_until,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.SuccessorClaimID, successorHash, 1, req.ToAgent, req.ToSession, req.ToWorkKey, row.Guarantee, row.LocalReplaceAllowed, effective.UnixMicro(), ttl.Microseconds(), effective.UnixMicro(), expires, nullString(row.Checkpoint), nullInt(row.AdmittedTTL), nullInt(row.AdmittedHoldUntil), nullString(row.InstallationID), nullString(row.RestoreID), boolInt(row.Remote)); err != nil {
 				return nil, storage(err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE claim_resources SET claim_id=? WHERE claim_id=?`, req.SuccessorClaimID, row.ClaimID); err != nil {
 				return nil, storage(err)
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO epochs(claim_id,token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,acquired_seq,checkpoint) VALUES(?,?,?,?,?,?,?,?,?,?)`, req.SuccessorClaimID, successorHash, req.ToAgent, req.ToSession, req.ToWorkKey, row.Guarantee, row.LocalReplaceAllowed, effective.UnixMicro(), 0, nullString(row.Checkpoint)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO epochs(claim_id,token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,acquired_seq,checkpoint,admitted_ttl_us,admitted_hold_until,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.SuccessorClaimID, successorHash, req.ToAgent, req.ToSession, req.ToWorkKey, row.Guarantee, row.LocalReplaceAllowed, effective.UnixMicro(), 0, nullString(row.Checkpoint), nullInt(row.AdmittedTTL), nullInt(row.AdmittedHoldUntil), nullString(row.InstallationID), nullString(row.RestoreID), boolInt(row.Remote)); err != nil {
 				return nil, storage(err)
 			}
 			for i, r := range row.Resources {
@@ -783,7 +865,11 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 					return nil, storage(err)
 				}
 			}
-			seq, err := tx.AppendEvent(store.Event{At: effective, Kind: "transferred", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: req.OperationID, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"reason": "transferred"}})
+			event := store.Event{At: effective, Kind: "transferred", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: req.OperationID, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"reason": "transferred"}}
+			if row.Remote {
+				event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+			}
+			seq, err := tx.AppendEvent(event)
 			if err != nil {
 				return nil, storage(err)
 			}
@@ -803,7 +889,7 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 			if current, readErr := readClaim(tx, req.SuccessorClaimID, &successor); readErr != nil {
 				return readErr
 			} else if current {
-				grant = Grant{ClaimID: successor.ClaimID, Resources: successor.Resources, AgentID: successor.AgentID, SessionID: successor.SessionID, WorkKey: successor.WorkKey, Revision: successor.Revision, AcquiredAt: time.UnixMicro(successor.AcquiredAt).UTC(), ExpiresAt: time.UnixMicro(successor.ExpiresAt).UTC(), Guarantee: successor.Guarantee, AuthorityID: s.st.AuthorityID(), LocalReplaceAllowed: successor.LocalReplaceAllowed, Active: effective.UnixMicro() < successor.ExpiresAt, Receipt: receipt}
+				grant = Grant{ClaimID: successor.ClaimID, Resources: successor.Resources, AgentID: successor.AgentID, SessionID: successor.SessionID, WorkKey: successor.WorkKey, Revision: successor.Revision, AcquiredAt: time.UnixMicro(successor.AcquiredAt).UTC(), ExpiresAt: time.UnixMicro(successor.ExpiresAt).UTC(), Guarantee: successor.Guarantee, AuthorityID: s.st.AuthorityID(), LocalReplaceAllowed: successor.LocalReplaceAllowed, Active: effective.UnixMicro() < successor.ExpiresAt, InstallationID: successor.InstallationID, RestoreID: successor.RestoreID, Receipt: receipt}
 			} else {
 				grant, err = grantFromClaimOrEpoch(tx, req.SuccessorClaimID, "", true, s.st.AuthorityID(), effective.UnixMicro())
 				grant.Receipt = receipt
@@ -821,6 +907,9 @@ func (s *Service) Verify(ctx context.Context, creds Credentials, expected []stri
 	}
 	var out Verification
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		if e := s.authorizeRemote(tx, creds.Actor, "read"); e != nil {
+			return e
+		}
 		var row claimRow
 		ok, e := readClaim(tx, creds.ClaimID, &row)
 		if e != nil {
@@ -878,6 +967,9 @@ func (s *Service) ReplayOperation(ctx context.Context, creds Credentials, id, ki
 	var out Receipt
 	found := false
 	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		if err := s.authorizeRemote(tx, creds.Actor, "write"); err != nil {
+			return err
+		}
 		var op operationRow
 		ok, err := readOperation(tx, creds.ClaimID, id, &op)
 		if err != nil {
@@ -892,6 +984,9 @@ func (s *Service) ReplayOperation(ctx context.Context, creds Credentials, id, ki
 		}
 		if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(hashToken(creds.Token))) != 1 {
 			return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+		}
+		if op.Remote && (creds.Actor == nil || creds.Actor.InstallationID != op.InstallationID) {
+			return reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 		}
 		effective, err := s.effectiveNow(tx, now)
 		if err != nil {
@@ -942,7 +1037,7 @@ func (s *Service) RunGuardedOperation(ctx context.Context, creds Credentials, op
 	var out Receipt
 	var operationErr error
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, err := s.effectiveNow(tx, now)
+		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
 		}
@@ -1026,7 +1121,11 @@ func (s *Service) completeGuardedInTx(ctx context.Context, tx *store.Tx, row cla
 	if op.Kind == "replace-file" {
 		kind = "replace-completed"
 	}
-	seq, err := tx.AppendEvent(store.Event{At: effective, Kind: kind, ClaimID: row.ClaimID, Resources: row.Resources, OperationID: op.OperationID, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(result)})
+	event := store.Event{At: effective, Kind: kind, ClaimID: row.ClaimID, Resources: row.Resources, OperationID: op.OperationID, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(result)}
+	if row.Remote {
+		event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+	}
+	seq, err := tx.AppendEvent(event)
 	if err != nil {
 		return Receipt{}, storage(err)
 	}
@@ -1060,7 +1159,11 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 	if err := validateTTL(ttl); err != nil {
 		return Started{}, err
 	}
-	hash, err := OperationRequestHash(op.Kind, s.st.AuthorityID(), creds.ClaimID, op.Request, ttl, deadline)
+	intent := map[string]any{"kind": op.Kind, "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "request": op.Request, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if creds.Actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+	}
+	hash, err := checkedRequestHash(intent)
 	if err != nil {
 		return Started{}, err
 	}
@@ -1069,7 +1172,7 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 	}
 	var started Started
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, e := s.effectiveNow(tx, now)
+		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
@@ -1083,6 +1186,9 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 		if found {
 			if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(hashToken(creds.Token))) != 1 {
 				return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+			}
+			if existing.Remote && (creds.Actor == nil || creds.Actor.InstallationID != existing.InstallationID) {
+				return reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 			}
 			if e := replayOperation(existing, hash, effective); e != nil {
 				return e
@@ -1113,15 +1219,32 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 		if pending, _ := hasStarted(tx, row.ClaimID); pending {
 			return reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 		}
+		if creds.Actor != nil {
+			mode, _, e := recoveryMode(tx)
+			if e != nil {
+				return e
+			}
+			if mode {
+				return reason.New(reason.ReasonRecoveryClosed, "new operation starts are closed during recovery")
+			}
+		}
+		expires, e := extensionExpiry(row, effective.UnixMicro(), ttl, time.Time{})
+		if e != nil {
+			return e
+		}
 		rev := row.Revision + 1
-		seq, e := tx.AppendEvent(store.Event{At: time.UnixMicro(effective.UnixMicro()), Kind: guardEventKind(op.Kind, "started"), ClaimID: row.ClaimID, Resources: row.Resources, OperationID: op.OperationID, Revision: &rev, AgentID: row.AgentID})
+		event := store.Event{At: effective, Kind: guardEventKind(op.Kind, "started"), ClaimID: row.ClaimID, Resources: row.Resources, OperationID: op.OperationID, Revision: &rev, AgentID: row.AgentID}
+		if row.Remote {
+			event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+		}
+		seq, e := tx.AppendEvent(event)
 		if e != nil {
 			return storage(e)
 		}
-		if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), effective.UnixMicro()+ttl.Microseconds(), row.ClaimID); e != nil {
+		if _, e := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, row.ClaimID); e != nil {
 			return storage(e)
 		}
-		if _, e := tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,started_at,started_seq) VALUES(?,?,?,?,?,?,?, ?,?)`, row.ClaimID, op.OperationID, op.Kind, hash, deadline.UnixMicro(), row.Revision, "started", effective.UnixMicro(), seq); e != nil {
+		if _, e := tx.ExecContext(ctx, `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,started_at,started_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, row.ClaimID, op.OperationID, op.Kind, hash, deadline.UnixMicro(), row.Revision, "started", effective.UnixMicro(), seq, nullString(row.InstallationID), nullString(row.RestoreID), boolInt(row.Remote)); e != nil {
 			return storage(e)
 		}
 		started = Started{OperationID: op.OperationID, ClaimID: row.ClaimID, Kind: op.Kind, Revision: rev, RequestHash: hash}
@@ -1145,7 +1268,7 @@ func (s *Service) RenewOperation(ctx context.Context, creds Credentials, id stri
 	now := s.clock.Now()
 	var out Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, err := s.effectiveNow(tx, now)
+		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
 		}
@@ -1169,11 +1292,18 @@ func (s *Service) RenewOperation(ctx context.Context, creds Credentials, id stri
 			return reason.New(reason.ReasonOperationNotFound, "started operation was not found")
 		}
 		rev := row.Revision + 1
-		expires := effective.UnixMicro() + ttl.Microseconds()
+		expires, err := extensionExpiry(row, effective.UnixMicro(), ttl, time.Time{})
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE claims SET revision=?,ttl_us=?,heartbeat_at=?,expires_at=? WHERE claim_id=?`, rev, ttl.Microseconds(), effective.UnixMicro(), expires, row.ClaimID); err != nil {
 			return storage(err)
 		}
-		seq, err := tx.AppendEvent(store.Event{At: effective, Kind: "renewed", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID})
+		event := store.Event{At: effective, Kind: "renewed", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID}
+		if row.Remote {
+			event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+		}
+		seq, err := tx.AppendEvent(event)
 		if err != nil {
 			return storage(err)
 		}
@@ -1191,7 +1321,7 @@ func (s *Service) CompleteOperation(ctx context.Context, creds Credentials, id s
 	now := s.clock.Now()
 	var out Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		effective, e := s.effectiveNow(tx, now)
+		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
@@ -1205,6 +1335,9 @@ func (s *Service) CompleteOperation(ctx context.Context, creds Credentials, id s
 		}
 		if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(hashToken(creds.Token))) != 1 {
 			return reason.New(reason.ReasonInvalidToken, "credential is invalid")
+		}
+		if op.Remote && (creds.Actor == nil || creds.Actor.InstallationID != op.InstallationID) {
+			return reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 		}
 		if op.State != "started" {
 			if effective.UnixMicro() >= op.RequestNotAfter {
@@ -1226,7 +1359,11 @@ func (s *Service) CompleteOperation(ctx context.Context, creds Credentials, id s
 		}
 		rev := row.Revision + 1
 		kind := guardEventKind(op.Kind, "completed")
-		seq, e := tx.AppendEvent(store.Event{At: time.UnixMicro(effective.UnixMicro()), Kind: kind, ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(receipt)})
+		event := store.Event{At: effective, Kind: kind, ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(receipt)}
+		if row.Remote {
+			event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+		}
+		seq, e := tx.AppendEvent(event)
 		if e != nil {
 			return storage(e)
 		}

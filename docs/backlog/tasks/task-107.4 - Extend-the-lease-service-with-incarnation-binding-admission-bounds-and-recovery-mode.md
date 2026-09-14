@@ -3,10 +3,11 @@ id: TASK-107.4
 title: >-
   Extend the lease service with incarnation binding, admission bounds, and
   recovery mode
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:08'
+updated_date: '2026-09-14 03:23'
 labels:
   - remote-authority
 dependencies:
@@ -49,3 +50,20 @@ Persist each claim's admitted maximum TTL and absolute hold deadline. Every exte
 <!-- DOD:BEGIN -->
 - [ ] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add typed remote actor/admission/recovery/admin contracts and stable reasons while preserving nil-context local behavior.
+2. Thread incarnation and installation provenance through serialized lease reads/mutations and persisted claim, epoch, operation, reconciliation, and event rows.
+3. Enforce portable-prefix and admitted TTL/hold limits across acquire, lifecycle extension, operation renewal/reconciliation, and same-installation transfer, with replay resolved before mutable admission policy.
+4. Implement namespace recovery acquire/start behavior, administrative claim revocation, recovery status, and atomic evidence-validated reopening.
+5. Bind ledger/watch cursors to restore incarnation and add focused tests for ordering, replay, limits, recovery closure, revocation, reopening, and unchanged local behavior.
+6. Run focused tests, full repository gates, independent review/verification, fix findings, then commit and finalize TASK-107.4.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented typed remote actor/policy and response identity boundaries; persisted installation/restore/admitted-limit provenance across claims, epochs, operations, reconciliation, and events; enforced replay-first prefix/bound/recovery behavior across lease lifecycle and exact remote operation renewal; added administrative claim revocation, recovery status, evidence-validated atomic reopening, and restore-bound cursors. Focused and repository checks pass: go test ./internal/lease ./internal/ledger ./internal/watch; mise run lint; mise run format-check; mise run test; mise run typecheck.
+<!-- SECTION:NOTES:END -->

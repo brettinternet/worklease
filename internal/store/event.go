@@ -12,14 +12,17 @@ import (
 // Event is the public, typed lifecycle event boundary. Private credentials and
 // payloads are intentionally not representable in its top-level fields.
 type Event struct {
-	At          time.Time
-	Kind        string
-	ClaimID     string
-	Resources   []string
-	OperationID string
-	Revision    *int64
-	AgentID     string
-	Detail      map[string]any
+	At             time.Time
+	Kind           string
+	ClaimID        string
+	Resources      []string
+	OperationID    string
+	Revision       *int64
+	AgentID        string
+	InstallationID string
+	RestoreID      string
+	Remote         bool
+	Detail         map[string]any
 }
 
 var eventKinds = map[string]bool{
@@ -82,7 +85,18 @@ func (t *Tx) AppendEvent(ev Event) (int64, error) {
 	if ev.Revision != nil {
 		revision = *ev.Revision
 	}
-	result, err := t.tx.Exec(`INSERT INTO events(at,kind,claim_id,resources,operation_id,revision,agent_id,detail) VALUES(?,?,?,?,?,?,?,?)`, ev.At.UnixMicro(), ev.Kind, claim, string(resources), operation, revision, agent, string(detail))
+	var installation, restore any
+	if ev.InstallationID != "" {
+		installation = ev.InstallationID
+	}
+	if ev.RestoreID != "" {
+		restore = ev.RestoreID
+	}
+	remote := 0
+	if ev.Remote {
+		remote = 1
+	}
+	result, err := t.tx.Exec(`INSERT INTO events(at,kind,claim_id,resources,operation_id,revision,agent_id,detail,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, ev.At.UnixMicro(), ev.Kind, claim, string(resources), operation, revision, agent, string(detail), installation, restore, remote)
 	if err != nil {
 		return 0, err
 	}

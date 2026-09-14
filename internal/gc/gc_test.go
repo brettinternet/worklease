@@ -292,12 +292,12 @@ func TestInterleavedEpochsPruneOnlyEventPrefixAndProtectUnresolved(t *testing.T)
 	if result.PrunedThrough != "1" || watermark(t, st, "pruned_through_seq") != "1" {
 		t.Fatalf("prefix watermark=%q", result.PrunedThrough)
 	}
-	cursorJSON, _ := json.Marshal(ledger.Cursor{Version: 1, AuthorityID: st.AuthorityID(), Feed: "events", Sequence: "0"})
+	cursorJSON, _ := json.Marshal(ledger.Cursor{Version: 1, AuthorityID: st.AuthorityID(), RestoreID: st.RestoreID(), Feed: "events", Sequence: "0"})
 	page, err := ledger.New(st).Events(ctx, base64.RawURLEncoding.EncodeToString(cursorJSON), 50)
 	if err != nil || !page.Gap || len(page.Events) != 0 {
 		t.Fatalf("continuation gap=%+v err=%v", page, err)
 	}
-	historyCursor, _ := json.Marshal(ledger.Cursor{Version: 1, AuthorityID: st.AuthorityID(), Feed: "history", Filter: "shared", Sequence: "0"})
+	historyCursor, _ := json.Marshal(ledger.Cursor{Version: 1, AuthorityID: st.AuthorityID(), RestoreID: st.RestoreID(), Feed: "history", Filter: "shared", Sequence: "0"})
 	history, err := ledger.New(st).History(ctx, "shared", base64.RawURLEncoding.EncodeToString(historyCursor), 50, false)
 	if err != nil || !history.Gap || len(history.Epochs) != 0 {
 		t.Fatalf("history continuation gap=%+v err=%v", history, err)

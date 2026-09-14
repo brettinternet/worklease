@@ -29,7 +29,7 @@ func TestWaitFiltersWithoutSkippingLaterMatchesAndReturnsScannedCursor(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
 	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: time.Second, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestWaitReportsRetainedPrefixGap(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
 	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestWaitTimeoutCursorOnlyAdvancesThroughScannedRows(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
 	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: 60 * time.Millisecond, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestWaitDoesNotReturnMatchAfterInitialDeadline(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
 	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Nanosecond, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
@@ -258,9 +258,9 @@ func TestWaitBindsCursorToAuthorityFeedAndFilter(t *testing.T) {
 	defer st.Close()
 	filter := ledger.ResourcesFilter([]string{"r"})
 	cases := []string{
-		ledger.EncodeCursor(strings.Repeat("f", 32), "events", filter, 0),
-		ledger.EncodeCursor(st.AuthorityID(), "history", filter, 0),
-		ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"other"}), 0),
+		ledger.EncodeCursor(strings.Repeat("f", 32), st.RestoreID(), "events", filter, 0),
+		ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "history", filter, 0),
+		ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"other"}), 0),
 	}
 	for _, cursor := range cases {
 		if _, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Millisecond}); err == nil {
@@ -277,7 +277,7 @@ func TestWaitTimeoutContinuationDoesNotSkipLateEvent(t *testing.T) {
 	}
 	defer st.Close()
 	filter := ledger.ResourcesFilter([]string{"r"})
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", filter, 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", filter, 0)
 	writeErr := make(chan error, 1)
 	go func() {
 		time.Sleep(275 * time.Millisecond)
@@ -360,7 +360,7 @@ func TestManyWaitersCancelWithoutLeakingOrBlockingWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
 	const waiters = 24
 	done := make(chan error, waiters)
 	for range waiters {

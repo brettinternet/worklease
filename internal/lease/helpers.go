@@ -22,15 +22,17 @@ type claimRow struct {
 	Revision                                                   int64
 	LocalReplaceAllowed                                        bool
 	AcquiredAt, TTL, HeartbeatAt, ExpiresAt                    int64
-	Checkpoint                                                 string
+	Checkpoint, InstallationID, RestoreID                      string
+	AdmittedTTL, AdmittedHoldUntil                             int64
+	Remote                                                     bool
 	Resources                                                  []string
 }
 
 func (r *claimRow) scanArgs() []any {
-	return []any{&r.ClaimID, &r.TokenHash, &r.Revision, &r.AgentID, &r.SessionID, &r.WorkKey, &r.Guarantee, &r.LocalReplaceAllowed, &r.AcquiredAt, &r.TTL, &r.HeartbeatAt, &r.ExpiresAt, &r.Checkpoint}
+	return []any{&r.ClaimID, &r.TokenHash, &r.Revision, &r.AgentID, &r.SessionID, &r.WorkKey, &r.Guarantee, &r.LocalReplaceAllowed, &r.AcquiredAt, &r.TTL, &r.HeartbeatAt, &r.ExpiresAt, &r.Checkpoint, &r.AdmittedTTL, &r.AdmittedHoldUntil, &r.InstallationID, &r.RestoreID, &r.Remote}
 }
 
-const claimSelect = `SELECT claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,coalesce(checkpoint,'') FROM claims`
+const claimSelect = `SELECT claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at,coalesce(checkpoint,''),coalesce(admitted_ttl_us,0),coalesce(admitted_hold_until,0),coalesce(installation_id,''),coalesce(restore_id,''),remote FROM claims`
 
 func readClaim(tx *store.Tx, id string, r *claimRow) (bool, error) {
 	var x int
@@ -85,16 +87,18 @@ func readClaimForResource(tx *store.Tx, res string, r *claimRow) (bool, error) {
 	return true, rows.Err()
 }
 func (r claimRow) view(authority string, now int64) (ClaimView, error) {
-	return ClaimView{ClaimID: r.ClaimID, Resources: append([]string(nil), r.Resources...), AgentID: r.AgentID, SessionID: r.SessionID, WorkKey: r.WorkKey, Guarantee: r.Guarantee, AuthorityID: authority, Revision: r.Revision, AcquiredAt: time.UnixMicro(r.AcquiredAt).UTC(), HeartbeatAt: time.UnixMicro(r.HeartbeatAt).UTC(), ExpiresAt: time.UnixMicro(r.ExpiresAt).UTC(), LocalReplaceAllowed: r.LocalReplaceAllowed, Active: now < r.ExpiresAt, CheckpointPresent: r.Checkpoint != ""}, nil
+	return ClaimView{ClaimID: r.ClaimID, Resources: append([]string(nil), r.Resources...), AgentID: r.AgentID, SessionID: r.SessionID, WorkKey: r.WorkKey, Guarantee: r.Guarantee, AuthorityID: authority, Revision: r.Revision, AcquiredAt: time.UnixMicro(r.AcquiredAt).UTC(), HeartbeatAt: time.UnixMicro(r.HeartbeatAt).UTC(), ExpiresAt: time.UnixMicro(r.ExpiresAt).UTC(), LocalReplaceAllowed: r.LocalReplaceAllowed, Active: now < r.ExpiresAt, CheckpointPresent: r.Checkpoint != "", InstallationID: r.InstallationID, RestoreID: r.RestoreID}, nil
 }
 
 type operationRow struct {
 	ClaimID, OperationID, Kind, RequestHash, TokenHash, State, Receipt                  string
+	InstallationID, RestoreID                                                           string
+	Remote                                                                              bool
 	RequestNotAfter, ExpectedRevision, StartedAt, StartedSeq, CompletedAt, CompletedSeq int64
 }
 
 func readOperation(tx *store.Tx, claim, id string, r *operationRow) (bool, error) {
-	err := tx.QueryRowContext(context.Background(), `SELECT o.claim_id,o.operation_id,o.kind,o.request_hash,o.request_not_after,o.expected_revision,o.state,coalesce(o.receipt,''),o.started_at,o.started_seq,coalesce(o.completed_at,0),coalesce(o.completed_seq,0),e.token_hash FROM operations o JOIN epochs e ON e.claim_id=o.claim_id WHERE o.claim_id=? AND o.operation_id=?`, claim, id).Scan(&r.ClaimID, &r.OperationID, &r.Kind, &r.RequestHash, &r.RequestNotAfter, &r.ExpectedRevision, &r.State, &r.Receipt, &r.StartedAt, &r.StartedSeq, &r.CompletedAt, &r.CompletedSeq, &r.TokenHash)
+	err := tx.QueryRowContext(context.Background(), `SELECT o.claim_id,o.operation_id,o.kind,o.request_hash,o.request_not_after,o.expected_revision,o.state,coalesce(o.receipt,''),o.started_at,o.started_seq,coalesce(o.completed_at,0),coalesce(o.completed_seq,0),e.token_hash,coalesce(o.installation_id,''),coalesce(o.restore_id,''),o.remote FROM operations o JOIN epochs e ON e.claim_id=o.claim_id WHERE o.claim_id=? AND o.operation_id=?`, claim, id).Scan(&r.ClaimID, &r.OperationID, &r.Kind, &r.RequestHash, &r.RequestNotAfter, &r.ExpectedRevision, &r.State, &r.Receipt, &r.StartedAt, &r.StartedSeq, &r.CompletedAt, &r.CompletedSeq, &r.TokenHash, &r.InstallationID, &r.RestoreID, &r.Remote)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no rows") {
 			return false, nil
@@ -251,6 +255,11 @@ func (s *Service) effectiveNow(tx *store.Tx, now time.Time) (time.Time, error) {
 	return time.UnixMicro(n).UTC(), nil
 }
 func (s *Service) authorize(row claimRow, c Credentials, now int64, allowStarted bool) error {
+	if row.Remote {
+		if c.Actor == nil || c.Actor.InstallationID != row.InstallationID {
+			return reason.New(reason.ReasonAuthorizationDenied, "claim belongs to another installation")
+		}
+	}
 	if c.AuthorityID != "" && c.AuthorityID != s.st.AuthorityID() {
 		return reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
 	}
@@ -275,6 +284,9 @@ func (s *Service) authorize(row claimRow, c Credentials, now int64, allowStarted
 	return nil
 }
 func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash, legacyHash string, deadline time.Time, now time.Time, apply func(claimRow, int64) (map[string]any, error)) (Receipt, error) {
+	if err := s.authorizeRemote(tx, c.Actor, "write"); err != nil {
+		return Receipt{}, err
+	}
 	var row claimRow
 	ok, err := readClaim(tx, c.ClaimID, &row)
 	if err != nil {
@@ -286,6 +298,9 @@ func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash, leg
 	} else if found {
 		if subtle.ConstantTimeCompare([]byte(op.TokenHash), []byte(hashToken(c.Token))) != 1 {
 			return Receipt{}, reason.New(reason.ReasonInvalidToken, "credential is invalid")
+		}
+		if op.Remote && (c.Actor == nil || c.Actor.InstallationID != op.InstallationID) {
+			return Receipt{}, reason.New(reason.ReasonAuthorizationDenied, "operation belongs to another installation")
 		}
 		if !requestHashMatches(op.RequestHash, hash, legacyHash) {
 			return Receipt{}, reason.New(reason.ReasonOperationRequestMismatch, "request intent differs from the recorded operation")
@@ -317,13 +332,17 @@ func (s *Service) mutateCurrent(tx *store.Tx, c Credentials, id, kind, hash, leg
 		seq = existingSeq
 		delete(result, "_eventSeq")
 	} else {
-		seq, err = tx.AppendEvent(store.Event{At: now, Kind: eventKind(kind), ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(result)})
+		event := store.Event{At: now, Kind: eventKind(kind), ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: publicReceiptDetail(result)}
+		if c.Actor != nil {
+			event.InstallationID, event.RestoreID, event.Remote = c.Actor.InstallationID, s.st.RestoreID(), true
+		}
+		seq, err = tx.AppendEvent(event)
 		if err != nil {
 			return Receipt{}, storage(err)
 		}
 	}
 	encoded, _ := json.Marshal(result)
-	if _, err := tx.ExecContext(context.Background(), `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, row.ClaimID, id, kind, hash, deadline.UnixMicro(), row.Revision, "completed", string(encoded), now.UnixMicro(), seq, now.UnixMicro(), seq); err != nil {
+	if _, err := tx.ExecContext(context.Background(), `INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,receipt,started_at,started_seq,completed_at,completed_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.ClaimID, id, kind, hash, deadline.UnixMicro(), row.Revision, "completed", string(encoded), now.UnixMicro(), seq, now.UnixMicro(), seq, nullString(row.InstallationID), nullString(row.RestoreID), boolInt(row.Remote)); err != nil {
 		return Receipt{}, storage(err)
 	}
 	return Receipt{OperationID: id, ClaimID: row.ClaimID, Kind: kind, RequestHash: hash, Revision: rev, Committed: true, Result: result}, nil
@@ -343,7 +362,11 @@ func eventKind(kind string) string {
 	}
 }
 func (s *Service) releaseInTx(tx *store.Tx, row claimRow, now time.Time, rev int64, id, why, hash string) (map[string]any, error) {
-	seq, err := tx.AppendEvent(store.Event{At: now, Kind: "released", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"reason": why, "checkpointPresent": row.Checkpoint != ""}})
+	event := store.Event{At: now, Kind: "released", ClaimID: row.ClaimID, Resources: row.Resources, OperationID: id, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"reason": why, "checkpointPresent": row.Checkpoint != ""}}
+	if row.Remote {
+		event.InstallationID, event.RestoreID, event.Remote = row.InstallationID, row.RestoreID, true
+	}
+	seq, err := tx.AppendEvent(event)
 	if err != nil {
 		return nil, storage(err)
 	}
@@ -358,7 +381,11 @@ func (s *Service) releaseInTx(tx *store.Tx, row claimRow, now time.Time, rev int
 }
 func endClaim(tx *store.Tx, row claimRow, recordedAt int64, endReason, event string, successor *string) error {
 	rev := row.Revision
-	seq, err := tx.AppendEvent(store.Event{At: time.UnixMicro(recordedAt), Kind: event, ClaimID: row.ClaimID, Resources: row.Resources, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"checkpointPresent": row.Checkpoint != ""}})
+	entry := store.Event{At: time.UnixMicro(recordedAt), Kind: event, ClaimID: row.ClaimID, Resources: row.Resources, Revision: &rev, AgentID: row.AgentID, Detail: map[string]any{"checkpointPresent": row.Checkpoint != ""}}
+	if row.Remote {
+		entry.InstallationID, entry.RestoreID, entry.Remote = row.InstallationID, row.RestoreID, true
+	}
+	seq, err := tx.AppendEvent(entry)
 	if err != nil {
 		return storage(err)
 	}
@@ -389,11 +416,11 @@ func grantFromClaimOrEpoch(tx *store.Tx, id string, receipt string, idempotent b
 		}
 		var result map[string]any
 		_ = json.Unmarshal([]byte(receipt), &result)
-		return Grant{ClaimID: id, Resources: row.Resources, AgentID: row.AgentID, SessionID: row.SessionID, WorkKey: row.WorkKey, Revision: row.Revision, AcquiredAt: time.UnixMicro(row.AcquiredAt).UTC(), ExpiresAt: time.UnixMicro(row.ExpiresAt).UTC(), Guarantee: row.Guarantee, AuthorityID: authority, LocalReplaceAllowed: row.LocalReplaceAllowed, Active: v.Active, Receipt: Receipt{OperationID: id, ClaimID: id, Kind: "acquire", Revision: resultRevision(result, 1), Idempotent: idempotent, Committed: true, Result: result}}, nil
+		return Grant{ClaimID: id, Resources: row.Resources, AgentID: row.AgentID, SessionID: row.SessionID, WorkKey: row.WorkKey, Revision: row.Revision, AcquiredAt: time.UnixMicro(row.AcquiredAt).UTC(), ExpiresAt: time.UnixMicro(row.ExpiresAt).UTC(), Guarantee: row.Guarantee, AuthorityID: authority, LocalReplaceAllowed: row.LocalReplaceAllowed, Active: v.Active, InstallationID: row.InstallationID, RestoreID: row.RestoreID, Receipt: Receipt{OperationID: id, ClaimID: id, Kind: "acquire", Revision: resultRevision(result, 1), Idempotent: idempotent, Committed: true, Result: result}}, nil
 	}
-	var agent, session, work, guarantee, token, checkpoint string
+	var agent, session, work, guarantee, token, checkpoint, installation, restore string
 	var replace, acquired, ended, final int64
-	err = tx.QueryRowContext(context.Background(), `SELECT token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,coalesce(ended_at,0),coalesce(final_revision,0),coalesce(checkpoint,'') FROM epochs WHERE claim_id=?`, id).Scan(&token, &agent, &session, &work, &guarantee, &replace, &acquired, &ended, &final, &checkpoint)
+	err = tx.QueryRowContext(context.Background(), `SELECT token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,coalesce(ended_at,0),coalesce(final_revision,0),coalesce(checkpoint,''),coalesce(installation_id,''),coalesce(restore_id,'') FROM epochs WHERE claim_id=?`, id).Scan(&token, &agent, &session, &work, &guarantee, &replace, &acquired, &ended, &final, &checkpoint, &installation, &restore)
 	if err != nil {
 		return Grant{}, reason.New(reason.ReasonOperationNotFound, "claim operation was not retained")
 	}
@@ -410,7 +437,7 @@ func grantFromClaimOrEpoch(tx *store.Tx, id string, receipt string, idempotent b
 	}
 	var recorded map[string]any
 	_ = json.Unmarshal([]byte(receipt), &recorded)
-	return Grant{ClaimID: id, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, Revision: final, AcquiredAt: time.UnixMicro(acquired).UTC(), Guarantee: guarantee, AuthorityID: authority, LocalReplaceAllowed: replace != 0, Active: false, Receipt: Receipt{OperationID: id, ClaimID: id, Kind: "acquire", Revision: resultRevision(recorded, 1), Idempotent: idempotent, Committed: true, Result: recorded}}, nil
+	return Grant{ClaimID: id, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, Revision: final, AcquiredAt: time.UnixMicro(acquired).UTC(), Guarantee: guarantee, AuthorityID: authority, LocalReplaceAllowed: replace != 0, Active: false, InstallationID: installation, RestoreID: restore, Receipt: Receipt{OperationID: id, ClaimID: id, Kind: "acquire", Revision: resultRevision(recorded, 1), Idempotent: idempotent, Committed: true, Result: recorded}}, nil
 }
 
 func resultRevision(result map[string]any, fallback int64) int64 {
@@ -679,6 +706,12 @@ func sameResourceMembers(a, b []string) bool {
 func formatMicros(v int64) string { return time.UnixMicro(v).UTC().Format(time.RFC3339Nano) }
 func nullString(v string) any {
 	if v == "" {
+		return nil
+	}
+	return v
+}
+func nullInt(v int64) any {
+	if v == 0 {
 		return nil
 	}
 	return v

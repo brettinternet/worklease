@@ -32,7 +32,7 @@ func TestWatchSubprocessEventWakesFilteredWaiter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
 	cmd := exec.Command(os.Args[0], "-test.run=TestWatchSubprocessEventWakesFilteredWaiter", "--")
 	cmd.Env = append(os.Environ(), "WORKLEASE_WATCH_HELPER=1", "WORKLEASE_WATCH_HOME="+home, "WORKLEASE_WATCH_CURSOR="+cursor)
 	var output bytes.Buffer
@@ -191,7 +191,7 @@ func TestWatchJSONRedactsEventDetails(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor := ledger.EncodeCursor(st.AuthorityID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
+	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"r"}), 0)
 	var out bytes.Buffer
 	if err := Run(ctx, []string{"worklease", "watch", "--json", "--home", home, "--cursor", cursor, "--resource", "r", "--timeout", "1s"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
