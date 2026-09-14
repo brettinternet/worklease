@@ -326,9 +326,12 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 	}
 	intent := map[string]any{"kind": "acquire", "authorityId": authority, "claimId": claimID, "resources": req.Resources, "agentId": agent, "sessionId": session, "workKey": work, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro(), "localReplaceAllowed": req.LocalReplaceAllowed, "coordinationOnly": req.CoordinationOnly}
 	if req.Actor != nil {
-		intent["expectedRestoreId"], intent["installationId"], intent["maxHold"] = req.Actor.ExpectedRestoreID, req.Actor.InstallationID, req.MaxHold.Microseconds()
+		intent["protocolVersion"], intent["expectedRestoreId"], intent["installationId"], intent["maxHold"] = "worklease-http/1", req.Actor.ExpectedRestoreID, req.Actor.InstallationID, req.MaxHold.Microseconds()
 	}
-	hash := lifecycleRequestHash(intent, req.HoldUntil)
+	var hash string
+	if req.Actor == nil {
+		hash = lifecycleRequestHash(intent, req.HoldUntil)
+	}
 	tokenHash := hashToken(req.Token)
 	var result Grant
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
@@ -338,6 +341,11 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 		}
 		if req.Actor != nil && req.AuthorityID != req.Actor.AuthorityID {
 			return reason.New(reason.ReasonAuthorityMismatch, "authority identity does not match")
+		}
+		if req.Actor != nil {
+			intent["installationId"] = req.Actor.InstallationID
+			intent["protocolVersion"] = "worklease-http/1"
+			hash = lifecycleRequestHash(intent, req.HoldUntil)
 		}
 		// Acquire is idempotent on claim ID. Authenticate a replay against the
 		// retained epoch even when the current claim has already ended.
@@ -643,7 +651,10 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 	if creds.Actor != nil {
 		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
 	}
-	hash := lifecycleRequestHash(intent, req.HoldUntil)
+	var hash string
+	if creds.Actor == nil {
+		hash = lifecycleRequestHash(intent, req.HoldUntil)
+	}
 	var receipt Receipt
 	var err error
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
@@ -651,7 +662,17 @@ func (s *Service) Heartbeat(ctx context.Context, creds Credentials, req Renew) (
 		if e != nil {
 			return e
 		}
-		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "heartbeat", hash, req.LegacyRequestHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		legacyHash := req.LegacyRequestHash
+		if creds.Actor != nil {
+			if !req.HoldUntil.IsZero() || req.LegacyRequestHash != "" {
+				return reason.Invalid("remote heartbeat contains local-only fields")
+			}
+			intent["installationId"] = creds.Actor.InstallationID
+			intent["protocolVersion"] = "worklease-http/1"
+			hash = lifecycleRequestHash(intent, time.Time{})
+			legacyHash = ""
+		}
+		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "heartbeat", hash, legacyHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
@@ -712,14 +733,27 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 	if creds.Actor != nil {
 		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
 	}
-	hash := lifecycleRequestHash(intent, req.HoldUntil)
+	var hash string
+	if creds.Actor == nil {
+		hash = lifecycleRequestHash(intent, req.HoldUntil)
+	}
 	var receipt Receipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
 		}
-		receipt, e = s.mutateCurrent(tx, creds, req.OperationID, "checkpoint", hash, req.LegacyRequestHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
+		legacyHash := req.LegacyRequestHash
+		if creds.Actor != nil {
+			if !req.HoldUntil.IsZero() || req.LegacyRequestHash != "" {
+				return reason.Invalid("remote checkpoint contains local-only fields")
+			}
+			intent["installationId"] = creds.Actor.InstallationID
+			intent["protocolVersion"] = "worklease-http/1"
+			hash = lifecycleRequestHash(intent, time.Time{})
+			legacyHash = ""
+		}
+		receipt, e = s.mutateCurrent(tx, creds, req.OperationID, "checkpoint", hash, legacyHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			if pending, _ := hasStarted(tx, row.ClaimID); pending {
 				return nil, reason.New(reason.ReasonOperationInProgress, "a guarded operation is in progress")
 			}
@@ -760,12 +794,20 @@ func (s *Service) Release(ctx context.Context, creds Credentials, req ReleaseReq
 	if creds.Actor != nil {
 		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
 	}
-	hash := requestHash(intent)
+	var hash string
+	if creds.Actor == nil {
+		hash = requestHash(intent)
+	}
 	var receipt Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
+		}
+		if creds.Actor != nil {
+			intent["installationId"] = creds.Actor.InstallationID
+			intent["protocolVersion"] = "worklease-http/1"
+			hash = requestHash(intent)
 		}
 		receipt, err = s.mutateCurrent(tx, creds, req.OperationID, "release", hash, "", deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {
 			pending, _ := hasStarted(tx, row.ClaimID)
@@ -819,12 +861,20 @@ func (s *Service) Transfer(ctx context.Context, creds Credentials, req TransferR
 	if creds.Actor != nil {
 		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
 	}
-	hash := requestHash(intent)
+	var hash string
+	if creds.Actor == nil {
+		hash = requestHash(intent)
+	}
 	var grant Grant
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, err := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if err != nil {
 			return err
+		}
+		if creds.Actor != nil {
+			intent["installationId"] = creds.Actor.InstallationID
+			intent["protocolVersion"] = "worklease-http/1"
+			hash = requestHash(intent)
 		}
 		var existing operationRow
 		if found, e := readOperation(tx, creds.ClaimID, req.OperationID, &existing); e != nil {
@@ -1161,20 +1211,35 @@ func (s *Service) BeginOperation(ctx context.Context, creds Credentials, op Oper
 	}
 	intent := map[string]any{"kind": op.Kind, "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "request": op.Request, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
 	if creds.Actor != nil {
-		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
+		intent["protocolVersion"], intent["expectedRestoreId"] = "worklease-http/1", creds.Actor.ExpectedRestoreID
 	}
-	hash, err := checkedRequestHash(intent)
-	if err != nil {
-		return Started{}, err
-	}
-	if op.RequestHash != "" && op.RequestHash != hash {
-		return Started{}, reason.New(reason.ReasonOperationRequestMismatch, "supplied request hash does not match operation intent")
+	var hash string
+	if creds.Actor == nil {
+		var err error
+		hash, err = checkedRequestHash(intent)
+		if err != nil {
+			return Started{}, err
+		}
+		if op.RequestHash != "" && op.RequestHash != hash {
+			return Started{}, reason.New(reason.ReasonOperationRequestMismatch, "supplied request hash does not match operation intent")
+		}
 	}
 	var started Started
-	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
+	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
 		if e != nil {
 			return e
+		}
+		if creds.Actor != nil {
+			intent["installationId"] = creds.Actor.InstallationID
+			var hashErr error
+			hash, hashErr = checkedRequestHash(intent)
+			if hashErr != nil {
+				return hashErr
+			}
+			if op.RequestHash != "" && op.RequestHash != hash {
+				return reason.New(reason.ReasonOperationRequestMismatch, "supplied request hash does not match operation intent")
+			}
 		}
 		// Replay belongs to the original authenticated epoch and must be
 		// resolved before current-claim or revision authorization.

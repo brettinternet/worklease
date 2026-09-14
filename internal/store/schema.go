@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,7 +15,10 @@ var requiredTables = map[string]bool{
 	"epoch_resources": true, "operations": true, "reconciliations": true, "events": true,
 	"recovery_state": true, "installations": true, "invites": true,
 	"invite_redemptions": true, "recovery_reopenings": true, "operation_renewals": true,
+	"admin_operation_replays": true,
 }
+var legacyV2RequiredTables = withoutRequired(requiredTables, "admin_operation_replays")
+var legacyV2RequiredFragments = withoutRequiredSlices(requiredTableFragments, "admin_operation_replays")
 var requiredIndexes = map[string]bool{
 	"claim_resources_by_claim": true, "epochs_by_acquired_seq": true,
 	"epoch_resources_by_resource": true, "operations_by_state": true,
@@ -21,8 +26,10 @@ var requiredIndexes = map[string]bool{
 	"installations_by_credential": true, "invites_by_hash": true,
 	"invites_by_state_expiry": true, "invites_by_issuer_operation": true,
 	"one_active_bootstrap_invite": true, "recovery_reopenings_by_restore": true,
-	"operation_renewals_by_retention": true,
+	"operation_renewals_by_retention":     true,
+	"admin_operation_replays_by_deadline": true,
 }
+var legacyV2RequiredIndexes = withoutRequired(requiredIndexes, "admin_operation_replays_by_deadline")
 
 var requiredTableFragments = map[string][]string{
 	"claims": {
@@ -73,23 +80,50 @@ var requiredTableFragments = map[string][]string{
 	"operation_renewals": {
 		"primary key (claim_id, operation_id, renewal_id)", "references operations(claim_id, operation_id) on delete cascade", "check (ttl_us > 0)", "check (remote in (0,1))",
 	},
+	"admin_operation_replays": {
+		"primary key (actor_installation_id, operation_id)",
+		"check (length(actor_installation_id) = 32 and actor_installation_id not glob '*[^0-9a-f]*')",
+		"check (length(operation_id) = 32 and operation_id not glob '*[^0-9a-f]*')",
+		"check (length(request_hash) = 64 and request_hash not glob '*[^0-9a-f]*')",
+	},
+}
+
+func withoutRequired(source map[string]bool, excluded string) map[string]bool {
+	copy := make(map[string]bool, len(source)-1)
+	for key, value := range source {
+		if key != excluded {
+			copy[key] = value
+		}
+	}
+	return copy
+}
+
+func withoutRequiredSlices(source map[string][]string, excluded string) map[string][]string {
+	copy := make(map[string][]string, len(source)-1)
+	for key, value := range source {
+		if key != excluded {
+			copy[key] = value
+		}
+	}
+	return copy
 }
 
 var requiredColumns = map[string][]string{
-	"meta":                {"key", "value"},
-	"claims":              {"claim_id", "token_hash", "revision", "agent_id", "session_id", "work_key", "guarantee", "local_replace_allowed", "acquired_at", "ttl_us", "heartbeat_at", "expires_at", "checkpoint", "admitted_ttl_us", "admitted_hold_until", "installation_id", "restore_id", "remote"},
-	"claim_resources":     {"resource", "claim_id", "position"},
-	"epochs":              {"claim_id", "token_hash", "agent_id", "session_id", "work_key", "guarantee", "local_replace_allowed", "acquired_at", "acquired_seq", "ended_at", "ended_seq", "ended_recorded_at", "end_reason", "final_revision", "successor_claim_id", "checkpoint", "admitted_ttl_us", "admitted_hold_until", "installation_id", "restore_id", "remote"},
-	"epoch_resources":     {"claim_id", "resource", "position"},
-	"operations":          {"claim_id", "operation_id", "kind", "request_hash", "request_not_after", "expected_revision", "state", "receipt", "started_at", "started_seq", "completed_at", "completed_seq", "installation_id", "restore_id", "remote"},
-	"reconciliations":     {"claim_id", "operation_id", "outcome", "evidence", "request_hash", "reconcile_operation_id", "resolver_claim_id", "resolver_agent_id", "resolver_session_id", "recorded_at", "recorded_seq", "installation_id", "restore_id", "remote"},
-	"events":              {"seq", "at", "kind", "claim_id", "resources", "operation_id", "revision", "agent_id", "detail", "installation_id", "restore_id", "remote"},
-	"recovery_state":      {"singleton", "recovery_mode", "recovery_revision", "restored_at", "selected_durable_cutoff", "cutoff_known", "loss_interval_start", "loss_interval_end", "loss_start_known", "loss_end_known", "coverage_gaps", "bootstrap_invite_id", "bootstrap_ready"},
-	"installations":       {"installation_id", "credential_hash", "role", "label", "enrolled_at", "restore_id", "enrolled_by_invite_id", "issuer_installation_id", "request_id", "request_hash", "revoked_at", "revoked_by_installation_id", "revoke_reason"},
-	"invites":             {"invite_id", "invite_hash", "role", "label", "issued_at", "expires_at", "restore_id", "issued_by_installation_id", "issue_operation_id", "issue_request_hash", "request_not_after", "bootstrap", "state", "used_at", "used_by_installation_id", "revoked_at", "revoked_by_installation_id"},
-	"invite_redemptions":  {"invite_id", "request_id", "request_hash", "request_not_after", "expected_restore_id", "installation_id", "credential_hash", "result", "redeemed_at", "replay_until"},
-	"recovery_reopenings": {"reopening_id", "operation_id", "request_hash", "request_not_after", "restore_id", "recovery_revision", "reopened_at", "reopened_by_installation_id", "selected_durable_cutoff", "cutoff_known", "loss_interval_start", "loss_interval_end", "loss_start_known", "loss_end_known", "inventory_complete", "pending_sets_complete", "retained_outcomes_complete", "namespace_cessation_established", "coverage_gaps", "attestation", "evidence_references"},
-	"operation_renewals":  {"claim_id", "operation_id", "renewal_id", "request_hash", "request_not_after", "expected_revision", "ttl_us", "receipt", "renewed_at", "renewed_seq", "installation_id", "restore_id", "remote"},
+	"meta":                    {"key", "value"},
+	"claims":                  {"claim_id", "token_hash", "revision", "agent_id", "session_id", "work_key", "guarantee", "local_replace_allowed", "acquired_at", "ttl_us", "heartbeat_at", "expires_at", "checkpoint", "admitted_ttl_us", "admitted_hold_until", "installation_id", "restore_id", "remote"},
+	"claim_resources":         {"resource", "claim_id", "position"},
+	"epochs":                  {"claim_id", "token_hash", "agent_id", "session_id", "work_key", "guarantee", "local_replace_allowed", "acquired_at", "acquired_seq", "ended_at", "ended_seq", "ended_recorded_at", "end_reason", "final_revision", "successor_claim_id", "checkpoint", "admitted_ttl_us", "admitted_hold_until", "installation_id", "restore_id", "remote"},
+	"epoch_resources":         {"claim_id", "resource", "position"},
+	"operations":              {"claim_id", "operation_id", "kind", "request_hash", "request_not_after", "expected_revision", "state", "receipt", "started_at", "started_seq", "completed_at", "completed_seq", "installation_id", "restore_id", "remote"},
+	"reconciliations":         {"claim_id", "operation_id", "outcome", "evidence", "request_hash", "reconcile_operation_id", "resolver_claim_id", "resolver_agent_id", "resolver_session_id", "recorded_at", "recorded_seq", "installation_id", "restore_id", "remote"},
+	"events":                  {"seq", "at", "kind", "claim_id", "resources", "operation_id", "revision", "agent_id", "detail", "installation_id", "restore_id", "remote"},
+	"recovery_state":          {"singleton", "recovery_mode", "recovery_revision", "restored_at", "selected_durable_cutoff", "cutoff_known", "loss_interval_start", "loss_interval_end", "loss_start_known", "loss_end_known", "coverage_gaps", "bootstrap_invite_id", "bootstrap_ready"},
+	"installations":           {"installation_id", "credential_hash", "role", "label", "enrolled_at", "restore_id", "enrolled_by_invite_id", "issuer_installation_id", "request_id", "request_hash", "revoked_at", "revoked_by_installation_id", "revoke_reason"},
+	"invites":                 {"invite_id", "invite_hash", "role", "label", "issued_at", "expires_at", "restore_id", "issued_by_installation_id", "issue_operation_id", "issue_request_hash", "request_not_after", "bootstrap", "state", "used_at", "used_by_installation_id", "revoked_at", "revoked_by_installation_id"},
+	"invite_redemptions":      {"invite_id", "request_id", "request_hash", "request_not_after", "expected_restore_id", "installation_id", "credential_hash", "result", "redeemed_at", "replay_until"},
+	"recovery_reopenings":     {"reopening_id", "operation_id", "request_hash", "request_not_after", "restore_id", "recovery_revision", "reopened_at", "reopened_by_installation_id", "selected_durable_cutoff", "cutoff_known", "loss_interval_start", "loss_interval_end", "loss_start_known", "loss_end_known", "inventory_complete", "pending_sets_complete", "retained_outcomes_complete", "namespace_cessation_established", "coverage_gaps", "attestation", "evidence_references"},
+	"operation_renewals":      {"claim_id", "operation_id", "renewal_id", "request_hash", "request_not_after", "expected_revision", "ttl_us", "receipt", "renewed_at", "renewed_seq", "installation_id", "restore_id", "remote"},
+	"admin_operation_replays": {"actor_installation_id", "operation_id", "request_hash", "request_not_after", "result"},
 }
 
 var v1RequiredTables = map[string]bool{
@@ -125,6 +159,7 @@ var v1RequiredTableFragments = map[string][]string{
 // error proves that every preceding schema mutation rolls back with the same
 // BEGIN IMMEDIATE transaction.
 var beforeMigrationStatementHook func(int, string) error
+var beforeV2ExtensionStatementHook func(int, string) error
 
 func createSchema(tx *sql.Tx, authority, restore string, now int64) error {
 	statements := v2SchemaStatements()
@@ -269,12 +304,39 @@ func v2SchemaStatements() []string {
 			PRIMARY KEY (claim_id, operation_id, renewal_id),
 			FOREIGN KEY (claim_id, operation_id) REFERENCES operations(claim_id, operation_id) ON DELETE CASCADE)`,
 		`CREATE INDEX operation_renewals_by_retention ON operation_renewals(request_not_after, claim_id, operation_id)`,
+		`CREATE TABLE admin_operation_replays (
+			actor_installation_id TEXT NOT NULL CHECK (length(actor_installation_id) = 32 AND actor_installation_id NOT GLOB '*[^0-9a-f]*'),
+			operation_id TEXT NOT NULL CHECK (length(operation_id) = 32 AND operation_id NOT GLOB '*[^0-9a-f]*'),
+			request_hash TEXT NOT NULL CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+			request_not_after INTEGER NOT NULL, result TEXT NOT NULL,
+			PRIMARY KEY (actor_installation_id, operation_id))`,
+		`CREATE INDEX admin_operation_replays_by_deadline ON admin_operation_replays(request_not_after)`,
 		`INSERT INTO recovery_state(singleton) VALUES(1)`,
 		`INSERT INTO meta(key,value) VALUES
 			('created_at', ?), ('authority_id', ?), ('restore_id', ?), ('last_observed_at', ?),
-			('last_event_seq', '0'), ('pruned_through_seq', '0')`,
+			('last_event_seq', '0'), ('pruned_through_seq', '0'), ('schema_v2_admin_operation_replays', '1')`,
 		`PRAGMA user_version = 2`,
 	}
+}
+
+func v2StandaloneSchemaStatements() []string {
+	var standalone []string
+	for _, statement := range v2SchemaStatements() {
+		for _, prefix := range []string{
+			"CREATE TABLE recovery_state", "CREATE TABLE installations", "CREATE UNIQUE INDEX installations_by_credential",
+			"CREATE TABLE invites", "CREATE UNIQUE INDEX invites_by_hash", "CREATE INDEX invites_by_state_expiry",
+			"CREATE UNIQUE INDEX invites_by_issuer_operation", "CREATE UNIQUE INDEX one_active_bootstrap_invite",
+			"CREATE TABLE invite_redemptions", "CREATE TABLE recovery_reopenings", "CREATE INDEX recovery_reopenings_by_restore",
+			"CREATE TABLE operation_renewals", "CREATE INDEX operation_renewals_by_retention",
+			"CREATE TABLE admin_operation_replays", "CREATE INDEX admin_operation_replays_by_deadline",
+		} {
+			if strings.HasPrefix(statement, prefix) {
+				standalone = append(standalone, statement)
+				break
+			}
+		}
+	}
+	return standalone
 }
 
 func migrateSchemaV1(tx *sql.Tx, restore string) error {
@@ -321,12 +383,12 @@ func migrateSchemaV1(tx *sql.Tx, restore string) error {
 		`ALTER TABLE events ADD COLUMN restore_id TEXT`,
 		`ALTER TABLE events ADD COLUMN remote INTEGER NOT NULL DEFAULT 0 CHECK (remote IN (0,1))`,
 	}
-	// Reuse only the new standalone object statements. Their order is stable and
-	// leaves all mutations inside this transaction.
-	statements = append(statements, v2SchemaStatements()[15:28]...)
+	// Reuse only standalone v2 objects; do not depend on positional slices of
+	// the complete fresh-schema statement list.
+	statements = append(statements, v2StandaloneSchemaStatements()...)
 	statements = append(statements,
 		`INSERT INTO recovery_state(singleton) VALUES(1)`,
-		`INSERT INTO meta(key,value) VALUES('restore_id', ?)`,
+		`INSERT INTO meta(key,value) VALUES('restore_id', ?), ('schema_v2_admin_operation_replays', '1')`,
 		`PRAGMA user_version = 2`,
 	)
 	for i, statement := range statements {
@@ -353,8 +415,84 @@ type schemaQueryer interface {
 	QueryRow(string, ...any) *sql.Row
 }
 
+const adminReplaySchemaMarker = "schema_v2_admin_operation_replays"
+
+func ensureV2AdminReplaySchema(ctx context.Context, driver *Driver) error {
+	return driver.Write(ctx, func(tx *sql.Tx) error {
+		var marker string
+		err := tx.QueryRow(`SELECT value FROM meta WHERE key=?`, adminReplaySchemaMarker).Scan(&marker)
+		if err == nil {
+			if marker != "1" {
+				return reason.New(reason.ReasonSchemaCorrupt, "admin replay schema marker is invalid")
+			}
+			return verifySchemaObjects(tx, requiredTables, requiredIndexes, requiredTableFragments, requiredColumns, true)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return schemaCorrupt(err)
+		}
+		if err := verifySchemaObjects(tx, legacyV2RequiredTables, legacyV2RequiredIndexes, legacyV2RequiredFragments, requiredColumnsWithout(requiredColumns, "admin_operation_replays"), true); err != nil {
+			return err
+		}
+		for index, statement := range []string{
+			`CREATE TABLE admin_operation_replays (actor_installation_id TEXT NOT NULL CHECK (length(actor_installation_id) = 32 AND actor_installation_id NOT GLOB '*[^0-9a-f]*'), operation_id TEXT NOT NULL CHECK (length(operation_id) = 32 AND operation_id NOT GLOB '*[^0-9a-f]*'), request_hash TEXT NOT NULL CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'), request_not_after INTEGER NOT NULL, result TEXT NOT NULL, PRIMARY KEY (actor_installation_id, operation_id))`,
+			`CREATE INDEX admin_operation_replays_by_deadline ON admin_operation_replays(request_not_after)`,
+			`INSERT INTO meta(key,value) VALUES(?, '1')`,
+		} {
+			if beforeV2ExtensionStatementHook != nil {
+				if err := beforeV2ExtensionStatementHook(index, statement); err != nil {
+					return err
+				}
+			}
+			var execErr error
+			if strings.HasPrefix(statement, "INSERT INTO meta") {
+				_, execErr = tx.Exec(statement, adminReplaySchemaMarker)
+			} else {
+				_, execErr = tx.Exec(statement)
+			}
+			if execErr != nil {
+				return schemaCorrupt(execErr)
+			}
+		}
+		return verifySchemaObjects(tx, requiredTables, requiredIndexes, requiredTableFragments, requiredColumns, true)
+	})
+}
+
+func requiredColumnsWithout(source map[string][]string, excluded string) map[string][]string {
+	copy := make(map[string][]string, len(source)-1)
+	for key, value := range source {
+		if key != excluded {
+			copy[key] = value
+		}
+	}
+	return copy
+}
+
 func verifySchema(db *sql.DB) error {
 	return verifySchemaObjects(db, requiredTables, requiredIndexes, requiredTableFragments, requiredColumns, true)
+}
+
+// verifyReadOnlyV2Schema accepts an unextended v2 database without mutating it.
+// Once the extension marker exists, however, the complete extension is required.
+func verifyReadOnlyV2Schema(db *sql.DB) error {
+	var marker string
+	err := db.QueryRow(`SELECT value FROM meta WHERE key=?`, adminReplaySchemaMarker).Scan(&marker)
+	if err == nil {
+		if marker != "1" {
+			return reason.New(reason.ReasonSchemaCorrupt, "admin replay schema marker is invalid")
+		}
+		return verifySchema(db)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return schemaCorrupt(err)
+	}
+	var tableCount int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='admin_operation_replays'`).Scan(&tableCount); err != nil {
+		return schemaCorrupt(err)
+	}
+	if tableCount != 0 {
+		return reason.New(reason.ReasonSchemaCorrupt, "admin replay schema marker is missing")
+	}
+	return verifySchemaObjects(db, legacyV2RequiredTables, legacyV2RequiredIndexes, legacyV2RequiredFragments, requiredColumnsWithout(requiredColumns, "admin_operation_replays"), true)
 }
 
 func verifySchemaObjects(db schemaQueryer, tables, indexes map[string]bool, fragments map[string][]string, columns map[string][]string, verifyMeta bool) error {
@@ -395,6 +533,11 @@ func verifySchemaObjects(db schemaQueryer, tables, indexes map[string]bool, frag
 	}
 	if err := verifyStartedOperationIndex(db, definitions["one_started_per_claim"]); err != nil {
 		return err
+	}
+	if tables["admin_operation_replays"] {
+		if err := verifyIndexColumns(db, "admin_operation_replays", "admin_operation_replays_by_deadline", []string{"request_not_after"}); err != nil {
+			return err
+		}
 	}
 	if tables["invites"] {
 		checks := []struct {
@@ -487,6 +630,35 @@ func verifyStartedOperationIndex(db schemaQueryer, definition string) error {
 	var columns int
 	if err := db.QueryRow(`SELECT count(*) FROM pragma_index_info('one_started_per_claim') WHERE name='claim_id'`).Scan(&columns); err != nil || columns != 1 {
 		return reason.New(reason.ReasonSchemaCorrupt, "started-operation index columns are invalid")
+	}
+	return nil
+}
+
+func verifyIndexColumns(db schemaQueryer, table, name string, columns []string) error {
+	rows, err := db.Query(`PRAGMA index_info("` + strings.ReplaceAll(name, `"`, `""`) + `")`)
+	if err != nil {
+		return schemaCorrupt(err)
+	}
+	defer rows.Close()
+	got := make([]string, 0, len(columns))
+	for rows.Next() {
+		var seq, cid int
+		var column string
+		if err := rows.Scan(&seq, &cid, &column); err != nil {
+			return schemaCorrupt(err)
+		}
+		got = append(got, column)
+	}
+	if err := rows.Err(); err != nil {
+		return schemaCorrupt(err)
+	}
+	if len(got) != len(columns) {
+		return reason.New(reason.ReasonSchemaCorrupt, "required index columns are invalid").With("index", name)
+	}
+	for i := range columns {
+		if got[i] != columns[i] {
+			return reason.New(reason.ReasonSchemaCorrupt, "required index columns are invalid").With("index", name)
+		}
 	}
 	return nil
 }

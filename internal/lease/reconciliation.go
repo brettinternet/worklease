@@ -95,20 +95,27 @@ func (s *Service) reconcile(ctx context.Context, creds Credentials, req Reconcil
 		return ReconciliationReceipt{}, err
 	}
 	now := s.clock.Now().UTC()
-	if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
-		return ReconciliationReceipt{}, err
-	}
 	intent := map[string]any{"kind": "reconcile", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "targetClaimId": req.TargetClaimID, "targetOperationId": req.TargetOperationID, "expectedRequestSha256": req.ExpectedRequestSHA256, "outcome": req.Outcome, "evidence": json.RawMessage(canonical), "ttl": ttl.Microseconds(), "requestNotAfter": req.RequestNotAfter.UTC().UnixMicro()}
 	if creds.Actor != nil {
 		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
 	}
-	hash, err := checkedRequestHash(intent)
-	if err != nil {
-		return ReconciliationReceipt{}, err
-	}
+	var hash string
 	var result ReconciliationReceipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
 		effective, e := s.effectiveRemoteNow(tx, creds.Actor, "write", now)
+		if e != nil {
+			return e
+		}
+		now = effective
+		if e := validateRequestWindow(req.RequestNotAfter, effective); e != nil {
+			return e
+		}
+		if creds.Actor != nil {
+			intent["protocolVersion"] = "worklease-http/1"
+			intent["installationId"] = creds.Actor.InstallationID
+			intent["expectedRestoreId"] = creds.Actor.ExpectedRestoreID
+		}
+		hash, e = checkedRequestHash(intent)
 		if e != nil {
 			return e
 		}

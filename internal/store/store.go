@@ -208,7 +208,19 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		_ = st.Close()
 		return nil, unsupportedSchema(version)
 	}
-	if err := verifySchema(driver.DB()); err != nil {
+	if version == SchemaVersion && !opts.ReadOnly {
+		if err := ensureV2AdminReplaySchema(ctx, driver); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+	}
+	var schemaErr error
+	if version == SchemaVersion && opts.ReadOnly {
+		schemaErr = verifyReadOnlyV2Schema(driver.DB())
+	} else {
+		schemaErr = verifySchema(driver.DB())
+	}
+	if err := schemaErr; err != nil {
 		_ = st.Close()
 		return nil, err
 	}

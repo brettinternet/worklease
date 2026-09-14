@@ -35,19 +35,21 @@ func (s *Service) RemoteRenewOperation(ctx context.Context, creds Credentials, r
 		return Receipt{}, err
 	}
 	now := s.clock.Now().UTC()
-	if err := validateRequestWindow(req.RequestNotAfter, now); err != nil {
-		return Receipt{}, err
-	}
-	hash := requestHash(map[string]any{"kind": "operation-renew", "authorityId": creds.Actor.AuthorityID, "expectedRestoreId": creds.Actor.ExpectedRestoreID, "installationId": creds.Actor.InstallationID, "claimId": creds.ClaimID, "operationId": req.OperationID, "renewalId": req.RenewalID, "ttl": ttl.Microseconds(), "requestNotAfter": req.RequestNotAfter.UnixMicro()})
+	var hash string
 	var out Receipt
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		if err := s.authorizeRemote(tx, creds.Actor, "write"); err != nil {
+		if err := s.authorizeRemoteContext(ctx, tx, creds.Actor, "write"); err != nil {
 			return err
 		}
 		effective, err := s.effectiveNow(tx, now)
 		if err != nil {
 			return err
 		}
+		now = effective
+		if err := validateRequestWindow(req.RequestNotAfter, effective); err != nil {
+			return err
+		}
+		hash = requestHash(map[string]any{"protocolVersion": "worklease-http/1", "kind": "operation-renew", "authorityId": creds.Actor.AuthorityID, "expectedRestoreId": creds.Actor.ExpectedRestoreID, "installationId": creds.Actor.InstallationID, "claimId": creds.ClaimID, "operationId": req.OperationID, "renewalId": req.RenewalID, "ttl": ttl.Microseconds(), "requestNotAfter": req.RequestNotAfter.UnixMicro()})
 		var target operationRow
 		found, err := readOperation(tx, creds.ClaimID, req.OperationID, &target)
 		if err != nil {
