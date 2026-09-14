@@ -580,8 +580,7 @@ func (h *harness) writeServerConfig(prefixes []string, maxTTL, maxHold string) e
 	return runSCP(h.remoteHost, local, h.configPath)
 }
 
-func (h *harness) requireServerStartFailure(expected ...string) error {
-	args := []string{"--json", "serve", "--server-config", h.configPath}
+func (h *harness) requireAuthorityFailure(args []string, expected ...string) error {
 	h.logCommand("authority@"+h.remoteHost+" expected-failure", append([]string{"worklease"}, args...))
 	var output []byte
 	var err error
@@ -591,13 +590,17 @@ func (h *harness) requireServerStartFailure(expected ...string) error {
 		output, err = exec.Command(h.binary, args...).CombinedOutput()
 	}
 	if err == nil {
-		return errors.New("misconfigured server unexpectedly started")
+		return fmt.Errorf("authority command unexpectedly succeeded: %s", strings.Join(args, " "))
 	}
 	var result map[string]any
 	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil || result["ok"] != false {
-		return fmt.Errorf("invalid server failure envelope: %v: %s", jsonErr, output)
+		return fmt.Errorf("invalid authority failure envelope: %v: %s", jsonErr, output)
 	}
 	return requireReason(result, expected...)
+}
+
+func (h *harness) requireServerStartFailure(expected ...string) error {
+	return h.requireAuthorityFailure([]string{"--json", "serve", "--server-config", h.configPath}, expected...)
 }
 
 func (h *harness) group1(evidence string) error {
@@ -719,7 +722,16 @@ func (h *harness) group2(evidence string) error {
 }
 
 func (h *harness) group3(evidence string) error {
-	credential := filepath.Join(h.clients[1].config, "worklease", "credentials", "team")
+	a, b := h.clients[0], h.clients[1]
+	installations, err := h.cli(a, "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
+		return err
+	}
+	oldInstallationID, err := installationIDByLabel(installations, "acceptance-worker")
+	if err != nil {
+		return err
+	}
+	credential := filepath.Join(b.config, "worklease", "credentials", "team")
 	saved := credential + ".saved"
 	var renameErr error
 	if h.realHost {
@@ -730,7 +742,7 @@ func (h *harness) group3(evidence string) error {
 	if renameErr != nil {
 		return renameErr
 	}
-	missingCredential, err := h.cliFailure(h.clients[1], "--profile", "team", "installation", "list")
+	missingCredential, err := h.cliFailure(b, "--profile", "team", "installation", "list")
 	if h.realHost {
 		_, renameErr = runSSH(h.remoteHost, "mv", saved, credential)
 	} else {
@@ -745,10 +757,76 @@ func (h *harness) group3(evidence string) error {
 	if err := requireReason(missingCredential, "credential-unsafe", "authentication-required"); err != nil {
 		return err
 	}
-	if _, err := h.cli(h.clients[0], "--profile", "team", "installation", "list"); err != nil {
+	rotationInvite := filepath.Join(h.root, "secrets", ".rotation.invite")
+	if _, err := h.cli(a, "--profile", "team", "invite", "issue", "--role", "write", "--invite-file", rotationInvite, "--label", "acceptance-worker-rotated"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "file-based bootstrap and worker enrollment produced isolated roles; missing installation credentials fail closed", Commands: []string{"enroll admin from bootstrap file", "issue worker invite file", "enroll worker", "remove credential and list installations"}, Evidence: []string{filepath.Join(evidence, "authority.log")}, Passed: true})
+	inviteForB := rotationInvite
+	if h.realHost {
+		inviteForB = filepath.Join(h.remoteRoot, ".rotation.invite")
+		if err := runSCP(h.remoteHost, rotationInvite, inviteForB); err != nil {
+			return err
+		}
+	}
+	oldCredential := credential + ".old"
+	if h.realHost {
+		_, renameErr = runSSH(h.remoteHost, "mv", credential, oldCredential)
+	} else {
+		renameErr = os.Rename(credential, oldCredential)
+	}
+	if renameErr != nil {
+		return renameErr
+	}
+	if _, err := h.cli(b, "enroll", "--profile", "team", "--invite-file", inviteForB, "--label", "acceptance-worker-rotated"); err != nil {
+		return err
+	}
+	newCredential := credential + ".new"
+	if _, err := h.cli(a, "--profile", "team", "installation", "revoke", "--installation-id", oldInstallationID, "--reason", "acceptance rotation"); err != nil {
+		return err
+	}
+	if h.realHost {
+		_, renameErr = runSSH(h.remoteHost, "mv", credential, newCredential)
+		if renameErr == nil {
+			_, renameErr = runSSH(h.remoteHost, "mv", oldCredential, credential)
+		}
+	} else {
+		renameErr = os.Rename(credential, newCredential)
+		if renameErr == nil {
+			renameErr = os.Rename(oldCredential, credential)
+		}
+	}
+	if renameErr != nil {
+		return renameErr
+	}
+	revoked, err := h.cliFailure(b, "--profile", "team", "acquire", "--handle", filepath.Join(b.home, "handles", "revoked.json"), "--resource", "coordination:revoked", "--ttl", "5s")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(revoked, "installation-revoked"); err != nil {
+		return err
+	}
+	if h.realHost {
+		_, renameErr = runSSH(h.remoteHost, "mv", credential, oldCredential)
+		if renameErr == nil {
+			_, renameErr = runSSH(h.remoteHost, "mv", newCredential, credential)
+		}
+	} else {
+		renameErr = os.Rename(credential, oldCredential)
+		if renameErr == nil {
+			renameErr = os.Rename(newCredential, credential)
+		}
+	}
+	if renameErr != nil {
+		return renameErr
+	}
+	rotatedHandle := filepath.Join(b.home, "handles", "rotated.json")
+	if _, err := h.cli(b, "--profile", "team", "acquire", "--handle", rotatedHandle, "--resource", "coordination:rotated", "--ttl", "5s"); err != nil {
+		return err
+	}
+	if _, err := h.cli(b, "--profile", "team", "release", "--handle", rotatedHandle, "--reason", "rotation observed"); err != nil {
+		return err
+	}
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "file-based enrollment keeps roles isolated; hidden invite rotation installs a new credential; revocation rejects the old bearer while the rotated bearer remains usable", Commands: []string{"enroll admin and worker from owner-private files", "remove credential and verify failure", "issue hidden rotation invite", "enroll replacement installation", "revoke old installation", "verify old bearer revoked", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "authority.log"), rotationInvite}, Passed: true})
 	return nil
 }
 
@@ -823,8 +901,24 @@ func (h *harness) group5(evidence string) error {
 		return err
 	}
 	h.report.RestoreTime = time.Since(start).String()
+	localMutation := []string{"--json", "--home", authorityDBRoot(h), "--local", "acquire", "--handle", filepath.Join(authorityDBRoot(h), "forbidden-local-handle.json"), "--resource", "coordination:forbidden-local", "--ttl", "1s"}
+	if err := h.requireAuthorityFailure(localMutation, "hosted-home-requires-remote"); err != nil {
+		return err
+	}
 	if err := h.restartServer(evidence); err != nil {
 		return err
+	}
+	if err := h.requireServerStartFailure("hosted-lock-held"); err != nil {
+		return err
+	}
+	lockChecks := [][]string{
+		{"--json", "hosted", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", filepath.Join(authorityDBRoot(h), "lock-check-bootstrap.invite")},
+		{"--json", "hosted", "retire", "--home", authorityDBRoot(h)},
+	}
+	for _, args := range lockChecks {
+		if err := h.requireAuthorityFailure(args, "hosted-lock-held"); err != nil {
+			return err
+		}
 	}
 	afterRestoreHandle := filepath.Join(h.clients[0].home, "handles", "after-restore.json")
 	staleClient, err := h.cliFailure(h.clients[0], "--profile", "team", "acquire", "--handle", afterRestoreHandle, "--resource", "coordination:after-restore")
@@ -834,7 +928,7 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation and old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "restart authority", "old client acquire"}, Evidence: []string{backup, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
 	return nil
 }
 
@@ -946,8 +1040,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		blocked("AC5.4", "immutable request incarnation"),
 		blocked("AC5.5", "no-burn mismatch"),
 		live("AC5.6", "role isolation", 3),
-		blocked("AC5.7", "credential rotation"),
-		blocked("AC5.8", "credential revocation"),
+		live("AC5.7", "credential rotation", 3),
+		live("AC5.8", "credential revocation", 3),
 		blocked("AC5.9", "distinct MCP authentication guidance"),
 		blocked("AC6.1", "snapshot/watch races"),
 		blocked("AC6.2", "disconnect and reconnect"),
@@ -973,8 +1067,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		blocked("AC7.16", "retained replay"),
 		blocked("AC7.17", "bootstrap reissue"),
 		blocked("AC7.18", "atomic reopen"),
-		blocked("AC7.19", "every lock-held bypass attempt"),
-		blocked("AC7.20", "direct local mutation refused against marked hosted home while lock is free"),
+		live("AC7.19", "every lock-held bypass attempt", 5),
+		live("AC7.20", "direct local mutation refused against marked hosted home while lock is free", 5),
 	}
 }
 
@@ -1050,6 +1144,19 @@ func (h *harness) cliFailure(c client, args ...string) (map[string]any, error) {
 		return nil, fmt.Errorf("invalid failure envelope: %v: %s", jsonErr, output)
 	}
 	return result, nil
+}
+
+func installationIDByLabel(result map[string]any, label string) (string, error) {
+	installations, _ := result["installations"].([]any)
+	for _, raw := range installations {
+		installation, _ := raw.(map[string]any)
+		if installation["label"] == label {
+			if id, _ := installation["installationId"].(string); id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("installation label %q not found", label)
 }
 
 func requireReason(result map[string]any, expected ...string) error {
