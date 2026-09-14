@@ -3,6 +3,9 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -93,6 +96,37 @@ func TestFinishedChildReplaysInflightRenewalBeforeCompletion(t *testing.T) {
 	}
 	if authority.renewals != 2 || authority.completionRevision != 3 {
 		t.Fatalf("renewals=%d completionRevision=%d", authority.renewals, authority.completionRevision)
+	}
+}
+
+type lateStartAuthority struct {
+	completed bool
+}
+
+func (*lateStartAuthority) BeginOperation(context.Context, lease.Credentials, lease.OperationIntent) (lease.Started, error) {
+	return lease.Started{OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ClaimID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Kind: "exec", Revision: 2}, nil
+}
+func (*lateStartAuthority) GuardDispatchAllowed(time.Duration) bool { return false }
+func (*lateStartAuthority) RenewOperation(context.Context, lease.Credentials, string, time.Duration) (lease.Receipt, error) {
+	return lease.Receipt{}, nil
+}
+func (a *lateStartAuthority) CompleteOperation(context.Context, lease.Credentials, string, map[string]any) (lease.Receipt, error) {
+	a.completed = true
+	return lease.Receipt{OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ClaimID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Kind: "exec", Revision: 3, Committed: true}, nil
+}
+
+func TestLateRemoteStartResponseDoesNotDispatch(t *testing.T) {
+	authority := &lateStartAuthority{}
+	marker := filepath.Join(t.TempDir(), "effect")
+	_, err := Exec(context.Background(), authority, lease.Credentials{ClaimID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, ExecRequest{
+		OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Argv: []string{"touch", marker},
+		TTL: time.Second, MaxDuration: time.Second, RequestNotAfter: time.Now().Add(time.Hour),
+	})
+	if err == nil || !authority.completed {
+		t.Fatalf("late start result: completed=%t err=%v", authority.completed, err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("late start dispatched effect: %v", statErr)
 	}
 }
 

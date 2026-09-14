@@ -72,6 +72,24 @@ func (c *AuthorityClock) DispatchAllowed(start time.Time, ttl time.Duration) boo
 	u, e := c.UpperBound()
 	return e == nil && u.Before(start.UTC().Add(ttl))
 }
+
+// DispatchAllowedFromSample applies the stop-new-work bound to the mutation
+// response that produced the current sample. Response latency and wall time
+// elapsed across suspend therefore consume the granted TTL.
+func (c *AuthorityClock) DispatchAllowedFromSample(ttl time.Duration) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.valid {
+		return false
+	}
+	now := c.now()
+	elapsed := now.Sub(c.sent)
+	if wallElapsed := now.UTC().Sub(c.sent.UTC()); wallElapsed > elapsed {
+		elapsed = wallElapsed
+	}
+	upper := c.authority.Add(elapsed)
+	return upper.Before(c.authority.Add(ttl * 3 / 4))
+}
 func (c *AuthorityClock) ShouldRenew(start time.Time, ttl time.Duration) bool {
 	u, e := c.UpperBound()
 	return e == nil && !u.Before(start.UTC().Add(ttl/2))

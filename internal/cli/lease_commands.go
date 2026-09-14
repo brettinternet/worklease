@@ -49,9 +49,17 @@ func tokenFromCommand(cmd *urfave.Command, fileFlag, fdFlag string) (string, err
 	}
 }
 func requestDeadlineCLI(cmd *urfave.Command) (time.Time, error) {
+	selected, err := profileSelection(cmd)
+	if err != nil {
+		return time.Time{}, err
+	}
+	remote := selected.Profile != nil
 	value := strings.TrimSpace(cmd.String("request-not-after"))
 	if value == "" {
 		if strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != "" || (strings.TrimSpace(cmd.String("claim-id")) == "" && strings.TrimSpace(cmd.String("token-file")) == "" && !cmd.IsSet("token-fd") && !cmd.IsSet("revision")) {
+			if remote {
+				return time.Time{}, nil
+			}
 			return time.Now().UTC().Add(24 * time.Hour), nil
 		}
 		return time.Time{}, reason.New(reason.ReasonReplayExpired, "request-not-after is required for stateless requests")
@@ -59,6 +67,9 @@ func requestDeadlineCLI(cmd *urfave.Command) (time.Time, error) {
 	deadline, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Time{}, reason.Invalid("request-not-after must be RFC3339")
+	}
+	if remote {
+		return deadline, nil
 	}
 	now := time.Now()
 	if !deadline.After(now) || deadline.After(now.Add(24*time.Hour)) {

@@ -87,6 +87,14 @@ func TestAuthorityClockBoundariesAndInvalidation(t *testing.T) {
 	if err := clock.Sample(now, now, now); err != nil {
 		t.Fatal(err)
 	}
+	now = start.Add(2900 * time.Millisecond)
+	if !clock.DispatchAllowedFromSample(4 * time.Second) {
+		t.Fatal("start response rejected before three quarters TTL")
+	}
+	now = start.Add(3100 * time.Millisecond)
+	if clock.DispatchAllowedFromSample(4 * time.Second) {
+		t.Fatal("start response allowed after three quarters TTL")
+	}
 	now = start.Add(5 * time.Second)
 	if !clock.ShouldRenew(start, 10*time.Second) {
 		t.Fatal("half-TTL renewal was not scheduled")

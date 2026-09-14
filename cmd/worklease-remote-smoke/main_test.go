@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +60,26 @@ func TestHistoricalResultHashIgnoresReplayMarker(t *testing.T) {
 	}
 }
 
+func TestVerifyClockBoundEvidenceRequiresLowerBoundAndNoExpiredDispatch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	generated, expired, late := strings.Repeat("4", 32), strings.Repeat("5", 32), strings.Repeat("6", 32)
+	log := "path=/.well-known/worklease status=200 requestSha256=aaa dropped=false responseDelay=1.2s authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:00Z historicalResultSha256=result at=2026-09-14T13:00:01.2Z\n" +
+		"path=/v1/claims/heartbeat status=200 requestSha256=bbb dropped=false responseDelay=0s requestId=" + generated + " requestNotAfter=2026-09-15T12:00:00.1Z authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:01Z historicalResultSha256=result at=now\n" +
+		"path=/v1/operations/begin status=200 requestSha256=ccc dropped=false responseDelay=2.5s requestId=" + late + " requestNotAfter=2026-09-15T12:00:02Z authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:02Z historicalResultSha256=result at=now\n"
+	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyClockBoundEvidence(logPath, generated, expired, late, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(log+"path=/v1/claims/heartbeat requestId="+expired+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyClockBoundEvidence(logPath, generated, expired, late, 2*time.Second); err == nil {
+		t.Fatal("expired request dispatch accepted")
+	}
+}
+
 func TestVerifyFaultGatesRequiresMatchedRequestHashes(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "fault.log")
 	log := "path=/v1/claims/acquire phase=held requestSha256=aaa at=now\n" +
@@ -73,6 +94,23 @@ func TestVerifyFaultGatesRequiresMatchedRequestHashes(t *testing.T) {
 	}
 	if err := verifyFaultGates(logPath, "/v1/claims/acquire", 1); err == nil {
 		t.Fatal("wrong gate count accepted")
+	}
+}
+
+func TestFaultProxyConsumesBoundedResponseFault(t *testing.T) {
+	dir := t.TempDir()
+	control := filepath.Join(dir, "control")
+	handler := &faultProxyHandler{control: control, log: filepath.Join(dir, "fault.log")}
+	if err := os.WriteFile(control, []byte("delay-response /v1/test 25ms -1h\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delay, offset := handler.consumeResponseFault("/v1/test", "request-hash")
+	if delay != 25*time.Millisecond || offset != -time.Hour {
+		t.Fatalf("delay=%s offset=%s", delay, offset)
+	}
+	delay, offset = handler.consumeResponseFault("/v1/test", "request-hash")
+	if delay != 0 || offset != 0 {
+		t.Fatalf("response fault was not one-shot: delay=%s offset=%s", delay, offset)
 	}
 }
 
