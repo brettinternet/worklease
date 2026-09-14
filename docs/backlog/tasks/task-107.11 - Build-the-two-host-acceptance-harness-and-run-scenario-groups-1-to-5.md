@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 15:29'
+updated_date: '2026-09-14 15:30'
 labels:
   - remote-authority
 dependencies:
@@ -104,4 +104,6 @@ Next resumable step: implement transport fault injection for AC4.1 and AC4.4-AC4
 Resumed under Worklease claim task-107-11-loop at AC4.1 transport fault injection; dependencies and prior evidence revalidated.
 
 Implemented AC4.1 one-shot TLS response-loss injection for begin, renewal, and completion. The harness records request-body hashes and requires an identical replay; lost begin remains unknown with zero dispatch, while renewal and completion replay with one effect. Acceptance exposed and fixed secondary pending replay sourcing the installation bearer instead of the contextual claim handle, completion replay being bypassed by begin replay, replayed JSON-number exit codes, and a finished-child/in-flight renewal race. Local objective evidence: dist/remote-acceptance/ac4-local-test-8/report.json and fault-proxy.log. A post-review real-host rerun is temporarily blocked by repeated baseline remote-host transport unknown-outcome failures before Group 2; the earlier pre-review run passed but is not used as final AC4.1 evidence.
+
+Committed AC4.1 transport-fault acceptance and replay fixes as fd58e45. Next resumable step is AC4.4 race ordering for installation revocation and policy changes. Post-review real-host rerun still requires a stable remote-host transport; repeated baseline setup mutations returned unknown-outcome before the fault slice.
 <!-- SECTION:NOTES:END -->
