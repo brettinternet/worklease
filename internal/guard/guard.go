@@ -293,6 +293,10 @@ type ExecAuthority interface {
 	CompleteOperation(context.Context, lease.Credentials, string, map[string]any) (lease.Receipt, error)
 }
 
+type conservativeDispatchAuthority interface {
+	GuardDispatchAllowed(time.Duration) bool
+}
+
 func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req ExecRequest) (ExecResult, error) {
 	if e := validExec(req.Argv); e != nil {
 		return ExecResult{}, e
@@ -357,6 +361,9 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 			}
 		}
 		return ExecResult{}, reason.New(reason.ReasonInvalidArgument, "guarded command could not be started")
+	}
+	if remote, ok := svc.(conservativeDispatchAuthority); ok && !remote.GuardDispatchAllowed(req.TTL) {
+		return preSpawnFailure(reason.New(reason.ReasonOwnershipLost, "guarded start response arrived after conservative authority expiry"))
 	}
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = cwd

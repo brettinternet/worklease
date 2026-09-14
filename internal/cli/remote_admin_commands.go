@@ -71,6 +71,13 @@ func adminCall(ctx context.Context, backend *authorityContext, path, kind string
 		if _, err := backend.HTTP.Metadata(ctx); err != nil {
 			return nil, err
 		}
+		if deadline, ok := body["requestNotAfter"].(time.Time); !ok || deadline.IsZero() {
+			deadline, err := backend.HTTP.Clock().RequestNotAfter()
+			if err != nil {
+				return nil, reason.New(reason.ReasonClockRegression, "authority time is unsampled")
+			}
+			body["requestNotAfter"] = deadline
+		}
 		if operationID == "" {
 			operationID = randomHex(16)
 		}
@@ -85,9 +92,8 @@ func adminCall(ctx context.Context, backend *authorityContext, path, kind string
 }
 
 func adminDeadline(cmd *urfave.Command) (time.Time, error) {
-	value := strings.TrimSpace(cmd.String("request-not-after"))
-	if value == "" {
-		return time.Now().UTC().Add(24 * time.Hour), nil
+	if strings.TrimSpace(cmd.String("request-not-after")) == "" {
+		return time.Time{}, nil
 	}
 	return requestDeadlineCLI(cmd)
 }

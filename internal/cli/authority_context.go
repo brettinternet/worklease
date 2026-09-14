@@ -30,6 +30,12 @@ type authorityWithDefaults struct {
 
 func (a authorityWithDefaults) DefaultTTL() time.Duration    { return a.ttl }
 func (a authorityWithDefaults) LocalService() *lease.Service { return a.local }
+func (a authorityWithDefaults) GuardDispatchAllowed(ttl time.Duration) bool {
+	if remote, ok := a.Authority.(interface{ GuardDispatchAllowed(time.Duration) bool }); ok {
+		return remote.GuardDispatchAllowed(ttl)
+	}
+	return true
+}
 
 type authorityContext struct {
 	API         commandAuthority

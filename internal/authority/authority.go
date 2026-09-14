@@ -124,6 +124,13 @@ func (a *LocalAuthority) ReconcileAtCurrentRevision(c context.Context, x lease.C
 // state is profile credentials and pending records owned by HTTPClient.
 type RemoteAuthority struct{ Client *HTTPClient }
 
+// GuardDispatchAllowed prevents a delayed successful begin response from
+// creating a local effect after its authority-time lease has conservatively
+// expired.
+func (a *RemoteAuthority) GuardDispatchAllowed(ttl time.Duration) bool {
+	return a.Client.clock.DispatchAllowedFromSample(ttl)
+}
+
 func NewRemoteAuthority(c *HTTPClient) (*RemoteAuthority, error) {
 	if c == nil {
 		return nil, reason.Invalid("remote HTTP client is required")

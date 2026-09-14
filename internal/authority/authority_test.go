@@ -116,4 +116,7 @@ func TestAuthorityTimeIsConservativeUnderAsymmetricLatency(t *testing.T) {
 	if !c.CanStart(current, 2*time.Second) {
 		t.Fatal("stopped work before three-quarter ttl")
 	}
+	if c.DispatchAllowedFromSample(time.Second) {
+		t.Fatal("response latency extended the authority-time ttl")
+	}
 }

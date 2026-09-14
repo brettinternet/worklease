@@ -689,7 +689,17 @@ func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if readErr != nil {
 				return readErr
 			}
-			drop := p.consume(r.URL.Path, response.StatusCode, requestHash, responseBody)
+			delay, authorityOffset := p.consumeResponseFault(r.URL.Path, requestHash)
+			if authorityOffset != 0 {
+				responseBody, readErr = shiftAuthorityTime(responseBody, authorityOffset)
+				if readErr != nil {
+					return readErr
+				}
+			}
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			drop := p.consume(r.URL.Path, response.StatusCode, requestHash, body, responseBody, delay)
 			if drop {
 				return errDropResponse
 			}
@@ -748,7 +758,48 @@ func (p *faultProxyHandler) appendLog(entry string) {
 	}
 }
 
-func (p *faultProxyHandler) consume(path string, status int, requestHash string, responseBody []byte) bool {
+func (p *faultProxyHandler) consumeResponseFault(path, requestHash string) (time.Duration, time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	armed, _ := os.ReadFile(p.control)
+	fields := strings.Fields(string(armed))
+	if (len(fields) != 3 && len(fields) != 4) || fields[0] != "delay-response" || fields[1] != path {
+		return 0, 0
+	}
+	delay, err := time.ParseDuration(fields[2])
+	if err != nil || delay <= 0 || delay > 10*time.Second {
+		return 0, 0
+	}
+	authorityOffset := time.Duration(0)
+	if len(fields) == 4 {
+		authorityOffset, err = time.ParseDuration(fields[3])
+		if err != nil || authorityOffset < -12*time.Hour || authorityOffset > 12*time.Hour {
+			return 0, 0
+		}
+	}
+	_ = os.WriteFile(p.control, nil, 0o600)
+	p.appendLog(fmt.Sprintf("path=%s phase=response-delay requestSha256=%s duration=%s authorityOffset=%s at=%s\n", path, requestHash, delay, authorityOffset, time.Now().UTC().Format(time.RFC3339Nano)))
+	return delay, authorityOffset
+}
+
+func shiftAuthorityTime(body []byte, offset time.Duration) ([]byte, error) {
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	raw, ok := envelope["authorityTime"].(string)
+	if !ok {
+		return nil, errors.New("response has no authority time")
+	}
+	authorityTime, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil, err
+	}
+	envelope["authorityTime"] = authorityTime.Add(offset).UTC().Format(time.RFC3339Nano)
+	return json.Marshal(envelope)
+}
+
+func (p *faultProxyHandler) consume(path string, status int, requestHash string, requestBody, responseBody []byte, responseDelay time.Duration) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	armed, _ := os.ReadFile(p.control)
@@ -757,6 +808,23 @@ func (p *faultProxyHandler) consume(path string, status int, requestHash string,
 		_ = os.WriteFile(p.control, nil, 0o600)
 	}
 	responseFields := ""
+	var request struct {
+		OperationID     string    `json:"operationId"`
+		ClaimID         string    `json:"claimId"`
+		RequestNotAfter time.Time `json:"requestNotAfter"`
+	}
+	if json.Unmarshal(requestBody, &request) == nil {
+		requestID := request.OperationID
+		if requestID == "" {
+			requestID = request.ClaimID
+		}
+		if requestID != "" {
+			responseFields += " requestId=" + requestID
+		}
+		if !request.RequestNotAfter.IsZero() {
+			responseFields += " requestNotAfter=" + request.RequestNotAfter.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	var envelope struct {
 		AuthorityID   string          `json:"authorityId"`
 		RestoreID     string          `json:"restoreId"`
@@ -764,9 +832,9 @@ func (p *faultProxyHandler) consume(path string, status int, requestHash string,
 		Result        json.RawMessage `json:"result"`
 	}
 	if json.Unmarshal(responseBody, &envelope) == nil && envelope.AuthorityID != "" && envelope.RestoreID != "" && !envelope.AuthorityTime.IsZero() {
-		responseFields = fmt.Sprintf(" authorityId=%s restoreId=%s authorityTime=%s historicalResultSha256=%s", envelope.AuthorityID, envelope.RestoreID, envelope.AuthorityTime.UTC().Format(time.RFC3339Nano), historicalResultHash(envelope.Result))
+		responseFields += fmt.Sprintf(" authorityId=%s restoreId=%s authorityTime=%s historicalResultSha256=%s", envelope.AuthorityID, envelope.RestoreID, envelope.AuthorityTime.UTC().Format(time.RFC3339Nano), historicalResultHash(envelope.Result))
 	}
-	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t%s at=%s\n", path, status, requestHash, drop, responseFields, time.Now().UTC().Format(time.RFC3339Nano))
+	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t responseDelay=%s%s at=%s\n", path, status, requestHash, drop, responseDelay, responseFields, time.Now().UTC().Format(time.RFC3339Nano))
 	p.appendLog(entry)
 	return drop
 }
@@ -828,6 +896,18 @@ func (h *harness) setFaultControl(command string) error {
 
 func (h *harness) armFault(path string) error {
 	return h.setFaultControl("drop " + path)
+}
+
+func (h *harness) delayResponse(path string, delay time.Duration) error {
+	return h.delayResponseWithAuthorityOffset(path, delay, 0)
+}
+
+func (h *harness) delayResponseWithAuthorityOffset(path string, delay, offset time.Duration) error {
+	command := "delay-response " + path + " " + delay.String()
+	if offset != 0 {
+		command += " " + offset.String()
+	}
+	return h.setFaultControl(command)
 }
 
 func (h *harness) holdFault(path string) error {
@@ -990,6 +1070,54 @@ func verifyFreshReplayEnvelope(logPath, path, authorityID string) error {
 		return nil
 	}
 	return fmt.Errorf("fault path %s has no dropped response and matching fresh replay envelope", path)
+}
+
+func verifyClockBoundEvidence(logPath, generatedDeadlineID, expiredID, lateStartID string, lateStartTTL time.Duration) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	var delayedSample, delayedObservedAt, generatedDeadline time.Time
+	lateStartObserved := false
+	for _, line := range strings.Split(string(data), "\n") {
+		values := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) == 2 {
+				values[parts[0]] = parts[1]
+			}
+		}
+		if values["requestId"] == expiredID {
+			return errors.New("expired short-window request reached the authority")
+		}
+		if values["path"] == "/.well-known/worklease" && values["responseDelay"] != "0s" {
+			delayedSample, _ = time.Parse(time.RFC3339Nano, values["authorityTime"])
+			delayedObservedAt, _ = time.Parse(time.RFC3339Nano, values["at"])
+		}
+		if values["requestId"] == generatedDeadlineID {
+			generatedDeadline, _ = time.Parse(time.RFC3339Nano, values["requestNotAfter"])
+		}
+		if values["requestId"] == lateStartID {
+			delay, _ := time.ParseDuration(values["responseDelay"])
+			if delay >= lateStartTTL*3/4 {
+				lateStartObserved = true
+			}
+		}
+	}
+	if delayedSample.IsZero() || delayedObservedAt.IsZero() || generatedDeadline.IsZero() {
+		return errors.New("delayed authority sample or generated request deadline was not observed")
+	}
+	if delayedObservedAt.Sub(delayedSample) < 30*time.Minute {
+		return errors.New("authority-time sample did not include measurable client clock skew")
+	}
+	window := generatedDeadline.Sub(delayedSample)
+	if window < 24*time.Hour-100*time.Millisecond || window > 24*time.Hour+500*time.Millisecond {
+		return fmt.Errorf("request deadline did not use the delayed sample lower bound: window=%s", window)
+	}
+	if !lateStartObserved {
+		return errors.New("late start response did not cross the stop-new-work threshold")
+	}
+	return nil
 }
 
 func (h *harness) switchProfileEndpoint(c client, endpoint string) error {
@@ -1269,6 +1397,57 @@ func (h *harness) group2(evidence string) error {
 	if err := verifyFreshReplayEnvelope(filepath.Join(evidence, "fault-proxy.log"), "/v1/operations/complete", h.report.Authority); err != nil {
 		return err
 	}
+
+	clockHandle := filepath.Join(a.home, "handles", "clock-bounds.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", clockHandle, "--resource", "coordination:clock-bounds", "--ttl", "5s"); err != nil {
+		return err
+	}
+	generatedDeadlineID := strings.Repeat("4", 32)
+	if err := h.delayResponseWithAuthorityOffset("/.well-known/worklease", 1200*time.Millisecond, -time.Hour); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "heartbeat", "--handle", clockHandle, "--operation-id", generatedDeadlineID, "--ttl", "5s"); err != nil {
+		return err
+	}
+	expiredID := strings.Repeat("5", 32)
+	expired, err := h.cliFailure(a, "--profile", "team", "heartbeat", "--handle", clockHandle, "--operation-id", expiredID, "--request-not-after", time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano), "--ttl", "5s")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(expired, "replay-expired"); err != nil {
+		return err
+	}
+
+	lateHandle := filepath.Join(a.home, "handles", "late-start.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", lateHandle, "--resource", "coordination:late-start", "--ttl", "5s"); err != nil {
+		return err
+	}
+	lateEffect := filepath.Join(evidence, "late-start-effect.log")
+	lateStartID, lateStartTTL := strings.Repeat("6", 32), 2*time.Second
+	if err := h.delayResponse("/v1/operations/begin", 1700*time.Millisecond); err != nil {
+		return err
+	}
+	late, err := h.cliFailure(a, "--profile", "team", "exec", "--handle", lateHandle, "--operation-id", lateStartID, "--ttl", lateStartTTL.String(), "--", h.self, "effect", lateEffect)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(late, "invalid-argument", "claim-expired", "ownership-lost", "unknown-outcome"); err != nil {
+		return err
+	}
+	if _, err := os.Stat(lateEffect); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("late start response dispatched an effect: %v", err)
+	}
+	h.report.EffectDispatchCounts[filepath.Base(lateEffect)] = 0
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := verifyClockBoundEvidence(filepath.Join(evidence, "fault-proxy.log"), generatedDeadlineID, expiredID, lateStartID, lateStartTTL); err != nil {
+		return err
+	}
+	clockEvidence := filepath.Join(evidence, "clock-bounds.txt")
+	if err := os.WriteFile(clockEvidence, []byte("asymmetric metadata response delay=1.2s\ninjected authority/client wall-clock skew=-1h\nrequest window=authority lower bound + 24h\nexpired short window dispatches=0\nlate successful start response dispatches=0\n"), 0o600); err != nil {
+		return err
+	}
 	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
 		return err
 	}
@@ -1301,7 +1480,7 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, faultEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
 	return nil
 }
 
@@ -1734,7 +1913,7 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC4.3", "no local fallback during partition", 2),
 		live("AC4.4", "race ordering for revocation and policy changes", 2),
 		live("AC4.5", "fresh response identity and time", 2),
-		blocked("AC4.6", "clock-bound edge cases"),
+		live("AC4.6", "clock-bound edge cases", 2),
 		blocked("AC4.7", "pre-dispatch persistence failure"),
 		blocked("AC4.8", "late acknowledgment without redispatch"),
 		blocked("AC4.9", "asynchronous provider effect continuing after terminal completion"),
