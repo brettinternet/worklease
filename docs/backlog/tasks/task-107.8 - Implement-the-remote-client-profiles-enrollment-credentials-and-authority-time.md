@@ -3,11 +3,11 @@ id: TASK-107.8
 title: >-
   Implement the remote client: profiles, enrollment, credentials, and authority
   time
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 08:06'
+updated_date: '2026-09-14 10:09'
 labels:
   - remote-authority
 dependencies:
@@ -20,6 +20,22 @@ references:
 documentation:
   - docs/remote-claim-authority.md
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
+modified_files:
+  - internal/authority/authority.go
+  - internal/authority/authority_test.go
+  - internal/authority/enrollment_test.go
+  - internal/authority/handle_pending.go
+  - internal/authority/http.go
+  - internal/authority/pending.go
+  - internal/authority/regression_test.go
+  - internal/authority/replay_test.go
+  - internal/authority/time.go
+  - internal/config/profile.go
+  - internal/config/profile_test.go
+  - internal/handle/handle.go
+  - internal/lease/reconciliation.go
+  - internal/lease/service.go
+  - internal/ledger/ledger.go
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -38,19 +54,19 @@ Profiles bind a trusted endpoint, expected authority, and pinned restore incarna
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One narrow authority interface serves the actual CLI, MCP, and guard consumers through the existing local SQLite service or the remote client. Remote-selected consumers do not open local SQLite authority state, local mode retains its current SQLite behavior, no backend registry is added, and contract fakes work without a live server.
-- [ ] #2 Profile selection follows the fixed precedence, repository content cannot select or redirect a profile, and an unbound invocation with no explicit profile, environment selection, or default uses local state without network access.
-- [ ] #3 Enrollment uses bounded public metadata discovery, saves immutable authority and restore identity plus exact pending state, generates and durably stores the installation credential before dispatch, replays a dropped response exactly, and activates the profile only after confirmed or recovered success.
-- [ ] #4 Credentials use the OS credential store or owner-private file storage, with descriptors only reading an already durable secret. Credentials never enter profile YAML, argv, logs, or redirects, HTTPS is required outside explicit development mode, and any new credential-store runtime module requires a contract D2 amendment.
-- [ ] #5 Every built-in remote mutation has durable exact pending state before dispatch, including admin and no-handle requests. Named claims reuse handle pending state; renewal, completion, reconciliation, and other requests use bounded profile recovery records when that slot is occupied; a failed pre-dispatch write sends nothing.
-- [ ] #6 Pending state retains each original request, authority, and `expectedRestoreId`. Guarded start and effect evidence remains until the operation is terminal or reconciled; a successful begin or renewal acknowledgment does not clear it, and recovering a later request cannot overwrite it. Each request record clears only after its confirmed terminal response, reconciliation, or definitive no-commit proof. Auth, revocation, incarnation, timeout, age, GC, replay expiry, refresh, and rotation preserve uncertainty.
-- [ ] #7 A configured remote profile never falls back locally. An uncertain dispatch preserves evidence and stops dependent new work. Retained replay of a started operation never permits execution, and a late acknowledgment received after the safe dispatch window cannot cause first dispatch; a timely confirmed original start may dispatch its effect once.
-- [ ] #8 Authority-time tests cover asymmetric latency, restart and suspend resampling, renewal at half TTL, stop-new-work at three quarters, the lower-bound 24-hour request deadline, expired short windows, and a late successful start response that does not dispatch an effect.
+- [x] #1 One narrow authority interface serves the actual CLI, MCP, and guard consumers through the existing local SQLite service or the remote client. Remote-selected consumers do not open local SQLite authority state, local mode retains its current SQLite behavior, no backend registry is added, and contract fakes work without a live server.
+- [x] #2 Profile selection follows the fixed precedence, repository content cannot select or redirect a profile, and an unbound invocation with no explicit profile, environment selection, or default uses local state without network access.
+- [x] #3 Enrollment uses bounded public metadata discovery, saves immutable authority and restore identity plus exact pending state, generates and durably stores the installation credential before dispatch, replays a dropped response exactly, and activates the profile only after confirmed or recovered success.
+- [x] #4 Credentials use the OS credential store or owner-private file storage, with descriptors only reading an already durable secret. Credentials never enter profile YAML, argv, logs, or redirects, HTTPS is required outside explicit development mode, and any new credential-store runtime module requires a contract D2 amendment.
+- [x] #5 Every built-in remote mutation has durable exact pending state before dispatch, including admin and no-handle requests. Named claims reuse handle pending state; renewal, completion, reconciliation, and other requests use bounded profile recovery records when that slot is occupied; a failed pre-dispatch write sends nothing.
+- [x] #6 Pending state retains each original request, authority, and `expectedRestoreId`. Guarded start and effect evidence remains until the operation is terminal or reconciled; a successful begin or renewal acknowledgment does not clear it, and recovering a later request cannot overwrite it. Each request record clears only after its confirmed terminal response, reconciliation, or definitive no-commit proof. Auth, revocation, incarnation, timeout, age, GC, replay expiry, refresh, and rotation preserve uncertainty.
+- [x] #7 A configured remote profile never falls back locally. An uncertain dispatch preserves evidence and stops dependent new work. Retained replay of a started operation never permits execution, and a late acknowledgment received after the safe dispatch window cannot cause first dispatch; a timely confirmed original start may dispatch its effect once.
+- [x] #8 Authority-time tests cover asymmetric latency, restart and suspend resampling, renewal at half TTL, stop-new-work at three quarters, the lower-bound 24-hour request deadline, expired short windows, and a late successful start response that does not dispatch an effect.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci` passes on the final commit
+- [x] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -63,3 +79,15 @@ Profiles bind a trusted endpoint, expected authority, and pinned restore incarna
 5. Add conservative authority-time sampling and half/three-quarter/deadline scheduling behavior.
 6. Add focused contract tests, run repository quality gates, independently review and verify all acceptance criteria.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented shared local/remote authority client contract, trusted user-side profiles and bindings, owner-private credential and recovery storage, strict pinned HTTP transport, enrollment and restart replay, RemoteHandleV2 pending evidence, exact lifecycle/admin recovery, and conservative authority-time scheduling. Review findings fixed: route/result correlation before clearing, named handle and secondary recovery, no-handle credential references, transfer successor recovery, and cross-handle reconciliation cleanup. Verification: mise run ci passed after final changes; staged Lefthook pre-commit passed; independent review and verifier findings were resolved with focused regression tests.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the remote authority client foundation in 8cd1bf7: shared local/remote/fake contract, trusted profiles, durable credentials and exact pending recovery, strict fail-closed HTTP/enrollment, named and handleless replay, transfer/reconciliation recovery, and authority-time bounds. Verified with focused regression tests, go test ./..., mise run lint, mise run format-check, mise run typecheck, mise run ci, and Lefthook pre-commit.
+<!-- SECTION:FINAL_SUMMARY:END -->
