@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 22:51'
+updated_date: '2026-09-14 23:20'
 labels:
   - remote-authority
 dependencies:
@@ -75,6 +75,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 8. Retain a dropped enrollment pending record across restore for AC5.4, then implement the reachable bootstrap crash/redaction and hidden invite-input portions of AC5.1-AC5.2; preserve any genuinely unreachable clauses as explicit blockers, run local and real-host evidence where available, review, run all quality gates, and commit.
 
 9. Replace personal SSH-host assumptions with a repository-managed Lima VM for durable remote acceptance runs; keep the generic SSH target supported for deployment-owned environments.
+
+10. Implement deterministic bootstrap subprocess crash-ordering and redaction evidence for AC5.1, then distinct MCP authentication guidance for AC5.9; run local and reachable real-host acceptance, independent review, all quality gates, staged hooks, commit, and record objective evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
