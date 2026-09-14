@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 16:01'
+updated_date: '2026-09-14 16:02'
 labels:
   - remote-authority
 dependencies:
@@ -110,4 +110,6 @@ Committed AC4.4 ordering acceptance as d77735a (Exercise remote policy race orde
 Resumed under Worklease claim task-107-11-loop-2 at AC4.5 fresh response identity and authority time; dependencies, prior evidence, and clean main checkout revalidated.
 
 Implemented AC4.5 fresh replay envelopes. The fault proxy now records redacted authorityId, restoreId, authorityTime, and a canonical historical-result hash for application responses. Group 2 requires an exact completion replay to retain the historical result and current authority/restore identity while advancing authority time. Local objective evidence: dist/remote-acceptance/20260914T155938.260367000Z/report.json, coverage.json, and fault-proxy.log; AC4.5 is local live-pass. The real-host rerun reached Group 1 but remote-host again returned a baseline heartbeat unknown-outcome before Group 2, so no real-host AC4.5 pass is claimed. Quality gates lint, format-check, test, and typecheck passed. Next resumable step: AC4.6 clock-bound edge cases; rerun AC4.5 on remote-host when baseline transport is stable.
+
+Committed AC4.5 acceptance as 8addab9 (Verify fresh remote replay envelopes).
 <!-- SECTION:NOTES:END -->
