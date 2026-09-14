@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 15:53'
+updated_date: '2026-09-14 15:54'
 labels:
   - remote-authority
 dependencies:
@@ -104,4 +104,6 @@ Implemented AC4.1 one-shot TLS response-loss injection for begin, renewal, and c
 Committed AC4.1 transport-fault acceptance and replay fixes as fd58e45. Next resumable step is AC4.4 race ordering for installation revocation and policy changes. Post-review real-host rerun still requires a stable remote-host transport; repeated baseline setup mutations returned unknown-outcome before the fault slice.
 
 Implemented deterministic AC4.4 ordering gates in the shared local/real-host harness. The TLS fault proxy can now hold an acquire before forwarding and records matched request-hash hold/release evidence. Group 2 proves installation revocation serialized first rejects a held mutation, a mutation committed first remains retained after revocation, prefix withdrawal serialized first rejects a held admission, and a claim admitted first can heartbeat after withdrawal. Held client commands are process-bounded. Local objective evidence: dist/remote-acceptance/ac4-race-local-test-3/report.json, coverage.json, fault-proxy.log, and race-ordering.txt. Focused tests and the full local harness pass. The real-host run remains blocked before Group 2 by the pre-existing remote-host baseline invite-issue unknown-outcome during provisioning; no AC4.4 real-host pass is claimed. Reviewer findings for SSH argument splitting, stale copied proxy evidence, and unbounded held commands were fixed.
+
+Committed AC4.4 ordering acceptance as d77735a (Exercise remote policy race ordering). Independent review found three concrete harness defects; all were fixed before commit and the reviewer reported no additional findings. Next resumable step: AC4.5 fresh response identity and authority time. The remote-host provisioning transport must be stable before any new real-host coverage can be promoted.
 <!-- SECTION:NOTES:END -->
