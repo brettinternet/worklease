@@ -17,6 +17,32 @@ import (
 func testHandle() Handle {
 	return Handle{SchemaVersion: 1, AuthorityID: strings.Repeat("a", 32), ClaimID: strings.Repeat("b", 32), Token: strings.Repeat("c", 64), Revision: 1, Resources: []string{"r"}, ExpiresAt: time.Now().Add(time.Hour), AgentID: "agent", SessionID: "session", State: "ready"}
 }
+
+func TestReadCredentialFDOwnsDuplicateUntilClose(t *testing.T) {
+	credentialPath := filepath.Join(t.TempDir(), "credential")
+	credential := strings.Repeat("a", 64)
+	if err := os.WriteFile(credentialPath, []byte(credential+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if got, err := ReadCredentialFD(int(source.Fd())); err != nil || got != credential {
+		t.Fatalf("credential=%q err=%v", got, err)
+	}
+	target, err := os.OpenFile(filepath.Join(t.TempDir(), "after"), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	runtime.GC()
+	runtime.Gosched()
+	if _, err := target.WriteString("still-open\n"); err != nil {
+		t.Fatalf("credential descriptor finalizer closed a reused descriptor: %v", err)
+	}
+}
 func TestContextRootAndContextualPathAreStableAndSessionScoped(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")

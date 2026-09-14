@@ -38,6 +38,53 @@ func TestVerifyFaultReplaysRequiresMatchingBody(t *testing.T) {
 	}
 }
 
+func TestUnexpectedEnrollmentResponseErrorRedactsEnvelope(t *testing.T) {
+	credential := strings.Repeat("a", 64)
+	err := unexpectedEnrollmentResponseError(500, map[string]any{"error": map[string]any{"reason": "internal", "message": credential}})
+	if strings.Contains(err.Error(), credential) || err.Error() != `mismatched enrollment status=500 reason="internal"` {
+		t.Fatalf("unsafe mismatch error: %v", err)
+	}
+}
+
+func TestRequireSecretValuesAbsentScansLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authority.log")
+	secret := []byte(strings.Repeat("b", 64))
+	if err := os.WriteFile(path, append([]byte("echoed="), secret...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireSecretValuesAbsent([]string{path}, secret); err == nil {
+		t.Fatal("echoed credential was not detected")
+	}
+}
+
+func TestVerifyExactFaultReplayRequiresOneDroppedIdenticalReplay(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fault.log")
+	requestID := strings.Repeat("a", 32)
+	valid := "path=/v1/enroll status=200 requestSha256=hash dropped=true historicalResultSha256=result requestId=" + requestID + "\n" +
+		"path=/v1/enroll status=200 requestSha256=hash dropped=false historicalResultSha256=result requestId=" + requestID + "\n"
+	if err := os.WriteFile(logPath, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyExactFaultReplay(logPath, "/v1/enroll", requestID); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]string{
+		"changed body":   strings.Replace(valid, "requestSha256=hash dropped=false", "requestSha256=other dropped=false", 1),
+		"changed result": strings.Replace(valid, "historicalResultSha256=result requestId="+requestID+"\n", "historicalResultSha256=other requestId="+requestID+"\n", 1),
+		"not dropped":    strings.Replace(valid, "dropped=true", "dropped=false", 1),
+		"extra replay":   valid + "path=/v1/enroll status=200 requestSha256=hash dropped=false historicalResultSha256=result requestId=" + requestID + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(logPath, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyExactFaultReplay(logPath, "/v1/enroll", requestID); err == nil {
+				t.Fatal("invalid replay evidence accepted")
+			}
+		})
+	}
+}
+
 func TestVerifyFreshReplayEnvelopeRequiresStableResultAndNewerTime(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "fault.log")
 	log := "path=/v1/operations/complete status=200 requestSha256=aaa dropped=true authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:00Z historicalResultSha256=result at=now\n" +
