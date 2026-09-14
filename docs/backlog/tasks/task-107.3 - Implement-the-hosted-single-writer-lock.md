@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 03:02'
+updated_date: '2026-09-14 03:03'
 labels:
   - remote-authority
 dependencies: []
@@ -57,6 +57,8 @@ Use the stable lock-file and pinned device/inode technique already used in `inte
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented durable owner-private hosted markers, pre-database local-write refusal with remote-profile guidance, and an exclusive nonblocking process-lifetime flock retained by approved hosted Store opens. Lock acquisition pins and verifies the stable lock inode and the home directory identity; Close releases only after SQLite closes and never unlinks the lock. Added deterministic lock/home replacement tests, v1 migration gating, stable-inode takeover, same-process contention, subprocess SIGSTOP/resume/exit handoff, empty-home marking, and ordinary-home concurrency/no-lock coverage. Independent verification found a parent-directory replacement gap; added immediate post-lock and pre-schema pinned-home identity checks plus regression coverage. Validation: focused store tests, go test -race ./internal/store, mise run lint, mise run typecheck, and full mise run ci passed. Final independent verification passed all five acceptance criteria.
+
+Delivery commit: 24eb317 (Add hosted authority writer lock).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
