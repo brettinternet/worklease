@@ -1,10 +1,11 @@
 ---
 id: TASK-107.11
 title: Build the two-host acceptance harness and run scenario groups 1 to 5
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:03'
+updated_date: '2026-09-14 11:47'
 labels:
   - remote-authority
 dependencies:
@@ -20,6 +21,10 @@ references:
 documentation:
   - docs/remote-claim-authority.md
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
+modified_files:
+  - cmd/worklease-remote-smoke/main.go
+  - scripts/test-e2e.sh
+  - mise.toml
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -50,3 +55,20 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 <!-- DOD:BEGIN -->
 - [ ] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Keep the checked-in local-development probe as the fast TLS/two-root CLI/MCP/guard/backup/restore path in e2e.
+2. Add deployment-owned real-host orchestration around the same scenario operations, including independent fault dispatch/effect counters and asynchronous backup selection.
+3. Complete every Group 1-5 case against one authority and two real client hosts; retain redacted commands, environment, measurements, cutoffs, recovery bounds, and owning observations.
+4. Rerun mise run ci and the unchanged real-host harness, review failures, and close only after all objective evidence passes.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented the local-development acceptance probe in cmd/worklease-remote-smoke and wired it into scripts/test-e2e.sh plus mise run remote-smoke. The probe launches the shipped TLS server, creates two isolated checkout/config/credential/home roots, exercises CLI contention, stdio MCP, a client-local guarded effect with dispatch count 1, partition fail-closed behavior, enrollment/credential failure, snapshot/watch, and an online SQLite backup followed by restore. It writes owner-private command, measurement, backup, pending-inventory, and per-group report evidence under dist/remote-acceptance/TIMESTAMP/.
+
+Local evidence: dist/remote-acceptance/20260914T114650.483809000Z/report.json. mise run ci passed on 2026-09-14. This is explicitly development evidence only: the complete fault matrix and unchanged real-host run remain blocking, including measured WAN latency/throughput, real host/process/filesystem boundaries, external asynchronous provider effects, and deployment backup/restore bounds.
+<!-- SECTION:NOTES:END -->

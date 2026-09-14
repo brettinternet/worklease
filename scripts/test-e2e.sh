@@ -7,5 +7,6 @@ set -eu
 # create otherwise-unreachable pending/predecessor states and exercise all tools.
 CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease
 go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev
+go run ./cmd/worklease-remote-smoke --binary ./bin/worklease
 go run ./cmd/worklease-doc-test
 go test ./internal/cli ./internal/mcp -run 'Test(CommandTreeRegistrationHelpAndShortOptions|CanonicalCommandHelpPathsFlagsAndExamples|PendingLifecycleRecoversBeforeAndAfterAuthorityDispatch|LedgerCLIJSONAndPendingHandleReconciliationRecovery|SetupMCPPreviewApplyAndNewUserLifecycle|SetupGuardAndInstructionsJSON|InstructionsAndDoctorAreReadOnly|WatchSubprocessEventWakesFilteredWaiter|PublicFullHistoryAndEventsRedactCheckpointAndCredentials|ReferencesCrossServerPendingRecoveryAndRestartHold|EndToEndDiscoveredClientUsesOnlyLeaseReference|OversizedInputAndExactElevenToolSchemas)$'

@@ -18,6 +18,7 @@ hooks-all = "lefthook run pre-commit --all-files"
 build = "CGO_ENABLED=0 go build -trimpath -o bin/worklease ./cmd/worklease"
 man = "mkdir -p dist && go run ./cmd/worklease-man --version dev > dist/worklease.1"
 smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev", depends = ["build"] }
+remote-smoke = { run = "go run ./cmd/worklease-remote-smoke --binary ./bin/worklease", depends = ["build"] }
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
