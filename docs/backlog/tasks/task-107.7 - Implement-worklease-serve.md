@@ -4,7 +4,7 @@ title: Implement worklease serve
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:03'
+updated_date: '2026-09-14 01:43'
 labels:
   - remote-authority
 dependencies:
@@ -33,7 +33,7 @@ The server configuration supplies the listen address, TLS material or an explici
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease serve --config FILE` recognizes the hosted home and takes its lock before opening or migrating the database, serves one namespace, drains in-flight requests for a bounded shutdown deadline on SIGTERM, then cancels pending requests and long polls and releases the lock after shutdown.
+- [ ] #1 `worklease serve --server-config FILE` recognizes the hosted home and takes its lock before opening or migrating the database, serves one namespace, drains in-flight requests for a bounded shutdown deadline on SIGTERM, then cancels pending requests and long polls and releases the lock after shutdown.
 - [ ] #2 Health and bounded identity-only metadata discovery are public and disclose only authority identity, restore identity, supported protocol information, authority time, and health. Health, metadata, and enrollment have explicit rate and body limits. Enrollment requires invite authentication; all other routes require an installation bearer.
 - [ ] #3 Handlers reject unknown fields, unsupported versions, oversized bodies or responses, invalid structure, and cancellation according to every frozen error mapping. Every application response is validated, carries fresh `authorityId`, `restoreId`, and `authorityTime`, and uses `Cache-Control: no-store`.
 - [ ] #4 Early transport validation does not replace transaction checks. Authenticated mutations recheck bearer state, role, authority, incarnation, epoch credential, replay, recovery state, and admission policy through the service in the frozen order.

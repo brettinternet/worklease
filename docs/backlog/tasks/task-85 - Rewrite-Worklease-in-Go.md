@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-14 01:06'
+updated_date: '2026-09-14 01:20'
 labels:
   - go-rewrite
 milestone: m-0
@@ -113,6 +113,12 @@ Owner-requested amendment recorded in contract sections 17 and 20 (no task): the
 created: 2026-09-14 01:06
 ---
 Owner-authorized TASK-107 finalizes the remote authority contract while leaving shipped local behavior unchanged. Section 20 now requires exact pending recovery for every remote mutation and independent restore outcome and cessation coverage; the completed-history journal remains a triggered follow-up.
+---
+
+author: @brett
+created: 2026-09-14 01:20
+---
+TASK-107.1 amendment summary: product-contract section 20.3 now freezes Remote Authority Protocol V1 (doc-4) by reference under section 15. The specification fixes worklease-http/1, exact HTTPS routes and CLI flags, storage-neutral mappings to existing typed services plus named auth/admin extensions, bounded non-cacheable envelopes, cancellation, installation/incarnation/epoch/replay/admission ordering, complete error-to-HTTP mapping, and the offline/client/HTTP/CLI/MCP exposure matrix. It excludes LegacyRequestHash, remote provider execution and replace-file, HTTP retirement, MCP enrollment, recovery import, and cross-host transfer. Evidence is recorded in the dated section 17 amendment.
 ---
 <!-- COMMENTS:END -->
 
