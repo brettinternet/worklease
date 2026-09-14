@@ -62,6 +62,23 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 	}
 	return lock.Write(path, h)
 }
+func setHandleAutoRenewOwner(path, owner string) error {
+	lock, err := handle.AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	h, err := lock.Read(path)
+	if err != nil {
+		return err
+	}
+	if h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
+		return errHandlePending
+	}
+	h.AutoRenewOwner = owner
+	return lock.Write(path, h)
+}
+
 func activateTransferHandle(predecessorPath, successorPath string, grant lease.Grant) error {
 	if predecessorPath == "" || successorPath == "" || predecessorPath == successorPath {
 		return fmt.Errorf("transfer handle paths are invalid")

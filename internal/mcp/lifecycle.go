@@ -9,7 +9,6 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/instructions"
 	"github.com/brettinternet/worklease/internal/lease"
-	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
 	watchpkg "github.com/brettinternet/worklease/internal/watch"
@@ -20,7 +19,7 @@ func (s *Server) status(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
+	defer b.Close()
 	ref, _ := argString(a, "lease")
 	resources, has := a["resources"]
 	if ref != "" && has {
@@ -32,10 +31,10 @@ func (s *Server) status(ctx context.Context, a map[string]any) (any, error) {
 			return nil, e
 		}
 		defer lk.Close()
-		if h.AuthorityID != b.st.AuthorityID() {
+		if h.AuthorityID != b.id {
 			return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
 		}
-		v, e := b.svc.Status(ctx, lease.Selector{ClaimID: h.ClaimID})
+		v, e := b.authority.Status(ctx, lease.Selector{ClaimID: h.ClaimID})
 		if e != nil {
 			return nil, e
 		}
@@ -50,7 +49,7 @@ func (s *Server) status(ctx context.Context, a map[string]any) (any, error) {
 	} else {
 		return nil, reason.Invalid("status requires lease or resources")
 	}
-	v, e := b.svc.Status(ctx, lease.Selector{Resources: rs})
+	v, e := b.authority.Status(ctx, lease.Selector{Resources: rs})
 	if e != nil {
 		return nil, e
 	}
@@ -74,9 +73,9 @@ func (s *Server) list(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
+	defer b.Close()
 	filter, _ := argString(a, "resource")
-	v, e := b.svc.List(ctx, filter)
+	v, e := b.authority.List(ctx, filter, nil)
 	if e != nil {
 		return nil, e
 	}
@@ -93,12 +92,16 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 		return nil, e
 	}
 	defer lk.Close()
+	if h.SchemaVersion == handle.RemoteSchemaVersion {
+		_ = lk.Close()
+		return s.remoteMutation(ctx, a, kind, ref, path, h)
+	}
 	b, e := s.open(ctx, true)
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
-	if h.AuthorityID != b.st.AuthorityID() {
+	defer b.Close()
+	if h.AuthorityID != b.id {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
 	}
 	if h.State == "pending" {
@@ -110,7 +113,7 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	if !h.HoldUntil.IsZero() && !time.Now().Before(h.HoldUntil) && kind != "release" {
 		return nil, reason.New(reason.ReasonClaimExpired, "automatic hold deadline has passed")
 	}
-	ttlv, e := argNumber(a, "ttl", b.svc.DefaultTTL().Seconds())
+	ttlv, e := argNumber(a, "ttl", s.options.TTL.Seconds())
 	if e != nil || ttlv <= 0 || ttlv > 3600 {
 		return nil, reason.Invalid("ttl must be between 1s and 1h")
 	}
@@ -171,15 +174,15 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	var receipt lease.Receipt
 	switch kind {
 	case "heartbeat":
-		receipt, e = b.svc.Heartbeat(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: id, TTL: ttlDuration(ttlv), RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
+		receipt, e = b.authority.Heartbeat(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: id, TTL: ttlDuration(ttlv), RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	case "checkpoint":
-		receipt, e = b.svc.Checkpoint(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.CheckpointRequest{OperationID: id, TTL: ttlDuration(ttlv), Data: checkpointRaw, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
+		receipt, e = b.authority.Checkpoint(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.CheckpointRequest{OperationID: id, TTL: ttlDuration(ttlv), Data: checkpointRaw, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	case "release":
 		r, _ := argString(a, "reason")
 		if strings.TrimSpace(r) == "" {
 			r = "released"
 		}
-		receipt, e = b.svc.Release(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.ReleaseRequest{OperationID: id, Reason: r, RequestNotAfter: deadline})
+		receipt, e = b.authority.Release(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.ReleaseRequest{OperationID: id, Reason: r, RequestNotAfter: deadline})
 	}
 	if e != nil {
 		if reason.DefinitiveNoCommit(e) {
@@ -233,12 +236,12 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}
 	switch kind {
 	case "heartbeat":
-		rec, err = b.svc.Heartbeat(ctx, creds, lease.Renew{OperationID: p.OperationID, TTL: ttl, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
+		rec, err = b.authority.Heartbeat(ctx, creds, lease.Renew{OperationID: p.OperationID, TTL: ttl, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "checkpoint":
 		raw, _ := json.Marshal(p.Inputs["checkpoint"])
-		rec, err = b.svc.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: p.OperationID, TTL: ttl, Data: raw, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
+		rec, err = b.authority.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: p.OperationID, TTL: ttl, Data: raw, RequestNotAfter: p.RequestNotAfter, HoldUntil: holdUntil, LegacyRequestHash: legacyHash})
 	case "release":
-		rec, err = b.svc.Release(ctx, creds, lease.ReleaseRequest{OperationID: p.OperationID, Reason: pendingString(p.Inputs, "reason"), RequestNotAfter: p.RequestNotAfter})
+		rec, err = b.authority.Release(ctx, creds, lease.ReleaseRequest{OperationID: p.OperationID, Reason: pendingString(p.Inputs, "reason"), RequestNotAfter: p.RequestNotAfter})
 	default:
 		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
 	}
@@ -277,6 +280,140 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 	s.mu.Unlock()
 	return map[string]any{"lease": ref, "receipt": rec, "autoHeartbeat": status, "holdUntil": h.HoldUntil}, nil
 }
+func clearRemotePending(path string) {
+	current, err := handle.Read(path)
+	if err == nil {
+		_ = handle.ClearPending(path, &current)
+	}
+}
+
+func (s *Server) remoteMutation(ctx context.Context, a map[string]any, kind, ref, path string, h handle.Handle) (any, error) {
+	if s.remote == nil || s.profile == nil || h.AuthorityID != s.profile.AuthorityID {
+		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+	}
+	if err := s.ensureRemoteCredential(); err != nil {
+		return nil, err
+	}
+	if h.PendingRequest != nil {
+		if h.PendingRequest.Kind != kind {
+			return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+		}
+		response, err := s.remoteClient.ReplayHandle(ctx, path)
+		if err != nil {
+			if reason.DefinitiveNoCommit(err) {
+				clearRemotePending(path)
+			}
+			return nil, mutationError(err, h.ClaimID, h.PendingRequest.OperationID, path)
+		}
+		var receipt lease.Receipt
+		if err := json.Unmarshal(response.Result, &receipt); err != nil {
+			return nil, reason.Invalid("remote mutation result is invalid")
+		}
+		return s.finishRemoteMutation(ref, path, h, kind, receipt)
+	}
+	if h.State != "ready" {
+		return nil, reason.New(reason.ReasonHandleInUse, "lease has a pending request")
+	}
+	authorityNow, err := s.remoteUpperNow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !h.HoldUntil.IsZero() && !authorityNow.Before(h.HoldUntil) && kind != "release" {
+		return nil, reason.New(reason.ReasonClaimExpired, "automatic hold deadline has passed")
+	}
+	ttlv, err := argNumber(a, "ttl", s.options.TTL.Seconds())
+	if err != nil || ttlv <= 0 || ttlv > 3600 {
+		return nil, reason.Invalid("ttl must be between 1s and 1h")
+	}
+	if !h.HoldUntil.IsZero() {
+		remaining := h.HoldUntil.Sub(authorityNow).Seconds()
+		if ttlv > remaining {
+			ttlv = remaining
+		}
+		if ttlv < 1 && kind != "release" {
+			return nil, reason.New(reason.ReasonClaimExpired, "automatic hold deadline has passed")
+		}
+	}
+	var checkpointRaw []byte
+	if kind == "checkpoint" {
+		data, ok := a["data"]
+		if !ok {
+			return nil, reason.Invalid("data is required")
+		}
+		checkpointRaw, err = json.Marshal(data)
+		if err == nil {
+			checkpointRaw, err = lease.ValidateCheckpoint(checkpointRaw, h.Token)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	releaseReason, _ := argString(a, "reason")
+	if kind == "release" {
+		if strings.TrimSpace(releaseReason) == "" {
+			releaseReason = "released"
+		}
+		if strings.Contains(releaseReason, h.Token) {
+			return nil, reason.Invalid("release reason must not contain the active credential")
+		}
+	}
+	id := opID()
+	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path, CredentialPath: s.profile.Credential.Path}
+	var receipt lease.Receipt
+	switch kind {
+	case "heartbeat":
+		receipt, err = s.remote.Heartbeat(ctx, creds, lease.Renew{OperationID: id, TTL: ttlDuration(ttlv)})
+	case "checkpoint":
+		receipt, err = s.remote.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: id, TTL: ttlDuration(ttlv), Data: checkpointRaw})
+	case "release":
+		receipt, err = s.remote.Release(ctx, creds, lease.ReleaseRequest{OperationID: id, Reason: releaseReason})
+	}
+	if err != nil {
+		if reason.DefinitiveNoCommit(err) {
+			clearRemotePending(path)
+		}
+		return nil, mutationError(err, h.ClaimID, id, path)
+	}
+	return s.finishRemoteMutation(ref, path, h, kind, receipt)
+}
+
+func (s *Server) finishRemoteMutation(ref, path string, h handle.Handle, kind string, receipt lease.Receipt) (any, error) {
+	if kind == "release" {
+		stopRenewal(s, ref)
+		if err := handle.Remove(path); err != nil {
+			return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be removed").With("claimId", h.ClaimID).With("operationId", receipt.OperationID).With("commitState", "committed")
+		}
+		return map[string]any{"receipt": receipt, "lease": ref, "autoHeartbeat": "stopped"}, nil
+	}
+	lock, err := handle.AcquireLock(context.Background(), path+".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+	current, err := lock.Read(path)
+	if err != nil {
+		return nil, err
+	}
+	if raw, ok := receipt.Result["expiresAt"].(string); ok {
+		if expires, parseErr := time.Parse(time.RFC3339Nano, raw); parseErr == nil {
+			current.ExpiresAt = expires
+		}
+	}
+	if !current.HoldUntil.IsZero() && current.ExpiresAt.After(current.HoldUntil) {
+		current.ExpiresAt = current.HoldUntil
+	}
+	if err := lock.Write(path, current); err != nil {
+		return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", h.ClaimID).With("operationId", receipt.OperationID).With("commitState", "committed")
+	}
+	status := "stopped"
+	s.mu.Lock()
+	if runtime := s.leases[ref]; runtime != nil {
+		status = runtime.status
+	}
+	s.mu.Unlock()
+	return map[string]any{"receipt": receipt, "lease": ref, "autoHeartbeat": status, "holdUntil": current.HoldUntil}, nil
+}
+
 func pendingHoldUntil(p *handle.PendingRequest, fallback time.Time) (time.Time, string) {
 	if micros := pendingInt(p.Inputs, "holdUntil"); micros != 0 {
 		return time.UnixMicro(micros).UTC(), ""
@@ -331,8 +468,8 @@ func (s *Server) verify(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
-	if h.AuthorityID != b.st.AuthorityID() {
+	defer b.Close()
+	if h.AuthorityID != b.id {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
 	}
 	expected := []string{}
@@ -342,7 +479,7 @@ func (s *Server) verify(ctx context.Context, a map[string]any) (any, error) {
 			return nil, e
 		}
 	}
-	v, e := b.svc.Verify(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, expected)
+	v, e := b.authority.Verify(ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, expected)
 	if e != nil {
 		return nil, e
 	}
@@ -353,7 +490,7 @@ func (s *Server) events(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
+	defer b.Close()
 	cursor, _ := argString(a, "cursor")
 	limit := 0
 	if v, ok := a["limit"]; ok {
@@ -373,7 +510,7 @@ func (s *Server) events(ctx context.Context, a map[string]any) (any, error) {
 			return nil, reason.Invalid("limit must be an integer")
 		}
 	}
-	p, e := ledger.New(b.st).Events(ctx, cursor, limit)
+	p, e := b.authority.Events(ctx, cursor, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -384,7 +521,7 @@ func (s *Server) watch(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer b.st.Close()
+	defer b.Close()
 	cursor, _ := argString(a, "cursor")
 	until, _ := argString(a, "until")
 	resources := []string{}
@@ -398,7 +535,29 @@ func (s *Server) watch(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil || timeout < 0 || timeout > 60 {
 		return nil, reason.Invalid("timeout must be between 0 and 60s")
 	}
-	r, e := watchpkg.Wait(ctx, b.st, watchpkg.Request{Cursor: cursor, Resources: resources, Until: until, Timeout: time.Duration(timeout * float64(time.Second)), PollInterval: s.options.PollInterval})
+	totalTimeout := time.Duration(timeout * float64(time.Second))
+	request := watchpkg.Request{Cursor: cursor, Resources: resources, Until: until, Timeout: totalTimeout, PollInterval: s.options.PollInterval}
+	if b.remote && request.Timeout > 30*time.Second {
+		request.Timeout = 30 * time.Second
+	}
+	r, e := b.authority.Watch(ctx, request)
+	if b.remote && totalTimeout > 30*time.Second {
+		deadline := time.Now().Add(totalTimeout - request.Timeout)
+		for e == nil && r.TimedOut && !r.Gap {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			if remaining > 30*time.Second {
+				remaining = 30 * time.Second
+			}
+			request.Timeout = remaining
+			if r.NextCursor != "" {
+				request.Cursor = r.NextCursor
+			}
+			r, e = b.authority.Watch(ctx, request)
+		}
+	}
 	if e != nil {
 		return nil, e
 	}

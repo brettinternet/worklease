@@ -39,10 +39,17 @@ func (s *Server) renewLoop(r *runtimeLease) {
 			return
 		}
 		now := time.Now()
+		if s.remote != nil {
+			var nowErr error
+			now, nowErr = s.remoteUpperNow(r.ctx)
+			if nowErr != nil {
+				return
+			}
+		}
 		if !r.holdUntil.After(now) || !h.ExpiresAt.After(now) {
 			return
 		}
-		wait := time.Until(h.ExpiresAt) / 2
+		wait := h.ExpiresAt.Sub(now) / 2
 		if wait < time.Millisecond {
 			wait = time.Millisecond
 		}
@@ -53,13 +60,19 @@ func (s *Server) renewLoop(r *runtimeLease) {
 			return
 		case <-t.C:
 		}
+		s.mu.Lock()
+		ttl := r.ttl
+		s.mu.Unlock()
+		if s.remote != nil {
+			if !s.renewRemote(r, ttl) {
+				return
+			}
+			continue
+		}
 		if !r.holdUntil.After(time.Now()) {
 			return
 		}
 		remaining := time.Until(r.holdUntil)
-		s.mu.Lock()
-		ttl := r.ttl
-		s.mu.Unlock()
 		if ttl > remaining {
 			ttl = remaining
 		}
@@ -72,13 +85,13 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		}
 		lk, err := handle.AcquireLock(r.ctx, r.path+".lock")
 		if err != nil {
-			b.st.Close()
+			b.Close()
 			return
 		}
 		h, err = lk.Read(r.path)
 		if err == nil && h.State == "pending" {
 			lk.Close()
-			b.st.Close()
+			b.Close()
 			return
 		}
 		if err == nil && h.State == "ready" && h.HoldUntil.After(time.Now()) {
@@ -88,7 +101,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 			h.State = "pending"
 			h.PendingRequest = &handle.PendingRequest{OperationID: id, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(inputs), RequestNotAfter: deadline, Inputs: inputs}
 			if err = lk.Write(r.path, h); err == nil {
-				rec, callErr := b.svc.Heartbeat(r.ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: id, TTL: ttl, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
+				rec, callErr := b.authority.Heartbeat(r.ctx, lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision}, lease.Renew{OperationID: id, TTL: ttl, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 				if callErr == nil {
 					h.State = "ready"
 					h.PendingRequest = nil
@@ -103,7 +116,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 					}
 					if writeErr := lk.Write(r.path, h); writeErr != nil {
 						lk.Close()
-						b.st.Close()
+						b.Close()
 						return
 					}
 				} else {
@@ -115,18 +128,64 @@ func (s *Server) renewLoop(r *runtimeLease) {
 						_ = lk.ClearPending(r.path, &h)
 					}
 					lk.Close()
-					b.st.Close()
+					b.Close()
 					return
 				}
 			}
 		}
 		lk.Close()
-		b.st.Close()
+		b.Close()
 		if err != nil {
 			return
 		}
 	}
 }
+func (s *Server) renewRemote(r *runtimeLease, ttl time.Duration) bool {
+	if s.ensureRemoteCredential() != nil {
+		return false
+	}
+	h, err := handle.Read(r.path)
+	if err != nil || h.State != "ready" || h.PendingRequest != nil || s.profile == nil || h.AuthorityID != s.profile.AuthorityID {
+		return false
+	}
+	authorityNow, err := s.remoteUpperNow(r.ctx)
+	if err != nil || !h.HoldUntil.After(authorityNow) {
+		return false
+	}
+	remaining := h.HoldUntil.Sub(authorityNow)
+	if ttl > remaining {
+		ttl = remaining
+	}
+	if ttl < time.Second {
+		return false
+	}
+	id := opID()
+	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: r.path, CredentialPath: s.profile.Credential.Path}
+	receipt, err := s.remote.Heartbeat(r.ctx, creds, lease.Renew{OperationID: id, TTL: ttl})
+	if err != nil {
+		if reason.DefinitiveNoCommit(err) {
+			clearRemotePending(r.path)
+		}
+		return false
+	}
+	lock, err := handle.AcquireLock(r.ctx, r.path+".lock")
+	if err != nil {
+		return false
+	}
+	defer lock.Close()
+	current, err := lock.Read(r.path)
+	if err != nil {
+		return false
+	}
+	if raw, ok := receipt.Result["expiresAt"].(string); ok {
+		current.ExpiresAt, _ = time.Parse(time.RFC3339Nano, raw)
+	}
+	if current.ExpiresAt.After(current.HoldUntil) {
+		current.ExpiresAt = current.HoldUntil
+	}
+	return lock.Write(r.path, current) == nil
+}
+
 func (s *Server) markRenewalStopped(r *runtimeLease) {
 	s.mu.Lock()
 	r.status = "stopped"

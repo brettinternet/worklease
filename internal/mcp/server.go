@@ -1,4 +1,4 @@
-// Package mcp implements Worklease's local stdio MCP adapter.
+// Package mcp implements Worklease's stdio MCP adapter.
 package mcp
 
 import (
@@ -10,6 +10,9 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/authority"
+	"github.com/brettinternet/worklease/internal/config"
 )
 
 const (
@@ -51,21 +54,24 @@ func (s *requestState) cancelRequest()     { s.mu.Lock(); s.cancelled = true; s.
 func (s *requestState) wasCancelled() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.cancelled }
 
 type Server struct {
-	options     Options
-	mu          sync.Mutex
-	requests    map[string]*requestState
-	seen        map[string]struct{}
-	leases      map[string]*runtimeLease
-	writerMu    sync.Mutex
-	active      sync.WaitGroup
-	slots       chan struct{}
-	done        chan struct{}
-	legacy      bool
-	modern      bool
-	legacyReady chan struct{}
-	serveCancel context.CancelFunc
-	inputMu     sync.Mutex
-	input       io.Closer
+	options      Options
+	mu           sync.Mutex
+	requests     map[string]*requestState
+	seen         map[string]struct{}
+	leases       map[string]*runtimeLease
+	writerMu     sync.Mutex
+	active       sync.WaitGroup
+	slots        chan struct{}
+	done         chan struct{}
+	legacy       bool
+	modern       bool
+	legacyReady  chan struct{}
+	serveCancel  context.CancelFunc
+	inputMu      sync.Mutex
+	input        io.Closer
+	remote       authority.Authority
+	remoteClient *authority.HTTPClient
+	profile      *config.Profile
 }
 
 // Serve runs the newline-delimited stdio protocol. It never writes logs to stdout.

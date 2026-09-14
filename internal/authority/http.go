@@ -47,6 +47,7 @@ type RequestSpec struct {
 	NewClaimCredentialPath string
 	TargetOperationID      string
 	TargetHandlePath       string
+	AutoRenewOwner         string
 }
 type Response struct {
 	AuthorityID   string
@@ -180,6 +181,11 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 				}
 				if err := c.pending.Save(p); err != nil {
 					return Response{}, reason.New(reason.ReasonStorageFailure, "secondary remote request could not be durably recorded")
+				}
+			}
+			if s.Kind == "acquire" && s.AutoRenewOwner != "" {
+				if err := setHandleAutoRenewOwner(s.HandlePath, s.AutoRenewOwner); err != nil {
+					return Response{}, reason.New(reason.ReasonStorageFailure, "automatic renewal state could not be durably recorded")
 				}
 			}
 		} else if err := c.pending.Save(p); err != nil {
