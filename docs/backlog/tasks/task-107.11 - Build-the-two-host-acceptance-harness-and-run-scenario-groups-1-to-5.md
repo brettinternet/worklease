@@ -22,8 +22,11 @@ documentation:
   - docs/remote-claim-authority.md
   - docs/backlog/docs/go-rewrite/doc-2 - Go-Product-Contract.md
 modified_files:
+  - cmd/worklease-remote-smoke/main.go
+  - cmd/worklease-remote-smoke/main_test.go
   - internal/handle/handle.go
   - internal/handle/handle_test.go
+  - internal/lease/remote_auth_acceptance_test.go
 parent_task_id: TASK-107
 priority: high
 type: feature
