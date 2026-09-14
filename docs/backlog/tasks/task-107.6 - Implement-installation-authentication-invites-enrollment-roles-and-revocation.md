@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies:
@@ -26,18 +26,20 @@ ordinal: 138000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Authority authentication is separate from claim credentials and is owned by Worklease with no OAuth server, browser login, or session. Enrollment is by invite. The admin client generates a one-shot code of at least 128 bits and sends only its hash, role, non-unique label, request id, and deadline; the redeemer generates and durably stores its installation credential before dispatch and redeems the code over TLS; the authority atomically burns the invite, inserts an immutable installation id and credential hash, and stores the redemption replay result. This applies the same rule the claim service already applies to claim tokens: the client saves its secret before dispatch and the authority stores only a hash.
+Implement the service-layer primitives for invite issuance, bootstrap invite state, enrollment, installation roles, and revocation. Enrollment is the only invite-authenticated API operation. Invite codes contain at least 128 bits of entropy and have a short initial expiry. The client generates and durably stores its installation credential before dispatch; the authority stores only its hash and atomically burns the invite, creates an immutable installation identifier, and retains the bounded exact redemption result. An exact replay with the same credential returns the original result after invite expiry while replay remains retained for no more than 24 hours. A new redemption after expiry fails, and a burned code never enrolls again after replay GC. Human identity, OAuth, browser login, retirement, and a control plane remain outside the authority.
 
-Bearer lookup, role mapping, and revocation must be rechecked inside the serialized mutation transaction, not only in HTTP middleware, so a revocation racing a mutation wins. Human identity stays outside the authority: it knows installations, roles, invites, and issuers, not people. This task delivers the service-layer authentication logic and its typed requests; the `serve` task wires the routes.
+Authentication must be available inside the serialized mutation transaction, not only in HTTP middleware. The service looks up credential hashes with constant-time comparison and checks bearer identity and revocation, role, authority and restore incarnation, epoch credential where applicable, replay, and new-admission policy in the frozen order. A revoked retained installation overrides replay and returns `installation-revoked`; a credential whose row is absent returns `authentication-required`. A mutation serialized after revocation fails, while a mutation committed before revocation remains committed. Restore bootstrap enrollment is the sole enrollment exception while recovery mode is active.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Invite issuance stores only the code hash with role, label, issuing installation, request id, and an expiry of about ten minutes; an identical retry returns the same grant without creating a second invite; the code is never persisted or logged.
-- [ ] #2 Redemption validates `authorityId` and `expectedRestoreId`, then atomically burns the invite and inserts an immutable installation id with the credential hash; the same code with the same credential retried after a lost response returns the original result within a bounded window no longer than 24 h; a different credential against a burned code conflicts; an expired, reused, mismatched-incarnation, or revoked invite is refused with no burn and no insert.
-- [ ] #3 Every authenticated request resolves the bearer by constant-time hash comparison to one installation and role; `read`, `write`, and `admin` grants match the roles table in the design; a `read` bearer cannot mutate and a `write` bearer cannot issue invites, revoke, reopen, or inspect private epochs it does not hold.
-- [ ] #4 Revocation is by installation id, takes effect on the next request including pending exact replays with `installation-revoked`, does not force-release the installation claims, and is rechecked in the same transaction as the mutation; a bearer whose row is absent fails `authentication-required`.
-- [ ] #5 Rotation is enrolling a new installation and revoking the old id; no code path, test, or fixture places an invite or installation credential on argv or in log output.
+- [ ] #1 The admin client generates and durably saves an invite code with at least 128 bits of entropy before dispatch. The authority receives and stores only its hash with role, non-unique label, issuing installation, request identity, short expiry, and replay provenance, and returns the same grant for an exact issuance retry without creating a second invite. No code appears in authority persistence or logs.
+- [ ] #2 Enrollment first validates invite authentication, `authorityId`, and immutable `expectedRestoreId`, then atomically burns the invite and inserts one immutable installation id with its credential hash. Exact same-credential replay returns the original result after invite expiry while retained for no more than 24 hours; a different credential conflicts; a new redemption after expiry performs no burn or insert; and a burned code never enrolls again after replay GC.
+- [ ] #3 The service exposes transaction-scoped authentication and role checks for TASK-107.4 and TASK-107.7. Credential-hash lookup uses constant-time comparison. A mutation serialized after revocation fails, a previously committed mutation remains committed, retained revoked installation state overrides replay with `installation-revoked`, and an absent credential fails `authentication-required` before authority, incarnation, epoch credential, replay, and admission checks.
+- [ ] #4 `read`, `write`, and `admin` grants match the design. API administration covers invitation, installation and claim revocation, private inspection, GC, and reopening; offline init, restore, bootstrap reissue, and retirement are not API role grants.
+- [ ] #5 Revocation is by immutable installation id, applies to the next request including pending exact replay, and preserves the installation's claims and unresolved operations. Rotation enrolls a new installation and revokes the old id.
+- [ ] #6 Recovery mode closes ordinary enrollment and API invite issuance. Only the current offline bootstrap invite may enroll the new admin needed for inspection, recovery, and reopening.
+- [ ] #7 No path or fixture places an invite code or installation credential in argv, logs, public events, or API errors.
 <!-- AC:END -->
 
 ## Definition of Done

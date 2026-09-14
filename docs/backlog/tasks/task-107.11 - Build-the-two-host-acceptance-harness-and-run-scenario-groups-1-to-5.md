@@ -4,10 +4,13 @@ title: Build the two-host acceptance harness and run scenario groups 1 to 5
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies:
+  - TASK-107.5
+  - TASK-107.7
+  - TASK-107.9
   - TASK-107.10
 references:
   - scripts/test-e2e.sh
@@ -26,17 +29,21 @@ ordinal: 143000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The design defers every reliability claim until executable evidence exists from a real deployment: two client hosts with different checkout roots and one `serve` host behind a TLS edge, exercising the five scenario groups listed under Remaining decisions and release evidence in `docs/remote-claim-authority.md` (identity and admission; lost response, partition, and authority time; enrollment and roles; watches and retention; restart, upgrade, and restore including double restore and the R0 to R1 stale request). Unit tests cannot substitute for WAN latency, replica restore, and paused-process behavior. The harness should be reproducible from `mise` with local containers or VMs and runnable unchanged against real hosts, and it should collect the measurements the design says decide later follow-ups.
+Build a reproducible acceptance harness and run all five scenario groups against one TLS authority host and two client hosts with distinct roots. Fixtures must exercise the real client, server, shared schema, CLI, MCP adapter, local guarded effects, asynchronous backup selection, restore, and offline lock boundary. Fault injection records expected effects and invocation counts so replay and late responses cannot hide duplicate execution. Local containers or VMs support development, but promotion requires the same harness to pass on real hosts.
+
+Report simulated WAN latency separately from measured real-host latency. Record exact evidence paths, commands, environment, measurements, selected backup cutoffs, unknown recovery bounds, and the observation for each scenario group. Unit tests support the harness but do not substitute for real WAN, backup, restore, filesystem, or process behavior. Every failure blocks Done until fixed and rerun.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A reproducible harness provisions one `serve` host with TLS and two client hosts, runs the CLI and the MCP adapter from both clients, and records WAN latency, renewal margins, write throughput, replication lag, and restore time.
-- [ ] #2 Scenario group 1 passes: cross-host contention on one portable key, separate scopes not contending, no repository-driven profile selection, reserved prefixes rejected through raw input and a bad allowlist, prefix withdrawal and bound changes affecting only new admissions, and persisted limits capping every extension path.
-- [ ] #3 Scenario group 2 passes: lost-response recovery by exact replay, a partition stopping new client effects with no local fallback, revocation and policy changes raced against mutations with the frozen check order, replay wrapped in fresh authority time, and the authority-time edge cases named in the design.
-- [ ] #4 Scenario group 3 passes: first-start bootstrap file, hidden and file and descriptor invite input without disclosure, dropped issuance and redemption responses, incarnation mismatch with no burn, immutable ids, rotation, role isolation, and distinct MCP guidance reasons.
-- [ ] #5 Scenario groups 4 and 5 pass: watch and snapshot races and cursor gaps, full-volume `storage-failure` with nothing pruned, restart preserving `restoreId`, replica restore with `restored` claim ends and revoked rows, double restore, an R0 pending acquire rejected under R1, a lost confirmed start held in client pending state until attested, a completed lost-tail operation recorded as an audit gap, transitive recovery closure, retained replay, bootstrap reissue, atomic reopening, and paused-server lock behavior.
-- [ ] #6 Results, measurements, and deviations are recorded in the task and in a `docs/reviews/` report; every failure is fixed or explicitly recorded as a blocker before this task closes.
+- [ ] #1 A reproducible harness provisions one authority behind TLS and two client hosts with distinct checkout and credential roots, runs both CLI and MCP paths, and captures expected external effects and exact dispatch counts under injected faults.
+- [ ] #2 The harness runs locally in containers or VMs for development and unchanged on real hosts for acceptance. Reports label synthetic WAN injection separately from real-host measurements and record commands, evidence paths, environment, latency, renewal margins, throughput, storage behavior, backup cutoff, restore time, and recovery bounds.
+- [ ] #3 Group 1 covers cross-host contention and separate scopes, repository-independent profile selection, raw and misconfigured reserved-prefix rejection, configuration restart behavior, and persisted admission limits on every extension path.
+- [ ] #4 Group 2 covers exact replay after lost start, renewal, and completion responses; coexistence of request-scoped recovery records with original guarded-effect evidence; no local fallback during partition; race ordering for revocation and policy changes; fresh response identity and time; clock-bound edge cases; pre-dispatch persistence failure; late acknowledgment without redispatch; and an asynchronous provider effect that continues after terminal completion.
+- [ ] #5 Group 3 covers bootstrap crash ordering and redaction, hidden/file/descriptor invite input, dropped invite and redemption responses, immutable request incarnation, no-burn mismatch, role isolation, rotation, revocation, and distinct MCP authentication guidance.
+- [ ] #6 Group 4 covers snapshot/watch races, disconnect and reconnect, cursor incarnation and retention gaps, stuck-history retention, full-volume `storage-failure` without pruning, and client pending evidence surviving age, GC, replay expiry, restart, and profile changes.
+- [ ] #7 Group 5 uses an actual asynchronous backup fixture with chosen and older cutoffs. It covers zero and nonzero pending sets, restart, schema and protocol upgrade, restored and missing credentials, double restore, retained start with lost completion, a known confirmed start missing from the backup while its client is offline or incomplete, fully missing completed work, provider effects after terminal receipt, installation inventories including ephemeral and retired clients, missing evidence that blocks reopening, explicitly unknown cutoffs or history bounds with otherwise exhaustive coverage, transitive closure including the over-32 failure, retained replay, bootstrap reissue, atomic reopen, every lock-held bypass attempt, and a direct local mutation refused against a marked hosted home while the lock is free.
+- [ ] #8 Each scenario group records its owning observation and objective pass evidence. Any failure remains blocking and the task cannot close until it is fixed and the affected scenario passes; unit coverage does not replace the real-host run.
 <!-- AC:END -->
 
 ## Definition of Done

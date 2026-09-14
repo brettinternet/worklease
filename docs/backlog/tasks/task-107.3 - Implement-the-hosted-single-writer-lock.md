@@ -4,7 +4,7 @@ title: Implement the hosted single-writer lock
 status: To Do
 assignee: []
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 00:37'
+updated_date: '2026-09-14 01:03'
 labels:
   - remote-authority
 dependencies: []
@@ -24,17 +24,18 @@ ordinal: 135000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A hosted SQLite authority must never be served by two live processes: a rolling deploy, blue-green cutover, or hostname pointing at two machines would create two writable databases with one authorityId. SQLite transaction serialization does not enforce one serving process, and a startup-only expiring lease would let a paused server resume after another adopted the database. The design mandates an exclusive process-lifetime `flock` on a stable lock file in the hosted home, verified after locking with the pinned device/inode technique already used in `internal/handle`, held by `serve` for its lifetime and by every offline hosted-writer command (init, restore, bootstrap reissue, retirement).
+Implement a hosted-home marker and an exclusive process-lifetime OS lock for every approved hosted writer. Hosted-home recognition occurs before any writer or migration opens the database. Direct local authority mutations against a marked hosted home refuse with remote-profile guidance even when no server holds the lock, because local policy would bypass remote admission and recovery rules. Only `serve` and explicit offline hosted administration or maintenance entry points may open a marked home for writes, and they acquire the hosted lock first. Migrations run only through those approved entry points.
 
-Ordinary local CLI homes keep their existing concurrency model. Do not add a blanket process-lifetime lock, a generic lock registry, or any change to concurrent local CLI and watch behavior. The lock is a local safety check for one volume; it does not protect against independent writable clones, and SQLite WAL requires a single-host filesystem.
+Use the stable lock-file and pinned device/inode technique already used in `internal/handle`. Never unlink or replace the lock file while held. Ordinary local homes keep their current concurrency model.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A hosted-writer lock helper acquires an exclusive advisory lock on a stable file in the home, verifies the opened descriptor device and inode against the directory entry after locking, never unlinks or replaces the lock file while held, and reports a distinct reason when the lock is already held.
-- [ ] #2 A second `serve` against a locked home and an alternate hosted-writer command both fail before opening the database for writes; after the holder exits, takeover succeeds and tests verify stable inode identity across the handoff.
-- [ ] #3 A holder paused with SIGSTOP retains the lock, a competitor is refused during the pause, and the holder resumes safely; tests cover pause, resume, and takeover after exit.
-- [ ] #4 Local CLI commands on an ordinary home never take this lock; the existing concurrent local CLI and watch tests are unchanged.
+- [ ] #1 A durable hosted-home marker is recognized before any database writer or migration opens. Direct local authority mutations refuse with remote-profile guidance before opening a marked home even when the lock is free. Only `serve` and explicit offline hosted administration or maintenance entry points may write or migrate it, and each acquires the hosted lock first.
+- [ ] #2 The lock helper takes an exclusive advisory lock on a stable file, verifies the opened descriptor device and inode against the directory entry, never replaces the file while held, and returns a distinct lock-held reason.
+- [ ] #3 A second server and every unapproved hosted writer fail before opening the database while the lock is held; approved takeover succeeds after exit and retains stable inode identity, while direct local mutations remain refused after the lock becomes free.
+- [ ] #4 A SIGSTOP-paused holder retains ownership, a competitor is refused during the pause, and resume plus exit handoff is safe.
+- [ ] #5 Ordinary local homes do not acquire the hosted process-lifetime lock, and existing concurrent local CLI, migration, and watch behavior remains unchanged.
 <!-- AC:END -->
 
 ## Definition of Done
