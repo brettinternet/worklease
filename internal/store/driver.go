@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -148,6 +149,24 @@ func OpenDriver(ctx context.Context, path string, readOnly bool) (*Driver, error
 	if _, err := db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10000"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
+	}
+	// The acceptance harness uses a process-scoped page ceiling to exercise a
+	// real SQLITE_FULL from the shipped server connection. It is deliberately
+	// unavailable through product configuration and only affects the child
+	// process carrying this explicit test environment.
+	if !readOnly {
+		if raw := os.Getenv("WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT"); raw != "" {
+			limit, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil || limit < 1 {
+				_ = db.Close()
+				return nil, fmt.Errorf("invalid acceptance sqlite page limit")
+			}
+			var applied int64
+			if queryErr := db.QueryRowContext(context.Background(), fmt.Sprintf("PRAGMA max_page_count=%d", limit)).Scan(&applied); queryErr != nil || applied != limit {
+				_ = db.Close()
+				return nil, fmt.Errorf("set acceptance sqlite page limit: applied=%d: %w", applied, queryErr)
+			}
+		}
 	}
 	if readOnly {
 		driver.readDB = db

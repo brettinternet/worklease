@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,8 +147,12 @@ func TestAgeRetentionFixtureAgesEveryRetentionClock(t *testing.T) {
 		`CREATE TABLE operations(request_not_after INTEGER,started_at INTEGER,completed_at INTEGER)`,
 		`CREATE TABLE reconciliations(recorded_at INTEGER)`,
 		`CREATE TABLE events(at INTEGER)`,
+		`CREATE TABLE invites(issued_at INTEGER,request_not_after INTEGER,expires_at INTEGER,used_at INTEGER,revoked_at INTEGER)`,
+		`CREATE TABLE invite_redemptions(redeemed_at INTEGER,request_not_after INTEGER,replay_until INTEGER)`,
+		`CREATE TABLE admin_operation_replays(request_not_after INTEGER)`,
 		`INSERT INTO claims VALUES(1,2,3)`, `INSERT INTO epochs VALUES(1,2,3)`,
 		`INSERT INTO operations VALUES(1,2,3)`, `INSERT INTO reconciliations VALUES(1)`, `INSERT INTO events VALUES(1)`,
+		`INSERT INTO invites VALUES(1,2,3,4,5)`, `INSERT INTO invite_redemptions VALUES(1,2,3)`, `INSERT INTO admin_operation_replays VALUES(1)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -170,11 +175,75 @@ func TestAgeRetentionFixtureAgesEveryRetentionClock(t *testing.T) {
 		`SELECT acquired_at FROM epochs`, `SELECT ended_at FROM epochs`, `SELECT ended_recorded_at FROM epochs`,
 		`SELECT request_not_after FROM operations`, `SELECT started_at FROM operations`, `SELECT completed_at FROM operations`,
 		`SELECT recorded_at FROM reconciliations`, `SELECT at FROM events`,
+		`SELECT issued_at FROM invites`, `SELECT request_not_after-2 FROM invites`, `SELECT expires_at-1 FROM invites`,
+		`SELECT used_at FROM invites`, `SELECT revoked_at FROM invites`,
+		`SELECT redeemed_at FROM invite_redemptions`, `SELECT request_not_after-2 FROM invite_redemptions`, `SELECT replay_until-1 FROM invite_redemptions`,
+		`SELECT request_not_after FROM admin_operation_replays`,
 	} {
 		var got int64
 		if err := db.QueryRow(query).Scan(&got); err != nil || got != aged {
 			t.Fatalf("%s: got=%d err=%v", query, got, err)
 		}
+	}
+}
+
+func TestFullVolumeFixtureFailsAndClearsDeterministically(t *testing.T) {
+	root := t.TempDir()
+	if err := writeAcceptanceOwnerMarker(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "authority"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database := filepath.Join(root, "authority", "worklease.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE admin_operation_replays(value TEXT)`,
+		`CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)`,
+		`INSERT INTO meta VALUES('last_observed_at','1'),('last_event_seq','2'),('pruned_through_seq','3')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := installFullVolumeFixture(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PageCount != state.MaxPageCount {
+		t.Fatalf("fixture is not full: %+v", state)
+	}
+	db, err = sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied int64
+	if err := db.QueryRow(`PRAGMA max_page_count=` + strconv.FormatInt(state.MaxPageCount, 10)).Scan(&applied); err != nil || applied != state.MaxPageCount {
+		t.Fatalf("apply fixture page limit: applied=%d err=%v", applied, err)
+	}
+	_, insertErr := db.Exec(`INSERT INTO admin_operation_replays VALUES('blocked')`)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if !isSQLiteFull(insertErr) {
+		t.Fatalf("fixture insert error=%v, want SQLITE_FULL", insertErr)
+	}
+	if err := clearFullVolumeFixture(database); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO admin_operation_replays VALUES('allowed')`); err != nil {
+		t.Fatalf("insert after fixture cleanup: %v", err)
 	}
 }
 
@@ -201,6 +270,47 @@ func TestAgeRetentionFixtureRejectsUnownedDatabase(t *testing.T) {
 	var got int64
 	if err := db.QueryRow(`SELECT expires_at FROM claims`).Scan(&got); err != nil || got != 9 {
 		t.Fatalf("unowned database changed: got=%d err=%v", got, err)
+	}
+}
+
+func TestVerifyReplayExpiredResponseRequiresMatchingRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fault.log")
+	requestID := strings.Repeat("a", 32)
+	valid := "path=/v1/enroll status=409 requestSha256=hash requestId=" + requestID + " reason=replay-expired at=now\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyReplayExpiredResponse(path, requestID); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyReplayExpiredResponse(path, strings.Repeat("b", 32)); err == nil {
+		t.Fatal("wrong replay request accepted")
+	}
+}
+
+func TestVerifyStorageFailureResponseRequiresServerReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fault.log")
+	valid := "path=/v1/admin/gc status=503 requestSha256=hash dropped=false reason=storage-failure at=now\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyStorageFailureResponse(path); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]string{
+		"wrong path":   strings.ReplaceAll(valid, "/v1/admin/gc", "/v1/claims/acquire"),
+		"wrong status": strings.ReplaceAll(valid, "status=503", "status=500"),
+		"wrong reason": strings.ReplaceAll(valid, "storage-failure", "internal"),
+		"duplicated":   valid + valid,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyStorageFailureResponse(path); err == nil {
+				t.Fatal("invalid storage-failure evidence accepted")
+			}
+		})
 	}
 }
 
