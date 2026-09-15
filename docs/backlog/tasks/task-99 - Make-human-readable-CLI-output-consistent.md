@@ -44,7 +44,7 @@ An audit after compacting `worklease list` found that several text commands stil
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Adopt the existing TASK-99 diff into an isolated HWT worktree while preserving the primary checkout.
+1. Adopt the existing TASK-99 diff into an isolated worktree while preserving the primary checkout.
 2. Audit affected commands, renderers, tests, help, and docs against all acceptance criteria; finish missing behavior with focused tests.
 3. Run focused tests and all repository quality gates, then obtain independent acceptance review.
 4. Commit the completed change, verify the primary diff is represented by the worktree commit, clear only that duplicate diff, merge to main, finalize TASK-99, and remove the managed worktree/branch.

@@ -59,7 +59,7 @@ This history is local, retention-bounded diagnostic state. It is not authoritati
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Selected as the only open dependency-ready backlog item after all three subtasks completed; working in HWT workspace w5C on branch task-59-retained-history.
+Selected as the only open dependency-ready backlog item after all three subtasks completed; working in an isolated worktree on branch task-59-retained-history.
 
 Independent verification found that history on a valid unmigrated v2 database failed on missing acquisition_revision columns. Added a read-only schema-aware fallback and regression coverage that preserves schema v2 while projecting singleton and bundle epochs as legacy-incomplete.
 

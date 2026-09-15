@@ -74,7 +74,7 @@ Increment and migrate the SQLite schema without fabricating unavailable history.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Selected as the earliest dependency-ready item; TASK-59.2 depends on it. Acquired the item-scoped local coordination lease and created HWT workspace w57 on branch task-59.1-epoch-boundaries.
+Selected as the earliest dependency-ready item; TASK-59.2 depends on it. Acquired the item-scoped local coordination lease and created an isolated worktree on branch task-59.1-epoch-boundaries.
 
 Implemented schema v3 acquisition revisions and token-free epoch terminations for singleton and bundle expiry replacement, transfer, and release. GC now retains associated history through termination recorded_at and removes termination plus epoch atomically. Added migration, rollback, exact/partial bundle, lifecycle, retention, redaction, and boundary documentation coverage. Full test suite passed (261 core + 19 SDK); lint, format-check, and typecheck passed.
 
