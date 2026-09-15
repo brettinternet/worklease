@@ -126,9 +126,13 @@ worklease acquire --profile team --resource github:org/repo#42
 ```
 
 `serve` owns one namespace and one SQLite writer. Guarded commands and provider
-effects still run on clients, and remote failures never fall back locally. This
-feature is experimental: it provides no high availability, provider fencing, or
-exactly-once execution. See the [remote authority guide](docs/remote-claim-authority.md)
+effects still run on clients. The standard binary opens no listener and makes
+no network request unless remote operation is explicit.
+Local reads remain setup-free.
+Remote failures do not fall back to local coordination. This feature is
+experimental: it provides no high availability,
+provider fencing, or exactly-once execution. See the
+[remote authority guide](docs/remote-claim-authority.md)
 for deployment, enrollment, administration, and recovery.
 
 ## JSON and MCP quick start
