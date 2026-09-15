@@ -165,9 +165,26 @@ func TestRemoteCLIInspectsAndReconcilesInterruptedExec(t *testing.T) {
 	}
 	op := strings.Repeat("b", 32)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
+	marker := filepath.Join(t.TempDir(), "started")
 	var execOut bytes.Buffer
-	err = Run(ctx, []string{"worklease", "exec", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--operation-id", op, "--ttl", "30s", "--json", "--", "sleep", "5"}, "test", "unknown", "unknown", &execOut, &bytes.Buffer{})
+	execResult := make(chan error, 1)
+	go func() {
+		execResult <- Run(ctx, []string{"worklease", "exec", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--operation-id", op, "--ttl", "30s", "--json", "--", "sh", "-c", `touch "$1"; sleep 5`, "sh", marker}, "test", "unknown", "unknown", &execOut, &bytes.Buffer{})
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-execResult
+			t.Fatal("guarded child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	err = <-execResult
 	if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonInterrupted {
 		t.Fatalf("exec interruption=%v output=%s", err, execOut.String())
 	}
