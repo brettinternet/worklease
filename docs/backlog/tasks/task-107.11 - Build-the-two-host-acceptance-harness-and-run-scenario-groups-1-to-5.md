@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 02:27'
+updated_date: '2026-09-15 02:28'
 labels:
   - remote-authority
 dependencies:
@@ -195,4 +195,6 @@ Committed AC7.5 and AC7.6 implementation as 1d00860 (Exercise restore upgrade an
 Implemented AC7.7 and AC7.8. Group 5 now restores the same checksum-verified selected artifact twice, starts and inspects the authority after each restore, and proves the authority ID is stable while each restore ID is fresh. A gated guarded effect is acknowledged and captured as started in the selected backup, then completes exactly once after the cutoff; the client handle and file pending stores are proven clear before restore, while both restored incarnations list the operation unresolved. Objective local evidence: dist/remote-acceptance/ac7-double-retained-local-final/report.json, coverage.json, double-restore.json, retained-start-lost-completion.json, and asynchronous-backup-selection.json. CI evidence: dist/remote-acceptance/20260915T021127.431172000Z/report.json. The repository-managed real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Independent review found and drove fixes for unchecked client pending state, a first restore masked by the second, and unpinned remote restore input. Remaining Group 5 clauses stay still-blocked. Next resumable step: AC7.9 confirmed start missing from backup while its client is offline or incomplete, then AC7.10 fully missing completed work.
 
 Implemented AC7.9 and AC7.10. The shared harness now drops a post-cutoff begin response, confirms the authority retained the start while the client keeps an incomplete pending request and dispatches no effect, and proves the selected artifact contains no such row. A separate post-cutoff operation completes with one effect and cleared pending state, while the selected artifact and restored recovery inventory omit it entirely. Objective local evidence: dist/remote-acceptance/ac7-missing-tail-local-reviewed/report.json, coverage.json, and missing-tail-operations.json; CI evidence: dist/remote-acceptance/20260915T022656.003778000Z/report.json. The repository-managed real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Independent review found duplicate operation IDs could falsely look absent when SQL count exceeded one; presence now uses count > 0 with regression coverage. Remaining Group 5 clauses stay still-blocked. Next resumable step: AC7.11 provider effects after terminal receipt and AC7.12 installation inventories including ephemeral and retired clients.
+
+Committed AC7.7 through AC7.10 harness slices as 041c968 (Exercise missing restore tail cases). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks.
 <!-- SECTION:NOTES:END -->
