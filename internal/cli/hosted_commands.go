@@ -28,9 +28,20 @@ const acceptanceCrashBeforeHostedReady = "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOST
 func serverCommands(s *boundary) *urfave.Command {
 	secret := &urfave.StringFlag{Name: "bootstrap-invite-file", Usage: "owner-private bootstrap invite `FILE`"}
 	initCommand := &urfave.Command{
-		Name: "init", Usage: "initialize a server", UsageText: "worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]",
-		Description: "Create a default local-only server configuration when needed, initialize its authority, and write a one-time bootstrap invite.\n\nExamples:\n  worklease server init\n  worklease server init --server-config FILE --bootstrap-invite-file FILE",
-		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret},
+		Name: "init", Usage: "initialize a server", UsageText: "worklease server init [--server-config FILE] [--bootstrap-invite-file FILE] [--guided]",
+		Description: "Create the legacy local-only server configuration, or opt into guided remote setup, initialize its authority, and write a one-time bootstrap invite.\n\nExamples:\n  worklease server init\n  worklease server init --guided\n  worklease server init --guided --listen 0.0.0.0:8443 --endpoint https://worklease.example.com:8443 --transport tls --admitted-prefix task: --admitted-prefix coordination: --confirm-non-loopback",
+		Flags: []urfave.Flag{
+			&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret,
+			&urfave.BoolFlag{Name: "guided", Usage: "prompt for or validate a ready-to-run remote server setup"},
+			&urfave.StringFlag{Name: "listen", Usage: "guided listener `HOST:PORT`"},
+			&urfave.StringFlag{Name: "endpoint", Usage: "guided client-facing origin `URL`"},
+			&urfave.StringFlag{Name: "transport", Usage: "guided transport: tls or http"},
+			&urfave.StringSliceFlag{Name: "admitted-prefix", Usage: "guided admitted resource `PREFIX` (repeatable)"},
+			&urfave.StringFlag{Name: "tls-cert", Usage: "existing owner-private TLS certificate `FILE`"},
+			&urfave.StringFlag{Name: "tls-key", Usage: "existing owner-private TLS key `FILE`"},
+			&urfave.BoolFlag{Name: "confirm-non-loopback", Usage: "confirm exposure on a non-loopback listener"},
+			&urfave.BoolFlag{Name: "acknowledge-cleartext-credentials", Usage: "acknowledge that HTTP exposes bearer credentials"},
+		},
 	}
 	initCommand.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedInit(s, ctx, cmd) }
 	restore := &urfave.Command{
@@ -267,20 +278,96 @@ func hostedResultPath(s *boundary, cmd *urfave.Command, op string, value any, pa
 	return err
 }
 
+func hostedGuidedResult(s *boundary, cmd *urfave.Command, bootstrap lease.BootstrapResult, setup *guidedSetupResult, invitePath string) error {
+	fields := map[string]any{
+		"authorityId":           bootstrap.AuthorityID,
+		"restoreId":             bootstrap.RestoreID,
+		"inviteId":              bootstrap.InviteID,
+		"expiresAt":             bootstrap.ExpiresAt,
+		"serverConfig":          setup.ConfigPath,
+		"bootstrapInviteFile":   invitePath,
+		"advertisedEndpoint":    setup.Endpoint,
+		"certificateFile":       setup.CertificatePath,
+		"keyFile":               setup.KeyPath,
+		"certificateSha256":     setup.Fingerprint,
+		"certificateValidUntil": setup.CertificateEnd,
+		"startCommand":          "worklease serve --server-config " + shellQuote(setup.ConfigPath),
+		"enrollCommand":         "worklease enroll --invite-file " + shellQuote(invitePath),
+	}
+	if setup.Warning != "" {
+		if _, err := fmt.Fprintln(s.errWriter, setup.Warning); err != nil {
+			return err
+		}
+	}
+	if s.jsonRequested(cmd) {
+		return output.WriteSuccess(s.writer, "server-init", fields)
+	}
+	_, err := fmt.Fprintf(s.writer, "server-init completed\nserver config: %s\nbootstrap invite file: %s\nauthority ID: %s\nadvertised endpoint: %s\n", setup.ConfigPath, invitePath, bootstrap.AuthorityID, setup.Endpoint)
+	if err != nil {
+		return err
+	}
+	if setup.CertificatePath != "" {
+		if _, err = fmt.Fprintf(s.writer, "TLS certificate: %s\nTLS key: %s\ncertificate SHA-256: %s\ncertificate valid until: %s\n", setup.CertificatePath, setup.KeyPath, setup.Fingerprint, setup.CertificateEnd.UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(s.writer, "start: worklease serve --server-config %s\nenroll: worklease enroll --invite-file %s\n", shellQuote(setup.ConfigPath), shellQuote(invitePath))
+	return err
+}
+
 func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
+	if !cmd.Bool("guided") {
+		for _, name := range []string{"listen", "endpoint", "transport", "admitted-prefix", "tls-cert", "tls-key", "confirm-non-loopback", "acknowledge-cleartext-credentials"} {
+			if cmd.IsSet(name) {
+				return hostedError(s, cmd, reason.Invalid("--"+name+" requires --guided"))
+			}
+		}
+	}
 	configPath, err := serverConfigPath(cmd)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	if _, statErr := os.Lstat(configPath); errors.Is(statErr, os.ErrNotExist) {
-		if err = writeDefaultServerConfig(configPath); err != nil {
-			return hostedError(s, cmd, err)
+	invitePath := strings.TrimSpace(cmd.String("bootstrap-invite-file"))
+	if invitePath == "" {
+		invitePath = filepath.Join(filepath.Dir(configPath), "bootstrap.invite")
+	}
+	invitePath, err = filepath.Abs(filepath.Clean(invitePath))
+	if err != nil {
+		return hostedError(s, cmd, err)
+	}
+	guided, err := prepareGuidedSetup(s.errWriter, cmd, configPath, invitePath)
+	if err != nil {
+		return hostedError(s, cmd, err)
+	}
+	guidedCommitted := false
+	defer func() {
+		if guided != nil && !guidedCommitted {
+			rollbackGuided(guided.created)
 		}
-	} else if statErr != nil {
-		return hostedError(s, cmd, statErr)
+	}()
+	if guided != nil {
+		defer guided.release()
+	} else {
+		initLock, lockErr := acquireGuidedSetupLock(configPath)
+		if lockErr != nil {
+			return hostedError(s, cmd, lockErr)
+		}
+		defer releaseGuidedSetupLock(initLock)
+	}
+	if guided == nil {
+		if _, statErr := os.Lstat(configPath); errors.Is(statErr, os.ErrNotExist) {
+			if err = writeDefaultServerConfig(configPath); err != nil {
+				return hostedError(s, cmd, err)
+			}
+		} else if statErr != nil {
+			return hostedError(s, cmd, statErr)
+		}
 	}
 	config, err := workleaseserver.LoadConfig(configPath)
 	if err != nil {
+		if guided != nil {
+			rollbackGuided(guided.created)
+		}
 		return hostedError(s, cmd, err)
 	}
 	home, err := filepath.Abs(filepath.Clean(config.Home))
@@ -297,14 +384,9 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		}
 	}
 	if err = store.ValidateHostedHome(home); err != nil {
-		return hostedError(s, cmd, err)
-	}
-	invitePath := strings.TrimSpace(cmd.String("bootstrap-invite-file"))
-	if invitePath == "" {
-		invitePath = filepath.Join(filepath.Dir(configPath), "bootstrap.invite")
-	}
-	invitePath, err = filepath.Abs(filepath.Clean(invitePath))
-	if err != nil {
+		if guided != nil {
+			rollbackGuided(guided.created)
+		}
 		return hostedError(s, cmd, err)
 	}
 	marked, markErr := os.Lstat(filepath.Join(home, store.HostedMarkerFileName))
@@ -318,6 +400,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	} else if marked.Mode()&os.ModeSymlink != 0 {
 		return hostedError(s, cmd, reason.New(reason.ReasonHomeUnsafe, "hosted marker is unsafe"))
 	}
+	guidedCommitted = true
 	if resuming {
 		if err := validateHostedInitContents(home, invitePath); err != nil {
 			return hostedError(s, cmd, err)
@@ -365,6 +448,15 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		return hostedError(s, cmd, err)
 	}
 	if err := st.Close(); err != nil {
+		return hostedError(s, cmd, err)
+	}
+	if guided != nil {
+		if err := completeGuidedSetup(guided); err != nil {
+			return hostedError(s, cmd, err)
+		}
+		return hostedGuidedResult(s, cmd, result, guided, invitePath)
+	}
+	if err := completeRecoveredGuidedSetup(configPath, home); err != nil {
 		return hostedError(s, cmd, err)
 	}
 	return hostedResultPath(s, cmd, "server-init", result, invitePath)

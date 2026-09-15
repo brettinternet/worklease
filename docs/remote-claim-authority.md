@@ -29,14 +29,17 @@ Each authority has these deployment invariants:
 | Process lock | Stop the lock holder before starting its replacement; a paused process still holds the lock. | Using the hosted lock to protect independent clones |
 | Startup configuration | Stop, edit, then start. The deployment-owned file is read once at startup. | Hot reload, remote configuration, or `serve --daemon` |
 
-`serve` and every offline hosted writer take the process-lifetime hosted lock
-before opening SQLite.
+The server owns exactly one namespace with one serialized writer protected by
+the hosted OS lock; operators stop before start when replacing the process.
+`serve` and every offline hosted writer take that process-lifetime lock before
+opening SQLite.
 
 A canonical configuration uses these implemented fields:
 
 ```yaml
 home: /srv/worklease
 listen: 127.0.0.1:8443
+advertisedEndpoint: https://worklease.example.com:8443
 tlsCert: /etc/worklease/server.crt
 tlsKey: /etc/worklease/server.key
 admittedPrefixes:
@@ -55,6 +58,7 @@ Configuration rules:
 | Canonical field | Accepted alias | Constraint |
 | --- | --- | --- |
 | `listen` | `listenAddress` | Required |
+| `advertisedEndpoint` | — | Optional for legacy configurations; guided setup persists the client-facing origin |
 | `tlsCert` | `tlsCertFile` | Required unless insecure HTTP is explicit |
 | `tlsKey` | `tlsKeyFile` | Required unless insecure HTTP is explicit |
 | `admittedPrefixes` | `prefixes` | Required |
@@ -213,6 +217,8 @@ hosted lock before opening SQLite:
 
 ```text
 worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
+worklease server init --guided [--listen HOST:PORT] [--endpoint URL] \
+  [--transport tls|http] [--admitted-prefix PREFIX]...
 worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 \
   --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
   --bootstrap-invite-file FILE [--cutoff-unknown]
@@ -232,8 +238,22 @@ With no arguments, `server init` creates this local-only setup:
 | Admission | `coordination:` resources |
 | Transport | Explicit insecure HTTP |
 
-Files are owner-private. Before exposing the server to another host, edit the
-configuration and enable TLS.
+Files are owner-private. Bare initialization remains non-interactive and
+local-only. For a new LAN authority, use `server init --guided`. Interactive
+setup prompts for missing choices; automation must supply `--listen`,
+`--endpoint`, `--transport`, and at least one `--admitted-prefix`. A
+non-loopback listener also requires `--confirm-non-loopback`. Cleartext HTTP
+requires the separate `--acknowledge-cleartext-credentials` flag.
+
+Guided TLS setup generates an ECDSA P-256 self-signed leaf certificate and
+owner-private key when `--tls-cert` and `--tls-key` are omitted. The generated
+leaf is valid for 365 days and covers the advertised endpoint host or IP.
+Supplied files must be owner-private, matched, and currently valid; a SAN
+mismatch is reported as a warning because a CA-verified client may use another
+name. Success output includes the endpoint, authority ID, DER-certificate
+SHA-256 fingerprint, created paths, start command, and bootstrap enrollment
+command. Fresh guided setup defaults admitted prefixes to `task:` and
+`coordination:` when those defaults are accepted interactively.
 
 `server init` stages the bootstrap secret before the authority transaction and
 writes a one-time admin invite. `bootstrap-reissue` replaces only that invite.
@@ -273,7 +293,7 @@ Recover in this order:
 | Installation inventory | Every active, retired, ephemeral, and CI installation that may have acted since the backup. |
 | Pending requests | An enumerable set per installation, or an independently verified exhaustive equivalent. |
 | Outcomes | Retained started operations and lost-tail work absent from the restored ledger. |
-| Cessation | Provider and executor cessation for every in-flight operation. Completion is not cessation; an empty pending set is not provider history. |
+| Cessation | Provider and executor/process cessation for every in-flight operation. Completion is not cessation; an empty pending set is not provider history. |
 | Loss window | The durable cutoff through old-authority cessation. Unknown bounds waive nothing. |
 | Namespace | Delayed provider effects after old-authority shutdown. |
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -339,7 +340,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 				return err
 			}
 		}
-		srv, err := workleaseserver.New(ctx, cfg, allowInsecureHTTP, nil)
+		srv, err := workleaseserver.New(ctx, cfg, allowInsecureHTTP, log.New(s.errWriter, "", 0))
 		if err != nil {
 			return s.handle(cmd, err)
 		}

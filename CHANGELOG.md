@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `worklease server init --guided` creates a validated LAN-ready server configuration, generates or validates owner-private TLS material, and prints the endpoint, authority ID, certificate fingerprint, and bootstrap handoff commands. `serve` reports its bound address and advertised endpoint after successful startup.
+
 ## 1.4.0 - 2026-09-15
 
 ### Breaking

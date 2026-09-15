@@ -3,13 +3,16 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,21 +29,22 @@ const maxRequestBody = 1 << 20
 const maxResponseBody = 4 << 20
 
 type Config struct {
-	Home              string   `yaml:"home"`
-	Listen            string   `yaml:"listen"`
-	TLSCert           string   `yaml:"tlsCert"`
-	TLSKey            string   `yaml:"tlsKey"`
-	Prefixes          []string `yaml:"admittedPrefixes"`
-	MaxTTL            string   `yaml:"maxTTL"`
-	MaxTTLMicros      int64    `yaml:"maxTTLMicros"`
-	MaxHold           string   `yaml:"maxHold"`
-	MaxHoldMicros     int64    `yaml:"maxHoldMicros"`
-	ShutdownTimeout   string   `yaml:"shutdownTimeout"`
-	HealthRate        int      `yaml:"healthRate"`
-	MetadataRate      int      `yaml:"metadataRate"`
-	EnrollmentRate    int      `yaml:"enrollmentRate"`
-	AllowInsecureHTTP bool     `yaml:"allowInsecureHTTP"`
-	RateLimits        struct {
+	Home               string   `yaml:"home"`
+	Listen             string   `yaml:"listen"`
+	AdvertisedEndpoint string   `yaml:"advertisedEndpoint"`
+	TLSCert            string   `yaml:"tlsCert"`
+	TLSKey             string   `yaml:"tlsKey"`
+	Prefixes           []string `yaml:"admittedPrefixes"`
+	MaxTTL             string   `yaml:"maxTTL"`
+	MaxTTLMicros       int64    `yaml:"maxTTLMicros"`
+	MaxHold            string   `yaml:"maxHold"`
+	MaxHoldMicros      int64    `yaml:"maxHoldMicros"`
+	ShutdownTimeout    string   `yaml:"shutdownTimeout"`
+	HealthRate         int      `yaml:"healthRate"`
+	MetadataRate       int      `yaml:"metadataRate"`
+	EnrollmentRate     int      `yaml:"enrollmentRate"`
+	AllowInsecureHTTP  bool     `yaml:"allowInsecureHTTP"`
+	RateLimits         struct {
 		Health     int `yaml:"health"`
 		Metadata   int `yaml:"metadata"`
 		Enrollment int `yaml:"enrollment"`
@@ -70,7 +74,7 @@ func LoadConfig(path string) (Config, error) {
 	if root.Kind != yaml.MappingNode {
 		return Config{}, reason.New(reason.ReasonConfigInvalid, "server configuration must be an object")
 	}
-	known := map[string]bool{"home": true, "listen": true, "listenAddress": true, "tlsCert": true, "tlsKey": true, "tlsCertFile": true, "tlsKeyFile": true, "admittedPrefixes": true, "prefixes": true, "maxTTL": true, "maxTTLMicros": true, "maxHold": true, "maxHoldMicros": true, "shutdownTimeout": true, "healthRate": true, "metadataRate": true, "enrollmentRate": true, "allowInsecureHTTP": true, "rateLimits": true}
+	known := map[string]bool{"home": true, "listen": true, "listenAddress": true, "advertisedEndpoint": true, "tlsCert": true, "tlsKey": true, "tlsCertFile": true, "tlsKeyFile": true, "admittedPrefixes": true, "prefixes": true, "maxTTL": true, "maxTTLMicros": true, "maxHold": true, "maxHoldMicros": true, "shutdownTimeout": true, "healthRate": true, "metadataRate": true, "enrollmentRate": true, "allowInsecureHTTP": true, "rateLimits": true}
 	seen := map[string]bool{}
 	for i := 0; i < len(root.Content); i += 2 {
 		name := root.Content[i].Value
@@ -173,6 +177,25 @@ func validateConfig(c Config, allowInsecureHTTP bool) error {
 	if strings.TrimSpace(c.Listen) == "" {
 		return reason.New(reason.ReasonConfigInvalid, "listen is required")
 	}
+	if c.AdvertisedEndpoint != "" {
+		endpoint, err := url.Parse(c.AdvertisedEndpoint)
+		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" {
+			return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint must be an origin URL")
+		}
+		expectedScheme := "https"
+		if c.AllowInsecureHTTP {
+			expectedScheme = "http"
+		}
+		if endpoint.Scheme != expectedScheme {
+			return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint scheme does not match server transport")
+		}
+		if endpointPort := endpoint.Port(); endpointPort != "" {
+			port, portErr := strconv.Atoi(endpointPort)
+			if portErr != nil || port < 1 || port > 65535 {
+				return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint port must be between 1 and 65535")
+			}
+		}
+	}
 	if len(c.Prefixes) == 0 {
 		return reason.New(reason.ReasonConfigInvalid, "admittedPrefixes is required")
 	}
@@ -273,14 +296,29 @@ func (s *Server) Serve(ctx context.Context, allowInsecureHTTP bool) error {
 	s.cancel = cancelRequests
 	s.http.BaseContext = func(net.Listener) context.Context { return requestCtx }
 	defer cancelRequests()
-	errc := make(chan error, 1)
-	go func() {
-		if allowInsecureHTTP {
-			errc <- s.http.ListenAndServe()
-		} else {
-			errc <- s.http.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
+	listener, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return err
+	}
+	transport := "http"
+	serveListener := listener
+	if !allowInsecureHTTP {
+		certificate, loadErr := tls.LoadX509KeyPair(s.cfg.TLSCert, s.cfg.TLSKey)
+		if loadErr != nil {
+			_ = listener.Close()
+			return loadErr
 		}
-	}()
+		transport = "https"
+		tlsConfig := &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
+		serveListener = tls.NewListener(listener, tlsConfig)
+	}
+	endpoint := strings.TrimSpace(s.cfg.AdvertisedEndpoint)
+	if endpoint == "" {
+		endpoint = transport + "://" + listener.Addr().String()
+	}
+	s.logger.Printf("listening address=%s transport=%s advertisedEndpoint=%s", listener.Addr().String(), transport, endpoint)
+	errc := make(chan error, 1)
+	go func() { errc <- s.http.Serve(serveListener) }()
 	select {
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {

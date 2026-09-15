@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,6 +48,15 @@ func TestValidateConfigRequiresTLSUnlessInsecureHTTPIsAllowed(t *testing.T) {
 	cfg.HealthRate = 0
 	if err := validateConfig(cfg, true); err == nil {
 		t.Fatal("configuration without explicit public endpoint rate limits was accepted")
+	}
+}
+
+func TestValidateConfigRejectsInvalidAdvertisedEndpointPort(t *testing.T) {
+	cfg := testConfig()
+	cfg.AllowInsecureHTTP = true
+	cfg.AdvertisedEndpoint = "http://worklease.example:65536"
+	if err := validateConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "port") {
+		t.Fatalf("invalid advertised endpoint port error = %v", err)
 	}
 }
 
@@ -194,6 +204,46 @@ func TestOperationRenewAndCompleteWireFieldsAreUnambiguous(t *testing.T) {
 	}
 	if complete.OperationID != "d" || complete.Receipt["exitCode"] == nil {
 		t.Fatalf("completion fields decoded ambiguously: %+v", complete)
+	}
+}
+
+func TestServeReportsBoundAddressTransportAndAdvertisedEndpoint(t *testing.T) {
+	srv, _ := newHostedTestServer(t)
+	srv.http.Addr = "127.0.0.1:0"
+	srv.cfg.AdvertisedEndpoint = "http://worklease.example:8443"
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, true) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "transport=http advertisedEndpoint=http://worklease.example:8443") || strings.Contains(logs.String(), "address=127.0.0.1:0 ") {
+		t.Fatalf("startup diagnostics = %q", logs.String())
+	}
+}
+
+func TestServeTLSFailureDoesNotReportReadiness(t *testing.T) {
+	srv, _ := newHostedTestServer(t)
+	srv.http.Addr = "127.0.0.1:0"
+	root := t.TempDir()
+	srv.cfg.TLSCert = filepath.Join(root, "server.crt")
+	srv.cfg.TLSKey = filepath.Join(root, "server.key")
+	for _, path := range []string{srv.cfg.TLSCert, srv.cfg.TLSKey} {
+		if err := os.WriteFile(path, []byte("not TLS material\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	if err := srv.Serve(context.Background(), false); err == nil {
+		t.Fatal("invalid TLS material unexpectedly served")
+	}
+	if strings.Contains(logs.String(), "listening address=") {
+		t.Fatalf("TLS failure implied readiness: %s", logs.String())
 	}
 }
 
