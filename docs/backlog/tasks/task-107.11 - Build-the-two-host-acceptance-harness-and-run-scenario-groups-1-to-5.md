@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 01:50'
+updated_date: '2026-09-15 01:51'
 labels:
   - remote-authority
 dependencies:
@@ -185,4 +185,6 @@ Implemented AC7.1 and AC7.3. Group 5 now runs a controlled asynchronous SQLite b
 Committed AC7.1 and AC7.3 implementation as 77422c4 (Exercise asynchronous backup selection). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks.
 
 Implemented AC7.5 and AC7.6. Group 5 now migrates a populated schema-v1 fixture with the current binary, preserves exact completed replay and started unknown-operation records, proves a schema-v1 reader rejects v2, and requires an obsolete HTTP protocol to return 426 with the exact supported version before current-protocol metadata succeeds. It also enrolls one installation before the selected asynchronous backup and another after it, queries the selected artifact to prove row presence/absence, then after restore requires the retained credential to return installation-revoked and the missing credential to return authentication-required through both CLI and MCP; a new post-restore credential remains usable. Objective local evidence: dist/remote-acceptance/ac7-upgrade-credentials-local-reviewed/report.json, coverage.json, schema-protocol-upgrade.json, restored-missing-credentials.json, and asynchronous-backup-selection.json. CI evidence: dist/remote-acceptance/20260915T014844.715378000Z/report.json. The repository-managed real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Independent review found remote profile refresh incorrectly used orchestrator-local filesystem access; the fix refreshes remote profiles through the remote CLI and verifies the returned restore ID. Re-review passed. Remaining Group 5 clauses stay still-blocked. Next resumable step: AC7.7 double restore and AC7.8 retained start with lost completion.
+
+Committed AC7.5 and AC7.6 implementation as 1d00860 (Exercise restore upgrade and credentials). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks.
 <!-- SECTION:NOTES:END -->
