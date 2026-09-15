@@ -170,6 +170,17 @@ type pendingSetInventory struct {
 	RequestIDs []string `json:"requestIds"`
 }
 
+type schemaUpgradeState struct {
+	UserVersion       int64  `json:"userVersion"`
+	AuthorityID       string `json:"authorityId"`
+	RestoreID         string `json:"restoreId"`
+	StartedOperations int64  `json:"startedOperations"`
+	CompletedReplay   int64  `json:"completedReplay"`
+	Events            int64  `json:"events"`
+	RequiredV2Objects int64  `json:"requiredV2Objects"`
+	LegacyOpenReason  string `json:"legacyOpenReason"`
+}
+
 type promptCapture struct {
 	mu      sync.Mutex
 	buffer  bytes.Buffer
@@ -373,6 +384,25 @@ func main() {
 			return
 		}
 		if err := controlledBackupSQLite(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "schema-v1-fixture" || os.Args[1] == "schema-upgrade-state") {
+		if len(os.Args) != 3 {
+			fatal(fmt.Errorf("%s requires a schema fixture home", os.Args[1]))
+		}
+		if os.Args[1] == "schema-v1-fixture" {
+			if err := createSchemaV1Fixture(os.Args[2]); err != nil {
+				fatal(err)
+			}
+			return
+		}
+		state, err := readSchemaUpgradeState(os.Args[2])
+		if err != nil {
+			fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(state); err != nil {
 			fatal(err)
 		}
 		return
@@ -3769,10 +3799,175 @@ func (h *harness) captureAsynchronousBackup(evidence, authorityDB, name string, 
 	return captured, nil
 }
 
+func (h *harness) exerciseSchemaProtocolUpgrade(evidence string) (string, error) {
+	fixtureHome := filepath.Join(h.root, "schema-upgrade-home")
+	helper, binary := h.self, h.binary
+	if h.realHost {
+		fixtureHome = filepath.Join(h.remoteRoot, "schema-upgrade-home")
+		helper, binary = h.remoteHelper, h.remoteBinary
+	}
+	runHelper := func(args ...string) ([]byte, error) {
+		h.logCommand("schema-fixture@"+h.remoteHost, append([]string{"worklease-remote-smoke"}, args...))
+		if h.realHost {
+			output, err := runSSH(h.remoteHost, append([]string{helper}, args...)...)
+			return []byte(output), err
+		}
+		return exec.Command(helper, args...).CombinedOutput()
+	}
+	if output, err := runHelper("schema-v1-fixture", fixtureHome); err != nil {
+		return "", fmt.Errorf("create schema-v1 fixture: %w: %s", err, output)
+	}
+	handlePath := filepath.Join(fixtureHome, "upgrade-handle.json")
+	upgradeArgs := []string{"--json", "--home", fixtureHome, "acquire", "--handle", handlePath, "--resource", "coordination:schema-upgrade", "--ttl", "5s"}
+	h.logCommand("schema-upgrade@"+h.remoteHost, append([]string{"worklease"}, upgradeArgs...))
+	if h.realHost {
+		if _, err := h.remoteJSON(binary, upgradeArgs...); err != nil {
+			return "", err
+		}
+	} else if _, err := runJSON(nil, "", binary, upgradeArgs...); err != nil {
+		return "", err
+	}
+	stateOutput, err := runHelper("schema-upgrade-state", fixtureHome)
+	if err != nil {
+		return "", fmt.Errorf("read upgraded schema fixture: %w: %s", err, stateOutput)
+	}
+	var state schemaUpgradeState
+	if err := json.Unmarshal(stateOutput, &state); err != nil {
+		return "", err
+	}
+	if state.UserVersion != store.SchemaVersion || state.AuthorityID != strings.Repeat("a", 32) || state.RestoreID == "" || state.StartedOperations != 1 || state.CompletedReplay != 1 || state.Events < 2 || state.RequiredV2Objects != 5 || state.LegacyOpenReason != "schema-unsupported" {
+		return "", fmt.Errorf("schema upgrade did not preserve the v1 authority and replay/unknown state: %+v", state)
+	}
+	protocolEvidence, err := h.protocolUpgradeEvidence()
+	if err != nil {
+		return "", err
+	}
+	evidencePath := filepath.Join(evidence, "schema-protocol-upgrade.json")
+	encoded, err := json.MarshalIndent(map[string]any{
+		"schema":      state,
+		"protocol":    protocolEvidence,
+		"observation": "the current binary migrated a populated schema-v1 authority while preserving completed replay and started unknown state; a legacy schema reader and legacy wire protocol both fail explicitly while worklease-http/1 remains available",
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidencePath, append(encoded, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return evidencePath, nil
+}
+
+func (h *harness) protocolUpgradeEvidence() (map[string]any, error) {
+	roots := x509.NewCertPool()
+	certificate, err := os.ReadFile(h.cert)
+	if err != nil || !roots.AppendCertsFromPEM(certificate) {
+		return nil, errors.New("load protocol-upgrade TLS root")
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+	requestMetadata := func(version string) (int, map[string]any, error) {
+		request, err := http.NewRequest(http.MethodGet, h.endpoint+"/.well-known/worklease", nil)
+		if err != nil {
+			return 0, nil, err
+		}
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Worklease-Protocol-Version", version)
+		response, err := client.Do(request)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer response.Body.Close()
+		var envelope map[string]any
+		if err := json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&envelope); err != nil {
+			return response.StatusCode, nil, err
+		}
+		return response.StatusCode, envelope, nil
+	}
+	legacyStatus, legacy, err := requestMetadata("worklease-http/0")
+	if err != nil {
+		return nil, err
+	}
+	legacyError, _ := legacy["error"].(map[string]any)
+	legacyDetails, _ := legacyError["details"].(map[string]any)
+	supported, _ := legacyDetails["supportedProtocolVersions"].([]any)
+	if legacyStatus != http.StatusUpgradeRequired || legacyError["reason"] != "protocol-version-unsupported" || len(supported) != 1 || supported[0] != "worklease-http/1" {
+		return nil, fmt.Errorf("legacy protocol was not rejected with the supported upgrade target: status=%d envelope=%v", legacyStatus, legacy)
+	}
+	currentStatus, current, err := requestMetadata("worklease-http/1")
+	if err != nil {
+		return nil, err
+	}
+	result, _ := current["result"].(map[string]any)
+	currentSupported, _ := result["supportedProtocolVersions"].([]any)
+	if currentStatus != http.StatusOK || current["protocolVersion"] != "worklease-http/1" || len(currentSupported) != 1 || currentSupported[0] != "worklease-http/1" || current["authorityId"] != h.report.Authority {
+		return nil, fmt.Errorf("current protocol metadata is invalid: status=%d envelope=%v", currentStatus, current)
+	}
+	return map[string]any{"legacyStatus": legacyStatus, "legacyReason": legacyError["reason"], "legacySupportedVersions": supported, "currentStatus": currentStatus, "currentProtocolVersion": current["protocolVersion"], "authorityId": current["authorityId"]}, nil
+}
+
+func (h *harness) exerciseRestoredCredentials(evidence string, retained, missing client, retainedID, missingID, restoreID string, selectedCutoffPresence map[string]bool) (string, error) {
+	if !selectedCutoffPresence[retainedID] || selectedCutoffPresence[missingID] {
+		return "", fmt.Errorf("selected backup installation inventory is invalid: retained=%t missing=%t", selectedCutoffPresence[retainedID], selectedCutoffPresence[missingID])
+	}
+	if err := h.refreshClientRestoreID(retained, restoreID); err != nil {
+		return "", err
+	}
+	if err := h.refreshClientRestoreID(missing, restoreID); err != nil {
+		return "", err
+	}
+	retainedCLI, err := h.cliFailure(retained, "--profile", "team", "installation", "list")
+	if err != nil {
+		return "", err
+	}
+	missingCLI, err := h.cliFailure(missing, "--profile", "team", "installation", "list")
+	if err != nil {
+		return "", err
+	}
+	if err := requireReason(retainedCLI, "installation-revoked"); err != nil {
+		return "", fmt.Errorf("retained restored credential: %w", err)
+	}
+	if err := requireReason(missingCLI, "authentication-required"); err != nil {
+		return "", fmt.Errorf("credential whose row is missing from backup: %w", err)
+	}
+	retainedMCP, err := h.mcpToolCall(retained, "list", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	missingMCP, err := h.mcpToolCall(missing, "list", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	for label, check := range map[string]struct {
+		response map[string]any
+		reason   string
+	}{"retained": {retainedMCP, "installation-revoked"}, "missing": {missingMCP, "authentication-required"}} {
+		errorFields, _ := check.response["error"].(map[string]any)
+		if errorFields["reason"] != check.reason {
+			return "", fmt.Errorf("%s restored MCP credential result=%v", label, check.response)
+		}
+	}
+	evidencePath := filepath.Join(evidence, "restored-missing-credentials.json")
+	encoded, err := json.MarshalIndent(map[string]any{
+		"restoreId":            restoreID,
+		"retainedInstallation": map[string]any{"installationId": retainedID, "presentAtCutoff": selectedCutoffPresence[retainedID], "cliReason": "installation-revoked", "mcpReason": "installation-revoked"},
+		"missingInstallation":  map[string]any{"installationId": missingID, "presentAtCutoff": selectedCutoffPresence[missingID], "cliReason": "authentication-required", "mcpReason": "authentication-required"},
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidencePath, append(encoded, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return evidencePath, nil
+}
+
 func (h *harness) group5(evidence string) error {
 	authorityDB := filepath.Join(h.root, "authority", "worklease.db")
 	if h.realHost {
 		authorityDB = filepath.Join(h.remoteRoot, "authority", "worklease.db")
+	}
+	retainedCredentialClient, retainedInstallationID, err := h.provisionRaceClient("restore-retained-installation")
+	if err != nil {
+		return err
 	}
 	zeroBefore, nonzeroBefore, err := h.pendingSetInventories()
 	if err != nil {
@@ -3809,6 +4004,21 @@ func (h *harness) group5(evidence string) error {
 	}
 	if !reflect.DeepEqual(zeroBefore.RequestIDs, zeroSelected.RequestIDs) || !reflect.DeepEqual(nonzeroBefore.RequestIDs, nonzeroSelected.RequestIDs) {
 		return errors.New("independently retained pending-set inventories changed across backup selection")
+	}
+	missingCredentialClient, missingInstallationID, err := h.provisionRaceClient("restore-missing-installation")
+	if err != nil {
+		return err
+	}
+	selectedCutoffPresence, err := backupInstallationPresence(selectedBackup.Path, retainedInstallationID, missingInstallationID)
+	if err != nil {
+		return err
+	}
+	if !selectedCutoffPresence[retainedInstallationID] || selectedCutoffPresence[missingInstallationID] {
+		return fmt.Errorf("selected backup does not establish retained/missing credential fixtures: %v", selectedCutoffPresence)
+	}
+	schemaProtocolEvidencePath, err := h.exerciseSchemaProtocolUpgrade(evidence)
+	if err != nil {
+		return err
 	}
 	backupEvidencePath := filepath.Join(evidence, "asynchronous-backup-selection.json")
 	backupEvidence, err := json.MarshalIndent(map[string]any{
@@ -3859,6 +4069,10 @@ func (h *harness) group5(evidence string) error {
 	if err := h.restartServer(evidence); err != nil {
 		return err
 	}
+	credentialEvidencePath, err := h.exerciseRestoredCredentials(evidence, retainedCredentialClient, missingCredentialClient, retainedInstallationID, missingInstallationID, restoredRestoreID, selectedCutoffPresence)
+	if err != nil {
+		return err
+	}
 	if h.preRestoreCursor == "" {
 		return errors.New("pre-restore cursor fixture is missing")
 	}
@@ -3885,6 +4099,9 @@ func (h *harness) group5(evidence string) error {
 	}
 	if _, err := h.cli(h.clients[0], "enroll", "--profile", "team", "--invite-file", clientRestoreInvite, "--label", "acceptance-restored-cursor"); err != nil {
 		return err
+	}
+	if _, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked"); err != nil {
+		return fmt.Errorf("new post-restore credential is unusable: %w", err)
 	}
 	staleCursor, err := h.cliFailure(h.clients[0], "--profile", "team", "events", "--cursor", h.preRestoreCursor)
 	if err != nil {
@@ -3983,11 +4200,25 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the chosen SQLite cutoff restores to a fresh incarnation; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"capture older asynchronous online backup", "mutate authority tail", "capture and select newer asynchronous online backup", "inventory zero and nonzero pending sets", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the current binary migrates populated schema-v1 replay and unknown-operation state while legacy schema and protocol readers fail explicitly; the chosen SQLite cutoff restores to a fresh incarnation; a retained installation credential is revoked, an installation missing from the selected backup cannot authenticate, and a new post-restore credential works; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"enroll installation retained by selected cutoff", "capture older asynchronous online backup", "mutate authority tail", "capture and select newer asynchronous online backup", "enroll installation missing from selected cutoff", "migrate populated schema-v1 fixture and probe legacy/current protocol versions", "inventory zero and nonzero pending sets", "stop authority", "hosted restore", "verify retained, missing, and new post-restore credentials", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, schemaProtocolEvidencePath, credentialEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
 	return nil
 }
 
 func (h *harness) refreshClientRestoreID(c client, restoreID string) error {
+	if c.remote {
+		if _, err := h.cli(c, "profile", "remove", "team"); err != nil {
+			return err
+		}
+		result, err := h.cli(c, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority)
+		if err != nil {
+			return err
+		}
+		profile, _ := result["profile"].(map[string]any)
+		if profile["restoreId"] != restoreID {
+			return fmt.Errorf("remote profile refresh returned restore ID %v, want %s", profile["restoreId"], restoreID)
+		}
+		return nil
+	}
 	paths := config.UserProfilePaths(func(name string) string {
 		if name == "XDG_CONFIG_HOME" {
 			return c.config
@@ -4140,8 +4371,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC7.2", "online SQLite backup on the authority host", 5),
 		live("AC7.3", "zero and nonzero pending sets", 5),
 		live("AC7.4", "authority restart", 5),
-		blocked("AC7.5", "schema and protocol upgrade"),
-		blocked("AC7.6", "restored and missing credentials"),
+		live("AC7.5", "schema and protocol upgrade", 5),
+		live("AC7.6", "restored and missing credentials", 5),
 		blocked("AC7.7", "double restore"),
 		blocked("AC7.8", "retained start with lost completion"),
 		blocked("AC7.9", "confirmed start missing from backup while client is offline or incomplete"),
@@ -4797,6 +5028,111 @@ func resolveSSHAddress(host string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("SSH host %q returned no non-loopback address", host)
+}
+
+func backupInstallationPresence(databasePath string, installationIDs ...string) (map[string]bool, error) {
+	db, err := sql.Open("sqlite", "file:"+databasePath+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	presence := make(map[string]bool, len(installationIDs))
+	for _, installationID := range installationIDs {
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM installations WHERE installation_id=?`, installationID).Scan(&count); err != nil {
+			return nil, err
+		}
+		presence[installationID] = count == 1
+	}
+	return presence, nil
+}
+
+func createSchemaV1Fixture(home string) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(home, 0o700); err != nil {
+		return err
+	}
+	databasePath := filepath.Join(home, "worklease.db")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	statements := []string{
+		`PRAGMA foreign_keys = ON`,
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`CREATE TABLE claims (claim_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, revision INTEGER NOT NULL, agent_id TEXT NOT NULL, session_id TEXT NOT NULL, work_key TEXT NOT NULL, guarantee TEXT NOT NULL CHECK (guarantee = 'local-coordination'), local_replace_allowed INTEGER NOT NULL CHECK (local_replace_allowed IN (0,1)), acquired_at INTEGER NOT NULL, ttl_us INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, checkpoint TEXT)`,
+		`CREATE TABLE claim_resources (resource TEXT PRIMARY KEY, claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE, position INTEGER NOT NULL)`,
+		`CREATE INDEX claim_resources_by_claim ON claim_resources(claim_id)`,
+		`CREATE TABLE epochs (claim_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT NOT NULL, work_key TEXT NOT NULL, guarantee TEXT NOT NULL, local_replace_allowed INTEGER NOT NULL, acquired_at INTEGER NOT NULL, acquired_seq INTEGER NOT NULL, ended_at INTEGER, ended_seq INTEGER, ended_recorded_at INTEGER, end_reason TEXT CHECK (end_reason IN ('released','transferred','expired')), final_revision INTEGER, successor_claim_id TEXT, checkpoint TEXT)`,
+		`CREATE INDEX epochs_by_acquired_seq ON epochs(acquired_seq)`,
+		`CREATE TABLE epoch_resources (claim_id TEXT NOT NULL REFERENCES epochs(claim_id) ON DELETE CASCADE, resource TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (claim_id, position))`,
+		`CREATE INDEX epoch_resources_by_resource ON epoch_resources(resource, claim_id)`,
+		`CREATE TABLE operations (claim_id TEXT NOT NULL, operation_id TEXT NOT NULL, kind TEXT NOT NULL, request_hash TEXT NOT NULL, request_not_after INTEGER NOT NULL, expected_revision INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('started','completed','reconciled')), receipt TEXT, started_at INTEGER NOT NULL, started_seq INTEGER NOT NULL, completed_at INTEGER, completed_seq INTEGER, PRIMARY KEY (claim_id, operation_id))`,
+		`CREATE INDEX operations_by_state ON operations(state)`,
+		`CREATE UNIQUE INDEX one_started_per_claim ON operations(claim_id) WHERE state = 'started'`,
+		`CREATE TABLE reconciliations (claim_id TEXT NOT NULL, operation_id TEXT NOT NULL, outcome TEXT NOT NULL CHECK (outcome IN ('observed-success','observed-failure')), evidence TEXT NOT NULL, request_hash TEXT NOT NULL, reconcile_operation_id TEXT NOT NULL, resolver_claim_id TEXT NOT NULL, resolver_agent_id TEXT NOT NULL, resolver_session_id TEXT NOT NULL, recorded_at INTEGER NOT NULL, recorded_seq INTEGER NOT NULL, PRIMARY KEY (claim_id, operation_id))`,
+		`CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL, claim_id TEXT, resources TEXT NOT NULL, operation_id TEXT, revision INTEGER, agent_id TEXT, detail TEXT NOT NULL DEFAULT '{}')`,
+		`CREATE INDEX events_by_claim ON events(claim_id, seq)`,
+		`CREATE INDEX events_by_at ON events(at)`,
+		`INSERT INTO meta(key,value) VALUES ('created_at','1'),('authority_id','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),('last_observed_at','2'),('last_event_seq','5'),('pruned_through_seq','0')`,
+		`INSERT INTO claims VALUES('11111111111111111111111111111111','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',3,'upgrade-agent','upgrade-session','upgrade-work','local-coordination',1,4102444700000000,100000000,4102444700000000,4102444800000000,'{"saved":true}')`,
+		`INSERT INTO claim_resources VALUES('coordination:upgrade-retained','11111111111111111111111111111111',0)`,
+		`INSERT INTO epochs VALUES('11111111111111111111111111111111','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','upgrade-agent','upgrade-session','upgrade-work','local-coordination',1,4102444700000000,4,NULL,NULL,NULL,NULL,NULL,NULL,'{"saved":true}')`,
+		`INSERT INTO epoch_resources VALUES('11111111111111111111111111111111','coordination:upgrade-retained',0)`,
+		`INSERT INTO operations VALUES('11111111111111111111111111111111','22222222222222222222222222222222','exec','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',4102444800000000,2,'started',NULL,4102444700000000,5,NULL,NULL)`,
+		`INSERT INTO operations VALUES('11111111111111111111111111111111','33333333333333333333333333333333','acquire','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',4102444800000000,1,'completed','{"committed":true}',4102444700000000,4,4102444700000000,4)`,
+		`INSERT INTO events(seq,at,kind,claim_id,resources,operation_id,revision,agent_id,detail) VALUES(4,10,'acquired','11111111111111111111111111111111','["coordination:upgrade-retained"]','33333333333333333333333333333333',1,'upgrade-agent','{}')`,
+		`INSERT INTO events(seq,at,kind,claim_id,resources,operation_id,revision,agent_id,detail) VALUES(5,12,'exec-started','11111111111111111111111111111111','["coordination:upgrade-retained"]','22222222222222222222222222222222',2,'upgrade-agent','{}')`,
+		`PRAGMA user_version = 1`,
+	}
+	for index, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("create schema-v1 fixture statement %d: %w", index, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(databasePath, 0o600)
+}
+
+func readSchemaUpgradeState(home string) (schemaUpgradeState, error) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(home, "worklease.db")+"?mode=ro")
+	if err != nil {
+		return schemaUpgradeState{}, err
+	}
+	defer db.Close()
+	state := schemaUpgradeState{}
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&state.UserVersion); err != nil {
+		return schemaUpgradeState{}, err
+	}
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='authority_id'`).Scan(&state.AuthorityID); err != nil {
+		return schemaUpgradeState{}, err
+	}
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='restore_id'`).Scan(&state.RestoreID); err != nil {
+		return schemaUpgradeState{}, err
+	}
+	queries := []struct {
+		query string
+		value *int64
+	}{
+		{`SELECT count(*) FROM operations WHERE operation_id='22222222222222222222222222222222' AND state='started'`, &state.StartedOperations},
+		{`SELECT count(*) FROM operations WHERE operation_id='33333333333333333333333333333333' AND state='completed' AND receipt IS NOT NULL`, &state.CompletedReplay},
+		{`SELECT count(*) FROM events WHERE seq IN (4,5)`, &state.Events},
+		{`SELECT count(*) FROM sqlite_master WHERE name IN ('recovery_state','installations','invites','recovery_reopenings','operation_renewals')`, &state.RequiredV2Objects},
+	}
+	for _, query := range queries {
+		if err := db.QueryRow(query.query).Scan(query.value); err != nil {
+			return schemaUpgradeState{}, err
+		}
+	}
+	if state.UserVersion != 1 {
+		state.LegacyOpenReason = "schema-unsupported"
+	}
+	return state, nil
 }
 
 func freePort() (int, error) {
