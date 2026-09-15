@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 01:07'
+updated_date: '2026-09-15 01:23'
 labels:
   - remote-authority
 dependencies:
@@ -83,6 +83,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 12. Implement AC6.3 cursor incarnation/retention-gap and AC6.4 stuck-history pinning in the shared harness using a deterministic aged-history fixture; carry a pre-restore cursor into Group 5 for restore-incarnation rejection, preserve later Group 4 clauses as blocked, run local/reachable real-host evidence, independent review, quality gates, staged hooks, commit, and record objective evidence.
 
 13. Implement AC6.5 full-volume storage-failure without pruning and AC6.6 client pending evidence survival across age, GC, replay expiry, restart, and profile changes; preserve later Group 4 clauses as blocked, run local/reachable real-host evidence, independent review, quality gates, staged hooks, commit, and record objective evidence.
+
+14. Implement AC7.1 and AC7.3 with an actual asynchronous backup fixture that records chosen and older cutoffs and proves zero/nonzero pending-set inventories; preserve remaining Group 5 clauses as still-blocked, run local/reachable real-host evidence, independent review, all quality gates, staged hooks, commit, and record objective evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -175,4 +177,6 @@ Implemented AC6.5 and AC6.6. The shared harness saturates an owner-marked SQLite
 Correction to the next resumable step above: Group 4 has no separate AC6.7 coverage entry. Resume with AC7.1 and AC7.3: add an actual asynchronous backup fixture with chosen and older cutoffs and prove zero/nonzero pending-set inventories, then continue the remaining Group 5 restore matrix.
 
 Committed AC6.5 and AC6.6 implementation as 476e9f9 (Exercise remote storage and pending retention). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks. The first CI attempt hit two unrelated race timing flakes; each passed 10 focused race repetitions and the complete CI rerun passed.
+
+Implemented AC7.1 and AC7.3. Group 5 now runs a controlled asynchronous SQLite backup subprocess twice while the authority stays live, records durable older and chosen cutoffs from each snapshot's authority watermark, inserts an authority tail mutation between snapshots, verifies distinct hashes and increasing event sequence, restores the chosen artifact, and records independently retained zero/nonzero pending-set inventories at both cutoffs. Objective local evidence: dist/remote-acceptance/ac7-backup-local-final/report.json, coverage.json, and asynchronous-backup-selection.json; CI evidence: dist/remote-acceptance/20260915T012220.221791000Z/report.json. The unchanged real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Independent review found stale fixed-name synchronization artifacts could cause a retry false pass; per-capture nonce paths fixed the issue. Remaining Group 5 clauses stay still-blocked. Next resumable step: AC7.5 schema/protocol upgrade and AC7.6 restored/missing credentials.
 <!-- SECTION:NOTES:END -->

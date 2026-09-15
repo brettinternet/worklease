@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -115,7 +116,7 @@ type harness struct {
 	report                                                          report
 	realHost                                                        bool
 	supportingTests                                                 []supportingTestEvidence
-	immutableEnrollmentClient                                       client
+	immutableEnrollmentClient, zeroPendingClient                    client
 	immutableEnrollmentID, immutableEnrollmentInvite                string
 	immutableEnrollmentBefore                                       authority.PendingRequest
 	pendingSurvivalBefore                                           []byte
@@ -152,6 +153,21 @@ type fullVolumeState struct {
 type storageSnapshot struct {
 	Tables map[string]int64  `json:"tables"`
 	Meta   map[string]string `json:"meta"`
+}
+
+type backupCapture struct {
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	StartedAt     string `json:"startedAt"`
+	DurableCutoff string `json:"durableCutoff"`
+	SHA256        string `json:"sha256"`
+	EventSequence int64  `json:"eventSequence"`
+}
+
+type pendingSetInventory struct {
+	Label      string   `json:"label"`
+	Root       string   `json:"root"`
+	RequestIDs []string `json:"requestIds"`
 }
 
 type promptCapture struct {
@@ -347,10 +363,16 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "backup" {
-		if len(os.Args) != 4 {
-			fatal(errors.New("backup requires source and destination"))
+		if len(os.Args) != 4 && len(os.Args) != 7 {
+			fatal(errors.New("backup requires source and destination, optionally followed by control, ready, and result paths"))
 		}
-		if err := backupSQLite(os.Args[2], os.Args[3]); err != nil {
+		if len(os.Args) == 4 {
+			if err := backupSQLite(os.Args[2], os.Args[3]); err != nil {
+				fatal(err)
+			}
+			return
+		}
+		if err := controlledBackupSQLite(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 			fatal(err)
 		}
 		return
@@ -2537,6 +2559,7 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 		return fmt.Errorf("pending enrollment incarnation mismatch body=%q record=%q err=%v", immutableBody.ExpectedRestoreID, immutablePending.ExpectedRestoreID, err)
 	}
 	h.immutableEnrollmentClient = immutableClient
+	h.zeroPendingClient = redeemer
 	h.immutableEnrollmentID = immutableID
 	h.immutableEnrollmentInvite = immutableInvite
 	h.immutableEnrollmentBefore = immutablePending
@@ -3597,46 +3620,224 @@ func protectedCount(result map[string]any, key string) int {
 	return resultSummaryCount(result, "protected", key)
 }
 
+func (h *harness) pendingSetInventories() (pendingSetInventory, pendingSetInventory, error) {
+	if h.zeroPendingClient.home == "" || h.immutableEnrollmentClient.home == "" {
+		return pendingSetInventory{}, pendingSetInventory{}, errors.New("pending-set inventory clients are missing")
+	}
+	inventory := func(label string, c client) (pendingSetInventory, error) {
+		root := filepath.Join(c.home, "pending", "team")
+		records, err := authority.NewFilePendingStore(root).List()
+		if err != nil {
+			return pendingSetInventory{}, err
+		}
+		requestIDs := make([]string, 0, len(records))
+		for _, record := range records {
+			requestIDs = append(requestIDs, record.RequestID)
+		}
+		sort.Strings(requestIDs)
+		return pendingSetInventory{Label: label, Root: root, RequestIDs: requestIDs}, nil
+	}
+	zero, err := inventory("confirmed-enrollment-zero-pending", h.zeroPendingClient)
+	if err != nil {
+		return pendingSetInventory{}, pendingSetInventory{}, err
+	}
+	nonzero, err := inventory("lost-enrollment-nonzero-pending", h.immutableEnrollmentClient)
+	if err != nil {
+		return pendingSetInventory{}, pendingSetInventory{}, err
+	}
+	if len(zero.RequestIDs) != 0 {
+		return pendingSetInventory{}, pendingSetInventory{}, fmt.Errorf("zero pending-set fixture contains requests: %v", zero.RequestIDs)
+	}
+	if len(nonzero.RequestIDs) == 0 || !slicesContains(nonzero.RequestIDs, h.immutableEnrollmentID) {
+		return pendingSetInventory{}, pendingSetInventory{}, fmt.Errorf("nonzero pending-set fixture does not contain %s: %v", h.immutableEnrollmentID, nonzero.RequestIDs)
+	}
+	return zero, nonzero, nil
+}
+
+func slicesContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *harness) captureAsynchronousBackup(evidence, authorityDB, name string, observe func() error) (backupCapture, error) {
+	nonce, err := randomRequestID()
+	if err != nil {
+		return backupCapture{}, err
+	}
+	nonce = nonce[:12]
+	localBackup := filepath.Join(evidence, "asynchronous-backup-"+name+".db")
+	localReady := filepath.Join(evidence, "asynchronous-backup-"+name+"-"+nonce+".ready")
+	localControl := filepath.Join(evidence, "asynchronous-backup-"+name+"-"+nonce+".control")
+	localResult := filepath.Join(evidence, "asynchronous-backup-"+name+"-"+nonce+".json")
+	backupPath, readyPath, controlPath, resultPath := localBackup, localReady, localControl, localResult
+	if h.realHost {
+		backupPath = filepath.Join(h.remoteRoot, "asynchronous-backup-"+name+".db")
+		readyPath = filepath.Join(h.remoteRoot, "asynchronous-backup-"+name+"-"+nonce+".ready")
+		controlPath = filepath.Join(h.remoteRoot, "asynchronous-backup-"+name+"-"+nonce+".control")
+		resultPath = filepath.Join(h.remoteRoot, "asynchronous-backup-"+name+"-"+nonce+".json")
+	}
+	args := []string{"backup", authorityDB, backupPath, controlPath, readyPath, resultPath}
+	h.logCommand("async-backup@"+h.remoteHost, append([]string{"worklease-remote-smoke"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var command *exec.Cmd
+	if h.realHost {
+		command = exec.CommandContext(ctx, "ssh", append([]string{h.remoteHost, h.remoteHelper}, args...)...)
+	} else {
+		command = exec.CommandContext(ctx, h.self, args...)
+	}
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	startedAt := time.Now().UTC()
+	if err := command.Start(); err != nil {
+		return backupCapture{}, err
+	}
+	waitReady := func() error {
+		if h.realHost {
+			_, err := runSSH(h.remoteHost, h.remoteHelper, "wait-file", readyPath, "backup", "ready", "10s")
+			return err
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			contents, err := os.ReadFile(readyPath)
+			if err == nil && strings.TrimSpace(string(contents)) == "backup ready" {
+				return nil
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return errors.New("timed out waiting for asynchronous backup fixture")
+	}
+	if err := waitReady(); err != nil {
+		cancel()
+		_ = command.Wait()
+		return backupCapture{}, err
+	}
+	if err := observe(); err != nil {
+		cancel()
+		_ = command.Wait()
+		return backupCapture{}, fmt.Errorf("observe live authority during %s backup: %w", name, err)
+	}
+	if h.realHost {
+		localControlCopy := filepath.Join(h.root, "asynchronous-backup-"+name+"-"+nonce+".control")
+		if err := os.WriteFile(localControlCopy, []byte("capture now\n"), 0o600); err != nil {
+			cancel()
+			_ = command.Wait()
+			return backupCapture{}, err
+		}
+		if err := runSCP(h.remoteHost, localControlCopy, controlPath); err != nil {
+			cancel()
+			_ = command.Wait()
+			return backupCapture{}, err
+		}
+	} else if err := os.WriteFile(controlPath, []byte("capture now\n"), 0o600); err != nil {
+		cancel()
+		_ = command.Wait()
+		return backupCapture{}, err
+	}
+	if err := command.Wait(); err != nil {
+		return backupCapture{}, fmt.Errorf("asynchronous %s backup: %w; output-bytes=%d", name, err, output.Len())
+	}
+	if h.realHost {
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+backupPath, localBackup); err != nil {
+			return backupCapture{}, err
+		}
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+resultPath, localResult); err != nil {
+			return backupCapture{}, err
+		}
+		h.report.RemoteEvidence = append(h.report.RemoteEvidence, h.remoteHost+":"+backupPath, h.remoteHost+":"+resultPath)
+	}
+	data, err := os.ReadFile(localResult)
+	if err != nil {
+		return backupCapture{}, err
+	}
+	var captured backupCapture
+	if err := json.Unmarshal(data, &captured); err != nil {
+		return backupCapture{}, err
+	}
+	captured.Name, captured.Path, captured.StartedAt = name, localBackup, startedAt.Format(time.RFC3339Nano)
+	verified, err := backupMetadata(localBackup)
+	if err != nil {
+		return backupCapture{}, err
+	}
+	if captured.SHA256 != verified.SHA256 || captured.EventSequence != verified.EventSequence || captured.DurableCutoff == "" {
+		return backupCapture{}, fmt.Errorf("backup result does not match durable artifact: result=%+v verified=%+v", captured, verified)
+	}
+	return captured, nil
+}
+
 func (h *harness) group5(evidence string) error {
 	authorityDB := filepath.Join(h.root, "authority", "worklease.db")
-	backup := filepath.Join(evidence, "asynchronous-backup.db")
-	backupRemote := backup
-	cutoff := time.Now().UTC()
 	if h.realHost {
 		authorityDB = filepath.Join(h.remoteRoot, "authority", "worklease.db")
-		backupRemote = filepath.Join(h.remoteRoot, "asynchronous-backup.db")
 	}
-	h.logCommand("backup@"+h.remoteHost, []string{"sqlite online backup", authorityDB, backupRemote})
-	var backupErr error
-	if h.realHost {
-		_, backupErr = runSSH(h.remoteHost, h.remoteHelper, "backup", authorityDB, backupRemote)
-		if backupErr == nil {
-			backupErr = runSCP(h.remoteHost, h.remoteHost+":"+backupRemote, backup)
-		}
-	} else {
-		done := make(chan error, 1)
-		go func() { done <- backupSQLite(authorityDB, backup) }()
-		backupErr = <-done
+	zeroBefore, nonzeroBefore, err := h.pendingSetInventories()
+	if err != nil {
+		return err
 	}
-	if backupErr != nil {
-		return backupErr
+	olderBackup, err := h.captureAsynchronousBackup(evidence, authorityDB, "older", func() error {
+		_, observeErr := h.cli(h.clients[0], "--profile", "team", "events", "--limit", "1")
+		return observeErr
+	})
+	if err != nil {
+		return err
 	}
-	h.report.BackupCutoff = cutoff.Format(time.RFC3339Nano)
-	if h.realHost {
-		h.report.RemoteEvidence = append(h.report.RemoteEvidence, h.remoteHost+":"+backupRemote)
+	backupTailHandle := filepath.Join(h.clients[0].home, "handles", "backup-tail.json")
+	if _, err := h.cli(h.clients[0], "--profile", "team", "acquire", "--handle", backupTailHandle, "--resource", "coordination:backup-tail", "--ttl", "5s"); err != nil {
+		return err
 	}
+	if _, err := h.cli(h.clients[0], "--profile", "team", "release", "--handle", backupTailHandle, "--reason", "separate selected backup cutoff"); err != nil {
+		return err
+	}
+	selectedBackup, err := h.captureAsynchronousBackup(evidence, authorityDB, "selected", func() error {
+		_, observeErr := h.cli(h.clients[0], "--profile", "team", "events", "--limit", "1")
+		return observeErr
+	})
+	if err != nil {
+		return err
+	}
+	backup := selectedBackup.Path
+	if selectedBackup.EventSequence <= olderBackup.EventSequence || selectedBackup.SHA256 == olderBackup.SHA256 {
+		return fmt.Errorf("selected backup did not retain a newer authority tail: older=%+v selected=%+v", olderBackup, selectedBackup)
+	}
+	zeroSelected, nonzeroSelected, err := h.pendingSetInventories()
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(zeroBefore.RequestIDs, zeroSelected.RequestIDs) || !reflect.DeepEqual(nonzeroBefore.RequestIDs, nonzeroSelected.RequestIDs) {
+		return errors.New("independently retained pending-set inventories changed across backup selection")
+	}
+	backupEvidencePath := filepath.Join(evidence, "asynchronous-backup-selection.json")
+	backupEvidence, err := json.MarshalIndent(map[string]any{
+		"fixture": "separate controlled subprocess using SQLite online backup while the authority remains live",
+		"older":   olderBackup, "selected": selectedBackup,
+		"selection":                   map[string]any{"chosen": selectedBackup.Name, "reason": "newest durable cutoff containing the backup-tail mutation"},
+		"pendingSetsAtOlderCutoff":    []pendingSetInventory{zeroBefore, nonzeroBefore},
+		"pendingSetsAtSelectedCutoff": []pendingSetInventory{zeroSelected, nonzeroSelected},
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(backupEvidencePath, append(backupEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
+	h.report.BackupCutoff = selectedBackup.DurableCutoff
 	h.stopServer()
 	restoredInvite := filepath.Join(h.root, "secrets", "restored.invite")
 	if h.realHost {
 		restoredInvite = filepath.Join(h.remoteRoot, "restored.invite")
 	}
 	start := time.Now()
-	restoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", cutoff.Format(time.RFC3339Nano), "--loss-interval-start", cutoff.Format(time.RFC3339Nano), "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
+	backupRemote := backup
+	if h.realHost {
+		backupRemote = filepath.Join(h.remoteRoot, "asynchronous-backup-selected.db")
+	}
+	restoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", selectedBackup.DurableCutoff, "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, restoreArgs...))
-	var (
-		restoreResult map[string]any
-		err           error
-	)
+	var restoreResult map[string]any
 	if h.realHost {
 		restoreResult, err = h.remoteJSON(h.remoteBinary, restoreArgs...)
 	} else {
@@ -3782,7 +3983,7 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the chosen SQLite cutoff restores to a fresh incarnation; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"capture older asynchronous online backup", "mutate authority tail", "capture and select newer asynchronous online backup", "inventory zero and nonzero pending sets", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
 	return nil
 }
 
@@ -3935,9 +4136,9 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC6.4", "stuck-history retention", 4),
 		live("AC6.5", "full-volume storage-failure without pruning", 4),
 		live("AC6.6", "pending evidence surviving age, GC, replay expiry, restart, and profile changes", 4, 5),
-		blocked("AC7.1", "actual asynchronous backup fixture with chosen and older cutoffs"),
+		live("AC7.1", "actual asynchronous backup fixture with chosen and older cutoffs", 5),
 		live("AC7.2", "online SQLite backup on the authority host", 5),
-		blocked("AC7.3", "zero and nonzero pending sets"),
+		live("AC7.3", "zero and nonzero pending sets", 5),
 		live("AC7.4", "authority restart", 5),
 		blocked("AC7.5", "schema and protocol upgrade"),
 		blocked("AC7.6", "restored and missing credentials"),
@@ -4488,6 +4689,54 @@ func readBootstrapState(home, secretPath string) (bootstrapState, error) {
 		return bootstrapState{}, err
 	}
 	return state, nil
+}
+
+func controlledBackupSQLite(source, destination, control, ready, result string) error {
+	if err := os.WriteFile(ready, []byte("backup ready\n"), 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(control)
+		if err == nil && strings.TrimSpace(string(contents)) == "capture now" {
+			if err := backupSQLite(source, destination); err != nil {
+				return err
+			}
+			capture, err := backupMetadata(destination)
+			if err != nil {
+				return err
+			}
+			capture.Path = destination
+			encoded, err := json.MarshalIndent(capture, "", "  ")
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(result, append(encoded, '\n'), 0o600)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return errors.New("timed out waiting to capture asynchronous backup")
+}
+
+func backupMetadata(path string) (backupCapture, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return backupCapture{}, err
+	}
+	digest := sha256.Sum256(contents)
+	database, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return backupCapture{}, err
+	}
+	defer database.Close()
+	var sequence, observedAt int64
+	if err := database.QueryRow(`SELECT CAST(value AS INTEGER) FROM meta WHERE key='last_event_seq'`).Scan(&sequence); err != nil {
+		return backupCapture{}, err
+	}
+	if err := database.QueryRow(`SELECT CAST(value AS INTEGER) FROM meta WHERE key='last_observed_at'`).Scan(&observedAt); err != nil {
+		return backupCapture{}, err
+	}
+	return backupCapture{SHA256: hex.EncodeToString(digest[:]), EventSequence: sequence, DurableCutoff: time.UnixMicro(observedAt).UTC().Format(time.RFC3339Nano)}, nil
 }
 
 func backupSQLite(source, destination string) error {
