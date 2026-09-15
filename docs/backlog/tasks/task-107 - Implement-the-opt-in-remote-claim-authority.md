@@ -1,10 +1,11 @@
 ---
 id: TASK-107
 title: Implement the opt-in remote claim authority
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 01:03'
+updated_date: '2026-09-15 05:15'
 labels:
   - remote-authority
 dependencies:
@@ -39,9 +40,31 @@ Repository enrollment and aliases, cross-host transfer, audited recovery import,
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every subtask is Done with objective acceptance evidence recorded in its task; no failed scenario may be treated as permission to close a task.
-- [ ] #2 One `worklease` binary serves one namespace on one host while two client hosts with distinct checkout roots contend on one portable key through both the CLI and MCP adapter, and every guarded effect runs only on a client host.
-- [ ] #3 Restore reopening remains closed unless independent installation inventory and pending-set coverage, outcomes for retained unresolved work and the known lost tail, and namespace-wide provider and executor cessation evidence are complete; a fully missing completed operation is allowed only as an attested history gap backed by independent no-residual-effect evidence.
-- [ ] #4 The standard runtime opens no listener and performs no network request before or after this epic unless the user explicitly invokes remote profile management, selects a remote profile, or runs `serve`; local reads remain setup-free and local behavior remains unchanged apart from the shared schema bump.
-- [ ] #5 The shipped docs keep one SQLite writer, one namespace per server, portable prefixes, persisted limits, invitation roles, immutable restore binding, and namespace recovery mode, and retain every deferred item and its trigger without claiming high availability.
+- [x] #1 Every subtask is Done with objective acceptance evidence recorded in its task; no failed scenario may be treated as permission to close a task.
+- [x] #2 One `worklease` binary serves one namespace on one host while two client hosts with distinct checkout roots contend on one portable key through both the CLI and MCP adapter, and every guarded effect runs only on a client host.
+- [x] #3 Restore reopening remains closed unless independent installation inventory and pending-set coverage, outcomes for retained unresolved work and the known lost tail, and namespace-wide provider and executor cessation evidence are complete; a fully missing completed operation is allowed only as an attested history gap backed by independent no-residual-effect evidence.
+- [x] #4 The standard runtime opens no listener and performs no network request before or after this epic unless the user explicitly invokes remote profile management, selects a remote profile, or runs `serve`; local reads remain setup-free and local behavior remains unchanged apart from the shared schema bump.
+- [x] #5 The shipped docs keep one SQLite writer, one namespace per server, portable prefixes, persisted limits, invitation roles, immutable restore binding, and namespace recovery mode, and retain every deferred item and its trigger without claiming high availability.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify all 13 subtasks are Done and their recorded evidence satisfies the parent acceptance criteria.
+2. Re-run repository quality gates from an isolated worktree at main.
+3. Record parent acceptance evidence, complete TASK-107, commit the authoritative task update, merge it to main, and remove the owned worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Parent verification on 2026-09-15: all TASK-107.1 through TASK-107.13 are Done with every acceptance criterion checked and objective verification/final summaries recorded. TASK-107.11 records passing local and repository-managed Lima VM scenario-group 1-5 reports, including two distinct client roots, CLI/MCP contention, client-only effects, and restore/reopening evidence boundaries. TASK-107.12 records the aligned experimental operator/product documentation and no-network opt-in boundary. TASK-107.13 records passing native amd64/arm64 image validation and lifecycle persistence coverage. From isolated worktree task-107-finalize at ea66d2b, mise run lint, mise run format-check, mise run test, and mise run typecheck all passed.
+
+Authoritative task state was reread after completion: status Done and all five parent acceptance criteria checked.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed the opt-in experimental remote claim authority epic. All 13 subtasks are Done with checked acceptance evidence; the two-client TLS CLI/MCP harness and Lima VM run cover contention, client-local effects, fault recovery, and restore reopening constraints; docs preserve the single-writer, explicit opt-in, recovery, and deferred-feature boundaries; container release validation covers both Linux architectures. Reverified the integrated main tree with lint, formatting, tests, and type checking.
+<!-- SECTION:FINAL_SUMMARY:END -->
