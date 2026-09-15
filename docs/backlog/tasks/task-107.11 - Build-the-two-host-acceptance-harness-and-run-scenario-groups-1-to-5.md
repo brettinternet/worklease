@@ -1,11 +1,11 @@
 ---
 id: TASK-107.11
 title: Build the two-host acceptance harness and run scenario groups 1 to 5
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 02:50'
+updated_date: '2026-09-15 04:16'
 labels:
   - remote-authority
 dependencies:
@@ -24,9 +24,11 @@ documentation:
 modified_files:
   - cmd/worklease-remote-smoke/main.go
   - cmd/worklease-remote-smoke/main_test.go
-  - >-
-    docs/backlog/tasks/task-107.11 -
-    Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md
+  - internal/cli/guard_commands.go
+  - internal/cli/lease_commands.go
+  - internal/cli/remote_commands_test.go
+  - mise.toml
+  - scripts/test-remote-vm.sh
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -43,19 +45,19 @@ Report synthetic WAN injection separately from measured cross-environment latenc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A reproducible harness provisions one authority behind TLS and two client environments with distinct checkout and credential roots, runs both CLI and MCP paths, and captures expected external effects and exact dispatch counts under injected faults.
-- [ ] #2 The harness runs unchanged with the authority and one client across an SSH boundary in a repository-managed VM; a physical or cloud host is optional additional evidence. Reports label synthetic WAN injection separately from measured cross-environment latency and record commands, evidence paths, environment, latency, renewal margins, throughput, storage behavior, backup cutoff, restore time, and recovery bounds.
-- [ ] #3 Group 1 covers cross-host contention and separate scopes, repository-independent profile selection, raw and misconfigured reserved-prefix rejection, configuration restart behavior, and persisted admission limits on every extension path.
-- [ ] #4 Group 2 covers exact replay after lost start, renewal, and completion responses; coexistence of request-scoped recovery records with original guarded-effect evidence; no local fallback during partition; race ordering for revocation and policy changes; fresh response identity and time; clock-bound edge cases; pre-dispatch persistence failure; late acknowledgment without redispatch; and an asynchronous provider effect that continues after terminal completion.
-- [ ] #5 Group 3 covers bootstrap crash ordering and redaction, hidden/file/descriptor invite input, dropped invite and redemption responses, immutable request incarnation, no-burn mismatch, role isolation, rotation, revocation, and distinct MCP authentication guidance.
-- [ ] #6 Group 4 covers snapshot/watch races, disconnect and reconnect, cursor incarnation and retention gaps, stuck-history retention, full-volume `storage-failure` without pruning, and client pending evidence surviving age, GC, replay expiry, restart, and profile changes.
-- [ ] #7 Group 5 uses an actual asynchronous backup fixture with chosen and older cutoffs. It covers zero and nonzero pending sets, restart, schema and protocol upgrade, restored and missing credentials, double restore, retained start with lost completion, a known confirmed start missing from the backup while its client is offline or incomplete, fully missing completed work, provider effects after terminal receipt, installation inventories including ephemeral and retired clients, missing evidence that blocks reopening, explicitly unknown cutoffs or history bounds with otherwise exhaustive coverage, transitive closure including the over-32 failure, retained replay, bootstrap reissue, atomic reopen, every lock-held bypass attempt, and a direct local mutation refused against a marked hosted home while the lock is free.
-- [ ] #8 Each scenario group records its owning observation and objective pass evidence. Any failure remains blocking and the task cannot close until it is fixed and the affected scenario passes; unit coverage does not replace the repository-managed VM run.
+- [x] #1 A reproducible harness provisions one authority behind TLS and two client environments with distinct checkout and credential roots, runs both CLI and MCP paths, and captures expected external effects and exact dispatch counts under injected faults.
+- [x] #2 The harness runs unchanged with the authority and one client across an SSH boundary in a repository-managed VM; a physical or cloud host is optional additional evidence. Reports label synthetic WAN injection separately from measured cross-environment latency and record commands, evidence paths, environment, latency, renewal margins, throughput, storage behavior, backup cutoff, restore time, and recovery bounds.
+- [x] #3 Group 1 covers cross-host contention and separate scopes, repository-independent profile selection, raw and misconfigured reserved-prefix rejection, configuration restart behavior, and persisted admission limits on every extension path.
+- [x] #4 Group 2 covers exact replay after lost start, renewal, and completion responses; coexistence of request-scoped recovery records with original guarded-effect evidence; no local fallback during partition; race ordering for revocation and policy changes; fresh response identity and time; clock-bound edge cases; pre-dispatch persistence failure; late acknowledgment without redispatch; and an asynchronous provider effect that continues after terminal completion.
+- [x] #5 Group 3 covers bootstrap crash ordering and redaction, hidden/file/descriptor invite input, dropped invite and redemption responses, immutable request incarnation, no-burn mismatch, role isolation, rotation, revocation, and distinct MCP authentication guidance.
+- [x] #6 Group 4 covers snapshot/watch races, disconnect and reconnect, cursor incarnation and retention gaps, stuck-history retention, full-volume `storage-failure` without pruning, and client pending evidence surviving age, GC, replay expiry, restart, and profile changes.
+- [x] #7 Group 5 uses an actual asynchronous backup fixture with chosen and older cutoffs. It covers zero and nonzero pending sets, restart, schema and protocol upgrade, restored and missing credentials, double restore, retained start with lost completion, a known confirmed start missing from the backup while its client is offline or incomplete, fully missing completed work, provider effects after terminal receipt, installation inventories including ephemeral and retired clients, missing evidence that blocks reopening, explicitly unknown cutoffs or history bounds with otherwise exhaustive coverage, transitive closure including the over-32 failure, retained replay, bootstrap reissue, atomic reopen, every lock-held bypass attempt, and a direct local mutation refused against a marked hosted home while the lock is free.
+- [x] #8 Each scenario group records its owning observation and objective pass evidence. Any failure remains blocking and the task cannot close until it is fixed and the affected scenario passes; unit coverage does not replace the repository-managed VM run.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run ci` passes on the final commit
+- [x] #1 `mise run ci` passes on the final commit
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -93,6 +95,8 @@ Report synthetic WAN injection separately from measured cross-environment latenc
 17. Implement AC7.9 confirmed starts missing from the selected backup with incomplete client evidence and AC7.10 fully missing completed work; verify selected-artifact absence, restored-inventory absence, and exact effect counts, then run local/reachable real-host evidence, independent review, quality gates, staged hooks, and commit.
 
 18. Replace the unavailable personal SSH alias with a repository-managed Lima VM, generated SSH configuration, and target-architecture binaries; treat its unchanged full-harness pass as the required cross-environment acceptance run.
+
+19. Complete the remaining Group 5 recovery slice (AC7.11-AC7.18): post-receipt provider effects, complete installation inventories, evidence-gated reopen with explicit unknown bounds, closure/over-32 behavior, retained replay, bootstrap reissue, and atomic reopen; then run the unchanged repository-managed VM harness, independent review, all quality gates, staged hooks, commit, merge main, and clean up the owned worktree.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -201,4 +205,14 @@ Implemented AC7.9 and AC7.10. The shared harness now drops a post-cutoff begin r
 Committed AC7.7 through AC7.10 harness slices as 041c968 (Exercise missing restore tail cases). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks.
 
 Acceptance scope relaxed by user decision: a repository-managed VM over SSH now satisfies the required cross-environment acceptance run; a separate physical or cloud host is optional evidence.
+
+Completed AC7.11-AC7.18 and the required repository-managed VM run. Group 5 now verifies provider effects after terminal receipt; complete selected-backup installation inventories including an active ephemeral and retired installation; evidence-gated atomic reopen with explicit unknown backup/history bounds; dependency closure for recovered operations including an over-32 failure; retained exact replay; bootstrap reissue; and recovery exit. Explicit remote guarded effects persist an absolute claim-token-file reference, replay through the retained pending request without an in-memory claim token, and reject FD-only credentials. The VM wrapper provisions Lima, detects the remote target, cross-compiles all supporting Go test binaries, uses a private remote TMPDIR, and fails on any supporting-test failure.
+
+Objective final evidence: local dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json; repository-managed VM dist/remote-acceptance/vm-20260915T041350Z/report.json and coverage.json. The unchanged harness passed all five groups across the SSH boundary. Independent review findings for retained explicit credentials and host/target test binaries were fixed. Final mise run ci and staged mise run hooks passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed the full two-client TLS acceptance harness and all scenario groups 1-5. The final harness covers CLI, MCP, guarded and asynchronous effects, fault replay, installation lifecycle, watch/retention/storage boundaries, asynchronous backup selection, restore recovery, recovery closure, bootstrap reissue, and hosted lock boundaries with objective dispatch counts and redacted evidence. A repository-managed Lima VM now runs the same harness over SSH with target-architecture binaries and blocking supporting tests. Final local evidence: dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json. Final VM evidence: dist/remote-acceptance/vm-20260915T041350Z/report.json. mise run ci and staged hooks passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
