@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-15 23:15'
+updated_date: '2026-09-15 23:16'
 labels:
   - remote-authority
   - ergonomics
@@ -68,6 +68,8 @@ Provide a supported setup path that gathers the small set of deployment choices 
 Implemented opt-in guided server initialization with interactive/non-interactive safety gates, generated or supplied TLS validation, advertised-endpoint persistence, handoff output, and post-bind serve diagnostics. Added focused coverage for legacy localhost behavior, generated/supplied TLS, SAN warnings, unsafe/mismatched/expired certificates, interactive defaults/cancellation, non-terminal required flags, insecure LAN acknowledgements, and prefix overrides. Focused tests and mise lint/format-check/test/typecheck pass.
 
 Independent review found and implementation fixed output-path collision, EOF cancellation, listener/endpoint port validation, full supplied-chain expiry validation, crash recovery, shell quoting, and LAN TLS coverage gaps. A config-directory flock now serializes setup/recovery, and the bounded recovery journal is target-scoped and preserves custom invite recovery commands. Independent verifier passed all 10 acceptance criteria. Final evidence: go test -race ./internal/cli ./internal/server; mise run lint; mise run format-check; mise run test; mise run typecheck; git diff --check.
+
+Delivery commit: 349f763 (Add guided remote server setup).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
