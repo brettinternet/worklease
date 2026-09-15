@@ -820,6 +820,7 @@ func (p *faultProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)
 		return
 	}
+	p.appendLog(fmt.Sprintf("path=%s phase=forwarded requestSha256=%s at=%s\n", r.URL.Path, requestHash, time.Now().UTC().Format(time.RFC3339Nano)))
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(p.backend)
@@ -1098,6 +1099,26 @@ func (h *harness) waitFaultHeld(path string) error {
 	return fmt.Errorf("timed out waiting for held fault %s", path)
 }
 
+func (h *harness) waitFaultLogOccurrences(fragment string, want int) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var data []byte
+		if h.realHost {
+			output, err := runSSH(h.remoteHost, "grep", "-F", fragment, h.faultLog)
+			if err == nil {
+				data = []byte(output)
+			}
+		} else {
+			data, _ = os.ReadFile(h.faultLog)
+		}
+		if bytes.Count(data, []byte(fragment)) >= want {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %d fault log entries containing %q", want, fragment)
+}
+
 func (h *harness) collectFaultLog(evidence string) error {
 	if h.realHost {
 		if err := runSCP(h.remoteHost, h.remoteHost+":"+h.faultLog, filepath.Join(evidence, "fault-proxy.log")); err != nil {
@@ -1359,7 +1380,7 @@ func verifyClockBoundEvidence(logPath, generatedDeadlineID, expiredID, lateStart
 		if values["requestId"] == expiredID {
 			return errors.New("expired short-window request reached the authority")
 		}
-		if values["path"] == "/.well-known/worklease" && values["responseDelay"] != "0s" {
+		if values["path"] == "/.well-known/worklease" && values["responseDelay"] != "" && values["responseDelay"] != "0s" {
 			delayedSample, _ = time.Parse(time.RFC3339Nano, values["authorityTime"])
 			delayedObservedAt, _ = time.Parse(time.RFC3339Nano, values["at"])
 		}
@@ -2681,18 +2702,130 @@ func (h *harness) group3(evidence string) error {
 }
 
 func (h *harness) group4(evidence string) error {
-	events, err := h.cli(h.clients[0], "--profile", "team", "events", "--limit", "100")
+	a, b := h.clients[0], h.clients[1]
+	snapshot := func() (map[string]any, string, error) {
+		events, err := h.cli(a, "--profile", "team", "events", "--limit", "100")
+		if err != nil {
+			return nil, "", err
+		}
+		cursor, _ := events["nextCursor"].(string)
+		if cursor == "" {
+			return nil, "", errors.New("events returned no cursor")
+		}
+		return events, cursor, nil
+	}
+	acquire := func(name string) error {
+		_, err := h.cli(b, "--profile", "team", "acquire", "--handle", filepath.Join(b.home, "handles", name+".json"), "--resource", "coordination:"+name, "--ttl", "5s")
+		return err
+	}
+
+	beforeSnapshot, beforeCursor, err := snapshot()
 	if err != nil {
 		return err
 	}
-	cursor, _ := events["nextCursor"].(string)
-	if cursor == "" {
-		return errors.New("events returned no cursor")
-	}
-	if _, err := h.cli(h.clients[0], "--profile", "team", "watch", "--cursor", cursor, "--timeout", "10ms"); err != nil {
+	if err := acquire("watch-before-start"); err != nil {
 		return err
 	}
-	pendingRoot := filepath.Join(h.clients[0].home, "pending", "team")
+	beforeWatch, err := h.cli(a, "--profile", "team", "watch", "--cursor", beforeCursor, "--timeout", "2s")
+	if err != nil {
+		return err
+	}
+	if err := requireWatchEvent(beforeWatch, beforeCursor, "acquired", "coordination:watch-before-start"); err != nil {
+		return fmt.Errorf("event committed between snapshot and watch: %w", err)
+	}
+
+	duringName := "watch-during-wait"
+	if err := acquire(duringName); err != nil {
+		return err
+	}
+	if err := h.startFaultProxy(evidence); err != nil {
+		return err
+	}
+	defer func() {
+		_ = h.switchProfileEndpoint(a, h.endpoint)
+		h.stopFaultProxy()
+	}()
+	if err := h.switchProfileEndpoint(a, h.faultEndpoint); err != nil {
+		return err
+	}
+	duringResource := "coordination:" + duringName
+	duringCommand, duringOutput, err := h.startCLI(a, "--profile", "team", "watch", "--resource", duringResource, "--until", "free", "--timeout", "3s")
+	if err != nil {
+		return err
+	}
+	if err := h.waitFaultLogOccurrences("path=/v1/watch phase=forwarded", 1); err != nil {
+		_ = duringCommand.Process.Kill()
+		_, _ = waitStartedCommand(duringCommand, 5*time.Second)
+		return err
+	}
+	if _, err := h.cli(b, "--profile", "team", "release", "--handle", filepath.Join(b.home, "handles", duringName+".json"), "--reason", "watch snapshot established"); err != nil {
+		_ = duringCommand.Process.Kill()
+		_, _ = waitStartedCommand(duringCommand, 5*time.Second)
+		return err
+	}
+	duringWatch, err := waitCLISuccess(duringCommand, duringOutput, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := requireWatchFreeAfterEvent(duringWatch, duringResource); err != nil {
+		return fmt.Errorf("release after active-state watch snapshot: %w", err)
+	}
+
+	disconnectedSnapshot, disconnectedCursor, err := snapshot()
+	if err != nil {
+		return err
+	}
+	if err := h.armFault("/v1/watch"); err != nil {
+		return err
+	}
+	disconnectedCommand, disconnectedOutput, err := h.startCLI(a, "--profile", "team", "watch", "--cursor", disconnectedCursor, "--timeout", "5s")
+	if err != nil {
+		return err
+	}
+	if err := h.waitFaultLogOccurrences("path=/v1/watch phase=forwarded", 2); err != nil {
+		_ = disconnectedCommand.Process.Kill()
+		_, _ = waitStartedCommand(disconnectedCommand, 5*time.Second)
+		return err
+	}
+	if err := acquire("watch-disconnected"); err != nil {
+		_ = disconnectedCommand.Process.Kill()
+		_, _ = waitStartedCommand(disconnectedCommand, 5*time.Second)
+		return err
+	}
+	disconnectErr, waitErr := waitStartedCommand(disconnectedCommand, 7*time.Second)
+	if waitErr != nil {
+		return waitErr
+	}
+	var disconnectedResult map[string]any
+	if disconnectErr == nil || json.Unmarshal(disconnectedOutput.Bytes(), &disconnectedResult) == nil && disconnectedResult["ok"] == true {
+		return fmt.Errorf("disconnected watch received a successful acknowledgment: err=%v output=%s", disconnectErr, disconnectedOutput.String())
+	}
+	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
+		return err
+	}
+	reconnectedWatch, err := h.cli(a, "--profile", "team", "watch", "--cursor", disconnectedCursor, "--timeout", "2s")
+	if err != nil {
+		return err
+	}
+	if err := requireWatchEvent(reconnectedWatch, disconnectedCursor, "acquired", "coordination:watch-disconnected"); err != nil {
+		return fmt.Errorf("reconnected watch: %w", err)
+	}
+	reconnectedCursor, _ := reconnectedWatch["nextCursor"].(string)
+	noDuplicate, err := h.cli(a, "--profile", "team", "watch", "--cursor", reconnectedCursor, "--timeout", "200ms")
+	if err != nil {
+		return err
+	}
+	if err := requireWatchTimeout(noDuplicate, reconnectedCursor); err != nil {
+		return fmt.Errorf("post-reconnect watch: %w", err)
+	}
+	if err := h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err := verifyDroppedWatch(filepath.Join(evidence, "fault-proxy.log")); err != nil {
+		return err
+	}
+
+	pendingRoot := filepath.Join(a.home, "pending", "team")
 	entries, err := os.ReadDir(pendingRoot)
 	if err != nil {
 		return fmt.Errorf("pending root missing: %v", err)
@@ -2701,7 +2834,90 @@ func (h *harness) group4(evidence string) error {
 	if err := os.WriteFile(inventory, []byte(fmt.Sprintf("enumerable-pending-files=%d\n", len(entries))), 0o600); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot cursor resumes through the remote watch path and the enumerable pending root survives client process restarts", Commands: []string{"events snapshot", "watch from cursor"}, Evidence: []string{inventory}, Passed: true})
+	watchEvidence := filepath.Join(evidence, "snapshot-watch-reconnect.json")
+	evidenceRecord := map[string]any{
+		"beforeWatchSnapshot": beforeSnapshot, "beforeWatchResult": beforeWatch,
+		"duringWatchInitialState": "active", "duringWatchResult": duringWatch,
+		"disconnectedSnapshot": disconnectedSnapshot, "disconnectedClientError": disconnectErr.Error(),
+		"disconnectedClientOutputBytes": disconnectedOutput.Len(), "reconnectedResult": reconnectedWatch,
+		"postReconnectResult": noDuplicate,
+	}
+	encoded, err := json.MarshalIndent(evidenceRecord, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(watchEvidence, append(encoded, '\n'), 0o600); err != nil {
+		return err
+	}
+	h.stopFaultProxy()
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot/watch ordering preserves an event committed before cursor resume and a release committed after an active-state snapshot; a response-ready watch can lose its transport before acknowledgment and reconnect from its saved cursor exactly once; the enumerable pending root survives client process restarts", Commands: []string{"snapshot then mutate before cursor watch", "acquire then watch until free and release", "drop completed watch response", "reconnect from saved cursor", "resume from next cursor without duplicate"}, Evidence: []string{watchEvidence, filepath.Join(evidence, "fault-proxy.log"), inventory}, Passed: true})
+	return nil
+}
+
+func verifyDroppedWatch(logPath string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	dropped := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "path=/v1/watch ") && strings.Contains(line, "status=200 ") && strings.Contains(line, "dropped=true ") {
+			dropped++
+		}
+	}
+	if dropped != 1 {
+		return fmt.Errorf("completed watch response drop count=%d, want 1", dropped)
+	}
+	return nil
+}
+
+func requireWatchEvent(result map[string]any, cursor, kind, resource string) error {
+	if result["cursor"] != cursor {
+		return fmt.Errorf("cursor=%v, want %q", result["cursor"], cursor)
+	}
+	next, _ := result["nextCursor"].(string)
+	if next == "" || next == cursor {
+		return fmt.Errorf("next cursor did not advance: %q", next)
+	}
+	event, _ := result["event"].(map[string]any)
+	if event == nil || event["kind"] != kind {
+		return fmt.Errorf("event=%v, want kind %q", event, kind)
+	}
+	resources, _ := event["resources"].([]any)
+	for _, value := range resources {
+		if value == resource {
+			return nil
+		}
+	}
+	return fmt.Errorf("event resources=%v, want %q", resources, resource)
+}
+
+func requireWatchFreeAfterEvent(result map[string]any, resource string) error {
+	if result["free"] != true || result["timedOut"] == true {
+		return fmt.Errorf("watch did not observe free state: %v", result)
+	}
+	cursor, _ := result["cursor"].(string)
+	next, _ := result["nextCursor"].(string)
+	if cursor == "" || next != cursor {
+		return fmt.Errorf("watch returned without scanning the release event: cursor=%q next=%q", cursor, next)
+	}
+	resources, _ := result["resources"].([]any)
+	for _, raw := range resources {
+		observed, _ := raw.(map[string]any)
+		if observed["resource"] == resource && observed["state"] == "free" {
+			return nil
+		}
+	}
+	return fmt.Errorf("watch resources=%v, want %s=free", resources, resource)
+}
+
+func requireWatchTimeout(result map[string]any, cursor string) error {
+	if result["timedOut"] != true || result["event"] != nil {
+		return fmt.Errorf("result did not time out without an event: %v", result)
+	}
+	if result["cursor"] != cursor || result["nextCursor"] != cursor {
+		return fmt.Errorf("timeout cursor changed: cursor=%v next=%v want=%q", result["cursor"], result["nextCursor"], cursor)
+	}
 	return nil
 }
 
@@ -2930,8 +3146,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC5.7", "credential rotation", 3),
 		live("AC5.8", "credential revocation", 3),
 		live("AC5.9", "distinct MCP authentication guidance", 3),
-		blocked("AC6.1", "snapshot/watch races"),
-		blocked("AC6.2", "disconnect and reconnect"),
+		live("AC6.1", "snapshot/watch races", 4),
+		live("AC6.2", "disconnect and reconnect", 4),
 		blocked("AC6.3", "cursor incarnation and retention gaps"),
 		blocked("AC6.4", "stuck-history retention"),
 		blocked("AC6.5", "full-volume storage-failure without pruning"),
@@ -3010,6 +3226,56 @@ func (h *harness) cli(c client, args ...string) (map[string]any, error) {
 		return h.remoteClientJSON(c, args...)
 	}
 	return runJSON(c.env, c.checkout, h.binary, append([]string{"--json"}, args...)...)
+}
+
+func (h *harness) startCLI(c client, args ...string) (*exec.Cmd, *bytes.Buffer, error) {
+	h.logCommand(c.name+hostSuffix(c)+" asynchronous", append([]string{"worklease", "--json"}, args...))
+	var cmd *exec.Cmd
+	if c.remote {
+		remoteEnv := []string{"WORKLEASE_HOME=" + c.home, "XDG_CONFIG_HOME=" + c.config, "SSL_CERT_FILE=" + h.remoteCert, "WORKLEASE_AGENT_ID=" + c.name, "WORKLEASE_SESSION_ID=" + c.name + "-session"}
+		sshArgs := []string{h.remoteHost, "env"}
+		sshArgs = append(sshArgs, remoteEnv...)
+		sshArgs = append(sshArgs, h.remoteBinary, "--json")
+		sshArgs = append(sshArgs, args...)
+		cmd = exec.Command("ssh", sshArgs...)
+	} else {
+		cmd = exec.Command(h.binary, append([]string{"--json"}, args...)...)
+		cmd.Env, cmd.Dir = c.env, c.checkout
+	}
+	output := &bytes.Buffer{}
+	cmd.Stdout, cmd.Stderr = output, output
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	return cmd, output, nil
+}
+
+func waitStartedCommand(cmd *exec.Cmd, timeout time.Duration) (error, error) {
+	finished := make(chan error, 1)
+	go func() { finished <- cmd.Wait() }()
+	select {
+	case err := <-finished:
+		return err, nil
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-finished
+		return nil, fmt.Errorf("command did not exit within %s", timeout)
+	}
+}
+
+func waitCLISuccess(cmd *exec.Cmd, output *bytes.Buffer, timeout time.Duration) (map[string]any, error) {
+	commandErr, waitErr := waitStartedCommand(cmd, timeout)
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	if commandErr != nil {
+		return nil, fmt.Errorf("asynchronous CLI failed: %w: %s", commandErr, output.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || result["ok"] != true {
+		return nil, fmt.Errorf("invalid asynchronous CLI success envelope: %v: %s", err, output.String())
+	}
+	return result, nil
 }
 
 func (h *harness) cliFailureTimeout(c client, timeout time.Duration, args ...string) (map[string]any, error) {
