@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/server"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 		runExample(binary, required, body)
 	}
 	validateCurrentDocs()
+	validateRemoteDocs()
 	validateDocumentedExitFamilies()
 	testContention(binary)
 	testMCPTwoLoops(binary)
@@ -107,8 +109,8 @@ func validateCurrentDocs() {
 	if !strings.Contains(text, "--token-file") || !strings.Contains(text, "--token-fd") {
 		fatal(fmt.Errorf("current docs must describe file and fd credential sources"))
 	}
-	// Backlog/migration records and the deferred remote proposal are deliberately
-	// outside executable-example validation.
+	// Backlog and migration records are deliberately outside executable-example
+	// validation.
 }
 
 func fencedBlocks(markdown string) []string {
@@ -118,6 +120,97 @@ func fencedBlocks(markdown string) []string {
 		blocks = append(blocks, parts[index])
 	}
 	return blocks
+}
+
+func validateRemoteDocs() {
+	guides := map[string][]string{
+		"README.md": {
+			"experimental", "no listener", "no network request", "Local reads remain setup-free",
+			"Remote failures do", "not fall back to local coordination",
+		},
+		"docs/remote-claim-authority.md": {
+			"**experimental**", "worklease profile add NAME", "--authority-id ID", "--allow-insecure-http",
+			"--invite-file FILE", "--invite-fd N", "--role read|write|admin", "--expected-recovery-revision N",
+			"--attestation-file FILE", "--selected-cutoff RFC3339", "--loss-interval-start RFC3339", "gc --apply", "--cutoff TIME", "--retention-days N",
+			"--loss-interval-end RFC3339", "--cutoff-unknown", "--unresolved-export FILE", "Follow-up triggers remain explicit",
+			"one Worklease namespace", "one serialized SQLite writer", "hosted OS lock", "stop before start",
+			"active, retired, and ephemeral", "enumerable pending-request set", "lost-tail outcomes",
+			"Provider cessation and executor/process cessation", "recovery closed indefinitely",
+			"fully missing completed operation", "recovery import", "completed-history journal",
+			"passed all five groups", "34915583460", "7e4cef4312d09e380d5c02cea7f23bd13ab66a9c",
+			"+2,147,600 B", "+5,242,880 B", "+2,383,219 B", "+5,763,072 B",
+			"+2,218,770 B", "+5,344,688 B", "+2,396,120 B", "+5,856,672 B",
+		},
+		"docs/cli-reference.md": {
+			"## Experimental remote authority", "--profile NAME", "WORKLEASE_PROFILE", "--local",
+			"worklease hosted restore", "worklease recovery reopen", "--cutoff-unknown",
+			"Remote `--wait`", "--poll-interval", "gc` requires `--apply`", "--cutoff TIME", "--retention-days N", "unsupported",
+		},
+		"docs/mcp.md": {
+			"Experimental remote profile", "--profile NAME", "local reads remain setup-free",
+			"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions",
+			"MCP does not add enrollment", "authentication-required", "operation-kind-unsupported",
+		},
+		"skills/worklease-workflow/SKILL.md": {
+			"provider-neutral contract above is unchanged", "--profile NAME", "WORKLEASE_PROFILE", "--local",
+			"no network request", "durable exact pending requests", "Provider execution, provider", "cessation, and file replacement remain client-local",
+			"Recovery import", "HA", "Postgres", "browser control plane",
+		},
+	}
+	for path, fragments := range guides {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fatal(err)
+		}
+		text := string(data)
+		for _, fragment := range fragments {
+			if !strings.Contains(text, fragment) {
+				fatal(fmt.Errorf("%s missing remote documentation statement %q", path, fragment))
+			}
+		}
+	}
+	remote, err := os.ReadFile("docs/remote-claim-authority.md")
+	if err != nil {
+		fatal(err)
+	}
+	for _, stale := range []string{"future remote design", "not a shipped HTTP backend", "proposal is deferred"} {
+		if strings.Contains(string(remote), stale) {
+			fatal(fmt.Errorf("remote guide still describes shipped capability as %q", stale))
+		}
+	}
+	validateRemoteServerConfig(string(remote))
+}
+
+func validateRemoteServerConfig(markdown string) {
+	match := regexp.MustCompile("(?s)```yaml\\n(.*?)\\n```").FindStringSubmatch(markdown)
+	if len(match) != 2 {
+		fatal(fmt.Errorf("remote guide missing canonical YAML server configuration"))
+	}
+	root, err := os.MkdirTemp("", "worklease-doc-remote-config-")
+	if err != nil {
+		fatal(err)
+	}
+	defer os.RemoveAll(root)
+	certPath, keyPath := filepath.Join(root, "server.crt"), filepath.Join(root, "server.key")
+	for _, path := range []string{certPath, keyPath} {
+		if err := os.WriteFile(path, []byte("documentation fixture\\n"), 0o600); err != nil {
+			fatal(err)
+		}
+	}
+	config := strings.ReplaceAll(match[1], "/srv/worklease", filepath.Join(root, "home"))
+	config = strings.ReplaceAll(config, "/etc/worklease/server.crt", certPath)
+	config = strings.ReplaceAll(config, "/etc/worklease/server.key", keyPath)
+	configPath := filepath.Join(root, "server.yaml")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		fatal(err)
+	}
+	loaded, err := server.LoadConfig(configPath)
+	if err != nil {
+		fatal(fmt.Errorf("remote guide canonical server configuration: %w", err))
+	}
+	if strings.Join(loaded.Prefixes, ",") != "github:,coordination:" {
+		fatal(fmt.Errorf("remote guide canonical server prefixes parsed as %q", loaded.Prefixes))
+	}
 }
 
 func validateDocumentedExitFamilies() {

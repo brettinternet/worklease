@@ -115,6 +115,34 @@ authoritative provider receipt before checkpoint and release. Assignment,
 status, comments, branches, worktrees, local locks, and operation receipts are
 not substitutes for a claim or provider checkpoint.
 
-The local SQLite authority is the only shipped authority. The remote authority
-proposal is deferred; never silently fall back from a configured remote service
-or describe local coordination as cross-host exclusion.
+## Experimental remote authority operations
+
+The provider-neutral contract above is unchanged: the caller still supplies
+source access, mutation authority, canonical resources, provider receipts, and
+review/archive capabilities. A remote Worklease profile changes only the claim
+authority location; it does not make Worklease a provider integration or grant
+provider authority.
+
+The experimental self-hosted remote authority is selected by explicit
+`--profile NAME`, then `WORKLEASE_PROFILE`, user-side checkout binding, user
+default, or local. `--local` is an explicit local override. Configured remote
+failure never silently falls back. The standard binary opens no listener and
+makes no network request unless remote profile management, a selected remote
+profile, or `serve` is explicitly invoked; local reads remain setup-free.
+
+One remote namespace is one `serve` process and one SQLite writer on one host,
+protected by the hosted lock. Remote `--wait` is client-side (maximum 60s),
+remote mutations retain durable exact pending requests, and remote same-host
+transfer requires a named predecessor handle. Provider execution, provider
+cessation, and file replacement remain client-local; `path`, `backlog-md`, and
+`markdown` keys are host-local and rejected by remote admission. See
+[`docs/remote-claim-authority.md`](../../docs/remote-claim-authority.md) for
+experimental setup, operator restart, restore/reopen evidence, and unsupported
+boundaries.
+
+Never report remote claim ownership as provider fencing. On uncertain remote
+mutation, retain the exact pending request, inspect/replay or reconcile it, and
+establish executor/provider cessation before retrying. Recovery import,
+completed-history journaling, cross-host transfer, repository enrollment, HA,
+Postgres, multi-namespace serving, backpressure, and browser control plane are
+not available.
