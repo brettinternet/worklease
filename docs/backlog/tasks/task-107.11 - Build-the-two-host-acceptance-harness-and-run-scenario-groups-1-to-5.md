@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-14 23:34'
+updated_date: '2026-09-15 00:06'
 labels:
   - remote-authority
 dependencies:
@@ -77,6 +77,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 9. Replace personal SSH-host assumptions with a repository-managed Lima VM for durable remote acceptance runs; keep the generic SSH target supported for deployment-owned environments.
 
 10. Implement deterministic bootstrap subprocess crash-ordering and redaction evidence for AC5.1, then distinct MCP authentication guidance for AC5.9; run local and reachable real-host acceptance, independent review, all quality gates, staged hooks, commit, and record objective evidence.
+
+11. Implement AC6.1 snapshot/watch race coverage and AC6.2 disconnect/reconnect coverage in the shared harness; preserve later Group 4 clauses as blocked, run local and reachable real-host evidence, independently review, execute quality gates and staged hooks, then commit objective task evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -157,4 +159,8 @@ Implemented the next Group 3 slices for AC5.2 and AC5.4. Enrollment now supports
 Implemented AC5.1 and AC5.9. The shared harness now crashes a real hosted-init subprocess at the committed-bootstrap-grant/before-ready boundary, verifies the 0600 staged secret, missing ready marker, committed single active grant, exit 86, redacted output, and exact one-grant recovery. It also drives stdio MCP with missing and revoked credentials, validates successful MCP initialization and tool-failure envelopes, and requires distinct profile-specific enrollment guidance. Objective local evidence: dist/remote-acceptance/ac5-bootstrap-mcp-local-reviewed/report.json, coverage.json, bootstrap-crash-ordering.json, bootstrap-crash-output.txt, bootstrap-recovery-output.json, and mcp-authentication-guidance.json. CI evidence: dist/remote-acceptance/20260914T233243.036167000Z/report.json. The repository-managed real-host rerun was attempted with lima-worklease-remote but DNS/SSH resolution is unavailable in this environment, so no real-host pass is claimed. Independent review findings for unbounded SSH subprocesses, weak MCP envelope validation, and writing output before redaction checks were fixed. Committed as 12b29e5 (Exercise bootstrap recovery and MCP guidance). Quality gates lint, format-check, test, typecheck, mise run ci, and staged hooks passed; one unrelated pre-commit concurrency test flake passed 10 focused repetitions and the subsequent full hooks runs.
 
 Next resumable step: implement AC6.1 snapshot/watch races, then AC6.2 disconnect/reconnect, preserving all unobserved Group 4 clauses as still-blocked and rerunning the unchanged Lima/SSH harness when a real host is reachable.
+
+Implemented AC6.1 snapshot/watch race and AC6.2 disconnect/reconnect slices. Group 4 now proves an event committed after a snapshot but before cursor resume, a release scanned only after an active-state watch snapshot, a completed watch response lost by transport with no client acknowledgment, exact reconnect from the saved cursor, and no duplicate after advancing the cursor. Objective local evidence: dist/remote-acceptance/ac6-watch-local-final-5/report.json, coverage.json, snapshot-watch-reconnect.json, fault-proxy.log, and pending-inventory.txt. CI evidence: dist/remote-acceptance/20260914T235438.772567000Z/report.json was generated before the final active-state ordering refinement; final CI is rerun before commit. The unchanged real-host run remains unreachable because lima-worklease-remote does not resolve over DNS/SSH in this environment, so no real-host pass is claimed. Independent review found and drove fixes for pre-dispatch race false passes, potentially acknowledged disconnects, and weak timeout cursor checks; final re-review passed with no findings. Next resumable step: AC6.3 cursor incarnation and retention gaps.
+
+Final mise run ci passed after the active-state ordering refinement; generated acceptance evidence is dist/remote-acceptance/20260915T000523.097541000Z/report.json and coverage.json, with AC6.1 and AC6.2 recorded live-pass locally.
 <!-- SECTION:NOTES:END -->

@@ -12,6 +12,95 @@ import (
 	"time"
 )
 
+func TestRequireWatchEvent(t *testing.T) {
+	cursor := "before"
+	valid := map[string]any{
+		"cursor": cursor, "nextCursor": "after",
+		"event": map[string]any{"kind": "acquired", "resources": []any{"coordination:other", "coordination:wanted"}},
+	}
+	if err := requireWatchEvent(valid, cursor, "acquired", "coordination:wanted"); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]map[string]any{
+		"wrong cursor":   {"cursor": "other", "nextCursor": "after", "event": valid["event"]},
+		"not advanced":   {"cursor": cursor, "nextCursor": cursor, "event": valid["event"]},
+		"wrong kind":     {"cursor": cursor, "nextCursor": "after", "event": map[string]any{"kind": "released", "resources": []any{"coordination:wanted"}}},
+		"wrong resource": {"cursor": cursor, "nextCursor": "after", "event": map[string]any{"kind": "acquired", "resources": []any{"coordination:other"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireWatchEvent(invalid, cursor, "acquired", "coordination:wanted"); err == nil {
+				t.Fatal("invalid watch result accepted")
+			}
+		})
+	}
+}
+
+func TestRequireWatchFreeAfterEvent(t *testing.T) {
+	resource := "coordination:wanted"
+	valid := map[string]any{"free": true, "timedOut": false, "cursor": "release", "nextCursor": "release", "resources": []any{map[string]any{"resource": resource, "state": "free"}}}
+	if err := requireWatchFreeAfterEvent(valid, resource); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]map[string]any{
+		"not free":      {"free": false, "cursor": "release", "nextCursor": "release", "resources": valid["resources"]},
+		"timed out":     {"free": true, "timedOut": true, "cursor": "release", "nextCursor": "release", "resources": valid["resources"]},
+		"no event scan": {"free": true, "cursor": "", "nextCursor": "release", "resources": valid["resources"]},
+		"wrong cursor":  {"free": true, "cursor": "release", "nextCursor": "other", "resources": valid["resources"]},
+		"wrong state":   {"free": true, "cursor": "release", "nextCursor": "release", "resources": []any{map[string]any{"resource": resource, "state": "active"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireWatchFreeAfterEvent(invalid, resource); err == nil {
+				t.Fatal("invalid watch release accepted")
+			}
+		})
+	}
+}
+
+func TestRequireWatchTimeout(t *testing.T) {
+	cursor := "resume"
+	if err := requireWatchTimeout(map[string]any{"timedOut": true, "cursor": cursor, "nextCursor": cursor}, cursor); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]map[string]any{
+		"event":        {"timedOut": true, "cursor": cursor, "nextCursor": cursor, "event": map[string]any{"kind": "acquired"}},
+		"not timeout":  {"timedOut": false, "cursor": cursor, "nextCursor": cursor},
+		"wrong cursor": {"timedOut": true, "cursor": "other", "nextCursor": cursor},
+		"advanced":     {"timedOut": true, "cursor": cursor, "nextCursor": "other"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireWatchTimeout(invalid, cursor); err == nil {
+				t.Fatal("invalid watch timeout accepted")
+			}
+		})
+	}
+}
+
+func TestVerifyDroppedWatchRequiresExactlyOneSuccessfulDrop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fault.log")
+	valid := "path=/v1/watch phase=forwarded requestSha256=hash at=now\n" +
+		"path=/v1/watch status=200 requestSha256=hash dropped=true responseDelay=0s at=now\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDroppedWatch(path); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]string{
+		"missing":    strings.ReplaceAll(valid, "dropped=true", "dropped=false"),
+		"failed":     strings.ReplaceAll(valid, "status=200", "status=422"),
+		"duplicated": valid + valid,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyDroppedWatch(path); err == nil {
+				t.Fatal("invalid disconnect evidence accepted")
+			}
+		})
+	}
+}
+
 func TestValidateSSHHostRejectsShellSyntax(t *testing.T) {
 	for _, host := range []string{"", "-oProxyCommand=bad", "remote.example;touch /tmp/pwned", "remote.example\nother"} {
 		if err := validateSSHHost(host); err == nil {
@@ -215,7 +304,8 @@ func TestVerifyClockBoundEvidenceRequiresLowerBoundAndNoExpiredDispatch(t *testi
 	generated, expired, late := strings.Repeat("4", 32), strings.Repeat("5", 32), strings.Repeat("6", 32)
 	log := "path=/.well-known/worklease status=200 requestSha256=aaa dropped=false responseDelay=1.2s authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:00Z historicalResultSha256=result at=2026-09-14T13:00:01.2Z\n" +
 		"path=/v1/claims/heartbeat status=200 requestSha256=bbb dropped=false responseDelay=0s requestId=" + generated + " requestNotAfter=2026-09-15T12:00:00.1Z authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:01Z historicalResultSha256=result at=now\n" +
-		"path=/v1/operations/begin status=200 requestSha256=ccc dropped=false responseDelay=2.5s requestId=" + late + " requestNotAfter=2026-09-15T12:00:02Z authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:02Z historicalResultSha256=result at=now\n"
+		"path=/v1/operations/begin status=200 requestSha256=ccc dropped=false responseDelay=2.5s requestId=" + late + " requestNotAfter=2026-09-15T12:00:02Z authorityId=authority restoreId=restore authorityTime=2026-09-14T12:00:02Z historicalResultSha256=result at=now\n" +
+		"path=/.well-known/worklease phase=forwarded requestSha256=ddd at=2026-09-14T13:00:03Z\n"
 	if err := os.WriteFile(logPath, []byte(log), 0o600); err != nil {
 		t.Fatal(err)
 	}
