@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 00:24'
+updated_date: '2026-09-15 01:06'
 labels:
   - remote-authority
 dependencies:
@@ -81,6 +81,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 11. Implement AC6.1 snapshot/watch race coverage and AC6.2 disconnect/reconnect coverage in the shared harness; preserve later Group 4 clauses as blocked, run local and reachable real-host evidence, independently review, execute quality gates and staged hooks, then commit objective task evidence.
 
 12. Implement AC6.3 cursor incarnation/retention-gap and AC6.4 stuck-history pinning in the shared harness using a deterministic aged-history fixture; carry a pre-restore cursor into Group 5 for restore-incarnation rejection, preserve later Group 4 clauses as blocked, run local/reachable real-host evidence, independent review, quality gates, staged hooks, commit, and record objective evidence.
+
+13. Implement AC6.5 full-volume storage-failure without pruning and AC6.6 client pending evidence survival across age, GC, replay expiry, restart, and profile changes; preserve later Group 4 clauses as blocked, run local/reachable real-host evidence, independent review, quality gates, staged hooks, commit, and record objective evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -167,4 +169,8 @@ Implemented AC6.1 snapshot/watch race and AC6.2 disconnect/reconnect slices. Gro
 Final mise run ci passed after the active-state ordering refinement; generated acceptance evidence is dist/remote-acceptance/20260915T000523.097541000Z/report.json and coverage.json, with AC6.1 and AC6.2 recorded live-pass locally.
 
 Implemented AC6.3 and AC6.4. The shared harness now rejects foreign-authority cursors through events and watch; applies a deterministic owner-marked aged-history fixture; verifies events/watch gap reset cursors are bound to the exact GC pruning watermark and resume without another gap; proves the retained lost-begin operation is still started and pins a newer epoch; and carries the reset cursor across actual backup/restore, refreshes/re-enrolls a client, then proves both events and watch reject the old cursor as authority-restored. Objective local evidence: dist/remote-acceptance/ac6-retention-reviewed-local-1/report.json, coverage.json, cursor-retention-gaps.json, and cursor-incarnation-after-restore.json. The unchanged real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Initial independent review found unsafe fixture scope and three false-pass gaps; all were addressed before final verification. Next resumable step: AC6.5 full-volume storage-failure without pruning, then AC6.6 pending evidence survival.
+
+Implemented AC6.5 and AC6.6. The shared harness saturates an owner-marked SQLite acceptance database, applies the same max_page_count to the shipped server connection, and forces the GC replay write to allocate an overflow page so the server emits 503 storage-failure from real SQLITE_FULL; a before/after authority snapshot is identical, and the unchanged retry then objectively collects eligible epochs/events. The retained enrollment pending file is aged, remains enumerable and byte-identical across replay expiry, server GC, authority restarts, endpoint/profile rewrites, restore-ID refresh, and authority-restored replay. Objective local evidence: dist/remote-acceptance/ac6-storage-pending-local-7/report.json, coverage.json, full-volume-storage-failure.json, cursor-retention-gaps.json, pending-replay-expired-output.txt, pending-evidence-survival.json, pending-inventory.txt, and fault-proxy.log. Independent review false-pass findings for synthetic failure, zero eligible pruning, missing replay-expired exercise, cleanup restoration, and wrong pending inventory were fixed. The unchanged real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails; no new real-host pass is claimed. Next resumable step: AC6.7 pending guarded-effect and secondary lifecycle non-overwrite coverage, then the remaining Group 5 restore matrix.
+
+Correction to the next resumable step above: Group 4 has no separate AC6.7 coverage entry. Resume with AC7.1 and AC7.3: add an actual asynchronous backup fixture with chosen and older cutoffs and prove zero/nonzero pending-set inventories, then continue the remaining Group 5 restore matrix.
 <!-- SECTION:NOTES:END -->

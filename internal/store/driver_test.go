@@ -16,6 +16,14 @@ import (
 	"time"
 )
 
+func TestDriverAcceptanceMaxPageCount(t *testing.T) {
+	t.Setenv("WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT", "128")
+	path := filepath.Join(t.TempDir(), DatabaseFileName)
+	driver := openTestDriver(t, path, false)
+	defer driver.Close()
+	assertPragma(t, driver.DB(), "max_page_count", "128")
+}
+
 func TestDriverPragmasAndPrivateModes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DatabaseFileName)
 	driver := openTestDriver(t, path, false)

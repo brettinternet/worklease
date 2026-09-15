@@ -44,8 +44,8 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/creack/pty"
-
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type coverageEntry struct {
@@ -118,6 +118,8 @@ type harness struct {
 	immutableEnrollmentClient                                       client
 	immutableEnrollmentID, immutableEnrollmentInvite                string
 	immutableEnrollmentBefore                                       authority.PendingRequest
+	pendingSurvivalBefore                                           []byte
+	fullVolumeMaxPageCount                                          int64
 	preRestoreCursor                                                string
 }
 
@@ -138,6 +140,18 @@ type bootstrapState struct {
 	ActiveInvites  int    `json:"activeInvites"`
 	RevokedInvites int    `json:"revokedInvites"`
 	SecretMode     string `json:"secretMode"`
+}
+
+type fullVolumeState struct {
+	PageCount     int64  `json:"pageCount"`
+	MaxPageCount  int64  `json:"maxPageCount"`
+	FreelistCount int64  `json:"freelistCount"`
+	Injection     string `json:"injection"`
+}
+
+type storageSnapshot struct {
+	Tables map[string]int64  `json:"tables"`
+	Meta   map[string]string `json:"meta"`
 }
 
 type promptCapture struct {
@@ -354,6 +368,29 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "full-volume-fixture" || os.Args[1] == "clear-full-volume-fixture" || os.Args[1] == "storage-snapshot") {
+		if len(os.Args) != 3 {
+			fatal(fmt.Errorf("%s requires an acceptance database", os.Args[1]))
+		}
+		var value any
+		var err error
+		switch os.Args[1] {
+		case "full-volume-fixture":
+			value, err = installFullVolumeFixture(os.Args[2])
+		case "clear-full-volume-fixture":
+			err = clearFullVolumeFixture(os.Args[2])
+			value = map[string]bool{"cleared": err == nil}
+		case "storage-snapshot":
+			value, err = readStorageSnapshot(os.Args[2])
+		}
+		if err != nil {
+			fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(value); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap-state" {
 		if len(os.Args) != 4 {
 			fatal(errors.New("bootstrap-state requires a hosted home and secret path"))
@@ -379,11 +416,14 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
-		if len(os.Args) != 5 {
-			fatal(errors.New("serve requires binary, config, and pid file"))
+		if len(os.Args) != 5 && len(os.Args) != 6 {
+			fatal(errors.New("serve requires binary, config, pid file, and optional acceptance SQLite page limit"))
 		}
 		serve := exec.Command(os.Args[2], "serve", "--server-config", os.Args[3])
 		serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
+		if len(os.Args) == 6 {
+			serve.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT="+os.Args[5])
+		}
 		if err := serve.Start(); err != nil {
 			fatal(err)
 		}
@@ -768,6 +808,9 @@ func (h *harness) provisionRemote(evidence string) error {
 
 func (h *harness) startServer(evidence string) error {
 	serverArgs := []string{"ssh", h.remoteHost, h.remoteHelper, "serve", h.remoteBinary, h.remoteConfig, filepath.Join(h.remoteRoot, "server.pid")}
+	if h.fullVolumeMaxPageCount > 0 {
+		serverArgs = append(serverArgs, strconv.FormatInt(h.fullVolumeMaxPageCount, 10))
+	}
 	h.logCommand("authority@"+h.remoteHost, serverArgs)
 	h.server = exec.Command("ssh", serverArgs[1:]...)
 	serverLog, err := os.OpenFile(filepath.Join(evidence, "authority.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -997,9 +1040,15 @@ func (p *faultProxyHandler) consume(path string, status int, requestHash string,
 		RestoreID     string          `json:"restoreId"`
 		AuthorityTime time.Time       `json:"authorityTime"`
 		Result        json.RawMessage `json:"result"`
+		Error         struct {
+			Reason string `json:"reason"`
+		} `json:"error"`
 	}
 	if json.Unmarshal(responseBody, &envelope) == nil && envelope.AuthorityID != "" && envelope.RestoreID != "" && !envelope.AuthorityTime.IsZero() {
 		responseFields += fmt.Sprintf(" authorityId=%s restoreId=%s authorityTime=%s historicalResultSha256=%s", envelope.AuthorityID, envelope.RestoreID, envelope.AuthorityTime.UTC().Format(time.RFC3339Nano), historicalResultHash(envelope.Result))
+		if envelope.Error.Reason != "" {
+			responseFields += " reason=" + envelope.Error.Reason
+		}
 	}
 	entry := fmt.Sprintf("path=%s status=%d requestSha256=%s dropped=%t responseDelay=%s%s at=%s\n", path, status, requestHash, drop, responseDelay, responseFields, time.Now().UTC().Format(time.RFC3339Nano))
 	p.appendLog(entry)
@@ -2765,6 +2814,9 @@ func ageRetentionFixture(database string, at int64) (err error) {
 		`UPDATE operations SET request_not_after=?,started_at=?,completed_at=CASE WHEN completed_at IS NULL THEN NULL ELSE ? END`,
 		`UPDATE reconciliations SET recorded_at=?`,
 		`UPDATE events SET at=?`,
+		`UPDATE invites SET issued_at=?,expires_at=?+1,request_not_after=?+2,used_at=CASE WHEN used_at IS NULL THEN NULL ELSE ? END,revoked_at=CASE WHEN revoked_at IS NULL THEN NULL ELSE ? END`,
+		`UPDATE invite_redemptions SET redeemed_at=?,replay_until=?+1,request_not_after=?+2`,
+		`UPDATE admin_operation_replays SET request_not_after=?`,
 	}
 	for _, statement := range statements {
 		arguments := strings.Count(statement, "?")
@@ -2804,8 +2856,242 @@ func mustParseInt64(value string) int64 {
 	return parsed
 }
 
+func isSQLiteFull(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqlite3.SQLITE_FULL
+}
+
+func installFullVolumeFixture(database string) (state fullVolumeState, err error) {
+	if err := validateAcceptanceDatabase(database); err != nil {
+		return state, err
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		return state, err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	if _, err = db.Exec(`DROP TRIGGER IF EXISTS worklease_acceptance_volume_full; DROP TABLE IF EXISTS worklease_acceptance_volume_fill; CREATE TABLE worklease_acceptance_volume_fill(payload BLOB NOT NULL); CREATE TRIGGER worklease_acceptance_volume_full BEFORE INSERT ON admin_operation_replays BEGIN INSERT INTO worklease_acceptance_volume_fill(payload) VALUES(zeroblob(1048576)); END`); err != nil {
+		return state, err
+	}
+	defer func() {
+		if err != nil {
+			_, _ = db.Exec(`DROP TRIGGER IF EXISTS worklease_acceptance_volume_full; DROP TABLE IF EXISTS worklease_acceptance_volume_fill`)
+		}
+	}()
+	var pageCount int64
+	if err = db.QueryRow(`PRAGMA page_count`).Scan(&pageCount); err != nil {
+		return state, err
+	}
+	if _, err = db.Exec(fmt.Sprintf(`PRAGMA max_page_count=%d`, pageCount+32)); err != nil {
+		return state, err
+	}
+	for {
+		_, insertErr := db.Exec(`INSERT INTO worklease_acceptance_volume_fill(payload) VALUES(zeroblob(4096))`)
+		if insertErr == nil {
+			continue
+		}
+		if !isSQLiteFull(insertErr) {
+			return state, insertErr
+		}
+		break
+	}
+	if err = db.QueryRow(`PRAGMA page_count`).Scan(&state.PageCount); err != nil {
+		return state, err
+	}
+	if err = db.QueryRow(`PRAGMA max_page_count`).Scan(&state.MaxPageCount); err != nil {
+		return state, err
+	}
+	if err = db.QueryRow(`PRAGMA freelist_count`).Scan(&state.FreelistCount); err != nil {
+		return state, err
+	}
+	if state.PageCount != state.MaxPageCount || state.FreelistCount > 1 {
+		return state, fmt.Errorf("volume fixture is not full: %+v", state)
+	}
+	state.Injection = "SQLite max_page_count saturation; server connection inherits the same ceiling and trigger allocates a new overflow page"
+	return state, nil
+}
+
+func clearFullVolumeFixture(database string) (err error) {
+	if err := validateAcceptanceDatabase(database); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	_, err = db.Exec(`DROP TRIGGER IF EXISTS worklease_acceptance_volume_full; DROP TABLE IF EXISTS worklease_acceptance_volume_fill`)
+	return err
+}
+
+func readStorageSnapshot(database string) (snapshot storageSnapshot, err error) {
+	if err := validateAcceptanceDatabase(database); err != nil {
+		return snapshot, err
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		return snapshot, err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	snapshot.Tables = map[string]int64{}
+	for _, table := range []string{"claims", "epochs", "operations", "reconciliations", "events", "invites", "invite_redemptions", "admin_operation_replays"} {
+		var count int64
+		if err = db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+			return snapshot, err
+		}
+		snapshot.Tables[table] = count
+	}
+	snapshot.Meta = map[string]string{}
+	rows, err := db.Query(`SELECT key,value FROM meta WHERE key IN ('last_observed_at','last_event_seq','pruned_through_seq') ORDER BY key`)
+	if err != nil {
+		return snapshot, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var key, value string
+		if err = rows.Scan(&key, &value); err != nil {
+			return snapshot, err
+		}
+		snapshot.Meta[key] = value
+	}
+	return snapshot, rows.Err()
+}
+
+func (h *harness) authorityDatabase() string {
+	if h.realHost {
+		return filepath.Join(h.remoteRoot, "authority", "worklease.db")
+	}
+	return filepath.Join(h.root, "authority", "worklease.db")
+}
+
+func (h *harness) fixtureJSON(command string, target any) error {
+	database := h.authorityDatabase()
+	h.logCommand("fixture@"+h.remoteHost, []string{command, database})
+	var output []byte
+	var err error
+	if h.realHost {
+		var remoteOutput string
+		remoteOutput, err = runSSH(h.remoteHost, h.remoteHelper, command, database)
+		output = []byte(remoteOutput)
+	} else {
+		var value any
+		switch command {
+		case "full-volume-fixture":
+			value, err = installFullVolumeFixture(database)
+		case "clear-full-volume-fixture":
+			err = clearFullVolumeFixture(database)
+			value = map[string]bool{"cleared": err == nil}
+		case "storage-snapshot":
+			value, err = readStorageSnapshot(database)
+		default:
+			return fmt.Errorf("unknown acceptance fixture command %q", command)
+		}
+		if err == nil {
+			output, err = json.Marshal(value)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(output, target)
+}
+
+func (h *harness) exerciseFullVolume(evidence string, c client) (err error) {
+	if err := h.startFaultProxy(evidence); err != nil {
+		return err
+	}
+	defer func() {
+		_ = h.switchProfileEndpoint(c, h.endpoint)
+		h.stopFaultProxy()
+	}()
+	if err := h.switchProfileEndpoint(c, h.faultEndpoint); err != nil {
+		return err
+	}
+	h.stopServer()
+	var before storageSnapshot
+	if err = h.fixtureJSON("storage-snapshot", &before); err != nil {
+		return err
+	}
+	var volume fullVolumeState
+	if err = h.fixtureJSON("full-volume-fixture", &volume); err != nil {
+		return err
+	}
+	installed := true
+	h.fullVolumeMaxPageCount = volume.MaxPageCount
+	defer func() {
+		if !installed {
+			return
+		}
+		h.stopServer()
+		h.fullVolumeMaxPageCount = 0
+		var cleared map[string]bool
+		cleanupErr := h.fixtureJSON("clear-full-volume-fixture", &cleared)
+		if cleanupErr == nil {
+			cleanupErr = h.restartServer(evidence)
+		}
+		err = errors.Join(err, cleanupErr)
+	}()
+	if err = h.restartServer(evidence); err != nil {
+		return err
+	}
+	failed, failureErr := h.cliFailure(c, "--profile", "team", "gc", "--apply", "--cutoff", time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano))
+	if failureErr != nil {
+		return failureErr
+	}
+	if err = requireReason(failed, "unknown-outcome"); err != nil {
+		return err
+	}
+	if err = h.collectFaultLog(evidence); err != nil {
+		return err
+	}
+	if err = verifyStorageFailureResponse(filepath.Join(evidence, "fault-proxy.log")); err != nil {
+		return err
+	}
+	h.stopServer()
+	var after storageSnapshot
+	if err = h.fixtureJSON("storage-snapshot", &after); err != nil {
+		return err
+	}
+	beforeData, _ := json.Marshal(before)
+	afterData, _ := json.Marshal(after)
+	if !bytes.Equal(beforeData, afterData) {
+		return fmt.Errorf("full-volume failure pruned or mutated authority state: before=%s after=%s", beforeData, afterData)
+	}
+	var cleared map[string]bool
+	if err = h.fixtureJSON("clear-full-volume-fixture", &cleared); err != nil {
+		return err
+	}
+	h.fullVolumeMaxPageCount = 0
+	installed = false
+	if !cleared["cleared"] {
+		return errors.New("full-volume fixture did not clear")
+	}
+	if err = h.restartServer(evidence); err != nil {
+		return err
+	}
+	record := map[string]any{"volume": volume, "failure": failed, "before": before, "after": after, "stateUnchanged": true}
+	encoded, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(evidence, "full-volume-storage-failure.json"), append(encoded, '\n'), 0o600)
+}
+
 func (h *harness) group4(evidence string) error {
 	a, b := h.clients[0], h.clients[1]
+	pendingPath := filepath.Join(h.immutableEnrollmentClient.home, "pending", "team", h.immutableEnrollmentID+".json")
+	if h.immutableEnrollmentID == "" {
+		return errors.New("pending-survival enrollment fixture is missing")
+	}
+	var err error
+	h.pendingSurvivalBefore, err = os.ReadFile(pendingPath)
+	if err != nil {
+		return err
+	}
+	agedAt := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(pendingPath, agedAt, agedAt); err != nil {
+		return err
+	}
 	snapshot := func() (map[string]any, string, error) {
 		events, err := h.cli(a, "--profile", "team", "events", "--limit", "100")
 		if err != nil {
@@ -2973,6 +3259,12 @@ func (h *harness) group4(evidence string) error {
 	if err := h.ageRetentionState(evidence); err != nil {
 		return err
 	}
+	// The first pass retires expired claims; after aging again, the second pass
+	// has objectively prunable epochs/events. Fail that apply on SQLITE_FULL
+	// before allowing the unchanged retry to collect them.
+	if err := h.exerciseFullVolume(evidence, a); err != nil {
+		return err
+	}
 	secondGC, err := h.cli(a, "--profile", "team", "gc", "--apply", "--cutoff", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err
@@ -3033,6 +3325,9 @@ func (h *harness) group4(evidence string) error {
 	if protectedCount(secondGC, "expiredClaims") < 1 || protectedCount(secondGC, "epochs") < 2 {
 		return fmt.Errorf("stuck-history protection missing: %v", secondGC["protected"])
 	}
+	if resultSummaryCount(secondGC, "collected", "epochs") < 1 || resultSummaryCount(secondGC, "collected", "events") < 1 {
+		return fmt.Errorf("post-full-volume GC had no objective prunable epoch/event: %v", secondGC["collected"])
+	}
 	h.preRestoreCursor = resetCursor
 	if h.preRestoreCursor == "" {
 		return errors.New("retention gap returned no reset cursor")
@@ -3046,14 +3341,75 @@ func (h *harness) group4(evidence string) error {
 	if err := os.WriteFile(retentionEvidence, append(retentionData, '\n'), 0o600); err != nil {
 		return err
 	}
+	if err := h.startFaultProxy(evidence); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(h.immutableEnrollmentClient, h.faultEndpoint); err != nil {
+		h.stopFaultProxy()
+		return err
+	}
+	replayExpiredOutput, replayExpiredErr := h.replayPendingFailure(h.immutableEnrollmentClient, h.immutableEnrollmentID, h.immutableEnrollmentInvite)
+	collectErr := h.collectFaultLog(evidence)
+	restoreEndpointErr := h.switchProfileEndpoint(h.immutableEnrollmentClient, h.endpoint)
+	h.stopFaultProxy()
+	if err := errors.Join(replayExpiredErr, collectErr, restoreEndpointErr); err != nil {
+		return err
+	}
+	inviteSecret, err := os.ReadFile(h.immutableEnrollmentInvite)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(replayExpiredOutput, bytes.TrimSpace(inviteSecret)) {
+		return errors.New("aged pending replay disclosed its invite")
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "pending-replay-expired-output.txt"), replayExpiredOutput, 0o600); err != nil {
+		return err
+	}
+	if !bytes.Contains(replayExpiredOutput, []byte("unknown-outcome")) {
+		return fmt.Errorf("aged pending replay did not retain client uncertainty: output=%q", replayExpiredOutput)
+	}
+	if err := verifyReplayExpiredResponse(filepath.Join(evidence, "fault-proxy.log"), h.immutableEnrollmentID); err != nil {
+		return err
+	}
+	pendingAfterGroup4, err := os.ReadFile(pendingPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(h.pendingSurvivalBefore, pendingAfterGroup4) {
+		return errors.New("age, replay expiry, GC, or authority restart changed retained client pending evidence")
+	}
+	pendingHash := sha256.Sum256(h.pendingSurvivalBefore)
+	pendingEvidencePath := filepath.Join(evidence, "pending-evidence-survival.json")
+	pendingEvidence, err := json.MarshalIndent(map[string]any{
+		"requestId": h.immutableEnrollmentID, "requestSha256": h.immutableEnrollmentBefore.RequestSHA256,
+		"recordSha256": hex.EncodeToString(pendingHash[:]), "agedAt": agedAt.UTC().Format(time.RFC3339Nano),
+		"survivedAge": true, "replayBeforeRestoreReason": "replay-expired",
+		"survivedReplayExpiryAndGC": true, "survivedAuthorityRestarts": true,
+		"survivedProfileRefresh": false,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(pendingEvidencePath, append(pendingEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
 
-	pendingRoot := filepath.Join(a.home, "pending", "team")
+	pendingRoot := filepath.Join(h.immutableEnrollmentClient.home, "pending", "team")
 	entries, err := os.ReadDir(pendingRoot)
 	if err != nil {
 		return fmt.Errorf("pending root missing: %v", err)
 	}
+	foundPending := false
+	for _, entry := range entries {
+		if entry.Name() == h.immutableEnrollmentID+".json" {
+			foundPending = true
+		}
+	}
+	if !foundPending {
+		return errors.New("retained pending request is not enumerable")
+	}
 	inventory := filepath.Join(evidence, "pending-inventory.txt")
-	if err := os.WriteFile(inventory, []byte(fmt.Sprintf("enumerable-pending-files=%d\n", len(entries))), 0o600); err != nil {
+	if err := os.WriteFile(inventory, []byte(fmt.Sprintf("pending-root=%s\nenumerable-pending-files=%d\ntarget-request-id=%s\ntarget-enumerable=true\n", pendingRoot, len(entries), h.immutableEnrollmentID)), 0o600); err != nil {
 		return err
 	}
 	watchEvidence := filepath.Join(evidence, "snapshot-watch-reconnect.json")
@@ -3071,7 +3427,41 @@ func (h *harness) group4(evidence string) error {
 	if err := os.WriteFile(watchEvidence, append(encoded, '\n'), 0o600); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot/watch ordering preserves an event committed before cursor resume and a release committed after an active-state snapshot; a response-ready watch can lose its transport before acknowledgment and reconnect from its saved cursor exactly once; foreign-authority cursors fail closed, retention gaps return explicit reset cursors, and a stuck started operation pins its own and newer history; the enumerable pending root survives client process restarts", Commands: []string{"snapshot then mutate before cursor watch", "acquire then watch until free and release", "drop completed watch response", "reconnect from saved cursor", "resume from next cursor without duplicate", "reject foreign-authority cursor", "age retention fixture and apply GC twice", "resume events and watch below pruning watermark", "verify stuck and newer history remain"}, Evidence: []string{watchEvidence, filepath.Join(evidence, "fault-proxy.log"), retentionEvidence, inventory}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot/watch ordering preserves an event committed before cursor resume and a release committed after an active-state snapshot; a response-ready watch can lose its transport before acknowledgment and reconnect from its saved cursor exactly once; foreign-authority cursors fail closed, retention gaps return explicit reset cursors, and a stuck started operation pins its own and newer history; a full SQLite volume returns storage-failure and rolls back pruning; exact client pending evidence survives aging, replay expiry, GC, and authority restarts", Commands: []string{"snapshot then mutate before cursor watch", "acquire then watch until free and release", "drop completed watch response", "reconnect from saved cursor", "resume from next cursor without duplicate", "reject foreign-authority cursor", "age retention fixture and apply GC twice", "resume events and watch below pruning watermark", "verify stuck and newer history remain", "fill bounded SQLite volume and attempt GC", "compare authority state and retained pending bytes"}, Evidence: []string{watchEvidence, filepath.Join(evidence, "fault-proxy.log"), retentionEvidence, filepath.Join(evidence, "full-volume-storage-failure.json"), pendingEvidencePath, inventory}, Passed: true})
+	return nil
+}
+
+func verifyReplayExpiredResponse(logPath, requestID string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	matches := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "path=/v1/enroll ") && strings.Contains(line, "requestId="+requestID+" ") && strings.Contains(line, "reason=replay-expired ") {
+			matches++
+		}
+	}
+	if matches != 1 {
+		return fmt.Errorf("replay-expired server response count=%d, want 1", matches)
+	}
+	return nil
+}
+
+func verifyStorageFailureResponse(logPath string) error {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return err
+	}
+	matches := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "path=/v1/admin/gc ") && strings.Contains(line, "status=503 ") && strings.Contains(line, "reason=storage-failure ") {
+			matches++
+		}
+	}
+	if matches != 1 {
+		return fmt.Errorf("full-volume storage-failure response count=%d, want 1", matches)
+	}
 	return nil
 }
 
@@ -3196,11 +3586,15 @@ func eventsContainKindResource(result map[string]any, kind, resource string) boo
 	return false
 }
 
-func protectedCount(result map[string]any, key string) int {
-	protected, _ := result["protected"].(map[string]any)
-	summary, _ := protected[key].(map[string]any)
+func resultSummaryCount(result map[string]any, section, key string) int {
+	values, _ := result[section].(map[string]any)
+	summary, _ := values[key].(map[string]any)
 	count, _ := summary["count"].(float64)
 	return int(count)
+}
+
+func protectedCount(result map[string]any, key string) int {
+	return resultSummaryCount(result, "protected", key)
 }
 
 func (h *harness) group5(evidence string) error {
@@ -3316,6 +3710,17 @@ func (h *harness) group5(evidence string) error {
 	if h.immutableEnrollmentID == "" {
 		return errors.New("immutable enrollment fixture is missing")
 	}
+	if err := h.refreshClientRestoreID(h.immutableEnrollmentClient, restoredRestoreID); err != nil {
+		return err
+	}
+	pendingPath := filepath.Join(h.immutableEnrollmentClient.home, "pending", "team", h.immutableEnrollmentID+".json")
+	pendingAfterRefresh, err := os.ReadFile(pendingPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(h.pendingSurvivalBefore, pendingAfterRefresh) {
+		return errors.New("profile restore refresh changed retained client pending evidence")
+	}
 	replayOutput, err := h.replayPendingFailure(h.immutableEnrollmentClient, h.immutableEnrollmentID, h.immutableEnrollmentInvite)
 	if err != nil {
 		return err
@@ -3337,9 +3742,24 @@ func (h *harness) group5(evidence string) error {
 	if !bytes.Equal(beforeData, afterData) {
 		return errors.New("restored enrollment replay mutated the retained request incarnation")
 	}
-	immutableEvidence := fmt.Sprintf("request-id=%s\nauthority-id=%s\noriginal-restore-id=%s\nnew-restore-id=%s\ninitial-dispatch-committed-and-response-dropped=true\nreplay-after-restore=authority-restored\nretained-request-sha256=%s\npending-record-unchanged=true\n", h.immutableEnrollmentID, restoredAuthorityID, afterPending.ExpectedRestoreID, restoredRestoreID, afterPending.RequestSHA256)
+	immutableEvidence := fmt.Sprintf("request-id=%s\nauthority-id=%s\noriginal-restore-id=%s\nnew-restore-id=%s\ninitial-dispatch-committed-and-response-dropped=true\nreplay-after-restore=authority-restored\nretained-request-sha256=%s\npending-record-unchanged=true\nprofile-refresh-pending-record-unchanged=true\n", h.immutableEnrollmentID, restoredAuthorityID, afterPending.ExpectedRestoreID, restoredRestoreID, afterPending.RequestSHA256)
 	immutableEvidencePath := filepath.Join(evidence, "immutable-enrollment-after-restore.txt")
 	if err := os.WriteFile(immutableEvidencePath, []byte(immutableEvidence), 0o600); err != nil {
+		return err
+	}
+	pendingHash := sha256.Sum256(h.pendingSurvivalBefore)
+	pendingSurvival, err := json.MarshalIndent(map[string]any{
+		"requestId": h.immutableEnrollmentID, "requestSha256": afterPending.RequestSHA256,
+		"recordSha256": hex.EncodeToString(pendingHash[:]), "survivedAge": true,
+		"replayBeforeRestoreReason": "replay-expired", "survivedReplayExpiryAndGC": true,
+		"survivedAuthorityRestarts": true, "survivedProfileRefresh": true,
+		"retainedOriginalRestoreId": afterPending.ExpectedRestoreID,
+		"currentProfileRestoreId":   restoredRestoreID, "replayReason": "authority-restored",
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "pending-evidence-survival.json"), append(pendingSurvival, '\n'), 0o600); err != nil {
 		return err
 	}
 	if err := h.requireServerStartFailure("hosted-lock-held"); err != nil {
@@ -3513,8 +3933,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC6.2", "disconnect and reconnect", 4),
 		live("AC6.3", "cursor incarnation and retention gaps", 4, 5),
 		live("AC6.4", "stuck-history retention", 4),
-		blocked("AC6.5", "full-volume storage-failure without pruning"),
-		blocked("AC6.6", "pending evidence surviving age, GC, replay expiry, restart, and profile changes"),
+		live("AC6.5", "full-volume storage-failure without pruning", 4),
+		live("AC6.6", "pending evidence surviving age, GC, replay expiry, restart, and profile changes", 4, 5),
 		blocked("AC7.1", "actual asynchronous backup fixture with chosen and older cutoffs"),
 		live("AC7.2", "online SQLite backup on the authority host", 5),
 		blocked("AC7.3", "zero and nonzero pending sets"),
@@ -3931,6 +4351,9 @@ func (h *harness) restartServer(evidence string) error {
 	configPath := filepath.Join(h.root, "secrets", "server.yaml")
 	h.logCommand("authority", []string{"worklease", "serve", "--server-config", configPath})
 	h.server = exec.Command(h.binary, "serve", "--server-config", configPath)
+	if h.fullVolumeMaxPageCount > 0 {
+		h.server.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT="+strconv.FormatInt(h.fullVolumeMaxPageCount, 10))
+	}
 	logFile, err := os.OpenFile(filepath.Join(evidence, "authority.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
