@@ -4,7 +4,7 @@ title: Make remote authority onboarding effortless
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-15 21:31'
+updated_date: '2026-09-15 21:56'
 labels:
   - remote-authority
   - ergonomics
@@ -17,9 +17,11 @@ ordinal: 147000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A first-time administrator currently has to initialize the server, edit YAML, obtain TLS material from somewhere, restart, query a strict HTTP metadata endpoint or parse `--json` output for the authority ID, create a profile, move a bare-secret invite file, and enroll each machine while repeating `--profile` on every later command. This is secure but exposes protocol details and creates many opportunities for confusion. The largest single obstacle is transport: the default configuration is localhost-only cleartext, and a "secure" LAN deployment today requires a CA-signed certificate because the client has no way to pin a server certificate, so users are pushed toward insecure HTTP.
+A first-time administrator currently needs server initialization, deployment YAML, TLS provisioning, authority-ID discovery, profile creation, and bare-secret invite enrollment. Default-profile selection exists but is a separate step. Simplify this without changing local coordination or weakening remote trust.
 
-Target journey. Server host: `worklease server init` (guided) then `worklease serve`. Client host: receive one invite artifact, run `worklease enroll`, then `worklease acquire`. A self-signed certificate generated at init and pinned through the invite keeps the default secure without a PKI. Local coordination, existing explicit profile commands, and the raw metadata endpoint stay available outside the happy path.
+Target journey: opt into guided server init, start serve, securely transfer one bootstrap artifact to the first administrator, and enroll with one command. That administrator can issue write-role artifacts for subsequent clients. Generated self-signed TLS is trusted through the transferred certificate pin, never trust on first use. Bare server init retains its existing local-only behavior; the documented remote journey explicitly selects guided setup.
+
+Scope is TASK-109.1 through TASK-109.4 in dependency order. This parent is an integration checklist, not another implementation lane; complete it only after all four children and the clean-state journey pass. Certificate automation/rotation, hosted deployment management, and new coordination semantics are outside this change.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -31,3 +33,12 @@ Target journey. Server host: `worklease server init` (guided) then `worklease se
 - [ ] #5 After enrollment the recipient runs lifecycle commands without repeating `--profile` on every command.
 - [ ] #6 The documented two-machine happy path is covered by executable acceptance testing from clean state.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Complete server setup and freeze its endpoint/certificate handoff (TASK-109.1).
+2. Implement artifact enrollment and profile activation (TASK-109.2).
+3. Extend existing remote doctor checks (TASK-109.3).
+4. Exercise and publish the two-machine journey (TASK-109.4), then verify parent criteria against that evidence.
+<!-- SECTION:PLAN:END -->

@@ -4,11 +4,15 @@ title: Add guided remote server setup
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-15 21:49'
+updated_date: '2026-09-15 21:56'
 labels:
   - remote-authority
   - ergonomics
 dependencies: []
+references:
+  - internal/cli/hosted_commands.go
+  - internal/cli/hosted_commands_test.go
+  - internal/server/server.go
 parent_task_id: TASK-109
 priority: high
 type: feature
@@ -25,14 +29,22 @@ Provide a supported setup path that gathers the small set of deployment choices 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The setup flow accepts by flag or interactively gathers the listen address, the client-facing endpoint URL when the listen address is not loopback, the transport choice, and admitted resource prefixes for common localhost and LAN deployments.
-- [ ] #2 A standard LAN authority can be initialized without opening or editing YAML and without supplying externally issued TLS material: setup generates an owner-private self-signed certificate and key and records their paths in the configuration.
-- [ ] #3 Supplying an existing certificate and key remains supported and skips generation.
-- [ ] #4 Broad or cleartext listeners require explicit confirmation or an equivalent non-interactive flag and present a concise credential-exposure warning; cleartext on a non-loopback listener is never chosen by default.
-- [ ] #5 When stdin is not a terminal and a required choice is missing, setup fails immediately with the exact flags to supply instead of prompting or silently defaulting to localhost.
-- [ ] #6 Success output states what was created, the authority ID, the certificate SHA-256 fingerprint when generated, how to start the server, and the single next command for enrolling another machine, without printing secret material.
-- [ ] #7 `serve` prints the listen address, transport, and client-facing endpoint on startup.
+- [ ] #1 Bare server init retains non-interactive local-only behavior. An explicit guided-setup option accepts flags or prompts for missing listen address, client-facing endpoint, transport, and admitted prefixes; fully specified flag-driven setup never prompts.
+- [ ] #2 Guided LAN setup defaults to TLS and generates owner-private certificate/key files without YAML editing or an external CA. The leaf certificate covers the advertised endpoint host/IP, has a documented validity period, and its paths and client-facing endpoint are persisted in validated server configuration.
+- [ ] #3 An existing certificate/key pair skips generation; setup rejects mismatched, expired, or endpoint-incompatible material before initializing the authority and exposes the same leaf-certificate fingerprint handoff as generated TLS.
+- [ ] #4 Guided setup requires explicit confirmation or equivalent flags for a non-loopback listener and a separate credential-exposure acknowledgement for cleartext. Non-loopback cleartext is never default; legacy bare-init loopback behavior is preserved.
+- [ ] #5 In guided mode, non-terminal input with missing required choices fails immediately with the exact flags to supply. Cancellation and validation failures do not initialize an authority or overwrite existing config, certificate, key, or invite files; partial-write failures give a safe recovery action.
+- [ ] #6 Success output states created paths, authority ID, SHA-256 of the DER leaf certificate for either TLS source, start command, and bootstrap enrollment command after secure artifact transfer, without secret values. TASK-109.2 owns artifact encoding and redemption.
+- [ ] #7 After successfully binding, serve reports its actual listen address, transport, and advertised endpoint on stderr; startup diagnostics do not corrupt structured stdout or imply readiness after a bind/TLS failure.
 - [ ] #8 Validation errors identify the invalid choice and provide a directly usable correction.
 - [ ] #9 Automated tests cover localhost, secure LAN with generated certificate, secure LAN with supplied certificate, explicitly insecure LAN, cancellation, non-interactive missing input, and invalid-input paths.
-- [ ] #10 The default admitted prefixes cover the resources used in the README quickstart (for example `task:` and `coordination:`) so a first remote acquire is not rejected for admission without a deliberate choice.
+- [ ] #10 Fresh guided setup defaults to task: and coordination: prefixes and preserves explicit overrides; legacy bare init and existing configurations retain their admitted-prefix behavior.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extend internal/cli/hosted_commands.go and internal/server/server.go for opt-in setup and persisted advertised endpoint; preserve existing lock, no-overwrite, and secret staging protections.
+2. Implement generated/supplied TLS validation and bind-success diagnostics. Freeze the persisted endpoint and SHA-256 DER leaf-certificate contract for TASK-109.2; do not implement a second invite codec here.
+3. Add hosted CLI/server tests for terminal and non-terminal flows, TLS files, cancellation, partial failures, reruns, and legacy defaults.
+<!-- SECTION:PLAN:END -->
