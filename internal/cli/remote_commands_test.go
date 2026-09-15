@@ -129,6 +129,34 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 	}
 }
 
+func TestRemoteCLIExplicitLifecycleAndGuardRetainCredentialPath(t *testing.T) {
+	profile, clientHome, claimHandle := remoteCLIFixture(t)
+	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:explicit", "--ttl", "30s", "--json")
+	if err != nil {
+		t.Fatalf("acquire: %v output=%s", err, out)
+	}
+	stored, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenRoot := filepath.Join(clientHome, "explicit-credentials")
+	if err := os.Mkdir(tokenRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(tokenRoot, "claim.token")
+	if err := os.WriteFile(tokenPath, []byte(stored.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runRemoteCLI(t, "heartbeat", "--profile", profile, "--home", clientHome, "--claim-id", stored.ClaimID, "--token-file", tokenPath, "--revision", "1", "--operation-id", strings.Repeat("e", 32), "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), "--ttl", "30s", "--json")
+	if err != nil {
+		t.Fatalf("explicit heartbeat: %v output=%s", err, out)
+	}
+	out, err = runRemoteCLI(t, "exec", "--profile", profile, "--home", clientHome, "--claim-id", stored.ClaimID, "--token-file", tokenPath, "--revision", "2", "--operation-id", strings.Repeat("f", 32), "--request-not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), "--ttl", "30s", "--max-duration", "1s", "--json", "--", "true")
+	if err != nil {
+		t.Fatalf("explicit guarded effect: %v output=%s", err, out)
+	}
+}
+
 func TestRemoteCLIInspectsAndReconcilesInterruptedExec(t *testing.T) {
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:reconcile", "--ttl", "30s", "--json")

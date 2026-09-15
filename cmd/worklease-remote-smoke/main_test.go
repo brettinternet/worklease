@@ -17,6 +17,40 @@ import (
 	"github.com/brettinternet/worklease/internal/ledger"
 )
 
+func TestNormalizeGoTarget(t *testing.T) {
+	for _, test := range []struct{ osName, archName, goos, goarch string }{
+		{"Linux\n", "aarch64\n", "linux", "arm64"},
+		{"Darwin", "x86_64", "darwin", "amd64"},
+	} {
+		goos, goarch, err := normalizeGoTarget(test.osName, test.archName)
+		if err != nil || goos != test.goos || goarch != test.goarch {
+			t.Fatalf("normalizeGoTarget(%q,%q)=(%q,%q,%v)", test.osName, test.archName, goos, goarch, err)
+		}
+	}
+	if _, _, err := normalizeGoTarget("Plan9", "mips"); err == nil {
+		t.Fatal("unsupported target accepted")
+	}
+}
+
+func TestQuoteRemoteArg(t *testing.T) {
+	if got, want := quoteRemoteArg("two words'quoted"), `'two words'"'"'quoted'`; got != want {
+		t.Fatalf("quoteRemoteArg=%q want %q", got, want)
+	}
+}
+
+func TestAcceptanceWorkspacePaths(t *testing.T) {
+	for _, path := range []string{"/tmp/worklease-acceptance-owned", "/private/tmp/worklease-acceptance-owned"} {
+		if !isAcceptanceWorkspacePath(path) {
+			t.Fatalf("valid acceptance path rejected: %s", path)
+		}
+	}
+	for _, path := range []string{"/tmp/other", "/tmp/worklease-acceptance-x/..", "relative/worklease-acceptance-x"} {
+		if isAcceptanceWorkspacePath(path) {
+			t.Fatalf("unsafe acceptance path accepted: %s", path)
+		}
+	}
+}
+
 func TestRequireOperationPendingClearedRejectsRetainedBeginHandle(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
