@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,22 @@ func TestValidateConfigRequiresTLSUnlessInsecureHTTPIsAllowed(t *testing.T) {
 	cfg.HealthRate = 0
 	if err := validateConfig(cfg, true); err == nil {
 		t.Fatal("configuration without explicit public endpoint rate limits was accepted")
+	}
+}
+
+func TestLoadConfigAllowsExplicitInsecureHTTP(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "server.yaml")
+	contents := "home: /authority\nlisten: 127.0.0.1:8443\nallowInsecureHTTP: true\nadmittedPrefixes:\n  - \"coordination:\"\nmaxTTL: 1m\nmaxHold: 1h\nhealthRate: 10\nmetadataRate: 10\nenrollmentRate: 10\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowInsecureHTTP {
+		t.Fatal("stored insecure HTTP choice was not loaded")
 	}
 }
 

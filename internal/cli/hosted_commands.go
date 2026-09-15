@@ -14,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
+	workleaseserver "github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
 )
@@ -24,34 +25,124 @@ var beforeHostedReadyHook func() error
 
 const acceptanceCrashBeforeHostedReady = "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY"
 
-func hostedCommands(s *boundary) *urfave.Command {
+func serverCommands(s *boundary) *urfave.Command {
 	secret := &urfave.StringFlag{Name: "bootstrap-invite-file", Usage: "owner-private bootstrap invite `FILE`"}
 	initCommand := &urfave.Command{
-		Name: "init", Usage: "initialize a hosted authority", UsageText: "worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE",
-		Description: "Initialize a hosted authority and write its one-time bootstrap invite to an owner-private file.\n\nExamples:\n  worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE",
-		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE`"}, secret},
+		Name: "init", Usage: "initialize a server", UsageText: "worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]",
+		Description: "Create a default local-only server configuration when needed, initialize its authority, and write a one-time bootstrap invite.\n\nExamples:\n  worklease server init\n  worklease server init --server-config FILE --bootstrap-invite-file FILE",
+		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret},
 	}
 	initCommand.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedInit(s, ctx, cmd) }
 	restore := &urfave.Command{
-		Name: "restore", Usage: "restore a hosted authority backup", UsageText: "worklease hosted restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]",
-		Description: "Restore a hosted backup into a fresh authority incarnation and enter recovery mode.\n\nExamples:\n  worklease hosted restore --home DIR --from FILE --selected-cutoff 2026-09-14T00:00:00Z --loss-interval-start 2026-09-14T00:00:00Z --loss-interval-end 2026-09-14T00:05:00Z --bootstrap-invite-file FILE",
+		Name: "restore", Usage: "restore a server authority backup", UsageText: "worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]",
+		Description: "Restore a hosted backup into a fresh authority incarnation and enter recovery mode.\n\nExamples:\n  worklease server restore --home DIR --from FILE --selected-cutoff 2026-09-14T00:00:00Z --loss-interval-start 2026-09-14T00:00:00Z --loss-interval-end 2026-09-14T00:05:00Z --bootstrap-invite-file FILE",
 		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "from", Usage: "owner-private backup `FILE`"}, &urfave.StringFlag{Name: "selected-cutoff", Usage: "durable backup cutoff `RFC3339`"}, &urfave.StringFlag{Name: "loss-interval-start", Usage: "loss interval start `RFC3339`"}, &urfave.StringFlag{Name: "loss-interval-end", Usage: "loss interval end `RFC3339`"}, &urfave.BoolFlag{Name: "cutoff-unknown", Usage: "record that the durable cutoff is unknown"}, secret},
 	}
 	restore.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRestore(s, ctx, cmd) }
 	reissue := &urfave.Command{
-		Name: "bootstrap-reissue", Usage: "replace the hosted bootstrap invite", UsageText: "worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE",
-		Description: "Replace only the active bootstrap invite while preserving authority history.\n\nExamples:\n  worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE", Flags: []urfave.Flag{secret},
+		Name: "bootstrap-reissue", Usage: "replace the server bootstrap invite", UsageText: "worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE",
+		Description: "Replace only the active bootstrap invite while preserving authority history.\n\nExamples:\n  worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE", Flags: []urfave.Flag{secret},
 	}
 	reissue.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedReissue(s, ctx, cmd) }
 	retire := &urfave.Command{
-		Name: "retire", Usage: "retire a hosted authority", UsageText: "worklease hosted retire --home DIR [--force --unresolved-export FILE]",
-		Description: "Safely retire a hosted authority; forced retirement first exports redacted unresolved recovery records.\n\nExamples:\n  worklease hosted retire --home DIR\n  worklease hosted retire --home DIR --force --unresolved-export FILE",
+		Name: "retire", Usage: "retire a server authority", UsageText: "worklease server retire --home DIR [--force --unresolved-export FILE]",
+		Description: "Safely retire a hosted authority; forced retirement first exports redacted unresolved recovery records.\n\nExamples:\n  worklease server retire --home DIR\n  worklease server retire --home DIR --force --unresolved-export FILE",
 		Flags:       []urfave.Flag{&urfave.BoolFlag{Name: "force", Usage: "allow retirement after writing a redacted unresolved export"}, &urfave.StringFlag{Name: "unresolved-export", Usage: "external redacted recovery export `FILE`"}},
 	}
 	retire.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRetire(s, ctx, cmd) }
-	return &urfave.Command{Name: "hosted", Usage: "manage an offline hosted authority", UsageText: "worklease hosted <init|restore|bootstrap-reissue|retire>", Description: "Offline hosted-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE\n  worklease hosted restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease hosted retire --home DIR", Commands: []*urfave.Command{initCommand, restore, reissue, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
-		return s.handle(cmd, reason.Invalid("invalid hosted command arguments"))
+	return &urfave.Command{Name: "server", Usage: "initialize and manage a server authority", UsageText: "worklease server <init|restore|bootstrap-reissue|retire>", Description: "Server-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease server init\n  worklease server restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease server retire --home DIR", Commands: []*urfave.Command{initCommand, restore, reissue, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
+		return s.handle(cmd, reason.Invalid("invalid server command arguments"))
 	}}
+}
+
+func defaultServerConfigPath() string {
+	if value := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); value != "" {
+		return filepath.Join(value, "worklease", "server.yaml")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".config", "worklease", "server.yaml")
+	}
+	return filepath.Join(os.TempDir(), "worklease", "server.yaml")
+}
+
+func defaultServerHome() string {
+	if value := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); value != "" {
+		return filepath.Join(value, "worklease", "server")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "worklease", "server")
+	}
+	return filepath.Join(os.TempDir(), "worklease", "server")
+}
+
+func serverConfigPath(cmd *urfave.Command) (string, error) {
+	path := strings.TrimSpace(cmd.String("server-config"))
+	if path == "" {
+		path = strings.TrimSpace(os.Getenv("WORKLEASE_SERVER_CONFIG"))
+	}
+	if path == "" {
+		path = defaultServerConfigPath()
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	return filepath.Abs(filepath.Clean(path))
+}
+
+func writeDefaultServerConfig(path string) error {
+	parent := filepath.Dir(path)
+	_, statErr := os.Lstat(parent)
+	createdParent := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !createdParent {
+		return statErr
+	}
+	if createdParent {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return err
+		}
+	}
+	if err := store.ValidateHostedHome(parent); err != nil {
+		return reason.New(reason.ReasonHomeUnsafe, "server configuration directory must be owner-private")
+	}
+	contents := fmt.Sprintf("home: %q\nlisten: 127.0.0.1:8443\nallowInsecureHTTP: true\nadmittedPrefixes:\n  - \"coordination:\"\nmaxTTL: 1h\nmaxHold: 24h\nshutdownTimeout: 5s\nhealthRate: 60\nmetadataRate: 60\nenrollmentRate: 20\n", defaultServerHome())
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = io.WriteString(file, contents); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	err = directory.Sync()
+	closeErr := directory.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	keep = true
+	return nil
 }
 
 func hostedHome(cmd *urfave.Command) (string, error) {
@@ -126,7 +217,7 @@ func hostedOpen(ctx context.Context, home string) (*store.Store, *store.HostedLo
 	if err != nil {
 		return nil, nil, err
 	}
-	st, err := store.Open(ctx, home, store.Options{HostedWriter: true, HostedLock: lock})
+	st, err := store.Open(ctx, home, store.Options{HostedWriter: true, HostedLock: lock, RequireDatabaseIfHostedReady: true})
 	if err != nil {
 		_ = lock.Close()
 		return nil, nil, err
@@ -177,21 +268,42 @@ func hostedResultPath(s *boundary, cmd *urfave.Command, op string, value any, pa
 }
 
 func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
-	home, err := hostedHome(cmd)
+	configPath, err := serverConfigPath(cmd)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	config, err := requiredHostedFile(cmd, "server-config")
+	if _, statErr := os.Lstat(configPath); errors.Is(statErr, os.ErrNotExist) {
+		if err = writeDefaultServerConfig(configPath); err != nil {
+			return hostedError(s, cmd, err)
+		}
+	} else if statErr != nil {
+		return hostedError(s, cmd, statErr)
+	}
+	config, err := workleaseserver.LoadConfig(configPath)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	if err = store.ValidateHostedPrivateFile(config); err != nil {
+	home, err := filepath.Abs(filepath.Clean(config.Home))
+	if err != nil {
 		return hostedError(s, cmd, err)
+	}
+	if explicitHome := strings.TrimSpace(cmd.String("home")); explicitHome != "" {
+		resolved, resolveErr := filepath.Abs(filepath.Clean(explicitHome))
+		if resolveErr != nil {
+			return hostedError(s, cmd, resolveErr)
+		}
+		if resolved != home {
+			return hostedError(s, cmd, reason.Invalid("--home must match the server configuration home"))
+		}
 	}
 	if err = store.ValidateHostedHome(home); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	invitePath, err := requiredHostedFile(cmd, "bootstrap-invite-file")
+	invitePath := strings.TrimSpace(cmd.String("bootstrap-invite-file"))
+	if invitePath == "" {
+		invitePath = filepath.Join(filepath.Dir(configPath), "bootstrap.invite")
+	}
+	invitePath, err = filepath.Abs(filepath.Clean(invitePath))
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
@@ -209,6 +321,17 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if resuming {
 		if err := validateHostedInitContents(home, invitePath); err != nil {
 			return hostedError(s, cmd, err)
+		}
+		ready, readyErr := store.HostedReady(home)
+		if readyErr != nil {
+			return hostedError(s, cmd, readyErr)
+		}
+		if ready {
+			if _, databaseErr := os.Lstat(filepath.Join(home, store.DatabaseFileName)); errors.Is(databaseErr, os.ErrNotExist) {
+				return hostedError(s, cmd, reason.New(reason.ReasonStorageFailure, "ready server authority database is missing"))
+			} else if databaseErr != nil {
+				return hostedError(s, cmd, databaseErr)
+			}
 		}
 		if _, secretErr := os.Lstat(invitePath); errors.Is(secretErr, os.ErrNotExist) {
 			if _, databaseErr := os.Lstat(filepath.Join(home, store.DatabaseFileName)); !errors.Is(databaseErr, os.ErrNotExist) {
@@ -244,7 +367,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResultPath(s, cmd, "hosted-init", result, invitePath)
+	return hostedResultPath(s, cmd, "server-init", result, invitePath)
 }
 
 func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error {
@@ -310,7 +433,7 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResultPath(s, cmd, "hosted-restore", result, secretPath)
+	return hostedResultPath(s, cmd, "server-restore", result, secretPath)
 }
 
 func hostedReissue(s *boundary, ctx context.Context, cmd *urfave.Command) error {
@@ -343,7 +466,7 @@ func hostedReissue(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResultPath(s, cmd, "hosted-bootstrap-reissue", result, path)
+	return hostedResultPath(s, cmd, "server-bootstrap-reissue", result, path)
 }
 
 func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
@@ -411,5 +534,5 @@ func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err := lock.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResult(s, cmd, "hosted-retire", map[string]any{"exported": cmd.Bool("force"), "unresolved": status.Unresolved})
+	return hostedResult(s, cmd, "server-retire", map[string]any{"exported": cmd.Bool("force"), "unresolved": status.Unresolved})
 }

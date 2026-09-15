@@ -26,20 +26,21 @@ const maxRequestBody = 1 << 20
 const maxResponseBody = 4 << 20
 
 type Config struct {
-	Home            string   `yaml:"home"`
-	Listen          string   `yaml:"listen"`
-	TLSCert         string   `yaml:"tlsCert"`
-	TLSKey          string   `yaml:"tlsKey"`
-	Prefixes        []string `yaml:"admittedPrefixes"`
-	MaxTTL          string   `yaml:"maxTTL"`
-	MaxTTLMicros    int64    `yaml:"maxTTLMicros"`
-	MaxHold         string   `yaml:"maxHold"`
-	MaxHoldMicros   int64    `yaml:"maxHoldMicros"`
-	ShutdownTimeout string   `yaml:"shutdownTimeout"`
-	HealthRate      int      `yaml:"healthRate"`
-	MetadataRate    int      `yaml:"metadataRate"`
-	EnrollmentRate  int      `yaml:"enrollmentRate"`
-	RateLimits      struct {
+	Home              string   `yaml:"home"`
+	Listen            string   `yaml:"listen"`
+	TLSCert           string   `yaml:"tlsCert"`
+	TLSKey            string   `yaml:"tlsKey"`
+	Prefixes          []string `yaml:"admittedPrefixes"`
+	MaxTTL            string   `yaml:"maxTTL"`
+	MaxTTLMicros      int64    `yaml:"maxTTLMicros"`
+	MaxHold           string   `yaml:"maxHold"`
+	MaxHoldMicros     int64    `yaml:"maxHoldMicros"`
+	ShutdownTimeout   string   `yaml:"shutdownTimeout"`
+	HealthRate        int      `yaml:"healthRate"`
+	MetadataRate      int      `yaml:"metadataRate"`
+	EnrollmentRate    int      `yaml:"enrollmentRate"`
+	AllowInsecureHTTP bool     `yaml:"allowInsecureHTTP"`
+	RateLimits        struct {
 		Health     int `yaml:"health"`
 		Metadata   int `yaml:"metadata"`
 		Enrollment int `yaml:"enrollment"`
@@ -69,7 +70,7 @@ func LoadConfig(path string) (Config, error) {
 	if root.Kind != yaml.MappingNode {
 		return Config{}, reason.New(reason.ReasonConfigInvalid, "server configuration must be an object")
 	}
-	known := map[string]bool{"home": true, "listen": true, "listenAddress": true, "tlsCert": true, "tlsKey": true, "tlsCertFile": true, "tlsKeyFile": true, "admittedPrefixes": true, "prefixes": true, "maxTTL": true, "maxTTLMicros": true, "maxHold": true, "maxHoldMicros": true, "shutdownTimeout": true, "healthRate": true, "metadataRate": true, "enrollmentRate": true, "rateLimits": true}
+	known := map[string]bool{"home": true, "listen": true, "listenAddress": true, "tlsCert": true, "tlsKey": true, "tlsCertFile": true, "tlsKeyFile": true, "admittedPrefixes": true, "prefixes": true, "maxTTL": true, "maxTTLMicros": true, "maxHold": true, "maxHoldMicros": true, "shutdownTimeout": true, "healthRate": true, "metadataRate": true, "enrollmentRate": true, "allowInsecureHTTP": true, "rateLimits": true}
 	seen := map[string]bool{}
 	for i := 0; i < len(root.Content); i += 2 {
 		name := root.Content[i].Value

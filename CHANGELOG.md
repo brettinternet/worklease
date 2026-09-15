@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Breaking
+
+- Hosted-authority lifecycle commands now live under `worklease server`; the former `worklease hosted` command is removed.
+
+### Added
+
+- `worklease server init` creates a private local-only server configuration, authority, and bootstrap invite with no arguments, and `worklease serve` loads that default configuration without arguments. `WORKLEASE_SERVER_CONFIG` or `--server-config` selects another file.
+
 ## 1.3.0 - 2026-09-15
 
 ### Added

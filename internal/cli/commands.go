@@ -317,20 +317,23 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		return server.Serve(ctx, os.Stdin, s.writer)
 	}
 
-	hosted := hostedCommands(s)
-	serve := jsonless("serve", "serve a hosted remote authority", "worklease serve --server-config server.yaml [--allow-insecure-http]",
-		&urfavecli.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE`"},
+	server := serverCommands(s)
+	serve := jsonless("serve", "serve a hosted remote authority", "worklease serve\n  worklease serve --server-config server.yaml",
+		&urfavecli.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"},
 		&urfavecli.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP on the configured listen address"})
 	serve.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
-		path := strings.TrimSpace(cmd.String("server-config"))
-		if path == "" {
-			return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "--server-config is required"))
+		path, err := serverConfigPath(cmd)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		if _, statErr := os.Lstat(path); os.IsNotExist(statErr) {
+			return s.handle(cmd, reason.New(reason.ReasonConfigMissing, fmt.Sprintf("server configuration not found at %s; run worklease server init", path)))
 		}
 		cfg, err := workleaseserver.LoadConfig(path)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		allowInsecureHTTP := cmd.Bool("allow-insecure-http")
+		allowInsecureHTTP := cmd.Bool("allow-insecure-http") || cfg.AllowInsecureHTTP
 		if allowInsecureHTTP {
 			if _, err := fmt.Fprintln(s.errWriter, insecureHTTPWarning); err != nil {
 				return err
@@ -342,12 +345,12 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		}
 		return srv.Serve(ctx, allowInsecureHTTP)
 	}
-	usageText(serve, "worklease serve --server-config FILE [--allow-insecure-http]")
-	detail(serve, "Serve one marked hosted authority over the frozen Worklease HTTP protocol. TLS is required unless --allow-insecure-http is explicitly used.")
+	usageText(serve, "worklease serve [--server-config FILE] [--allow-insecure-http]")
+	detail(serve, "Serve one marked hosted authority using --server-config, WORKLEASE_SERVER_CONFIG, or the default user configuration. TLS is required unless insecure HTTP is explicitly enabled by the file or flag.")
 	all := append(commands, policy, op, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)
-	all = append(all, hosted, serve, mcp, helpCommand(s))
+	all = append(all, server, serve, mcp, helpCommand(s))
 	for _, command := range all {
 		switch command.Name {
 		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":

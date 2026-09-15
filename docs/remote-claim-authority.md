@@ -60,16 +60,16 @@ Configuration rules:
 | Canonical field | Accepted alias | Constraint |
 | --- | --- | --- |
 | `listen` | `listenAddress` | Required |
-| `tlsCert` | `tlsCertFile` | Required unless the serve flag enables insecure HTTP |
-| `tlsKey` | `tlsKeyFile` | Required unless the serve flag enables insecure HTTP |
+| `tlsCert` | `tlsCertFile` | Required unless insecure HTTP is explicit |
+| `tlsKey` | `tlsKeyFile` | Required unless insecure HTTP is explicit |
 | `admittedPrefixes` | `prefixes` | Required |
 | `maxTTL` | — | 1s–1h |
 | `maxHold` | — | 1s–24h |
 | `healthRate`, `metadataRate`, `enrollmentRate` | nested `rateLimits` | Positive |
 
 `home` is also required. Do not combine a canonical field with its alias.
-Cleartext HTTP requires `serve --allow-insecure-http` and exposes credentials
-and claim data.
+Cleartext HTTP requires `allowInsecureHTTP: true` or
+`serve --allow-insecure-http` and exposes credentials and claim data.
 
 An optional asynchronous SQLite backup (for example, WAL replication to object
 storage) is a disaster-recovery backup, not failover, a coordinator, or a
@@ -211,26 +211,41 @@ administration, transfer, exec, replacement, reconciliation, history, recovery,
 or server tools. It never redeems invites. `key` and instructions remain
 client-local; remote admission rejects host-local keys.
 
-## Hosted operator commands
+## Server operator commands
 
-All hosted commands are offline-only, never use a remote profile, and take the
+All server lifecycle commands are offline-only, never use a remote profile, and take the
 hosted lock before opening SQLite:
 
 ```text
-worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE
-worklease hosted restore --home DIR --from FILE --selected-cutoff RFC3339 \
+worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
+worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 \
   --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
   --bootstrap-invite-file FILE [--cutoff-unknown]
-worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE
-worklease hosted retire --home DIR [--force --unresolved-export FILE]
-worklease serve --server-config FILE [--allow-insecure-http]
+worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE
+worklease server retire --home DIR [--force --unresolved-export FILE]
+worklease serve [--server-config FILE] [--allow-insecure-http]
 ```
 
-`hosted init` stages the bootstrap secret before the authority transaction and
+With no arguments, `server init` creates this local-only setup:
+
+| Item | Default |
+| --- | --- |
+| Configuration | `$XDG_CONFIG_HOME/worklease/server.yaml` |
+| Authority | `$XDG_STATE_HOME/worklease/server` |
+| Bootstrap invite | Beside the configuration |
+| Listener | `127.0.0.1:8443` |
+| Admission | `coordination:` resources |
+| Transport | Explicit insecure HTTP |
+
+Files are owner-private. Before exposing the server to another host, edit the
+configuration and enable TLS.
+
+`server init` stages the bootstrap secret before the authority transaction and
 writes a one-time admin invite. `bootstrap-reissue` replaces only that active
-invite. `serve` reads its listen address, TLS, admission bounds, rates, and home
-from the server configuration file; `--allow-insecure-http` is its only network
-override.
+invite. `serve` resolves its configuration from `--server-config`,
+`WORKLEASE_SERVER_CONFIG`, then the default path. The file owns its listen
+address, TLS, admission bounds, rates, home, and optional insecure-HTTP choice;
+the flag remains an explicit network override.
 
 Configuration changes are therefore: stop `serve`, edit the deployment-owned
 file, verify the hosted home and backup, then start exactly one `serve` process.
@@ -244,7 +259,7 @@ Restore recreates an authority; it never resumes one.
 
 | Phase | Behavior |
 | --- | --- |
-| `hosted restore` | Installs the private backup under lock, creates a new `restoreId`, ends claims as `restored`, revokes credentials/invites, and preserves started operations as unresolved. |
+| `server restore` | Installs the private backup under lock, creates a new `restoreId`, ends claims as `restored`, revokes credentials/invites, and preserves started operations as unresolved. |
 | Recovery mode | Rejects `BeginOperation` and unrelated acquires; permits renewal, checkpoint, release, completion, reconciliation, inspection, and same-host transfer. |
 | Resolution | Requires exact replay or reconciliation with outcome and cessation evidence. Started work remains `unknown-outcome` until resolved. |
 | `recovery reopen` | Reopens admission only after complete attested coverage. |
@@ -291,7 +306,7 @@ accounting or the recovery target inadequate.
 
 ## Retirement and unsupported boundaries
 
-`hosted retire` refuses active claims or unresolved started operations. Forced
+`server retire` refuses active claims or unresolved started operations. Forced
 retirement requires `--force --unresolved-export FILE`, writes a redacted export
 outside the hosted home, and records only safe active/unresolved metadata. It is
 not a recovery import and does not erase unresolved risk. Retirement is offline;

@@ -302,29 +302,38 @@ worklease recovery status --profile NAME
 worklease recovery reopen --profile NAME --expected-recovery-revision N --attestation-file FILE [--operation-id ID] [--request-not-after RFC3339]
 ```
 
-Hosted operations are offline-only and take the hosted lock before opening
+Server lifecycle operations are offline-only and take the hosted lock before opening
 SQLite:
 
 ```text
-worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE
-worklease hosted restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]
-worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE
-worklease hosted retire --home DIR [--force --unresolved-export FILE]
-worklease serve --server-config FILE [--allow-insecure-http]
+worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
+worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]
+worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE
+worklease server retire --home DIR [--force --unresolved-export FILE]
+worklease serve [--server-config FILE] [--allow-insecure-http]
 ```
 
-`serve` reads listen/TLS/admission/rate settings only from its deployment-owned
-server config. Configuration changes require stop-before-start; there is no hot
-reload. Restore creates a fresh incarnation, ends active claims as `restored`,
-revokes old credentials, retains started operations as unresolved, and holds
-ordinary admission in recovery until an admin attestation establishes complete
-installation inventory, enumerable pending coverage, retained and lost-tail
-outcomes, provider and executor cessation, the selected cutoff and loss
-interval through old-authority cessation. Unknown bounds must be explicit and
-never waive another coverage requirement; missing inventory, pending-set,
-outcome, or cessation coverage keeps recovery closed indefinitely. A completely missing completed operation can be
-an attested history gap only with independent no-residual-effect evidence;
-recovery import and a completed-history journal are unsupported.
+With no arguments, `server init` creates a local-only configuration, authority,
+and bootstrap invite in the user's XDG directories. `serve` resolves config in
+this order:
+
+1. `--server-config`
+2. `WORKLEASE_SERVER_CONFIG`
+3. `$XDG_CONFIG_HOME/worklease/server.yaml`
+
+Settings load only at startup; changes require stop-before-start. Restore:
+
+- creates a fresh incarnation;
+- ends active claims as `restored` and revokes old credentials;
+- retains started operations as unresolved; and
+- blocks ordinary admission until an admin attests to installation inventory,
+  pending requests, retained and lost-tail outcomes, executor/provider
+  cessation, and the cutoff-to-cessation loss interval.
+
+Unknown bounds must be explicit and waive nothing. Any coverage gap keeps
+recovery closed. A missing completed operation also needs independent
+no-residual-effect evidence. Recovery import and completed-history journals are
+unsupported.
 
 `replace-file`, provider execution, recovery import, completed-history
 journaling, cross-host transfer, repository enrollment, HA, Postgres,

@@ -112,16 +112,15 @@ if init_output=$(docker run --rm \
   --user "$(id -u):$(id -g)" \
   --mount "type=bind,source=$home,target=/var/lib/worklease" \
   --mount "type=bind,source=$secrets,target=/run/worklease" \
-  "$image" --json hosted init --home /var/lib/worklease \
-  --server-config /run/worklease/server.yaml \
+  "$image" --json server init --server-config /run/worklease/server.yaml \
   --bootstrap-invite-file /run/worklease/bootstrap.invite); then
   :
 else
-  echo "hosted init failed: $init_output" >&2
+  echo "server init failed: $init_output" >&2
   exit 1
 fi
 authority_id=$(printf '%s' "$init_output" | jq -er '.authorityId') || {
-  echo "hosted init result has no authorityId" >&2
+  echo "server init result has no authorityId" >&2
   exit 1
 }
 
