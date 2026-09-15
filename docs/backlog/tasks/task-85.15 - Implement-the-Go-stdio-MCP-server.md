@@ -72,7 +72,7 @@ Evidence and patterns (the amended contract is normative): hum `internal/mcp/ser
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Implemented commit c497cb0 in HWT workspace w8F. Added the Go stdio JSON-RPC/MCP server, eleven typed tools, private reference-backed lifecycle handles, cross-process mutation locking and pending replay, bounded renewal/hold enforcement, CLI wiring, and acceptance tests. Independent review found queueing, duplicate-ID, renewal recovery, hold ceiling, schema validation, verify locking, and input-validation defects; all valid findings were fixed. Validation passed: mise run ci-go; mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run hooks; go test -race ./internal/mcp.
+Implemented commit c497cb0 in an isolated worktree. Added the Go stdio JSON-RPC/MCP server, eleven typed tools, private reference-backed lifecycle handles, cross-process mutation locking and pending replay, bounded renewal/hold enforcement, CLI wiring, and acceptance tests. Independent review found queueing, duplicate-ID, renewal recovery, hold ceiling, schema validation, verify locking, and input-validation defects; all valid findings were fixed. Validation passed: mise run ci-go; mise run lint; mise run format-check; mise run test (339 Python tests); mise run typecheck; mise run hooks; go test -race ./internal/mcp.
 
 Merged implementation to main in c4b8573 and the post-merge test stabilization in 31b2e7c. Post-merge mise run ci-go passed on main.
 
