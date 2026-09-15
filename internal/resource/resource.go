@@ -182,9 +182,6 @@ func coordinationKey(provider, source, item string) (Key, error) {
 	if err != nil {
 		return Key{}, err
 	}
-	if source == "" {
-		return Key{}, invalid("source must not be blank")
-	}
 	// Keep the byte representation compatible with the reference adapters:
 	// sorted keys, no spaces, and ASCII JSON string escaping.
 	data := []byte(`{"item":` + quoteJSONASCII(item) + `,"provider":` + quoteJSONASCII(provider) + `,"source":` + quoteJSONASCII(source) + `}`)
