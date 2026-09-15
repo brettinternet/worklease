@@ -20,12 +20,10 @@ network unless that profile is selected by the normal precedence rules.
 
 ## Deployment boundary
 
-One hosted authority is one Worklease namespace, one SQLite database, and one
-`worklease serve` process. It has one serialized SQLite writer and one persistent
-volume. Do not put a hosted database behind a load balancer with two writable
-origins, copy a live database to a second writable location, or run two servers
-against the same authority ID. SQLite WAL requires a single-host filesystem;
-network filesystems are unsupported.
+One hosted authority has exactly one namespace, SQLite database, `worklease
+serve` process, serialized writer, and persistent volume. SQLite WAL requires a
+single-host filesystem. Never use a network filesystem, multiple writable
+origins, writable copies, or two servers with the same authority ID.
 
 The server takes an exclusive process-lifetime hosted OS lock on the authority
 home. `serve` and every offline hosted writer take this lock before opening
@@ -57,14 +55,21 @@ metadataRate: 60
 enrollmentRate: 20
 ```
 
-`listenAddress`, `tlsCertFile`, `tlsKeyFile`, and `prefixes` are implemented
-aliases for `listen`, `tlsCert`, `tlsKey`, and `admittedPrefixes`. The nested
-`rateLimits: {health: N, metadata: N, enrollment: N}` form is also accepted;
-do not specify an alias and its canonical field together. `home`, `listen`,
-admitted prefixes, positive `maxTTL` (1s–1h), positive `maxHold` (1s–24h), and
-positive health/metadata/enrollment rates are required. TLS is required unless
-`--allow-insecure-http` is explicitly supplied to `serve`; cleartext HTTP
-exposes credentials and claim data to the network.
+Configuration rules:
+
+| Canonical field | Accepted alias | Constraint |
+| --- | --- | --- |
+| `listen` | `listenAddress` | Required |
+| `tlsCert` | `tlsCertFile` | Required unless the serve flag enables insecure HTTP |
+| `tlsKey` | `tlsKeyFile` | Required unless the serve flag enables insecure HTTP |
+| `admittedPrefixes` | `prefixes` | Required |
+| `maxTTL` | — | 1s–1h |
+| `maxHold` | — | 1s–24h |
+| `healthRate`, `metadataRate`, `enrollmentRate` | nested `rateLimits` | Positive |
+
+`home` is also required. Do not combine a canonical field with its alias.
+Cleartext HTTP requires `serve --allow-insecure-http` and exposes credentials
+and claim data.
 
 An optional asynchronous SQLite backup (for example, WAL replication to object
 storage) is a disaster-recovery backup, not failover, a coordinator, or a
@@ -74,13 +79,18 @@ history interval.
 
 ## Profiles and enrollment
 
-Profiles and bindings are owner-private user files, separate from repository
-configuration. Profile selection for commands that support an authority is,
-in order: explicit `--profile NAME`, `WORKLEASE_PROFILE`, an explicit
-user-side checkout binding, the user default, then local. `--local` is an
-explicit local override and conflicts with `--profile` or `WORKLEASE_PROFILE`.
-A configured remote failure never falls back to local. Endpoint changes require
-removing and adding the profile; credential-bearing redirects are refused.
+Profiles and bindings are owner-private user files, never repository config.
+Selection order is:
+
+1. `--profile NAME`
+2. `WORKLEASE_PROFILE`
+3. user-side checkout binding
+4. user default
+5. local authority
+
+`--local` overrides bindings/defaults and conflicts with explicit profile
+selection. Remote failures never fall back to local. To change an endpoint,
+remove and re-add the profile. Credential-bearing redirects are refused.
 
 The exact profile commands are:
 
@@ -110,18 +120,22 @@ worklease invite issue --profile NAME --role read|write|admin \
 worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]
 ```
 
-`invite issue` requires exactly one invite output source. It also accepts the
-long-only replay flags `--operation-id ID` and `--request-not-after TIME`.
-The plaintext invite is generated before dispatch; the file form is durably
-saved first, while an fd caller owns durable capture from the descriptor. Only
-the invite's SHA-256 is sent to the authority. `enroll` accepts exactly one file or fd
-source in non-interactive use; an interactive terminal may prompt without echo.
-The installation credential is client-generated and saved privately. Neither
-bearer is accepted on argv, returned in output, or stored in the repository.
-Roles are exactly `read`, `write`, and `admin`: reads use `read`, claim and
-operation lifecycle uses `write`, and invite, installation, claim-revocation,
-GC, and recovery administration uses `admin`. A higher role includes lower
-permissions.
+Invite and enrollment rules:
+
+- `invite issue` requires one output source and supports the long-only replay
+  flags shown above.
+- File output is durable before dispatch; fd callers own durable capture.
+- Only the invite SHA-256 reaches the authority.
+- Non-interactive enrollment requires one file or fd; terminals may prompt
+  without echo.
+- Installation credentials are client-generated and private.
+- Neither bearer appears on argv, in output, or in the repository.
+
+| Role | Permission |
+| --- | --- |
+| `read` | Read state |
+| `write` | Read plus claim and operation lifecycle |
+| `admin` | Write plus invites, installations, revocation, GC, and recovery |
 
 The exact administrative commands and flags are:
 
@@ -136,32 +150,36 @@ worklease recovery reopen --profile NAME --expected-recovery-revision N \
   --attestation-file FILE [--operation-id ID] [--request-not-after RFC3339]
 ```
 
-Reasons are stable machine-readable outcomes, not prose to parse. Remote
-failures include `authentication-required`, `installation-revoked`,
-`authorization-denied`, `authority-mismatch`, `authority-restored`,
-`resource-not-enrolled`, `recovery-required`, `recovery-closed`,
-`already-claimed`, `stale-claim`, `stale-revision`, `operation-request-mismatch`,
-`unknown-outcome`, `operation-ambiguous`, `replay-expired`,
-`operation-kind-unsupported`, `invite-invalid`, `invite-expired`, and
-`invite-used`, as well as the common validation, rate-limit, storage, and clock
-reasons. Exit families remain `2` ownership/contention, `3` ledger/replay or
-ambiguous outcome, `64` invalid input/configuration, and `75` authority/storage
-failure. Details are bounded and redacted.
+Remote reasons are stable values, not prose to parse:
+
+```text
+authentication-required  installation-revoked  authorization-denied
+authority-mismatch       authority-restored     resource-not-enrolled
+recovery-required        recovery-closed        already-claimed
+stale-claim              stale-revision         operation-request-mismatch
+unknown-outcome          operation-ambiguous    replay-expired
+operation-kind-unsupported  invite-invalid      invite-expired  invite-used
+```
+
+Common validation, rate-limit, storage, and clock reasons also apply. Exit
+families remain `2` ownership/contention, `3` ledger/replay/ambiguity, `64`
+invalid input/configuration, and `75` authority/storage. Details are bounded and
+redacted.
 
 ## Remote CLI surface
 
-Existing claim lifecycle, inspection, watch, and guarded-operation commands use
-the selected profile: `acquire`, `status`, `list`, `heartbeat`, `checkpoint`,
-`release`, `transfer`, `verify`, `exec`, `op inspect`, `op reconcile`,
-`events`, `history`, `watch`, and `gc`. Use the existing flags documented in the
-[CLI reference](cli-reference.md), plus global `--profile NAME` or `--local`.
-Remote `--wait` remains a client loop and is capped at 60 seconds. Remote
-`acquire` rejects explicit `--poll-interval`; the server owns polling. Remote
-GC is apply-only: use `gc --apply` with `--cutoff TIME` or
-`--retention-days N` (default 30 days); a remote GC preview is unsupported. Every remote
-mutation, including `--no-handle`, records a durable exact pending request
-before dispatch. A failed request after dispatch is uncertain: inspect or
-replay the same request, never issue a new effect.
+Lifecycle, inspection, guarded-operation, event, watch, and GC commands use the
+selected profile. See the [CLI reference](cli-reference.md) for shared flags.
+Remote differences:
+
+- `--wait` is a client loop capped at 60 seconds.
+- `acquire --poll-interval` is rejected; the server owns polling.
+- GC is apply-only: use `gc --apply` with `--cutoff TIME` or
+  `--retention-days N` (default 30).
+- Every mutation, including `--no-handle`, records its exact pending request
+  before dispatch.
+- After an uncertain dispatch, inspect or replay the same request; never issue a
+  new effect.
 
 Remote admission accepts only configured portable prefixes. `path:`,
 `backlog-md:`, and `markdown:` are host-local and always rejected remotely.
@@ -188,14 +206,10 @@ worklease mcp
 worklease setup mcp --client claude-code|cursor
 ```
 
-MCP uses the existing lease arguments: `resources`, selected provider/source/item
-or `path`, `ttl`, `wait` (0–60 seconds), `workKey`, `agentId`, `sessionId`,
-`coordinationOnly`, `autoHeartbeat`, `maxHold`, an opaque `lease` reference,
-`data`, `reason`, `cursor`, `limit`, `until`, and `timeout`. It does not add
-profile, enrollment, administration, transfer, exec, replacement,
-reconciliation, history, recovery, or remote-server tools. MCP never redeems
-an invite. `key` and instructions are client-local, and remote host-local keys
-are rejected by remote admission.
+MCP keeps its existing lease arguments and adds no profile, enrollment,
+administration, transfer, exec, replacement, reconciliation, history, recovery,
+or server tools. It never redeems invites. `key` and instructions remain
+client-local; remote admission rejects host-local keys.
 
 ## Hosted operator commands
 
@@ -214,9 +228,9 @@ worklease serve --server-config FILE [--allow-insecure-http]
 
 `hosted init` stages the bootstrap secret before the authority transaction and
 writes a one-time admin invite. `bootstrap-reissue` replaces only that active
-invite. `serve` uses only the server configuration file for its listen address,
-TLS, admission bounds, rates, and home; `--allow-insecure-http` is its only
-network override.
+invite. `serve` reads its listen address, TLS, admission bounds, rates, and home
+from the server configuration file; `--allow-insecure-http` is its only network
+override.
 
 Configuration changes are therefore: stop `serve`, edit the deployment-owned
 file, verify the hosted home and backup, then start exactly one `serve` process.
@@ -226,51 +240,39 @@ secrets on the same trusted single-host filesystem.
 
 ## Restore, recovery, and reopening
 
-Restore is authority recreation, never resumption. `hosted restore` installs an
-owner-private backup under the hosted lock, creates a fresh random `restoreId`,
-ends active claims with reason `restored`, revokes old installation credentials
-and invites, leaves started operations unresolved, and enters namespace recovery
-mode. Old handles and cursors fail closed (`stale-claim` or
-`authority-restored`); an absent old credential is `authentication-required` and
-a retained revoked credential is `installation-revoked`.
+Restore recreates an authority; it never resumes one.
 
-The operator records the selected durable backup cutoff. If it is unknown, pass
-`--cutoff-unknown`; the lost-history bound is then unknown. Always record the
-loss interval start and end through cessation of the old authority, not merely
-observed backup lag. A delayed provider request, escaped descendant, or client
-whose response was lost can outlive a terminal receipt, an expired claim, an
-empty pending directory, or the old authority process. Recovery must account
-for it.
+| Phase | Behavior |
+| --- | --- |
+| `hosted restore` | Installs the private backup under lock, creates a new `restoreId`, ends claims as `restored`, revokes credentials/invites, and preserves started operations as unresolved. |
+| Recovery mode | Rejects `BeginOperation` and unrelated acquires; permits renewal, checkpoint, release, completion, reconciliation, inspection, and same-host transfer. |
+| Resolution | Requires exact replay or reconciliation with outcome and cessation evidence. Started work remains `unknown-outcome` until resolved. |
+| `recovery reopen` | Reopens admission only after complete attested coverage. |
 
-Recovery mode refuses new `BeginOperation` and ordinary unrelated acquires.
-Renewal, checkpoint, release, completion, reconciliation, inspection, and
-same-host transfer remain available. A recovery acquire must cover the full
-transitive resource closure of an unresolved predecessor and still fit the
-1–32-resource limit. It does not grant permission to redispatch an effect.
-Resolve retained operations by exact replay or reconciliation with explicit
-outcome and cessation evidence; a retained started operation remains
-`unknown-outcome` until resolved.
+Old handles and cursors fail closed as `stale-claim` or `authority-restored`.
+Missing old credentials return `authentication-required`; retained revoked ones
+return `installation-revoked`.
 
-Before reopening, the admin attestation and private evidence references must
-cover all of the following:
+Record the durable backup cutoff and the loss interval through old-authority
+cessation—not merely observed backup lag. Use `--cutoff-unknown` when needed.
+Delayed requests, escaped descendants, and lost responses can outlive receipts,
+claims, pending directories, and the old process.
 
-1. An independent inventory of every active, retired, and ephemeral/CI
-   installation that may have acted since the selected backup.
-2. An enumerable pending-request set for each installation, or equivalent
-   independently verified evidence proving exhaustive pending coverage.
-3. Both retained outcomes and the lost-tail outcomes: every retained started
-   operation is reconciled, and work that may exist only outside the restored
-   ledger is accounted for.
-4. Provider cessation and executor/process cessation for every known in-flight
-   operation, including operations with terminal receipts and cases where a
-   pending set is empty. Completion is not cessation and an empty pending set
-   is not provider history.
-5. The selected durable cutoff and the interval from that cutoff through old
-   authority cessation. If the selected cutoff or interval bounds are unknown,
-   say so explicitly; an unknown bound never waives any other required coverage.
-6. Namespace-wide cessation coverage, including delayed provider effects after
-   the old authority stops. Missing inventory, pending-set, outcome, or cessation
-   coverage keeps recovery closed indefinitely.
+A recovery acquire must cover an unresolved predecessor's full transitive
+resource closure within the 1–32-resource limit. It never authorizes redispatch.
+
+Before reopening, private evidence must cover:
+
+| Evidence | Required coverage |
+| --- | --- |
+| Installation inventory | Every active, retired, ephemeral, and CI installation that may have acted since the backup. |
+| Pending requests | An enumerable set per installation, or independently verified exhaustive equivalent. |
+| Outcomes | Reconciliation of retained started operations and accounting for lost-tail work absent from the restored ledger. |
+| Cessation | Provider and executor/process cessation for every in-flight operation, including terminal receipts and empty pending sets. Completion is not cessation; an empty set is not provider history. |
+| Loss window | The durable cutoff through old-authority cessation. Mark unknown bounds explicitly; they waive no other evidence. |
+| Namespace | Delayed provider effects after old-authority shutdown. |
+
+Any inventory, pending-set, outcome, or cessation gap keeps recovery closed.
 
 `recovery reopen` reads the owner-private bounded JSON attestation from
 `--attestation-file`. The attestation carries `inventoryComplete`,
@@ -280,13 +282,12 @@ validates structure and retained rows but cannot verify external truth. Never
 put credentials, argv, provider payloads, checkpoints, receipts, or evidence
 dumps in public events, logs, MCP results, or the attestation itself.
 
-A fully missing completed operation may remain an attested history gap only when
-independent evidence establishes that no residual provider or executor effect
-exists. Never redispatch a missing row. Recovery import and a completed-history
-journal are unsupported: they remain deferred until a recovery drill shows that
-manual accounting lacks required evidence or a recovery target cannot be
-established. An export, read replica, or backup is not permission to remove
-unknown state or to reopen without the coverage above.
+A missing completed operation may remain an attested history gap only with
+independent evidence of no residual provider or executor effect. Never
+redispatch a missing row. Exports, replicas, and backups do not permit removing
+unknown state or reopening without full coverage. Recovery import and a
+completed-history journal remain deferred until a drill proves manual
+accounting or the recovery target inadequate.
 
 ## Retirement and unsupported boundaries
 
@@ -315,39 +316,31 @@ These are not hidden fallbacks. Unsupported operations return a structured
 capability or validation reason, and configured remote failures never silently
 switch to local coordination.
 
-Follow-up triggers remain explicit:
+Future capabilities need demonstrated demand or evidence:
 
-- add repository enrollment and aliases only after deployments need host-local
-  policy keys across checkout roots and the canonical locator vectors pass on
-  every supported platform;
-- add cross-host transfer only when ownership handoff between installations is a
-  demonstrated workflow, with a protocol that cannot copy bearer credentials;
-- add recovery import when a restore drill shows that manual accounting cannot
-  represent already-identified lost-tail operations;
-- add a completed-history client journal when a drill cannot establish required
-  coverage or meet its selected recovery target; the journal still cannot prove
-  provider or executor cessation;
-- add admission backpressure only after measured disk, WAL, pinned-history, or
-  request-size pressure shows lifecycle capacity needs protection;
-- add browser login or a control plane only after deployment demand justifies a
-  separate authenticated management surface;
-- add multi-namespace serving only after demand justifies per-namespace routing,
-  locks, credentials, and load isolation;
-- add Postgres or multiple service replicas only after measured throughput or
-  managed-durability requirements justify a second backend and its conformance
-  and failover evidence; add fencing counters only with an enforcing consumer.
+| Capability | Trigger |
+| --- | --- |
+| Repository enrollment | Cross-root host-local keys are needed and locator vectors pass on every platform. |
+| Cross-host transfer | Installation handoff is demonstrated without copying bearer credentials. |
+| Recovery import | A drill proves manual accounting cannot represent known lost-tail work. |
+| Completed-history journal | A drill cannot establish coverage or meet its target; a journal still cannot prove cessation. |
+| Admission backpressure | Measured disk, WAL, pinned-history, or request-size pressure threatens lifecycle capacity. |
+| Browser/control plane | Deployment demand justifies a separate authenticated surface. |
+| Multi-namespace serving | Demand justifies isolated routing, locks, credentials, and load. |
+| Postgres or replicas | Measured throughput/durability needs justify backend conformance and failover evidence. Fencing counters also need an enforcing consumer. |
 
 ## Evidence and release artifacts
 
 The [TASK-107.11 acceptance record](backlog/tasks/task-107.11%20-%20Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md)
-records the retained reports at
-`dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json` and
-`dist/remote-acceptance/vm-20260915T041350Z/report.json`. The unchanged harness
-passed all five groups locally and in the repository-managed Lima VM; the VM run
-put the authority and one client across SSH with target-architecture binaries.
-This is measured acceptance evidence, not proof of HA, fencing, provider
-cessation, cross-host transfer, or recovery reliability beyond the scenarios
-and limits recorded in those reports.
+links two retained reports:
+
+- `dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json`
+- `dist/remote-acceptance/vm-20260915T041350Z/report.json`
+
+The same harness passed all five groups locally and in the repository-managed
+Lima VM. The VM placed the authority and one client across SSH using native
+binaries. This evidence proves only those recorded scenarios—not HA, fencing,
+provider cessation, cross-host transfer, or broader recovery reliability.
 
 Release artifact evidence is Actions run
 [34915583460](https://github.com/brettinternet/worklease/actions/runs/34915583460),
