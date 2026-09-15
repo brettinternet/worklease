@@ -27,6 +27,7 @@ func (losingExecAuthority) CompleteOperation(context.Context, lease.Credentials,
 
 type replayingRenewAuthority struct {
 	renewals int
+	marker   string
 }
 
 func (a *replayingRenewAuthority) BeginOperation(context.Context, lease.Credentials, lease.OperationIntent) (lease.Started, error) {
@@ -36,6 +37,9 @@ func (a *replayingRenewAuthority) RenewOperation(context.Context, lease.Credenti
 	a.renewals++
 	if a.renewals == 1 {
 		return lease.Receipt{}, reason.New(reason.ReasonUnknownOutcome, "lost renewal response")
+	}
+	if err := os.WriteFile(a.marker, nil, 0o600); err != nil {
+		return lease.Receipt{}, err
 	}
 	return lease.Receipt{Revision: 3, Result: map[string]any{"expiresAt": time.Now().Add(time.Second).Format(time.RFC3339Nano)}}, nil
 }
@@ -50,10 +54,11 @@ func TestReplayedReceiptExitAcceptsJSONNumber(t *testing.T) {
 }
 
 func TestTransientRenewalFailureRetriesExactRequestBeforeExpiry(t *testing.T) {
-	authority := &replayingRenewAuthority{}
+	marker := filepath.Join(t.TempDir(), "renewed")
+	authority := &replayingRenewAuthority{marker: marker}
 	result, err := Exec(context.Background(), authority, lease.Credentials{AuthorityID: "dddddddddddddddddddddddddddddddd", ClaimID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, ExecRequest{
 		OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Argv:        []string{"sleep", "0.18"}, TTL: 200 * time.Millisecond, MaxDuration: time.Second,
+		Argv:        []string{"sh", "-c", `while [ ! -f "$1" ]; do sleep 0.01; done`, "sh", marker}, TTL: time.Second, MaxDuration: 3 * time.Second,
 		RequestNotAfter: time.Now().Add(time.Hour),
 	})
 	if err != nil || result.ExitCode != 0 {
@@ -67,6 +72,7 @@ func TestTransientRenewalFailureRetriesExactRequestBeforeExpiry(t *testing.T) {
 type finishingDuringRenewAuthority struct {
 	renewals           int
 	completionRevision int64
+	marker             string
 }
 
 func (a *finishingDuringRenewAuthority) BeginOperation(context.Context, lease.Credentials, lease.OperationIntent) (lease.Started, error) {
@@ -75,7 +81,10 @@ func (a *finishingDuringRenewAuthority) BeginOperation(context.Context, lease.Cr
 func (a *finishingDuringRenewAuthority) RenewOperation(context.Context, lease.Credentials, string, time.Duration) (lease.Receipt, error) {
 	a.renewals++
 	if a.renewals == 1 {
-		time.Sleep(80 * time.Millisecond)
+		if err := os.WriteFile(a.marker, nil, 0o600); err != nil {
+			return lease.Receipt{}, err
+		}
+		time.Sleep(250 * time.Millisecond)
 		return lease.Receipt{}, reason.New(reason.ReasonUnknownOutcome, "lost renewal response")
 	}
 	return lease.Receipt{Revision: 3, Result: map[string]any{"expiresAt": time.Now().Add(time.Second).Format(time.RFC3339Nano)}}, nil
@@ -86,10 +95,11 @@ func (a *finishingDuringRenewAuthority) CompleteOperation(_ context.Context, cre
 }
 
 func TestFinishedChildReplaysInflightRenewalBeforeCompletion(t *testing.T) {
-	authority := &finishingDuringRenewAuthority{}
+	marker := filepath.Join(t.TempDir(), "renewing")
+	authority := &finishingDuringRenewAuthority{marker: marker}
 	_, err := Exec(context.Background(), authority, lease.Credentials{ClaimID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, ExecRequest{
-		OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Argv: []string{"sleep", "0.08"},
-		TTL: 100 * time.Millisecond, MaxDuration: time.Second, RequestNotAfter: time.Now().Add(time.Hour),
+		OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Argv: []string{"sh", "-c", `while [ ! -f "$1" ]; do sleep 0.01; done`, "sh", marker},
+		TTL: time.Second, MaxDuration: 3 * time.Second, RequestNotAfter: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
