@@ -4,7 +4,7 @@ title: Enroll a remote client from one self-contained invite
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-15 21:32'
+updated_date: '2026-09-15 21:49'
 labels:
   - remote-authority
   - ergonomics
@@ -34,4 +34,6 @@ Make the invitation the single trust and enrollment handoff: the artifact carrie
 - [ ] #6 Invite and installation credentials never appear in argv, normal output, logs, or repository files.
 - [ ] #7 Existing explicit `profile add` and bare-secret `--invite-file` enrollment remain supported or receive a documented migration path.
 - [ ] #8 Automated tests cover successful enrollment, default-profile selection, safe retry after uncertain outcomes, tampering, wrong authority, certificate mismatch, expiry, and replay.
+- [ ] #9 `invite issue` defaults `--role` to `write` and the label to the profile name so the common case needs no extra flags.
+- [ ] #10 The artifact is a compact single-line token that works both as an owner-private file and pasted into the hidden enroll prompt, so a recipient can join from a chat-transferred string without file transfer.
 <!-- AC:END -->
