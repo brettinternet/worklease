@@ -10,6 +10,18 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 )
 
+func TestClientAllowsExplicitInsecureLANEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	profile := config.Profile{Name: "lan", Endpoint: "http://192.168.1.20:8080", AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(dir, "cred")}}
+	if _, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(dir, "pending")), nil); err != nil {
+		t.Fatalf("explicit insecure LAN endpoint rejected: %v", err)
+	}
+	profile.AllowInsecureHTTP = false
+	if _, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(dir, "pending-secure")), nil); err == nil {
+		t.Fatal("insecure LAN endpoint accepted without explicit opt-in")
+	}
+}
+
 func TestEnrollmentRequiresPinnedAuthority(t *testing.T) {
 	var calls int
 	p := config.Profile{Name: "x", Endpoint: "https://authority.example", Credential: config.CredentialDescriptor{Path: filepath.Join(t.TempDir(), "cred")}}

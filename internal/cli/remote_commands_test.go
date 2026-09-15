@@ -57,7 +57,7 @@ func remoteCLIFixture(t *testing.T) (string, string, string) {
 	configRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	paths := config.UserProfilePaths(os.Getenv)
-	profile := config.Profile{Name: "team", Endpoint: httpServer.URL, AuthorityID: bootstrap.AuthorityID, RestoreID: bootstrap.RestoreID, DevHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(configRoot, "worklease", "credentials", "team")}}
+	profile := config.Profile{Name: "team", Endpoint: httpServer.URL, AuthorityID: bootstrap.AuthorityID, RestoreID: bootstrap.RestoreID, AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(configRoot, "worklease", "credentials", "team")}}
 	client, err := authority.NewHTTPClient(profile, authority.NewFilePendingStore(filepath.Join(configRoot, "pending")), nil)
 	if err != nil {
 		t.Fatal(err)

@@ -3,7 +3,7 @@ id: doc-4
 title: Remote Authority Protocol V1
 type: specification
 created_date: '2026-09-14 01:19'
-updated_date: '2026-09-14 01:52'
+updated_date: '2026-09-15 02:17'
 tags:
   - remote-authority
   - protocol
@@ -46,8 +46,9 @@ revisions remain explicit typed fields.
 ## 2. Transport, version, and envelopes
 
 The protocol identifier is the exact ASCII string `worklease-http/1`. All
-requests use HTTP/1.1 or HTTP/2 over HTTPS, except `--dev-http`, which permits
-loopback cleartext for development only. Credential-bearing redirects are never
+requests use HTTP/1.1 or HTTP/2 over HTTPS, except when
+`--allow-insecure-http` explicitly permits cleartext HTTP. Credential-bearing
+redirects are never
 followed. There is no version negotiation by URL.
 
 Every request sends:
@@ -454,7 +455,7 @@ selected.
 ### 8.1 Server and offline hosted commands
 
 ```text
-worklease serve --server-config FILE [--dev-http]
+worklease serve --server-config FILE [--allow-insecure-http]
 worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE
 worklease hosted restore --home DIR --from FILE --selected-cutoff RFC3339 \
   --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
@@ -465,16 +466,17 @@ worklease hosted retire --home DIR [--force --unresolved-export FILE]
 
 `serve` takes listen address, TLS/proxy policy, admitted prefixes, TTL/hold
 bounds, rate limits, and database home only from `--server-config`; no individual
-network/admission flag overrides it. `--dev-http` requires a loopback listen
-address. Hosted commands are offline-only, take the hosted lock, and never use a
-remote profile. `retire --force` requires the redacted unresolved export path.
+network/admission flag overrides it except the explicit
+`--allow-insecure-http` transport opt-in, which permits cleartext HTTP on the
+configured listen address. Hosted commands are offline-only, take the hosted
+lock, and never use a remote profile. `retire --force` requires the redacted unresolved export path.
 There is no `serve --daemon`, hot reload, retirement HTTP call, or schema/backend
 selection flag in V1.
 
 ### 8.2 Profiles, enrollment, and administration
 
 ```text
-worklease profile add NAME --endpoint URL --authority-id ID
+worklease profile add NAME --endpoint URL --authority-id ID [--allow-insecure-http]
 worklease profile list
 worklease profile show NAME
 worklease profile remove NAME

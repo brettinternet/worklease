@@ -618,8 +618,8 @@ func validateProfileForClient(p config.Profile) error { // config validation is 
 		return reason.New(reason.ReasonConfigInvalid, "profile endpoint is invalid")
 	}
 	if u.Scheme != "https" {
-		if !p.DevHTTP || u.Scheme != "http" || !(u.Hostname() == "localhost" || strings.HasPrefix(u.Hostname(), "127.") || u.Hostname() == "::1") {
-			return reason.New(reason.ReasonConfigInvalid, "HTTPS is required for profile endpoint")
+		if !p.AllowInsecureHTTP || u.Scheme != "http" {
+			return reason.New(reason.ReasonConfigInvalid, "HTTPS is required for profile endpoint unless insecure HTTP is explicitly allowed")
 		}
 	}
 	if p.AuthorityID != "" && !validID(p.AuthorityID) {
@@ -673,7 +673,7 @@ func (c *HTTPClient) activateEnrollment(id string, response Response, profilePat
 	if !validID(enrolled.InstallationID) || (enrolled.Role != "read" && enrolled.Role != "write" && enrolled.Role != "admin") || enrolled.EnrolledAt.IsZero() {
 		return config.Profile{}, lease.EnrollResult{}, reason.Invalid("remote enrollment result is invalid")
 	}
-	out := config.Profile{Name: c.profile.Name, Endpoint: c.profile.Endpoint, AuthorityID: c.profile.AuthorityID, RestoreID: c.profile.RestoreID, DevHTTP: c.profile.DevHTTP, Credential: c.profile.Credential}
+	out := config.Profile{Name: c.profile.Name, Endpoint: c.profile.Endpoint, AuthorityID: c.profile.AuthorityID, RestoreID: c.profile.RestoreID, AllowInsecureHTTP: c.profile.AllowInsecureHTTP, Credential: c.profile.Credential}
 	if profilePath.Profiles == "" {
 		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonStorageFailure, "profile activation path is required")
 	}

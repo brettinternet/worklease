@@ -30,17 +30,17 @@ func testConfig() Config {
 	return Config{Home: "/authority", Listen: "127.0.0.1:8443", Prefixes: []string{"coordination:"}, MaxTTL: "1m", MaxHold: "1h", HealthRate: 10, MetadataRate: 10, EnrollmentRate: 10}
 }
 
-func TestValidateConfigRequiresTLSUnlessDevelopment(t *testing.T) {
+func TestValidateConfigRequiresTLSUnlessInsecureHTTPIsAllowed(t *testing.T) {
 	cfg := testConfig()
 	if err := validateConfig(cfg, false); err == nil {
 		t.Fatal("production configuration without TLS was accepted")
 	}
 	if err := validateConfig(cfg, true); err != nil {
-		t.Fatalf("development configuration rejected: %v", err)
+		t.Fatalf("explicit insecure HTTP configuration rejected: %v", err)
 	}
 	cfg.Listen = "0.0.0.0:8443"
 	if err := validateConfig(cfg, true); err != nil {
-		t.Fatalf("loopback-independent config validation failed: %v", err)
+		t.Fatalf("LAN insecure HTTP configuration rejected: %v", err)
 	}
 	cfg.HealthRate = 0
 	if err := validateConfig(cfg, true); err == nil {

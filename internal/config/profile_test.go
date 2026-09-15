@@ -50,9 +50,9 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 	}
 }
 
-func TestProfileRejectsInsecureEndpointAndUnknownFields(t *testing.T) {
+func TestProfileAllowsExplicitInsecureHTTPEndpointAndRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
-	p := Profile{Name: "dev", Endpoint: "http://127.0.0.1:8080", DevHTTP: true, Credential: CredentialDescriptor{Path: filepath.Join(dir, "c")}}
+	p := Profile{Name: "lan", Endpoint: "http://192.168.1.20:8080", AllowInsecureHTTP: true, Credential: CredentialDescriptor{Path: filepath.Join(dir, "c")}}
 	if err := SaveProfiles(ProfilePaths{Profiles: filepath.Join(dir, "p")}, []Profile{p}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +62,13 @@ func TestProfileRejectsInsecureEndpointAndUnknownFields(t *testing.T) {
 	if _, _, err := LoadProfiles(ProfilePaths{Profiles: filepath.Join(dir, "bad")}); err == nil {
 		t.Fatal("unknown nested profile field accepted")
 	}
-	p.DevHTTP = false
-	p.Endpoint = "http://example.com"
+	if err := os.WriteFile(filepath.Join(dir, "legacy"), []byte("profiles:\n - name: x\n   endpoint: http://192.168.1.20:8080\n   devHttp: true\n   credential:\n     path: /tmp/c\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadProfiles(ProfilePaths{Profiles: filepath.Join(dir, "legacy")}); err == nil {
+		t.Fatal("removed devHttp profile field accepted")
+	}
+	p.AllowInsecureHTTP = false
 	if err := validateProfile(p); err == nil {
 		t.Fatal("insecure endpoint accepted")
 	}

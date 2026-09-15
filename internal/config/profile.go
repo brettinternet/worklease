@@ -7,7 +7,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,12 +21,12 @@ type CredentialDescriptor struct {
 }
 
 type Profile struct {
-	Name        string               `yaml:"name" json:"name"`
-	Endpoint    string               `yaml:"endpoint" json:"endpoint"`
-	AuthorityID string               `yaml:"authorityId" json:"authorityId"`
-	RestoreID   string               `yaml:"restoreId" json:"restoreId"`
-	DevHTTP     bool                 `yaml:"devHttp,omitempty" json:"devHttp,omitempty"`
-	Credential  CredentialDescriptor `yaml:"credential" json:"credential"`
+	Name              string               `yaml:"name" json:"name"`
+	Endpoint          string               `yaml:"endpoint" json:"endpoint"`
+	AuthorityID       string               `yaml:"authorityId" json:"authorityId"`
+	RestoreID         string               `yaml:"restoreId" json:"restoreId"`
+	AllowInsecureHTTP bool                 `yaml:"allowInsecureHTTP,omitempty" json:"allowInsecureHTTP,omitempty"`
+	Credential        CredentialDescriptor `yaml:"credential" json:"credential"`
 }
 
 type ProfileSelection struct {
@@ -180,8 +179,8 @@ func validateProfile(p Profile) error {
 		return fmt.Errorf("profile endpoint is invalid")
 	}
 	if u.Scheme != "https" {
-		if !p.DevHTTP || u.Scheme != "http" || !isLoopback(u.Hostname()) {
-			return fmt.Errorf("HTTPS is required for profile endpoint")
+		if !p.AllowInsecureHTTP || u.Scheme != "http" {
+			return fmt.Errorf("HTTPS is required for profile endpoint unless insecure HTTP is explicitly allowed")
 		}
 	}
 	if p.AuthorityID != "" && !hexID(p.AuthorityID) {
@@ -205,10 +204,6 @@ func hexID(s string) bool {
 		}
 	}
 	return true
-}
-func isLoopback(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback() || strings.EqualFold(host, "localhost")
 }
 func writePrivate(path string, data []byte) error {
 	dir := filepath.Dir(path)

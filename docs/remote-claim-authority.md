@@ -813,8 +813,9 @@ begins bounded process-group termination no later than conservative last-known
 expiry, or immediately after confirmed ownership, authentication, or incarnation
 loss. This does not fence an asynchronous provider effect or escaped descendant.
 Local supervision behavior is unchanged. A configured remote failure never
-falls back to local state. Require HTTPS outside an explicit development mode,
-finite timeouts, cancellable waits, and server response validation.
+falls back to local state. Require HTTPS unless the user explicitly opts into
+cleartext HTTP with `--allow-insecure-http`; finite timeouts, cancellable waits,
+and server response validation still apply.
 
 ## Authentication, roles, and revocation
 

@@ -18,11 +18,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const insecureHTTPWarning = "warning: insecure HTTP exposes Worklease credentials and claim data to the network"
+
 func profileCommands(s *boundary) []*urfave.Command {
 	leaf := func(name, usage string, flags []urfave.Flag, action func(context.Context, *urfave.Command) error) *urfave.Command {
 		return &urfave.Command{Name: name, Usage: usage, UsageText: "worklease profile " + name, Description: usage + ".\n\nExamples:\n  worklease profile " + name, Flags: flags, Action: action}
 	}
-	add := leaf("add", "add a trusted remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.BoolFlag{Name: "dev-http", Usage: "allow loopback HTTP for development"}}, profileAddAction(s))
+	add := leaf("add", "add a trusted remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP to the remote authority"}}, profileAddAction(s))
 	list := leaf("list", "list trusted remote authority profiles", nil, profileListAction(s))
 	list.Aliases = []string{"ls"}
 	show := leaf("show", "show one trusted remote authority profile", nil, profileShowAction(s))
@@ -57,7 +59,12 @@ func profileAddAction(s *boundary) func(context.Context, *urfave.Command) error 
 		if _, exists := profiles[name]; exists {
 			return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "profile already exists"))
 		}
-		profile := config.Profile{Name: name, Endpoint: strings.TrimRight(strings.TrimSpace(cmd.String("endpoint")), "/"), AuthorityID: strings.TrimSpace(cmd.String("authority-id")), DevHTTP: cmd.Bool("dev-http"), Credential: config.CredentialDescriptor{Path: filepath.Join(filepath.Dir(paths.Profiles), "credentials", name)}}
+		profile := config.Profile{Name: name, Endpoint: strings.TrimRight(strings.TrimSpace(cmd.String("endpoint")), "/"), AuthorityID: strings.TrimSpace(cmd.String("authority-id")), AllowInsecureHTTP: cmd.Bool("allow-insecure-http"), Credential: config.CredentialDescriptor{Path: filepath.Join(filepath.Dir(paths.Profiles), "credentials", name)}}
+		if profile.AllowInsecureHTTP && !s.jsonRequested(cmd) {
+			if _, err := fmt.Fprintln(s.errWriter, insecureHTTPWarning); err != nil {
+				return err
+			}
+		}
 		client, err := authority.NewHTTPClient(profile, authority.NewFilePendingStore(filepath.Join(filepath.Dir(paths.Profiles), "pending", name)), nil)
 		if err != nil {
 			return s.handle(cmd, err)
