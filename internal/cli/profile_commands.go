@@ -24,6 +24,7 @@ func profileCommands(s *boundary) []*urfave.Command {
 	}
 	add := leaf("add", "add a trusted remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.BoolFlag{Name: "dev-http", Usage: "allow loopback HTTP for development"}}, profileAddAction(s))
 	list := leaf("list", "list trusted remote authority profiles", nil, profileListAction(s))
+	list.Aliases = []string{"ls"}
 	show := leaf("show", "show one trusted remote authority profile", nil, profileShowAction(s))
 	remove := leaf("remove", "remove one trusted remote authority profile", nil, profileRemoveAction(s))
 	def := leaf("default", "select the default remote authority profile", nil, profileDefaultAction(s))

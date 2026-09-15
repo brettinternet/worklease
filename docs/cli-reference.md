@@ -49,6 +49,10 @@ No other option has a short alias. In particular, `--source`, `--work-key`, the
 provider triple, handles and leases, explicit credentials, replay and polling
 controls, coordination-only mode, and guarded-operation tuning are long-only.
 
+Every command named `list` also accepts the conventional `ls` alias: `worklease
+ls`, `policy ls`, `profile ls`, and `installation ls`. The canonical names remain
+`list` in help, documentation, and structured operation names.
+
 ## Shell completion
 
 `worklease completion (bash|zsh|fish)` prints a deterministic, ANSI-free shell

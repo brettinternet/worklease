@@ -33,6 +33,7 @@ func remoteAdminCommands(s *boundary) []*urfave.Command {
 	invite.Description = "Manage remote installation invitations.\n\nExamples:\n  worklease invite issue --profile team --role write --invite-file invite.secret"
 
 	installationList := command("list", "list remote installations", []urfave.Flag{&urfave.BoolFlag{Name: "include-revoked", Usage: "include revoked installations"}}, installationListAction(s))
+	installationList.Aliases = []string{"ls"}
 	installationRevoke := command("revoke", "revoke a remote installation", append(mutating(), &urfave.StringFlag{Name: "installation-id", Usage: "installation `ID` to revoke"}, &urfave.StringFlag{Name: "reason", Usage: "public revocation `REASON`"}), installationRevokeAction(s))
 	installation := command("installation", "manage remote installations", nil, nil)
 	installation.Commands = []*urfave.Command{installationList, installationRevoke}

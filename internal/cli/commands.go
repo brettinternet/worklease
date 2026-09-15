@@ -145,6 +145,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	textOutput(statusCommand, "The default view shortens identifiers and shows relative expiry; --full shows complete non-secret metadata with RFC3339 timestamps.")
 
 	listCommand := jsonless("list", "list current claims", "worklease list\n  worklease list --resource KEY --full", resourceFlag("only claims covering exact resource `KEY`"), full())
+	listCommand.Aliases = []string{"ls"}
 	listCommand.Action = listActionReal(s)
 	usageText(listCommand, "worklease list [--resource KEY] [--full]")
 	detail(listCommand, "List every current claim in the local authority, optionally filtered to one exact resource.")
@@ -249,6 +250,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		}
 	}
 	policyList := jsonless("list", "list built-in policies", "worklease policy list\n  worklease policy list --full", full("add local-replace and provider-fencing columns"))
+	policyList.Aliases = []string{"ls"}
 	policyList.Action = policyListAction(s)
 	policyDescribe := jsonless("describe", "describe a policy", "worklease policy describe path\n  worklease policy describe backlog-md --full", full("show contract versions and fencing guarantees"))
 	policyDescribe.Action = policyDescribeAction(s)

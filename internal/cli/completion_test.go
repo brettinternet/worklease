@@ -99,8 +99,11 @@ func TestCompletionSuggestionsCoverTreeAliasesAndOptionsForEveryShell(t *testing
 		want []string
 		not  []string
 	}{
-		{name: "root", args: []string{"worklease", "--generate-shell-completion"}, want: []string{"completion:generate shell completion", "op:inspect or reconcile operations", "help:show help", "h:show help"}, not: []string{"--generate-shell-completion"}},
+		{name: "root", args: []string{"worklease", "--generate-shell-completion"}, want: []string{"list:list current claims", "ls:list current claims", "completion:generate shell completion", "op:inspect or reconcile operations", "help:show help", "h:show help"}, not: []string{"--generate-shell-completion"}},
 		{name: "nested", args: []string{"worklease", "op", "--generate-shell-completion"}, want: []string{"inspect:inspect an operation", "reconcile:reconcile an operation"}},
+		{name: "policy list alias", args: []string{"worklease", "policy", "--generate-shell-completion"}, want: []string{"list:list built-in policies", "ls:list built-in policies"}},
+		{name: "profile list alias", args: []string{"worklease", "profile", "--generate-shell-completion"}, want: []string{"list:list trusted remote authority profiles", "ls:list trusted remote authority profiles"}},
+		{name: "installation list alias", args: []string{"worklease", "installation", "--generate-shell-completion"}, want: []string{"list:list remote installations", "ls:list remote installations"}},
 		{name: "alias", args: []string{"worklease", "ev", "--generate-shell-completion"}, want: []string{"events:show lifecycle events", "event:show lifecycle events"}},
 		{name: "global option", args: []string{"worklease", "--h", "--generate-shell-completion"}, want: []string{"--home:state directory", "-H:state directory", "--help:show help"}, not: []string{"--generate-shell-completion"}},
 		{name: "local option", args: []string{"worklease", "acquire", "--po", "--generate-shell-completion"}, want: []string{"--poll-interval:DURATION between contention polls", "--wait:wait up to DURATION", "-w:wait up to DURATION", "--home:state directory"}},
