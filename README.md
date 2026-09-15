@@ -125,6 +125,8 @@ worklease enroll --profile team --invite-file invite.secret
 worklease acquire --profile team --resource github:org/repo#42
 ```
 
+![Two workers coordinating through a Worklease remote authority](docs/remote-demo.gif)
+
 `serve` owns one namespace and one SQLite writer. Guarded commands and provider
 effects still run on clients. The standard binary opens no listener and makes
 no network request unless remote operation is explicit.
