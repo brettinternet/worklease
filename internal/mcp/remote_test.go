@@ -55,7 +55,7 @@ func remoteMCPFixture(t *testing.T, enroll bool) (config.Profile, string, *autho
 
 	configRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
-	profile := config.Profile{Name: "team", Endpoint: httpServer.URL, AuthorityID: bootstrap.AuthorityID, RestoreID: bootstrap.RestoreID, DevHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(configRoot, "worklease", "credentials", "team")}}
+	profile := config.Profile{Name: "team", Endpoint: httpServer.URL, AuthorityID: bootstrap.AuthorityID, RestoreID: bootstrap.RestoreID, AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(configRoot, "worklease", "credentials", "team")}}
 	var client *authority.HTTPClient
 	var installationID string
 	if enroll {
@@ -247,7 +247,7 @@ func TestRemoteMCPAutomaticRenewalUsesRemoteAuthority(t *testing.T) {
 
 func TestRemoteMCPLocalToolsDoNotContactAuthority(t *testing.T) {
 	home := t.TempDir()
-	profile := config.Profile{Name: "offline", Endpoint: "http://127.0.0.1:1", AuthorityID: strings.Repeat("a", 32), RestoreID: strings.Repeat("b", 32), DevHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(home, "credential")}}
+	profile := config.Profile{Name: "offline", Endpoint: "http://127.0.0.1:1", AuthorityID: strings.Repeat("a", 32), RestoreID: strings.Repeat("b", 32), AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(home, "credential")}}
 	s, err := NewServer(Options{Home: home, Profile: &profile, ProfileName: profile.Name})
 	if err != nil {
 		t.Fatal(err)

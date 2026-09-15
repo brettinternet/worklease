@@ -318,9 +318,9 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 
 	hosted := hostedCommands(s)
-	serve := jsonless("serve", "serve a hosted remote authority", "worklease serve --server-config server.yaml [--dev-http]",
+	serve := jsonless("serve", "serve a hosted remote authority", "worklease serve --server-config server.yaml [--allow-insecure-http]",
 		&urfavecli.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE`"},
-		&urfavecli.BoolFlag{Name: "dev-http", Usage: "allow cleartext HTTP on a loopback address for development only"})
+		&urfavecli.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP on the configured listen address"})
 	serve.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
 		path := strings.TrimSpace(cmd.String("server-config"))
 		if path == "" {
@@ -330,14 +330,20 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		srv, err := workleaseserver.New(ctx, cfg, cmd.Bool("dev-http"), nil)
+		allowInsecureHTTP := cmd.Bool("allow-insecure-http")
+		if allowInsecureHTTP {
+			if _, err := fmt.Fprintln(s.errWriter, insecureHTTPWarning); err != nil {
+				return err
+			}
+		}
+		srv, err := workleaseserver.New(ctx, cfg, allowInsecureHTTP, nil)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return srv.Serve(ctx, cmd.Bool("dev-http"))
+		return srv.Serve(ctx, allowInsecureHTTP)
 	}
-	usageText(serve, "worklease serve --server-config FILE [--dev-http]")
-	detail(serve, "Serve one marked hosted authority over the frozen Worklease HTTP protocol. TLS is required unless --dev-http is explicitly used on loopback.")
+	usageText(serve, "worklease serve --server-config FILE [--allow-insecure-http]")
+	detail(serve, "Serve one marked hosted authority over the frozen Worklease HTTP protocol. TLS is required unless --allow-insecure-http is explicitly used.")
 	all := append(commands, policy, op, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)

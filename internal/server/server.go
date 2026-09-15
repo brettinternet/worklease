@@ -165,7 +165,7 @@ func parseDuration(v string, micros int64, name string) (time.Duration, error) {
 	}
 	return d, nil
 }
-func validateConfig(c Config, dev bool) error {
+func validateConfig(c Config, allowInsecureHTTP bool) error {
 	if strings.TrimSpace(c.Home) == "" {
 		return reason.New(reason.ReasonConfigInvalid, "home is required")
 	}
@@ -195,7 +195,7 @@ func validateConfig(c Config, dev bool) error {
 	if c.HealthRate <= 0 || c.MetadataRate <= 0 || c.EnrollmentRate <= 0 {
 		return reason.New(reason.ReasonConfigInvalid, "health, metadata, and enrollment rate limits must be positive")
 	}
-	if !dev && (c.TLSCert == "" || c.TLSKey == "") {
+	if !allowInsecureHTTP && (c.TLSCert == "" || c.TLSKey == "") {
 		return reason.New(reason.ReasonConfigInvalid, "TLS certificate and key are required")
 	}
 	if c.TLSCert != "" && c.TLSKey != "" {
@@ -222,12 +222,9 @@ type Server struct {
 	shutdown time.Duration
 }
 
-func New(ctx context.Context, cfg Config, devHTTP bool, logger *log.Logger) (*Server, error) {
-	if err := validateConfig(cfg, devHTTP); err != nil {
+func New(ctx context.Context, cfg Config, allowInsecureHTTP bool, logger *log.Logger) (*Server, error) {
+	if err := validateConfig(cfg, allowInsecureHTTP); err != nil {
 		return nil, err
-	}
-	if devHTTP && !loopback(cfg.Listen) {
-		return nil, reason.New(reason.ReasonConfigInvalid, "--dev-http requires a loopback listen address")
 	}
 	if err := store.ValidateHostedHome(cfg.Home); err != nil {
 		return nil, err
@@ -262,22 +259,11 @@ func New(ctx context.Context, cfg Config, devHTTP bool, logger *log.Logger) (*Se
 	s.http = &http.Server{Addr: cfg.Listen, Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 35 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	return s, nil
 }
-func loopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" || host == "::1" || host == "127.0.0.1" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
 
 // Handler exposes the protocol handler for embedding and transport tests.
 func (s *Server) Handler() http.Handler { return s.handler() }
 
-func (s *Server) Serve(ctx context.Context, devHTTP bool) error {
+func (s *Server) Serve(ctx context.Context, allowInsecureHTTP bool) error {
 	defer func() { _ = s.store.Close() }()
 	if ctx == nil {
 		ctx = context.Background()
@@ -288,7 +274,7 @@ func (s *Server) Serve(ctx context.Context, devHTTP bool) error {
 	defer cancelRequests()
 	errc := make(chan error, 1)
 	go func() {
-		if devHTTP {
+		if allowInsecureHTTP {
 			errc <- s.http.ListenAndServe()
 		} else {
 			errc <- s.http.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
