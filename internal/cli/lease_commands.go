@@ -421,7 +421,15 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, nil, "", e
 		}
-		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision")}, backend.API, backend, nil, nil, "", nil
+		credentialPath := strings.TrimSpace(cmd.String("token-file"))
+		if credentialPath != "" {
+			credentialPath, e = filepath.Abs(credentialPath)
+			if e != nil {
+				backend.Close()
+				return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonCredentialUnsafe, "credential path cannot be resolved")
+			}
+		}
+		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: token, Revision: cmd.Int64("revision"), CredentialPath: credentialPath}, backend.API, backend, nil, nil, "", nil
 	}
 	if strings.TrimSpace(cmd.String("lease")) != "" {
 		backend.Close()

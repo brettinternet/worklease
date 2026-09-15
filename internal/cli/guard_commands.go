@@ -243,9 +243,17 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, e
 		}
-		credentialPath := ""
-		if backend.Remote {
-			credentialPath = backend.Profile.Credential.Path
+		credentialPath := strings.TrimSpace(cmd.String("token-file"))
+		if backend.Remote && credentialPath == "" {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonCredentialUnsafe, "remote guarded effects require a durable token file")
+		}
+		if credentialPath != "" {
+			credentialPath, e = filepath.Abs(credentialPath)
+			if e != nil {
+				backend.Close()
+				return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonCredentialUnsafe, "credential path cannot be resolved")
+			}
 		}
 		return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: cmd.String("claim-id"), Token: tok, Revision: cmd.Int64("revision"), CredentialPath: credentialPath}, backend.API, backend, nil, nil
 	}

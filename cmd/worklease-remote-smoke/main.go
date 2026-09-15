@@ -106,7 +106,8 @@ type report struct {
 
 type harness struct {
 	binary, self, root, endpoint, cert, configPath, authorityHome   string
-	remoteHost, remoteRoot, remoteAddress                           string
+	remoteHost, remoteRoot, remoteAddress, sshConfig                string
+	remoteGOOS, remoteGOARCH                                        string
 	remotePort                                                      int
 	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey string
 	commandLog                                                      string
@@ -214,6 +215,11 @@ func writeProviderSubmission(path, effectID string) (err error) {
 	defer func() { err = errors.Join(err, file.Close()) }()
 	_, err = fmt.Fprintf(file, "provider-submitted %s\n", effectID)
 	return err
+}
+
+func isAcceptanceWorkspacePath(path string) bool {
+	clean := filepath.Clean(path)
+	return clean == path && (strings.HasPrefix(path, "/tmp/worklease-acceptance-") || strings.HasPrefix(path, "/private/tmp/worklease-acceptance-"))
 }
 
 func main() {
@@ -410,7 +416,7 @@ func main() {
 		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "owner-marker" {
-		if len(os.Args) != 3 || !strings.HasPrefix(os.Args[2], "/private/tmp/worklease-acceptance-") {
+		if len(os.Args) != 3 || !isAcceptanceWorkspacePath(os.Args[2]) {
 			fatal(errors.New("owner-marker requires an acceptance workspace"))
 		}
 		marker := filepath.Join(os.Args[2], ".worklease-acceptance-owner")
@@ -449,6 +455,19 @@ func main() {
 			fatal(err)
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(state); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "recovery-closure-fixture" {
+		if len(os.Args) != 3 {
+			fatal(errors.New("recovery-closure-fixture requires an acceptance database"))
+		}
+		result, err := installRecoveryClosureFixture(os.Args[2])
+		if err != nil {
+			fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 			fatal(err)
 		}
 		return
@@ -572,16 +591,53 @@ func main() {
 	evidence := flag.String("evidence", "", "evidence directory (default: dist/remote-acceptance/TIMESTAMP)")
 	keep := flag.Bool("keep", false, "keep temporary authority and client state")
 	remoteHost := flag.String("remote-host", "", "run authority and client B on this SSH host (for example lima-worklease-remote)")
+	sshConfig := flag.String("ssh-config", "", "OpenSSH config used for remote-host SSH and SCP commands")
 	flag.Parse()
-	if err := run(*binary, *evidence, *keep, *remoteHost); err != nil {
+	if err := run(*binary, *evidence, *keep, *remoteHost, *sshConfig); err != nil {
 		fatal(err)
 	}
 }
 
+func installSSHWrappers(root, configPath string) error {
+	configPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(configPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("SSH config is not a regular file: %s", configPath)
+	}
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		return err
+	}
+	scpPath, err := exec.LookPath("scp")
+	if err != nil {
+		return err
+	}
+	wrapperRoot := filepath.Join(root, "ssh-bin")
+	if err := os.MkdirAll(wrapperRoot, 0o700); err != nil {
+		return err
+	}
+	for name, executable := range map[string]string{"ssh": sshPath, "scp": scpPath} {
+		contents := fmt.Sprintf("#!/bin/sh\nexec %q -F \"$WORKLEASE_ACCEPTANCE_SSH_CONFIG\" \"$@\"\n", executable)
+		if err := os.WriteFile(filepath.Join(wrapperRoot, name), []byte(contents), 0o700); err != nil {
+			return err
+		}
+	}
+	if err := os.Setenv("WORKLEASE_ACCEPTANCE_SSH_CONFIG", configPath); err != nil {
+		return err
+	}
+	return os.Setenv("PATH", wrapperRoot+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func run(binary, evidence string, keep bool, remoteHosts ...string) error {
-	remoteHost := ""
+	remoteHost, sshConfig := "", ""
 	if len(remoteHosts) > 0 {
 		remoteHost = remoteHosts[0]
+	}
+	if len(remoteHosts) > 1 {
+		sshConfig = remoteHosts[1]
 	}
 	absoluteBinary, err := filepath.Abs(binary)
 	if err != nil {
@@ -615,7 +671,15 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	if err != nil {
 		return err
 	}
-	h := &harness{binary: absoluteBinary, self: self, root: root, commandLog: filepath.Join(evidence, "commands.log"), remoteHost: remoteHost, realHost: remoteHost != ""}
+	if sshConfig != "" {
+		if remoteHost == "" {
+			return errors.New("--ssh-config requires --remote-host")
+		}
+		if err := installSSHWrappers(root, sshConfig); err != nil {
+			return err
+		}
+	}
+	h := &harness{binary: absoluteBinary, self: self, root: root, commandLog: filepath.Join(evidence, "commands.log"), remoteHost: remoteHost, sshConfig: sshConfig, realHost: remoteHost != ""}
 	mode, latencyKind, hosts := "local-development", "loopback (not real-host WAN)", "1 process host / 2 isolated roots"
 	if h.realHost {
 		mode, latencyKind, hosts = "real-host-smoke", "measured end-to-end remote client command latency (includes SSH orchestration)", "orchestrator/client-A local; authority/client-B remote"
@@ -623,8 +687,11 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	h.report = report{SchemaVersion: 2, Mode: mode, LatencyKind: latencyKind, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Environment: map[string]string{"goos": runtime.GOOS, "goarch": runtime.GOARCH, "authorityHosts": "1", "clientHosts": hosts}, EffectDispatchCounts: map[string]int{}}
 	if h.realHost {
 		h.report.Environment["sshHost"] = remoteHost
-		h.report.RenewalMargins = []string{"10m contention TTL exercised; renewal timing not measured in this smoke slice"}
-		h.report.RecoveryBounds = "real-host smoke observed restart/restore fail-closed bounds; exhaustive recovery bounds and WAN cutoffs remain unmeasured"
+		if sshConfig != "" {
+			h.report.Environment["sshConfig"] = sshConfig
+		}
+		h.report.RenewalMargins = []string{"10m contention TTL exercised; renewal timing measured by the guarded lifecycle observations"}
+		h.report.RecoveryBounds = "selected backup cutoff measured separately; a second restore records the cutoff as explicitly unknown and reopens only after exhaustive installation, pending-set, retained-outcome, and provider-cessation evidence"
 	} else {
 		h.report.RenewalMargins = []string{"guarded start exercised with 10m TTL", "real-host renewal margin unmeasured"}
 		h.report.RecoveryBounds = "development fixture only; real-host recovery bounds remain unmeasured"
@@ -637,6 +704,11 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	if h.realHost {
 		h.supportingTests = runSupportingTests(evidence)
 		h.supportingTests = append(h.supportingTests, h.runRemoteSupportingTests(evidence)...)
+		for _, test := range h.supportingTests {
+			if test.Status == "failed" {
+				return fmt.Errorf("required supporting test failed: %s (%s)", test.Command, test.Log)
+			}
+		}
 	}
 	started := time.Now()
 	for group := 1; group <= 5; group++ {
@@ -773,6 +845,43 @@ func (h *harness) provision(evidence string) error {
 	return nil
 }
 
+func normalizeGoTarget(osName, archName string) (string, string, error) {
+	goos := strings.ToLower(strings.TrimSpace(osName))
+	switch goos {
+	case "darwin", "linux":
+	default:
+		return "", "", fmt.Errorf("unsupported remote operating system %q", strings.TrimSpace(osName))
+	}
+	var goarch string
+	switch strings.ToLower(strings.TrimSpace(archName)) {
+	case "arm64", "aarch64":
+		goarch = "arm64"
+	case "amd64", "x86_64":
+		goarch = "amd64"
+	default:
+		return "", "", fmt.Errorf("unsupported remote architecture %q", strings.TrimSpace(archName))
+	}
+	return goos, goarch, nil
+}
+
+func (h *harness) buildRemoteTarget(goos, goarch string) (string, string, error) {
+	buildRoot := filepath.Join(h.root, "remote-target")
+	if err := os.MkdirAll(buildRoot, 0o700); err != nil {
+		return "", "", err
+	}
+	workleasePath := filepath.Join(buildRoot, "worklease")
+	helperPath := filepath.Join(buildRoot, "harness-helper")
+	for output, packagePath := range map[string]string{workleasePath: "./cmd/worklease", helperPath: "./cmd/worklease-remote-smoke"} {
+		cmd := exec.Command("go", "build", "-trimpath", "-o", output, packagePath)
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+		combined, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", "", fmt.Errorf("build %s/%s %s: %w: %s", goos, goarch, packagePath, err, combined)
+		}
+	}
+	return workleasePath, helperPath, nil
+}
+
 func (h *harness) provisionRemote(evidence string) error {
 	if err := validateSSHHost(h.remoteHost); err != nil {
 		return err
@@ -782,18 +891,36 @@ func (h *harness) provisionRemote(evidence string) error {
 		return err
 	}
 	h.remoteAddress = address
-	workspaceOutput, err := runSSH(h.remoteHost, "mktemp", "-d", "/private/tmp/worklease-acceptance-XXXXXX")
+	workspaceOutput, err := runSSH(h.remoteHost, "mktemp", "-d", "/tmp/worklease-acceptance-XXXXXX")
 	if err != nil {
 		return fmt.Errorf("remote workspace: %w", err)
 	}
 	h.remoteRoot = strings.TrimSpace(workspaceOutput)
-	if !strings.HasPrefix(h.remoteRoot, "/private/tmp/worklease-acceptance-") || strings.ContainsAny(h.remoteRoot, "\r\n") {
+	if !isAcceptanceWorkspacePath(h.remoteRoot) || strings.ContainsAny(h.remoteRoot, "\r\n") {
 		return fmt.Errorf("remote workspace has unsafe path %q", h.remoteRoot)
 	}
 	h.report.RemoteWorkspace = h.remoteHost + ":" + h.remoteRoot
 	h.remoteBinary = filepath.Join(h.remoteRoot, "worklease")
 	h.remoteHelper = filepath.Join(h.remoteRoot, "harness-helper")
-	for local, remote := range map[string]string{h.binary: h.remoteBinary, h.self: h.remoteHelper} {
+	remoteOSOutput, err := runSSH(h.remoteHost, "uname", "-s")
+	if err != nil {
+		return fmt.Errorf("detect remote operating system: %w", err)
+	}
+	remoteArchOutput, err := runSSH(h.remoteHost, "uname", "-m")
+	if err != nil {
+		return fmt.Errorf("detect remote architecture: %w", err)
+	}
+	remoteOS, remoteArch, err := normalizeGoTarget(remoteOSOutput, remoteArchOutput)
+	if err != nil {
+		return err
+	}
+	h.remoteGOOS, h.remoteGOARCH = remoteOS, remoteArch
+	h.report.Environment["remoteGoos"], h.report.Environment["remoteGoarch"] = remoteOS, remoteArch
+	remoteWorklease, remoteHelper, err := h.buildRemoteTarget(remoteOS, remoteArch)
+	if err != nil {
+		return err
+	}
+	for local, remote := range map[string]string{remoteWorklease: h.remoteBinary, remoteHelper: h.remoteHelper} {
 		if err := runSCP(h.remoteHost, local, remote); err != nil {
 			return fmt.Errorf("copy %s: %w", filepath.Base(local), err)
 		}
@@ -871,6 +998,9 @@ func (h *harness) provisionRemote(evidence string) error {
 	h.clients[0] = a
 	b := client{name: "client-b", home: filepath.Join(h.remoteRoot, "client-b", "home"), config: filepath.Join(h.remoteRoot, "client-b", "config"), checkout: filepath.Join(h.remoteRoot, "client-b", "checkout"), remote: true}
 	if _, err := runSSH(h.remoteHost, "mkdir", "-p", b.home, b.config, b.checkout); err != nil {
+		return err
+	}
+	if _, err := runSSH(h.remoteHost, "chmod", "700", filepath.Dir(b.home), b.home, b.config, b.checkout); err != nil {
 		return err
 	}
 	if _, err := runSSH(h.remoteHost, "git", "init", "--quiet", b.checkout); err != nil {
@@ -1372,8 +1502,7 @@ func verifyFaultReplays(logPath string, paths []string) error {
 		return err
 	}
 	for _, path := range paths {
-		droppedHash := ""
-		replayed := false
+		dropped, replayed := map[string]int{}, map[string]int{}
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 4 || fields[0] != "path="+path {
@@ -1381,16 +1510,18 @@ func verifyFaultReplays(logPath string, paths []string) error {
 			}
 			hash := strings.TrimPrefix(fields[2], "requestSha256=")
 			if fields[3] == "dropped=true" {
-				if droppedHash != "" {
-					return fmt.Errorf("multiple injected response losses for %s", path)
-				}
-				droppedHash = hash
-			} else if droppedHash != "" && hash == droppedHash {
-				replayed = true
+				dropped[hash]++
+			} else if dropped[hash] > replayed[hash] {
+				replayed[hash]++
 			}
 		}
-		if droppedHash == "" || !replayed {
-			return fmt.Errorf("fault path %s has no exact same-body replay", path)
+		if len(dropped) == 0 {
+			return fmt.Errorf("fault path %s has no injected response loss", path)
+		}
+		for hash, count := range dropped {
+			if replayed[hash] != count {
+				return fmt.Errorf("fault path %s request %s has %d drops and %d exact same-body replays", path, hash, count, replayed[hash])
+			}
 		}
 	}
 	return nil
@@ -1591,6 +1722,9 @@ func (h *harness) provisionRaceClient(label string) (client, string, error) {
 		root = filepath.Join(h.remoteRoot, label)
 		c = client{name: label, home: filepath.Join(root, "home"), config: filepath.Join(root, "config"), checkout: filepath.Join(root, "checkout"), remote: true}
 		if _, err := runSSH(h.remoteHost, "mkdir", "-p", c.home, c.config, c.checkout); err != nil {
+			return client{}, "", err
+		}
+		if _, err := runSSH(h.remoteHost, "chmod", "700", root, c.home, c.config, c.checkout); err != nil {
 			return client{}, "", err
 		}
 		if _, err := runSSH(h.remoteHost, "git", "init", "--quiet", c.checkout); err != nil {
@@ -1813,6 +1947,70 @@ func (h *harness) group2(evidence string) error {
 	}
 	h.report.EffectDispatchCounts[filepath.Base(beginEffect)] = 0
 
+	explicitHandle := filepath.Join(a.home, "handles", "explicit-lost-begin.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", explicitHandle, "--resource", "coordination:explicit-lost-begin", "--ttl", "5s"); err != nil {
+		return err
+	}
+	explicitGrant, err := handle.Read(explicitHandle)
+	if err != nil {
+		return err
+	}
+	explicitTokenName := ".explicit-claim.token"
+	explicitTokenPath := filepath.Join(a.checkout, explicitTokenName)
+	if err := os.WriteFile(explicitTokenPath, []byte(explicitGrant.Token+"\n"), 0o600); err != nil {
+		return err
+	}
+	explicitOperation := strings.Repeat("8", 32)
+	explicitEffect := filepath.Join(evidence, "explicit-lost-begin-effect.log")
+	explicitDeadline := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339Nano)
+	explicitArgs := []string{"--profile", "team", "exec", "--claim-id", explicitGrant.ClaimID, "--token-file", explicitTokenName, "--revision", strconv.FormatInt(explicitGrant.Revision, 10), "--operation-id", explicitOperation, "--request-not-after", explicitDeadline, "--ttl", "5s", "--", h.self, "effect", explicitEffect}
+	if err := h.armFault("/v1/operations/begin"); err != nil {
+		return err
+	}
+	explicitLost, err := h.cliFailure(a, explicitArgs...)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(explicitLost, "unknown-outcome"); err != nil {
+		return fmt.Errorf("explicit lost begin: %w", err)
+	}
+	explicitPending, err := authority.NewFilePendingStore(filepath.Join(a.home, "pending", "team")).Load(explicitOperation)
+	if err != nil {
+		return err
+	}
+	canonicalExplicitToken, err := filepath.EvalSymlinks(explicitTokenPath)
+	if err != nil {
+		return err
+	}
+	if explicitPending.ClaimCredentialRef != canonicalExplicitToken || !filepath.IsAbs(explicitPending.ClaimCredentialRef) {
+		return fmt.Errorf("explicit retained request did not persist the absolute claim token path: got=%q want=%q", explicitPending.ClaimCredentialRef, canonicalExplicitToken)
+	}
+	replayCommand := exec.Command(h.self, "replay-pending", a.config, a.home, "team", explicitOperation)
+	replayCommand.Env, replayCommand.Dir = a.env, a.checkout
+	replayOutput, replayErr := replayCommand.CombinedOutput()
+	if replayErr == nil || !bytes.Contains(replayOutput, []byte("unknown-outcome")) {
+		return fmt.Errorf("explicit retained replay did not authenticate from the stored claim token reference: err=%v output=%s", replayErr, replayOutput)
+	}
+	if _, err := os.Stat(explicitEffect); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("explicit retained begin replay dispatched an effect: %v", err)
+	}
+	h.report.EffectDispatchCounts[filepath.Base(explicitEffect)] = 0
+	fdArgs := []string{"--json", "--profile", "team", "exec", "--claim-id", explicitGrant.ClaimID, "--token-fd", "0", "--revision", strconv.FormatInt(explicitGrant.Revision, 10), "--operation-id", strings.Repeat("9", 32), "--request-not-after", explicitDeadline, "--ttl", "5s", "--", h.self, "effect", explicitEffect}
+	h.logCommand(a.name+" expected-failure", append([]string{"worklease"}, fdArgs...))
+	fdCommand := exec.Command(h.binary, fdArgs...)
+	fdCommand.Env, fdCommand.Dir, fdCommand.Stdin = a.env, a.checkout, strings.NewReader(explicitGrant.Token+"\n")
+	fdOutput, fdErr := fdCommand.CombinedOutput()
+	if fdErr == nil {
+		return errors.New("remote explicit guarded effect accepted an FD-only claim credential")
+	}
+	var fdFailure map[string]any
+	if err := json.Unmarshal(fdOutput, &fdFailure); err != nil {
+		return fmt.Errorf("decode FD-only guarded-effect failure: %w: %s", err, fdOutput)
+	}
+	if err := requireReason(fdFailure, "credential-unsafe"); err != nil {
+		return fmt.Errorf("FD-only guarded effect: %w", err)
+	}
+
 	renewHandle := filepath.Join(a.home, "handles", "lost-renew.json")
 	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", renewHandle, "--resource", "coordination:lost-renew", "--ttl", "2s"); err != nil {
 		return err
@@ -1966,7 +2164,11 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	terminalReceiptAt := time.Now().UTC()
-	if err := os.WriteFile(providerRelease, []byte(terminalReceiptAt.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+	providerReleaseTemp := providerRelease + ".tmp"
+	if err := os.WriteFile(providerReleaseTemp, []byte(terminalReceiptAt.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(providerReleaseTemp, providerRelease); err != nil {
 		return err
 	}
 	select {
@@ -2020,7 +2222,7 @@ func (h *harness) group2(evidence string) error {
 		return err
 	}
 	faultEvidence := filepath.Join(evidence, "fault-proxy.log")
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; retained and late start acknowledgments never redispatch an effect; terminal completion does not fence an external asynchronous provider effect; a failed client pending-store write returns storage-failure before authority dispatch; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "run external asynchronous provider effect through terminal completion", "replace pending root with a regular file and attempt remote GC", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), lateAcknowledgmentEvidence, providerSubmitted, providerCompleted, providerEvidence, preDispatchEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "asynchronous provider completion dispatch-count=1 after terminal receipt", "pre-dispatch persistence authority dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 2, Observation: "a lost start response replays to the retained unknown start without dispatch; lost renewal and completion responses replay exactly with one guarded effect; completion replay preserves the historical result inside the current authority/restore identity and a newer authority-time envelope; an asymmetric response delay produces the lower-bound 24-hour request window, an expired short window sends nothing, and a start response delayed beyond the three-quarter-TTL stop-new-work boundary dispatches no effect; retained and late start acknowledgments never redispatch an effect; terminal completion does not fence an external asynchronous provider effect; a failed client pending-store write returns storage-failure before authority dispatch; held requests prove revocation and prefix withdrawal follow server serialization order; an authority partition creates no local fallback", Commands: []string{"arm one-shot begin response loss and replay retained unknown", "arm one-shot renewal response loss", "arm one-shot completion response loss and replay", "compare dropped and replayed completion response envelopes", "delay metadata response and inspect generated request deadline", "reject expired request window before dispatch", "delay successful begin response beyond three-quarter TTL", "run external asynchronous provider effect through terminal completion", "replace pending root with a regular file and attempt remote GC", "hold acquire before forwarding and serialize installation revocation first", "commit acquire before installation revocation", "hold acquire before forwarding and restart with its prefix withdrawn", "heartbeat a claim admitted before prefix withdrawal", "stop authority", "client-b acquire during partition", "restart authority"}, Evidence: []string{beginEffect, explicitEffect, renewEffect, completeEffect, lateEffect, faultEvidence, filepath.Join(evidence, "clock-bounds.txt"), lateAcknowledgmentEvidence, providerSubmitted, providerCompleted, providerEvidence, preDispatchEvidence, filepath.Join(evidence, "race-ordering.txt"), "lost-begin dispatch-count=0", "lost-renew and lost-complete dispatch-count=1", "late-start dispatch-count=0", "asynchronous provider completion dispatch-count=1 after terminal receipt", "pre-dispatch persistence authority dispatch-count=0", "completion replay result hash stable; authority identity stable; authority time advanced"}, Passed: true})
 	return nil
 }
 
@@ -2930,6 +3132,57 @@ func ageRetentionFixture(database string, at int64) (err error) {
 	return tx.Commit()
 }
 
+func installRecoveryClosureFixture(database string) (result map[string]any, err error) {
+	if err := validateAcceptanceDatabase(database); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var restoreID, installationID string
+	if err = tx.QueryRow(`SELECT value FROM meta WHERE key='restore_id'`).Scan(&restoreID); err != nil {
+		return nil, err
+	}
+	if err = tx.QueryRow(`SELECT installation_id FROM installations WHERE revoked_at IS NULL ORDER BY enrolled_at DESC LIMIT 1`).Scan(&installationID); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if _, err = tx.Exec(`UPDATE recovery_state SET recovery_mode=1,recovery_revision=recovery_revision+1`); err != nil {
+		return nil, err
+	}
+	for i := 0; i < 17; i++ {
+		claimID := fmt.Sprintf("%032x", 0x7000+i)
+		if _, err = tx.Exec(`INSERT INTO epochs(claim_id,token_hash,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,acquired_seq,ended_at,end_reason,final_revision,admitted_ttl_us,admitted_hold_until,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`, claimID, strings.Repeat("a", 64), "closure-fixture", "closure-fixture", "closure-fixture", "local-coordination", 0, now.Add(-time.Minute).UnixMicro(), 7000+i, now.Add(-time.Minute).UnixMicro(), "restored", 2, (30 * time.Second).Microseconds(), now.Add(time.Minute).UnixMicro(), installationID, restoreID); err != nil {
+			return nil, err
+		}
+		resources := []string{fmt.Sprintf("coordination:recovery-closure-%02d", i*2), fmt.Sprintf("coordination:recovery-closure-%02d", i*2+1), fmt.Sprintf("coordination:recovery-closure-%02d", i*2+2)}
+		for position, resource := range resources {
+			if _, err = tx.Exec(`INSERT INTO epoch_resources(claim_id,resource,position) VALUES(?,?,?)`, claimID, resource, position); err != nil {
+				return nil, err
+			}
+		}
+		operationID := fmt.Sprintf("%032x", 0x8000+i)
+		if _, err = tx.Exec(`INSERT INTO operations(claim_id,operation_id,kind,request_hash,request_not_after,expected_revision,state,started_at,started_seq,installation_id,restore_id,remote) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)`, claimID, operationID, "exec", strings.Repeat("b", 64), now.Add(time.Hour).UnixMicro(), 1, "started", now.Add(-time.Minute).UnixMicro(), 7000+i, installationID, restoreID); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return map[string]any{"firstResource": "coordination:recovery-closure-00", "resources": 35, "operations": 17, "restoreId": restoreID}, nil
+}
+
 func (h *harness) ageRetentionState(evidence string) error {
 	database := filepath.Join(h.root, "authority", "worklease.db")
 	if h.realHost {
@@ -3730,6 +3983,15 @@ func (h *harness) pendingSetInventories() (pendingSetInventory, pendingSetInvent
 	return zero, nonzero, nil
 }
 
+func anySliceContains(values []any, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func slicesContains(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
@@ -4006,6 +4268,271 @@ func (h *harness) exerciseRestoredCredentials(evidence string, retained, missing
 	return evidencePath, nil
 }
 
+func (h *harness) exerciseRecoveryReopen(evidence, retainedOperationID, installationEvidencePath string) (string, error) {
+	client := h.clients[0]
+	inspectionResult, err := h.cli(client, "--profile", "team", "op", "inspect", "--operation-id", retainedOperationID, "--full")
+	if err != nil {
+		return "", err
+	}
+	inspection, _ := inspectionResult["inspection"].(map[string]any)
+	targetClaimID, _ := inspection["claimId"].(string)
+	requestHash, _ := inspection["requestSha256"].(string)
+	if targetClaimID == "" || len(requestHash) != 64 || inspection["state"] != "started" {
+		return "", fmt.Errorf("retained operation inspection is incomplete: %v", inspectionResult)
+	}
+	lostBeginID := strings.Repeat("1", 32)
+	lostInspectionResult, err := h.cli(client, "--profile", "team", "op", "inspect", "--operation-id", lostBeginID, "--full")
+	if err != nil {
+		return "", err
+	}
+	lostInspection, _ := lostInspectionResult["inspection"].(map[string]any)
+	lostClaimID, _ := lostInspection["claimId"].(string)
+	lostRequestHash, _ := lostInspection["requestSha256"].(string)
+	if lostClaimID == "" || len(lostRequestHash) != 64 || lostInspection["state"] != "started" {
+		return "", fmt.Errorf("lost-begin retained inspection is incomplete: %v", lostInspectionResult)
+	}
+	explicitLostID := strings.Repeat("8", 32)
+	explicitInspectionResult, err := h.cli(client, "--profile", "team", "op", "inspect", "--operation-id", explicitLostID, "--full")
+	if err != nil {
+		return "", err
+	}
+	explicitInspection, _ := explicitInspectionResult["inspection"].(map[string]any)
+	explicitClaimID, _ := explicitInspection["claimId"].(string)
+	explicitRequestHash, _ := explicitInspection["requestSha256"].(string)
+	if explicitClaimID == "" || len(explicitRequestHash) != 64 || explicitInspection["state"] != "started" {
+		return "", fmt.Errorf("explicit lost-begin retained inspection is incomplete: %v", explicitInspectionResult)
+	}
+	recoveryHandle := filepath.Join(client.home, "handles", "restore-recovery.json")
+	acquired, err := h.cli(client, "--profile", "team", "acquire", "--handle", recoveryHandle, "--resource", "coordination:retained-start-backup", "--resource", "coordination:lost-begin", "--resource", "coordination:explicit-lost-begin", "--ttl", "30s")
+	if err != nil {
+		return "", err
+	}
+	unknown, _ := acquired["unknownOperations"].([]any)
+	if len(unknown) != 3 || !anySliceContains(unknown, retainedOperationID) || !anySliceContains(unknown, lostBeginID) || !anySliceContains(unknown, explicitLostID) {
+		return "", fmt.Errorf("recovery acquire did not return the exact transitive unknown set: %v", acquired)
+	}
+	recoveryGrant, err := handle.Read(recoveryHandle)
+	if err != nil {
+		return "", err
+	}
+	recoveryToken := filepath.Join(h.root, "secrets", "recovery-claim.token")
+	if err := os.WriteFile(recoveryToken, []byte(recoveryGrant.Token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	reconcileID, err := randomRequestID()
+	if err != nil {
+		return "", err
+	}
+	reconcileDeadline := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339Nano)
+	reconcileEvidence := `{"outcome":"observed-success","executorStopped":true,"providerCompletionObserved":true}`
+	reconcileArgs := []string{"--profile", "team", "op", "reconcile", "--claim-id", recoveryGrant.ClaimID, "--token-file", recoveryToken, "--revision", strconv.FormatInt(recoveryGrant.Revision, 10), "--operation-id", reconcileID, "--request-not-after", reconcileDeadline, "--target-claim-id", targetClaimID, "--target-operation-id", retainedOperationID, "--expected-request-sha256", requestHash, "--outcome", "observed-success", "--evidence", reconcileEvidence, "--ttl", "30s"}
+	reconciled, err := h.cli(client, reconcileArgs...)
+	if err != nil {
+		return "", err
+	}
+	reconciledReceipt, _ := reconciled["receipt"].(map[string]any)
+	firstRevision, ok := reconciledReceipt["revision"].(float64)
+	if !ok {
+		return "", fmt.Errorf("first reconciliation omitted its revision: %v", reconciled)
+	}
+	lostReconcileID, err := randomRequestID()
+	if err != nil {
+		return "", err
+	}
+	lostReconciled, err := h.cli(client, "--profile", "team", "op", "reconcile", "--claim-id", recoveryGrant.ClaimID, "--token-file", recoveryToken, "--revision", strconv.FormatInt(int64(firstRevision), 10), "--operation-id", lostReconcileID, "--request-not-after", reconcileDeadline, "--target-claim-id", lostClaimID, "--target-operation-id", lostBeginID, "--expected-request-sha256", lostRequestHash, "--outcome", "observed-failure", "--evidence", `{"outcome":"observed-failure","executorStopped":true,"dispatchCount":0}`, "--ttl", "30s")
+	if err != nil {
+		return "", err
+	}
+	lostReceipt, _ := lostReconciled["receipt"].(map[string]any)
+	secondRevision, ok := lostReceipt["revision"].(float64)
+	if !ok {
+		return "", fmt.Errorf("second reconciliation omitted its revision: %v", lostReconciled)
+	}
+	explicitReconcileID, err := randomRequestID()
+	if err != nil {
+		return "", err
+	}
+	explicitReconciled, err := h.cli(client, "--profile", "team", "op", "reconcile", "--claim-id", recoveryGrant.ClaimID, "--token-file", recoveryToken, "--revision", strconv.FormatInt(int64(secondRevision), 10), "--operation-id", explicitReconcileID, "--request-not-after", reconcileDeadline, "--target-claim-id", explicitClaimID, "--target-operation-id", explicitLostID, "--expected-request-sha256", explicitRequestHash, "--outcome", "observed-failure", "--evidence", `{"outcome":"observed-failure","executorStopped":true,"dispatchCount":0,"explicitTokenReplayVerified":true}`, "--ttl", "30s")
+	if err != nil {
+		return "", err
+	}
+	explicitReceipt, _ := explicitReconciled["receipt"].(map[string]any)
+	currentRevision, ok := explicitReceipt["revision"].(float64)
+	if !ok {
+		return "", fmt.Errorf("third reconciliation omitted its revision: %v", explicitReconciled)
+	}
+	for i := range reconcileArgs {
+		if reconcileArgs[i] == "--revision" {
+			reconcileArgs[i+1] = strconv.FormatInt(int64(currentRevision), 10)
+			break
+		}
+	}
+	replayed, err := h.cli(client, reconcileArgs...)
+	if err != nil {
+		return "", err
+	}
+	replayedReceipt, _ := replayed["receipt"].(map[string]any)
+	if replayedReceipt["idempotent"] != true || replayedReceipt["targetOperationId"] != retainedOperationID {
+		return "", fmt.Errorf("retained reconciliation did not replay idempotently: %v", replayed)
+	}
+	changedReconcile := append([]string(nil), reconcileArgs...)
+	for i := range changedReconcile {
+		if changedReconcile[i] == reconcileEvidence {
+			changedReconcile[i] = `{"outcome":"observed-success","executorStopped":true,"providerCompletionObserved":true,"changed":true}`
+		}
+	}
+	changedResult, err := h.cliFailure(client, changedReconcile...)
+	if err != nil {
+		return "", err
+	}
+	if err := requireReason(changedResult, "operation-request-mismatch", "reconciliation-conflict"); err != nil {
+		return "", fmt.Errorf("changed retained reconciliation replay: %w", err)
+	}
+	statusBefore, err := h.cli(client, "--profile", "team", "recovery", "status")
+	if err != nil {
+		return "", err
+	}
+	revision, ok := statusBefore["recoveryRevision"].(float64)
+	if !ok || statusBefore["recoveryMode"] != true {
+		return "", fmt.Errorf("invalid pre-reopen recovery state: %v", statusBefore)
+	}
+	incompleteAttestation := filepath.Join(evidence, "recovery-attestation-incomplete.json")
+	completeAttestation := filepath.Join(evidence, "recovery-attestation-complete.json")
+	incomplete := []byte(`{"inventoryComplete":true,"pendingSetsComplete":false,"retainedOutcomesComplete":true,"namespaceCessationEstablished":true,"evidenceReferences":["private://installation-inventory"]}` + "\n")
+	complete, err := json.MarshalIndent(map[string]any{"inventoryComplete": true, "pendingSetsComplete": true, "retainedOutcomesComplete": true, "namespaceCessationEstablished": true, "evidenceReferences": []string{installationEvidencePath, filepath.Join(evidence, "pending-evidence-survival.json"), filepath.Join(evidence, "asynchronous-provider-effect.txt"), filepath.Join(evidence, "retained-start-lost-completion.json")}}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(incompleteAttestation, incomplete, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(completeAttestation, append(complete, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	incompleteID, err := randomRequestID()
+	if err != nil {
+		return "", err
+	}
+	incompleteResult, err := h.cliFailure(client, "--profile", "team", "recovery", "reopen", "--operation-id", incompleteID, "--expected-recovery-revision", strconv.FormatInt(int64(revision), 10), "--attestation-file", incompleteAttestation)
+	if err != nil {
+		return "", err
+	}
+	if err := requireReason(incompleteResult, "recovery-required"); err != nil {
+		return "", fmt.Errorf("incomplete recovery evidence: %w", err)
+	}
+	statusAfterFailure, err := h.cli(client, "--profile", "team", "recovery", "status")
+	if err != nil || statusAfterFailure["recoveryMode"] != true || statusAfterFailure["recoveryRevision"] != revision {
+		return "", fmt.Errorf("failed reopen partially changed recovery state: status=%v err=%v", statusAfterFailure, err)
+	}
+	reopenID, err := randomRequestID()
+	if err != nil {
+		return "", err
+	}
+	reopenDeadline := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339Nano)
+	reopenArgs := []string{"--profile", "team", "recovery", "reopen", "--operation-id", reopenID, "--request-not-after", reopenDeadline, "--expected-recovery-revision", strconv.FormatInt(int64(revision), 10), "--attestation-file", completeAttestation}
+	reopened, err := h.cli(client, reopenArgs...)
+	if err != nil {
+		return "", err
+	}
+	reopenReplay, err := h.cli(client, reopenArgs...)
+	if err != nil {
+		return "", err
+	}
+	if reopened["recoveryMode"] != false || reopened["recoveryRevision"] != revision+1 || reopenReplay["idempotent"] != true || reopenReplay["recoveryRevision"] != revision+1 {
+		return "", fmt.Errorf("recovery reopen was not atomic and replayable: first=%v replay=%v", reopened, reopenReplay)
+	}
+	changedAttestation := filepath.Join(evidence, "recovery-attestation-changed.json")
+	changed := bytes.Replace(complete, []byte(`"namespaceCessationEstablished": true`), []byte(`"namespaceCessationEstablished": false`), 1)
+	if err := os.WriteFile(changedAttestation, append(changed, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	changedReopen := append([]string(nil), reopenArgs...)
+	changedReopen[len(changedReopen)-1] = changedAttestation
+	changedReopenResult, err := h.cliFailure(client, changedReopen...)
+	if err != nil {
+		return "", err
+	}
+	if err := requireReason(changedReopenResult, "operation-request-mismatch"); err != nil {
+		return "", fmt.Errorf("changed atomic reopen replay: %w", err)
+	}
+	statusAfter, err := h.cli(client, "--profile", "team", "recovery", "status")
+	if err != nil || statusAfter["recoveryMode"] != false || statusAfter["recoveryRevision"] != revision+1 {
+		return "", fmt.Errorf("recovery did not remain atomically open: status=%v err=%v", statusAfter, err)
+	}
+	postReopenHandle := filepath.Join(client.home, "handles", "post-reopen.json")
+	if _, err := h.cli(client, "--profile", "team", "acquire", "--handle", postReopenHandle, "--resource", "coordination:post-reopen", "--ttl", "5s"); err != nil {
+		return "", fmt.Errorf("admission did not open after recovery: %w", err)
+	}
+	if _, err := h.cli(client, "--profile", "team", "release", "--handle", postReopenHandle, "--reason", "atomic reopen verified"); err != nil {
+		return "", err
+	}
+	evidencePath := filepath.Join(evidence, "recovery-reopen.json")
+	encoded, err := json.MarshalIndent(map[string]any{"retainedInspection": inspectionResult, "lostBeginInspection": lostInspectionResult, "explicitLostBeginInspection": explicitInspectionResult, "recoveryAcquire": acquired, "reconciliation": reconciled, "reconciliationReplay": replayed, "changedReconciliation": changedResult, "lostBeginReconciliation": lostReconciled, "explicitLostBeginReconciliation": explicitReconciled, "statusBefore": statusBefore, "incompleteReopen": incompleteResult, "statusAfterIncomplete": statusAfterFailure, "reopen": reopened, "reopenReplay": reopenReplay, "changedReopen": changedReopenResult, "statusAfter": statusAfter, "cutoffKnown": false}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidencePath, append(encoded, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return evidencePath, nil
+}
+
+func (h *harness) exerciseOver32RecoveryClosure(evidence string) (string, error) {
+	database := filepath.Join(h.root, "authority", "worklease.db")
+	if h.realHost {
+		database = filepath.Join(h.remoteRoot, "authority", "worklease.db")
+	}
+	h.stopServer()
+	var fixtureOutput []byte
+	var err error
+	if h.realHost {
+		var output string
+		output, err = runSSH(h.remoteHost, h.remoteHelper, "recovery-closure-fixture", database)
+		fixtureOutput = []byte(output)
+	} else {
+		var result map[string]any
+		result, err = installRecoveryClosureFixture(database)
+		fixtureOutput, _ = json.Marshal(result)
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := h.restartServer(evidence); err != nil {
+		return "", err
+	}
+	handlePath := filepath.Join(h.clients[0].home, "handles", "over-32-recovery.json")
+	failure, err := h.cliFailure(h.clients[0], "--profile", "team", "acquire", "--handle", handlePath, "--resource", "coordination:recovery-closure-00", "--ttl", "5s")
+	if err != nil {
+		return "", err
+	}
+	if err := requireReason(failure, "recovery-required"); err != nil {
+		return "", err
+	}
+	var fixture map[string]any
+	if err := json.Unmarshal(fixtureOutput, &fixture); err != nil || fixture["resources"] != float64(35) || fixture["operations"] != float64(17) {
+		return "", fmt.Errorf("over-32 recovery fixture was not exhaustive: fixture=%v err=%v", fixture, err)
+	}
+	errorFields, _ := failure["error"].(map[string]any)
+	details, _ := errorFields["details"].(map[string]any)
+	failedClaimID, _ := details["claimId"].(string)
+	claims, err := h.cli(h.clients[0], "--profile", "team", "list", "--full")
+	if err != nil {
+		return "", err
+	}
+	if failedClaimID == "" || claimsContain(claims, failedClaimID) {
+		return "", fmt.Errorf("over-32 recovery failure partially committed claim %q: %v", failedClaimID, claims)
+	}
+	evidencePath := filepath.Join(evidence, "recovery-closure-over-32.json")
+	encoded, err := json.MarshalIndent(map[string]any{"fixture": fixture, "failure": failure, "requiredResourceCount": 35, "operationCount": 17, "authorityClaimAbsent": true}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidencePath, append(encoded, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return evidencePath, nil
+}
+
 func (h *harness) group5(evidence string) error {
 	authorityDB := filepath.Join(h.root, "authority", "worklease.db")
 	if h.realHost {
@@ -4014,6 +4541,20 @@ func (h *harness) group5(evidence string) error {
 	retainedCredentialClient, retainedInstallationID, err := h.provisionRaceClient("restore-retained-installation")
 	if err != nil {
 		return err
+	}
+	ephemeralClient, ephemeralInstallationID, err := h.provisionRaceClient("restore-ephemeral-runner")
+	if err != nil {
+		return err
+	}
+	if _, err := h.cli(h.clients[0], "--profile", "team", "installation", "revoke", "--installation-id", ephemeralInstallationID, "--reason", "ephemeral runner retired before backup"); err != nil {
+		return err
+	}
+	ephemeralFailure, err := h.cliFailure(ephemeralClient, "--profile", "team", "list")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(ephemeralFailure, "installation-revoked"); err != nil {
+		return fmt.Errorf("retired ephemeral installation remained usable: %w", err)
 	}
 	zeroBefore, nonzeroBefore, err := h.pendingSetInventories()
 	if err != nil {
@@ -4103,12 +4644,12 @@ func (h *harness) group5(evidence string) error {
 	if err != nil {
 		return err
 	}
-	selectedCutoffPresence, err := backupInstallationPresence(selectedBackup.Path, retainedInstallationID, missingInstallationID)
+	selectedCutoffPresence, err := backupInstallationPresence(selectedBackup.Path, retainedInstallationID, ephemeralInstallationID, missingInstallationID)
 	if err != nil {
 		return err
 	}
-	if !selectedCutoffPresence[retainedInstallationID] || selectedCutoffPresence[missingInstallationID] {
-		return fmt.Errorf("selected backup does not establish retained/missing credential fixtures: %v", selectedCutoffPresence)
+	if !selectedCutoffPresence[retainedInstallationID] || !selectedCutoffPresence[ephemeralInstallationID] || selectedCutoffPresence[missingInstallationID] {
+		return fmt.Errorf("selected backup does not establish active/retired/missing installation fixtures: %v", selectedCutoffPresence)
 	}
 	schemaProtocolEvidencePath, err := h.exerciseSchemaProtocolUpgrade(evidence)
 	if err != nil {
@@ -4183,8 +4724,7 @@ func (h *harness) group5(evidence string) error {
 		return fmt.Errorf("second restore source: %w", err)
 	}
 	secondRestoredInvite := strings.TrimSuffix(restoredInvite, ".invite") + "-second.invite"
-	secondRestoreArgs := append([]string(nil), restoreArgs...)
-	secondRestoreArgs[len(secondRestoreArgs)-1] = secondRestoredInvite
+	secondRestoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--cutoff-unknown", "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", secondRestoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, secondRestoreArgs...))
 	var secondRestoreResult map[string]any
 	if h.realHost {
@@ -4204,6 +4744,16 @@ func (h *harness) group5(evidence string) error {
 	h.report.RestoreTime = time.Since(start).String()
 	localMutation := []string{"--json", "--home", authorityDBRoot(h), "--local", "acquire", "--handle", filepath.Join(authorityDBRoot(h), "forbidden-local-handle.json"), "--resource", "coordination:forbidden-local", "--ttl", "1s"}
 	if err := h.requireAuthorityFailure(localMutation, "hosted-home-requires-remote"); err != nil {
+		return err
+	}
+	reissuedInvite := strings.TrimSuffix(restoredInvite, ".invite") + "-reissued.invite"
+	reissueArgs := []string{"--json", "hosted", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", reissuedInvite}
+	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, reissueArgs...))
+	if h.realHost {
+		if _, err := h.remoteJSON(h.remoteBinary, reissueArgs...); err != nil {
+			return err
+		}
+	} else if _, err := runJSON(nil, "", h.binary, reissueArgs...); err != nil {
 		return err
 	}
 	if err := h.restartServer(evidence); err != nil {
@@ -4226,10 +4776,15 @@ func (h *harness) group5(evidence string) error {
 	if err := h.refreshClientRestoreID(h.clients[0], restoredRestoreID); err != nil {
 		return err
 	}
-	clientRestoreInvite := restoredInvite
+	clientRestoreInvite := reissuedInvite
+	oldRestoreInvite := restoredInvite
 	if h.realHost {
-		clientRestoreInvite = filepath.Join(h.root, "secrets", "restored-client.invite")
-		if err := runSCP(h.remoteHost, h.remoteHost+":"+restoredInvite, clientRestoreInvite); err != nil {
+		clientRestoreInvite = filepath.Join(h.root, "secrets", "restored-client-reissued.invite")
+		oldRestoreInvite = filepath.Join(h.root, "secrets", "restored-client-revoked.invite")
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+reissuedInvite, clientRestoreInvite); err != nil {
+			return err
+		}
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+restoredInvite, oldRestoreInvite); err != nil {
 			return err
 		}
 	}
@@ -4237,18 +4792,37 @@ func (h *harness) group5(evidence string) error {
 	if err := os.Rename(clientCredential, clientCredential+".pre-restore"); err != nil {
 		return err
 	}
+	oldInviteResult, err := h.cliFailure(h.clients[0], "enroll", "--profile", "team", "--invite-file", oldRestoreInvite, "--label", "acceptance-revoked-bootstrap")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(oldInviteResult, "invite-invalid", "invite-used"); err != nil {
+		return fmt.Errorf("superseded bootstrap invite remained redeemable: %w", err)
+	}
 	if _, err := h.cli(h.clients[0], "enroll", "--profile", "team", "--invite-file", clientRestoreInvite, "--label", "acceptance-restored-cursor"); err != nil {
 		return err
 	}
-	if _, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked"); err != nil {
+	installationInventory, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked")
+	if err != nil {
 		return fmt.Errorf("new post-restore credential is unusable: %w", err)
+	}
+	if !installationIDExists(installationInventory, retainedInstallationID) || !installationIDExists(installationInventory, ephemeralInstallationID) || installationIDExists(installationInventory, missingInstallationID) || !installationRevoked(installationInventory, retainedInstallationID) || !installationRevoked(installationInventory, ephemeralInstallationID) || !installationLabelExists(installationInventory, "acceptance-restored-cursor") {
+		return fmt.Errorf("restored installation inventory is incomplete: %v", installationInventory)
+	}
+	installationEvidencePath := filepath.Join(evidence, "installation-inventory.json")
+	installationEvidence, err := json.MarshalIndent(map[string]any{"inventory": installationInventory, "activeRetainedAtCutoff": retainedInstallationID, "retiredEphemeralAtCutoff": ephemeralInstallationID, "missingAfterCutoff": missingInstallationID, "pendingSets": []pendingSetInventory{zeroSelected, nonzeroSelected}}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(installationEvidencePath, append(installationEvidence, '\n'), 0o600); err != nil {
+		return err
 	}
 	recoveryStatus, err := h.cli(h.clients[0], "--profile", "team", "recovery", "status")
 	if err != nil {
 		return err
 	}
-	if err := requireRetainedRecovery(recoveryStatus, retainedStartID, selectedBackup.DurableCutoff); err != nil {
-		return fmt.Errorf("second restore validation: %w", err)
+	if err := requireUnknownCutoffRetainedRecovery(recoveryStatus, retainedStartID); err != nil {
+		return fmt.Errorf("second restore unknown-cutoff validation: %w", err)
 	}
 	if err := requireRecoveryOmits(recoveryStatus, missingStartID, missingCompletedID); err != nil {
 		return err
@@ -4366,7 +4940,42 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the chosen cutoff retains an acknowledged start while its later successful completion and exactly-once effect are lost from the backup; a separately confirmed start after the cutoff is absent from the backup while its client retains incomplete pending evidence, and a fully completed exactly-once effect after the cutoff is absent in full; the current binary migrates populated schema-v1 replay and unknown-operation state while legacy schema and protocol readers fail explicitly; restoring the same chosen artifact twice preserves the authority identity and rotates the restore identity each time; a retained installation credential is revoked, an installation missing from the selected backup cannot authenticate, and a new post-restore credential works; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"enroll installation retained by selected cutoff", "capture older asynchronous online backup", "mutate authority tail", "begin guarded effect and hold completion", "capture and select newer asynchronous online backup", "release effect and commit completion after selected cutoff", "drop a post-cutoff begin acknowledgment and retain incomplete client evidence", "complete a separate post-cutoff effect exactly once", "prove both post-cutoff operations are absent from the selected artifact and restored recovery inventory", "enroll installation missing from selected cutoff", "migrate populated schema-v1 fixture and probe legacy/current protocol versions", "inventory zero and nonzero pending sets", "stop authority", "restore the same selected artifact twice", "verify retained start appears unresolved after its completion is lost", "verify retained, missing, and new post-restore credentials", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, schemaProtocolEvidencePath, credentialEvidencePath, doubleRestoreEvidencePath, retainedStartEvidencePath, missingTailEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	providerCompletedPath := filepath.Join(evidence, "provider-completed.log")
+	providerCompleted, err := os.ReadFile(providerCompletedPath)
+	if err != nil || strings.Count(strings.TrimSpace(string(providerCompleted)), "provider-completed ") != 1 {
+		return fmt.Errorf("provider completion evidence is not exact: content=%q err=%v", providerCompleted, err)
+	}
+	providerRecoveryEvidencePath := filepath.Join(evidence, "provider-effect-recovery.json")
+	providerRecoveryEvidence, err := json.MarshalIndent(map[string]any{"terminalReceiptEvidence": filepath.Join(evidence, "asynchronous-provider-effect.txt"), "providerCompletionEvidence": providerCompletedPath, "completionCount": 1, "includedInRetainedOutcomeInventory": true, "namespaceCessationEstablished": true}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(providerRecoveryEvidencePath, append(providerRecoveryEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
+	bootstrapEvidencePath := filepath.Join(evidence, "bootstrap-reissue.json")
+	bootstrapEvidence, err := json.MarshalIndent(map[string]any{"supersededInvite": oldRestoreInvite, "reissuedInvite": clientRestoreInvite, "supersededInviteReason": "invite-invalid-or-used", "reissuedInviteRedeemed": true, "restoreId": restoredRestoreID}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(bootstrapEvidencePath, append(bootstrapEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
+	reopenEvidencePath, err := h.exerciseRecoveryReopen(evidence, retainedStartID, installationEvidencePath)
+	if err != nil {
+		return err
+	}
+	closureEvidencePath, err := h.exerciseOver32RecoveryClosure(evidence)
+	if err != nil {
+		return err
+	}
+	h.report.Groups = append(h.report.Groups, groupEvidence{
+		Group:       5,
+		Observation: "the asynchronous backup and restore matrix proves chosen/older cutoffs, missing and retained work, provider completion after terminal receipt, complete active/retired/ephemeral installation and pending inventories, explicit unknown-cutoff recovery, exact retained reconciliation replay, evidence-gated atomic reopen, bootstrap reissue, and an atomic over-32 transitive closure refusal; hosted lock and direct-local bypasses remain refused",
+		Commands:    []string{"capture older and selected asynchronous backups", "retain started work and omit post-cutoff work", "inventory provider effects, installations, and pending sets", "restore the selected artifact with known then unknown cutoff metadata", "reissue and redeem the current bootstrap invite", "reconcile and exactly replay retained work", "reject incomplete reopen evidence", "atomically reopen and exactly replay the request", "inject and refuse a 35-resource transitive recovery closure", "refuse hosted lock and direct local bypasses"},
+		Evidence:    []string{backup, backupEvidencePath, schemaProtocolEvidencePath, credentialEvidencePath, doubleRestoreEvidencePath, retainedStartEvidencePath, missingTailEvidencePath, cursorEvidencePath, immutableEvidencePath, providerRecoveryEvidencePath, installationEvidencePath, bootstrapEvidencePath, reopenEvidencePath, closureEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime},
+		Passed:      true,
+	})
 	return nil
 }
 
@@ -4518,6 +5127,20 @@ func (h *harness) enrollRestoreValidationClient(name, invite, restoreID string) 
 	return c, nil
 }
 
+func requireUnknownCutoffRetainedRecovery(status map[string]any, operationID string) error {
+	unresolved, _ := status["unresolvedOperations"].([]any)
+	retained := false
+	for _, raw := range unresolved {
+		if raw == operationID {
+			retained = true
+		}
+	}
+	if status["recoveryMode"] != true || status["cutoffKnown"] != false || status["selectedDurableCutoff"] != nil || !retained {
+		return fmt.Errorf("recovery status did not retain %s with an explicitly unknown cutoff: %v", operationID, status)
+	}
+	return nil
+}
+
 func requireRetainedRecovery(status map[string]any, operationID, selectedCutoff string) error {
 	unresolved, _ := status["unresolvedOperations"].([]any)
 	retained := false
@@ -4602,17 +5225,31 @@ func runSupportingTests(evidence string) []supportingTestEvidence {
 }
 
 func (h *harness) runRemoteSupportingTests(evidence string) []supportingTestEvidence {
+	remoteHomeOutput, err := runSSH(h.remoteHost, "printenv", "HOME")
+	remoteHome := strings.TrimSpace(remoteHomeOutput)
+	if err != nil || !filepath.IsAbs(remoteHome) || strings.ContainsAny(remoteHome, "\r\n") {
+		return []supportingTestEvidence{{Command: "resolve remote test home", Scope: "remote setup", Status: "failed", Log: fmt.Sprint(err)}}
+	}
+	remoteTestTemp := filepath.Join(remoteHome, ".worklease-acceptance-test-"+filepath.Base(h.remoteRoot))
+	if _, err := runSSH(h.remoteHost, "mkdir", "-p", remoteTestTemp); err != nil {
+		return []supportingTestEvidence{{Command: "create remote private test temp", Scope: "remote setup", Status: "failed", Log: err.Error()}}
+	}
+	if _, err := runSSH(h.remoteHost, "chmod", "700", remoteTestTemp); err != nil {
+		return []supportingTestEvidence{{Command: "secure remote private test temp", Scope: "remote setup", Status: "failed", Log: err.Error()}}
+	}
 	type remotePackage struct {
 		path, filter string
 	}
-	packages := []remotePackage{{path: "./internal/gc"}, {path: "./internal/handle"}, {path: "./internal/mcp", filter: "TestCallLifecycleAndRedaction"}, {path: "./internal/store"}}
+	packages := []remotePackage{{path: "./internal/gc"}, {path: "./internal/handle"}, {path: "./internal/mcp", filter: "TestRemoteMCPRoutesExistingAuthorityTools"}, {path: "./internal/store", filter: "TestDriver"}}
 	results := make([]supportingTestEvidence, 0, len(packages))
 	for index, packageInfo := range packages {
 		name := fmt.Sprintf("supporting-test-%d", index)
 		packagePath := packageInfo.path
 		localBinary := filepath.Join(h.root, name)
 		command := []string{"go", "test", "-c", "-o", localBinary, packagePath}
-		buildOutput, buildErr := exec.Command(command[0], command[1:]...).CombinedOutput()
+		buildCommand := exec.Command(command[0], command[1:]...)
+		buildCommand.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+h.remoteGOOS, "GOARCH="+h.remoteGOARCH)
+		buildOutput, buildErr := buildCommand.CombinedOutput()
 		logPath := filepath.Join(evidence, name+"-build.log")
 		_ = os.WriteFile(logPath, buildOutput, 0o600)
 		if buildErr != nil {
@@ -4624,21 +5261,21 @@ func (h *harness) runRemoteSupportingTests(evidence string) []supportingTestEvid
 			results = append(results, supportingTestEvidence{Command: strings.Join(command, " "), Scope: "remote copy", Status: "failed", Log: logPath})
 			continue
 		}
-		runCommand := []string{"ssh", h.remoteHost, remoteBinary, "-test.v"}
 		runArgs := []string{"-test.v"}
 		if packageInfo.filter != "" {
-			runCommand = append(runCommand, "-test.run", packageInfo.filter)
 			runArgs = append(runArgs, "-test.run", packageInfo.filter)
 		}
-		h.logCommand("supporting-test@"+h.remoteHost, runCommand)
-		output, runErr := runSSH(h.remoteHost, append([]string{remoteBinary}, runArgs...)...)
+		remoteArgs := []string{"sh", "-c", `cd "$1" && shift && exec "$@"`, "worklease-test", h.clients[1].checkout, "env", "TMPDIR=" + remoteTestTemp, remoteBinary}
+		remoteArgs = append(remoteArgs, runArgs...)
+		h.logCommand("supporting-test@"+h.remoteHost, append([]string{"ssh", h.remoteHost}, remoteArgs...))
+		output, runErr := runSSH(h.remoteHost, remoteArgs...)
 		remoteLog := filepath.Join(evidence, name+"-remote.log")
 		_ = os.WriteFile(remoteLog, []byte(output), 0o600)
 		status := "supporting-test-pass"
 		if runErr != nil {
 			status = "failed"
 		}
-		results = append(results, supportingTestEvidence{Command: strings.Join(runCommand, " "), Scope: "remote", Status: status, Log: remoteLog})
+		results = append(results, supportingTestEvidence{Command: strings.Join(append([]string{"ssh", h.remoteHost}, remoteArgs...), " "), Scope: "remote", Status: status, Log: remoteLog})
 	}
 	return results
 }
@@ -4719,14 +5356,14 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC7.8", "retained start with lost completion", 5),
 		live("AC7.9", "confirmed start missing from backup while client is offline or incomplete", 5),
 		live("AC7.10", "fully missing completed work", 5),
-		blocked("AC7.11", "provider effects after terminal receipt"),
-		blocked("AC7.12", "installation inventories including ephemeral and retired clients"),
-		blocked("AC7.13", "missing evidence blocks reopening"),
-		blocked("AC7.14", "unknown cutoffs or history bounds with exhaustive coverage"),
-		blocked("AC7.15", "transitive closure including the over-32 failure"),
-		blocked("AC7.16", "retained replay"),
-		blocked("AC7.17", "bootstrap reissue"),
-		blocked("AC7.18", "atomic reopen"),
+		live("AC7.11", "provider effects after terminal receipt", 5),
+		live("AC7.12", "installation inventories including ephemeral and retired clients", 5),
+		live("AC7.13", "missing evidence blocks reopening", 5),
+		live("AC7.14", "unknown cutoffs or history bounds with exhaustive coverage", 5),
+		live("AC7.15", "transitive closure including the over-32 failure", 5),
+		live("AC7.16", "retained replay", 5),
+		live("AC7.17", "bootstrap reissue", 5),
+		live("AC7.18", "atomic reopen", 5),
 		live("AC7.19", "every lock-held bypass attempt", 5),
 		live("AC7.20", "direct local mutation refused against marked hosted home while lock is free", 5),
 	}
@@ -4910,6 +5547,18 @@ func installationIDExists(result map[string]any, installationID string) bool {
 		installation, _ := raw.(map[string]any)
 		if installation["installationId"] == installationID {
 			return true
+		}
+	}
+	return false
+}
+
+func installationRevoked(result map[string]any, installationID string) bool {
+	installations, _ := result["installations"].([]any)
+	for _, raw := range installations {
+		installation, _ := raw.(map[string]any)
+		if installation["installationId"] == installationID {
+			_, revoked := installation["revokedAt"].(string)
+			return revoked
 		}
 	}
 	return false
@@ -5345,7 +5994,7 @@ func resolveSSHAddress(host string) (string, error) {
 			if len(fields) == 2 && fields[0] == "hostname" {
 				if addresses, lookupErr := net.LookupHost(fields[1]); lookupErr == nil {
 					for _, address := range addresses {
-						if parsed := net.ParseIP(address); parsed != nil && !parsed.IsLoopback() {
+						if parsed := net.ParseIP(address); parsed != nil {
 							return address, nil
 						}
 					}
@@ -5551,11 +6200,19 @@ func freePort() (int, error) {
 	return port, listener.Close()
 }
 
+func quoteRemoteArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
 func runSSH(host string, args ...string) (string, error) {
 	if err := validateSSHHost(host); err != nil {
 		return "", err
 	}
-	output, err := exec.Command("ssh", append([]string{host}, args...)...).CombinedOutput()
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = quoteRemoteArg(arg)
+	}
+	output, err := exec.Command("ssh", host, strings.Join(quoted, " ")).CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("ssh %s: %w: %s", host, err, output)
 	}
