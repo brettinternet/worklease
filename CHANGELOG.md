@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.0 - 2026-09-15
+
 ### Added
 
 - Every `list` command accepts `ls`, including the top-level claim list and the nested policy, profile, and installation lists.
