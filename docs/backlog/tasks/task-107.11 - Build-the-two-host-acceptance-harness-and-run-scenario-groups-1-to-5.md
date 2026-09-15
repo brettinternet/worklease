@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 02:28'
+updated_date: '2026-09-15 02:50'
 labels:
   - remote-authority
 dependencies:
@@ -36,21 +36,21 @@ ordinal: 143000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Build a reproducible acceptance harness and run all five scenario groups against one TLS authority host and two client hosts with distinct roots. Fixtures must exercise the real client, server, shared schema, CLI, MCP adapter, local guarded effects, asynchronous backup selection, restore, and offline lock boundary. Fault injection records expected effects and invocation counts so replay and late responses cannot hide duplicate execution. Local containers or VMs support development, but promotion requires the same harness to pass on real hosts.
+Build a reproducible acceptance harness and run all five scenario groups against one TLS authority environment and two client environments with distinct roots. At least one client and the authority run across an SSH boundary in a repository-managed VM; an independently hosted physical or cloud machine is optional additional evidence, not a completion requirement. Fixtures must exercise the real client, server, shared schema, CLI, MCP adapter, local guarded effects, asynchronous backup selection, restore, and offline lock boundary. Fault injection records expected effects and invocation counts so replay and late responses cannot hide duplicate execution.
 
-Report simulated WAN latency separately from measured real-host latency. Record exact evidence paths, commands, environment, measurements, selected backup cutoffs, unknown recovery bounds, and the observation for each scenario group. Unit tests support the harness but do not substitute for real WAN, backup, restore, filesystem, or process behavior. Every failure blocks Done until fixed and rerun.
+Report synthetic WAN injection separately from measured cross-environment latency. Record exact evidence paths, commands, environment, measurements, selected backup cutoffs, unknown recovery bounds, and the observation for each scenario group. Unit tests support the harness but do not substitute for the VM backup, restore, filesystem, process, SSH, and TLS behavior. Every failure blocks Done until fixed and rerun.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A reproducible harness provisions one authority behind TLS and two client hosts with distinct checkout and credential roots, runs both CLI and MCP paths, and captures expected external effects and exact dispatch counts under injected faults.
-- [ ] #2 The harness runs locally in containers or VMs for development and unchanged on real hosts for acceptance. Reports label synthetic WAN injection separately from real-host measurements and record commands, evidence paths, environment, latency, renewal margins, throughput, storage behavior, backup cutoff, restore time, and recovery bounds.
+- [ ] #1 A reproducible harness provisions one authority behind TLS and two client environments with distinct checkout and credential roots, runs both CLI and MCP paths, and captures expected external effects and exact dispatch counts under injected faults.
+- [ ] #2 The harness runs unchanged with the authority and one client across an SSH boundary in a repository-managed VM; a physical or cloud host is optional additional evidence. Reports label synthetic WAN injection separately from measured cross-environment latency and record commands, evidence paths, environment, latency, renewal margins, throughput, storage behavior, backup cutoff, restore time, and recovery bounds.
 - [ ] #3 Group 1 covers cross-host contention and separate scopes, repository-independent profile selection, raw and misconfigured reserved-prefix rejection, configuration restart behavior, and persisted admission limits on every extension path.
 - [ ] #4 Group 2 covers exact replay after lost start, renewal, and completion responses; coexistence of request-scoped recovery records with original guarded-effect evidence; no local fallback during partition; race ordering for revocation and policy changes; fresh response identity and time; clock-bound edge cases; pre-dispatch persistence failure; late acknowledgment without redispatch; and an asynchronous provider effect that continues after terminal completion.
 - [ ] #5 Group 3 covers bootstrap crash ordering and redaction, hidden/file/descriptor invite input, dropped invite and redemption responses, immutable request incarnation, no-burn mismatch, role isolation, rotation, revocation, and distinct MCP authentication guidance.
 - [ ] #6 Group 4 covers snapshot/watch races, disconnect and reconnect, cursor incarnation and retention gaps, stuck-history retention, full-volume `storage-failure` without pruning, and client pending evidence surviving age, GC, replay expiry, restart, and profile changes.
 - [ ] #7 Group 5 uses an actual asynchronous backup fixture with chosen and older cutoffs. It covers zero and nonzero pending sets, restart, schema and protocol upgrade, restored and missing credentials, double restore, retained start with lost completion, a known confirmed start missing from the backup while its client is offline or incomplete, fully missing completed work, provider effects after terminal receipt, installation inventories including ephemeral and retired clients, missing evidence that blocks reopening, explicitly unknown cutoffs or history bounds with otherwise exhaustive coverage, transitive closure including the over-32 failure, retained replay, bootstrap reissue, atomic reopen, every lock-held bypass attempt, and a direct local mutation refused against a marked hosted home while the lock is free.
-- [ ] #8 Each scenario group records its owning observation and objective pass evidence. Any failure remains blocking and the task cannot close until it is fixed and the affected scenario passes; unit coverage does not replace the real-host run.
+- [ ] #8 Each scenario group records its owning observation and objective pass evidence. Any failure remains blocking and the task cannot close until it is fixed and the affected scenario passes; unit coverage does not replace the repository-managed VM run.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -91,6 +91,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 16. Implement AC7.7 double restore and AC7.8 retained start with lost completion against the selected asynchronous backup; preserve later Group 5 clauses as blocked, run local/reachable real-host evidence, independent review, all quality gates, staged hooks, commit, and record objective evidence.
 
 17. Implement AC7.9 confirmed starts missing from the selected backup with incomplete client evidence and AC7.10 fully missing completed work; verify selected-artifact absence, restored-inventory absence, and exact effect counts, then run local/reachable real-host evidence, independent review, quality gates, staged hooks, and commit.
+
+18. Replace the unavailable personal SSH alias with a repository-managed Lima VM, generated SSH configuration, and target-architecture binaries; treat its unchanged full-harness pass as the required cross-environment acceptance run.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -197,4 +199,6 @@ Implemented AC7.7 and AC7.8. Group 5 now restores the same checksum-verified sel
 Implemented AC7.9 and AC7.10. The shared harness now drops a post-cutoff begin response, confirms the authority retained the start while the client keeps an incomplete pending request and dispatches no effect, and proves the selected artifact contains no such row. A separate post-cutoff operation completes with one effect and cleared pending state, while the selected artifact and restored recovery inventory omit it entirely. Objective local evidence: dist/remote-acceptance/ac7-missing-tail-local-reviewed/report.json, coverage.json, and missing-tail-operations.json; CI evidence: dist/remote-acceptance/20260915T022656.003778000Z/report.json. The repository-managed real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Independent review found duplicate operation IDs could falsely look absent when SQL count exceeded one; presence now uses count > 0 with regression coverage. Remaining Group 5 clauses stay still-blocked. Next resumable step: AC7.11 provider effects after terminal receipt and AC7.12 installation inventories including ephemeral and retired clients.
 
 Committed AC7.7 through AC7.10 harness slices as 041c968 (Exercise missing restore tail cases). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks.
+
+Acceptance scope relaxed by user decision: a repository-managed VM over SSH now satisfies the required cross-environment acceptance run; a separate physical or cloud host is optional evidence.
 <!-- SECTION:NOTES:END -->
