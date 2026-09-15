@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 01:06'
+updated_date: '2026-09-15 01:07'
 labels:
   - remote-authority
 dependencies:
@@ -173,4 +173,6 @@ Implemented AC6.3 and AC6.4. The shared harness now rejects foreign-authority cu
 Implemented AC6.5 and AC6.6. The shared harness saturates an owner-marked SQLite acceptance database, applies the same max_page_count to the shipped server connection, and forces the GC replay write to allocate an overflow page so the server emits 503 storage-failure from real SQLITE_FULL; a before/after authority snapshot is identical, and the unchanged retry then objectively collects eligible epochs/events. The retained enrollment pending file is aged, remains enumerable and byte-identical across replay expiry, server GC, authority restarts, endpoint/profile rewrites, restore-ID refresh, and authority-restored replay. Objective local evidence: dist/remote-acceptance/ac6-storage-pending-local-7/report.json, coverage.json, full-volume-storage-failure.json, cursor-retention-gaps.json, pending-replay-expired-output.txt, pending-evidence-survival.json, pending-inventory.txt, and fault-proxy.log. Independent review false-pass findings for synthetic failure, zero eligible pruning, missing replay-expired exercise, cleanup restoration, and wrong pending inventory were fixed. The unchanged real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails; no new real-host pass is claimed. Next resumable step: AC6.7 pending guarded-effect and secondary lifecycle non-overwrite coverage, then the remaining Group 5 restore matrix.
 
 Correction to the next resumable step above: Group 4 has no separate AC6.7 coverage entry. Resume with AC7.1 and AC7.3: add an actual asynchronous backup fixture with chosen and older cutoffs and prove zero/nonzero pending-set inventories, then continue the remaining Group 5 restore matrix.
+
+Committed AC6.5 and AC6.6 implementation as 476e9f9 (Exercise remote storage and pending retention). Final verification passed mise run lint, format-check, test, typecheck, ci, and staged hooks. The first CI attempt hit two unrelated race timing flakes; each passed 10 focused race repetitions and the complete CI rerun passed.
 <!-- SECTION:NOTES:END -->
