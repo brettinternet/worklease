@@ -118,7 +118,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/release-archive/worklease-v${version}-linux-${ASSET_ARCH}.tar.gz" -C "$RUNNER_TEMP/released"
           cp "$RUNNER_TEMP/released/bin/worklease" "bin/worklease-${TARGET_ARCH}"
       - name: Set up Docker builder
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
       - name: Build native image from released binary
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
@@ -221,9 +221,9 @@ jobs:
           cp "$RUNNER_TEMP/released-amd64/bin/worklease" bin/worklease-amd64
           cp "$RUNNER_TEMP/released-arm64/bin/worklease" bin/worklease-arm64
       - name: Set up Docker builder
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
