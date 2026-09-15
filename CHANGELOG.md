@@ -6,6 +6,8 @@
 
 - Every `list` command accepts `ls`, including the top-level claim list and the nested policy, profile, and installation lists.
 - `worklease completion bash|zsh|fish` prints deterministic, read-only shell completion derived from the visible command tree, including aliases and options.
+- The experimental, opt-in self-hosted remote claim authority is documented with profile management, invite enrollment, remote CLI/MCP operation, hosted lifecycle, single-writer deployment, and restore/reopen recovery boundaries. The standard binary remains listener- and network-free unless remote profile management, a selected remote profile, or `serve` is explicitly used; local reads remain setup-free.
+- Actions run [34915583460](https://github.com/brettinternet/worklease/actions/runs/34915583460) at commit `7e4cef4312d09e380d5c02cea7f23bd13ab66a9c` passed all four target archive jobs and native smoke on matching runners. Relative to v1.2.0, archive/binary deltas were linux-arm64 `+2,147,600 B`/`+5,242,880 B`, linux-x64 `+2,383,219 B`/`+5,763,072 B`, macos-arm64 `+2,218,770 B`/`+5,344,688 B`, and macos-x64 `+2,396,120 B`/`+5,856,672 B`. The dispatch did not publish, tag, or push.
 
 ## 1.2.0 - 2026-09-13
 

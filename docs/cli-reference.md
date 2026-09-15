@@ -223,8 +223,101 @@ and one to 32 resources. All lifecycle mutations apply to the whole claim.
 MCP leases have an absolute `maxHold` deadline; ordinary CLI claims do not.
 Concurrent sessions need distinct selectors even in one checkout.
 
-## Deferred authority
+## Experimental remote authority
 
-[`remote-claim-authority.md`](remote-claim-authority.md)
-records the future remote design; it is not a shipped HTTP backend. Worklease
-uses one local SQLite authority. It has no remote fallback.
+The standard binary is inert by default: it opens no listener and makes no
+network request unless remote profile management, a selected remote profile, or
+`serve` is explicitly invoked. Local reads remain setup-free. A selected remote
+profile never falls back to local after failure. The remote authority is
+experimental, self-hosted, one namespace/process/SQLite writer on one
+single-host filesystem; it makes no HA, provider-fencing, or exactly-once
+execution claim. See [`remote-claim-authority.md`](remote-claim-authority.md)
+for the operator runbook and recovery evidence requirements.
+
+### Profiles and enrollment
+
+Profiles are owner-private and selected in this order: `--profile NAME`,
+`WORKLEASE_PROFILE`, explicit user-side checkout binding, user default, then
+local. `--local` overrides local selection and conflicts with `--profile` or
+`WORKLEASE_PROFILE`. Endpoint changes require remove/add.
+
+```text
+worklease profile add NAME --endpoint URL --authority-id ID [--allow-insecure-http]
+worklease profile list
+worklease profile ls
+worklease profile show NAME
+worklease profile remove NAME
+worklease profile default NAME
+worklease profile bind NAME [--cwd DIR]
+worklease profile unbind [--cwd DIR]
+worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]
+```
+
+`profile add` performs metadata discovery and pins authority/incarnation before
+saving. `enroll` never accepts an invite or installation credential on argv.
+An admin issues an invite with exactly one output source:
+
+```text
+worklease invite issue --profile NAME --role read|write|admin \
+  (--invite-file FILE|--invite-fd N) [--label TEXT] [--expires-at RFC3339] \
+  [--operation-id ID] [--request-not-after RFC3339]
+```
+
+The invite is generated before dispatch; the file form is durably saved first,
+while an fd caller owns durable capture. Only its hash crosses the network. Roles are `read`, `write`, and `admin`. Stable remote reasons include
+`authentication-required`, `installation-revoked`, `authorization-denied`,
+`authority-restored`, `resource-not-enrolled`, `recovery-required`,
+`recovery-closed`, `unknown-outcome`, `operation-ambiguous`,
+`operation-request-mismatch`, and `operation-kind-unsupported`.
+
+### Remote and hosted commands
+
+Existing lifecycle/inspection commands use the selected profile: `acquire`,
+`status`, `list`, `heartbeat`, `checkpoint`, `release`, `transfer`, `verify`,
+`exec`, `op inspect`, `op reconcile`, `events`, `history`, `watch`, and `gc`.
+Remote `--wait` is a client loop capped at 60 seconds; `--poll-interval` is
+local-only. Remote `gc` requires `--apply` and accepts `--cutoff TIME` or
+`--retention-days N` (default 30 days); it has no remote dry run. Remote mutations, including `--no-handle`, save durable exact pending
+requests before dispatch. `path:`, `backlog-md:`, and `markdown:` are
+host-local and rejected remotely; same-host transfer requires a named
+predecessor handle.
+
+Remote administration is:
+
+```text
+worklease installation list --profile NAME [--include-revoked]
+worklease installation revoke --profile NAME --installation-id ID [--reason TEXT] [--operation-id ID] [--request-not-after RFC3339]
+worklease claim revoke --profile NAME --claim-id ID [--reason TEXT] [--operation-id ID] [--request-not-after RFC3339]
+worklease recovery status --profile NAME
+worklease recovery reopen --profile NAME --expected-recovery-revision N --attestation-file FILE [--operation-id ID] [--request-not-after RFC3339]
+```
+
+Hosted operations are offline-only and take the hosted lock before opening
+SQLite:
+
+```text
+worklease hosted init --home DIR --server-config FILE --bootstrap-invite-file FILE
+worklease hosted restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]
+worklease hosted bootstrap-reissue --home DIR --bootstrap-invite-file FILE
+worklease hosted retire --home DIR [--force --unresolved-export FILE]
+worklease serve --server-config FILE [--allow-insecure-http]
+```
+
+`serve` reads listen/TLS/admission/rate settings only from its deployment-owned
+server config. Configuration changes require stop-before-start; there is no hot
+reload. Restore creates a fresh incarnation, ends active claims as `restored`,
+revokes old credentials, retains started operations as unresolved, and holds
+ordinary admission in recovery until an admin attestation establishes complete
+installation inventory, enumerable pending coverage, retained and lost-tail
+outcomes, provider and executor cessation, the selected cutoff and loss
+interval through old-authority cessation. Unknown bounds must be explicit and
+never waive another coverage requirement; missing inventory, pending-set,
+outcome, or cessation coverage keeps recovery closed indefinitely. A completely missing completed operation can be
+an attested history gap only with independent no-residual-effect evidence;
+recovery import and a completed-history journal are unsupported.
+
+`replace-file`, provider execution, recovery import, completed-history
+journaling, cross-host transfer, repository enrollment, HA, Postgres,
+multi-namespace serving, admission backpressure, browser control plane, and
+remote retirement are unsupported. Public publication, tags, pushes, and
+release execution are separate owner-authorized actions.

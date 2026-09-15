@@ -80,6 +80,32 @@ bind handles and cursors. Resource keys may be host-local. MCP does not discover
 provider work, perform provider writes, or prove provider-side fencing. A client
 must verify its authoritative provider checkpoint before release.
 
-Native editor guards are optional and separate; see [setup](setup.md). The
-deferred remote authority document is design evidence, not an available MCP
-transport.
+### Experimental remote profile
+
+The remote authority is experimental and is never an MCP endpoint. `worklease
+mcp` remains a local stdio process; when a remote profile is selected with the
+same global `--profile NAME` (or `WORKLEASE_PROFILE`/user-side binding/default),
+it uses the remote HTTPS client while keeping credentials, handles, and durable
+pending requests on the client host. `--local` explicitly selects the local
+SQLite authority and conflicts with remote selection. An unselected profile does
+not cause network activity, and local reads remain setup-free.
+
+The eleven tools and their names do not change: `key`, `acquire`, `status`,
+`list`, `heartbeat`, `checkpoint`, `verify`, `watch`, `events`, `release`, and
+`instructions`. Remote `acquire` uses portable configured resource prefixes;
+host-local `path`, `backlog-md`, and `markdown` keys are rejected. `wait` is a
+client loop capped at 60 seconds and the remote server owns polling. Remote
+MCP does not add enrollment, administration, transfer, exec, replace-file,
+reconciliation, history, profile, or recovery tools. Enroll outside MCP with:
+
+```text
+worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]
+```
+
+Remote failures retain stable reasons such as `authentication-required`,
+`installation-revoked`, `already-claimed`, `authority-restored`,
+`unknown-outcome`, and `operation-kind-unsupported`; they are not flattened to
+prose. See the [experimental remote authority guide](remote-claim-authority.md)
+for hosted deployment, recovery, and unsupported boundaries.
+
+Native editor guards are optional and separate; see [setup](setup.md).

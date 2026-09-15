@@ -110,6 +110,22 @@ in one checkout. Credentials are never printed.
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
 
+## Experimental remote authority
+
+Worklease also ships an **experimental**, opt-in, self-hosted remote claim
+authority. One `worklease serve` process owns one namespace and one SQLite
+writer on one host; guarded commands and provider effects remain on client
+hosts. It makes no high-availability, provider-fencing, or exactly-once
+execution claim. Profiles, invite enrollment, remote administration, hosted
+restore/recovery, and the local stdio MCP client are documented in the
+[experimental remote authority guide](docs/remote-claim-authority.md).
+
+The standard binary permanently opens no listener and makes no network request
+unless remote profile management is explicitly invoked, a remote profile is
+selected, or `serve` is run. Local reads remain setup-free. Remote failures do
+not fall back to local coordination. Public publication, tagging, pushing, and
+release execution remain separately owner-authorized.
+
 ## JSON and MCP quick start
 
 Put `--json` before the command for one schema-version 2 envelope. Errors have a
@@ -176,7 +192,7 @@ See:
 - [MCP and JSON](docs/mcp.md)
 - [Setup and native hooks](docs/setup.md)
 - [Container deployment](docs/container.md)
-- [Remote authority design](docs/remote-claim-authority.md)
+- [Experimental remote authority](docs/remote-claim-authority.md)
 
 ## Development
 
@@ -202,4 +218,5 @@ runs clean-checkout end-to-end smoke, and renders the manual.
 The changelog command rejects empty entries, invalid versions or dates,
 duplicates, and existing releases. The tagged workflow publishes the matching
 changelog section verbatim. Tagging and publishing require separate owner
-authorization.
+authorization. Experimental remote artifact jobs may build and smoke-test on
+matching runners without publishing, tagging, or pushing.
