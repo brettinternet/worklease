@@ -15,6 +15,10 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   go-assets:
     name: Go archive (${{ matrix.platform }}-${{ matrix.asset_arch }})
@@ -81,28 +85,65 @@ jobs:
           path: dist/release/worklease-*.tar.gz
           if-no-files-found: error
 
-  publish:
-    name: Publish explicitly authorized tagged release
-    if: github.event_name == 'push'
+  container-images:
+    name: Container validation (linux-${{ matrix.arch }})
     needs: [go-assets]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+            asset_arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            asset_arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download released Linux binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-go-linux-${{ matrix.asset_arch }}
+          path: ${{ runner.temp }}/release-archive
+      - name: Install released Linux binary
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          version=${RELEASE_TAG#v}
+          mkdir -p "$RUNNER_TEMP/released" bin
+          tar -xzf "$RUNNER_TEMP/release-archive/worklease-v${version}-linux-${ASSET_ARCH}.tar.gz" -C "$RUNNER_TEMP/released"
+          cp "$RUNNER_TEMP/released/bin/worklease" "bin/worklease-${TARGET_ARCH}"
+      - name: Set up Docker builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build native image from released binary
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          version=${RELEASE_TAG#v}
+          image="worklease-container-smoke:${version}-${TARGET_ARCH}"
+          docker buildx build --load --platform "linux/${TARGET_ARCH}" \
+            --build-arg VERSION="$version" --build-arg REVISION="$GITHUB_SHA" \
+            --tag "$image" .
+          upgrade_image="${image}-upgrade"
+          docker tag "$image" "$upgrade_image"
+          scripts/test-container-image.sh "$image" "$version" \
+            "$RUNNER_TEMP/released/bin/worklease" "$upgrade_image"
+
+  release-gate:
+    name: Authorize tagged release
+    if: github.event_name == 'push'
+    needs: [go-assets, container-images]
     runs-on: ubuntu-latest
     environment: release
-    permissions:
-      actions: read
-      contents: write
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
-      - name: Install mise
-        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-        with: { cache: true }
-      - name: Validate and extract curated release notes
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          version=${RELEASE_TAG#v}
-          go run ./cmd/worklease-release --version "$version" --changelog-notes "$RUNNER_TEMP/release-notes.md"
       - name: Verify CI passed for tag commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,6 +151,27 @@ jobs:
           run_id=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 1 --json databaseId --jq '.[0].databaseId')
           test -n "$run_id"
           gh run watch "$run_id" --exit-status
+
+  publish:
+    name: Publish immutable release assets
+    if: github.event_name == 'push'
+    needs: [go-assets, release-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with: { cache: true }
+      - name: Extract curated release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=${RELEASE_TAG#v}
+          go run ./cmd/worklease-release --version "$version" --changelog-notes "$RUNNER_TEMP/release-notes.md"
       - name: Download all release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -130,6 +192,55 @@ jobs:
             dist/release/checksums.txt
           fail_on_unmatched_files: true
           body_path: ${{ runner.temp }}/release-notes.md
+
+  publish-container:
+    name: Publish immutable multi-platform container
+    if: github.event_name == 'push'
+    needs: [go-assets, release-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download Linux release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-go-linux-*
+          path: ${{ runner.temp }}/release-archives
+      - name: Prepare released binaries
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=${RELEASE_TAG#v}
+          mkdir -p bin "$RUNNER_TEMP/released-amd64" "$RUNNER_TEMP/released-arm64"
+          tar -xzf "$RUNNER_TEMP/release-archives/release-go-linux-x64/worklease-v${version}-linux-x64.tar.gz" -C "$RUNNER_TEMP/released-amd64"
+          tar -xzf "$RUNNER_TEMP/release-archives/release-go-linux-arm64/worklease-v${version}-linux-arm64.tar.gz" -C "$RUNNER_TEMP/released-arm64"
+          cp "$RUNNER_TEMP/released-amd64/bin/worklease" bin/worklease-amd64
+          cp "$RUNNER_TEMP/released-arm64/bin/worklease" bin/worklease-arm64
+      - name: Set up Docker builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish immutable version tag
+        env:
+          IMAGE: ghcr.io/brettinternet/worklease
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing image tag $IMAGE:$RELEASE_TAG" >&2
+            exit 1
+          fi
+          version=${RELEASE_TAG#v}
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$version" --build-arg REVISION="$GITHUB_SHA" \
+            --tag "$IMAGE:$RELEASE_TAG" --push .
 
   mise-install:
     name: mise latest (${{ matrix.platform }})

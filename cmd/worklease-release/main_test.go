@@ -31,6 +31,42 @@ func TestReleaseWorkflowPublishesValidatedChangelogNotes(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowValidatesAndPublishesContainer(t *testing.T) {
+	workflow, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, required := range []string{
+		"Container validation (linux-${{ matrix.arch }})",
+		"arch: amd64",
+		"arch: arm64",
+		"scripts/test-container-image.sh",
+		"if: github.event_name == 'push'",
+		"ghcr.io/brettinternet/worklease",
+		"--platform linux/amd64,linux/arm64",
+		"docker buildx imagetools inspect",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("release workflow does not contain %q", required)
+		}
+	}
+	if strings.Count(text, "packages: write") != 1 {
+		t.Fatal("package-write permission must be limited to one container publication job")
+	}
+
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := string(dockerfile)
+	for _, required := range []string{"FROM scratch", "COPY --chown=65532:65532", "USER 65532:65532", `ENTRYPOINT ["/worklease"]`} {
+		if !strings.Contains(container, required) {
+			t.Fatalf("Dockerfile does not contain %q", required)
+		}
+	}
+}
+
 func TestExplicitEmptyChangelogModesAreRejected(t *testing.T) {
 	for _, test := range []struct {
 		name    string

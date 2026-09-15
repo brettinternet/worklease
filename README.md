@@ -55,7 +55,8 @@ mise run build
 
 Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
 and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
-`checksums.txt`.
+`checksums.txt`. Linux amd64 and arm64 server images are published to
+`ghcr.io/brettinternet/worklease:vVERSION`; see [container deployment](docs/container.md).
 
 ### Shell completion
 
@@ -174,6 +175,7 @@ See:
 - [Claim, operation, and recovery model](docs/claim-model.md)
 - [MCP and JSON](docs/mcp.md)
 - [Setup and native hooks](docs/setup.md)
+- [Container deployment](docs/container.md)
 - [Remote authority design](docs/remote-claim-authority.md)
 
 ## Development
