@@ -4,7 +4,7 @@ title: Add guided remote server setup
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-15 21:56'
+updated_date: '2026-09-15 22:25'
 labels:
   - remote-authority
   - ergonomics
@@ -31,13 +31,13 @@ Provide a supported setup path that gathers the small set of deployment choices 
 <!-- AC:BEGIN -->
 - [ ] #1 Bare server init retains non-interactive local-only behavior. An explicit guided-setup option accepts flags or prompts for missing listen address, client-facing endpoint, transport, and admitted prefixes; fully specified flag-driven setup never prompts.
 - [ ] #2 Guided LAN setup defaults to TLS and generates owner-private certificate/key files without YAML editing or an external CA. The leaf certificate covers the advertised endpoint host/IP, has a documented validity period, and its paths and client-facing endpoint are persisted in validated server configuration.
-- [ ] #3 An existing certificate/key pair skips generation; setup rejects mismatched, expired, or endpoint-incompatible material before initializing the authority and exposes the same leaf-certificate fingerprint handoff as generated TLS.
+- [ ] #3 An existing certificate/key pair skips generation. Setup rejects unreadable, unsafe, mismatched-pair, or expired material before initializing the authority; a supplied leaf whose SAN does not cover the advertised endpoint host is a warning, not a rejection, since CA-verified clients may reach it by another name. Both TLS sources expose the same leaf-certificate fingerprint handoff.
 - [ ] #4 Guided setup requires explicit confirmation or equivalent flags for a non-loopback listener and a separate credential-exposure acknowledgement for cleartext. Non-loopback cleartext is never default; legacy bare-init loopback behavior is preserved.
 - [ ] #5 In guided mode, non-terminal input with missing required choices fails immediately with the exact flags to supply. Cancellation and validation failures do not initialize an authority or overwrite existing config, certificate, key, or invite files; partial-write failures give a safe recovery action.
-- [ ] #6 Success output states created paths, authority ID, SHA-256 of the DER leaf certificate for either TLS source, start command, and bootstrap enrollment command after secure artifact transfer, without secret values. TASK-109.2 owns artifact encoding and redemption.
+- [ ] #6 Success output states created paths, authority ID, SHA-256 of the DER leaf certificate for either TLS source, start command, and the exact bootstrap enrollment command `worklease enroll --invite-file FILE` (no `--profile`; the artifact carries the profile name), without secret values. TASK-109.2 owns artifact encoding and redemption.
 - [ ] #7 After successfully binding, serve reports its actual listen address, transport, and advertised endpoint on stderr; startup diagnostics do not corrupt structured stdout or imply readiness after a bind/TLS failure.
 - [ ] #8 Validation errors identify the invalid choice and provide a directly usable correction.
-- [ ] #9 Automated tests cover localhost, secure LAN with generated certificate, secure LAN with supplied certificate, explicitly insecure LAN, cancellation, non-interactive missing input, and invalid-input paths.
+- [ ] #9 Automated tests cover localhost, secure LAN with generated certificate, secure LAN with supplied certificate (including SAN-mismatch warning), explicitly insecure LAN, cancellation, non-interactive missing input, and invalid-input paths.
 - [ ] #10 Fresh guided setup defaults to task: and coordination: prefixes and preserves explicit overrides; legacy bare init and existing configurations retain their admitted-prefix behavior.
 <!-- AC:END -->
 

@@ -4,7 +4,7 @@ title: Enroll a remote client from one self-contained invite
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-15 21:56'
+updated_date: '2026-09-15 22:25'
 labels:
   - remote-authority
   - ergonomics
@@ -34,14 +34,14 @@ TASK-109.1 owns server configuration and certificate creation. This task owns th
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 server init and invite issue emit the same bounded, versioned artifact containing endpoint, authority ID, optional SHA-256 DER leaf-certificate pin, and single-use invite secret. File output is owner-private and refuses unsafe paths/overwrites. Bootstrap retains admin role; issued invites default to write.
-- [ ] #2 Fresh enrollment accepts one artifact without pre-creating a profile; --profile names the destination, with a documented deterministic name when omitted. Reuse requires matching endpoint, authority and pin, and must not overwrite an existing enrolled credential. Activate the profile and set a missing user default only after successful enrollment; preserve existing defaults and bindings.
+- [ ] #1 server init and invite issue emit the same bounded, versioned artifact containing endpoint, authority ID, optional SHA-256 DER leaf-certificate pin, a profile-name hint, and single-use invite secret. File output is owner-private and refuses unsafe paths/overwrites. Bootstrap retains admin role; issued invites default to write.
+- [ ] #2 Fresh enrollment accepts one artifact without pre-creating a profile. The destination profile name is `--profile` when given, else the artifact hint (server init sets it to `admin`; invite issue sets it from `--label`, defaulting to the issuer profile name), else `remote`. Reuse requires matching endpoint, authority and pin, and must not overwrite an existing enrolled credential. Activate the profile and set a missing user default only after successful enrollment; preserve existing defaults and bindings.
 - [ ] #3 For pinned HTTPS, verify the exact DER leaf-certificate SHA-256, endpoint hostname/IP and validity before sending any bearer; use normal CA verification when no pin exists. Persist the pin through activation and exact replay and enforce it on all CLI/MCP requests. Never follow redirects or silently accept a changed certificate.
 - [ ] #4 The recipient does not need to run curl, copy an authority ID, run profile add, or pass `--profile` on subsequent commands.
 - [ ] #5 Malformed/unsupported artifacts, conflicting established trust, wrong authority, certificate mismatch, expired invites, and redemption by a different installation fail closed. Exact durable enrollment retries remain idempotent rather than being mistaken for invite reuse. Insecure HTTP requires explicit client opt-in; the artifact alone cannot enable it. Document that whole-artifact substitution is prevented by authentic transfer, not by its encoding.
 - [ ] #6 Invite and installation credentials never appear in argv, normal output, logs, or repository files.
 - [ ] #7 Keep explicit profile add and bare-secret --invite-file, --invite-fd, and hidden-prompt enrollment working with a selected profile. Existing restore/bootstrap-reissue outputs remain redeemable; document how recovery users obtain trust/profile information without weakening restore-incarnation checks.
-- [ ] #8 Tests cover file/fd/hidden-prompt artifact enrollment, malformed/oversized input, profile-name collisions, existing default/binding precedence, local-only fallback, pinned TLS on later CLI/MCP calls, wrong authority, expiry, distinct-installation replay rejection, exact retry after response loss, and profile-save failure without losing replay credentials.
+- [ ] #8 Tests cover file/fd/hidden-prompt artifact enrollment, malformed/oversized input, profile-name hint and collision handling, existing default/binding precedence, local-only fallback, pinned TLS on later CLI/MCP calls, wrong authority, expiry, distinct-installation replay rejection, exact retry after response loss, and profile-save failure without losing replay credentials.
 - [ ] #9 invite issue defaults role to write and label to the selected issuer profile name, preserving explicit overrides; choosing admin remains explicit and issuing any invite still requires an administrative installation.
 - [ ] #10 The artifact is a compact single-line token accepted from an owner-private file, inherited descriptor, or hidden terminal prompt. Non-terminal input without an explicit source fails immediately; conflicting sources fail. Tokens never appear in positional arguments, normal output, or echoed prompts.
 <!-- AC:END -->
