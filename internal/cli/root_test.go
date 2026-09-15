@@ -251,6 +251,32 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 	}
 }
 
+func TestEveryListCommandAcceptsLSAlias(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	for _, path := range []string{"list", "policy list", "profile list", "installation list"} {
+		t.Run(path, func(t *testing.T) {
+			parent := root
+			parts := strings.Fields(path)
+			for _, name := range parts[:len(parts)-1] {
+				parent = parent.Command(name)
+				if parent == nil {
+					t.Fatalf("missing parent command %q", name)
+				}
+			}
+			list := parent.Command("list")
+			if list == nil {
+				t.Fatal("missing list command")
+			}
+			if got := strings.Join(list.Names(), ","); got != "list,ls" {
+				t.Fatalf("list command names = %q, want list,ls", got)
+			}
+			if parent.Command("ls") != list {
+				t.Fatal("ls does not resolve to the list command")
+			}
+		})
+	}
+}
+
 func TestSupportedShortOptionsMatchLongForms(t *testing.T) {
 	tests := []struct {
 		name, path, long, short, value string

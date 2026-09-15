@@ -4,6 +4,7 @@
 
 ### Added
 
+- Every `list` command accepts `ls`, including the top-level claim list and the nested policy, profile, and installation lists.
 - `worklease completion bash|zsh|fish` prints deterministic, read-only shell completion derived from the visible command tree, including aliases and options.
 
 ## 1.2.0 - 2026-09-13
