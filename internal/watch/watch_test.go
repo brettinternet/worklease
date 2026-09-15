@@ -365,7 +365,7 @@ func TestManyWaitersCancelWithoutLeakingOrBlockingWrites(t *testing.T) {
 	done := make(chan error, waiters)
 	for range waiters {
 		go func() {
-			_, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: time.Second, PollInterval: MinPoll})
+			_, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 10 * time.Second, PollInterval: MinPoll})
 			done <- err
 		}()
 	}
