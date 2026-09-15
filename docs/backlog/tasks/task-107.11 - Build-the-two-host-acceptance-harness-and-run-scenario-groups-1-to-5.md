@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 00:37'
-updated_date: '2026-09-15 00:06'
+updated_date: '2026-09-15 00:24'
 labels:
   - remote-authority
 dependencies:
@@ -24,9 +24,9 @@ documentation:
 modified_files:
   - cmd/worklease-remote-smoke/main.go
   - cmd/worklease-remote-smoke/main_test.go
-  - internal/handle/handle.go
-  - internal/handle/handle_test.go
-  - internal/lease/remote_auth_acceptance_test.go
+  - >-
+    docs/backlog/tasks/task-107.11 -
+    Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md
 parent_task_id: TASK-107
 priority: high
 type: feature
@@ -79,6 +79,8 @@ Report simulated WAN latency separately from measured real-host latency. Record 
 10. Implement deterministic bootstrap subprocess crash-ordering and redaction evidence for AC5.1, then distinct MCP authentication guidance for AC5.9; run local and reachable real-host acceptance, independent review, all quality gates, staged hooks, commit, and record objective evidence.
 
 11. Implement AC6.1 snapshot/watch race coverage and AC6.2 disconnect/reconnect coverage in the shared harness; preserve later Group 4 clauses as blocked, run local and reachable real-host evidence, independently review, execute quality gates and staged hooks, then commit objective task evidence.
+
+12. Implement AC6.3 cursor incarnation/retention-gap and AC6.4 stuck-history pinning in the shared harness using a deterministic aged-history fixture; carry a pre-restore cursor into Group 5 for restore-incarnation rejection, preserve later Group 4 clauses as blocked, run local/reachable real-host evidence, independent review, quality gates, staged hooks, commit, and record objective evidence.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -163,4 +165,6 @@ Next resumable step: implement AC6.1 snapshot/watch races, then AC6.2 disconnect
 Implemented AC6.1 snapshot/watch race and AC6.2 disconnect/reconnect slices. Group 4 now proves an event committed after a snapshot but before cursor resume, a release scanned only after an active-state watch snapshot, a completed watch response lost by transport with no client acknowledgment, exact reconnect from the saved cursor, and no duplicate after advancing the cursor. Objective local evidence: dist/remote-acceptance/ac6-watch-local-final-5/report.json, coverage.json, snapshot-watch-reconnect.json, fault-proxy.log, and pending-inventory.txt. CI evidence: dist/remote-acceptance/20260914T235438.772567000Z/report.json was generated before the final active-state ordering refinement; final CI is rerun before commit. The unchanged real-host run remains unreachable because lima-worklease-remote does not resolve over DNS/SSH in this environment, so no real-host pass is claimed. Independent review found and drove fixes for pre-dispatch race false passes, potentially acknowledged disconnects, and weak timeout cursor checks; final re-review passed with no findings. Next resumable step: AC6.3 cursor incarnation and retention gaps.
 
 Final mise run ci passed after the active-state ordering refinement; generated acceptance evidence is dist/remote-acceptance/20260915T000523.097541000Z/report.json and coverage.json, with AC6.1 and AC6.2 recorded live-pass locally.
+
+Implemented AC6.3 and AC6.4. The shared harness now rejects foreign-authority cursors through events and watch; applies a deterministic owner-marked aged-history fixture; verifies events/watch gap reset cursors are bound to the exact GC pruning watermark and resume without another gap; proves the retained lost-begin operation is still started and pins a newer epoch; and carries the reset cursor across actual backup/restore, refreshes/re-enrolls a client, then proves both events and watch reject the old cursor as authority-restored. Objective local evidence: dist/remote-acceptance/ac6-retention-reviewed-local-1/report.json, coverage.json, cursor-retention-gaps.json, and cursor-incarnation-after-restore.json. The unchanged real-host target lima-worklease-remote remains unreachable because DNS/SSH resolution fails, so no new real-host pass is claimed. Initial independent review found unsafe fixture scope and three false-pass gaps; all were addressed before final verification. Next resumable step: AC6.5 full-volume storage-failure without pruning, then AC6.6 pending evidence survival.
 <!-- SECTION:NOTES:END -->

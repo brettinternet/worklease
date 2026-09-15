@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/ledger"
 )
 
 func TestRequireWatchEvent(t *testing.T) {
@@ -72,6 +75,132 @@ func TestRequireWatchTimeout(t *testing.T) {
 				t.Fatal("invalid watch timeout accepted")
 			}
 		})
+	}
+}
+
+func TestRequireRetentionGapsRejectFalsePasses(t *testing.T) {
+	authorityID, restoreID := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	cursor := ledger.EncodeCursor(authorityID, restoreID, "events", "", 0)
+	reset := ledger.EncodeCursor(authorityID, restoreID, "events", "", 7)
+	events := map[string]any{"gap": true, "events": []any{}, "nextCursor": reset}
+	if err := requireEventsGap(events, cursor, "7"); err != nil {
+		t.Fatal(err)
+	}
+	watch := map[string]any{"gap": true, "nextCursor": reset, "resetCursor": reset}
+	if err := requireWatchGap(watch, cursor, "7"); err != nil {
+		t.Fatal(err)
+	}
+	for name, invalid := range map[string]map[string]any{
+		"events with rows": {"gap": true, "events": []any{map[string]any{"kind": "acquired"}}, "nextCursor": reset},
+		"events no gap":    {"gap": false, "events": []any{}, "nextCursor": reset},
+		"events no reset":  {"gap": true, "events": []any{}, "nextCursor": cursor},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireEventsGap(invalid, cursor, "7"); err == nil {
+				t.Fatal("invalid events gap accepted")
+			}
+		})
+	}
+	for name, invalid := range map[string]map[string]any{
+		"watch with event":  {"gap": true, "event": map[string]any{"kind": "acquired"}, "nextCursor": reset, "resetCursor": reset},
+		"watch no gap":      {"gap": false, "nextCursor": reset, "resetCursor": reset},
+		"watch wrong reset": {"gap": true, "nextCursor": reset, "resetCursor": cursor},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireWatchGap(invalid, cursor, "7"); err == nil {
+				t.Fatal("invalid watch gap accepted")
+			}
+		})
+	}
+}
+
+func TestEventsContainKindResourceRequiresBoth(t *testing.T) {
+	result := map[string]any{"events": []any{
+		map[string]any{"kind": "acquired", "resources": []any{"coordination:one"}},
+		map[string]any{"kind": "exec-started", "resources": []any{"coordination:stuck"}},
+	}}
+	if !eventsContainKindResource(result, "exec-started", "coordination:stuck") {
+		t.Fatal("matching event was not found")
+	}
+	if eventsContainKindResource(result, "released", "coordination:stuck") || eventsContainKindResource(result, "exec-started", "coordination:one") {
+		t.Fatal("event kind and resource were not jointly required")
+	}
+}
+
+func TestAgeRetentionFixtureAgesEveryRetentionClock(t *testing.T) {
+	root := t.TempDir()
+	if err := writeAcceptanceOwnerMarker(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "authority"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database := filepath.Join(root, "authority", "worklease.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE claims(acquired_at INTEGER,heartbeat_at INTEGER,expires_at INTEGER)`,
+		`CREATE TABLE epochs(acquired_at INTEGER,ended_at INTEGER,ended_recorded_at INTEGER)`,
+		`CREATE TABLE operations(request_not_after INTEGER,started_at INTEGER,completed_at INTEGER)`,
+		`CREATE TABLE reconciliations(recorded_at INTEGER)`,
+		`CREATE TABLE events(at INTEGER)`,
+		`INSERT INTO claims VALUES(1,2,3)`, `INSERT INTO epochs VALUES(1,2,3)`,
+		`INSERT INTO operations VALUES(1,2,3)`, `INSERT INTO reconciliations VALUES(1)`, `INSERT INTO events VALUES(1)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const aged = int64(42)
+	if err := ageRetentionFixture(database, aged); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, query := range []string{
+		`SELECT acquired_at FROM claims`, `SELECT heartbeat_at FROM claims`, `SELECT expires_at FROM claims`,
+		`SELECT acquired_at FROM epochs`, `SELECT ended_at FROM epochs`, `SELECT ended_recorded_at FROM epochs`,
+		`SELECT request_not_after FROM operations`, `SELECT started_at FROM operations`, `SELECT completed_at FROM operations`,
+		`SELECT recorded_at FROM reconciliations`, `SELECT at FROM events`,
+	} {
+		var got int64
+		if err := db.QueryRow(query).Scan(&got); err != nil || got != aged {
+			t.Fatalf("%s: got=%d err=%v", query, got, err)
+		}
+	}
+}
+
+func TestAgeRetentionFixtureRejectsUnownedDatabase(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "worklease.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE claims(expires_at INTEGER); INSERT INTO claims VALUES(9)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ageRetentionFixture(database, 42); err == nil {
+		t.Fatal("unowned database was accepted")
+	}
+	db, err = sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var got int64
+	if err := db.QueryRow(`SELECT expires_at FROM claims`).Scan(&got); err != nil || got != 9 {
+		t.Fatalf("unowned database changed: got=%d err=%v", got, err)
 	}
 }
 
