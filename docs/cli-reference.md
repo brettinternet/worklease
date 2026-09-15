@@ -104,63 +104,35 @@ claim or an authoritative provider checkpoint.
 One claim covers all `--resource` values atomically. Resources contend by exact
 bytes and are never silently normalized.
 
-Human-readable output uses outcome sentences or table headers rather than a
-standalone command-name banner. Key/value labels use lower camel case aligned
-with the JSON vocabulary (`claimId`, `expiresAt`, `nextCursor`); table headers
-use upper snake case (`CLAIM_ID`, `EXPIRES_AT`). JSON field names and envelopes
-are unchanged.
+## Output conventions
 
-`list` has three useful forms:
+| Surface | Convention |
+| --- | --- |
+| Text | Outcome sentences or tables; lower camel case labels and upper snake case headers. |
+| JSON | Stable schema-version 2 envelopes; never colored. |
+| Color | Interactive semantic states only; disabled for redirected output, `TERM=dumb`, or `NO_COLOR`. |
+| `--full` | Complete non-secret metadata, full resources and IDs, and RFC3339 timestamps. |
+| Redaction | Credentials and private operation payloads stay hidden unless an authenticated command explicitly allows them. |
+
+Common inspection forms:
 
 | Form | Output |
 | --- | --- |
-| `list` | Compact `STATE`, `RESOURCE`, and relative `LEASE` table; Git resources collapse to provider/repository/item. |
-| `list --full` | Full resources, claim and agent IDs, and RFC3339 expiry, with normal redaction. |
+| `list` | `STATE`, `RESOURCE`, and relative `LEASE`; Git resources collapse to provider/repository/item. |
+| `list --full` | Full resources, claim and agent IDs, and RFC3339 expiry. |
 | `list --resource KEY` | One exact resource, or `no current claims`. |
+| `events` | Kind, resource set when present, and relative time. |
+| `history --resource KEY` | Agent, status, acquire/end times, end reason, and operation kinds. |
 
-An absent, empty, or filtered-out authority also prints `no current claims`.
-Coordination hashes appear as short non-secret fingerprints. `status` uses
-relative expiry; `status --full` adds complete non-secret metadata and RFC3339
-timestamps.
+`status` uses relative expiry; `status --full` adds complete non-secret metadata.
+Lifecycle results show only fields relevant to the operation. Checkpoint reports
+persisted bytes, transfer shows the successor handle and resources, and verify
+keeps full unresolved operation IDs.
 
-On an interactive terminal, headers are bold; healthy/available states and event
-kinds are green, attention states are yellow, and failures are red. Styling is
-limited to semantic headers, states, kinds, garbage-collection outcomes, and
-error guidance; identifiers and timestamps are never colored. Color is omitted
-when output is redirected, `TERM=dumb`, or `NO_COLOR` is set. JSON is never
-colored.
-
-Successful lifecycle mutations name the action and claim, then show only
-operation-relevant fields. In text, checkpoint reports persisted byte size and
-transfer confirms the successor handle and complete resource set. These additions
-do not change their stable JSON envelopes. Verification preserves full unresolved
-operation IDs needed for recovery.
-
-Inspection output favors compact timelines:
-
-| View | Compact output | `--full` adds |
-| --- | --- | --- |
-| `events` | Kind, resource set when present, relative time | Complete non-secret event metadata |
-| `history --resource` | Agent, status, relative acquire/end times, end reason, ordered operation kinds | IDs, per-operation rows, RFC3339 timestamps |
-| Guarded/authenticated payloads | Indented labeled blocks | Complete allowed payload |
-
-Non-completed operations include state, such as `exec:started`. Authority-wide
-events such as `gc-applied` omit resource placeholders. Timelines and recovery
-rows have no synthetic row numbers.
-
-`history` without a resource aliases `events`; its JSON envelope therefore uses
-`"operation":"events"`. Resource-scoped history has its own envelope.
-`policy describe --full` adds contract versions and fencing guarantees. `key`,
-`watch`, and `gc` use fixed field order. A GC preview ends with the exact apply
-command. Use `--json` for complete structured output.
-
-Cursor policy:
-
-- `events` and `history` text omit cursors; page with `--json` and `--cursor`.
-- `watch` omits false booleans, uses relative expiry, and reports retention gaps
-  only when present.
-- `watch` exposes a cursor only as `resume: worklease watch --cursor ...`.
-- JSON cursor fields are unchanged.
+`history` without a resource aliases `events`. Text views omit cursors; page with
+`--json` and `--cursor`. `watch` prints a cursor only as a runnable
+`resume: worklease watch --cursor ...` command. A GC preview likewise ends with
+the exact apply command.
 
 ## Guarded and recovery operations
 
@@ -234,109 +206,22 @@ Concurrent sessions need distinct selectors even in one checkout.
 
 ## Experimental remote authority
 
-The standard binary opens no listener and makes no network request unless you:
+The standard binary uses the network only when you manage or select a remote
+profile, or run `serve`. Remote failures never fall back to local.
 
-- manage a remote profile;
-- select a remote profile; or
-- run `serve`.
+| Task | Commands |
+| --- | --- |
+| Select an authority | `profile add|list|show|remove|default|bind|unbind`, `--profile`, `--local` |
+| Enroll a client | `invite issue`, `enroll` |
+| Administer access | `installation list|revoke`, `claim revoke` |
+| Recover an authority | `server restore`, `recovery status|reopen` |
+| Run or retire a server | `server init|bootstrap-reissue|retire`, `serve` |
 
-Local reads need no setup, and remote failures never fall back to local. The
-experimental, self-hosted authority supports one namespace, process, and SQLite
-writer on one single-host filesystem—not HA, provider fencing, or exactly-once
-execution. See [`remote-claim-authority.md`](remote-claim-authority.md).
+A selected profile applies to lifecycle, inspection, guarded operations, events,
+watches, and GC. Remote authorities accept portable resources only; `path:`,
+`backlog-md:`, and `markdown:` are rejected.
 
-### Profiles and enrollment
-
-Profiles are owner-private and selected in this order: `--profile NAME`,
-`WORKLEASE_PROFILE`, explicit user-side checkout binding, user default, then
-local. `--local` overrides local selection and conflicts with `--profile` or
-`WORKLEASE_PROFILE`. Endpoint changes require remove/add.
-
-```text
-worklease profile add NAME --endpoint URL --authority-id ID [--allow-insecure-http]
-worklease profile list
-worklease profile ls
-worklease profile show NAME
-worklease profile remove NAME
-worklease profile default NAME
-worklease profile bind NAME [--cwd DIR]
-worklease profile unbind [--cwd DIR]
-worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]
-```
-
-`profile add` performs metadata discovery and pins authority/incarnation before
-saving. `enroll` never accepts an invite or installation credential on argv.
-An admin issues an invite with exactly one output source:
-
-```text
-worklease invite issue --profile NAME --role read|write|admin \
-  (--invite-file FILE|--invite-fd N) [--label TEXT] [--expires-at RFC3339] \
-  [--operation-id ID] [--request-not-after RFC3339]
-```
-
-The invite is generated before dispatch; the file form is durably saved first,
-while an fd caller owns durable capture. Only its hash crosses the network. Roles are `read`, `write`, and `admin`. Stable remote reasons include
-`authentication-required`, `installation-revoked`, `authorization-denied`,
-`authority-restored`, `resource-not-enrolled`, `recovery-required`,
-`recovery-closed`, `unknown-outcome`, `operation-ambiguous`,
-`operation-request-mismatch`, and `operation-kind-unsupported`.
-
-### Remote and hosted commands
-
-The selected profile applies to lifecycle, inspection, guarded operations,
-events, watches, and GC. Remote differences:
-
-- `--wait` is a client loop capped at 60 seconds; `--poll-interval` is local-only.
-- GC requires `--apply` plus `--cutoff TIME` or `--retention-days N` (default 30).
-- Every mutation, including `--no-handle`, saves its exact pending request first.
-- `path:`, `backlog-md:`, and `markdown:` resources are rejected.
-- Same-host transfer requires a named predecessor handle.
-
-Remote administration is:
-
-```text
-worklease installation list --profile NAME [--include-revoked]
-worklease installation revoke --profile NAME --installation-id ID [--reason TEXT] [--operation-id ID] [--request-not-after RFC3339]
-worklease claim revoke --profile NAME --claim-id ID [--reason TEXT] [--operation-id ID] [--request-not-after RFC3339]
-worklease recovery status --profile NAME
-worklease recovery reopen --profile NAME --expected-recovery-revision N --attestation-file FILE [--operation-id ID] [--request-not-after RFC3339]
-```
-
-Server lifecycle operations are offline-only and take the hosted lock before opening
-SQLite:
-
-```text
-worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
-worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]
-worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE
-worklease server retire --home DIR [--force --unresolved-export FILE]
-worklease serve [--server-config FILE] [--allow-insecure-http]
-```
-
-With no arguments, `server init` creates a local-only configuration, authority,
-and bootstrap invite in the user's XDG directories. `serve` resolves config in
-this order:
-
-1. `--server-config`
-2. `WORKLEASE_SERVER_CONFIG`
-3. `$XDG_CONFIG_HOME/worklease/server.yaml`
-
-Settings load only at startup; changes require stop-before-start. Restore:
-
-- creates a fresh incarnation;
-- ends active claims as `restored` and revokes old credentials;
-- retains started operations as unresolved; and
-- blocks ordinary admission until an admin attests to installation inventory,
-  pending requests, retained and lost-tail outcomes, executor/provider
-  cessation, and the cutoff-to-cessation loss interval.
-
-Unknown bounds must be explicit and waive nothing. Any coverage gap keeps
-recovery closed. A missing completed operation also needs independent
-no-residual-effect evidence. Recovery import and completed-history journals are
-unsupported.
-
-`replace-file`, provider execution, recovery import, completed-history
-journaling, cross-host transfer, repository enrollment, HA, Postgres,
-multi-namespace serving, admission backpressure, browser control plane, and
-remote retirement are unsupported. Public publication, tags, pushes, and
-release execution are separate owner-authorized actions.
+The service is one namespace and one SQLite writer on a single-host filesystem.
+It does not provide HA, provider fencing, or exactly-once execution. See the
+[remote authority guide](remote-claim-authority.md) for command forms,
+enrollment, deployment, recovery evidence, and unsupported operations.
