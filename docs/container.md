@@ -27,12 +27,17 @@ sudo install -d -m 0700 -o 65532 -g 65532 /srv/worklease/bootstrap
 sudo install -d -m 0700 -o 65532 -g 65532 /etc/worklease
 ```
 
-The home is the durability boundary, not only `worklease.db`. Keep the database,
-its `worklease.db-wal` and `worklease.db-shm` sidecars, `hosted`, `hosted.lock`,
-`hosted.ready`, the authority and restore identities, claims and operation
-replay, recovery state, installations, invites, reopening records, and every
-future authority file together on this mount. Never mount those files
-individually or split them across volumes.
+The complete home—not only `worklease.db`—is the durability boundary:
+
+| State | Includes |
+| --- | --- |
+| SQLite | `worklease.db`, WAL, and SHM files |
+| Process | `hosted`, `hosted.lock`, and `hosted.ready` |
+| Authority | Authority and restore identities, claims, and operation replay |
+| Recovery | Recovery state, installations, invites, and reopening records |
+
+Keep current and future authority files on one mount. Never mount individual
+files or split the home across volumes.
 
 SQLite WAL requires a local, single-host filesystem. Network filesystems are
 unsupported. Run one writable container against a hosted home, never multiple
@@ -104,11 +109,15 @@ replication integration; do not copy a live database file independently of its
 WAL state. Optional asynchronous object replication is disaster recovery, not
 high availability.
 
-Keep replication credentials in read-only secrets. Persist any backup tool
-metadata, replica generations, and restore-selection state required by that
-integration in its own durable deployment-managed volume; do not bake them into
-the Worklease image or mix a writable replica with the authority home. A restored
-replica must go through `worklease hosted restore`, which creates a new restore
-incarnation and enters recovery mode. See the [remote authority design and
-recovery model](remote-claim-authority.md) for cutoff, evidence, and reopening
-requirements.
+For backup integrations:
+
+- keep replication credentials in read-only secrets;
+- keep tool metadata, replica generations, and restore-selection state in a
+  separate durable volume;
+- never bake that state into the image or mix a writable replica with the
+  authority home; and
+- restore through `worklease hosted restore`, which creates a new incarnation
+  in recovery mode.
+
+See the [remote authority recovery model](remote-claim-authority.md) for cutoff,
+evidence, and reopening requirements.

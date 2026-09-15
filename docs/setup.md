@@ -42,26 +42,24 @@ worklease setup guard --client claude-code
 worklease setup guard --client claude-code --apply
 ```
 
-The hook matches only `Edit`, `Write`, `MultiEdit`, and `NotebookEdit`. It does
-not register Bash. Default claim coverage allows those edits while the selected
-context/session has a current valid claim. Stricter path coverage requires the
-claim to contain each edited path resource:
+Use exact path coverage when each edited path must appear in the claim:
 
 ```sh
 worklease setup guard --client claude-code --coverage path --apply
 ```
 
-Explicit `--home`, `--config`, `--session`, `--handle`, or `--lease` selections
-are embedded in the safely quoted hook command. `--remove` recognizes either
-coverage form and removes only the Worklease-managed hook. `--client generic`
-prints a POSIX wrapper which requires `WORKLEASE_HANDLE` and
-`WORKLEASE_RESOURCE`; install and invoke that wrapper in the client yourself.
+| Setting | Behavior |
+| --- | --- |
+| Default coverage | Requires a current claim for the selected context/session. |
+| `--coverage path` | Also requires each edited path resource. |
+| `--home`, `--config`, `--session`, `--handle`, `--lease` | Embeds the explicit selection in the quoted hook command. |
+| `--remove` | Removes only the Worklease-managed hook, in either coverage mode. |
+| `--client generic` | Prints a POSIX wrapper requiring `WORKLEASE_HANDLE` and `WORKLEASE_RESOURCE`. |
 
-The native hook is a cooperative check immediately before an edit, not a fence
-around the later filesystem write. Another editor can race it. It does not
-cover shell commands, provider writes, unsupported client tools, other hosts,
-or callers using another authority. A Worklease claim never turns an external
-provider mutation into a provider-fenced operation.
+The Claude Code hook covers `Edit`, `Write`, `MultiEdit`, and `NotebookEdit`,
+not Bash. It is a cooperative pre-edit check, not a filesystem fence: another
+editor can race it. It cannot cover shell or provider writes, unsupported tools,
+other hosts, or another authority.
 
 Client shapes and hook behavior were checked against current documentation:
 

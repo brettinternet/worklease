@@ -71,20 +71,20 @@ current claim only; opt-in path coverage requires exact claimed membership.
 
 ## Output redaction policy
 
-Every emitted value is normalized through JSON before recursive redaction, so
-Go structs, named maps, and typed slices follow the same policy as loose JSON.
-Bearer material is always redacted: keys named `token`, `tokenHash`, `bearer`,
-`password`, `secret`, `credential`, or `credentials`, plus token-shaped values
-outside documented SHA-256 and path fields. Token-shaped JSON member names are
-redacted too; collisions receive deterministic suffixes rather than dropping a
-value.
+All output passes through JSON normalization and recursive redaction. The same
+rules apply to structs, typed collections, and loose JSON:
 
-Operation-private keys (`argv`, `rawRequest`, `rawReceipt`, `checkpoint`,
-`evidence`, and `output`) are allowed only in the invoking checkpoint, exec, or
-replace-file result and in credential-authenticated `op inspect --full` output.
-Public CLI views, errors, and all MCP projections redact those keys. Other
-fields are public metadata; public producers still must not read private
-columns or treat redaction as authorization.
+- Always redact keys named `token`, `tokenHash`, `bearer`, `password`, `secret`,
+  `credential`, or `credentials`.
+- Redact token-shaped values except documented SHA-256 and path fields.
+- Redact token-shaped member names; preserve collisions with deterministic
+  suffixes.
+- Allow `argv`, `rawRequest`, `rawReceipt`, `checkpoint`, `evidence`, and
+  `output` only in the invoking checkpoint, exec, or replace-file result, or in
+  credential-authenticated `op inspect --full`.
+
+Public CLI views, errors, and MCP output redact operation-private keys. Public
+producers must still avoid private columns; redaction is not authorization.
 
 ## Events, cursors, and retention
 

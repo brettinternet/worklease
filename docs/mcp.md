@@ -44,13 +44,15 @@ reference; later lifecycle calls use the reference, not the session selector.
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"acquire","arguments":{"resources":["task:b"],"sessionId":"loop-b","agentId":"agent-b"}},"_meta":{"protocolVersion":"2026-07-28"}}
 ```
 
-Capture each successful result's opaque `structuredContent.lease`. Subsequent
-`status`, `heartbeat`, `checkpoint`, `verify`, and `release` tool calls pass
-`{"lease":"REFERENCE"}` rather than a session selector. The sessions isolate
-the private handle files; the lease references select them. If both loops
-acquire `task:a`, the loser receives a structured `already-claimed` result with
-safe holder/expiry details and can watch or select other work. No token appears
-in results, errors, logs, checkpoints, or tool schemas.
+For each successful acquire:
+
+1. Capture `structuredContent.lease`.
+2. Pass `{"lease":"REFERENCE"}` to `status`, `heartbeat`, `checkpoint`,
+   `verify`, and `release`.
+
+Sessions isolate private handles; lease references select them. A conflicting
+acquire returns structured `already-claimed` holder/expiry details. Tokens never
+appear in results, errors, logs, checkpoints, or schemas.
 
 ## Renewal, cancellation, and recovery
 
@@ -59,14 +61,16 @@ flight. Every MCP heartbeat, automatic or explicit, is capped by the original
 absolute `maxHold` deadline. The server keeps reading stdin so cancellation and
 EOF are prompt. Restarting does not auto-renew an old handle.
 
-Mutations persist exact pending requests before dispatch. Retry by opaque lease
-reference only when the outcome is uncertain and the error returns that
-reference; this replays only the identical operation during its bounded window.
-A definitive acquire failure removes the pending grant and returns no lease
-reference, so retry with a fresh `acquire` request. Changed intent conflicts.
-Started guarded effects are not exposed as MCP exec tools; advanced inspection,
-cessation evidence, and reconciliation remain explicit CLI operations described
-in [the claim model](claim-model.md).
+Mutations save exact pending requests before dispatch:
+
+- If an uncertain-outcome error returns a lease reference, retry with that
+  reference. Only the identical operation replays within its bounded window.
+- If acquire fails definitively, no lease reference remains; submit a fresh
+  `acquire`.
+- Changed intent conflicts.
+
+MCP exposes no guarded exec tools. Use the CLI for inspection, cessation
+evidence, and reconciliation; see [the claim model](claim-model.md).
 
 MCP errors preserve the CLI's stable `reason`, `exitCode`, and `details` instead
 of flattening contention or stale ownership into prose. Unknown methods, invalid
@@ -82,21 +86,21 @@ must verify its authoritative provider checkpoint before release.
 
 ### Experimental remote profile
 
-The remote authority is experimental and is never an MCP endpoint. `worklease
-mcp` remains a local stdio process; when a remote profile is selected with the
-same global `--profile NAME` (or `WORKLEASE_PROFILE`/user-side binding/default),
-it uses the remote HTTPS client while keeping credentials, handles, and durable
-pending requests on the client host. `--local` explicitly selects the local
-SQLite authority and conflicts with remote selection. An unselected profile does
-not cause network activity, and local reads remain setup-free.
+The experimental remote authority is never an MCP endpoint. `worklease mcp`
+stays local and uses HTTPS only when a profile is selected. Credentials,
+handles, and pending requests remain on the client host.
 
-The eleven tools and their names do not change: `key`, `acquire`, `status`,
-`list`, `heartbeat`, `checkpoint`, `verify`, `watch`, `events`, `release`, and
-`instructions`. Remote `acquire` uses portable configured resource prefixes;
-host-local `path`, `backlog-md`, and `markdown` keys are rejected. `wait` is a
-client loop capped at 60 seconds and the remote server owns polling. Remote
-MCP does not add enrollment, administration, transfer, exec, replace-file,
-reconciliation, history, profile, or recovery tools. Enroll outside MCP with:
+| Selection | Behavior |
+| --- | --- |
+| `--profile NAME`, environment, binding, or default | Use the selected remote profile. |
+| `--local` | Use local SQLite; conflicts with remote selection. |
+| No selected profile | Make no network request; local reads remain setup-free. |
+
+The same eleven tools remain available. Remote acquire accepts only configured
+portable prefixes; `path`, `backlog-md`, and `markdown` keys are rejected.
+`wait` is a client loop capped at 60 seconds, while the server owns polling.
+Enrollment, administration, transfer, exec, replacement, reconciliation,
+history, profiles, and recovery remain outside MCP. Enroll with:
 
 ```text
 worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]

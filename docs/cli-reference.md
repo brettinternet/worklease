@@ -7,13 +7,17 @@ the one-shot onboarding read for people and agents. Top-level help groups
 commands into *Claim lifecycle*, *Inspection and recovery*, and *Setup and
 administration*.
 
-Usage lines show required inputs and alternate forms, for example
-`worklease exec [selection] ... -- COMMAND [ARGS...]`, `worklease policy describe
-NAME`, and the two `history` projections. `[selection]` stands for the shared
-claim-selection options that every contextual command accepts; each such
-command's help explains them. Option help shows effective runtime defaults
-(`--ttl` 15m, `--max-duration` 1h, `--limit` 50, `--timeout` 30s,
-`--retention-days` 30) and never a zero-value sentinel.
+Usage lines expose required inputs and alternate forms:
+
+```text
+worklease exec [selection] ... -- COMMAND [ARGS...]
+worklease policy describe NAME
+worklease history [--resource RESOURCE]
+```
+
+`[selection]` means the shared claim-selection options listed in that command's
+help. Help shows runtime defaults, including `--ttl` 15m, `--max-duration` 1h,
+`--limit` 50, `--timeout` 30s, and `--retention-days` 30.
 
 ## Global interface
 
@@ -106,16 +110,18 @@ with the JSON vocabulary (`claimId`, `expiresAt`, `nextCursor`); table headers
 use upper snake case (`CLAIM_ID`, `EXPIRES_AT`). JSON field names and envelopes
 are unchanged.
 
-`list` prints a compact `STATE`, `RESOURCE`, and relative `LEASE` table, or the
-single line `no current claims` when nothing matches (missing authority, empty
-authority, or a `--resource` filter with no match). Git-backed
-resources collapse to provider, repository, and item; coordination hashes use a
-short non-secret fingerprint. `list --full` shows unshortened resources, claim
-and agent IDs, and absolute expiry timestamps, subject to the normal
-bearer-shaped-value redaction policy. `list --resource KEY` accepts exactly one
-exact resource. `status` similarly uses relative expiry in
-its compact view; `status --full` adds complete non-secret claim metadata and
-RFC3339 timestamps.
+`list` has three useful forms:
+
+| Form | Output |
+| --- | --- |
+| `list` | Compact `STATE`, `RESOURCE`, and relative `LEASE` table; Git resources collapse to provider/repository/item. |
+| `list --full` | Full resources, claim and agent IDs, and RFC3339 expiry, with normal redaction. |
+| `list --resource KEY` | One exact resource, or `no current claims`. |
+
+An absent, empty, or filtered-out authority also prints `no current claims`.
+Coordination hashes appear as short non-secret fingerprints. `status` uses
+relative expiry; `status --full` adds complete non-secret metadata and RFC3339
+timestamps.
 
 On an interactive terminal, headers are bold; healthy/available states and event
 kinds are green, attention states are yellow, and failures are red. Styling is
@@ -130,30 +136,31 @@ transfer confirms the successor handle and complete resource set. These addition
 do not change their stable JSON envelopes. Verification preserves full unresolved
 operation IDs needed for recovery.
 
-Guarded command streams and authenticated inspection payloads use indented,
-labeled blocks instead of escaped single lines. Compact `events` rows show only
-the event kind, compact resource set when present, and relative time; authority-
-wide events such as `gc-applied` omit resource placeholders. Compact
-`history --resource` epochs show the agent, status, relative acquire and end
-times, end reason, and ordered operation kinds; a non-completed operation
-includes its state (`exec:started`). `--full` views add complete non-secret
-identifiers and metadata, per-operation rows, and absolute RFC3339 timestamps.
-Timeline rows, full resource-status rows, and acquire-recovery rows do not use
-synthetic row numbers. `history` without a resource is an alias for the
-bounded global event feed. Its `--json` output is the canonical events envelope,
-including `operation: "events"`; `history --resource RESOURCE --json` instead
-returns the resource-scoped history envelope. `policy describe --full` adds
-contract versions and fencing guarantees. `key`, `watch`, and `gc` use fixed
-command-specific field ordering; a `gc` preview ends with the exact
-`worklease gc --apply --cutoff TIME` follow-up. Use `--json` as the canonical
-complete structured output.
+Inspection output favors compact timelines:
 
-Cursor policy: text views never print a bare opaque cursor. `events` and
-`history` text omit cursors entirely; page with `--json` and `--cursor`. `watch`
-text omits routine false booleans, shows relative expiry per resource, reports a
-retention gap only when one exists, and presents its resumption cursor only inside
-a copyable `resume: worklease watch --cursor ...` line. JSON cursor fields are
-unchanged.
+| View | Compact output | `--full` adds |
+| --- | --- | --- |
+| `events` | Kind, resource set when present, relative time | Complete non-secret event metadata |
+| `history --resource` | Agent, status, relative acquire/end times, end reason, ordered operation kinds | IDs, per-operation rows, RFC3339 timestamps |
+| Guarded/authenticated payloads | Indented labeled blocks | Complete allowed payload |
+
+Non-completed operations include state, such as `exec:started`. Authority-wide
+events such as `gc-applied` omit resource placeholders. Timelines and recovery
+rows have no synthetic row numbers.
+
+`history` without a resource aliases `events`; its JSON envelope therefore uses
+`"operation":"events"`. Resource-scoped history has its own envelope.
+`policy describe --full` adds contract versions and fencing guarantees. `key`,
+`watch`, and `gc` use fixed field order. A GC preview ends with the exact apply
+command. Use `--json` for complete structured output.
+
+Cursor policy:
+
+- `events` and `history` text omit cursors; page with `--json` and `--cursor`.
+- `watch` omits false booleans, uses relative expiry, and reports retention gaps
+  only when present.
+- `watch` exposes a cursor only as `resume: worklease watch --cursor ...`.
+- JSON cursor fields are unchanged.
 
 ## Guarded and recovery operations
 
@@ -167,13 +174,15 @@ unchanged.
 | `watch` | Wait for a resource state or event cursor change. |
 | `gc` | Preview or apply contiguous-prefix retention. |
 
-`exec` reports `local-coordination`; it is not provider fencing. Replacement
-content is limited to 16 MiB and is read and digested before the guarded
-transaction. Only successful expected-hash replacement reports
-`local-serialized-replace`. A started guarded
-operation blocks another until its outcome and process cessation are established.
-Exact replay accepts the same operation ID and normalized request during its
-bounded recovery window; changed intent is rejected.
+Guarded-operation guarantees:
+
+- `exec` reports `local-coordination`, not provider fencing.
+- `replace-file` reads and digests at most 16 MiB before its transaction. Only a
+  successful expected-hash replacement reports `local-serialized-replace`.
+- A started operation blocks another until outcome and process cessation are
+  established.
+- Replay requires the same operation ID and normalized request within the
+  recovery window; changed intent is rejected.
 
 ## Policy and administration
 
@@ -225,14 +234,16 @@ Concurrent sessions need distinct selectors even in one checkout.
 
 ## Experimental remote authority
 
-The standard binary is inert by default: it opens no listener and makes no
-network request unless remote profile management, a selected remote profile, or
-`serve` is explicitly invoked. Local reads remain setup-free. A selected remote
-profile never falls back to local after failure. The remote authority is
-experimental, self-hosted, one namespace/process/SQLite writer on one
-single-host filesystem; it makes no HA, provider-fencing, or exactly-once
-execution claim. See [`remote-claim-authority.md`](remote-claim-authority.md)
-for the operator runbook and recovery evidence requirements.
+The standard binary opens no listener and makes no network request unless you:
+
+- manage a remote profile;
+- select a remote profile; or
+- run `serve`.
+
+Local reads need no setup, and remote failures never fall back to local. The
+experimental, self-hosted authority supports one namespace, process, and SQLite
+writer on one single-host filesystem—not HA, provider fencing, or exactly-once
+execution. See [`remote-claim-authority.md`](remote-claim-authority.md).
 
 ### Profiles and enrollment
 
@@ -272,15 +283,14 @@ while an fd caller owns durable capture. Only its hash crosses the network. Role
 
 ### Remote and hosted commands
 
-Existing lifecycle/inspection commands use the selected profile: `acquire`,
-`status`, `list`, `heartbeat`, `checkpoint`, `release`, `transfer`, `verify`,
-`exec`, `op inspect`, `op reconcile`, `events`, `history`, `watch`, and `gc`.
-Remote `--wait` is a client loop capped at 60 seconds; `--poll-interval` is
-local-only. Remote `gc` requires `--apply` and accepts `--cutoff TIME` or
-`--retention-days N` (default 30 days); it has no remote dry run. Remote mutations, including `--no-handle`, save durable exact pending
-requests before dispatch. `path:`, `backlog-md:`, and `markdown:` are
-host-local and rejected remotely; same-host transfer requires a named
-predecessor handle.
+The selected profile applies to lifecycle, inspection, guarded operations,
+events, watches, and GC. Remote differences:
+
+- `--wait` is a client loop capped at 60 seconds; `--poll-interval` is local-only.
+- GC requires `--apply` plus `--cutoff TIME` or `--retention-days N` (default 30).
+- Every mutation, including `--no-handle`, saves its exact pending request first.
+- `path:`, `backlog-md:`, and `markdown:` resources are rejected.
+- Same-host transfer requires a named predecessor handle.
 
 Remote administration is:
 
