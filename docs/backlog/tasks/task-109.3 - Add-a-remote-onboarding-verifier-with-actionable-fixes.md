@@ -4,7 +4,7 @@ title: Add a remote onboarding verifier with actionable fixes
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-15 21:32'
+updated_date: '2026-09-15 21:49'
 labels:
   - remote-authority
   - ergonomics
@@ -30,4 +30,5 @@ When remote setup fails, users fall through to protocol-level checks and must in
 - [ ] #4 The checks distinguish listener, firewall, TLS, certificate pin, identity, credential, role, and admission failures.
 - [ ] #5 Running the checks is read-only and cannot create profiles, enroll installations, or mutate claims.
 - [ ] #6 Automated tests cover each reported failure class and confirm output redaction.
+- [ ] #7 `resource-not-enrolled` errors returned to the client name the admitted prefixes, and the metadata endpoint exposes them so `doctor` can report admission without a mutating request.
 <!-- AC:END -->

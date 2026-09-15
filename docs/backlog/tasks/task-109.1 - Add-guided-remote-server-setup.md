@@ -4,7 +4,7 @@ title: Add guided remote server setup
 status: To Do
 assignee: []
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-15 21:32'
+updated_date: '2026-09-15 21:49'
 labels:
   - remote-authority
   - ergonomics
@@ -34,4 +34,5 @@ Provide a supported setup path that gathers the small set of deployment choices 
 - [ ] #7 `serve` prints the listen address, transport, and client-facing endpoint on startup.
 - [ ] #8 Validation errors identify the invalid choice and provide a directly usable correction.
 - [ ] #9 Automated tests cover localhost, secure LAN with generated certificate, secure LAN with supplied certificate, explicitly insecure LAN, cancellation, non-interactive missing input, and invalid-input paths.
+- [ ] #10 The default admitted prefixes cover the resources used in the README quickstart (for example `task:` and `coordination:`) so a first remote acquire is not rejected for admission without a deliberate choice.
 <!-- AC:END -->
