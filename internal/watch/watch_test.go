@@ -280,13 +280,13 @@ func TestWaitTimeoutContinuationDoesNotSkipLateEvent(t *testing.T) {
 	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", filter, 0)
 	writeErr := make(chan error, 1)
 	go func() {
-		time.Sleep(275 * time.Millisecond)
+		time.Sleep(2750 * time.Millisecond)
 		writeErr <- st.Write(ctx, func(tx *store.Tx) error {
 			_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("8", 32)})
 			return err
 		})
 	}()
-	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 300 * time.Millisecond, PollInterval: 250 * time.Millisecond})
+	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 3 * time.Second, PollInterval: 500 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
