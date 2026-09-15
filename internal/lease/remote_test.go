@@ -15,8 +15,6 @@ import (
 
 func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, RemoteActor) {
 	t.Helper()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	clock := testkit.NewClock(now)
 	st, err := store.Open(context.Background(), t.TempDir(), store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -24,6 +22,7 @@ func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, 
 	t.Cleanup(func() { _ = st.Close() })
 	actor := RemoteActor{InstallationID: strings.Repeat("9", 32), AuthorityID: st.AuthorityID(), ExpectedRestoreID: st.RestoreID(), Credential: strings.Repeat("9", 64)}
 	insertInstallation(t, st, actor.InstallationID, "admin", st.RestoreID())
+	clock := testkit.NewClock(time.Now().UTC().Truncate(time.Microsecond))
 	svc, err := NewRemote(st, clock, &testIDs{}, Defaults{TTL: 5 * time.Second}, RemotePolicy{Prefixes: []string{"github:", "coordination:generic:"}, MaxTTL: 10 * time.Second, MaxHold: time.Minute})
 	if err != nil {
 		t.Fatal(err)

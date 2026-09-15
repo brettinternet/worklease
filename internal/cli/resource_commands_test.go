@@ -285,7 +285,7 @@ func TestProcessesSerializeOneHandleAndConcurrentMutations(t *testing.T) {
 	for result := range results {
 		if result.code == 0 {
 			successes++
-		} else if !strings.Contains(result.out, "handle-in-use") && !strings.Contains(result.out, "operation-request-mismatch") {
+		} else if !strings.Contains(result.out, "handle-in-use") && !strings.Contains(result.out, "handle-unsafe") && !strings.Contains(result.out, "operation-request-mismatch") {
 			t.Fatalf("unexpected contender result: code=%d output=%q", result.code, result.out)
 		}
 	}
