@@ -791,7 +791,7 @@ func (h *harness) provision(evidence string) error {
 	h.endpoint = "https://" + address
 	configPath := filepath.Join(secretDir, "server.yaml")
 	h.configPath, h.authorityHome = configPath, authorityHome
-	config := h.serverConfig([]string{"coordination:"}, "1h", "24h")
+	config := h.serverConfig(authorityHome, []string{"coordination:"}, "1h", "24h")
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return err
 	}
@@ -963,7 +963,7 @@ func (h *harness) provisionRemote(evidence string) error {
 	authorityHome := filepath.Join(h.remoteRoot, "authority")
 	h.remoteConfig = filepath.Join(h.remoteRoot, "server.yaml")
 	h.configPath, h.authorityHome = h.remoteConfig, authorityHome
-	config := h.serverConfig([]string{"coordination:"}, "1h", "24h")
+	config := h.serverConfig(authorityHome, []string{"coordination:"}, "1h", "24h")
 	configLocal := filepath.Join(secretDir, "server.yaml")
 	if err := os.WriteFile(configLocal, []byte(config), 0o600); err != nil {
 		return err
@@ -1775,7 +1775,7 @@ func claimsContain(result map[string]any, claimID string) bool {
 	return false
 }
 
-func (h *harness) serverConfig(prefixes []string, maxTTL, maxHold string) string {
+func (h *harness) serverConfig(home string, prefixes []string, maxTTL, maxHold string) string {
 	listen, cert, key := strings.TrimPrefix(h.endpoint, "https://"), h.cert, filepath.Join(h.root, "secrets", "tls.key")
 	if h.realHost {
 		listen = fmt.Sprintf("0.0.0.0:%d", h.remotePort)
@@ -1785,11 +1785,11 @@ func (h *harness) serverConfig(prefixes []string, maxTTL, maxHold string) string
 	for _, prefix := range prefixes {
 		fmt.Fprintf(&admitted, "  - %q\n", prefix)
 	}
-	return fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n%smaxTTL: %s\nmaxHold: %s\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", h.authorityHome, listen, cert, key, admitted.String(), maxTTL, maxHold)
+	return fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n%smaxTTL: %s\nmaxHold: %s\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", home, listen, cert, key, admitted.String(), maxTTL, maxHold)
 }
 
 func (h *harness) writeServerConfig(prefixes []string, maxTTL, maxHold string) error {
-	config := []byte(h.serverConfig(prefixes, maxTTL, maxHold))
+	config := []byte(h.serverConfig(h.authorityHome, prefixes, maxTTL, maxHold))
 	if !h.realHost {
 		return os.WriteFile(h.configPath, config, 0o600)
 	}
@@ -2633,11 +2633,25 @@ func requireSecretsAbsent(paths []string, secretFiles ...string) error {
 func (h *harness) group3BootstrapCrash(evidence string) error {
 	home := filepath.Join(h.root, "bootstrap-crash-authority")
 	invite := filepath.Join(h.root, "secrets", ".bootstrap-crash.invite")
-	binary, helper, config := h.binary, h.self, h.configPath
+	binary, helper := h.binary, h.self
+	config := filepath.Join(h.root, "secrets", "bootstrap-crash-server.yaml")
 	if h.realHost {
 		home = filepath.Join(h.remoteRoot, "bootstrap-crash-authority")
 		invite = filepath.Join(h.remoteRoot, ".bootstrap-crash.invite")
-		binary, helper, config = h.remoteBinary, h.remoteHelper, h.remoteConfig
+		binary, helper = h.remoteBinary, h.remoteHelper
+	}
+	configContents := []byte(h.serverConfig(home, []string{"coordination:"}, "1h", "24h"))
+	if h.realHost {
+		localConfig := config
+		config = filepath.Join(h.remoteRoot, "bootstrap-crash-server.yaml")
+		if err := os.WriteFile(localConfig, configContents, 0o600); err != nil {
+			return err
+		}
+		if err := runSCP(h.remoteHost, localConfig, config); err != nil {
+			return err
+		}
+	} else if err := os.WriteFile(config, configContents, 0o600); err != nil {
+		return err
 	}
 	args := []string{"--json", "server", "init", "--server-config", config, "--bootstrap-invite-file", invite}
 	h.logCommand("bootstrap-crash-boundary", append([]string{"env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", "worklease"}, args...))
