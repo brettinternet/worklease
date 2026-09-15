@@ -89,7 +89,9 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 		Name: "worklease", Usage: "Coordinate local work ownership", UsageText: "worklease [global options] <command>",
 		Description: "Coordinate work safely on one host. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
 		Version:     version, HideVersion: true, Writer: stdout, ErrWriter: stderr,
-		Metadata: map[string]any{jsonStateKey: state}, ExitErrHandler: func(context.Context, *urfavecli.Command, error) {},
+		EnableShellCompletion: true, ShellComplete: writeShellCompletions,
+		ConfigureShellCompletionCommand: configureCompletionCommand(state),
+		Metadata:                        map[string]any{jsonStateKey: state}, ExitErrHandler: func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
 			&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "output one JSON envelope"},
 			&urfavecli.StringFlag{Name: "home", Aliases: []string{"H"}, Usage: "state directory [$WORKLEASE_HOME]"},
@@ -116,6 +118,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 		},
 	}
 	state.root = root
+	setShellCompletionHandlers(root)
 	if err := validateCLICommandTree(root); err != nil {
 		panic(err)
 	}
@@ -192,7 +195,6 @@ func (s *boundary) versionResult(cmd *urfavecli.Command) error {
 // Run is the process entry point used by cmd/worklease and tests.
 func Run(ctx context.Context, args []string, version, commit, buildTime string, stdout, stderr io.Writer) error {
 	root := NewRootCommand(version, commit, buildTime, stdout, stderr)
-	SetInvocationArgs(root, args)
 	for _, arg := range args {
 		if !utf8.ValidString(arg) {
 			err := reason.Invalid("arguments must be valid UTF-8")
@@ -203,7 +205,26 @@ func Run(ctx context.Context, args []string, version, commit, buildTime string, 
 			return err
 		}
 	}
+	args = safeCompletionArgs(args)
+	SetInvocationArgs(root, args)
 	return root.Run(ctx, args)
+}
+
+// safeCompletionArgs keeps the framework's internal completion marker from
+// becoming an argument to a command after a positional `--` separator. Shell
+// completion must never dispatch the command being completed.
+func safeCompletionArgs(args []string) []string {
+	marker := len(args) - 1
+	if marker < 0 || args[marker] != "--generate-shell-completion" {
+		return args
+	}
+	for index := 1; index < marker-1; index++ {
+		if args[index] == "--" {
+			safe := append([]string(nil), args[:index]...)
+			return append(safe, "--generate-shell-completion")
+		}
+	}
+	return args
 }
 
 func hasJSON(args []string) bool {

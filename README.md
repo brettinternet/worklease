@@ -57,6 +57,29 @@ Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
 and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
 `checksums.txt`.
 
+### Shell completion
+
+Add the matching line to your shell configuration:
+
+```bash
+# ~/.bashrc
+source <(worklease completion bash)
+```
+
+```zsh
+# ~/.zshrc
+source <(worklease completion zsh)
+```
+
+For Fish, generate its conventional completion file:
+
+```fish
+mkdir -p ~/.config/fish/completions
+worklease completion fish > ~/.config/fish/completions/worklease.fish
+```
+
+Restart the shell or source its configuration after installing Worklease.
+
 ## Quick start
 
 Claim a resource, do the work, then release it:

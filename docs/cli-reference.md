@@ -49,6 +49,31 @@ No other option has a short alias. In particular, `--source`, `--work-key`, the
 provider triple, handles and leases, explicit credentials, replay and polling
 controls, coordination-only mode, and guarded-operation tuning are long-only.
 
+## Shell completion
+
+`worklease completion (bash|zsh|fish)` prints a deterministic, ANSI-free shell
+completion script derived from the registered command tree. It includes visible
+root and nested commands, command aliases, global options, and command-local
+options. Generation and completion requests do not inspect or mutate claim
+state; the framework's completion protocol remains hidden from suggestions.
+Unsupported shell names fail with an `invalid-argument` error listing the three
+supported shells.
+
+Enable completion with the matching shell setup:
+
+```bash
+source <(worklease completion bash)
+```
+
+```zsh
+source <(worklease completion zsh)
+```
+
+```fish
+mkdir -p ~/.config/fish/completions
+worklease completion fish > ~/.config/fish/completions/worklease.fish
+```
+
 ## Common lifecycle
 
 | Command | Purpose |
@@ -156,6 +181,7 @@ bounded recovery window; changed intent is rejected.
 | `setup mcp` | Preview/apply/remove Claude Code, Cursor, or generic MCP setup. |
 | `setup guard` | Preview/apply/remove optional native edit-hook setup. |
 | `setup instructions` | Generate the managed AGENTS.md block. |
+| `completion bash|zsh|fish` | Print the completion script for a supported shell. |
 | `mcp` | Serve Model Context Protocol on stdin/stdout. |
 
 Built-in resource policies are `backlog-md`, `markdown`, `github`, `linear`,

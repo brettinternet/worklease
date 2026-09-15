@@ -353,6 +353,196 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	return all
 }
 
+func setShellCompletionHandlers(command *urfavecli.Command) {
+	command.ShellComplete = writeShellCompletions
+	for _, child := range command.Commands {
+		setShellCompletionHandlers(child)
+	}
+}
+
+// writeShellCompletions derives suggestions only from the registered CLI tree.
+func writeShellCompletions(_ context.Context, command *urfavecli.Command) {
+	last := ""
+	if state, ok := command.Root().Metadata[jsonStateKey].(*boundary); ok {
+		state.mu.Lock()
+		args := append([]string(nil), state.invocation...)
+		state.mu.Unlock()
+		for index, arg := range args {
+			if arg == "--generate-shell-completion" && index > 0 {
+				last = args[index-1]
+				break
+			}
+		}
+	}
+	if last == "" {
+		args := command.Args().Slice()
+		for index := len(args) - 1; index >= 0; index-- {
+			if args[index] != "--generate-shell-completion" {
+				last = args[index]
+				break
+			}
+		}
+	}
+	if strings.HasPrefix(last, "-") {
+		seen := make(map[string]bool)
+		flags := append(command.VisibleFlags(), command.VisiblePersistentFlags()...)
+		for _, flag := range flags {
+			doc, _ := flag.(urfavecli.DocGenerationFlag)
+			usage := ""
+			if doc != nil {
+				usage = strings.ReplaceAll(doc.GetUsage(), "`", "")
+			}
+			for _, name := range flag.Names() {
+				token := "--" + name
+				if len(name) == 1 {
+					token = "-" + name
+				}
+				if !seen[token] {
+					fmt.Fprintf(command.Root().Writer, "%s:%s\n", token, usage)
+					seen[token] = true
+				}
+			}
+		}
+		return
+	}
+	children := command.VisibleCommands()
+	if command == command.Root() {
+		if help := command.Command("help"); help != nil && !help.Hidden {
+			children = append(children, help)
+		}
+	}
+	for _, child := range children {
+		for _, name := range child.Names() {
+			fmt.Fprintf(command.Root().Writer, "%s:%s\n", name, child.Usage)
+		}
+	}
+}
+
+const bashCompletionDependencyBlock = `  if declare -F _comp_initialize >/dev/null 2>&1; then
+    _comp_initialize "$@"
+  else
+    _get_comp_words_by_ref "$@" cur prev words cword
+  fi`
+
+const bashCompletionFallbackBlock = `  if declare -F _comp_initialize >/dev/null 2>&1; then
+    _comp_initialize "$@"
+  elif declare -F _get_comp_words_by_ref >/dev/null 2>&1; then
+    _get_comp_words_by_ref "$@" cur prev words cword
+  else
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev=""
+    if (( COMP_CWORD > 0 )); then
+      prev="${COMP_WORDS[COMP_CWORD-1]}"
+    fi
+    words=("${COMP_WORDS[@]}")
+    cword="${COMP_CWORD}"
+  fi`
+
+const bashCompletionUnsafeRequestBlock = `__worklease_build_completion_request() {
+  local -a words_before_cursor=("${COMP_WORDS[@]:0:${COMP_CWORD}}")
+  local current_word="${COMP_WORDS[COMP_CWORD]}"
+
+  if [[ "${current_word}" == "-"* ]]; then
+    printf '%s %s --generate-shell-completion' "${words_before_cursor[*]}" "${current_word}"
+  else
+    printf '%s --generate-shell-completion' "${words_before_cursor[*]}"
+  fi
+}`
+
+const bashCompletionSafeRequestBlock = `__worklease_build_completion_request() {
+  __worklease_completion_request=("${COMP_WORDS[@]:0:${COMP_CWORD}}")
+  local current_word="${COMP_WORDS[COMP_CWORD]}"
+
+  if [[ "${current_word}" == "-"* ]]; then
+    __worklease_completion_request+=("${current_word}")
+  fi
+  __worklease_completion_request+=("--generate-shell-completion")
+}`
+
+const bashCompletionUnsafeInvocation = `    local request_comp
+
+    COMPREPLY=()
+    cur="${words[$cword]}"
+
+    __worklease_init_completion -n "=:" || return
+
+    request_comp="$(__worklease_build_completion_request)"
+    opts=$(eval "${request_comp}" 2>/dev/null)`
+
+const bashCompletionSafeInvocation = `    local -a __worklease_completion_request
+
+    COMPREPLY=()
+    cur="${words[$cword]}"
+
+    __worklease_init_completion -n "=:" || return
+
+    __worklease_build_completion_request
+    opts=$("${__worklease_completion_request[@]}" 2>/dev/null)`
+
+func safeBashCompletion(script string) (string, error) {
+	for _, replacement := range []struct{ old, new string }{
+		{bashCompletionDependencyBlock, bashCompletionFallbackBlock},
+		{bashCompletionUnsafeRequestBlock, bashCompletionSafeRequestBlock},
+		{bashCompletionUnsafeInvocation, bashCompletionSafeInvocation},
+	} {
+		if !strings.Contains(script, replacement.old) {
+			return "", fmt.Errorf("unexpected Bash completion template")
+		}
+		script = strings.Replace(script, replacement.old, replacement.new, 1)
+	}
+	return script, nil
+}
+
+// configureCompletionCommand exposes urfave's generated completion scripts
+// for the shells Worklease supports while keeping its runtime protocol hidden.
+func configureCompletionCommand(s *boundary) urfavecli.ConfigureShellCompletionCommand {
+	return func(command *urfavecli.Command) {
+		command.Hidden = false
+		command.Category = categoryAdmin
+		command.Usage = "generate shell completion for Bash, Zsh, or Fish"
+		command.UsageText = "worklease completion (bash|zsh|fish)"
+		command.Description = "Print a deterministic completion script derived from the registered command tree. Generation and completion requests are read-only and do not inspect claim state.\n\nExamples:\n  worklease completion bash\n  worklease completion zsh\n  worklease completion fish"
+		supported := map[string]bool{"bash": true, "zsh": true, "fish": true}
+		commands := make([]*urfavecli.Command, 0, len(supported))
+		for _, child := range command.Commands {
+			if !supported[child.Name] {
+				continue
+			}
+			child.UsageText = "worklease completion " + child.Name
+			child.Description = fmt.Sprintf("Print the %s completion script.\n\nExamples:\n  worklease completion %s", child.Name, child.Name)
+			if child.Name == "bash" {
+				generate := child.Action
+				child.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+					root := cmd.Root()
+					writer := root.Writer
+					var generated strings.Builder
+					root.Writer = &generated
+					err := generate(ctx, cmd)
+					root.Writer = writer
+					if err != nil {
+						return err
+					}
+					script, err := safeBashCompletion(generated.String())
+					if err != nil {
+						return err
+					}
+					_, err = writer.Write([]byte(script))
+					return err
+				}
+			}
+			commands = append(commands, child)
+		}
+		command.Commands = commands
+		setShellCompletionHandlers(command)
+		command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+			if cmd.Args().Len() > 0 {
+				return s.handle(cmd, reason.Invalid(fmt.Sprintf("unsupported shell %q; supported shells: bash, zsh, fish", cmd.Args().First())))
+			}
+			return urfavecli.ShowSubcommandHelp(cmd)
+		}
+	}
+}
+
 // helpCommand replaces urfave's built-in help so that one deterministic,
 // read-only invocation can print the whole command tree for onboarding.
 func helpCommand(s *boundary) *urfavecli.Command {
