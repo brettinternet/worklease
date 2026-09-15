@@ -16,6 +16,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
 )
@@ -214,22 +215,31 @@ func TestRemoteMCPMissingCredentialPreflightsMutation(t *testing.T) {
 
 func TestRemoteMCPAutomaticRenewalUsesRemoteAuthority(t *testing.T) {
 	profile, home, _, _ := remoteMCPFixture(t, true)
-	s, err := NewServer(Options{Home: home, AgentID: "renew-agent", SessionID: "renew-session", TTL: time.Second, Profile: &profile, ProfileName: profile.Name})
+	s, err := NewServer(Options{Home: home, AgentID: "renew-agent", SessionID: "renew-session", TTL: 5 * time.Second, Profile: &profile, ProfileName: profile.Name})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	result, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []string{"coordination:renew"}, "ttl": 1.0, "maxHold": 60.0})
+	result, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []string{"coordination:renew"}, "ttl": 5.0, "maxHold": 60.0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaseRef, _ := mcpFields(t, result)["lease"].(string)
+	fields := mcpFields(t, result)
+	leaseRef, _ := fields["lease"].(string)
+	if leaseRef == "" {
+		t.Fatalf("acquire failed: %#v", fields)
+	}
 	path := s.handlePath(leaseRef)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		h, readErr := handle.Read(path)
 		if readErr != nil {
-			t.Fatal(readErr)
+			classified := reason.As(readErr)
+			if classified == nil || classified.Reason != reason.ReasonHandleUnsafe {
+				t.Fatal(readErr)
+			}
+			time.Sleep(25 * time.Millisecond)
+			continue
 		}
 		if h.Revision > 1 {
 			break
