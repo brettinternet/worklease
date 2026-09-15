@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-12 03:21'
-updated_date: '2026-09-14 01:20'
+updated_date: '2026-09-15 04:49'
 labels:
   - go-rewrite
 milestone: m-0
@@ -119,6 +119,12 @@ author: @brett
 created: 2026-09-14 01:20
 ---
 TASK-107.1 amendment summary: product-contract section 20.3 now freezes Remote Authority Protocol V1 (doc-4) by reference under section 15. The specification fixes worklease-http/1, exact HTTPS routes and CLI flags, storage-neutral mappings to existing typed services plus named auth/admin extensions, bounded non-cacheable envelopes, cancellation, installation/incarnation/epoch/replay/admission ordering, complete error-to-HTTP mapping, and the offline/client/HTTP/CLI/MCP exposure matrix. It excludes LegacyRequestHash, remote provider execution and replace-file, HTTP retirement, MCP enrollment, recovery import, and cross-host transfer. Evidence is recorded in the dated section 17 amendment.
+---
+
+author: @brett
+created: 2026-09-15 04:49
+---
+TASK-107.12 promotes the completed opt-in remote authority to an experimental shipped capability and records the matching section 17/20 amendment. The default binary remains local and network-inert unless remote profile management, a selected profile, or serve is explicit; effects stay client-local. TASK-107.11 passed all five local and Lima/SSH harness groups, and Actions run 34915583460 built and natively smoke-tested all four targets. Restore evidence requirements and deferred triggers remain intact; no HA, fencing, publication, tag, push, or release claim is added.
 ---
 <!-- COMMENTS:END -->
 
