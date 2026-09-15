@@ -111,10 +111,12 @@ ID is unsafe and unsupported.
 
 ## Legacy Python state
 
-Worklease does not import or delete Python-era state. After stopping every old
-Worklease process, move `leases.sqlite3`, `locks/`, `context-leases/`, and
-`mcp-leases/` out of `WORKLEASE_HOME` into a private backup. Keep the backup
-until you no longer need rollback or historical inspection.
+Worklease does not import or delete Python-era state. Migrate it manually:
+
+1. Stop every old Worklease process.
+2. Move `leases.sqlite3`, `locks/`, `context-leases/`, and `mcp-leases/` from
+   `WORKLEASE_HOME` into a private backup.
+3. Keep the backup until rollback and historical inspection are unnecessary.
 
 See [CLI reference](cli-reference.md) for commands and
 [MCP and JSON](mcp.md) for agent orchestration. The remote authority design

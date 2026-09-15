@@ -44,15 +44,16 @@ reference; later lifecycle calls use the reference, not the session selector.
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"acquire","arguments":{"resources":["task:b"],"sessionId":"loop-b","agentId":"agent-b"}},"_meta":{"protocolVersion":"2026-07-28"}}
 ```
 
-For each successful acquire:
+Use the returned reference for the rest of the lifecycle:
 
-1. Capture `structuredContent.lease`.
-2. Pass `{"lease":"REFERENCE"}` to `status`, `heartbeat`, `checkpoint`,
-   `verify`, and `release`.
+| Step | Input or output |
+| --- | --- |
+| `acquire` | Capture `structuredContent.lease`. |
+| `status`, `heartbeat`, `checkpoint`, `verify`, `release` | Pass `{"lease":"REFERENCE"}`. |
 
-Sessions isolate private handles; lease references select them. A conflicting
-acquire returns structured `already-claimed` holder/expiry details. Tokens never
-appear in results, errors, logs, checkpoints, or schemas.
+Sessions isolate private handles; lease references select them. Contention
+returns structured `already-claimed` holder/expiry details. Tokens never appear
+in results, errors, logs, checkpoints, or schemas.
 
 ## Renewal, cancellation, and recovery
 

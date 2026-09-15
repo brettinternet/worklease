@@ -20,22 +20,17 @@ network unless that profile is selected by the normal precedence rules.
 
 ## Deployment boundary
 
-One hosted authority has exactly one namespace, SQLite database, `worklease
-serve` process, serialized writer, and persistent volume. SQLite WAL requires a
-single-host filesystem. Never use a network filesystem, multiple writable
-origins, writable copies, or two servers with the same authority ID.
+Each authority has these deployment invariants:
 
-The server takes an exclusive process-lifetime hosted OS lock on the authority
-home. `serve` and every offline hosted writer take this lock before opening
-SQLite. The lock file is stable while held. A paused process retains the lock;
-stop it before starting a replacement. The lock protects cooperating processes
-on one host, not independent writable clones.
+| Invariant | Required practice | Not supported |
+| --- | --- | --- |
+| One writer | Run one `worklease serve` process against one SQLite database and persistent volume. | Multiple writable origins or copies |
+| Local WAL | Keep the complete authority home on one single-host filesystem. | Network filesystems |
+| Process lock | Stop the lock holder before starting its replacement; a paused process still holds the lock. | Using the hosted lock to protect independent clones |
+| Startup configuration | Stop, edit, then start. The deployment-owned file is read once at startup. | Hot reload, remote configuration, or `serve --daemon` |
 
-The server configuration is deployment-owned and is read only at startup. A
-configuration change (including admitted prefixes, TTL/hold bounds, rates,
-listen address, or TLS files) takes effect by a deliberate **stop before start**
-restart. There is no hot reload, `serve --daemon`, remote configuration route,
-or schema/backend-selection flag.
+`serve` and every offline hosted writer take the process-lifetime hosted lock
+before opening SQLite.
 
 A canonical configuration uses these implemented fields:
 
@@ -241,17 +236,16 @@ Files are owner-private. Before exposing the server to another host, edit the
 configuration and enable TLS.
 
 `server init` stages the bootstrap secret before the authority transaction and
-writes a one-time admin invite. `bootstrap-reissue` replaces only that active
-invite. `serve` resolves its configuration from `--server-config`,
-`WORKLEASE_SERVER_CONFIG`, then the default path. The file owns its listen
-address, TLS, admission bounds, rates, home, and optional insecure-HTTP choice;
-the flag remains an explicit network override.
+writes a one-time admin invite. `bootstrap-reissue` replaces only that invite.
+`serve` resolves configuration in this order:
 
-Configuration changes are therefore: stop `serve`, edit the deployment-owned
-file, verify the hosted home and backup, then start exactly one `serve` process.
-Do not hot-edit a running configuration or start a second process. Keep the
-hosted home, lock, database, WAL sidecars, readiness marker, and private
-secrets on the same trusted single-host filesystem.
+1. `--server-config`
+2. `WORKLEASE_SERVER_CONFIG`
+3. `$XDG_CONFIG_HOME/worklease/server.yaml`
+
+The file defines the listener, TLS, admission bounds, rates, home, and optional
+insecure HTTP. Apply changes with the stop-before-start procedure in
+[Deployment boundary](#deployment-boundary).
 
 ## Restore, recovery, and reopening
 
@@ -264,45 +258,41 @@ Restore recreates an authority; it never resumes one.
 | Resolution | Requires exact replay or reconciliation with outcome and cessation evidence. Started work remains `unknown-outcome` until resolved. |
 | `recovery reopen` | Reopens admission only after complete attested coverage. |
 
-Old handles and cursors fail closed as `stale-claim` or `authority-restored`.
-Missing old credentials return `authentication-required`; retained revoked ones
-return `installation-revoked`.
+Recover in this order:
 
-Record the durable backup cutoff and the loss interval through old-authority
-cessation—not merely observed backup lag. Use `--cutoff-unknown` when needed.
-Delayed requests, escaped descendants, and lost responses can outlive receipts,
-claims, pending directories, and the old process.
-
-A recovery acquire must cover an unresolved predecessor's full transitive
-resource closure within the 1–32-resource limit. It never authorizes redispatch.
-
-Before reopening, private evidence must cover:
+1. Record the durable backup cutoff and loss interval through old-authority
+   cessation. Use `--cutoff-unknown` when needed; backup lag is not the bound.
+2. Enumerate the private evidence below.
+3. Replay or reconcile every retained started operation. Never redispatch a
+   missing row.
+4. Write the bounded, owner-private JSON attestation.
+5. Run `recovery reopen`; any evidence gap keeps recovery closed.
 
 | Evidence | Required coverage |
 | --- | --- |
 | Installation inventory | Every active, retired, ephemeral, and CI installation that may have acted since the backup. |
-| Pending requests | An enumerable set per installation, or independently verified exhaustive equivalent. |
-| Outcomes | Reconciliation of retained started operations and accounting for lost-tail work absent from the restored ledger. |
-| Cessation | Provider and executor/process cessation for every in-flight operation, including terminal receipts and empty pending sets. Completion is not cessation; an empty set is not provider history. |
-| Loss window | The durable cutoff through old-authority cessation. Mark unknown bounds explicitly; they waive no other evidence. |
+| Pending requests | An enumerable set per installation, or an independently verified exhaustive equivalent. |
+| Outcomes | Retained started operations and lost-tail work absent from the restored ledger. |
+| Cessation | Provider and executor cessation for every in-flight operation. Completion is not cessation; an empty pending set is not provider history. |
+| Loss window | The durable cutoff through old-authority cessation. Unknown bounds waive nothing. |
 | Namespace | Delayed provider effects after old-authority shutdown. |
 
-Any inventory, pending-set, outcome, or cessation gap keeps recovery closed.
+The attestation contains `inventoryComplete`, `pendingSetsComplete`,
+`retainedOutcomesComplete`, `namespaceCessationEstablished`, and private
+`evidenceReferences`. Worklease validates its structure and retained rows, not
+external truth. Keep credentials, argv, payloads, checkpoints, receipts, and
+evidence dumps out of the attestation and public output.
 
-`recovery reopen` reads the owner-private bounded JSON attestation from
-`--attestation-file`. The attestation carries `inventoryComplete`,
-`pendingSetsComplete`, `retainedOutcomesComplete`,
-`namespaceCessationEstablished`, and private `evidenceReferences`; Worklease
-validates structure and retained rows but cannot verify external truth. Never
-put credentials, argv, provider payloads, checkpoints, receipts, or evidence
-dumps in public events, logs, MCP results, or the attestation itself.
+Old handles and cursors fail closed as `stale-claim` or `authority-restored`.
+Missing old credentials return `authentication-required`; retained revoked ones
+return `installation-revoked`. A recovery acquire must cover its predecessor's
+full transitive resource closure within the 1–32-resource limit and never
+authorizes redispatch.
 
-A missing completed operation may remain an attested history gap only with
-independent evidence of no residual provider or executor effect. Never
-redispatch a missing row. Exports, replicas, and backups do not permit removing
-unknown state or reopening without full coverage. Recovery import and a
-completed-history journal remain deferred until a drill proves manual
-accounting or the recovery target inadequate.
+A missing completed operation needs independent evidence of no residual effect.
+Exports, replicas, and backups cannot remove unknown state or substitute for
+full reopening evidence. Recovery import and a completed-history journal remain
+deferred.
 
 ## Retirement and unsupported boundaries
 
