@@ -110,21 +110,26 @@ in one checkout. Credentials are never printed.
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
 
-## Experimental remote authority
+## Remote authority
 
-Worklease also ships an **experimental**, opt-in, self-hosted remote claim
-authority. One `worklease serve` process owns one namespace and one SQLite
-writer on one host; guarded commands and provider effects remain on client
-hosts. It makes no high-availability, provider-fencing, or exactly-once
-execution claim. Profiles, invite enrollment, remote administration, hosted
-restore/recovery, and the local stdio MCP client are documented in the
-[experimental remote authority guide](docs/remote-claim-authority.md).
+Coordinate clients across hosts through one explicitly selected, self-hosted
+authority:
 
-The standard binary permanently opens no listener and makes no network request
-unless remote profile management is explicitly invoked, a remote profile is
-selected, or `serve` is run. Local reads remain setup-free. Remote failures do
-not fall back to local coordination. Public publication, tagging, pushing, and
-release execution remain separately owner-authorized.
+```sh
+# Server
+worklease serve --server-config server.yaml
+
+# Client
+worklease profile add team --endpoint https://worklease.example.com --authority-id AUTHORITY_ID
+worklease enroll --profile team --invite-file invite.secret
+worklease acquire --profile team --resource github:org/repo#42
+```
+
+`serve` owns one namespace and one SQLite writer. Guarded commands and provider
+effects still run on clients, and remote failures never fall back locally. This
+feature is experimental: it provides no high availability, provider fencing, or
+exactly-once execution. See the [remote authority guide](docs/remote-claim-authority.md)
+for deployment, enrollment, administration, and recovery.
 
 ## JSON and MCP quick start
 
@@ -192,7 +197,7 @@ See:
 - [MCP and JSON](docs/mcp.md)
 - [Setup and native hooks](docs/setup.md)
 - [Container deployment](docs/container.md)
-- [Experimental remote authority](docs/remote-claim-authority.md)
+- [Remote authority](docs/remote-claim-authority.md)
 
 ## Development
 
