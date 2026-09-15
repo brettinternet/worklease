@@ -32,6 +32,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/creack/pty"
@@ -116,6 +118,7 @@ type harness struct {
 	immutableEnrollmentClient                                       client
 	immutableEnrollmentID, immutableEnrollmentInvite                string
 	immutableEnrollmentBefore                                       authority.PendingRequest
+	preRestoreCursor                                                string
 }
 
 type client struct {
@@ -338,6 +341,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "age-retention-fixture" {
+		if len(os.Args) != 4 {
+			fatal(errors.New("age-retention-fixture requires a database and Unix-microsecond timestamp"))
+		}
+		at, err := strconv.ParseInt(os.Args[3], 10, 64)
+		if err != nil {
+			fatal(errors.New("age-retention-fixture timestamp is invalid"))
+		}
+		if err := ageRetentionFixture(os.Args[2], at); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap-state" {
 		if len(os.Args) != 4 {
 			fatal(errors.New("bootstrap-state requires a hosted home and secret path"))
@@ -442,6 +458,9 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	}
 	if !keep {
 		defer os.RemoveAll(root)
+	}
+	if err := writeAcceptanceOwnerMarker(root); err != nil {
+		return err
 	}
 	if evidence == "" {
 		stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
@@ -2701,6 +2720,90 @@ func (h *harness) group3(evidence string) error {
 	return nil
 }
 
+func writeAcceptanceOwnerMarker(root string) error {
+	return os.WriteFile(filepath.Join(root, ".worklease-acceptance-owner"), []byte("worklease remote acceptance fixture\n"), 0o600)
+}
+
+func validateAcceptanceDatabase(database string) error {
+	resolved, err := filepath.EvalSymlinks(database)
+	if err != nil {
+		return err
+	}
+	root := filepath.Dir(filepath.Dir(resolved))
+	if resolved != filepath.Join(root, "authority", "worklease.db") {
+		return errors.New("retention fixture requires the acceptance authority database")
+	}
+	marker := filepath.Join(root, ".worklease-acceptance-owner")
+	info, err := os.Stat(marker)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("retention fixture requires an owner-private acceptance marker")
+	}
+	return nil
+}
+
+func ageRetentionFixture(database string, at int64) (err error) {
+	if err := validateAcceptanceDatabase(database); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	statements := []string{
+		`UPDATE claims SET acquired_at=?,heartbeat_at=?,expires_at=?`,
+		`UPDATE epochs SET acquired_at=?,ended_at=CASE WHEN ended_at IS NULL THEN NULL ELSE ? END,ended_recorded_at=CASE WHEN ended_recorded_at IS NULL THEN NULL ELSE ? END`,
+		`UPDATE operations SET request_not_after=?,started_at=?,completed_at=CASE WHEN completed_at IS NULL THEN NULL ELSE ? END`,
+		`UPDATE reconciliations SET recorded_at=?`,
+		`UPDATE events SET at=?`,
+	}
+	for _, statement := range statements {
+		arguments := strings.Count(statement, "?")
+		values := make([]any, arguments)
+		for i := range values {
+			values[i] = at
+		}
+		if _, err = tx.Exec(statement, values...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (h *harness) ageRetentionState(evidence string) error {
+	database := filepath.Join(h.root, "authority", "worklease.db")
+	if h.realHost {
+		database = filepath.Join(h.remoteRoot, "authority", "worklease.db")
+	}
+	h.stopServer()
+	at := strconv.FormatInt(time.Now().Add(-72*time.Hour).UnixMicro(), 10)
+	h.logCommand("fixture@"+h.remoteHost, []string{"age-retention-fixture", database, at})
+	var err error
+	if h.realHost {
+		_, err = runSSH(h.remoteHost, h.remoteHelper, "age-retention-fixture", database, at)
+	} else {
+		err = ageRetentionFixture(database, mustParseInt64(at))
+	}
+	if err != nil {
+		return err
+	}
+	return h.restartServer(evidence)
+}
+
+func mustParseInt64(value string) int64 {
+	parsed, _ := strconv.ParseInt(value, 10, 64)
+	return parsed
+}
+
 func (h *harness) group4(evidence string) error {
 	a, b := h.clients[0], h.clients[1]
 	snapshot := func() (map[string]any, string, error) {
@@ -2824,6 +2927,125 @@ func (h *harness) group4(evidence string) error {
 	if err := verifyDroppedWatch(filepath.Join(evidence, "fault-proxy.log")); err != nil {
 		return err
 	}
+	h.stopFaultProxy()
+	if err := h.switchProfileEndpoint(a, h.endpoint); err != nil {
+		return err
+	}
+
+	incarnationSnapshot, incarnationCursor, err := snapshot()
+	if err != nil {
+		return err
+	}
+	parsedCursor, err := ledger.ParseCursor(incarnationCursor)
+	if err != nil {
+		return err
+	}
+	foreignCursor := ledger.EncodeCursor(strings.Repeat("f", 32), parsedCursor.RestoreID, parsedCursor.Feed, parsedCursor.Filter, mustParseInt64(parsedCursor.Sequence))
+	foreignResult, err := h.cliFailure(a, "--profile", "team", "events", "--cursor", foreignCursor)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(foreignResult, "cursor-invalid"); err != nil {
+		return fmt.Errorf("foreign-authority events cursor: %w", err)
+	}
+	foreignWatch, err := h.cliFailure(a, "--profile", "team", "watch", "--cursor", foreignCursor, "--timeout", "200ms")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(foreignWatch, "cursor-invalid"); err != nil {
+		return fmt.Errorf("foreign-authority watch cursor: %w", err)
+	}
+	oldCursor := ledger.EncodeCursor(parsedCursor.AuthorityID, parsedCursor.RestoreID, "events", "", 0)
+	newerHandle := filepath.Join(a.home, "handles", "retention-newer.json")
+	if _, err := h.cli(a, "--profile", "team", "acquire", "--handle", newerHandle, "--resource", "coordination:retention-newer", "--ttl", "1s"); err != nil {
+		return err
+	}
+	if _, err := h.cli(a, "--profile", "team", "release", "--handle", newerHandle, "--reason", "retention pin fixture"); err != nil {
+		return err
+	}
+	if err := h.ageRetentionState(evidence); err != nil {
+		return err
+	}
+	firstGC, err := h.cli(a, "--profile", "team", "gc", "--apply", "--cutoff", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	if err := h.ageRetentionState(evidence); err != nil {
+		return err
+	}
+	secondGC, err := h.cli(a, "--profile", "team", "gc", "--apply", "--cutoff", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	gapEvents, err := h.cli(a, "--profile", "team", "events", "--cursor", oldCursor, "--limit", "100")
+	if err != nil {
+		return err
+	}
+	prunedThrough, _ := secondGC["prunedThroughSequence"].(string)
+	if err := requireEventsGap(gapEvents, oldCursor, prunedThrough); err != nil {
+		return err
+	}
+	gapWatch, err := h.cli(a, "--profile", "team", "watch", "--cursor", oldCursor, "--timeout", "2s")
+	if err != nil {
+		return err
+	}
+	if err := requireWatchGap(gapWatch, oldCursor, prunedThrough); err != nil {
+		return err
+	}
+	resetCursor, _ := gapEvents["nextCursor"].(string)
+	resumedEvents, err := h.cli(a, "--profile", "team", "events", "--cursor", resetCursor, "--limit", "100")
+	if err != nil {
+		return err
+	}
+	if resumedEvents["gap"] == true {
+		return fmt.Errorf("events reset cursor produced another gap: %v", resumedEvents)
+	}
+	resumedWatch, err := h.cli(a, "--profile", "team", "watch", "--cursor", resetCursor, "--timeout", "2s")
+	if err != nil {
+		return err
+	}
+	if resumedWatch["gap"] == true {
+		return fmt.Errorf("watch reset cursor produced another gap: %v", resumedWatch)
+	}
+	retainedEvents, err := h.cli(a, "--profile", "team", "events", "--limit", "1000")
+	if err != nil {
+		return err
+	}
+	if !eventsContainKindResource(retainedEvents, "exec-started", "coordination:lost-begin") || !eventsContainResource(retainedEvents, "coordination:retention-newer") {
+		return errors.New("stuck started operation did not pin its own and newer retained history")
+	}
+	stuckInspection, err := h.cli(a, "--profile", "team", "op", "inspect", "--handle", filepath.Join(a.home, "handles", "lost-begin.json"), "--operation-id", strings.Repeat("1", 32), "--full")
+	if err != nil {
+		return err
+	}
+	inspection, _ := stuckInspection["inspection"].(map[string]any)
+	if inspection["state"] != "started" || inspection["operationId"] != strings.Repeat("1", 32) {
+		return fmt.Errorf("stuck operation was not retained as started: %v", inspection)
+	}
+	newerHistory, err := h.cli(a, "--profile", "team", "history", "--resource", "coordination:retention-newer", "--limit", "10", "--full")
+	if err != nil {
+		return err
+	}
+	newerEpochs, _ := newerHistory["epochs"].([]any)
+	if len(newerEpochs) != 1 {
+		return fmt.Errorf("newer pinned epoch count=%d, want 1", len(newerEpochs))
+	}
+	if protectedCount(secondGC, "expiredClaims") < 1 || protectedCount(secondGC, "epochs") < 2 {
+		return fmt.Errorf("stuck-history protection missing: %v", secondGC["protected"])
+	}
+	h.preRestoreCursor = resetCursor
+	if h.preRestoreCursor == "" {
+		return errors.New("retention gap returned no reset cursor")
+	}
+	retentionEvidence := filepath.Join(evidence, "cursor-retention-gaps.json")
+	retentionRecord := map[string]any{"incarnationSnapshot": incarnationSnapshot, "foreignAuthorityEvents": foreignResult, "foreignAuthorityWatch": foreignWatch, "firstGC": firstGC, "secondGC": secondGC, "eventsGap": gapEvents, "watchGap": gapWatch, "resumedEvents": resumedEvents, "resumedWatch": resumedWatch, "stuckInspection": stuckInspection, "newerHistory": newerHistory, "retainedEvents": retainedEvents}
+	retentionData, err := json.MarshalIndent(retentionRecord, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(retentionEvidence, append(retentionData, '\n'), 0o600); err != nil {
+		return err
+	}
 
 	pendingRoot := filepath.Join(a.home, "pending", "team")
 	entries, err := os.ReadDir(pendingRoot)
@@ -2849,8 +3071,7 @@ func (h *harness) group4(evidence string) error {
 	if err := os.WriteFile(watchEvidence, append(encoded, '\n'), 0o600); err != nil {
 		return err
 	}
-	h.stopFaultProxy()
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot/watch ordering preserves an event committed before cursor resume and a release committed after an active-state snapshot; a response-ready watch can lose its transport before acknowledgment and reconnect from its saved cursor exactly once; the enumerable pending root survives client process restarts", Commands: []string{"snapshot then mutate before cursor watch", "acquire then watch until free and release", "drop completed watch response", "reconnect from saved cursor", "resume from next cursor without duplicate"}, Evidence: []string{watchEvidence, filepath.Join(evidence, "fault-proxy.log"), inventory}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 4, Observation: "snapshot/watch ordering preserves an event committed before cursor resume and a release committed after an active-state snapshot; a response-ready watch can lose its transport before acknowledgment and reconnect from its saved cursor exactly once; foreign-authority cursors fail closed, retention gaps return explicit reset cursors, and a stuck started operation pins its own and newer history; the enumerable pending root survives client process restarts", Commands: []string{"snapshot then mutate before cursor watch", "acquire then watch until free and release", "drop completed watch response", "reconnect from saved cursor", "resume from next cursor without duplicate", "reject foreign-authority cursor", "age retention fixture and apply GC twice", "resume events and watch below pruning watermark", "verify stuck and newer history remain"}, Evidence: []string{watchEvidence, filepath.Join(evidence, "fault-proxy.log"), retentionEvidence, inventory}, Passed: true})
 	return nil
 }
 
@@ -2921,6 +3142,67 @@ func requireWatchTimeout(result map[string]any, cursor string) error {
 	return nil
 }
 
+func requireEventsGap(result map[string]any, cursor, prunedThrough string) error {
+	events, _ := result["events"].([]any)
+	next, _ := result["nextCursor"].(string)
+	if result["gap"] != true || len(events) != 0 || next == "" || next == cursor {
+		return fmt.Errorf("events retention gap is not explicit: %v", result)
+	}
+	return requireResetCursor(cursor, next, prunedThrough)
+}
+
+func requireWatchGap(result map[string]any, cursor, prunedThrough string) error {
+	next, _ := result["nextCursor"].(string)
+	reset, _ := result["resetCursor"].(string)
+	if result["gap"] != true || result["event"] != nil || next == "" || next == cursor || reset != next {
+		return fmt.Errorf("watch retention gap is not explicit: %v", result)
+	}
+	return requireResetCursor(cursor, reset, prunedThrough)
+}
+
+func requireResetCursor(original, reset, sequence string) error {
+	before, err := ledger.ParseCursor(original)
+	if err != nil {
+		return err
+	}
+	after, err := ledger.ParseCursor(reset)
+	if err != nil {
+		return err
+	}
+	if sequence == "" || before.AuthorityID != after.AuthorityID || before.RestoreID != after.RestoreID || before.Feed != after.Feed || before.Filter != after.Filter || after.Sequence != sequence {
+		return fmt.Errorf("reset cursor is not bound to pruning watermark %q: before=%+v after=%+v", sequence, before, after)
+	}
+	return nil
+}
+
+func eventsContainResource(result map[string]any, resource string) bool {
+	return eventsContainKindResource(result, "", resource)
+}
+
+func eventsContainKindResource(result map[string]any, kind, resource string) bool {
+	events, _ := result["events"].([]any)
+	for _, raw := range events {
+		event, _ := raw.(map[string]any)
+		if kind != "" && event["kind"] != kind {
+			continue
+		}
+		resources, _ := event["resources"].([]any)
+		for _, observed := range resources {
+			if observed == resource {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func protectedCount(result map[string]any, key string) int {
+	protected, _ := result["protected"].(map[string]any)
+	summary, _ := protected[key].(map[string]any)
+	count, _ := summary["count"].(float64)
+	return int(count)
+}
+
 func (h *harness) group5(evidence string) error {
 	authorityDB := filepath.Join(h.root, "authority", "worklease.db")
 	backup := filepath.Join(evidence, "asynchronous-backup.db")
@@ -2982,6 +3264,55 @@ func (h *harness) group5(evidence string) error {
 	if err := h.restartServer(evidence); err != nil {
 		return err
 	}
+	if h.preRestoreCursor == "" {
+		return errors.New("pre-restore cursor fixture is missing")
+	}
+	staleCursorClient, err := h.cliFailure(h.clients[0], "--profile", "team", "events", "--cursor", h.preRestoreCursor)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(staleCursorClient, "authority-restored"); err != nil {
+		return fmt.Errorf("stale profile and cursor after restore: %w", err)
+	}
+	if err := h.refreshClientRestoreID(h.clients[0], restoredRestoreID); err != nil {
+		return err
+	}
+	clientRestoreInvite := restoredInvite
+	if h.realHost {
+		clientRestoreInvite = filepath.Join(h.root, "secrets", "restored-client.invite")
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+restoredInvite, clientRestoreInvite); err != nil {
+			return err
+		}
+	}
+	clientCredential := filepath.Join(h.clients[0].config, "worklease", "credentials", "team")
+	if err := os.Rename(clientCredential, clientCredential+".pre-restore"); err != nil {
+		return err
+	}
+	if _, err := h.cli(h.clients[0], "enroll", "--profile", "team", "--invite-file", clientRestoreInvite, "--label", "acceptance-restored-cursor"); err != nil {
+		return err
+	}
+	staleCursor, err := h.cliFailure(h.clients[0], "--profile", "team", "events", "--cursor", h.preRestoreCursor)
+	if err != nil {
+		return err
+	}
+	if err := requireReason(staleCursor, "authority-restored"); err != nil {
+		return fmt.Errorf("old events cursor under refreshed restore identity: %w", err)
+	}
+	staleWatchCursor, err := h.cliFailure(h.clients[0], "--profile", "team", "watch", "--cursor", h.preRestoreCursor, "--timeout", "200ms")
+	if err != nil {
+		return err
+	}
+	if err := requireReason(staleWatchCursor, "authority-restored"); err != nil {
+		return fmt.Errorf("old watch cursor under refreshed restore identity: %w", err)
+	}
+	cursorEvidencePath := filepath.Join(evidence, "cursor-incarnation-after-restore.json")
+	cursorEvidence, err := json.MarshalIndent(map[string]any{"oldProfile": staleCursorClient, "refreshedProfileEvents": staleCursor, "refreshedProfileWatch": staleWatchCursor, "newRestoreId": restoredRestoreID}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cursorEvidencePath, append(cursorEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
 	if h.immutableEnrollmentID == "" {
 		return errors.New("immutable enrollment fixture is missing")
 	}
@@ -3023,16 +3354,45 @@ func (h *harness) group5(evidence string) error {
 			return err
 		}
 	}
-	afterRestoreHandle := filepath.Join(h.clients[0].home, "handles", "after-restore.json")
-	staleClient, err := h.cliFailure(h.clients[0], "--profile", "team", "acquire", "--handle", afterRestoreHandle, "--resource", "coordination:after-restore")
+	afterRestoreHandle := filepath.Join(h.clients[1].home, "handles", "after-restore.json")
+	staleClient, err := h.cliFailure(h.clients[1], "--profile", "team", "acquire", "--handle", afterRestoreHandle, "--resource", "coordination:after-restore")
 	if err != nil {
 		return err
 	}
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "an asynchronously selected SQLite cutoff restores to a fresh incarnation; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"copy live SQLite cutoff", "stop authority", "hosted restore", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
 	return nil
+}
+
+func (h *harness) refreshClientRestoreID(c client, restoreID string) error {
+	paths := config.UserProfilePaths(func(name string) string {
+		if name == "XDG_CONFIG_HOME" {
+			return c.config
+		}
+		return ""
+	})
+	profiles, defaultName, err := config.LoadProfiles(paths)
+	if err != nil {
+		return err
+	}
+	profile, ok := profiles["team"]
+	if !ok {
+		return errors.New("team profile is missing")
+	}
+	profile.RestoreID = restoreID
+	profiles["team"] = profile
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	values := make([]config.Profile, 0, len(names))
+	for _, name := range names {
+		values = append(values, profiles[name])
+	}
+	return config.SaveProfiles(paths, values, defaultName)
 }
 
 func runSupportingTests(evidence string) []supportingTestEvidence {
@@ -3111,8 +3471,11 @@ func (h *harness) coverageMatrix() []coverageEntry {
 	blocked := func(id, clause string) coverageEntry {
 		return coverageEntry{ID: id, Clause: clause, Status: "still-blocked", Evidence: []string{"not exercised by the five-group smoke slice"}}
 	}
-	live := func(id, clause string, group int) coverageEntry {
-		evidence := liveEvidence(group)
+	live := func(id, clause string, groups ...int) coverageEntry {
+		var evidence []string
+		for _, group := range groups {
+			evidence = append(evidence, liveEvidence(group)...)
+		}
 		if len(evidence) == 0 {
 			return blocked(id, clause)
 		}
@@ -3148,8 +3511,8 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC5.9", "distinct MCP authentication guidance", 3),
 		live("AC6.1", "snapshot/watch races", 4),
 		live("AC6.2", "disconnect and reconnect", 4),
-		blocked("AC6.3", "cursor incarnation and retention gaps"),
-		blocked("AC6.4", "stuck-history retention"),
+		live("AC6.3", "cursor incarnation and retention gaps", 4, 5),
+		live("AC6.4", "stuck-history retention", 4),
 		blocked("AC6.5", "full-volume storage-failure without pruning"),
 		blocked("AC6.6", "pending evidence surviving age, GC, replay expiry, restart, and profile changes"),
 		blocked("AC7.1", "actual asynchronous backup fixture with chosen and older cutoffs"),
