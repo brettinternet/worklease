@@ -143,7 +143,7 @@ func validateRemoteDocs() {
 		},
 		"docs/cli-reference.md": {
 			"## Experimental remote authority", "--profile NAME", "WORKLEASE_PROFILE", "--local",
-			"worklease hosted restore", "worklease recovery reopen", "--cutoff-unknown",
+			"worklease server restore", "worklease recovery reopen", "--cutoff-unknown",
 			"Remote `--wait`", "--poll-interval", "gc` requires `--apply`", "--cutoff TIME", "--retention-days N", "unsupported",
 		},
 		"docs/mcp.md": {

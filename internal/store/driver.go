@@ -93,6 +93,14 @@ type Driver struct {
 // the selected driver opens by path, this check has the residual pre-open race
 // documented by UnsafePathRaceWarning.
 func OpenDriver(ctx context.Context, path string, readOnly bool) (*Driver, error) {
+	return openDriver(ctx, path, readOnly, true)
+}
+
+func openExistingDriver(ctx context.Context, path string, readOnly bool) (*Driver, error) {
+	return openDriver(ctx, path, readOnly, false)
+}
+
+func openDriver(ctx context.Context, path string, readOnly, create bool) (*Driver, error) {
 	if ctx == nil {
 		return nil, errors.New("nil context")
 	}
@@ -111,7 +119,11 @@ func OpenDriver(ctx context.Context, path string, readOnly bool) (*Driver, error
 	}
 
 	if !readOnly {
-		if err := createDatabaseIfAbsent(path); err != nil {
+		if create {
+			if err := createDatabaseIfAbsent(path); err != nil {
+				return nil, err
+			}
+		} else if err := checkExistingPath(path, "database"); err != nil {
 			return nil, err
 		}
 		if err := createPrivateSidecarsIfAbsent(path); err != nil {
@@ -132,7 +144,7 @@ func OpenDriver(ctx context.Context, path string, readOnly bool) (*Driver, error
 	if deadline, ok := ctx.Deadline(); ok {
 		busyTimeout = timeoutMilliseconds(time.Until(deadline))
 	}
-	dsn := sqliteDSNTimeout(path, readOnly, busyTimeout)
+	dsn := sqliteDSNTimeoutCreate(path, readOnly, busyTimeout, create)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
@@ -378,6 +390,10 @@ func sqliteDSN(path string, readOnly bool) string {
 }
 
 func sqliteDSNTimeout(path string, readOnly bool, busyTimeout int64) string {
+	return sqliteDSNTimeoutCreate(path, readOnly, busyTimeout, true)
+}
+
+func sqliteDSNTimeoutCreate(path string, readOnly bool, busyTimeout int64, create bool) string {
 	// Escaping URI query delimiters keeps absolute filesystem paths usable by
 	// SQLite's URI parser.
 	escaped := strings.ReplaceAll(strings.ReplaceAll(path, "%", "%25"), "?", "%3F")
@@ -385,6 +401,9 @@ func sqliteDSNTimeout(path string, readOnly bool, busyTimeout int64) string {
 	mode := "rwc"
 	txlock := "immediate"
 	pragmas := "&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"
+	if !create {
+		mode = "rw"
+	}
 	if readOnly {
 		mode, txlock = "ro", "deferred"
 		// journal_mode is persistent and cannot be set by a read-only

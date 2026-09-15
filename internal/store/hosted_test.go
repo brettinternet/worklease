@@ -296,6 +296,13 @@ func TestHostedReadyRequirementFailsClosed(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("incomplete hosted open touched database: %v", err)
 	}
+	st, err := Open(context.Background(), home, Options{HostedWriter: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
 	lock, err := AcquireHostedLock(context.Background(), home)
 	if err != nil {
 		t.Fatal(err)
@@ -306,12 +313,90 @@ func TestHostedReadyRequirementFailsClosed(t *testing.T) {
 	if err := ReplaceHostedDatabase(lock, filepath.Join(t.TempDir(), "missing.db")); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
 		t.Fatalf("missing backup error=%v", err)
 	}
-	st, err := Open(context.Background(), home, Options{HostedWriter: true, RequireHostedReady: true, HostedLock: lock})
+	st, err = Open(context.Background(), home, Options{HostedWriter: true, RequireHostedReady: true, HostedLock: lock})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostedReadyDatabaseRemovalBeforeIdentityCheckFailsClosed(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "hosted")
+	if err := MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(context.Background(), home, Options{HostedWriter: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireHostedLock(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteHostedReady(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	beforeHomeOpenHook = func(path string) {
+		if path == home {
+			beforeHomeOpenHook = nil
+			_ = os.Remove(filepath.Join(home, DatabaseFileName))
+		}
+	}
+	t.Cleanup(func() { beforeHomeOpenHook = nil })
+	if _, err := Open(context.Background(), home, Options{HostedWriter: true, RequireDatabaseIfHostedReady: true}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonStorageFailure {
+		t.Fatalf("removed ready database error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed ready database was recreated: %v", err)
+	}
+}
+
+func TestHostedReadyDatabaseRemovalDuringDriverOpenCannotRecreate(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "hosted")
+	if err := MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(context.Background(), home, Options{HostedWriter: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireHostedLock(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteHostedReady(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	beforeSQLiteOpenHook = func(string) {
+		beforeSQLiteOpenHook = nil
+		_ = os.Remove(filepath.Join(home, DatabaseFileName))
+	}
+	t.Cleanup(func() { beforeSQLiteOpenHook = nil })
+	if _, err := Open(context.Background(), home, Options{HostedWriter: true, RequireDatabaseIfHostedReady: true}); err == nil {
+		t.Fatal("ready database removal during driver open succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first open recreated ready database: %v", err)
+	}
+	if _, err := Open(context.Background(), home, Options{HostedWriter: true, RequireDatabaseIfHostedReady: true}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonStorageFailure {
+		t.Fatalf("retry after ready database removal error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry recreated ready database: %v", err)
 	}
 }
 

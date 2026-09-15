@@ -27,6 +27,9 @@ type Options struct {
 	ReadOnly           bool
 	HostedWriter       bool
 	RequireHostedReady bool
+	// RequireDatabaseIfHostedReady permits an unfinalized initialization marker
+	// but refuses to recreate a database once the ready marker is durable.
+	RequireDatabaseIfHostedReady bool
 	// HostedLock is an already-acquired lock used by offline operations that
 	// must replace or initialize SQLite without releasing the writer fence.
 	HostedLock *HostedLock
@@ -82,13 +85,14 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	st.hosted = marked
-	if marked && opts.RequireHostedReady {
-		ready, readyErr := hostedReady(dir)
-		if readyErr != nil {
+	ready := false
+	if marked && (opts.RequireHostedReady || opts.RequireDatabaseIfHostedReady) {
+		ready, err = hostedReady(dir)
+		if err != nil {
 			_ = st.Close()
-			return nil, readyErr
+			return nil, err
 		}
-		if !ready {
+		if opts.RequireHostedReady && !ready {
 			_ = st.Close()
 			return nil, reason.New(reason.ReasonStorageFailure, "hosted authority initialization is incomplete")
 		}
@@ -150,7 +154,11 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 		_ = st.Close()
 		return nil, homeUnsafe(err)
 	}
-	driver, err := openDriverRetry(ctx, database, opts.ReadOnly)
+	if ready && !beforeExists {
+		_ = st.Close()
+		return nil, reason.New(reason.ReasonStorageFailure, "ready hosted authority database is missing")
+	}
+	driver, err := openDriverRetry(ctx, database, opts.ReadOnly, ready)
 	if err != nil {
 		_ = st.Close()
 		return nil, homeUnsafe(err)
@@ -434,7 +442,7 @@ func (t *Tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.
 func (t *Tx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return t.tx.QueryRowContext(ctx, query, args...)
 }
-func openDriverRetry(ctx context.Context, path string, readOnly bool) (*Driver, error) {
+func openDriverRetry(ctx context.Context, path string, readOnly, requireExisting bool) (*Driver, error) {
 	attemptCtx := ctx
 	cancel := func() {}
 	if _, ok := ctx.Deadline(); !ok {
@@ -443,7 +451,13 @@ func openDriverRetry(ctx context.Context, path string, readOnly bool) (*Driver, 
 	defer cancel()
 	var last error
 	for {
-		driver, err := OpenDriver(attemptCtx, path, readOnly)
+		var driver *Driver
+		var err error
+		if requireExisting {
+			driver, err = openExistingDriver(attemptCtx, path, readOnly)
+		} else {
+			driver, err = OpenDriver(attemptCtx, path, readOnly)
+		}
 		if err == nil {
 			return driver, nil
 		}

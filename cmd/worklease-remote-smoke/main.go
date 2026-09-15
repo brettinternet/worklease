@@ -796,8 +796,8 @@ func (h *harness) provision(evidence string) error {
 		return err
 	}
 	bootstrap := filepath.Join(secretDir, "bootstrap.invite")
-	h.logCommand("authority", []string{"worklease", "--json", "hosted", "init", "--home", authorityHome, "--server-config", configPath, "--bootstrap-invite-file", bootstrap})
-	initResult, err := runJSON(nil, "", h.binary, "--json", "hosted", "init", "--home", authorityHome, "--server-config", configPath, "--bootstrap-invite-file", bootstrap)
+	h.logCommand("authority", []string{"worklease", "--json", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", bootstrap})
+	initResult, err := runJSON(nil, "", h.binary, "--json", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", bootstrap)
 	if err != nil {
 		return err
 	}
@@ -973,7 +973,7 @@ func (h *harness) provisionRemote(evidence string) error {
 	}
 	h.endpoint = fmt.Sprintf("https://%s:%d", address, port)
 	bootstrapRemote := filepath.Join(h.remoteRoot, "bootstrap.invite")
-	initArgs := []string{"--json", "hosted", "init", "--home", authorityHome, "--server-config", h.remoteConfig, "--bootstrap-invite-file", bootstrapRemote}
+	initArgs := []string{"--json", "server", "init", "--server-config", h.remoteConfig, "--bootstrap-invite-file", bootstrapRemote}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, initArgs...))
 	initResult, err := h.remoteJSON(h.remoteBinary, initArgs...)
 	if err != nil {
@@ -2639,7 +2639,7 @@ func (h *harness) group3BootstrapCrash(evidence string) error {
 		invite = filepath.Join(h.remoteRoot, ".bootstrap-crash.invite")
 		binary, helper, config = h.remoteBinary, h.remoteHelper, h.remoteConfig
 	}
-	args := []string{"--json", "hosted", "init", "--home", home, "--server-config", config, "--bootstrap-invite-file", invite}
+	args := []string{"--json", "server", "init", "--server-config", config, "--bootstrap-invite-file", invite}
 	h.logCommand("bootstrap-crash-boundary", append([]string{"env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", "worklease"}, args...))
 	crashCtx, cancelCrash := context.WithTimeout(context.Background(), 30*time.Second)
 	var crashCommand *exec.Cmd
@@ -3066,7 +3066,7 @@ func (h *harness) group3(evidence string) error {
 	if _, err := h.cli(b, "--profile", "team", "release", "--handle", rotatedHandle, "--reason", "rotation observed"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "a real subprocess crash after the bootstrap grant commit recovers exactly once without disclosure; hidden, file, and descriptor invite sources work; lost enrollment responses retain exact requests; an incarnation mismatch does not burn the invite; MCP distinguishes missing and revoked installation guidance; roles and rotation remain isolated", Commands: []string{"crash hosted init after committed bootstrap grant", "resume hosted init with staged secret", "enroll through hidden prompt", "drop and replay invite issuance response", "drop and replay descriptor enrollment response", "retain dropped enrollment across restore", "reject mismatched incarnation then redeem the same invite", "remove credential and inspect MCP guidance", "rotate and revoke worker installation", "inspect revoked MCP guidance", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "bootstrap-crash-ordering.json"), filepath.Join(evidence, "bootstrap-crash-output.txt"), filepath.Join(evidence, "bootstrap-recovery-output.json"), filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "immutable-enrollment-before-restore.json"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), filepath.Join(evidence, "mcp-authentication-guidance.json"), rotationInvite}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 3, Observation: "a real subprocess crash after the bootstrap grant commit recovers exactly once without disclosure; hidden, file, and descriptor invite sources work; lost enrollment responses retain exact requests; an incarnation mismatch does not burn the invite; MCP distinguishes missing and revoked installation guidance; roles and rotation remain isolated", Commands: []string{"crash server init after committed bootstrap grant", "resume server init with staged secret", "enroll through hidden prompt", "drop and replay invite issuance response", "drop and replay descriptor enrollment response", "retain dropped enrollment across restore", "reject mismatched incarnation then redeem the same invite", "remove credential and inspect MCP guidance", "rotate and revoke worker installation", "inspect revoked MCP guidance", "verify rotated bearer works"}, Evidence: []string{filepath.Join(evidence, "bootstrap-crash-ordering.json"), filepath.Join(evidence, "bootstrap-crash-output.txt"), filepath.Join(evidence, "bootstrap-recovery-output.json"), filepath.Join(evidence, "authority.log"), filepath.Join(evidence, "fault-proxy.log"), filepath.Join(evidence, "enrollment-replay.txt"), filepath.Join(evidence, "immutable-enrollment-before-restore.json"), filepath.Join(evidence, "enrollment-incarnation-mismatch.json"), filepath.Join(evidence, "post-mismatch-installations.json"), filepath.Join(evidence, "mcp-authentication-guidance.json"), rotationInvite}, Passed: true})
 	return nil
 }
 
@@ -4683,7 +4683,7 @@ func (h *harness) group5(evidence string) error {
 	if err := h.requireRestoreSourceHash(backupRemote, selectedBackup.SHA256); err != nil {
 		return fmt.Errorf("first restore source: %w", err)
 	}
-	restoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", selectedBackup.DurableCutoff, "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
+	restoreArgs := []string{"--json", "server", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", selectedBackup.DurableCutoff, "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, restoreArgs...))
 	var restoreResult map[string]any
 	if h.realHost {
@@ -4724,7 +4724,7 @@ func (h *harness) group5(evidence string) error {
 		return fmt.Errorf("second restore source: %w", err)
 	}
 	secondRestoredInvite := strings.TrimSuffix(restoredInvite, ".invite") + "-second.invite"
-	secondRestoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--cutoff-unknown", "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", secondRestoredInvite}
+	secondRestoreArgs := []string{"--json", "server", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--cutoff-unknown", "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", secondRestoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, secondRestoreArgs...))
 	var secondRestoreResult map[string]any
 	if h.realHost {
@@ -4747,7 +4747,7 @@ func (h *harness) group5(evidence string) error {
 		return err
 	}
 	reissuedInvite := strings.TrimSuffix(restoredInvite, ".invite") + "-reissued.invite"
-	reissueArgs := []string{"--json", "hosted", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", reissuedInvite}
+	reissueArgs := []string{"--json", "server", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", reissuedInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, reissueArgs...))
 	if h.realHost {
 		if _, err := h.remoteJSON(h.remoteBinary, reissueArgs...); err != nil {
@@ -4924,8 +4924,8 @@ func (h *harness) group5(evidence string) error {
 		return err
 	}
 	lockChecks := [][]string{
-		{"--json", "hosted", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", filepath.Join(authorityDBRoot(h), "lock-check-bootstrap.invite")},
-		{"--json", "hosted", "retire", "--home", authorityDBRoot(h)},
+		{"--json", "server", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", filepath.Join(authorityDBRoot(h), "lock-check-bootstrap.invite")},
+		{"--json", "server", "retire", "--home", authorityDBRoot(h)},
 	}
 	for _, args := range lockChecks {
 		if err := h.requireAuthorityFailure(args, "hosted-lock-held"); err != nil {

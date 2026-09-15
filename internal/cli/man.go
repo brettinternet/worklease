@@ -65,6 +65,8 @@ func WriteManPage(w io.Writer, root *urfavecli.Command, date string) error {
 	section(&page, "FILES")
 	definition(&page, "$WORKLEASE_HOME/worklease.db", "Local SQLite authority. The directory and database are owner-private.")
 	definition(&page, "$WORKLEASE_HOME/handles/", "Private authority-bound, session-scoped contextual handles.")
+	definition(&page, "$XDG_CONFIG_HOME/worklease/server.yaml", "Default server configuration; override with $WORKLEASE_SERVER_CONFIG or --server-config.")
+	definition(&page, "$XDG_CONFIG_HOME/worklease/bootstrap.invite", "Default owner-private bootstrap invite created by server init.")
 	section(&page, "SEE ALSO")
 	definition(&page, "Documentation", "https://github.com/brettinternet/worklease")
 	_, err = io.Copy(w, &page)

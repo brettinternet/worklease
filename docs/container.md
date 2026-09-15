@@ -78,8 +78,7 @@ docker run --rm \
   --mount type=bind,src=/etc/worklease/tls,dst=/run/worklease-tls,readonly \
   --mount type=bind,src=/srv/worklease/bootstrap,dst=/run/bootstrap \
   ghcr.io/brettinternet/worklease:v1.2.0 \
-  hosted init --home /var/lib/worklease \
-  --server-config /run/worklease/server.yaml \
+  server init --server-config /run/worklease/server.yaml \
   --bootstrap-invite-file /run/bootstrap/admin.invite
 ```
 
@@ -116,7 +115,7 @@ For backup integrations:
   separate durable volume;
 - never bake that state into the image or mix a writable replica with the
   authority home; and
-- restore through `worklease hosted restore`, which creates a new incarnation
+- restore through `worklease server restore`, which creates a new incarnation
   in recovery mode.
 
 See the [remote authority recovery model](remote-claim-authority.md) for cutoff,
