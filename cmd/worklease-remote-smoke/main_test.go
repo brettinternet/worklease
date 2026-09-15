@@ -13,8 +13,68 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/ledger"
 )
+
+func TestRequireOperationPendingClearedRejectsRetainedBeginHandle(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlesRoot := filepath.Join(root, "handles")
+	if err := os.Mkdir(handlesRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	operationID := strings.Repeat("d", 32)
+	authorityID, claimID := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	handlePath := filepath.Join(handlesRoot, "retained.json")
+	stored := handle.Handle{
+		SchemaVersion: handle.RemoteSchemaVersion,
+		AuthorityID:   authorityID,
+		ClaimID:       claimID,
+		Token:         strings.Repeat("c", 64),
+		Resources:     []string{"coordination:retained"},
+		AgentID:       "test-agent",
+		SessionID:     "test-session",
+		State:         "pending",
+		PendingRequest: &handle.PendingRequest{
+			OperationID: operationID, Kind: "exec", AuthorityID: authorityID, ClaimID: claimID,
+			RequestHash: strings.Repeat("e", 64), RequestNotAfter: time.Now().Add(time.Hour), Inputs: map[string]any{"request": "retained"},
+		},
+	}
+	if err := handle.Write(handlePath, stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireOperationPendingCleared(handlePath, filepath.Join(root, "pending"), operationID); err == nil || !strings.Contains(err.Error(), "remains pending in handle") {
+		t.Fatalf("retained begin handle was not rejected: %v", err)
+	}
+}
+
+func TestBackupOperationPresenceTreatsDuplicateIDsAsPresent(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "backup.db")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE operations (claim_id TEXT NOT NULL, operation_id TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	operationID := strings.Repeat("e", 32)
+	if _, err := database.Exec(`INSERT INTO operations(claim_id, operation_id) VALUES (?, ?), (?, ?)`, strings.Repeat("a", 32), operationID, strings.Repeat("b", 32), operationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	presence, err := backupOperationPresence(databasePath, operationID, strings.Repeat("f", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !presence[operationID] || presence[strings.Repeat("f", 32)] {
+		t.Fatalf("unexpected operation presence: %v", presence)
+	}
+}
 
 func TestRequireWatchEvent(t *testing.T) {
 	cursor := "before"

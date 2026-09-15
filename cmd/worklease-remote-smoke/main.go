@@ -41,6 +41,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
@@ -255,6 +256,18 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "file-sha256" {
+		if len(os.Args) != 3 {
+			fatal(errors.New("file-sha256 requires a path"))
+		}
+		contents, err := os.ReadFile(os.Args[2])
+		if err != nil {
+			fatal(err)
+		}
+		digest := sha256.Sum256(contents)
+		fmt.Println(hex.EncodeToString(digest[:]))
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "effect" {
 		if len(os.Args) != 3 {
 			fatal(errors.New("effect requires a path"))
@@ -282,6 +295,39 @@ func main() {
 		}
 		time.Sleep(delay)
 		file, err := os.OpenFile(os.Args[3], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, err = io.WriteString(file, "dispatch\n")
+			if closeErr := file.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "gated-effect" {
+		if len(os.Args) != 5 {
+			fatal(errors.New("gated-effect requires ready, release, and effect paths"))
+		}
+		if err := os.WriteFile(os.Args[2], []byte("effect ready\n"), 0o600); err != nil {
+			fatal(err)
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			release, err := os.ReadFile(os.Args[3])
+			if err == nil && strings.TrimSpace(string(release)) == "release effect" {
+				break
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				fatal(err)
+			}
+			if time.Now().After(deadline) {
+				fatal(errors.New("timed out waiting to release gated effect"))
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		file, err := os.OpenFile(os.Args[4], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, err = io.WriteString(file, "dispatch\n")
 			if closeErr := file.Close(); err == nil {
@@ -3987,14 +4033,62 @@ func (h *harness) group5(evidence string) error {
 	if _, err := h.cli(h.clients[0], "--profile", "team", "release", "--handle", backupTailHandle, "--reason", "separate selected backup cutoff"); err != nil {
 		return err
 	}
+	retainedStartHandle := filepath.Join(h.clients[0].home, "handles", "retained-start-backup.json")
+	if _, err := h.cli(h.clients[0], "--profile", "team", "acquire", "--handle", retainedStartHandle, "--resource", "coordination:retained-start-backup", "--ttl", "30s"); err != nil {
+		return err
+	}
+	retainedStartID := strings.Repeat("d", 32)
+	retainedStartReady := filepath.Join(evidence, "retained-start.ready")
+	retainedStartRelease := filepath.Join(evidence, "retained-start.release")
+	retainedStartEffect := filepath.Join(evidence, "retained-start-effect.log")
+	retainedStartCommand, retainedStartOutput, err := h.startCLI(h.clients[0], "--profile", "team", "exec", "--handle", retainedStartHandle, "--operation-id", retainedStartID, "--ttl", "30s", "--max-duration", "25s", "--", h.self, "gated-effect", retainedStartReady, retainedStartRelease, retainedStartEffect)
+	if err != nil {
+		return err
+	}
+	retainedStartFinished := false
+	defer func() {
+		if !retainedStartFinished && retainedStartCommand.Process != nil {
+			_ = retainedStartCommand.Process.Kill()
+			_, _ = waitStartedCommand(retainedStartCommand, time.Second)
+		}
+	}()
+	if err := waitForExactFile(retainedStartReady, "effect ready", 10*time.Second); err != nil {
+		return err
+	}
 	selectedBackup, err := h.captureAsynchronousBackup(evidence, authorityDB, "selected", func() error {
-		_, observeErr := h.cli(h.clients[0], "--profile", "team", "events", "--limit", "1")
+		_, observeErr := h.cli(h.clients[0], "--profile", "team", "op", "inspect", "--handle", retainedStartHandle, "--operation-id", retainedStartID, "--full")
 		return observeErr
 	})
 	if err != nil {
 		return err
 	}
+	if err := os.WriteFile(retainedStartRelease, []byte("release effect\n"), 0o600); err != nil {
+		return err
+	}
+	retainedStartResult, err := waitCLISuccess(retainedStartCommand, retainedStartOutput, 10*time.Second)
+	retainedStartFinished = true
+	if err != nil {
+		return err
+	}
+	retainedStartEffectData, err := os.ReadFile(retainedStartEffect)
+	if err != nil || string(retainedStartEffectData) != "dispatch\n" {
+		return fmt.Errorf("retained-start effect dispatch count: content=%q err=%v", retainedStartEffectData, err)
+	}
+	if err := requireOperationPendingCleared(retainedStartHandle, filepath.Join(h.clients[0].home, "pending", "team"), retainedStartID); err != nil {
+		return err
+	}
 	backup := selectedBackup.Path
+	selectedOperationState, err := backupOperationState(backup, retainedStartID)
+	if err != nil {
+		return err
+	}
+	if selectedOperationState != "started" {
+		return fmt.Errorf("selected backup operation state=%q, want started", selectedOperationState)
+	}
+	missingTailEvidencePath, missingStartID, missingCompletedID, err := h.exerciseMissingTailOperations(evidence, selectedBackup.Path)
+	if err != nil {
+		return err
+	}
 	if selectedBackup.EventSequence <= olderBackup.EventSequence || selectedBackup.SHA256 == olderBackup.SHA256 {
 		return fmt.Errorf("selected backup did not retain a newer authority tail: older=%+v selected=%+v", olderBackup, selectedBackup)
 	}
@@ -4045,6 +4139,9 @@ func (h *harness) group5(evidence string) error {
 	if h.realHost {
 		backupRemote = filepath.Join(h.remoteRoot, "asynchronous-backup-selected.db")
 	}
+	if err := h.requireRestoreSourceHash(backupRemote, selectedBackup.SHA256); err != nil {
+		return fmt.Errorf("first restore source: %w", err)
+	}
 	restoreArgs := []string{"--json", "hosted", "restore", "--home", authorityDBRoot(h), "--from", backupRemote, "--selected-cutoff", selectedBackup.DurableCutoff, "--loss-interval-start", selectedBackup.DurableCutoff, "--loss-interval-end", time.Now().UTC().Format(time.RFC3339Nano), "--bootstrap-invite-file", restoredInvite}
 	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, restoreArgs...))
 	var restoreResult map[string]any
@@ -4056,11 +4153,54 @@ func (h *harness) group5(evidence string) error {
 	if err != nil {
 		return err
 	}
-	restoredAuthorityID, _ := restoreResult["authorityId"].(string)
-	restoredRestoreID, _ := restoreResult["restoreId"].(string)
-	if restoredAuthorityID != h.report.Authority || restoredRestoreID == "" || restoredRestoreID == h.immutableEnrollmentBefore.ExpectedRestoreID {
-		return fmt.Errorf("restore identity did not rotate on the same authority: authority=%q restore=%q", restoredAuthorityID, restoredRestoreID)
+	firstRestoreID, _ := restoreResult["restoreId"].(string)
+	if restoreResult["authorityId"] != h.report.Authority || firstRestoreID == "" || firstRestoreID == h.immutableEnrollmentBefore.ExpectedRestoreID {
+		return fmt.Errorf("restore identity did not rotate on the same authority: authority=%q restore=%q", restoreResult["authorityId"], firstRestoreID)
 	}
+	if err := h.restartServer(evidence); err != nil {
+		return err
+	}
+	firstRestoreInvite := restoredInvite
+	if h.realHost {
+		firstRestoreInvite = filepath.Join(h.root, "secrets", "restored-first.invite")
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+restoredInvite, firstRestoreInvite); err != nil {
+			return err
+		}
+	}
+	firstRestoreClient, err := h.enrollRestoreValidationClient("first-restore-validation", firstRestoreInvite, firstRestoreID)
+	if err != nil {
+		return err
+	}
+	firstRecoveryStatus, err := h.cli(firstRestoreClient, "--profile", "team", "recovery", "status")
+	if err != nil {
+		return err
+	}
+	if err := requireRetainedRecovery(firstRecoveryStatus, retainedStartID, selectedBackup.DurableCutoff); err != nil {
+		return fmt.Errorf("first restore validation: %w", err)
+	}
+	h.stopServer()
+	if err := h.requireRestoreSourceHash(backupRemote, selectedBackup.SHA256); err != nil {
+		return fmt.Errorf("second restore source: %w", err)
+	}
+	secondRestoredInvite := strings.TrimSuffix(restoredInvite, ".invite") + "-second.invite"
+	secondRestoreArgs := append([]string(nil), restoreArgs...)
+	secondRestoreArgs[len(secondRestoreArgs)-1] = secondRestoredInvite
+	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, secondRestoreArgs...))
+	var secondRestoreResult map[string]any
+	if h.realHost {
+		secondRestoreResult, err = h.remoteJSON(h.remoteBinary, secondRestoreArgs...)
+	} else {
+		secondRestoreResult, err = runJSON(nil, "", h.binary, secondRestoreArgs...)
+	}
+	if err != nil {
+		return fmt.Errorf("second restore of selected backup: %w", err)
+	}
+	restoredAuthorityID, _ := secondRestoreResult["authorityId"].(string)
+	restoredRestoreID, _ := secondRestoreResult["restoreId"].(string)
+	if restoredAuthorityID != h.report.Authority || restoredRestoreID == "" || restoredRestoreID == firstRestoreID || restoredRestoreID == h.immutableEnrollmentBefore.ExpectedRestoreID {
+		return fmt.Errorf("second restore identity is not fresh on the same authority: authority=%q first=%q second=%q", restoredAuthorityID, firstRestoreID, restoredRestoreID)
+	}
+	restoredInvite = secondRestoredInvite
 	h.report.RestoreTime = time.Since(start).String()
 	localMutation := []string{"--json", "--home", authorityDBRoot(h), "--local", "acquire", "--handle", filepath.Join(authorityDBRoot(h), "forbidden-local-handle.json"), "--resource", "coordination:forbidden-local", "--ttl", "1s"}
 	if err := h.requireAuthorityFailure(localMutation, "hosted-home-requires-remote"); err != nil {
@@ -4102,6 +4242,32 @@ func (h *harness) group5(evidence string) error {
 	}
 	if _, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked"); err != nil {
 		return fmt.Errorf("new post-restore credential is unusable: %w", err)
+	}
+	recoveryStatus, err := h.cli(h.clients[0], "--profile", "team", "recovery", "status")
+	if err != nil {
+		return err
+	}
+	if err := requireRetainedRecovery(recoveryStatus, retainedStartID, selectedBackup.DurableCutoff); err != nil {
+		return fmt.Errorf("second restore validation: %w", err)
+	}
+	if err := requireRecoveryOmits(recoveryStatus, missingStartID, missingCompletedID); err != nil {
+		return err
+	}
+	doubleRestoreEvidencePath := filepath.Join(evidence, "double-restore.json")
+	doubleRestoreEvidence, err := json.MarshalIndent(map[string]any{"authorityId": restoredAuthorityID, "sourceBackup": backupRemote, "sourceSha256": selectedBackup.SHA256, "selectedCutoff": selectedBackup.DurableCutoff, "firstRestoreId": firstRestoreID, "firstRecoveryStatus": firstRecoveryStatus, "secondRestoreId": restoredRestoreID, "secondRecoveryStatus": recoveryStatus, "restoreIdsDistinct": true}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(doubleRestoreEvidencePath, append(doubleRestoreEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
+	retainedStartEvidencePath := filepath.Join(evidence, "retained-start-lost-completion.json")
+	retainedStartEvidence, err := json.MarshalIndent(map[string]any{"operationId": retainedStartID, "selectedBackupState": selectedOperationState, "liveCompletion": retainedStartResult, "effectDispatchCount": 1, "clientPendingClearedBeforeRestore": true, "firstRestoreRecoveryStatus": firstRecoveryStatus, "secondRestoreRecoveryStatus": recoveryStatus}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(retainedStartEvidencePath, append(retainedStartEvidence, '\n'), 0o600); err != nil {
+		return err
 	}
 	staleCursor, err := h.cliFailure(h.clients[0], "--profile", "team", "events", "--cursor", h.preRestoreCursor)
 	if err != nil {
@@ -4200,7 +4366,183 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(staleClient, "authority-restored", "installation-revoked", "authentication-required"); err != nil {
 		return err
 	}
-	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the current binary migrates populated schema-v1 replay and unknown-operation state while legacy schema and protocol readers fail explicitly; the chosen SQLite cutoff restores to a fresh incarnation; a retained installation credential is revoked, an installation missing from the selected backup cannot authenticate, and a new post-restore credential works; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"enroll installation retained by selected cutoff", "capture older asynchronous online backup", "mutate authority tail", "capture and select newer asynchronous online backup", "enroll installation missing from selected cutoff", "migrate populated schema-v1 fixture and probe legacy/current protocol versions", "inventory zero and nonzero pending sets", "stop authority", "hosted restore", "verify retained, missing, and new post-restore credentials", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, schemaProtocolEvidencePath, credentialEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	h.report.Groups = append(h.report.Groups, groupEvidence{Group: 5, Observation: "a controlled asynchronous backup subprocess captures older and chosen durable cutoffs while the authority remains live; a tail mutation distinguishes the chosen snapshot and independently retained inventories cover zero and nonzero pending sets at both cutoffs; the chosen cutoff retains an acknowledged start while its later successful completion and exactly-once effect are lost from the backup; a separately confirmed start after the cutoff is absent from the backup while its client retains incomplete pending evidence, and a fully completed exactly-once effect after the cutoff is absent in full; the current binary migrates populated schema-v1 replay and unknown-operation state while legacy schema and protocol readers fail explicitly; restoring the same chosen artifact twice preserves the authority identity and rotates the restore identity each time; a retained installation credential is revoked, an installation missing from the selected backup cannot authenticate, and a new post-restore credential works; stale profiles and old cursors both fail authority-restored, including after refreshing the profile to the current restore; a retained enrollment remains immutably bound to its original restore and fails closed; direct local mutation is refused while the hosted lock is free; every offline writer and a second server are refused while the hosted server holds the lock; old clients fail closed", Commands: []string{"enroll installation retained by selected cutoff", "capture older asynchronous online backup", "mutate authority tail", "begin guarded effect and hold completion", "capture and select newer asynchronous online backup", "release effect and commit completion after selected cutoff", "drop a post-cutoff begin acknowledgment and retain incomplete client evidence", "complete a separate post-cutoff effect exactly once", "prove both post-cutoff operations are absent from the selected artifact and restored recovery inventory", "enroll installation missing from selected cutoff", "migrate populated schema-v1 fixture and probe legacy/current protocol versions", "inventory zero and nonzero pending sets", "stop authority", "restore the same selected artifact twice", "verify retained start appears unresolved after its completion is lost", "verify retained, missing, and new post-restore credentials", "refuse direct local acquire with lock free", "restart authority", "reject old cursor before and after profile refresh", "replay retained old-incarnation enrollment", "refuse second serve/bootstrap reissue/retire while lock held", "old client acquire"}, Evidence: []string{backup, backupEvidencePath, schemaProtocolEvidencePath, credentialEvidencePath, doubleRestoreEvidencePath, retainedStartEvidencePath, missingTailEvidencePath, cursorEvidencePath, immutableEvidencePath, "selected-cutoff=" + h.report.BackupCutoff, "restore-time=" + h.report.RestoreTime}, Passed: true})
+	return nil
+}
+
+func (h *harness) exerciseMissingTailOperations(evidence, selectedBackup string) (string, string, string, error) {
+	client := h.clients[0]
+	missingStartID := strings.Repeat("e", 32)
+	missingStartHandle := filepath.Join(client.home, "handles", "missing-tail-start.json")
+	if _, err := h.cli(client, "--profile", "team", "acquire", "--handle", missingStartHandle, "--resource", "coordination:missing-tail-start", "--ttl", "30s"); err != nil {
+		return "", "", "", err
+	}
+	if err := h.startFaultProxy(evidence); err != nil {
+		return "", "", "", err
+	}
+	if err := h.switchProfileEndpoint(client, h.faultEndpoint); err != nil {
+		h.stopFaultProxy()
+		return "", "", "", err
+	}
+	proxyActive := true
+	defer func() {
+		if proxyActive {
+			_ = h.switchProfileEndpoint(client, h.endpoint)
+			h.stopFaultProxy()
+		}
+	}()
+	missingStartEffect := filepath.Join(evidence, "missing-tail-start-effect.log")
+	if err := h.armFault("/v1/operations/begin"); err != nil {
+		return "", "", "", err
+	}
+	missingStartResult, err := h.cliFailure(client, "--profile", "team", "exec", "--handle", missingStartHandle, "--operation-id", missingStartID, "--ttl", "30s", "--", h.self, "effect", missingStartEffect)
+	if err != nil {
+		return "", "", "", err
+	}
+	if err := requireReason(missingStartResult, "unknown-outcome"); err != nil {
+		return "", "", "", err
+	}
+	if _, err := os.Stat(missingStartEffect); !errors.Is(err, os.ErrNotExist) {
+		return "", "", "", fmt.Errorf("missing-tail start dispatched despite lost acknowledgment: %v", err)
+	}
+	missingStartInspection, err := h.cli(client, "--profile", "team", "op", "inspect", "--handle", missingStartHandle, "--operation-id", missingStartID, "--full")
+	if err != nil {
+		return "", "", "", err
+	}
+	inspection, _ := missingStartInspection["inspection"].(map[string]any)
+	if inspection["state"] != "started" || inspection["operationId"] != missingStartID {
+		return "", "", "", fmt.Errorf("post-cutoff missing start was not confirmed: %v", missingStartInspection)
+	}
+	storedHandle, err := handle.Read(missingStartHandle)
+	if err != nil {
+		return "", "", "", err
+	}
+	if storedHandle.PendingRequest == nil || storedHandle.PendingRequest.OperationID != missingStartID {
+		return "", "", "", fmt.Errorf("post-cutoff missing start has no incomplete client pending evidence: %+v", storedHandle.PendingRequest)
+	}
+	if err := h.switchProfileEndpoint(client, h.endpoint); err != nil {
+		return "", "", "", err
+	}
+	h.stopFaultProxy()
+	proxyActive = false
+
+	missingCompletedID := strings.Repeat("f", 32)
+	missingCompletedHandle := filepath.Join(client.home, "handles", "missing-tail-completed.json")
+	if _, err := h.cli(client, "--profile", "team", "acquire", "--handle", missingCompletedHandle, "--resource", "coordination:missing-tail-completed", "--ttl", "30s"); err != nil {
+		return "", "", "", err
+	}
+	missingCompletedEffect := filepath.Join(evidence, "missing-tail-completed-effect.log")
+	missingCompletedResult, err := h.cli(client, "--profile", "team", "exec", "--handle", missingCompletedHandle, "--operation-id", missingCompletedID, "--ttl", "30s", "--", h.self, "effect", missingCompletedEffect)
+	if err != nil {
+		return "", "", "", err
+	}
+	completedEffect, err := os.ReadFile(missingCompletedEffect)
+	if err != nil || string(completedEffect) != "dispatch\n" {
+		return "", "", "", fmt.Errorf("fully missing completed effect dispatch count: content=%q err=%v", completedEffect, err)
+	}
+	if err := requireOperationPendingCleared(missingCompletedHandle, filepath.Join(client.home, "pending", "team"), missingCompletedID); err != nil {
+		return "", "", "", err
+	}
+	missingCompletedInspection, err := h.cli(client, "--profile", "team", "op", "inspect", "--handle", missingCompletedHandle, "--operation-id", missingCompletedID, "--full")
+	if err != nil {
+		return "", "", "", err
+	}
+	completedInspection, _ := missingCompletedInspection["inspection"].(map[string]any)
+	if completedInspection["state"] != "completed" || completedInspection["operationId"] != missingCompletedID {
+		return "", "", "", fmt.Errorf("post-cutoff completed operation was not confirmed: %v", missingCompletedInspection)
+	}
+	presence, err := backupOperationPresence(selectedBackup, missingStartID, missingCompletedID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if presence[missingStartID] || presence[missingCompletedID] {
+		return "", "", "", fmt.Errorf("post-cutoff operations unexpectedly exist in selected backup: %v", presence)
+	}
+	h.report.EffectDispatchCounts[filepath.Base(missingStartEffect)] = 0
+	h.report.EffectDispatchCounts[filepath.Base(missingCompletedEffect)] = 1
+	evidencePath := filepath.Join(evidence, "missing-tail-operations.json")
+	evidenceRecord := map[string]any{
+		"selectedBackup":                  selectedBackup,
+		"confirmedStartMissingFromBackup": map[string]any{"operationId": missingStartID, "liveInspection": missingStartInspection, "selectedBackupPresent": false, "clientPendingKind": storedHandle.PendingRequest.Kind, "clientIncomplete": true, "effectDispatchCount": 0},
+		"fullyMissingCompletedWork":       map[string]any{"operationId": missingCompletedID, "liveInspection": missingCompletedInspection, "liveCompletion": missingCompletedResult, "selectedBackupPresent": false, "clientPendingCleared": true, "effectDispatchCount": 1},
+	}
+	encoded, err := json.MarshalIndent(evidenceRecord, "", "  ")
+	if err != nil {
+		return "", "", "", err
+	}
+	if err := os.WriteFile(evidencePath, append(encoded, '\n'), 0o600); err != nil {
+		return "", "", "", err
+	}
+	return evidencePath, missingStartID, missingCompletedID, nil
+}
+
+func (h *harness) requireRestoreSourceHash(path, expected string) error {
+	var observed string
+	if h.realHost {
+		output, err := runSSH(h.remoteHost, h.remoteHelper, "file-sha256", path)
+		if err != nil {
+			return err
+		}
+		observed = strings.TrimSpace(output)
+	} else {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(contents)
+		observed = hex.EncodeToString(digest[:])
+	}
+	if observed != expected {
+		return fmt.Errorf("restore source %s sha256=%s, want %s", path, observed, expected)
+	}
+	return nil
+}
+
+func (h *harness) enrollRestoreValidationClient(name, invite, restoreID string) (client, error) {
+	c := client{name: name, home: filepath.Join(h.root, name, "home"), config: filepath.Join(h.root, name, "config"), checkout: filepath.Join(h.root, name, "checkout")}
+	if err := os.MkdirAll(c.checkout, 0o700); err != nil {
+		return client{}, err
+	}
+	c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+name, "WORKLEASE_SESSION_ID="+name+"-session")
+	profileResult, err := h.cli(c, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority)
+	if err != nil {
+		return client{}, err
+	}
+	profile, _ := profileResult["profile"].(map[string]any)
+	if profile["restoreId"] != restoreID {
+		return client{}, fmt.Errorf("%s profile restore ID=%v, want %s", name, profile["restoreId"], restoreID)
+	}
+	if _, err := h.cli(c, "enroll", "--profile", "team", "--invite-file", invite, "--label", name); err != nil {
+		return client{}, err
+	}
+	return c, nil
+}
+
+func requireRetainedRecovery(status map[string]any, operationID, selectedCutoff string) error {
+	unresolved, _ := status["unresolvedOperations"].([]any)
+	retained := false
+	for _, operation := range unresolved {
+		if operation == operationID {
+			retained = true
+		}
+	}
+	observedCutoff, cutoffErr := time.Parse(time.RFC3339Nano, fmt.Sprint(status["selectedDurableCutoff"]))
+	expectedCutoff, expectedErr := time.Parse(time.RFC3339Nano, selectedCutoff)
+	if status["recoveryMode"] != true || status["cutoffKnown"] != true || !retained || cutoffErr != nil || expectedErr != nil || !observedCutoff.Equal(expectedCutoff) {
+		return fmt.Errorf("recovery status did not retain started operation %s at cutoff %s: %v", operationID, selectedCutoff, status)
+	}
+	return nil
+}
+
+func requireRecoveryOmits(status map[string]any, operationIDs ...string) error {
+	unresolved, _ := status["unresolvedOperations"].([]any)
+	for _, operationID := range operationIDs {
+		for _, operation := range unresolved {
+			if operation == operationID {
+				return fmt.Errorf("post-cutoff operation %s unexpectedly exists in restored recovery inventory: %v", operationID, status)
+			}
+		}
+	}
 	return nil
 }
 
@@ -4373,10 +4715,10 @@ func (h *harness) coverageMatrix() []coverageEntry {
 		live("AC7.4", "authority restart", 5),
 		live("AC7.5", "schema and protocol upgrade", 5),
 		live("AC7.6", "restored and missing credentials", 5),
-		blocked("AC7.7", "double restore"),
-		blocked("AC7.8", "retained start with lost completion"),
-		blocked("AC7.9", "confirmed start missing from backup while client is offline or incomplete"),
-		blocked("AC7.10", "fully missing completed work"),
+		live("AC7.7", "double restore", 5),
+		live("AC7.8", "retained start with lost completion", 5),
+		live("AC7.9", "confirmed start missing from backup while client is offline or incomplete", 5),
+		live("AC7.10", "fully missing completed work", 5),
 		blocked("AC7.11", "provider effects after terminal receipt"),
 		blocked("AC7.12", "installation inventories including ephemeral and retired clients"),
 		blocked("AC7.13", "missing evidence blocks reopening"),
@@ -5028,6 +5370,71 @@ func resolveSSHAddress(host string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("SSH host %q returned no non-loopback address", host)
+}
+
+func requireOperationPendingCleared(handlePath, pendingRoot, operationID string) error {
+	storedHandle, err := handle.Read(handlePath)
+	if err != nil {
+		return err
+	}
+	if pending := storedHandle.PendingRequest; pending != nil && pending.OperationID == operationID {
+		return fmt.Errorf("successful operation %s remains pending in handle as %s", operationID, pending.Kind)
+	}
+	records, err := authority.NewFilePendingStore(pendingRoot).List()
+	if err != nil {
+		return err
+	}
+	for _, pending := range records {
+		if pending.OperationID == operationID || pending.TargetOperationID == operationID {
+			return fmt.Errorf("successful operation %s left client pending request %s (%s)", operationID, pending.RequestID, pending.Kind)
+		}
+	}
+	return nil
+}
+
+func waitForExactFile(path, expected string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(path)
+		if err == nil && strings.TrimSpace(string(contents)) == expected {
+			return nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %s to contain %q", path, expected)
+}
+
+func backupOperationState(databasePath, operationID string) (string, error) {
+	db, err := sql.Open("sqlite", "file:"+databasePath+"?mode=ro")
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	var state string
+	if err := db.QueryRow(`SELECT state FROM operations WHERE operation_id=?`, operationID).Scan(&state); err != nil {
+		return "", err
+	}
+	return state, nil
+}
+
+func backupOperationPresence(databasePath string, operationIDs ...string) (map[string]bool, error) {
+	db, err := sql.Open("sqlite", "file:"+databasePath+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	presence := make(map[string]bool, len(operationIDs))
+	for _, operationID := range operationIDs {
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM operations WHERE operation_id=?`, operationID).Scan(&count); err != nil {
+			return nil, err
+		}
+		presence[operationID] = count > 0
+	}
+	return presence, nil
 }
 
 func backupInstallationPresence(databasePath string, installationIDs ...string) (map[string]bool, error) {
