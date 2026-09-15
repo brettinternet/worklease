@@ -525,6 +525,9 @@ func TestHelpAllCoversEveryCommandOnceReadOnly(t *testing.T) {
 		t.Fatal("aggregate help contains ANSI sequences")
 	}
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	if err := root.Run(context.Background(), []string{"worklease", "--help"}); err != nil {
+		t.Fatal(err)
+	}
 	sections := 0
 	for _, entry := range commandTree(root) {
 		if entry.command.Name == "help" {
