@@ -1,11 +1,11 @@
 ---
 id: TASK-109.2
 title: Enroll a remote client from one self-contained invite
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-16 00:43'
+updated_date: '2026-09-16 00:44'
 labels:
   - remote-authority
   - ergonomics
@@ -60,4 +60,12 @@ TASK-109.1 owns server configuration and certificate creation. This task owns th
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented strict self-contained invite artifacts, artifact-based enrollment and default activation, persistent certificate pinning across CLI/MCP HTTP requests, durable enrollment/invite replay, safe file/FD/hidden input, legacy invite compatibility, and recovery documentation. Independent review found and verified fixes for TLS dialer bypass, pending trust binding, init recovery, credential cleanup, invite staging, and replay identity checks. Validation passed: focused authority/CLI tests plus mise run lint, format-check, test, and typecheck.
+
+Committed implementation as 81c814e. Staged Lefthook pre-commit passed after all repository quality gates.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added versioned self-contained invite artifacts for server bootstrap and remote invite issuance, one-command enrollment with default profile activation, exact leaf-certificate pinning across CLI/MCP traffic, and durable fail-closed replay/recovery. Verified with focused artifact, TLS, file/FD enrollment, collision, staging, and replay tests; full lint, format-check, test, typecheck, and staged hooks passed. Implementation commit: 81c814e.
+<!-- SECTION:FINAL_SUMMARY:END -->
