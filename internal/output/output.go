@@ -184,7 +184,7 @@ func writeTextError(w io.Writer, err error, color bool) error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		value := escapeText(fmt.Sprint(Redact(failure.Details[key])))
+		value := escapeText(fmt.Sprint(redact(failure.Details[key], key, true)))
 		if key == "recoveryHint" {
 			value = Style(color, Yellow, value)
 		}

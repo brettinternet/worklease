@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -68,6 +69,66 @@ func TestWriteTextErrorColorsReasonAndRecoveryHint(t *testing.T) {
 	}
 	if ColorEnabled(&bytes.Buffer{}) {
 		t.Fatal("non-terminal buffer enabled color")
+	}
+}
+
+func TestErrorRenderersPreserveSafeRecoveryPathAndRedaction(t *testing.T) {
+	hex64 := strings.Repeat("ab", 32)
+	secret := strings.Repeat("c", 64)
+	pendingPath := "/home/handles/ctx-" + hex64 + ".json"
+	err := reason.New(reason.ReasonUnknownOutcomePending, "request "+secret+" is pending").
+		With("pendingPath", pendingPath).
+		With("resource", secret).
+		With("recoveryHint", "retry\nwith "+secret).
+		With("holder", map[string]any{
+			"token":      secret,
+			"note":       secret,
+			"checkpoint": map[string]any{"pendingPath": pendingPath},
+		}).
+		With("handlePath", "/private/ctx-"+hex64+".json")
+
+	var jsonOut bytes.Buffer
+	if writeErr := WriteError(&jsonOut, "release", err); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	var envelope Envelope
+	if decodeErr := json.Unmarshal(jsonOut.Bytes(), &envelope); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if envelope.Error.Details["pendingPath"] != pendingPath {
+		t.Fatalf("JSON pendingPath = %#v", envelope.Error.Details["pendingPath"])
+	}
+	if holder, ok := envelope.Error.Details["holder"].(map[string]any); !ok || holder["token"] != "[REDACTED]" || holder["note"] != "[REDACTED]" || holder["checkpoint"] != "[REDACTED]" {
+		t.Fatalf("JSON holder was not safely projected: %#v", envelope.Error.Details["holder"])
+	}
+	if strings.Contains(jsonOut.String(), secret) {
+		t.Fatalf("JSON leaked credential: %q", jsonOut.String())
+	}
+
+	for _, color := range []bool{false, true} {
+		t.Run(fmt.Sprintf("color=%v", color), func(t *testing.T) {
+			var textOut bytes.Buffer
+			if writeErr := writeTextError(&textOut, err, color); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			text := textOut.String()
+			if !strings.Contains(text, "pendingPath: "+pendingPath) {
+				t.Fatalf("text pendingPath was not preserved: %q", text)
+			}
+			for _, disallowed := range []string{secret, "handlePath:", "checkpoint: map"} {
+				if strings.Contains(text, disallowed) {
+					t.Fatalf("text exposed %q: %q", disallowed, text)
+				}
+			}
+			for _, want := range []string{"request [REDACTED] is pending", "resource: [REDACTED]", "recoveryHint:", `retry\\nwith [REDACTED]`, "token:[REDACTED]", "note:[REDACTED]", "checkpoint:[REDACTED]"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("text missing %q: %q", want, text)
+				}
+			}
+			if color != strings.Contains(text, "\x1b[") {
+				t.Fatalf("color=%v output=%q", color, text)
+			}
+		})
 	}
 }
 
