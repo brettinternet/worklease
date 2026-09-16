@@ -1,11 +1,11 @@
 ---
 id: TASK-113
 title: Add safe server reset and neutral bootstrap profile naming
-status: In Progress
+status: Done
 assignee:
   - '@brettinternet'
 created_date: '2026-09-16 15:50'
-updated_date: '2026-09-16 17:13'
+updated_date: '2026-09-16 17:24'
 labels: []
 dependencies: []
 priority: medium
@@ -21,12 +21,12 @@ A missing server configuration can leave a valid hosted home that blocks zero-fl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A confirmed server reset safely clears a valid hosted authority so server initialization can succeed again at the same home; preview/refusal paths do not mutate state
-- [ ] #2 Reset refuses a running server, active claims, unsafe or ambiguous homes, and unresolved operations unless a redacted export is explicitly requested; it removes only a matching owner-private bootstrap artifact and leaves deployment config/TLS intact
-- [ ] #3 The non-empty-home initialization error gives an actionable reset command for the resolved home, and initialization recognizes the safely retired hosted-home shape
-- [ ] #4 Bootstrap artifact enrollment uses the neutral profile hint remote, activates it as the default when appropriate, and text output displays the installation role separately
-- [ ] #5 CLI help, user documentation, and focused tests cover reset safety, reinitialization, and neutral profile naming
-- [ ] #6 Version 1.6.1 is committed, pushed, tagged, published, and verified with passing local and remote release checks
+- [x] #1 A confirmed server reset safely clears a valid hosted authority so server initialization can succeed again at the same home; preview/refusal paths do not mutate state
+- [x] #2 Reset refuses a running server, active claims, unsafe or ambiguous homes, and unresolved operations unless a redacted export is explicitly requested; it removes only a matching owner-private bootstrap artifact and leaves deployment config/TLS intact
+- [x] #3 The non-empty-home initialization error gives an actionable reset command for the resolved home, and initialization recognizes the safely retired hosted-home shape
+- [x] #4 Bootstrap artifact enrollment uses the neutral profile hint remote, activates it as the default when appropriate, and text output displays the installation role separately
+- [x] #5 CLI help, user documentation, and focused tests cover reset safety, reinitialization, and neutral profile naming
+- [x] #6 Version 1.6.1 is committed, pushed, tagged, published, and verified with passing local and remote release checks
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -41,4 +41,12 @@ A missing server configuration can leave a valid hosted home that blocks zero-fl
 Implemented reset command, retired-home reinitialization, neutral remote profile hints with legacy artifact upgrade, role-separated enrollment output, pinned no-replace retirement exports, bootstrap credential binding, staged-secret refusal, readiness-first restartable cleanup, focused safety tests, and operator docs. Initial independent review found export collision/aliasing, stale secret carryover, crash ordering, artifact upgrade, and removal race defects; fixes are implemented and re-review is running.
 
 Independent safety re-review passed after durable reset-intent recovery, current-bootstrap binding, readiness-before-artifact ordering, no-replace pinned exports, and atomic quarantine removal fixes. Local evidence: focused reset/hosted/handle tests pass; exact mise run test, lint, format-check, typecheck, vuln, e2e, race, doc-test, release-note extraction, staged hooks, and GIF regeneration/visual contact-sheet inspection pass. One full CI aggregate race run hit an existing watch timing flake; the focused test passed 10/10 and an immediate exact mise run race passed.
+
+Published v1.6.1 from a3cb4ef. Push CI passed on Linux x64/arm64 and macOS x64/arm64: https://github.com/brettinternet/worklease/actions/runs/35127112016. Release workflow passed archive builds/smokes, container validation/publication, immutable asset publication, CI authorization, and mise latest installation on all four platforms: https://github.com/brettinternet/worklease/actions/runs/35127359577. Downloaded all four published archives, verified checksums, and ran the macOS arm64 binary: version 1.6.1, commit a3cb4ef. Release: https://github.com/brettinternet/worklease/releases/tag/v1.6.1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a crash-recoverable, lock-safe server reset flow with strict refusal and redacted export handling; made bootstrap profile naming role-neutral while preserving legacy artifact upgrades; improved init guidance and documentation. Verified focused safety coverage, repository quality gates, independent review, four-platform CI, published archives/checksums, multi-platform container publication, and mise installation. Released as v1.6.1.
+<!-- SECTION:FINAL_SUMMARY:END -->
