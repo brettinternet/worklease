@@ -239,6 +239,139 @@ func TestPendingAcquireBlocksLifecycleAndReplaysWithoutResourceFlags(t *testing.
 	}
 }
 
+// stagePendingRemoteAcquire drops one acquire response so the named handle
+// retains an exact unresolved acquire request.
+func stagePendingRemoteAcquire(t *testing.T, profileName, claimHandle, resource, claimID string) int {
+	t.Helper()
+	profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	transport := cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response, roundTripErr := http.DefaultTransport.RoundTrip(request)
+		if request.URL.Path != "/v1/claims/acquire" || roundTripErr != nil {
+			return response, roundTripErr
+		}
+		calls++
+		_ = response.Body.Close()
+		return nil, errors.New("lost acquire response")
+	})
+	client, err := authority.NewHTTPClient(profiles[profileName], authority.NewFilePendingStore(filepath.Join(t.TempDir(), "pending")), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := authority.NewRemoteAuthority(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = remote.Acquire(context.Background(), lease.AcquireRequest{ClaimID: claimID, Token: strings.Repeat("d", 64), Resources: []string{resource}, AgentID: "agent", SessionID: "session", WorkKey: "pending", TTL: 30 * time.Second, MaxHold: time.Hour, RequestNotAfter: time.Now().Add(time.Hour), HandlePath: claimHandle})
+	if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonUnknownOutcome || calls != 1 {
+		t.Fatalf("staged acquire=%v calls=%d", err, calls)
+	}
+	staged, err := handle.Read(claimHandle)
+	if err != nil || staged.PendingRequest == nil || staged.PendingRequest.OperationID != claimID {
+		t.Fatalf("pending acquire=%#v err=%v", staged, err)
+	}
+	return calls
+}
+
+// A pending acquire is recovered by exact replay only. Supplying different
+// resources must never silently substitute a new request for the retained one.
+func TestPendingRemoteAcquireRefusesChangedAndInvalidAcquisitionInputs(t *testing.T) {
+	profileName, clientHome, claimHandle := remoteCLIFixture(t)
+	claimID := strings.Repeat("c", 32)
+	stagePendingRemoteAcquire(t, profileName, claimHandle, "coordination:staged", claimID)
+	before, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:different", "--json")
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonRecoveryRequired || !strings.Contains(out, claimID) {
+		t.Fatalf("changed resources replayed or misreported: err=%v output=%s", err, out)
+	}
+	if strings.Contains(out, strings.Repeat("d", 64)) {
+		t.Fatalf("credential leaked: %s", out)
+	}
+
+	// Mixed and malformed resource input must be rejected as invalid input
+	// rather than dispatching the retained request.
+	if _, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:staged", "--path", "README.md", "--json"); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonResourceInputConflict {
+		t.Fatalf("mixed resource input=%v", err)
+	}
+	if _, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:staged", "--resource", "coordination:staged", "--json"); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonInvalidResource {
+		t.Fatalf("malformed resource input=%v", err)
+	}
+
+	after, err := handle.Read(claimHandle)
+	if err != nil || after.PendingRequest == nil || after.PendingRequest.OperationID != claimID || !bytes.Equal(after.PendingRequest.Request, before.PendingRequest.Request) {
+		t.Fatalf("refusals changed retained request: %#v err=%v", after, err)
+	}
+
+	// The same resources still recover the retained request exactly.
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:staged", "--json")
+	if err != nil || !strings.Contains(out, `"resources":["coordination:staged"]`) {
+		t.Fatalf("matching-input replay: %v output=%s", err, out)
+	}
+	ready, err := handle.Read(claimHandle)
+	if err != nil || ready.State != "ready" || ready.PendingRequest != nil || ready.ClaimID != claimID {
+		t.Fatalf("replayed handle=%#v err=%v", ready, err)
+	}
+}
+
+// A handle carrying both a pending acquire and an unresolved recovery record
+// must be reconciled first; replay must not dispatch past that guard.
+func TestPendingRemoteAcquireWithRecoveryRecordRefusesReplay(t *testing.T) {
+	profileName, clientHome, claimHandle := remoteCLIFixture(t)
+	claimID := strings.Repeat("c", 32)
+	stagePendingRemoteAcquire(t, profileName, claimHandle, "coordination:dual", claimID)
+	staged, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged.RecoveryRequest = &handle.RecoveryRequest{OperationID: strings.Repeat("e", 32), TargetClaimID: staged.ClaimID, RequestHash: strings.Repeat("f", 64), RequestNotAfter: time.Now().Add(time.Hour).UTC()}
+	if err := handle.Write(claimHandle, staged); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--json"},
+		{"acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:dual", "--json"},
+	} {
+		out, runErr := runRemoteCLI(t, args...)
+		classified := reason.As(runErr)
+		if classified == nil || classified.Reason != reason.ReasonHandleInUse {
+			t.Fatalf("dual-record handle replayed: args=%v err=%v output=%s", args, runErr, out)
+		}
+	}
+	after, err := handle.Read(claimHandle)
+	if err != nil || after.PendingRequest == nil || after.RecoveryRequest == nil {
+		t.Fatalf("dual records changed: %#v err=%v", after, err)
+	}
+}
+
+// Only a remote pending request is recoverable from a bare handle. A local
+// acquire must still reject missing or invalid resource input before it
+// creates or opens the authority store.
+func TestLocalAcquireValidatesResourceInputBeforeOpeningStore(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "authority")
+	claimHandle := filepath.Join(t.TempDir(), "claim.json")
+	for _, args := range [][]string{
+		{"--local", "--home", home, "acquire", "--handle", claimHandle, "--json"},
+		{"--local", "--home", home, "acquire", "--handle", claimHandle, "--resource", "a", "--path", "README.md", "--json"},
+	} {
+		_, err := runRemoteCLI(t, args...)
+		classified := reason.As(err)
+		if classified == nil || classified.Reason != reason.ReasonInvalidResource && classified.Reason != reason.ReasonResourceInputConflict {
+			t.Fatalf("invalid local input=%v args=%v", err, args)
+		}
+		if _, statErr := os.Stat(home); !os.IsNotExist(statErr) {
+			t.Fatalf("invalid input opened the authority store: %v", statErr)
+		}
+	}
+}
+
 func TestRemoteCLIReacquiresExpiredContextualClaimWithFreshInputs(t *testing.T) {
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:old", "--ttl", "1s", "--json")

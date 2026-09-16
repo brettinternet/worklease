@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -131,9 +132,17 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if cmd.Bool("no-handle") && explicitHandle {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "--no-handle cannot be mixed with a handle"))
 		}
+		// A bare explicit handle carries no resource input only when it selects
+		// a remote pending request for exact recovery. Every other form, and the
+		// local authority, still validates its acquisition inputs before any
+		// store is opened.
+		selection, err := profileSelection(cmd)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		bareHandleRecovery := explicitHandle && selection.Profile != nil && !resourceInputSupplied(cmd)
 		var in ResourceInput
-		var err error
-		if !explicitHandle {
+		if !bareHandleRecovery {
 			in, err = ResolveResourceInput(cmd)
 			if err != nil {
 				return s.handle(cmd, err)
@@ -145,24 +154,21 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		}
 		defer backend.Close()
 		svc, st, cfg := backend.Local, backend.Store, backend.Config
+		resources := make([]string, 0, len(in.Keys))
+		for _, key := range in.Keys {
+			resources = append(resources, key.Resource)
+		}
 		if backend.Remote && explicitHandle {
 			path, pathErr := acquireHandlePath(cmd, cfg)
 			if pathErr != nil {
 				return s.handle(cmd, pathErr)
 			}
-			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path); replayed {
+			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path, resources); replayed {
 				return replayErr
 			}
 		}
-		if explicitHandle {
-			in, err = ResolveResourceInput(cmd)
-			if err != nil {
-				return s.handle(cmd, err)
-			}
-		}
-		resources := make([]string, 0, len(in.Keys))
-		for _, key := range in.Keys {
-			resources = append(resources, key.Resource)
+		if bareHandleRecovery {
+			return s.handle(cmd, reason.New(reason.ReasonInvalidResource, "one resource input is required"))
 		}
 		if backend.Remote {
 			return remoteAcquire(ctx, s, cmd, backend, resources, in.Keys[0].LocalReplaceAllowed)
@@ -649,6 +655,26 @@ func inputBytes(m map[string]any, key string) []byte {
 	}
 	return nil
 }
+
+// resourceInputSupplied reports whether any resource addressing mode was
+// selected, without resolving or validating it.
+func resourceInputSupplied(cmd *urfave.Command) bool {
+	return len(cmd.StringSlice("resource")) > 0 || cmd.IsSet("provider") || cmd.IsSet("source") || cmd.IsSet("item") ||
+		cmd.IsSet("path") || strings.TrimSpace(cmd.String("path")) != ""
+}
+
+// sameResourceSelection compares resource membership between a retained
+// request and a caller's current selection. Order is not request identity.
+func sameResourceSelection(retained, supplied []string) bool {
+	if len(retained) != len(supplied) {
+		return false
+	}
+	left, right := slices.Clone(retained), slices.Clone(supplied)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(left, right)
+}
+
 func pendingAcquireRecovery(h *handle.Handle, path string) error {
 	if h == nil || h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
 		return nil

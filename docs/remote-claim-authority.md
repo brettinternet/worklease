@@ -277,8 +277,14 @@ Remote differences:
   entry point; never change inputs, extend its deadline, delete the handle, or
   start a new session to bypass uncertainty. A pending acquire blocks unrelated
   lifecycle actions as `not-committed` for the new attempt while the acquire
-  remains uncertain; `acquire --handle PATH` replays it exactly. `--session`
+  remains uncertain; `acquire --handle PATH` replays it exactly, either bare or
+  with the same resource selection. Supplying different resources reports
+  `recovery-required` rather than substituting a new request. `--session`
   selects an independent loop only; it is not an uncertainty recovery bypass.
+- An outcome is `unknown` whenever the request reached a server, including when
+  the response fails authority or restore identity validation and when a
+  validated grant cannot be activated locally. Only a pre-dispatch failure or a
+  validated authoritative rejection is `not-committed`.
 - A fresh acquire is appropriate only after definitive inactivity and no
   unresolved pending request. Recovery output identifies the pending operation
   and handle path while omitting credentials and private request payloads.

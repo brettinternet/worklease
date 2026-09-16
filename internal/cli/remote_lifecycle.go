@@ -78,7 +78,11 @@ func remoteTransfer(ctx context.Context, s *boundary, cmd *urfave.Command, backe
 	return writeLeaseResult(s, cmd, "transfer", transferFields(grant, successorPath))
 }
 
-func replayPendingRemoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backend *authorityContext, path string) (bool, error) {
+// replayPendingRemoteAcquire recovers the exact retained acquire request. When
+// the caller also supplied acquisition inputs, they must select the same
+// resources: recovery replays the original request and never substitutes a
+// different one.
+func replayPendingRemoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backend *authorityContext, path string, resources []string) (bool, error) {
 	existing, err := handle.Read(path)
 	if err != nil || existing.PendingRequest == nil {
 		return false, nil
@@ -86,8 +90,22 @@ func replayPendingRemoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Co
 	if existing.AuthorityID != backend.AuthorityID() {
 		return true, s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 	}
+	if existing.RecoveryRequest != nil {
+		return true, s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+	}
 	if existing.PendingRequest.Kind != "acquire" {
 		return true, s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
+	}
+	if len(resources) > 0 {
+		var retained struct {
+			Resources []string `json:"resources"`
+		}
+		if json.Unmarshal(existing.PendingRequest.Request, &retained) != nil {
+			return true, s.handle(cmd, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request is invalid"))
+		}
+		if !sameResourceSelection(retained.Resources, resources) {
+			return true, s.handle(cmd, pendingAcquireRecovery(&existing, path))
+		}
 	}
 	response, replayErr := backend.HTTP.ReplayHandle(ctx, path)
 	if replayErr != nil {
@@ -151,7 +169,7 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 			if existing.RecoveryRequest != nil {
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
 			}
-			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path); replayed {
+			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path, resources); replayed {
 				return replayErr
 			}
 			if existing.State != "ready" {

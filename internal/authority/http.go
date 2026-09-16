@@ -188,6 +188,10 @@ func (c *HTTPClient) requestPreviouslyStaged(p PendingRequest, handlePath string
 	return err == nil && old.RequestSHA256 == p.RequestSHA256 && bytes.Equal(old.Request, p.Request)
 }
 
+// stagingFailure classifies a durable pre-dispatch staging failure. A cause
+// describing the request itself is preserved so the operator can distinguish a
+// changed request from a persistence fault; every storage-layer cause, however
+// the filesystem classified it, stays storage-failure.
 func (c *HTTPClient) stagingFailure(err error, previouslyStaged bool, fallback string) error {
 	var classified *reason.Error
 	switch {
@@ -195,7 +199,7 @@ func (c *HTTPClient) stagingFailure(err error, previouslyStaged bool, fallback s
 		classified = reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
 	default:
 		classified = reason.As(err)
-		if classified == nil || !reason.Registered(classified.Reason) {
+		if classified == nil || !stagingRequestCause(classified.Reason) {
 			classified = reason.New(reason.ReasonStorageFailure, fallback)
 		}
 	}
@@ -205,6 +209,17 @@ func (c *HTTPClient) stagingFailure(err error, previouslyStaged bool, fallback s
 	}
 	classified.With("commitState", state)
 	return classified
+}
+
+// stagingRequestCause names the classified causes that describe the request or
+// its ownership rather than the durable store's health.
+func stagingRequestCause(name string) bool {
+	switch name {
+	case reason.ReasonOperationRequestMismatch, reason.ReasonHandleInUse, reason.ReasonRecoveryRequired,
+		reason.ReasonAuthorityMismatch, reason.ReasonAuthorityRestored, reason.ReasonReplayExpired:
+		return true
+	}
+	return false
 }
 
 func pendingRecoveryFailure(path string, pending *handle.PendingRequest) error {
@@ -287,9 +302,16 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 	}
 	resp, err := c.do(ctx, method, s.Path, s.Body, s)
 	// Validate identity even when the application envelope reports an error;
-	// an error from another authority must never reconcile this request.
+	// an error from another authority must never reconcile this request. The
+	// request already reached a server, so a mismatched response identity is
+	// never evidence that this mutation did not commit.
 	if resp.AuthorityID != "" {
 		if identityErr := c.validate(resp, false); identityErr != nil {
+			if s.Mutating {
+				if classified := reason.As(identityErr); classified != nil {
+					classified.With("commitState", "unknown")
+				}
+			}
 			return Response{}, identityErr
 		}
 	}

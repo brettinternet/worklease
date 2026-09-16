@@ -22,6 +22,19 @@ type handleReplacement struct {
 	ExpiresAt time.Time
 }
 
+// sameResourceSet compares resource membership. The protocol does not define
+// resource order as grant identity, so an authority that canonicalizes order
+// must not permanently wedge a committed pending acquire.
+func sameResourceSet(request, grant []string) bool {
+	if len(request) != len(grant) {
+		return false
+	}
+	left, right := slices.Clone(request), slices.Clone(grant)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(left, right)
+}
+
 // persistHandleRequest uses the existing owner-private handle slot for named
 // claim mutations. A different unresolved request can never replace it.
 func persistHandleRequest(path, claimID string, p PendingRequest, newToken string, replacement handleReplacement) error {
@@ -156,7 +169,7 @@ func activateGrantHandle(path string, grant lease.Grant) error {
 		AuthorityID, ClaimID, AgentID, SessionID, WorkKey string
 		Resources                                         []string
 	}
-	if err := json.Unmarshal(h.PendingRequest.Request, &request); err != nil || request.AuthorityID != grant.AuthorityID || request.ClaimID != grant.ClaimID || request.AgentID != grant.AgentID || request.SessionID != grant.SessionID || request.WorkKey != grant.WorkKey || !slices.Equal(request.Resources, grant.Resources) {
+	if err := json.Unmarshal(h.PendingRequest.Request, &request); err != nil || request.AuthorityID != grant.AuthorityID || request.ClaimID != grant.ClaimID || request.AgentID != grant.AgentID || request.SessionID != grant.SessionID || request.WorkKey != grant.WorkKey || !sameResourceSet(request.Resources, grant.Resources) {
 		return fmt.Errorf("remote grant does not match pending acquire")
 	}
 	h.Revision, h.ExpiresAt, h.State, h.PendingRequest = grant.Revision, grant.ExpiresAt, "ready", nil

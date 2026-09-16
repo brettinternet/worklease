@@ -311,12 +311,14 @@ func (a *RemoteAuthority) Acquire(ctx context.Context, r lease.AcquireRequest) (
 	if e != nil {
 		return out, uncertainRemoteResult(e)
 	}
+	// The authority already validated this grant, so a local activation or
+	// cleanup failure is never evidence that the acquire did not commit.
 	if r.HandlePath != "" {
 		e = activateGrantHandle(r.HandlePath, out)
-	} else if e == nil {
+	} else {
 		e = a.Client.finalize(id, "")
 	}
-	return out, e
+	return out, uncertainRemoteResult(e)
 }
 func (a *RemoteAuthority) Status(ctx context.Context, r lease.Selector) (lease.Status, error) {
 	q := map[string]any{"protocolVersion": protocolVersion, "authorityId": a.Client.profile.AuthorityID, "expectedRestoreId": a.Client.profile.RestoreID}
@@ -420,9 +422,10 @@ func (a *RemoteAuthority) Transfer(ctx context.Context, c lease.Credentials, r l
 	}
 	if c.HandlePath != "" {
 		e = activateTransferHandle(c.HandlePath, r.SuccessorHandlePath, out)
-	} else if e == nil {
+	} else {
 		e = a.Client.finalize(r.OperationID, "")
 	}
+	e = uncertainRemoteResult(e)
 	return out, e
 }
 func (a *RemoteAuthority) Verify(ctx context.Context, c lease.Credentials, expected []string) (lease.Verification, error) {
