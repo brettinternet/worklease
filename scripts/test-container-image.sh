@@ -70,6 +70,7 @@ chmod 600 "$secrets/tls.key" "$secrets/tls.crt"
 cat >"$secrets/server.yaml" <<EOF
 home: /var/lib/worklease
 listen: 0.0.0.0:7443
+advertisedEndpoint: https://127.0.0.1:7443
 tlsCert: /run/worklease/tls.crt
 tlsKey: /run/worklease/tls.key
 admittedPrefixes:
@@ -134,7 +135,6 @@ export SSL_CERT_FILE="$secrets/tls.crt"
 export WORKLEASE_AGENT_ID=container-smoke
 export WORKLEASE_SESSION_ID=container-smoke
 echo "enrolling client and acquiring durable claim"
-"$binary" profile add team --endpoint "$endpoint" --authority-id "$authority_id" >/dev/null
 "$binary" enroll --profile team --invite-file "$secrets/bootstrap.invite" --label container-smoke >/dev/null
 acquire_output=$("$binary" --json --profile team acquire --resource coordination:container-smoke --session container-smoke --ttl 10m)
 claim_id=$(printf '%s' "$acquire_output" | jq -er '.claimId') || {
