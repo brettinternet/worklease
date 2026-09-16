@@ -1,10 +1,11 @@
 ---
 id: TASK-110
 title: 'Zero-flag remote authority: predictable defaults with a flag ladder'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-16 04:23'
-updated_date: '2026-09-16 04:29'
+updated_date: '2026-09-16 04:33'
 labels:
   - ergonomics
   - remote-authority
@@ -39,3 +40,18 @@ This task also audits the full command tree so the no-flag contract is deliberat
 - [ ] #8 Automated acceptance tests cover: the clean zero-flag transcript in AC1 end to end; repeated `server init` after bootstrap expiry, after redemption, and with mismatched config/state; zero-flag `invite issue`; both enrollments; the two-client coordination demo; and the LAN variant with wildcard listen asserting the endpoint is not the wildcard.
 - [ ] #9 Docs (`docs/remote-claim-authority.md`, `docs/cli-reference.md`, README quickstart, `docs/remote-demo.tape`) lead with the zero-flag local transcript, then the LAN variant, then a short 'customize' section listing the override flags, env vars, and config keys in ladder order. Flags appear only where consent or machine-specific addressing requires them.
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-16 04:33
+---
+Zero-flag audit of the non-server command tree (built binary, private scratch home). Already good: after `acquire --path FILE`, `status`, `heartbeat`, `verify`, `list`, `history`, `events`, `release`, and `gc` (preview) all work bare via the contextual handle. Group commands print help with exit 0. `key`/`acquire`/`transfer`/`watch`/`exec`/`replace-file` fail fast naming the missing input, which is inherent.
+
+Remaining friction to fold into AC7:
+- No-claim errors are inconsistent: `status`/`verify` say 'selected handle is unavailable', `heartbeat`/`release`/`checkpoint` say 'handle is missing'. Unify and point at `worklease acquire --path FILE`.
+- `checkpoint` bare reports 'checkpoint must be canonical JSON no larger than 8 KiB'; it should say `--data` or `--data-file` is required.
+- `profile show` bare should default to the selected/default profile; `profile default` bare should print the current default instead of erroring. Both help texts omit the NAME argument in USAGE.
+- `installation list` / `recovery status` correctly require a remote profile; no change.
+---
+<!-- COMMENTS:END -->
