@@ -113,47 +113,58 @@ polling, coordination-only, and guarded-operation options.
 
 ## Remote authority
 
-Set up a pinned-TLS authority and enroll two machines without copying IDs or
-editing configuration. Run this on the server, using its client-reachable name:
+Start the secure local authority in one terminal:
 
 ```sh
-install -d -m 0700 ~/.config/worklease
-worklease server init --guided \
+worklease server init
+worklease serve
+```
+
+`server init` creates TLS for `https://127.0.0.1:8443`, admits
+`coordination:`, and prints the owner-private bootstrap artifact path and next
+commands. Transfer that artifact through an authenticated secret channel. On
+the administrator machine, enroll and issue the second invite:
+
+```sh
+worklease enroll --invite-file PATH_PRINTED_BY_INIT
+worklease invite issue
+```
+
+Bare `worklease enroll` provides a hidden terminal prompt instead. Transfer the
+artifact path printed by `invite issue` to the second client, then run:
+
+```sh
+worklease enroll --invite-file PATH_PRINTED_BY_INVITE_ISSUE
+worklease acquire --resource coordination:demo
+worklease list
+worklease heartbeat
+worklease release
+```
+
+Invite artifacts and installation credentials are bearer secrets. Keep them
+outside source checkouts and logs, and remove one-time artifacts under your
+secret-retention policy.
+
+### LAN
+
+A LAN listener needs one explicit exposure consent and a client-reachable
+endpoint. Wildcard listeners are never advertised to clients:
+
+```sh
+worklease server init \
   --listen 0.0.0.0:8443 \
-  --endpoint https://worklease.example.com:8443 \
-  --transport tls \
-  --admitted-prefix coordination: \
+  --endpoint https://HOST:8443 \
   --confirm-non-loopback
 worklease serve
 ```
 
-Securely transfer `~/.config/worklease/bootstrap.invite` to the administrator.
-On the administrator machine, keep artifacts outside the checkout:
+### Customize
 
-```sh
-install -d -m 0700 ~/.config/worklease
-worklease enroll --invite-file ~/.config/worklease/bootstrap.invite
-worklease doctor --resource coordination:demo
-worklease invite issue --role write \
-  --invite-file ~/.config/worklease/client.invite \
-  --label client
-```
-
-Securely transfer `client.invite` to the separate client machine, then run:
-
-```sh
-install -d -m 0700 ~/.config/worklease
-worklease enroll --invite-file ~/.config/worklease/client.invite
-worklease doctor --resource coordination:demo
-worklease acquire --resource coordination:demo --session client
-worklease heartbeat --session client
-```
-
-The administrator can now run `worklease list --full` and see the client's
-claim. The client finishes with `worklease release --session client --reason done`.
-Invite artifacts and installation credentials are bearer secrets; transfer them
-with an authenticated secret channel such as `scp`, keep them outside source
-checkouts, and remove one-time artifacts under your secret-retention policy.
+Override the local defaults only when needed. Use `--admitted-prefix`,
+`--tls-cert` with `--tls-key`, `--bootstrap-invite-file`, or `--server-config`;
+then `WORKLEASE_SERVER_CONFIG`; then the matching `server.yaml` keys for a
+managed deployment. `--guided` is a no-op compatibility alias. Cleartext also
+requires `--transport http --acknowledge-cleartext-credentials`.
 
 ![Two workers coordinating through a Worklease remote authority](docs/remote-demo.gif)
 

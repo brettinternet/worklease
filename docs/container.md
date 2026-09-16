@@ -61,7 +61,7 @@ docker run --rm \
   --mount type=bind,src=/etc/worklease,dst=/run/worklease \
   --mount type=bind,src=/srv/worklease/bootstrap,dst=/run/bootstrap \
   ghcr.io/brettinternet/worklease:v1.2.0 \
-  server init --guided \
+  server init \
   --server-config /run/worklease/server.yaml \
   --bootstrap-invite-file /run/bootstrap/admin.invite \
   --listen 0.0.0.0:7443 \

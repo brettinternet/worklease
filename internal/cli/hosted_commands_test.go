@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -79,7 +80,7 @@ func TestServerInitWithoutArgumentsCreatesRunnableDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Home != filepath.Join(stateRoot, "worklease", "server") || cfg.Listen != "127.0.0.1:8443" || !cfg.AllowInsecureHTTP {
+	if cfg.Home != filepath.Join(stateRoot, "worklease", "server") || cfg.Listen != "127.0.0.1:8443" || cfg.AdvertisedEndpoint != "https://127.0.0.1:8443" || cfg.AllowInsecureHTTP || cfg.TLSCert == "" || cfg.TLSKey == "" {
 		t.Fatalf("default config = %+v", cfg)
 	}
 	invitePath := filepath.Join(configRoot, "worklease", "bootstrap.invite")
@@ -123,14 +124,14 @@ func TestServerInitWithoutArgumentsCreatesRunnableDefaults(t *testing.T) {
 	var healthy bool
 	var lastHealthError error
 	lastHealthStatus := 0
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 100 * time.Millisecond}
+	client := &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, Timeout: 100 * time.Millisecond}
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
 		select {
 		case serveErr := <-serveDone:
 			t.Fatalf("argument-free serve exited before readiness: %v stderr=%s", serveErr, stderr.String())
 		default:
 		}
-		request, requestErr := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+address+"/healthz", nil)
+		request, requestErr := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+address+"/healthz", nil)
 		if requestErr == nil {
 			request.Header.Set("Accept", "application/json")
 		}
@@ -156,11 +157,203 @@ func TestServerInitWithoutArgumentsCreatesRunnableDefaults(t *testing.T) {
 	if err := <-serveDone; err != nil {
 		t.Fatalf("argument-free serve: %v stderr=%s", err, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "insecure HTTP") || !strings.Contains(stderr.String(), "listening address="+address+" transport=http advertisedEndpoint=http://"+address) {
+	if !strings.Contains(stderr.String(), "listening address="+address+" transport=https advertisedEndpoint=https://127.0.0.1:8443") {
 		t.Fatalf("argument-free serve diagnostics = %q", stderr.String())
 	}
 	if command := NewRootCommand("test", "unknown", "unknown", &out, &stderr).Command("hosted"); command != nil {
 		t.Fatal("obsolete hosted command remains registered")
+	}
+}
+
+func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
+	clearWorkleaseEnvironment(t)
+	for _, name := range []string{"WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG"} {
+		t.Setenv(name, "")
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:8443")
+	if err != nil {
+		t.Skipf("default authority port is unavailable: %v", err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	serverHome := t.TempDir()
+	t.Setenv("HOME", serverHome)
+	var initOut, initErr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &initOut, &initErr); err != nil {
+		t.Fatalf("zero-flag init: %v stderr=%s", err, initErr.String())
+	}
+	bootstrapPath := filepath.Join(serverHome, ".config", "worklease", "bootstrap.invite")
+	if !strings.Contains(initOut.String(), bootstrapPath) || !strings.Contains(initOut.String(), "worklease serve") || !strings.Contains(initOut.String(), "worklease enroll --invite-file") {
+		t.Fatalf("init handoff is incomplete: %s", initOut.String())
+	}
+
+	serveCtx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	var serveOut, serveErr strings.Builder
+	go func() {
+		serveDone <- Run(serveCtx, []string{"worklease", "serve"}, "test", "unknown", "unknown", &serveOut, &serveErr)
+	}()
+	serverStopped := false
+	t.Cleanup(func() {
+		if serverStopped {
+			return
+		}
+		cancel()
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Errorf("zero-flag serve shutdown: %v stderr=%s", err, serveErr.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("zero-flag serve did not stop")
+		}
+	})
+	client := &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, Timeout: 100 * time.Millisecond}
+	ready := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		request, requestErr := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://127.0.0.1:8443/healthz", nil)
+		if requestErr == nil {
+			request.Header.Set("Worklease-Protocol-Version", workleaseserver.ProtocolVersion)
+			request.Header.Set("Accept", "application/json")
+		}
+		var response *http.Response
+		if requestErr == nil {
+			response, requestErr = client.Do(request)
+		}
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("zero-flag serve did not become ready: %s", serveErr.String())
+	}
+
+	adminHome := t.TempDir()
+	t.Setenv("HOME", adminHome)
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "enroll", "--invite-file", bootstrapPath}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("admin enroll: %v stderr=%s", err, stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "invite", "issue"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("zero-flag invite issue: %v stderr=%s", err, stderr.String())
+	}
+	clientInvite := filepath.Join(adminHome, ".config", "worklease", "admin.invite")
+	if !strings.Contains(out.String(), clientInvite) || !strings.Contains(out.String(), "worklease enroll --invite-file") {
+		t.Fatalf("invite handoff is incomplete: %s", out.String())
+	}
+
+	clientHome := t.TempDir()
+	t.Setenv("HOME", clientHome)
+	for _, args := range [][]string{
+		{"worklease", "enroll", "--invite-file", clientInvite},
+		{"worklease", "acquire", "--resource", "coordination:demo"},
+		{"worklease", "list"},
+		{"worklease", "heartbeat"},
+		{"worklease", "release"},
+	} {
+		out.Reset()
+		stderr.Reset()
+		if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+			t.Fatalf("%v: %v stdout=%s stderr=%s", args, err, out.String(), stderr.String())
+		}
+		if args[1] == "list" && !strings.Contains(out.String(), "coordination:demo") {
+			t.Fatalf("second client list omitted claim: %s", out.String())
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("zero-flag serve shutdown: %v stderr=%s", err, serveErr.String())
+		}
+		serverStopped = true
+	case <-time.After(5 * time.Second):
+		t.Fatal("zero-flag serve did not stop")
+	}
+	t.Setenv("HOME", serverHome)
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "bootstrap invite was used") || !strings.Contains(err.Error(), "worklease server bootstrap-reissue") {
+		t.Fatalf("redeemed bootstrap rerun guidance: %v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "bootstrap-reissue"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("bare bootstrap reissue after redemption: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(out.String(), bootstrapPath) {
+		t.Fatalf("bootstrap reissue omitted default artifact: %s", out.String())
+	}
+}
+
+func TestServerInitSetupOverridesDoNotRequireGuidedAlias(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	configPath := filepath.Join(root, "config", "worklease", "custom.yaml")
+	var out, stderr strings.Builder
+	args := []string{"worklease", "server", "init", "--server-config", configPath, "--listen", "127.0.0.1:9443", "--endpoint", "https://localhost:9443", "--transport", "tls", "--admitted-prefix", "task:", "--json"}
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("setup override init: %v stderr=%s", err, stderr.String())
+	}
+	cfg, err := workleaseserver.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:9443" || cfg.AdvertisedEndpoint != "https://localhost:9443" || cfg.AllowInsecureHTTP || len(cfg.Prefixes) != 1 || cfg.Prefixes[0] != "task:" {
+		t.Fatalf("override config=%+v", cfg)
+	}
+}
+
+func TestServerInitNamesMismatchedConfigAndStatePaths(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	otherConfig := filepath.Join(root, "other", "server.yaml")
+	home := filepath.Join(root, "state", "worklease", "server")
+	out.Reset()
+	stderr.Reset()
+	err := Run(context.Background(), []string{"worklease", "server", "init", "--server-config", otherConfig}, "test", "unknown", "unknown", &out, &stderr)
+	if err == nil || !strings.Contains(err.Error(), otherConfig) || !strings.Contains(err.Error(), home) {
+		t.Fatalf("mismatched config/state error=%v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+}
+
+func TestExistingWildcardConfigRequiresClientFacingEndpointBeforeInitialization(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "authority")
+	configPath := hostedTestFile(t, root, "server.yaml", home, 0o600)
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents), "127.0.0.1:8443", "0.0.0.0:8443", 1))
+	if err := os.WriteFile(configPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr strings.Builder
+	err = Run(context.Background(), []string{"worklease", "server", "init", "--server-config", configPath}, "test", "unknown", "unknown", &out, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "advertisedEndpoint is required") || strings.Contains(out.String(), "0.0.0.0") {
+		t.Fatalf("wildcard config result err=%v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(home, store.HostedMarkerFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("wildcard config initialized authority: %v", statErr)
 	}
 }
 
@@ -221,71 +414,156 @@ func TestGuidedServerInitGeneratesTLSAndHandoff(t *testing.T) {
 	}
 }
 
-func TestGuidedServerInitInteractiveDefaultsAndCancellation(t *testing.T) {
-	originalTerminal, originalInput := guidedSetupTerminal, guidedSetupInput
-	t.Cleanup(func() { guidedSetupTerminal, guidedSetupInput = originalTerminal, originalInput })
-	guidedSetupTerminal = func() bool { return true }
+func TestGuidedAliasMatchesZeroFlagDefaultsWithoutPrompting(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
-	guidedSetupInput = strings.NewReader("127.0.0.1:9443\nhttps://localhost:9443\n\n\n")
-	var out, stderr strings.Builder
-	if err := Run(context.Background(), []string{"worklease", "server", "init", "--guided"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
-		t.Fatalf("interactive guided init: %v stderr=%s", err, stderr.String())
+	var plain, guided strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init", "--json"}, "test", "unknown", "unknown", &plain, &strings.Builder{}); err != nil {
+		t.Fatalf("plain init: %v", err)
 	}
-	cfg, err := workleaseserver.LoadConfig(filepath.Join(root, "config", "worklease", "server.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	// A fresh XDG root gives the alias a separate authority while preserving
+	// identical defaults and proving that stdin is never consulted.
+	aliasRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(aliasRoot, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(aliasRoot, "state"))
+	if err := Run(context.Background(), []string{"worklease", "server", "init", "--guided", "--json"}, "test", "unknown", "unknown", &guided, &strings.Builder{}); err != nil {
+		t.Fatalf("guided alias init: %v", err)
 	}
-	if strings.Join(cfg.Prefixes, ",") != "task:,coordination:" || cfg.TLSCert == "" {
-		t.Fatalf("interactive defaults = %+v", cfg)
-	}
-
-	cancelRoot := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(cancelRoot, "config"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(cancelRoot, "state"))
-	for _, input := range []string{"cancel\n", ""} {
-		guidedSetupInput = strings.NewReader(input)
-		out.Reset()
-		stderr.Reset()
-		err = Run(context.Background(), []string{"worklease", "server", "init", "--guided"}, "test", "unknown", "unknown", &out, &stderr)
-		if failure := reason.As(err); failure == nil || failure.Reason != reason.ReasonInvalidArgument || !strings.Contains(err.Error(), "cancelled") {
-			t.Fatalf("cancellation error for %q = %v", input, err)
+	for _, configRoot := range []string{root, aliasRoot} {
+		cfg, err := workleaseserver.LoadConfig(filepath.Join(configRoot, "config", "worklease", "server.yaml"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if _, statErr := os.Stat(filepath.Join(cancelRoot, "config", "worklease", "server.yaml")); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("cancelled setup created config: %v", statErr)
-		}
-		if _, statErr := os.Stat(filepath.Join(cancelRoot, "state", "worklease", "server")); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("cancelled setup initialized authority: %v", statErr)
+		if cfg.Listen != "127.0.0.1:8443" || cfg.AdvertisedEndpoint != "https://127.0.0.1:8443" || cfg.AllowInsecureHTTP || strings.Join(cfg.Prefixes, ",") != "coordination:" || cfg.TLSCert == "" {
+			t.Fatalf("alias defaults = %+v", cfg)
 		}
 	}
 }
 
-func TestGuidedServerInitNonTerminalSafetyAndInsecureLAN(t *testing.T) {
-	originalTerminal := guidedSetupTerminal
-	t.Cleanup(func() { guidedSetupTerminal = originalTerminal })
-	guidedSetupTerminal = func() bool { return false }
+func TestServerInitRerunPreservesCertificatePin(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
 	var out, stderr strings.Builder
-	err := Run(context.Background(), []string{"worklease", "server", "init", "--guided"}, "test", "unknown", "unknown", &out, &stderr)
-	for _, flag := range []string{"--listen ADDRESS", "--endpoint URL", "--transport tls|http", "--admitted-prefix PREFIX"} {
-		if err == nil || !strings.Contains(err.Error(), flag) {
-			t.Fatalf("missing-input error lacks %s: %v", flag, err)
-		}
+	args := []string{"worklease", "server", "init", "--json"}
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("initial init: %v stderr=%s", err, stderr.String())
 	}
-	invalidPort := []string{"worklease", "server", "init", "--guided", "--listen", "127.0.0.1:99999", "--endpoint", "https://localhost:9443", "--transport", "tls", "--admitted-prefix", "coordination:"}
+	invitePath := filepath.Join(root, "config", "worklease", "bootstrap.invite")
+	firstData, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(firstData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("rerun init: %v stderr=%s", err, stderr.String())
+	}
+	secondData, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(secondData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CertificateSHA256 == "" || second.CertificateSHA256 != first.CertificateSHA256 {
+		t.Fatalf("certificate pin changed across rerun: first=%q second=%q", first.CertificateSHA256, second.CertificateSHA256)
+	}
+}
+
+func TestServerInitRerunReissuesExpiredUnredeemedBootstrap(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	args := []string{"worklease", "server", "init", "--json"}
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("initial init: %v stderr=%s", err, stderr.String())
+	}
+	invitePath := filepath.Join(root, "config", "worklease", "bootstrap.invite")
+	beforeData, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(beforeData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "state", "worklease", "server")
+	lock, err := store.AcquireHostedLock(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), home, store.Options{HostedWriter: true, RequireHostedReady: true, HostedLock: lock})
+	if err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.WriteAt(context.Background(), now, func(tx *store.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `UPDATE invites SET issued_at=?,expires_at=? WHERE bootstrap=1 AND state='active'`, now.Add(-2*time.Minute).UnixMicro(), now.Add(-time.Minute).UnixMicro())
+		return err
+	}); err != nil {
+		_ = st.Close()
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("expired init rerun: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(out.String(), `"bootstrapStatus":"reissued"`) {
+		t.Fatalf("expired init rerun status: %s", out.String())
+	}
+	afterData, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(afterData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Invite == before.Invite || after.CertificateSHA256 != before.CertificateSHA256 || after.AuthorityID != before.AuthorityID {
+		t.Fatalf("expired bootstrap replacement before=%+v after=%+v", before, after)
+	}
+}
+
+func TestServerInitNonLoopbackAndInsecureSafety(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	err := Run(context.Background(), []string{"worklease", "server", "init", "--listen", "0.0.0.0:9443", "--endpoint", "https://worklease.lan:9443", "--transport", "tls", "--admitted-prefix", "coordination:"}, "test", "unknown", "unknown", &out, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--confirm-non-loopback") {
+		t.Fatalf("missing LAN confirmation error = %v", err)
+	}
+	invalidPort := []string{"worklease", "server", "init", "--listen", "127.0.0.1:99999", "--endpoint", "https://localhost:9443", "--transport", "tls", "--admitted-prefix", "coordination:"}
 	if err = Run(context.Background(), invalidPort, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "1 through 65535") {
 		t.Fatalf("invalid listen port error = %v", err)
 	}
-	invalidEndpoint := []string{"worklease", "server", "init", "--guided", "--listen", "127.0.0.1:9443", "--endpoint", "https://localhost:65536", "--transport", "tls", "--admitted-prefix", "coordination:"}
+	invalidEndpoint := []string{"worklease", "server", "init", "--listen", "127.0.0.1:9443", "--endpoint", "https://localhost:65536", "--transport", "tls", "--admitted-prefix", "coordination:"}
 	if err = Run(context.Background(), invalidEndpoint, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "--endpoint port") {
 		t.Fatalf("invalid endpoint port error = %v", err)
 	}
-	args := []string{"worklease", "server", "init", "--guided", "--listen", "0.0.0.0:9443", "--endpoint", "http://worklease.lan:9443", "--transport", "http", "--admitted-prefix", "coordination:"}
+	args := []string{"worklease", "server", "init", "--listen", "0.0.0.0:9443", "--endpoint", "http://worklease.lan:9443", "--transport", "http", "--admitted-prefix", "coordination:"}
 	if err = Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "--confirm-non-loopback") {
 		t.Fatalf("missing LAN confirmation error = %v", err)
 	}
@@ -434,7 +712,7 @@ func TestGuidedSetupReportsAndCompletesPostCommitRecovery(t *testing.T) {
 	}
 	out.Reset()
 	stderr.Reset()
-	if err := Run(context.Background(), guidedArgs, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "without --guided") || !strings.Contains(err.Error(), "--bootstrap-invite-file "+invitePath) {
+	if err := Run(context.Background(), guidedArgs, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "setup overrides apply only during initial server init") {
 		t.Fatalf("guided retry recovery error = %v", err)
 	}
 	resumeArgs := []string{"worklease", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", invitePath}
@@ -725,7 +1003,7 @@ func TestHostedCommandsRefuseHeldLockBeforeOpeningDatabase(t *testing.T) {
 		{"worklease", "server", "init", "--home", home, "--server-config", cfg, "--bootstrap-invite-file", invite},
 		{"worklease", "server", "restore", "--home", home, "--from", backup, "--selected-cutoff", now.Format(time.RFC3339Nano), "--loss-interval-start", now.Format(time.RFC3339Nano), "--loss-interval-end", now.Format(time.RFC3339Nano), "--bootstrap-invite-file", filepath.Join(secretDir, "restored")},
 		{"worklease", "server", "bootstrap-reissue", "--home", home, "--bootstrap-invite-file", filepath.Join(secretDir, "next")},
-		{"worklease", "server", "retire", "--home", home},
+		{"worklease", "server", "retire", "--home", home, "--confirm-retire"},
 	}
 	for _, args := range commands {
 		out.Reset()
@@ -811,7 +1089,7 @@ func TestHostedRestoreAndForcedRetirement(t *testing.T) {
 	exportPath := filepath.Join(secretDir, "retirement.json")
 	out.Reset()
 	stderr.Reset()
-	if err := Run(context.Background(), []string{"worklease", "server", "retire", "--home", home, "--force", "--unresolved-export", exportPath, "--json"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"worklease", "server", "retire", "--home", home, "--confirm-retire", "--force", "--unresolved-export", exportPath, "--json"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
 		t.Fatalf("forced retire: %v stdout=%s stderr=%s", err, out.String(), stderr.String())
 	}
 	exported, err := os.ReadFile(exportPath)

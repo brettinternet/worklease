@@ -177,6 +177,13 @@ func validateConfig(c Config, allowInsecureHTTP bool) error {
 	if strings.TrimSpace(c.Listen) == "" {
 		return reason.New(reason.ReasonConfigInvalid, "listen is required")
 	}
+	listenHost, _, err := net.SplitHostPort(c.Listen)
+	if err != nil || listenHost == "" {
+		return reason.New(reason.ReasonConfigInvalid, "listen must be HOST:PORT")
+	}
+	if ip := net.ParseIP(listenHost); ip != nil && ip.IsUnspecified() && strings.TrimSpace(c.AdvertisedEndpoint) == "" {
+		return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint is required when listen uses a wildcard address")
+	}
 	if c.AdvertisedEndpoint != "" {
 		endpoint, err := url.Parse(c.AdvertisedEndpoint)
 		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" {
@@ -188,6 +195,9 @@ func validateConfig(c Config, allowInsecureHTTP bool) error {
 		}
 		if endpoint.Scheme != expectedScheme {
 			return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint scheme does not match server transport")
+		}
+		if ip := net.ParseIP(endpoint.Hostname()); ip != nil && ip.IsUnspecified() {
+			return reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint must not use a wildcard address")
 		}
 		if endpointPort := endpoint.Port(); endpointPort != "" {
 			port, portErr := strconv.Atoi(endpointPort)

@@ -209,10 +209,34 @@ Concurrent sessions need distinct selectors even in one checkout.
 The standard binary uses the network only when you manage or select a remote
 profile, or run `serve`. Remote failures never fall back to local.
 
+The local journey uses the paths printed by state-producing commands:
+
+```sh
+worklease server init
+worklease serve
+worklease enroll --invite-file PATH_PRINTED_BY_INIT
+worklease invite issue
+worklease enroll --invite-file PATH_PRINTED_BY_INVITE_ISSUE
+worklease acquire --resource coordination:demo
+worklease list
+worklease heartbeat
+worklease release
+```
+
+The defaults are pinned TLS at `https://127.0.0.1:8443`, the
+`coordination:` prefix, and owner-private XDG paths. A LAN setup adds
+`--listen 0.0.0.0:8443 --endpoint https://HOST:8443 --confirm-non-loopback`.
+
+Customize with setup flags first, then `WORKLEASE_SERVER_CONFIG`, then the
+matching `server.yaml` keys. `--guided` is a no-op compatibility alias.
+Cleartext additionally requires
+`--transport http --acknowledge-cleartext-credentials`.
+
 | Task | Commands |
 | --- | --- |
 | Select an authority | `profile add|list|show|remove|default|bind|unbind`, `--profile`, `--local` |
 | Enroll a client | `invite issue`, `enroll` |
+| Issue an invite with defaults | `invite issue` defaults to write/profile-label/15-minute expiry, writes an owner-private artifact, and prints its path plus exact enroll command without the bearer. |
 | Administer access | `installation list|revoke`, `claim revoke` |
 | Recover an authority | `server restore`, `recovery status|reopen` |
 | Run or retire a server | `server init|bootstrap-reissue|retire`, `serve` |

@@ -25,7 +25,7 @@ const (
 
 // selectionHelp explains the shared claim-selection options that every
 // contextual command accepts; usage lines refer to it as [selection].
-const selectionHelp = "Selection: with no selection option the command uses the private contextual handle for the current Git worktree and --session. Pass --handle PATH for an explicit handle, or --claim-id ID --revision N with --token-file FILE or --token-fd N for explicit credentials."
+const selectionHelp = "Selection: with no selection option the command uses the private contextual handle for the current Git worktree and --session. If no claim is selected, acquire one first. Pass --handle PATH for an explicit handle, or --claim-id ID --revision N with --token-file FILE or --token-fd N for explicit credentials."
 
 // flagUsage is the single source of option help for flags whose meaning is
 // the same everywhere. A backquoted word becomes the value placeholder.
@@ -160,7 +160,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	checkpointCommand := jsonless("checkpoint", "store recovery metadata", "worklease checkpoint --data '{\"phase\":\"tests\"}'\n  worklease checkpoint --data-file progress.json", append(mutate(), flag("data"), flag("data-file"))...)
 	checkpointCommand.Action = checkpointActionReal(s)
 	usageText(checkpointCommand, "worklease checkpoint (--data JSON | --data-file FILE) [selection]")
-	detail(checkpointCommand, "Persist bounded JSON recovery metadata with the selected claim and renew it in the same transaction.\n\n"+selectionHelp)
+	detail(checkpointCommand, "Persist bounded JSON recovery metadata with the selected claim and renew it in the same transaction. Supply exactly one --data JSON or --data-file FILE; if no claim is selected, acquire one first.\n\n"+selectionHelp)
 
 	releaseCommand := jsonless("release", "release the contextual claim", "worklease release\n  worklease release --reason done", append(mutate(), &urfavecli.StringFlag{Name: "reason", Aliases: []string{"m"}, Usage: "release `REASON` recorded in history", DefaultText: "released"})...)
 	releaseCommand.Action = releaseActionReal(s)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/authority"
+	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -28,7 +29,7 @@ func remoteAdminCommands(s *boundary) []*urfave.Command {
 	mutating := func() []urfave.Flag {
 		return []urfave.Flag{&urfave.StringFlag{Name: "operation-id", Usage: "32-hex replay operation `ID`"}, &urfave.StringFlag{Name: "request-not-after", Usage: "RFC3339 replay deadline `TIME`, at most 24h ahead"}}
 	}
-	inviteFlags := append(mutating(), &urfave.StringFlag{Name: "role", Usage: "invite role: read, write, or admin"}, &urfave.StringFlag{Name: "invite-file", Usage: "owner-private output `FILE` for the invite secret"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited output descriptor `N` for the invite secret", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "public invite label `TEXT`"}, &urfave.StringFlag{Name: "expires-at", Usage: "optional RFC3339 invite expiry `TIME`"})
+	inviteFlags := append(mutating(), &urfave.StringFlag{Name: "role", Usage: "invite role: read, write, or admin (default write)", DefaultText: "write"}, &urfave.StringFlag{Name: "invite-file", Usage: "owner-private output `FILE` for the invite artifact"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited output descriptor `N` for the invite artifact", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "public invite label `TEXT` (defaults to the selected profile)"}, &urfave.StringFlag{Name: "expires-at", Usage: "optional RFC3339 invite expiry `TIME` (default 15m authority lifetime)"})
 	inviteIssue := command("issue", "issue a remote installation invite", inviteFlags, inviteIssueAction(s))
 	invite := command("invite", "manage remote invitations", nil, nil)
 	invite.Commands = []*urfave.Command{inviteIssue}
@@ -166,6 +167,11 @@ func sha256SumInvite(artifact string) []byte {
 	return sum[:]
 }
 
+func defaultInviteArtifactPath(profileName string) string {
+	paths := config.UserProfilePaths(os.Getenv)
+	return filepath.Join(filepath.Dir(paths.Profiles), profileName+".invite")
+}
+
 func publishInviteIssue(stage inviteIssueStage, file string, fd int, fdSet bool) error {
 	data := []byte(stage.Artifact + "\n")
 	if file != "" {
@@ -188,14 +194,17 @@ func publishInviteIssue(stage inviteIssueStage, file string, fd int, fdSet bool)
 func inviteIssueAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
 		file, fdSet := strings.TrimSpace(cmd.String("invite-file")), cmd.IsSet("invite-fd")
-		if (file != "") == fdSet {
-			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "exactly one invite output is required"))
+		if file != "" && fdSet {
+			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "invite-file and invite-fd are mutually exclusive"))
 		}
 		backend, err := remoteBackend(ctx, s, cmd)
 		if err != nil {
 			return err
 		}
 		defer backend.Close()
+		if file == "" && !fdSet {
+			file = defaultInviteArtifactPath(backend.ProfileName)
+		}
 		role, label, expiry := strings.TrimSpace(cmd.String("role")), strings.TrimSpace(cmd.String("label")), strings.TrimSpace(cmd.String("expires-at"))
 		if role == "" {
 			role = "write"
@@ -264,7 +273,23 @@ func inviteIssueAction(s *boundary) func(context.Context, *urfave.Command) error
 		if err := handle.RemoveOwnerPrivate(stagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return s.handle(cmd, reason.New(reason.ReasonStorageFailure, "invite issue stage could not be cleared"))
 		}
-		return writeAdminResult(s, cmd, "invite-issue", raw)
+		var result map[string]any
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return s.handle(cmd, reason.New(reason.ReasonInvalidArgument, "remote result is invalid"))
+		}
+		if file != "" {
+			result["artifactPath"] = file
+			result["enrollCommand"] = "worklease enroll --invite-file " + shellQuote(file)
+		}
+		if s.jsonRequested(cmd) {
+			return output.WriteSuccess(s.writer, "invite-issue", result)
+		}
+		if file != "" {
+			_, err := fmt.Fprintf(s.writer, "invite-issue completed\ninvite artifact: %s\nenroll: worklease enroll --invite-file %s\n", file, shellQuote(file))
+			return err
+		}
+		_, err = fmt.Fprintln(s.writer, "invite-issue completed; invite artifact written to the requested descriptor")
+		return err
 	}
 }
 

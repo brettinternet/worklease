@@ -42,6 +42,15 @@ func TestValidateConfigRequiresTLSUnlessInsecureHTTPIsAllowed(t *testing.T) {
 		t.Fatalf("explicit insecure HTTP configuration rejected: %v", err)
 	}
 	cfg.Listen = "0.0.0.0:8443"
+	if err := validateConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "advertisedEndpoint") {
+		t.Fatalf("wildcard listener without endpoint error = %v", err)
+	}
+	cfg.AdvertisedEndpoint = "https://[::]:8443"
+	if err := validateConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "wildcard") {
+		t.Fatalf("wildcard advertised endpoint error = %v", err)
+	}
+	cfg.AllowInsecureHTTP = true
+	cfg.AdvertisedEndpoint = "http://worklease.example:8443"
 	if err := validateConfig(cfg, true); err != nil {
 		t.Fatalf("LAN insecure HTTP configuration rejected: %v", err)
 	}

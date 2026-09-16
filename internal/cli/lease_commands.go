@@ -365,7 +365,7 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 			}
 			h, e := handle.Read(path)
 			if e != nil {
-				return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "selected handle is unavailable"))
+				return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "no contextual claim is available; run worklease acquire --path FILE"))
 			}
 			if h.AuthorityID != backend.AuthorityID() {
 				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
@@ -448,7 +448,7 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 		h, e := handle.Read(path)
 		if e != nil {
 			backend.Close()
-			return lease.Credentials{}, nil, nil, nil, nil, "", e
+			return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonClaimSelectionMissing, "no contextual claim is available; run worklease acquire --path FILE")
 		}
 		if h.AuthorityID != backend.AuthorityID() {
 			backend.Close()
@@ -465,7 +465,7 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 	if e != nil {
 		lk.Close()
 		backend.Close()
-		return lease.Credentials{}, nil, nil, nil, nil, "", e
+		return lease.Credentials{}, nil, nil, nil, nil, "", reason.New(reason.ReasonClaimSelectionMissing, "no contextual claim is available; run worklease acquire --path FILE")
 	}
 	if h.AuthorityID != backend.AuthorityID() {
 		lk.Close()
@@ -775,6 +775,11 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 }
 func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
+		inlineSet := cmd.IsSet("data") && strings.TrimSpace(cmd.String("data")) != ""
+		fileSet := strings.TrimSpace(cmd.String("data-file")) != ""
+		if inlineSet == fileSet {
+			return s.handle(cmd, reason.Invalid("checkpoint requires exactly one of --data JSON or --data-file FILE; for example: worklease checkpoint --data '{\"phase\":\"tests\"}'"))
+		}
 		c, svc, st, lk, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
 			return s.handle(cmd, err)

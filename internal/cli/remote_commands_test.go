@@ -450,6 +450,31 @@ func TestArtifactEnrollmentFromFileAndFDActivatesDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestInviteIssueDefaultsToPrivateArtifactAndPrintsEnrollCommand(t *testing.T) {
+	profile, clientHome, _ := remoteCLIFixture(t)
+	paths := config.UserProfilePaths(os.Getenv)
+	expected := filepath.Join(filepath.Dir(paths.Profiles), profile+".invite")
+	out, err := runRemoteCLI(t, "invite", "issue", "--profile", profile, "--home", clientHome, "--json")
+	if err != nil {
+		t.Fatalf("default invite issue: %v output=%s", err, out)
+	}
+	artifactData, err := os.ReadFile(expected)
+	if err != nil {
+		t.Fatalf("default artifact: %v", err)
+	}
+	artifact, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(artifactData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, artifact.Invite) || !strings.Contains(out, expected) || !strings.Contains(out, "worklease enroll --invite-file") {
+		t.Fatalf("default invite output leaked or omitted handoff: %s", out)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope["artifactPath"] != expected {
+		t.Fatalf("default invite envelope=%v err=%v", envelope, err)
+	}
+}
+
 func TestDefinitiveInviteIssueFailureClearsStage(t *testing.T) {
 	profile, clientHome, _ := remoteCLIFixture(t)
 	secretRoot := filepath.Join(t.TempDir(), "secrets")

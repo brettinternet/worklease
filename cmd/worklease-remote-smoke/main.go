@@ -4949,7 +4949,7 @@ func (h *harness) group5(evidence string) error {
 	}
 	lockChecks := [][]string{
 		{"--json", "server", "bootstrap-reissue", "--home", authorityDBRoot(h), "--bootstrap-invite-file", filepath.Join(authorityDBRoot(h), "lock-check-bootstrap.invite")},
-		{"--json", "server", "retire", "--home", authorityDBRoot(h)},
+		{"--json", "server", "retire", "--home", authorityDBRoot(h), "--confirm-retire"},
 	}
 	for _, args := range lockChecks {
 		if err := h.requireAuthorityFailure(args, "hosted-lock-held"); err != nil {

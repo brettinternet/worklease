@@ -132,8 +132,8 @@ func validateRemoteDocs() {
 	guides := map[string][]string{
 		"README.md": {
 			"experimental", "no listener", "no network request", "Local reads remain", "setup-free",
-			"Remote failures do", "not fall back to local coordination", "server init --guided",
-			"worklease doctor --resource coordination:demo", "worklease list --full",
+			"Remote failures do", "not fall back to local coordination", "server init",
+			"worklease invite issue", "worklease list",
 		},
 		"docs/remote-claim-authority.md": {
 			"**experimental**", "## Two-machine quickstart", "Temporary trusted-LAN cleartext test only",
@@ -164,7 +164,7 @@ func validateRemoteDocs() {
 			"Recovery import", "HA", "Postgres", "browser control plane",
 		},
 		"docs/container.md": {
-			"server init --guided", "--transport tls", "generated certificate pin", "invite issue --role write",
+			"server init", "generated certificate pin", "invite issue --role write",
 		},
 	}
 	for path, fragments := range guides {
@@ -203,12 +203,12 @@ func validateOnboardingDocs() {
 		fatal(fmt.Errorf("remote guide quickstart boundary is missing"))
 	}
 	quickstart := text[start:end]
-	for _, forbidden := range []string{"curl ", "Worklease-Protocol-Version", "--json", "--authority-id", "profile add", "```yaml"} {
+	for _, forbidden := range []string{"curl ", "Worklease-Protocol-Version", "--json", "--authority-id", "profile add", "```yaml", "install -d", "--manual-dir"} {
 		if strings.Contains(quickstart, forbidden) {
 			fatal(fmt.Errorf("primary remote quickstart contains protocol-oriented step %q", forbidden))
 		}
 	}
-	for _, required := range []string{"server init --guided", "--transport tls", "scp ", "enroll --invite-file", "invite issue --role write", "doctor --resource", "acquire --resource", "heartbeat --session", "list --full", "release --session", "--acknowledge-cleartext-credentials", "--allow-insecure-http"} {
+	for _, required := range []string{"worklease server init", "worklease serve", "--listen 0.0.0.0:8443", "--endpoint https://HOST:8443", "--confirm-non-loopback", "enroll --invite-file", "worklease invite issue", "acquire --resource coordination:demo", "worklease list", "worklease heartbeat", "worklease release", "### Customize", "--acknowledge-cleartext-credentials", "--allow-insecure-http"} {
 		if !strings.Contains(quickstart, required) {
 			fatal(fmt.Errorf("primary remote quickstart missing command %q", required))
 		}
@@ -217,12 +217,12 @@ func validateOnboardingDocs() {
 	if err != nil {
 		fatal(err)
 	}
-	for _, forbidden := range []string{"--json", "sed -", "--authority-id", "profile add", "http://"} {
+	for _, forbidden := range []string{"--json", "sed -", "--authority-id", "profile add", "http://", "install ", "mkdir ", "--guided"} {
 		if strings.Contains(string(tape), forbidden) {
 			fatal(fmt.Errorf("remote demo contains stale onboarding step %q", forbidden))
 		}
 	}
-	for _, required := range []string{"server init --guided", "enroll --invite-file", "invite issue --role write", "doctor --resource", "acquire --resource", "list --full", "heartbeat", "release --reason"} {
+	for _, required := range []string{"worklease server init", "enroll --invite-file", "worklease invite issue", "acquire --resource coordination:demo", "worklease list", "worklease heartbeat", "worklease release"} {
 		if !strings.Contains(string(tape), required) {
 			fatal(fmt.Errorf("remote demo missing journey command %q", required))
 		}
@@ -276,7 +276,7 @@ func testInsecureOnboarding(binary string) {
 	configPath := filepath.Join(root, "server.yaml")
 	bootstrap := filepath.Join(root, "bootstrap.invite")
 	serverEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "server-config"), "XDG_STATE_HOME="+filepath.Join(root, "server-state"))
-	runDocCommand(binary, serverEnv, "server", "init", "--guided", "--server-config", configPath, "--bootstrap-invite-file", bootstrap, "--listen", address, "--endpoint", "http://"+address, "--transport", "http", "--admitted-prefix", "coordination:", "--confirm-non-loopback", "--acknowledge-cleartext-credentials")
+	runDocCommand(binary, serverEnv, "server", "init", "--server-config", configPath, "--bootstrap-invite-file", bootstrap, "--listen", address, "--endpoint", "http://"+address, "--transport", "http", "--admitted-prefix", "coordination:", "--confirm-non-loopback", "--acknowledge-cleartext-credentials")
 	serverLog := &bytes.Buffer{}
 	server := exec.Command(binary, "serve", "--server-config", configPath)
 	server.Env, server.Stdout, server.Stderr = serverEnv, serverLog, serverLog

@@ -1,0 +1,55 @@
+# CLI zero-flag audit
+
+This table is the checked-in contract for every leaf command. A blank option
+means the command either performs a safe contextual read, uses its documented
+local default, or reports the missing required input without guessing.
+
+| Command | Zero-flag behavior | Safety / guidance |
+| --- | --- | --- |
+| `version` | Print build version | Read-only |
+| `key` | Report missing resource input | No mutation |
+| `acquire` | Report missing resource input | Acquire requires an explicit resource |
+| `status` | Show current contextual claim | If none, acquire first |
+| `list` | List current claims | Says `no current claims` when empty |
+| `heartbeat` | Use contextual handle and default TTL | Acquire first if no claim |
+| `checkpoint` | Report missing data and claim selection | Supply `--data` or `--data-file`; acquire first |
+| `release` | Use contextual handle and default reason | Acquire first if no claim |
+| `transfer` | Report missing successor handle | Requires explicit successor destination |
+| `verify` | Verify contextual claim | Acquire first if no claim |
+| `exec` | Report missing child command | Requires `-- COMMAND` |
+| `replace-file` | Report missing path/content | Requires explicit replacement inputs |
+| `history` | Show global lifecycle history | Read-only |
+| `events` | Show lifecycle events | Read-only |
+| `watch` | Report missing wait condition/resource or cursor | Requires explicit wait target |
+| `gc` | Preview retention | Never applies without `--apply` |
+| `doctor` | Run read-only diagnostics | No state mutation |
+| `policy list` | List built-in policies | Read-only |
+| `policy describe` | Report missing policy name | Read-only |
+| `op inspect` | Inspect contextual operation | Read-only; acquire first for private context |
+| `op reconcile` | Report missing reconciliation inputs | Requires explicit evidence and target |
+| `instructions loop` | Print lifecycle guidance | Read-only |
+| `instructions safety` | Print safety guidance | Read-only |
+| `setup mcp` | Preview integration changes | Writes only with `--apply` |
+| `setup guard` | Preview guard changes | Writes only with `--apply` |
+| `setup instructions` | Print managed instructions | Read-only |
+| `profile add` | Report missing profile name/trust inputs | Performs bounded metadata discovery only when inputs are supplied |
+| `profile list` | List trusted profiles | Setup-free and local |
+| `profile show` | Show the selected contextual/default profile | Pass a name only to override profile selection |
+| `profile remove` | Report missing profile name | Destructive only with explicit name |
+| `profile default` | Show the current default profile | Changes default only with an explicit name |
+| `profile bind` | Report missing profile name | Binds current checkout only with explicit name |
+| `profile unbind` | Remove current checkout binding | Explicitly scoped to current checkout |
+| `enroll` | Prompt privately in a terminal; otherwise report missing invite | Bearer never enters argv/output |
+| `invite issue` | Issue write invite for selected profile; owner-private default artifact, profile label, 15-minute expiry | Prints artifact path and exact enroll command, never bearer |
+| `installation list` | List installations for selected remote profile | Read-only |
+| `installation revoke` | Report missing installation ID | Destructive only with explicit ID |
+| `claim revoke` | Report missing claim ID | Destructive only with explicit ID |
+| `recovery status` | Show remote recovery state | Read-only |
+| `recovery reopen` | Report missing attestation | Requires explicit private evidence |
+| `server init` | Secure TLS loopback at `127.0.0.1:8443`, HTTPS endpoint, generated pin, coordination namespace, XDG paths | `--guided` is only an alias; LAN requires endpoint and consent; HTTP requires acknowledgement |
+| `server restore` | Report missing backup/recovery inputs | Destructive state replacement requires explicit inputs |
+| `server bootstrap-reissue` | Resolve server config/home and default bootstrap artifact | Names the resolved authority on errors |
+| `server retire` | Resolve server config/home, name it, and refuse mutation without `--confirm-retire` | Explicitly destructive; output names resolved home |
+| `serve` | Resolve and serve configured authority | TLS by default; HTTP requires explicit allowance |
+| `mcp` | Serve MCP over stdio | Network only when selected by profile |
+| `help` | Show command help | Read-only |

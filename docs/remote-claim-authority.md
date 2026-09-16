@@ -22,67 +22,62 @@ network unless that profile is selected by the normal precedence rules.
 
 The default setup generates a self-signed TLS certificate and pins its leaf
 fingerprint into each invite artifact. Runtime state, private keys, invites, and
-installation credentials stay in owner-private user directories outside the
+installation credentials stay in owner-private XDG user directories outside the
 checkout.
 
-On the server, substitute a DNS name or IP reachable from both client machines:
+Start the secure local authority in one terminal:
 
 ```sh
-install -d -m 0700 ~/.config/worklease
-worklease server init --guided \
+worklease server init
+worklease serve
+```
+
+The first command creates TLS for `https://127.0.0.1:8443`, admits
+`coordination:`, and prints the owner-private bootstrap artifact path and exact
+next commands. Transfer that artifact through an authenticated secret channel.
+On the administrator machine:
+
+```sh
+worklease enroll --invite-file PATH_PRINTED_BY_INIT
+worklease invite issue
+```
+
+Bare `worklease enroll` provides a hidden terminal prompt instead. Transfer the
+artifact path printed by `invite issue` to the second client, then run:
+
+```sh
+worklease enroll --invite-file PATH_PRINTED_BY_INVITE_ISSUE
+worklease acquire --resource coordination:demo
+worklease list
+worklease heartbeat
+worklease release
+```
+
+Artifacts are bearer secrets. Keep them and generated server files out of
+repositories and logs, and remove one-time artifacts under your secret-retention
+policy.
+
+### LAN
+
+A non-loopback listener needs one explicit consent and a client-reachable
+endpoint. A wildcard listener is never advertised as an endpoint:
+
+```sh
+worklease server init \
   --listen 0.0.0.0:8443 \
-  --endpoint https://worklease.example.com:8443 \
-  --transport tls \
-  --admitted-prefix coordination: \
+  --endpoint https://HOST:8443 \
   --confirm-non-loopback
 worklease serve
 ```
 
-First create the owner-private artifact directory on the administrator and
-client machines:
+### Customize
 
-```sh
-install -d -m 0700 ~/.config/worklease
-```
-
-Transfer the generated bootstrap artifact through an authenticated secret
-channel. For example, from the server:
-
-```sh
-scp ~/.config/worklease/bootstrap.invite admin@admin-machine:~/.config/worklease/bootstrap.invite
-```
-
-On the administrator machine, enrollment creates and selects the profile from
-the artifact; no authority ID, YAML, or response parsing is required:
-
-```sh
-worklease enroll --invite-file ~/.config/worklease/bootstrap.invite
-worklease doctor --resource coordination:demo
-worklease invite issue --role write \
-  --invite-file ~/.config/worklease/client.invite \
-  --label client
-scp ~/.config/worklease/client.invite client@client-machine:~/.config/worklease/client.invite
-```
-
-On the separate client machine:
-
-```sh
-worklease enroll --invite-file ~/.config/worklease/client.invite
-worklease doctor --resource coordination:demo
-worklease acquire --resource coordination:demo --session client
-worklease heartbeat --session client
-```
-
-Back on the administrator machine, `worklease list --full` shows the client's
-claim. Finish on the client with:
-
-```sh
-worklease release --session client --reason done
-```
-
-The artifacts are bearer secrets. Keep them and the generated server files out
-of repositories, logs, and command output; remove one-time artifacts according
-to the receiving secret store's policy.
+Use command flags first: `--admitted-prefix`, `--tls-cert` with `--tls-key`,
+`--bootstrap-invite-file`, and `--server-config`. Use
+`WORKLEASE_SERVER_CONFIG` for process-wide selection, or the corresponding
+`server.yaml` keys for managed deployments. `--guided` is a no-op compatibility
+alias. Cleartext additionally requires
+`--transport http --acknowledge-cleartext-credentials`.
 
 ### Temporary trusted-LAN cleartext test only
 
@@ -91,7 +86,7 @@ HTTP exposes invite, installation, and claim credentials to anyone who can
 observe the network. It is not the default setup:
 
 ```sh
-worklease server init --guided \
+worklease server init \
   --listen 0.0.0.0:8080 \
   --endpoint http://worklease-test.lan:8080 \
   --transport http \
@@ -147,7 +142,7 @@ Configuration rules:
 | Canonical field | Accepted alias | Constraint |
 | --- | --- | --- |
 | `listen` | `listenAddress` | Required |
-| `advertisedEndpoint` | — | Optional for legacy configurations; guided setup persists the client-facing origin |
+| `advertisedEndpoint` | — | Optional for legacy configurations; setup persists the client-facing origin |
 | `tlsCert` | `tlsCertFile` | Required unless insecure HTTP is explicit |
 | `tlsKey` | `tlsKeyFile` | Required unless insecure HTTP is explicit |
 | `admittedPrefixes` | `prefixes` | Required |
@@ -212,8 +207,12 @@ worklease enroll [--profile NAME] (--invite-file FILE|--invite-fd N) [--label TE
 
 Invite and enrollment rules:
 
-- `invite issue` requires one output source, defaults to the `write` role, and
-  supports the long-only replay flags shown above.
+- `invite issue` defaults to the `write` role, the selected profile name as its
+  label, and the authority's documented 15-minute expiry. With no output flags
+  it writes an owner-private `<profile>.invite` artifact under XDG config,
+  prints its path, and prints the exact `worklease enroll --invite-file ...`
+  command. `--invite-fd` remains available for automation; the bearer is never
+  printed.
 - File output is a self-contained invite artifact and is durable before
   dispatch; fd callers own durable capture. See
   [Remote invite artifacts](remote-invite-artifact.md) for trust and legacy
@@ -311,43 +310,43 @@ hosted lock before opening SQLite:
 
 ```text
 worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
-worklease server init --guided [--listen HOST:PORT] [--endpoint URL] \
+worklease server init [--listen HOST:PORT] [--endpoint URL] \
   [--transport tls|http] [--admitted-prefix PREFIX]...
 worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 \
   --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
   --bootstrap-invite-file FILE [--cutoff-unknown]
-worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE
-worklease server retire --home DIR [--force --unresolved-export FILE]
+worklease server bootstrap-reissue [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE]
+worklease server retire [--server-config FILE | --home DIR] [--confirm-retire] [--force --unresolved-export FILE]
 worklease serve [--server-config FILE] [--allow-insecure-http]
 ```
 
-With no arguments, `server init` creates this local-only setup:
+With no arguments, `server init` creates this secure loopback setup:
 
 | Item | Default |
 | --- | --- |
 | Configuration | `$XDG_CONFIG_HOME/worklease/server.yaml` |
 | Authority | `$XDG_STATE_HOME/worklease/server` |
-| Bootstrap invite | Beside the configuration |
+| Bootstrap invite | Beside the configuration, owner-private |
+| TLS certificate/key | Beside the configuration, owner-private |
+| Endpoint | `https://127.0.0.1:8443` |
 | Listener | `127.0.0.1:8443` |
 | Admission | `coordination:` resources |
-| Transport | Explicit insecure HTTP |
+| Transport | TLS with generated pinned certificate |
 
-Files are owner-private. Bare initialization remains non-interactive and
-local-only. For a new LAN authority, use `server init --guided`. Interactive
-setup prompts for missing choices; automation must supply `--listen`,
-`--endpoint`, `--transport`, and at least one `--admitted-prefix`. A
-non-loopback listener also requires `--confirm-non-loopback`. Cleartext HTTP
-requires the separate `--acknowledge-cleartext-credentials` flag.
+Files are owner-private. All setup overrides work without `--guided`, which is
+only a compatibility alias. A LAN listener requires `--endpoint` and
+`--confirm-non-loopback`; wildcard listeners never become endpoints. Cleartext
+HTTP requires the separate `--acknowledge-cleartext-credentials` flag.
 
-Guided TLS setup generates an ECDSA P-256 self-signed leaf certificate and
+TLS setup generates an ECDSA P-256 self-signed leaf certificate and
 owner-private key when `--tls-cert` and `--tls-key` are omitted. The generated
 leaf is valid for 365 days and covers the advertised endpoint host or IP.
 Supplied files must be owner-private, matched, and currently valid; a SAN
 mismatch is reported as a warning because a CA-verified client may use another
 name. Success output includes the endpoint, authority ID, DER-certificate
 SHA-256 fingerprint, created paths, start command, and bootstrap enrollment
-command. Fresh guided setup defaults admitted prefixes to `task:` and
-`coordination:` when those defaults are accepted interactively.
+command. Fresh setup defaults the admitted prefix to `coordination:`. The legacy
+`--guided` flag is accepted only as a compatibility alias.
 
 `server init` stages the bootstrap secret before the authority transaction and
 writes a one-time admin invite. `bootstrap-reissue` replaces only that invite.

@@ -26,26 +26,27 @@ Type `export PATH="$PWD/bin:$PATH"`
 Enter
 Type `export WORKLEASE_DEMO_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/worklease-remote-demo.XXXXXX")`
 Enter
-Type `touch "$WORKLEASE_DEMO_ROOT/.owner"; mkdir -m 700 "$WORKLEASE_DEMO_ROOT/server" "$WORKLEASE_DEMO_ROOT/server-state" "$WORKLEASE_DEMO_ROOT/admin-config" "$WORKLEASE_DEMO_ROOT/admin-home" "$WORKLEASE_DEMO_ROOT/client-config" "$WORKLEASE_DEMO_ROOT/client-home"`
+Type `touch "$WORKLEASE_DEMO_ROOT/.owner"`
 Enter
-Type `export XDG_STATE_HOME="$WORKLEASE_DEMO_ROOT/server-state"`
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/server-config" XDG_STATE_HOME="$WORKLEASE_DEMO_ROOT/server-state"`
 Enter
-Type `worklease server init --guided --server-config "$WORKLEASE_DEMO_ROOT/server/server.yaml" --bootstrap-invite-file "$WORKLEASE_DEMO_ROOT/server/admin.invite" --listen 127.0.0.1:18443 --endpoint https://127.0.0.1:18443 --transport tls --admitted-prefix coordination:`
+# Local secure default: TLS loopback, pinned certificate, coordination: namespace.
+Type `worklease server init`
 Enter
-Type `worklease serve --server-config "$WORKLEASE_DEMO_ROOT/server/server.yaml" > "$WORKLEASE_DEMO_ROOT/server.log" 2>&1 & export WORKLEASE_SERVER_PID=$!`
+Type `worklease serve > "$WORKLEASE_DEMO_ROOT/server.log" 2>&1 & export WORKLEASE_SERVER_PID=$!`
 Enter
 Sleep 1s
-Type `install -m 600 "$WORKLEASE_DEMO_ROOT/server/admin.invite" "$WORKLEASE_DEMO_ROOT/admin.invite"`
+Type `cp "$WORKLEASE_DEMO_ROOT/server-config/worklease/bootstrap.invite" "$WORKLEASE_DEMO_ROOT/admin.invite"`
 Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease enroll --profile team --invite-file "$WORKLEASE_DEMO_ROOT/admin.invite" --label administrator`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/admin.invite"`
 Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease invite issue --role write --invite-file "$WORKLEASE_DEMO_ROOT/client.invite" --label team`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease invite issue`
 Enter
-Type `install -m 600 "$WORKLEASE_DEMO_ROOT/client.invite" "$WORKLEASE_DEMO_ROOT/client-config/client.invite"`
+Type `cp "$WORKLEASE_DEMO_ROOT/admin-config/worklease/admin.invite" "$WORKLEASE_DEMO_ROOT/client.invite"`
 Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/client-config/client.invite" --label client`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/client.invite"`
 Enter
-Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" WORKLEASE_PROFILE=team WORKLEASE_SESSION_ID=client WORKLEASE_AGENT_ID=client PS1='client@remote $ '`
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" WORKLEASE_SESSION_ID=client WORKLEASE_AGENT_ID=client PS1='client@remote $ '`
 Enter
 Type `SHELL=/bin/bash tmux -f /dev/null new-session -s worklease-remote-demo /bin/bash --noprofile --norc`
 Enter
@@ -53,7 +54,7 @@ Sleep 1s
 Type `tmux set-option -g status off; tmux set-option -g default-command 'exec /bin/bash --noprofile --norc'; tmux split-window -h`
 Enter
 Sleep 1s
-Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" WORKLEASE_PROFILE=team WORKLEASE_SESSION_ID=admin WORKLEASE_AGENT_ID=admin PS1='admin@remote $ '; clear`
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" WORKLEASE_PROFILE=admin WORKLEASE_SESSION_ID=admin WORKLEASE_AGENT_ID=admin PS1='admin@remote $ '; clear`
 Enter
 Ctrl+B
 Type `o`
@@ -71,7 +72,7 @@ Sleep 2s
 
 Ctrl+B
 Type `o`
-Type `worklease list --full`
+Type `worklease list`
 Enter
 Sleep 3s
 
@@ -80,9 +81,12 @@ Type `o`
 Type `worklease heartbeat`
 Enter
 Sleep 2s
-Type `worklease release --reason done`
+Type `worklease release`
 Enter
 Sleep 3s
+
+# LAN: worklease server init --listen 0.0.0.0:8443 --endpoint https://HOST:8443 --confirm-non-loopback
+# Customize next with setup flags, WORKLEASE_SERVER_CONFIG, or server.yaml keys.
 
 Hide
 Ctrl+B

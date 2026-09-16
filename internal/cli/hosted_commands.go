@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -31,15 +32,15 @@ const acceptanceCrashBeforeHostedReady = "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOST
 func serverCommands(s *boundary) *urfave.Command {
 	secret := &urfave.StringFlag{Name: "bootstrap-invite-file", Usage: "owner-private bootstrap invite `FILE`"}
 	initCommand := &urfave.Command{
-		Name: "init", Usage: "initialize a server", UsageText: "worklease server init [--server-config FILE] [--bootstrap-invite-file FILE] [--guided]",
-		Description: "Create the legacy local-only server configuration, or opt into guided remote setup, initialize its authority, and write a one-time bootstrap invite.\n\nExamples:\n  worklease server init\n  worklease server init --guided\n  worklease server init --guided --listen 0.0.0.0:8443 --endpoint https://worklease.example.com:8443 --transport tls --admitted-prefix task: --admitted-prefix coordination: --confirm-non-loopback",
+		Name: "init", Usage: "initialize a secure server", UsageText: "worklease server init [--server-config FILE] [--bootstrap-invite-file FILE] [--guided]",
+		Description: "Initialize a TLS-pinned remote authority. With no options it binds 127.0.0.1:8443, advertises https://127.0.0.1:8443, admits coordination:, and places owner-private state, certificate, key, and bootstrap artifact under XDG directories. --guided is a compatibility alias; setup overrides work without it.\n\nExamples:\n  worklease server init\n  worklease server init --listen 0.0.0.0:8443 --endpoint https://worklease.example.com:8443 --admitted-prefix coordination: --confirm-non-loopback\n  worklease server init --guided --transport http --acknowledge-cleartext-credentials",
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret,
-			&urfave.BoolFlag{Name: "guided", Usage: "prompt for or validate a ready-to-run remote server setup"},
-			&urfave.StringFlag{Name: "listen", Usage: "guided listener `HOST:PORT`"},
-			&urfave.StringFlag{Name: "endpoint", Usage: "guided client-facing origin `URL`"},
-			&urfave.StringFlag{Name: "transport", Usage: "guided transport: tls or http"},
-			&urfave.StringSliceFlag{Name: "admitted-prefix", Usage: "guided admitted resource `PREFIX` (repeatable)"},
+			&urfave.BoolFlag{Name: "guided", Usage: "compatibility alias for setup"},
+			&urfave.StringFlag{Name: "listen", Usage: "listener `HOST:PORT`; defaults to 127.0.0.1:8443"},
+			&urfave.StringFlag{Name: "endpoint", Usage: "client-facing origin `URL`; required for non-loopback listeners"},
+			&urfave.StringFlag{Name: "transport", Usage: "transport: tls (default) or http"},
+			&urfave.StringSliceFlag{Name: "admitted-prefix", Usage: "admitted resource `PREFIX` (default coordination:, repeatable)"},
 			&urfave.StringFlag{Name: "tls-cert", Usage: "existing owner-private TLS certificate `FILE`"},
 			&urfave.StringFlag{Name: "tls-key", Usage: "existing owner-private TLS key `FILE`"},
 			&urfave.BoolFlag{Name: "confirm-non-loopback", Usage: "confirm exposure on a non-loopback listener"},
@@ -54,17 +55,17 @@ func serverCommands(s *boundary) *urfave.Command {
 	}
 	restore.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRestore(s, ctx, cmd) }
 	reissue := &urfave.Command{
-		Name: "bootstrap-reissue", Usage: "replace the server bootstrap invite", UsageText: "worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE",
-		Description: "Replace only the active bootstrap invite while preserving authority history.\n\nExamples:\n  worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE", Flags: []urfave.Flag{secret},
+		Name: "bootstrap-reissue", Usage: "replace the server bootstrap invite", UsageText: "worklease server bootstrap-reissue [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE]",
+		Description: "Replace only the active bootstrap invite while preserving authority history. The artifact defaults beside the resolved server configuration.\n\nExamples:\n  worklease server bootstrap-reissue\n  worklease server bootstrap-reissue --server-config FILE --bootstrap-invite-file FILE\n  worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE", Flags: []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret},
 	}
 	reissue.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedReissue(s, ctx, cmd) }
 	retire := &urfave.Command{
-		Name: "retire", Usage: "retire a server authority", UsageText: "worklease server retire --home DIR [--force --unresolved-export FILE]",
-		Description: "Safely retire a hosted authority; forced retirement first exports redacted unresolved recovery records.\n\nExamples:\n  worklease server retire --home DIR\n  worklease server retire --home DIR --force --unresolved-export FILE",
-		Flags:       []urfave.Flag{&urfave.BoolFlag{Name: "force", Usage: "allow retirement after writing a redacted unresolved export"}, &urfave.StringFlag{Name: "unresolved-export", Usage: "external redacted recovery export `FILE`"}},
+		Name: "retire", Usage: "retire a server authority", UsageText: "worklease server retire [--server-config FILE | --home DIR] [--confirm-retire] [--force --unresolved-export FILE]",
+		Description: "Destructively retire a hosted authority only with explicit --confirm-retire; without it, the command resolves and names the home but does not mutate. Forced retirement first exports redacted unresolved recovery records.\n\nExamples:\n  worklease server retire --confirm-retire\n  worklease server retire --server-config FILE --confirm-retire --force --unresolved-export FILE\n  worklease server retire --home DIR --confirm-retire",
+		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, &urfave.BoolFlag{Name: "confirm-retire", Usage: "explicitly confirm destructive authority retirement"}, &urfave.BoolFlag{Name: "force", Usage: "allow destructive retirement after writing a redacted unresolved export"}, &urfave.StringFlag{Name: "unresolved-export", Usage: "external redacted recovery export `FILE`"}},
 	}
 	retire.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRetire(s, ctx, cmd) }
-	return &urfave.Command{Name: "server", Usage: "initialize and manage a server authority", UsageText: "worklease server <init|restore|bootstrap-reissue|retire>", Description: "Server-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease server init\n  worklease server restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease server retire --home DIR", Commands: []*urfave.Command{initCommand, restore, reissue, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
+	return &urfave.Command{Name: "server", Usage: "initialize and manage a server authority", UsageText: "worklease server <init|restore|bootstrap-reissue|retire>", Description: "Server-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease server init\n  worklease server restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease server retire --home DIR --confirm-retire", Commands: []*urfave.Command{initCommand, restore, reissue, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
 		return s.handle(cmd, reason.Invalid("invalid server command arguments"))
 	}}
 }
@@ -122,38 +123,33 @@ func writeDefaultServerConfig(path string) error {
 	if err := store.ValidateHostedHome(parent); err != nil {
 		return reason.New(reason.ReasonHomeUnsafe, "server configuration directory must be owner-private")
 	}
-	contents := fmt.Sprintf("home: %q\nlisten: 127.0.0.1:8443\nallowInsecureHTTP: true\nadmittedPrefixes:\n  - \"coordination:\"\nmaxTTL: 1h\nmaxHold: 24h\nshutdownTimeout: 5s\nhealthRate: 60\nmetadataRate: 60\nenrollmentRate: 20\n", defaultServerHome())
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	certPath := filepath.Join(parent, "server.crt")
+	keyPath := filepath.Join(parent, "server.key")
+	certPEM, keyPEM, _, err := generateGuidedCertificate("127.0.0.1")
 	if err != nil {
 		return err
 	}
+	created := []string{}
 	keep := false
 	defer func() {
-		_ = file.Close()
 		if !keep {
-			_ = os.Remove(path)
+			for _, createdPath := range created {
+				_ = os.Remove(createdPath)
+			}
 		}
 	}()
-	if _, err = io.WriteString(file, contents); err != nil {
-		return err
+	for _, output := range []struct {
+		path string
+		data []byte
+	}{{certPath, certPEM}, {keyPath, keyPEM}} {
+		if err := writeGuidedExclusive(output.path, output.data); err != nil {
+			return err
+		}
+		created = append(created, output.path)
 	}
-	if err = file.Sync(); err != nil {
+	contents := fmt.Sprintf("home: %q\nlisten: 127.0.0.1:8443\nadvertisedEndpoint: https://127.0.0.1:8443\ntlsCert: %q\ntlsKey: %q\nadmittedPrefixes:\n  - \"coordination:\"\nmaxTTL: 1h\nmaxHold: 24h\nshutdownTimeout: 5s\nhealthRate: 60\nmetadataRate: 60\nenrollmentRate: 20\n", defaultServerHome(), certPath, keyPath)
+	if err := writeGuidedExclusive(path, []byte(contents)); err != nil {
 		return err
-	}
-	if err = file.Close(); err != nil {
-		return err
-	}
-	directory, err := os.Open(parent)
-	if err != nil {
-		return err
-	}
-	err = directory.Sync()
-	closeErr := directory.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
 	}
 	keep = true
 	return nil
@@ -165,6 +161,54 @@ func hostedHome(cmd *urfave.Command) (string, error) {
 		return "", reason.Invalid("--home is required")
 	}
 	return filepath.Abs(filepath.Clean(home))
+}
+
+// resolveHostedHome keeps offline lifecycle commands on the same deployment
+// configuration precedence as serve. An explicit --home remains supported for
+// legacy automation, but when both are supplied their paths must agree.
+func resolveHostedHome(cmd *urfave.Command) (string, string, error) {
+	configPath, err := serverConfigPath(cmd)
+	if err != nil {
+		return "", "", err
+	}
+	explicit := strings.TrimSpace(cmd.String("home"))
+	_, statErr := os.Lstat(configPath)
+	if explicit == "" || statErr == nil || cmd.IsSet("server-config") || strings.TrimSpace(os.Getenv("WORKLEASE_SERVER_CONFIG")) != "" {
+		if statErr == nil {
+			cfg, loadErr := workleaseserver.LoadConfig(configPath)
+			if loadErr != nil {
+				return "", "", loadErr
+			}
+			home, absErr := filepath.Abs(filepath.Clean(cfg.Home))
+			if absErr != nil {
+				return "", "", absErr
+			}
+			if explicit != "" {
+				given, givenErr := filepath.Abs(filepath.Clean(explicit))
+				if givenErr != nil {
+					return "", "", givenErr
+				}
+				if given != home {
+					return "", "", reason.Invalid(fmt.Sprintf("server configuration %s names home %s, but --home resolves to %s", configPath, home, given))
+				}
+			}
+			return home, configPath, nil
+		}
+		if explicit == "" {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return "", "", reason.New(reason.ReasonConfigMissing, fmt.Sprintf("server configuration not found at %s; run worklease server init", configPath))
+			}
+			return "", "", statErr
+		}
+	}
+	if explicit == "" {
+		return "", "", reason.Invalid("--home is required")
+	}
+	if cmd.IsSet("server-config") || strings.TrimSpace(os.Getenv("WORKLEASE_SERVER_CONFIG")) != "" {
+		return "", "", reason.New(reason.ReasonConfigMissing, fmt.Sprintf("server configuration not found at %s; run worklease server init", configPath))
+	}
+	home, err := filepath.Abs(filepath.Clean(explicit))
+	return home, configPath, err
 }
 func requiredHostedFile(cmd *urfave.Command, name string) (string, error) {
 	value := strings.TrimSpace(cmd.String(name))
@@ -215,6 +259,10 @@ func stageHostedSecret(path string) (string, error) {
 	return value, nil
 }
 
+func stageHostedReissueSecret(path string) (string, error) {
+	return stageHostedSecret(path + ".legacy-secret")
+}
+
 // Init keeps a durable legacy secret beside the artifact until initialization
 // is ready. This preserves crash recovery while making the transferred file a
 // single self-contained artifact.
@@ -247,7 +295,42 @@ func rejectStagedBootstrapSecret(invitePath string) error {
 	return nil
 }
 
-func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup *guidedSetupResult, secret string, advertisedEndpoint string, listen string, insecure bool) error {
+func hostedArtifactSetup(config workleaseserver.Config) (*guidedSetupResult, error) {
+	endpoint := strings.TrimSpace(config.AdvertisedEndpoint)
+	if endpoint == "" {
+		host, _, err := net.SplitHostPort(config.Listen)
+		if err != nil || host == "" {
+			return nil, reason.New(reason.ReasonConfigInvalid, "listen address is invalid")
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			return nil, reason.New(reason.ReasonConfigInvalid, "advertisedEndpoint is required when listen uses a wildcard address")
+		}
+		scheme := "https"
+		if config.AllowInsecureHTTP {
+			scheme = "http"
+		}
+		endpoint = scheme + "://" + config.Listen
+	}
+	setup := &guidedSetupResult{Endpoint: endpoint}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" {
+		return nil, reason.New(reason.ReasonConfigInvalid, "advertised endpoint is invalid")
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsUnspecified() {
+		return nil, reason.New(reason.ReasonConfigInvalid, "advertised endpoint must not use a wildcard address")
+	}
+	if strings.TrimSpace(config.TLSCert) == "" {
+		return setup, nil
+	}
+	setup.Fingerprint, _, setup.Warning, err = inspectGuidedCertificate(config.TLSCert, config.TLSKey, parsed.Hostname())
+	if err != nil {
+		return nil, err
+	}
+	return setup, nil
+}
+
+func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup *guidedSetupResult, secret string, advertisedEndpoint string, listen string, insecure bool, replacement ...bool) error {
+	allowReplacement := len(replacement) > 0 && replacement[0]
 	endpoint, pin := "", ""
 	if setup != nil {
 		endpoint, pin = setup.Endpoint, setup.Fingerprint
@@ -271,12 +354,17 @@ func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup 
 	if readErr == nil {
 		value := strings.TrimSuffix(string(data), "\n")
 		if existing, decodeErr := authority.DecodeInviteArtifact(value); decodeErr == nil {
-			if existing != desired {
+			if existing.Endpoint != desired.Endpoint || existing.AuthorityID != desired.AuthorityID || existing.CertificateSHA256 != desired.CertificateSHA256 || existing.ProfileHint != desired.ProfileHint {
 				return reason.New(reason.ReasonAuthorityMismatch, "existing invite artifact conflicts with hosted authority")
+			}
+			if existing != desired {
+				if err := handle.WriteOwnerPrivate(path, []byte(encoded+"\n"), authority.MaxInviteArtifactBytes+1); err != nil {
+					return err
+				}
 			}
 		} else {
 			legacy, legacyErr := store.ReadHostedSecret(path)
-			if legacyErr != nil || legacy != secret {
+			if !allowReplacement && (legacyErr != nil || legacy != secret) {
 				return reason.New(reason.ReasonCredentialUnsafe, "existing bootstrap invite conflicts with hosted authority")
 			}
 			if err := handle.WriteOwnerPrivate(path, []byte(encoded+"\n"), authority.MaxInviteArtifactBytes+1); err != nil {
@@ -307,6 +395,18 @@ func parseHostedTime(value, name string, required bool) (time.Time, error) {
 	}
 	return parsed.UTC(), nil
 }
+func hostedBootstrapState(ctx context.Context, st *store.Store) (string, time.Time, error) {
+	var state string
+	var expiry int64
+	err := st.Read(ctx, func(tx *store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT state,expires_at FROM invites WHERE bootstrap=1 ORDER BY issued_at DESC LIMIT 1`).Scan(&state, &expiry)
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return state, time.UnixMicro(expiry).UTC(), nil
+}
+
 func hostedOpen(ctx context.Context, home string) (*store.Store, *store.HostedLock, error) {
 	lock, err := store.AcquireHostedLock(ctx, home)
 	if err != nil {
@@ -318,21 +418,6 @@ func hostedOpen(ctx context.Context, home string) (*store.Store, *store.HostedLo
 		return nil, nil, err
 	}
 	return st, lock, nil
-}
-func hostedResult(s *boundary, cmd *urfave.Command, op string, value any) error {
-	if s.jsonRequested(cmd) {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		var fields map[string]any
-		if err := json.Unmarshal(encoded, &fields); err != nil {
-			return err
-		}
-		return output.WriteSuccess(s.writer, op, fields)
-	}
-	_, err := fmt.Fprintf(s.writer, "%s completed\n", op)
-	return err
 }
 func hostedError(s *boundary, cmd *urfave.Command, err error) error { return s.handle(cmd, err) }
 
@@ -346,6 +431,10 @@ func finalizeHostedReady(lock *store.HostedLock) error {
 }
 
 func hostedResultPath(s *boundary, cmd *urfave.Command, op string, value any, path string) error {
+	return hostedResultPathStatus(s, cmd, op, value, path, "")
+}
+
+func hostedResultPathStatus(s *boundary, cmd *urfave.Command, op string, value any, path, status string) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -355,10 +444,17 @@ func hostedResultPath(s *boundary, cmd *urfave.Command, op string, value any, pa
 		return err
 	}
 	fields["bootstrapInviteFile"] = path
+	if status != "" {
+		fields["bootstrapStatus"] = status
+	}
 	if s.jsonRequested(cmd) {
 		return output.WriteSuccess(s.writer, op, fields)
 	}
-	_, err = fmt.Fprintf(s.writer, "%s completed; bootstrap invite file %s\n", op, path)
+	if status == "" {
+		_, err = fmt.Fprintf(s.writer, "%s completed; bootstrap invite file %s\n", op, path)
+		return err
+	}
+	_, err = fmt.Fprintf(s.writer, "%s completed; bootstrap invite file %s (bootstrap %s)\n", op, path, status)
 	return err
 }
 
@@ -399,14 +495,16 @@ func hostedGuidedResult(s *boundary, cmd *urfave.Command, bootstrap lease.Bootst
 	return err
 }
 
-func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
-	if !cmd.Bool("guided") {
-		for _, name := range []string{"listen", "endpoint", "transport", "admitted-prefix", "tls-cert", "tls-key", "confirm-non-loopback", "acknowledge-cleartext-credentials"} {
-			if cmd.IsSet(name) {
-				return hostedError(s, cmd, reason.Invalid("--"+name+" requires --guided"))
-			}
+func hostedSetupOverrideSet(cmd *urfave.Command) bool {
+	for _, name := range []string{"listen", "endpoint", "transport", "admitted-prefix", "tls-cert", "tls-key", "confirm-non-loopback", "acknowledge-cleartext-credentials"} {
+		if cmd.IsSet(name) {
+			return true
 		}
 	}
+	return false
+}
+
+func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	configPath, err := serverConfigPath(cmd)
 	if err != nil {
 		return hostedError(s, cmd, err)
@@ -422,6 +520,9 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	guided, err := prepareGuidedSetup(s.errWriter, cmd, configPath, invitePath)
 	if err != nil {
 		return hostedError(s, cmd, err)
+	}
+	if guided == nil && hostedSetupOverrideSet(cmd) {
+		return hostedError(s, cmd, reason.Invalid("server configuration already exists at "+configPath+"; setup overrides apply only during initial server init"))
 	}
 	guidedCommitted := false
 	defer func() {
@@ -454,6 +555,13 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		}
 		return hostedError(s, cmd, err)
 	}
+	artifactSetup := guided
+	if artifactSetup == nil {
+		artifactSetup, err = hostedArtifactSetup(config)
+		if err != nil {
+			return hostedError(s, cmd, err)
+		}
+	}
 	home, err := filepath.Abs(filepath.Clean(config.Home))
 	if err != nil {
 		return hostedError(s, cmd, err)
@@ -464,7 +572,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 			return hostedError(s, cmd, resolveErr)
 		}
 		if resolved != home {
-			return hostedError(s, cmd, reason.Invalid("--home must match the server configuration home"))
+			return hostedError(s, cmd, reason.Invalid(fmt.Sprintf("server configuration %s names home %s, but --home resolves to %s", configPath, home, resolved)))
 		}
 	}
 	if err = store.ValidateHostedHome(home); err != nil {
@@ -492,6 +600,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	}
 	guidedCommitted = true
 	allowArtifact := false
+	bootstrapStatus := "created"
 	if resuming {
 		if err := validateHostedInitContents(home, invitePath); err != nil {
 			return hostedError(s, cmd, err)
@@ -529,6 +638,28 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		return hostedError(s, cmd, err)
 	}
 	defer lock.Close()
+	if resuming && allowArtifact {
+		state, expiry, stateErr := hostedBootstrapState(ctx, st)
+		if stateErr != nil {
+			_ = st.Close()
+			return hostedError(s, cmd, stateErr)
+		}
+		switch state {
+		case "used", "revoked":
+			_ = st.Close()
+			return hostedError(s, cmd, reason.Invalid(fmt.Sprintf("bootstrap invite was %s; issue a new one with worklease server bootstrap-reissue --server-config %s --bootstrap-invite-file %s", state, shellQuote(configPath), shellQuote(invitePath))))
+		case "active":
+			bootstrapStatus = "active"
+			if !expiry.After(time.Now().UTC()) {
+				bootstrapStatus = "reissued"
+				secret, err = lease.GenerateInviteCode()
+				if err != nil {
+					_ = st.Close()
+					return hostedError(s, cmd, err)
+				}
+			}
+		}
+	}
 	result, err := lease.New(st, nil, nil, lease.Defaults{}).HostedInitialize(ctx, secret)
 	if err != nil {
 		_ = st.Close()
@@ -546,18 +677,6 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	artifactSetup := guided
-	if artifactSetup == nil && config.AdvertisedEndpoint != "" && config.TLSCert != "" {
-		endpoint, parseErr := url.Parse(config.AdvertisedEndpoint)
-		if parseErr != nil {
-			return hostedError(s, cmd, reason.New(reason.ReasonConfigInvalid, "advertised endpoint is invalid"))
-		}
-		fingerprint, _, _, inspectErr := inspectGuidedCertificate(config.TLSCert, config.TLSKey, endpoint.Hostname())
-		if inspectErr != nil {
-			return hostedError(s, cmd, inspectErr)
-		}
-		artifactSetup = &guidedSetupResult{Endpoint: config.AdvertisedEndpoint, Fingerprint: fingerprint}
-	}
 	if err := writeHostedInviteArtifact(invitePath, result, artifactSetup, secret, config.AdvertisedEndpoint, config.Listen, config.AllowInsecureHTTP); err != nil {
 		return hostedError(s, cmd, err)
 	}
@@ -570,7 +689,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err := completeRecoveredGuidedSetup(configPath, home); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResultPath(s, cmd, "server-init", result, invitePath)
+	return hostedResultPathStatus(s, cmd, "server-init", result, invitePath, bootstrapStatus)
 }
 
 func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error {
@@ -640,15 +759,19 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 }
 
 func hostedReissue(s *boundary, ctx context.Context, cmd *urfave.Command) error {
-	home, err := hostedHome(cmd)
+	home, configPath, err := resolveHostedHome(cmd)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	path, err := requiredHostedFile(cmd, "bootstrap-invite-file")
+	path := strings.TrimSpace(cmd.String("bootstrap-invite-file"))
+	if path == "" {
+		path = filepath.Join(filepath.Dir(configPath), "bootstrap.invite")
+	}
+	path, err = filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	secret, err := stageHostedSecret(path)
+	secret, err := stageHostedReissueSecret(path)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
@@ -669,13 +792,41 @@ func hostedReissue(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
+	var setup *guidedSetupResult
+	if _, statErr := os.Lstat(configPath); statErr == nil {
+		cfg, loadErr := workleaseserver.LoadConfig(configPath)
+		if loadErr != nil {
+			return hostedError(s, cmd, loadErr)
+		}
+		setup, loadErr = hostedArtifactSetup(cfg)
+		if loadErr != nil {
+			return hostedError(s, cmd, loadErr)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return hostedError(s, cmd, statErr)
+	}
+	if setup != nil {
+		if err := writeHostedInviteArtifact(path, result, setup, secret, "", "", false, true); err != nil {
+			return hostedError(s, cmd, err)
+		}
+	} else {
+		if err := store.WriteHostedSecret(path, secret); err != nil {
+			return hostedError(s, cmd, err)
+		}
+		if err := handle.RemoveOwnerPrivate(path + ".legacy-secret"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return hostedError(s, cmd, err)
+		}
+	}
 	return hostedResultPath(s, cmd, "server-bootstrap-reissue", result, path)
 }
 
 func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
-	home, err := hostedHome(cmd)
+	home, _, err := resolveHostedHome(cmd)
 	if err != nil {
 		return hostedError(s, cmd, err)
+	}
+	if !cmd.Bool("confirm-retire") {
+		return hostedError(s, cmd, reason.Invalid(fmt.Sprintf("retirement is destructive; no changes made to resolved home %s; rerun with --confirm-retire", home)))
 	}
 	lock, err := store.AcquireHostedLock(ctx, home)
 	if err != nil {
@@ -737,5 +888,10 @@ func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if err := lock.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResult(s, cmd, "server-retire", map[string]any{"exported": cmd.Bool("force"), "unresolved": status.Unresolved})
+	fields := map[string]any{"home": home, "exported": cmd.Bool("force"), "unresolved": status.Unresolved}
+	if s.jsonRequested(cmd) {
+		return output.WriteSuccess(s.writer, "server-retire", fields)
+	}
+	_, err = fmt.Fprintf(s.writer, "server-retire completed; retired home %s\n", home)
+	return err
 }

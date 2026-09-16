@@ -3,6 +3,7 @@ package lease
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -51,11 +52,20 @@ func (s *Service) HostedInitialize(ctx context.Context, secret string) (Bootstra
 			if err := tx.QueryRowContext(ctx, `SELECT invite_id,restore_id,invite_hash,expires_at FROM invites WHERE bootstrap=1 AND state='active' LIMIT 1`).Scan(&existingID, &existingRestore, &existingHash, &expires); err != nil {
 				return err
 			}
-			if existingHash != HashSecret(secret) {
-				return reason.Invalid("staged bootstrap secret differs from the recorded grant")
+			if time.UnixMicro(expires).Before(now) || time.UnixMicro(expires).Equal(now) {
+				// An unredeemed expired bootstrap is safe to replace in place:
+				// it has never authenticated an installation and the owner file
+				// is rewritten only after this transaction commits.
+				if _, err := tx.ExecContext(ctx, `UPDATE invites SET state='revoked',revoked_at=? WHERE invite_id=? AND state='active'`, now.UnixMicro(), existingID); err != nil {
+					return err
+				}
+			} else {
+				if existingHash != HashSecret(secret) {
+					return reason.Invalid("staged bootstrap secret differs from the recorded grant")
+				}
+				result = BootstrapResult{InviteID: existingID, RestoreID: existingRestore, ExpiresAt: time.UnixMicro(expires).UTC()}
+				return nil
 			}
-			result = BootstrapResult{InviteID: existingID, RestoreID: existingRestore, ExpiresAt: time.UnixMicro(expires).UTC()}
-			return nil
 		}
 		var restore string
 		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='restore_id'`).Scan(&restore); err != nil {
@@ -141,21 +151,32 @@ func (s *Service) HostedBootstrapReissue(ctx context.Context, secret string) (Bo
 	var result BootstrapResult
 	now := s.clock.Now().UTC().Truncate(time.Microsecond)
 	err := s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
-		var old string
+		var restore string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='restore_id'`).Scan(&restore); err != nil {
+			return err
+		}
+		var old sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT bootstrap_invite_id FROM recovery_state WHERE singleton=1 AND bootstrap_ready=1`).Scan(&old); err != nil {
 			return reason.New(reason.ReasonInviteInvalid, "bootstrap invite is unavailable")
 		}
-		var existingHash, restore string
-		var existingExpiry int64
-		if err := tx.QueryRowContext(ctx, `SELECT invite_hash,restore_id,expires_at FROM invites WHERE invite_id=? AND state='active'`, old).Scan(&existingHash, &restore, &existingExpiry); err != nil {
-			return err
-		}
-		if existingHash == HashSecret(secret) {
-			result = BootstrapResult{InviteID: old, RestoreID: restore, ExpiresAt: time.UnixMicro(existingExpiry).UTC()}
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE invites SET state='revoked',revoked_at=? WHERE invite_id=? AND state='active'`, now.UnixMicro(), old); err != nil {
-			return err
+		if old.Valid && old.String != "" {
+			var existingHash, existingRestore, state string
+			var existingExpiry int64
+			err := tx.QueryRowContext(ctx, `SELECT invite_hash,restore_id,expires_at,state FROM invites WHERE invite_id=?`, old.String).Scan(&existingHash, &existingRestore, &existingExpiry, &state)
+			if err == nil {
+				restore = existingRestore
+				if state == "active" && existingHash == HashSecret(secret) {
+					result = BootstrapResult{InviteID: old.String, RestoreID: restore, ExpiresAt: time.UnixMicro(existingExpiry).UTC()}
+					return nil
+				}
+				if state == "active" {
+					if _, err := tx.ExecContext(ctx, `UPDATE invites SET state='revoked',revoked_at=? WHERE invite_id=? AND state='active'`, now.UnixMicro(), old.String); err != nil {
+						return err
+					}
+				}
+			} else if err != sql.ErrNoRows {
+				return err
+			}
 		}
 		var err error
 		result, err = composeOfflineBootstrap(ctx, tx, now, restore, secret)

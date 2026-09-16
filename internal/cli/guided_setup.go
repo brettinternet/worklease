@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -29,13 +28,9 @@ import (
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
-	"golang.org/x/term"
 )
 
 const guidedCertificateValidity = 365 * 24 * time.Hour
-
-var guidedSetupTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-var guidedSetupInput io.Reader = os.Stdin
 
 type guidedSetupResult struct {
 	ConfigPath      string
@@ -58,21 +53,12 @@ type guidedSetupOptions struct {
 }
 
 func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, invitePath string) (*guidedSetupResult, error) {
-	if !cmd.Bool("guided") {
+	// --guided is retained as a compatibility alias. A missing configuration
+	// always uses the same setup ladder, whether or not the alias is present.
+	if _, err := os.Lstat(configPath); err == nil {
 		return nil, nil
-	}
-	journalExists := false
-	if _, err := os.Lstat(configPath + ".guided-incomplete"); err == nil {
-		journalExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
-	}
-	if !journalExists {
-		if _, err := os.Lstat(configPath); err == nil {
-			return nil, reason.Invalid("guided setup refuses to overwrite --server-config; choose a new path")
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
 	}
 
 	opts := guidedSetupOptions{
@@ -85,36 +71,20 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 		confirmLAN:      cmd.Bool("confirm-non-loopback"),
 		acknowledgeHTTP: cmd.Bool("acknowledge-cleartext-credentials"),
 	}
-	missing := missingGuidedFlags(opts)
-	interactive := guidedSetupTerminal()
-	if len(missing) > 0 && !interactive {
-		return nil, reason.Invalid("guided setup requires " + strings.Join(missing, ", ") + " when stdin is not a terminal")
+	if opts.listen == "" {
+		opts.listen = "127.0.0.1:8443"
 	}
-	var reader *bufio.Reader
-	if interactive {
-		reader = bufio.NewReader(guidedSetupInput)
+	if opts.transport == "" {
+		opts.transport = "tls"
 	}
-	if len(missing) > 0 {
-		var err error
-		if opts.listen == "" {
-			opts.listen, err = guidedPrompt(reader, errWriter, "Listen address", "127.0.0.1:8443")
-		}
-		if err == nil && opts.endpoint == "" {
-			opts.endpoint, err = guidedPrompt(reader, errWriter, "Client-facing endpoint", defaultEndpoint(opts.listen))
-		}
-		if err == nil && opts.transport == "" {
-			opts.transport, err = guidedPrompt(reader, errWriter, "Transport (tls/http)", "tls")
-			opts.transport = strings.ToLower(opts.transport)
-		}
-		if err == nil && len(opts.prefixes) == 0 {
-			var value string
-			value, err = guidedPrompt(reader, errWriter, "Admitted prefixes (comma-separated)", "task:,coordination:")
-			opts.prefixes = cleanPrefixes(strings.Split(value, ","))
-		}
-		if err != nil {
-			return nil, err
-		}
+	if opts.endpoint == "" {
+		opts.endpoint = defaultEndpointForTransport(opts.listen, opts.transport)
 	}
+	if len(opts.prefixes) == 0 {
+		opts.prefixes = []string{"coordination:"}
+	}
+	// Defaults are resolved before validation for both the historical alias and
+	// its canonical zero-flag form. Setup never prompts or reads stdin.
 	endpointURL, endpointHost, err := validateGuidedChoices(opts)
 	if err != nil {
 		return nil, err
@@ -124,28 +94,10 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 		return nil, err
 	}
 	if !loopback && !opts.confirmLAN {
-		if !interactive {
-			return nil, reason.Invalid("non-loopback --listen requires --confirm-non-loopback")
-		}
-		ok, confirmErr := guidedConfirm(reader, errWriter, "Expose the authority on a non-loopback listener?")
-		if confirmErr != nil {
-			return nil, confirmErr
-		}
-		if !ok {
-			return nil, reason.Invalid("guided setup cancelled before creating files")
-		}
+		return nil, reason.Invalid("non-loopback --listen requires --confirm-non-loopback")
 	}
 	if opts.transport == "http" && !opts.acknowledgeHTTP {
-		if !interactive {
-			return nil, reason.Invalid("cleartext --transport http requires --acknowledge-cleartext-credentials")
-		}
-		ok, confirmErr := guidedConfirm(reader, errWriter, "Acknowledge that cleartext HTTP exposes bearer credentials?")
-		if confirmErr != nil {
-			return nil, confirmErr
-		}
-		if !ok {
-			return nil, reason.Invalid("guided setup cancelled before creating files")
-		}
+		return nil, reason.Invalid("cleartext --transport http requires --acknowledge-cleartext-credentials")
 	}
 
 	result := &guidedSetupResult{ConfigPath: configPath, Endpoint: endpointURL.String()}
@@ -199,7 +151,7 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 		return nil, err
 	}
 	if entries, readErr := os.ReadDir(home); readErr == nil && len(entries) > 0 {
-		return nil, reason.Invalid("guided setup requires an empty server home; choose a fresh XDG_STATE_HOME")
+		return nil, reason.Invalid(fmt.Sprintf("server configuration %s does not match non-empty server home %s; use the configuration that initialized this home or choose a fresh XDG_STATE_HOME", configPath, home))
 	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return nil, reason.Invalid("guided setup cannot inspect the server home; choose a readable owner-private XDG_STATE_HOME")
 	}
@@ -242,23 +194,6 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 	return result, nil
 }
 
-func missingGuidedFlags(opts guidedSetupOptions) []string {
-	var missing []string
-	if opts.listen == "" {
-		missing = append(missing, "--listen ADDRESS")
-	}
-	if opts.endpoint == "" {
-		missing = append(missing, "--endpoint URL")
-	}
-	if opts.transport == "" {
-		missing = append(missing, "--transport tls|http")
-	}
-	if len(opts.prefixes) == 0 {
-		missing = append(missing, "--admitted-prefix PREFIX")
-	}
-	return missing
-}
-
 func cleanPrefixes(values []string) []string {
 	var out []string
 	for _, value := range values {
@@ -270,50 +205,16 @@ func cleanPrefixes(values []string) []string {
 	return out
 }
 
-func guidedPrompt(reader *bufio.Reader, writer io.Writer, label, fallback string) (string, error) {
-	if fallback != "" {
-		fmt.Fprintf(writer, "%s [%s]: ", label, fallback)
-	} else {
-		fmt.Fprintf(writer, "%s: ", label)
-	}
-	line, err := reader.ReadString('\n')
-	if errors.Is(err, io.EOF) && len(line) == 0 {
-		return "", reason.Invalid("guided setup cancelled before creating files")
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", reason.Invalid("guided setup input could not be read")
-	}
-	value := strings.TrimSpace(line)
-	if strings.EqualFold(value, "cancel") {
-		return "", reason.Invalid("guided setup cancelled before creating files")
-	}
-	if value == "" {
-		value = fallback
-	}
-	return value, nil
-}
-
-func guidedConfirm(reader *bufio.Reader, writer io.Writer, prompt string) (bool, error) {
-	value, err := guidedPrompt(reader, writer, prompt+" (yes/no)", "no")
-	if err != nil {
-		return false, err
-	}
-	switch strings.ToLower(value) {
-	case "yes", "y":
-		return true, nil
-	case "no", "n":
-		return false, nil
-	default:
-		return false, reason.Invalid("confirmation must be yes or no")
-	}
-}
-
-func defaultEndpoint(listen string) string {
+func defaultEndpointForTransport(listen, transport string) string {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
 		return ""
 	}
-	return "https://" + net.JoinHostPort(host, port)
+	scheme := "https"
+	if strings.EqualFold(strings.TrimSpace(transport), "http") {
+		scheme = "http"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 func validateGuidedChoices(opts guidedSetupOptions) (*url.URL, string, error) {
@@ -338,6 +239,9 @@ func validateGuidedChoices(opts guidedSetupOptions) (*url.URL, string, error) {
 	}
 	if parsed.Hostname() == "" {
 		return nil, "", reason.Invalid("--endpoint must include a hostname or IP address")
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsUnspecified() {
+		return nil, "", reason.Invalid("--endpoint must not use a wildcard address; provide a client-facing hostname or IP")
 	}
 	if endpointPort := parsed.Port(); endpointPort != "" {
 		port, portErr := strconv.Atoi(endpointPort)

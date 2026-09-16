@@ -171,6 +171,15 @@ func TestHostedBootstrapReissuePreservesLifecycleState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.WriteAt(ctx, time.Now().UTC(), func(tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE invites SET state='used',used_at=?,used_by_installation_id=? WHERE bootstrap=1 AND state='active'`, time.Now().UTC().UnixMicro(), strings.Repeat("9", 32))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.HostedBootstrapReissue(ctx, strings.Repeat("f", 64)); err != nil {
+		t.Fatalf("reissue after bootstrap redemption: %v", err)
+	}
 }
 
 func TestHostedRetirementInventoryRedactsPrivateFields(t *testing.T) {

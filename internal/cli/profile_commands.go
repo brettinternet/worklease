@@ -27,9 +27,11 @@ func profileCommands(s *boundary) []*urfave.Command {
 	add := leaf("add", "add a trusted remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.StringFlag{Name: "certificate-sha256", Usage: "expected DER leaf certificate SHA-256 `HEX`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP to the remote authority"}}, profileAddAction(s))
 	list := leaf("list", "list trusted remote authority profiles", nil, profileListAction(s))
 	list.Aliases = []string{"ls"}
-	show := leaf("show", "show one trusted remote authority profile", nil, profileShowAction(s))
+	show := leaf("show", "show one trusted remote authority profile (or the contextual profile)", nil, profileShowAction(s))
+	show.UsageText = "worklease profile show [NAME]"
+	def := leaf("default", "select or show the default remote authority profile", nil, profileDefaultAction(s))
+	def.UsageText = "worklease profile default [NAME]"
 	remove := leaf("remove", "remove one trusted remote authority profile", nil, profileRemoveAction(s))
-	def := leaf("default", "select the default remote authority profile", nil, profileDefaultAction(s))
 	bind := leaf("bind", "bind this checkout to a remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
 	unbind := leaf("unbind", "remove this checkout's remote authority binding", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
 	profile := &urfave.Command{Name: "profile", Usage: "manage trusted remote authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>", Description: "Manage owner-private remote authority profiles and checkout bindings.\n\nExamples:\n  worklease profile list", Commands: []*urfave.Command{add, list, show, remove, def, bind, unbind}}
@@ -124,13 +126,17 @@ func profileListAction(s *boundary) func(context.Context, *urfave.Command) error
 }
 func profileShowAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error {
-		name, err := profileNameArg(cmd)
-		if err != nil {
-			return s.handle(cmd, err)
-		}
+		name := strings.TrimSpace(cmd.Args().First())
 		profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
 		if err != nil {
 			return s.handle(cmd, err)
+		}
+		if name == "" {
+			selected, selectErr := profileSelection(cmd)
+			if selectErr != nil || selected.Profile == nil {
+				return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "profile name is required; pass NAME or select a contextual/default profile"))
+			}
+			name = selected.Name
 		}
 		p, ok := profiles[name]
 		if !ok {
@@ -165,14 +171,17 @@ func profileRemoveAction(s *boundary) func(context.Context, *urfave.Command) err
 }
 func profileDefaultAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error {
-		name, err := profileNameArg(cmd)
+		paths := config.UserProfilePaths(os.Getenv)
+		profiles, current, err := config.LoadProfiles(paths)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		paths := config.UserProfilePaths(os.Getenv)
-		profiles, _, err := config.LoadProfiles(paths)
-		if err != nil {
-			return s.handle(cmd, err)
+		name := strings.TrimSpace(cmd.Args().First())
+		if name == "" {
+			if current == "" {
+				return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "no default profile is selected; pass NAME to select one"))
+			}
+			return writeProfileResult(s, cmd, "profile-default", current)
 		}
 		if _, ok := profiles[name]; !ok {
 			return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "profile is not defined"))

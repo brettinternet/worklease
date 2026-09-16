@@ -1,6 +1,6 @@
 # Remote invite artifacts
 
-`worklease server init --guided` and `worklease invite issue` create a compact,
+`worklease server init` and `worklease invite issue` create a compact,
 owner-private, single-line invite artifact. Transfer that whole file through an
 authentic confidential channel (for example, a password manager or an
 authenticated encrypted copy). The token encoding is bounded and versioned,

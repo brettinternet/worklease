@@ -209,8 +209,8 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "setup instructions", example: "worklease setup instructions", flags: []string{}},
 		{path: "server init", example: "worklease server init", flags: []string{"server-config", "bootstrap-invite-file", "guided", "listen", "endpoint", "transport", "admitted-prefix", "tls-cert", "tls-key", "confirm-non-loopback", "acknowledge-cleartext-credentials"}},
 		{path: "server restore", example: "worklease server restore --home DIR --from FILE", flags: []string{"from", "selected-cutoff", "loss-interval-start", "loss-interval-end", "cutoff-unknown", "bootstrap-invite-file"}},
-		{path: "server bootstrap-reissue", example: "worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE", flags: []string{"bootstrap-invite-file"}},
-		{path: "server retire", example: "worklease server retire --home DIR", flags: []string{"force", "unresolved-export"}},
+		{path: "server bootstrap-reissue", example: "worklease server bootstrap-reissue --home DIR --bootstrap-invite-file FILE", flags: []string{"server-config", "bootstrap-invite-file"}},
+		{path: "server retire", example: "worklease server retire --home DIR --confirm-retire", flags: []string{"server-config", "confirm-retire", "force", "unresolved-export"}},
 		{path: "serve", example: "worklease serve", flags: []string{"server-config", "allow-insecure-http"}},
 		{path: "mcp", example: "worklease mcp", flags: []string{}},
 	}
