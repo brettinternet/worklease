@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-16 17:51'
-updated_date: '2026-09-16 20:34'
+updated_date: '2026-09-16 21:38'
 labels: []
 dependencies: []
 references:
@@ -65,6 +65,8 @@ No dependencies. This is a small output-only fix that can land before TASK-114/1
 <!-- SECTION:NOTES:BEGIN -->
 Implemented key-aware public redaction in writeTextError and added renderer-level regression coverage for text/JSON path preservation, safe-detail allowlisting, secret and neutral token redaction, nested private-payload filtering, escaping, and colored/uncolored text.
 Evidence: before the fix, the focused internal/output test failed because pendingPath rendered as ctx-[REDACTED].json; after the fix it passed. mise run lint, mise run format-check, and mise run typecheck passed. mise run test initially exposed the developer default remote profile; rerunning with isolated HOME and the existing mise installation passed all packages. Staged mise run hooks passed, and the commit hook passed the full suite. Implementation commit: 1c1dd61.
+
+Post-completion review (commit ee88ba8) re-verified this output-only fix and found no defect: text rendering preserves only the pendingPath recovery digest, while recoveryHint, holder, claimId, and resource values containing bare 64-hex strings remain redacted, and nested private-payload filtering and isPublicHexKey policy are unchanged.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

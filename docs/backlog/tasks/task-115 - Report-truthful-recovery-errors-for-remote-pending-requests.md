@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-16 17:51'
-updated_date: '2026-09-16 20:06'
+updated_date: '2026-09-16 21:38'
 labels: []
 dependencies: []
 references:
@@ -85,6 +85,8 @@ Independently deliverable from TASK-114 (epoch replacement) and TASK-116 (text p
 Implemented truthful pre-dispatch staging classification, pending-acquire lifecycle refusal and exact acquire replay, typed-result uncertainty preservation, bounded recovery hints, docs, and focused authority/CLI regressions. Focused checks: go test ./internal/authority; isolated-home go test ./internal/cli.
 
 Validation after review fixes: mise run lint, mise run format-check, mise run test, mise run typecheck, and staged mise run hooks all passed with an isolated HOME to avoid the operator default remote profile. Regression coverage exercises zero-dispatch staging failures and collisions, retained same-request uncertainty, definitive rejection cleanup, uncertain transport preservation, all four pending-acquire lifecycle refusals, redacted JSON details, and successful exact acquire replay. Independent review found five recovery-state/path issues; all were corrected before final gates. Implementation commit f2949c4 was fast-forwarded to main.
+
+Post-completion review (commit ee88ba8) found and fixed three defects in this task's area: (1) stagingFailure preserved any registered reason, so a blocked or hostile pending-store root leaked handle-unsafe instead of storage-failure; this broke the remote acceptance suite (worklease-remote-smoke group 2 AC6.5), which passed at 610fd8c and failed at d19b134. Classification now preserves only request-level causes and keeps every storage-layer fault as storage-failure. (2) A mutation whose response failed authority or restore identity validation returned a bare definitive error, so mutationFailure reported commitState not-committed even though the request had reached a server and may have committed; HTTPClient.Call now marks those post-dispatch identity failures unknown. (3) The pending-acquire replay path ignored supplied acquisition inputs, so acquire --handle H --resource NEW silently replayed a retained request for a different resource; replayPendingRemoteAcquire now requires a supplied selection to match the retained request and otherwise reports recovery-required. New regression coverage failing before and passing after: internal/authority/commit_truth_test.go TestPostDispatchIdentityMismatchRetainsUncertainty and TestStagingFailureReportsStorageFaultsAsStorageFailure; internal/cli/remote_commands_test.go TestPendingRemoteAcquireRefusesChangedAndInvalidAcquisitionInputs. Docs updated in docs/remote-claim-authority.md. Gates: go vet, staticcheck, gofmt, go test ./..., go test -race ./..., doc-test, smoke, remote-smoke, and scripts/test-e2e.sh all passed, plus staged lefthook pre-commit under an isolated HOME.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

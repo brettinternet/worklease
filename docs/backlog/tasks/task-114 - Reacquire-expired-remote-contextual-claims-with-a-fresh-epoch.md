@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-16 17:50'
-updated_date: '2026-09-16 18:59'
+updated_date: '2026-09-16 21:38'
 labels: []
 dependencies: []
 references:
@@ -85,6 +85,8 @@ No prerequisite task. TASK-115 owns recovery error classification/hints and TASK
 Implemented remote ready-handle status validation, lock-bound fresh-epoch staging, exact pending acquire replay, grant activation metadata refresh, regression coverage for expired reacquire/current inputs, stale local expiry with remote activity, lost-response replay, and concurrent handle changes. Focused checks: go test ./internal/authority ./internal/lease; go test ./internal/cli -run 'TestRemoteCLI'.
 
 Review found and fixed three boundary defects: authoritative inactivity can replace a locally future-dated ready handle through exact locked revalidation; nested status claim identity is validated; mismatched grant metadata leaves the new request pending. Independent verifier passed all criteria. Required gates passed: mise run lint, format-check, test, typecheck, and hooks under an isolated HOME using the existing mise installation. Post-merge focused packages also passed.
+
+Post-completion review (commit ee88ba8) found and fixed three defects in this task's area: (1) a validated grant whose local activation or cleanup failed returned a raw error, rendering as reason internal with the default commitState not-committed even though the receipt reported the acquire committed; RemoteAuthority.Acquire and Transfer now map post-success activation failures to unknown-outcome, matching ReplayHandle. (2) activateGrantHandle compared grant resources with slices.Equal, so an authority that canonicalizes resource order would permanently wedge a committed pending acquire because replay repeated the same comparison; it now compares membership while still rejecting additions, removals, and substitutions. (3) The explicit-handle replay path skipped the RecoveryRequest guard present in remoteAcquire, so a handle carrying both a pending acquire and an unresolved recovery record dispatched anyway; replayPendingRemoteAcquire now rejects it before any transport call. New regression coverage failing before and passing after: internal/authority/commit_truth_test.go TestAcquireActivationFailureIsUncertainNotDefinitive and TestAcquireActivationAcceptsCanonicalizedResourceOrder; internal/cli/remote_commands_test.go TestPendingRemoteAcquireWithRecoveryRecordRefusesReplay. Gates: go vet, staticcheck, gofmt, go test ./..., go test -race ./..., doc-test, smoke, remote-smoke, and scripts/test-e2e.sh all passed, plus staged lefthook pre-commit under an isolated HOME.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
