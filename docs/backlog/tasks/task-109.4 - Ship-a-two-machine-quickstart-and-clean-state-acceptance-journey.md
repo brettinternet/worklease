@@ -1,11 +1,11 @@
 ---
 id: TASK-109.4
 title: Ship a two-machine quickstart and clean-state acceptance journey
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-16 02:15'
+updated_date: '2026-09-16 02:16'
 labels:
   - remote-authority
   - ergonomics
@@ -39,13 +39,13 @@ The onboarding experience is only complete when a new user can follow the shorte
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The primary quickstart uses Worklease commands and secure artifact transfer to initialize/start a server, enroll the first administrator from its bootstrap artifact, issue a write invite, enroll a separate client, and observe that client claim from the administrator; runtime secrets remain outside the checkout.
-- [ ] #2 The primary quickstart contains no raw HTTP request, protocol header, `--json` parsing, manual authority-ID handling, or hand-edited YAML.
-- [ ] #3 The quickstart clearly separates the default secure setup with a generated pinned certificate from an explicitly labeled temporary trusted-LAN cleartext test path.
-- [ ] #4 The README remote section, `docs/remote-claim-authority.md`, `docs/container.md`, and the regenerated `docs/remote-demo.tape` and GIF use the new journey.
-- [ ] #5 Extend the existing remote-smoke harness with isolated server/admin/client homes, generated pinned TLS, flag-driven guided init, serve readiness, secure artifact handoff, default-profile enrollment, doctor, cross-client claim visibility/contention, heartbeat, and release. A focused terminal test separately covers interactive setup/hidden input. Run the existing two-host VM harness to prove transport across hosts.
-- [ ] #6 Every command in the new primary and explicitly insecure onboarding journeys is exercised by doc-test or acceptance validation. Regenerate the demo only with disposable credentials and inspect tape/GIF for secret disclosure; unrelated advanced-document command coverage is not expanded by this task.
-- [ ] #7 Advanced profile management, bare-secret invites, and raw metadata diagnostics remain documented outside the primary happy path.
+- [x] #1 The primary quickstart uses Worklease commands and secure artifact transfer to initialize/start a server, enroll the first administrator from its bootstrap artifact, issue a write invite, enroll a separate client, and observe that client claim from the administrator; runtime secrets remain outside the checkout.
+- [x] #2 The primary quickstart contains no raw HTTP request, protocol header, `--json` parsing, manual authority-ID handling, or hand-edited YAML.
+- [x] #3 The quickstart clearly separates the default secure setup with a generated pinned certificate from an explicitly labeled temporary trusted-LAN cleartext test path.
+- [x] #4 The README remote section, `docs/remote-claim-authority.md`, `docs/container.md`, and the regenerated `docs/remote-demo.tape` and GIF use the new journey.
+- [x] #5 Extend the existing remote-smoke harness with isolated server/admin/client homes, generated pinned TLS, flag-driven guided init, serve readiness, secure artifact handoff, default-profile enrollment, doctor, cross-client claim visibility/contention, heartbeat, and release. A focused terminal test separately covers interactive setup/hidden input. Run the existing two-host VM harness to prove transport across hosts.
+- [x] #6 Every command in the new primary and explicitly insecure onboarding journeys is exercised by doc-test or acceptance validation. Regenerate the demo only with disposable credentials and inspect tape/GIF for secret disclosure; unrelated advanced-document command coverage is not expanded by this task.
+- [x] #7 Advanced profile management, bare-secret invites, and raw metadata diagnostics remain documented outside the primary happy path.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,3 +63,9 @@ Implemented the guided onboarding journey across README.md, docs/remote-claim-au
 
 Verification: mise run doc-test; mise run remote-smoke (dist/remote-acceptance/20260916T014135.904027000Z/report.json); mise run remote-smoke-vm (dist/remote-acceptance/vm-20260916T014649Z/report.json, retained owner-marked remote workspace); mise run lint; mise run format-check; mise run test; mise run typecheck. Regenerated docs/remote-demo.gif with disposable temporary credentials and inspected a rendered frame: it shows doctor, cross-client claim visibility, heartbeat, and release without invite or installation secrets. Independent verifier passed criteria 2-7 and identified missing client artifact-directory setup for criterion 1; added explicit owner-private directory creation on the administrator and client paths, then reran doc-test and all repository quality gates.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Delivered the guided remote onboarding journey in commit 3f1c4a8. The primary docs now use generated pinned TLS and self-contained invite artifacts without manual IDs, JSON parsing, or hand-edited YAML; advanced profile/bare-secret/metadata guidance remains separate. The local and two-host smoke harnesses prove guided setup, isolated admin/client state, artifact handoff, doctor, contention, visibility, heartbeat, release, and the existing recovery matrix. Verification passed: doc-test, remote-smoke, remote-smoke-vm, lint, format-check, test, typecheck, staged hooks, and independent acceptance verification after its one directory-setup finding was fixed. The regenerated GIF was inspected and contains no bearer secrets.
+<!-- SECTION:FINAL_SUMMARY:END -->
