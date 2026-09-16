@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-15 21:19'
-updated_date: '2026-09-16 02:26'
+updated_date: '2026-09-16 03:26'
 labels:
   - remote-authority
   - ergonomics
@@ -49,9 +49,7 @@ Scope is TASK-109.1 through TASK-109.4 in dependency order. This parent is an in
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Parent integration verification passed on main after all four subtasks completed. Executed: mise run doc-test; mise run remote-smoke (dist/remote-acceptance/20260916T021800.061820000Z/report.json); mise run remote-smoke-vm (dist/remote-acceptance/vm-20260916T021821Z/report.json); mise run lint; mise run format-check; mise run test; mise run typecheck. Independent verifier passed all six parent criteria with no findings and reran focused guided-setup, artifact-enrollment, pinned-TLS, and full repository checks.
-
-Integration record commit: e5e9a24 (Complete TASK-109 integration).
+Post-delivery review of the TASK-109 commit range found and fixed three defects (commit 5b2e290): (1) a fresh 'server init' could adopt a bootstrap secret staged beside the invite file by an unrelated or interrupted run, making a previously transferred bearer the new authority's admin; it is now refused before the home is marked, with guided preflight coverage, while same-authority resume still reuses its own staged secret; (2) definitively rejected remote mutations leaked durable pending records until the 256-record bound failed valid mutations locally; RemoteAuthority.Execute now finalizes definitive rejections and retains only uncertain outcomes; (3) guided setup did not sync parent directories after creating or clearing its journal, config, certificate, and key. Regression tests added in internal/cli and internal/authority; verified failing before each fix. Revalidated: mise run lint, format-check, test, typecheck, hooks, doc-test, remote-smoke, remote-smoke-vm.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
