@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -151,7 +152,14 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 		return nil, err
 	}
 	if entries, readErr := os.ReadDir(home); readErr == nil && len(entries) > 0 {
-		return nil, reason.Invalid(fmt.Sprintf("server configuration %s does not match non-empty server home %s; use the configuration that initialized this home or choose a fresh XDG_STATE_HOME", configPath, home))
+		reusable, reuseErr := reusableGuidedServerHome(home, entries)
+		if reuseErr != nil {
+			return nil, reuseErr
+		}
+		if !reusable {
+			reset := "worklease server reset --home " + shellQuote(home) + " --confirm-reset"
+			return nil, reason.Invalid(fmt.Sprintf("server configuration %s does not match non-empty server home %s; use the configuration that initialized this home, run %s, or choose a fresh XDG_STATE_HOME", configPath, home, reset))
+		}
 	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return nil, reason.Invalid("guided setup cannot inspect the server home; choose a readable owner-private XDG_STATE_HOME")
 	}
@@ -192,6 +200,27 @@ func prepareGuidedSetup(errWriter io.Writer, cmd *urfave.Command, configPath, in
 	result.created = append(result.created, configPath)
 	keepLock = true
 	return result, nil
+}
+
+func reusableGuidedServerHome(home string, entries []os.DirEntry) (bool, error) {
+	allowed := map[string]bool{
+		store.HostedMarkerFileName: true,
+		store.HostedLockFileName:   true,
+		"handles":                  true,
+	}
+	for _, entry := range entries {
+		if !allowed[entry.Name()] || entry.Type()&os.ModeSymlink != 0 || entry.Name() == "handles" && !entry.IsDir() {
+			return false, nil
+		}
+	}
+	lock, err := store.AcquireHostedLock(context.Background(), home)
+	if err != nil {
+		return false, err
+	}
+	if err := lock.Close(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func cleanPrefixes(values []string) []string {

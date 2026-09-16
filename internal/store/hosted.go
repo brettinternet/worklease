@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,8 @@ const (
 	HostedLockFileName = "hosted.lock"
 	// HostedReadyFileName is created after bootstrap state is committed.
 	HostedReadyFileName = "hosted.ready"
+	// HostedResetFileName makes destructive reset cleanup restartable.
+	HostedResetFileName = "hosted.reset"
 
 	hostedMarkerContents = "worklease-hosted-v1\n"
 	hostedReadyContents  = "worklease-hosted-ready-v1\n"
@@ -287,6 +290,92 @@ func HostedReady(home string) (bool, error) {
 	return hostedReady(dir)
 }
 
+type HostedResetIntent struct {
+	Version              int    `json:"version"`
+	BootstrapInvitePath  string `json:"bootstrapInvitePath"`
+	UnresolvedExportPath string `json:"unresolvedExportPath,omitempty"`
+}
+
+func WriteHostedResetIntent(lock *HostedLock, intent HostedResetIntent) error {
+	if intent.Version != 1 || !filepath.IsAbs(intent.BootstrapInvitePath) || intent.UnresolvedExportPath != "" && !filepath.IsAbs(intent.UnresolvedExportPath) {
+		return reason.Invalid("hosted reset intent is invalid")
+	}
+	dir, err := lock.directory()
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(intent)
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	fd, err := unix.Openat(int(dir.Fd()), HostedResetFileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return homeUnsafe(err)
+	}
+	file := os.NewFile(uintptr(fd), HostedResetFileName)
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = unix.Unlinkat(int(dir.Fd()), HostedResetFileName, 0)
+		}
+	}()
+	if _, err = file.Write(encoded); err != nil {
+		return homeUnsafe(err)
+	}
+	if err = file.Sync(); err != nil {
+		return homeUnsafe(err)
+	}
+	if err = unix.Fsync(int(dir.Fd())); err != nil {
+		return homeUnsafe(err)
+	}
+	keep = true
+	return nil
+}
+
+func ReadHostedResetIntent(lock *HostedLock) (HostedResetIntent, bool, error) {
+	var intent HostedResetIntent
+	dir, err := lock.directory()
+	if err != nil {
+		return intent, false, err
+	}
+	fd, err := unix.Openat(int(dir.Fd()), HostedResetFileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return intent, false, nil
+	}
+	if err != nil {
+		return intent, false, homeUnsafe(err)
+	}
+	file := os.NewFile(uintptr(fd), HostedResetFileName)
+	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || validateHostedFile(&stat, "reset intent") != nil {
+		return intent, false, homeUnsafe(errors.New("hosted reset intent is unsafe"))
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, 4097))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&intent); err != nil || intent.Version != 1 || !filepath.IsAbs(intent.BootstrapInvitePath) || intent.UnresolvedExportPath != "" && !filepath.IsAbs(intent.UnresolvedExportPath) {
+		return HostedResetIntent{}, false, homeUnsafe(errors.New("hosted reset intent is invalid"))
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return HostedResetIntent{}, false, homeUnsafe(errors.New("hosted reset intent is invalid"))
+	}
+	return intent, true, nil
+}
+
+func RemoveHostedResetIntent(lock *HostedLock) error {
+	dir, err := lock.directory()
+	if err != nil {
+		return err
+	}
+	if err := unix.Unlinkat(int(dir.Fd()), HostedResetFileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return homeUnsafe(err)
+	}
+	return unix.Fsync(int(dir.Fd()))
+}
+
 func hostedReady(dir *os.File) (bool, error) {
 	fd, err := unix.Openat(int(dir.Fd()), HostedReadyFileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if errors.Is(err, unix.ENOENT) {
@@ -413,22 +502,25 @@ func WriteHostedExport(path string, write func(io.Writer) error) error {
 		return homeUnsafe(err)
 	}
 	parent := filepath.Dir(resolved)
-	info, err := os.Stat(parent)
+	dir, _, err := secureHome(parent, true)
+	if err != nil || dir == nil {
+		return homeUnsafe(errors.New("export parent is not owner-private"))
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return homeUnsafe(errors.New("export parent is not owner-private"))
 	}
-	tmp := resolved + ".tmp-" + strconv.Itoa(os.Getpid())
-	fd, err := unix.Open(tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	name := filepath.Base(resolved)
+	tmpName := "." + name + ".tmp-" + strconv.Itoa(os.Getpid())
+	fd, err := unix.Openat(int(dir.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(tmp))
-	keep := false
+	file := os.NewFile(uintptr(fd), tmpName)
 	defer func() {
 		_ = file.Close()
-		if !keep {
-			_ = os.Remove(tmp)
-		}
+		_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
 	}()
 	if err = write(file); err != nil {
 		return err
@@ -439,19 +531,16 @@ func WriteHostedExport(path string, write func(io.Writer) error) error {
 	if err = file.Close(); err != nil {
 		return homeUnsafe(err)
 	}
-	if err = os.Rename(tmp, resolved); err != nil {
+	if err = unix.Linkat(int(dir.Fd()), tmpName, int(dir.Fd()), name, 0); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return reason.Invalid("retirement export already exists")
+		}
 		return homeUnsafe(err)
 	}
-	keep = true
-	dir, err := os.Open(parent)
-	if err != nil {
+	if err = unix.Unlinkat(int(dir.Fd()), tmpName, 0); err != nil {
 		return homeUnsafe(err)
 	}
-	defer dir.Close()
-	if err = dir.Sync(); err != nil {
-		return homeUnsafe(err)
-	}
-	return nil
+	return unix.Fsync(int(dir.Fd()))
 }
 
 // RemoveHostedFiles removes the known authority files after a safe retirement.
@@ -461,9 +550,10 @@ func RemoveHostedFiles(lock *HostedLock) error {
 	if err != nil {
 		return err
 	}
-	// Keep the marker so a retired directory cannot silently become a local
-	// authority after the lock is released.
-	for _, name := range []string{DatabaseFileName, DatabaseFileName + "-wal", DatabaseFileName + "-shm", HostedReadyFileName} {
+	// Clear readiness before database files so a crash can never leave a
+	// serviceable marker pointing at a missing or partial authority. Keep the
+	// hosted marker so the directory cannot silently become a local authority.
+	for _, name := range []string{HostedReadyFileName, DatabaseFileName, DatabaseFileName + "-wal", DatabaseFileName + "-shm"} {
 		if err := unix.Unlinkat(int(dir.Fd()), name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 			return homeUnsafe(err)
 		}

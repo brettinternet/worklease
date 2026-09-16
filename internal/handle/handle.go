@@ -1205,6 +1205,71 @@ func ListOwnerPrivateNames(path string) ([]string, error) {
 	return names, nil
 }
 
+// RemoveOwnerPrivateIfContent atomically quarantines an owner-private file,
+// then removes it only when its bounded contents match the caller's prior read.
+func RemoveOwnerPrivateIfContent(path string, expected []byte, max int64) error {
+	if int64(len(expected)) > max {
+		return newHandleError(reason.ReasonHandleMalformed, "private file is oversized")
+	}
+	parent, name, absolute, err := openParent(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return os.ErrNotExist
+		}
+		return newHandleError(reason.ReasonHandleUnsafe, "private path is unsafe")
+	}
+	defer parent.Close()
+	parentST, err := validateParentFD(parent)
+	if err != nil {
+		return err
+	}
+	if err = verifyParentPath(absolute, identity(&parentST)); err != nil {
+		return err
+	}
+	quarantine := "." + name + ".remove-" + randomName()
+	if err = unix.Renameat(int(parent.Fd()), name, int(parent.Fd()), quarantine); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return os.ErrNotExist
+		}
+		return newHandleError(reason.ReasonHandleUnsafe, "private file cannot be quarantined")
+	}
+	restore := true
+	defer func() {
+		if restore {
+			if unix.Linkat(int(parent.Fd()), quarantine, int(parent.Fd()), name, 0) == nil {
+				_ = unix.Unlinkat(int(parent.Fd()), quarantine, 0)
+			}
+		}
+	}()
+	fd, err := unix.Openat(int(parent.Fd()), quarantine, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
+	}
+	file := os.NewFile(uintptr(fd), quarantine)
+	leafST, err := statFD(file)
+	if err != nil || validateLeafStat(&leafST, true) != nil {
+		_ = file.Close()
+		return newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, max+1))
+	closeErr := file.Close()
+	if err != nil || closeErr != nil || int64(len(contents)) > max {
+		return newHandleError(reason.ReasonHandleMalformed, "private file cannot be read safely")
+	}
+	current, err := statAt(parent, quarantine)
+	if err != nil || validateLeafStat(&current, true) != nil || !sameIdentity(identity(&leafST), identity(&current)) || !bytes.Equal(contents, expected) {
+		return newHandleError(reason.ReasonHandleUnsafe, "private file changed before removal")
+	}
+	if err = unix.Unlinkat(int(parent.Fd()), quarantine, 0); err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "private file cannot be removed")
+	}
+	restore = false
+	if err = parent.Sync(); err != nil {
+		return newHandleError(reason.ReasonHandleUnsafe, "private file removal cannot be synchronized")
+	}
+	return verifyParentPath(absolute, identity(&parentST))
+}
+
 func RemoveOwnerPrivate(path string) error {
 	parent, name, absolute, err := openParent(path)
 	if err != nil {

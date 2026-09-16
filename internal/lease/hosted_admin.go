@@ -211,6 +211,16 @@ type RetirementStatus struct {
 	Unresolved   int
 }
 
+// HostedBootstrapSecretMatches reports whether a secret belongs to the
+// authority's current bootstrap invite, regardless of that invite's state.
+func (s *Service) HostedBootstrapSecretMatches(ctx context.Context, secret string) (bool, error) {
+	var count int
+	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT count(*) FROM recovery_state r JOIN invites i ON i.invite_id=r.bootstrap_invite_id WHERE r.singleton=1 AND r.bootstrap_ready=1 AND i.bootstrap=1 AND i.invite_hash=?`, HashSecret(secret)).Scan(&count)
+	})
+	return count == 1, err
+}
+
 func (s *Service) HostedRetirementStatus(ctx context.Context) (RetirementStatus, error) {
 	var out RetirementStatus
 	now := s.clock.Now().UTC().UnixMicro()

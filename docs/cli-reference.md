@@ -244,7 +244,7 @@ Cleartext additionally requires
 | Issue an invite with defaults | `invite issue` defaults to write/profile-label/15-minute expiry, writes an owner-private artifact, and prints its path plus exact enroll command without the bearer. |
 | Administer access | `installation list|revoke`, `claim revoke` |
 | Recover an authority | `server restore`, `recovery status|reopen` |
-| Run or retire a server | `server init|bootstrap-reissue|retire`, `serve` |
+| Run, reset, or retire a server | `server init|bootstrap-reissue|reset|retire`, `serve` |
 
 A selected profile applies to lifecycle, inspection, guarded operations, events,
 watches, and GC. Remote authorities accept portable resources only; `path:`,

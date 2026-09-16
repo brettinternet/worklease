@@ -316,6 +316,8 @@ worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 \
   --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
   --bootstrap-invite-file FILE [--cutoff-unknown]
 worklease server bootstrap-reissue [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE]
+worklease server reset [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE] \
+  [--confirm-reset] [--force --unresolved-export FILE]
 worklease server retire [--server-config FILE | --home DIR] [--confirm-retire] [--force --unresolved-export FILE]
 worklease serve [--server-config FILE] [--allow-insecure-http]
 ```
@@ -349,8 +351,9 @@ command. Fresh setup defaults the admitted prefix to `coordination:`. The legacy
 `--guided` flag is accepted only as a compatibility alias.
 
 `server init` stages the bootstrap secret before the authority transaction and
-writes a one-time admin invite. `bootstrap-reissue` replaces only that invite.
-`serve` resolves configuration in this order:
+writes a one-time admin invite. Enrolling it creates the role-neutral `remote`
+profile and reports the separate `admin` installation role. `bootstrap-reissue`
+replaces only that invite. `serve` resolves configuration in this order:
 
 1. `--server-config`
 2. `WORKLEASE_SERVER_CONFIG`
@@ -407,13 +410,21 @@ Exports, replicas, and backups cannot remove unknown state or substitute for
 full reopening evidence. Recovery import and a completed-history journal remain
 deferred.
 
-## Retirement and unsupported boundaries
+## Reset, retirement, and unsupported boundaries
 
-`server retire` refuses active claims or unresolved started operations. Forced
-retirement requires `--force --unresolved-export FILE`, writes a redacted export
-outside the hosted home, and records only safe active/unresolved metadata. It is
-not a recovery import and does not erase unresolved risk. Retirement is offline;
-there is no HTTP retirement route.
+`server reset` prepares a stopped authority for fresh initialization. It always
+refuses active claims. Unresolved operations require
+`--force --unresolved-export FILE`; the redacted export must be outside the
+hosted home. Reset removes the database readiness state and only a matching
+owner-private bootstrap artifact. It preserves the deployment configuration,
+TLS files, hosted marker, and stable lock. Running `server init` afterward
+creates a new authority ID and invalidates every old enrolled client.
+
+`server retire` refuses active claims or unresolved started operations unless
+forced. Forced retirement requires `--force --unresolved-export FILE`, writes a
+redacted export outside the hosted home, and records only safe active/unresolved
+metadata. It is not a recovery import and does not erase unresolved risk. Both
+commands are offline; there is no HTTP reset or retirement route.
 
 The experimental release explicitly does **not** support:
 

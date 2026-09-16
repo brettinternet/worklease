@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.6.1 - 2026-09-16
+
+### Added
+
+- `worklease server reset` safely prepares a stopped hosted authority for fresh initialization while preserving deployment configuration and TLS files.
+
+### Changed
+
+- Bootstrap enrollment now creates the role-neutral `remote` profile and reports its administrative installation role separately; existing `admin`-hint bootstrap artifacts upgrade in place.
+
+### Fixed
+
+- Missing server configuration now points to an exact reset command, and reset recovery handles interrupted cleanup without exposing a ready marker over missing authority state.
+- Retirement exports use pinned owner-private directories and no-replace publication, while reset binds bootstrap cleanup to the authority record and refuses stale staged secrets, active claims, unsafe aliases, and deployment-artifact collisions.
+
 ## 1.6.0 - 2026-09-16
 
 ### Added

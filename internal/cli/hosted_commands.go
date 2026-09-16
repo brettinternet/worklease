@@ -25,7 +25,10 @@ import (
 
 // beforeHostedReadyHook is test-only crash-boundary instrumentation after the
 // database grant commits but before the finalization marker is durable.
-var beforeHostedReadyHook func() error
+var (
+	beforeHostedReadyHook          func() error
+	beforeResetArtifactRemovalHook func() error
+)
 
 const acceptanceCrashBeforeHostedReady = "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY"
 
@@ -65,7 +68,13 @@ func serverCommands(s *boundary) *urfave.Command {
 		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, &urfave.BoolFlag{Name: "confirm-retire", Usage: "explicitly confirm destructive authority retirement"}, &urfave.BoolFlag{Name: "force", Usage: "allow destructive retirement after writing a redacted unresolved export"}, &urfave.StringFlag{Name: "unresolved-export", Usage: "external redacted recovery export `FILE`"}},
 	}
 	retire.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRetire(s, ctx, cmd) }
-	return &urfave.Command{Name: "server", Usage: "initialize and manage a server authority", UsageText: "worklease server <init|restore|bootstrap-reissue|retire>", Description: "Server-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease server init\n  worklease server restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease server retire --home DIR --confirm-retire", Commands: []*urfave.Command{initCommand, restore, reissue, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
+	reset := &urfave.Command{
+		Name: "reset", Usage: "reset a server authority", UsageText: "worklease server reset [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE] [--confirm-reset] [--force --unresolved-export FILE]",
+		Description: "Clear a stopped hosted authority so it can be initialized again. Reset always refuses active claims, requires an explicit export before discarding unresolved operations, removes only a matching bootstrap artifact, and preserves deployment configuration and TLS files. Without --confirm-reset it names the resolved home without mutating it.\n\nExamples:\n  worklease server reset --confirm-reset\n  worklease server reset --home DIR --confirm-reset\n  worklease server reset --confirm-reset --force --unresolved-export FILE",
+		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "server-config", Usage: "deployment server configuration `FILE` [$WORKLEASE_SERVER_CONFIG]"}, secret, &urfave.BoolFlag{Name: "confirm-reset", Usage: "explicitly confirm destructive authority reset"}, &urfave.BoolFlag{Name: "force", Usage: "discard unresolved operations after writing a redacted export"}, &urfave.StringFlag{Name: "unresolved-export", Usage: "external redacted recovery export `FILE`"}},
+	}
+	reset.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedReset(s, ctx, cmd) }
+	return &urfave.Command{Name: "server", Usage: "initialize and manage a server authority", UsageText: "worklease server <init|restore|bootstrap-reissue|reset|retire>", Description: "Server-authority lifecycle commands. Every command takes the hosted writer lock before opening SQLite.\n\nExamples:\n  worklease server init\n  worklease server restore --home DIR --from FILE --bootstrap-invite-file FILE\n  worklease server reset --home DIR --confirm-reset\n  worklease server retire --home DIR --confirm-retire", Commands: []*urfave.Command{initCommand, restore, reissue, reset, retire}, OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
 		return s.handle(cmd, reason.Invalid("invalid server command arguments"))
 	}}
 }
@@ -210,6 +219,22 @@ func resolveHostedHome(cmd *urfave.Command) (string, string, error) {
 	home, err := filepath.Abs(filepath.Clean(explicit))
 	return home, configPath, err
 }
+func resolveResetHome(cmd *urfave.Command) (string, string, error) {
+	configPath, err := serverConfigPath(cmd)
+	if err != nil {
+		return "", "", err
+	}
+	if _, statErr := os.Lstat(configPath); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+		return resolveHostedHome(cmd)
+	}
+	explicit := strings.TrimSpace(cmd.String("home"))
+	if explicit == "" {
+		return "", "", reason.New(reason.ReasonConfigMissing, fmt.Sprintf("server configuration not found at %s; pass --home for the hosted authority to reset", configPath))
+	}
+	home, err := filepath.Abs(filepath.Clean(explicit))
+	return home, configPath, err
+}
+
 func requiredHostedFile(cmd *urfave.Command, name string) (string, error) {
 	value := strings.TrimSpace(cmd.String(name))
 	if value == "" {
@@ -345,7 +370,7 @@ func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup 
 		}
 		endpoint = scheme + "://" + listen
 	}
-	desired := authority.InviteArtifact{Version: 1, Endpoint: endpoint, AuthorityID: result.AuthorityID, CertificateSHA256: pin, ProfileHint: "admin", Invite: secret}
+	desired := authority.InviteArtifact{Version: 1, Endpoint: endpoint, AuthorityID: result.AuthorityID, CertificateSHA256: pin, ProfileHint: "remote", Invite: secret}
 	encoded, err := authority.EncodeInviteArtifact(desired)
 	if err != nil {
 		return err
@@ -354,7 +379,8 @@ func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup 
 	if readErr == nil {
 		value := strings.TrimSuffix(string(data), "\n")
 		if existing, decodeErr := authority.DecodeInviteArtifact(value); decodeErr == nil {
-			if existing.Endpoint != desired.Endpoint || existing.AuthorityID != desired.AuthorityID || existing.CertificateSHA256 != desired.CertificateSHA256 || existing.ProfileHint != desired.ProfileHint {
+			compatibleHint := existing.ProfileHint == desired.ProfileHint || existing.ProfileHint == "admin" && desired.ProfileHint == "remote"
+			if existing.Endpoint != desired.Endpoint || existing.AuthorityID != desired.AuthorityID || existing.CertificateSHA256 != desired.CertificateSHA256 || !compatibleHint {
 				return reason.New(reason.ReasonAuthorityMismatch, "existing invite artifact conflicts with hosted authority")
 			}
 			if existing != desired {
@@ -828,64 +854,8 @@ func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	if !cmd.Bool("confirm-retire") {
 		return hostedError(s, cmd, reason.Invalid(fmt.Sprintf("retirement is destructive; no changes made to resolved home %s; rerun with --confirm-retire", home)))
 	}
-	lock, err := store.AcquireHostedLock(ctx, home)
+	status, err := clearHostedAuthority(ctx, cmd, home, false, "", nil)
 	if err != nil {
-		return hostedError(s, cmd, err)
-	}
-	st, err := store.Open(ctx, home, store.Options{HostedWriter: true, RequireHostedReady: true, HostedLock: lock})
-	if err != nil {
-		_ = lock.Close()
-		return hostedError(s, cmd, err)
-	}
-	svc := lease.New(st, nil, nil, lease.Defaults{})
-	status, err := svc.HostedRetirementStatus(ctx)
-	if err != nil {
-		_ = st.Close()
-		lock.Close()
-		return hostedError(s, cmd, err)
-	}
-	if !cmd.Bool("force") && (status.ActiveClaims > 0 || status.Unresolved > 0) {
-		_ = st.Close()
-		lock.Close()
-		return hostedError(s, cmd, reason.Invalid("hosted authority has active claims or unresolved operations"))
-	}
-	exportPath := strings.TrimSpace(cmd.String("unresolved-export"))
-	if cmd.Bool("force") {
-		if exportPath == "" {
-			_ = st.Close()
-			lock.Close()
-			return hostedError(s, cmd, reason.Invalid("--force requires --unresolved-export"))
-		}
-		exportPath, err = filepath.Abs(filepath.Clean(exportPath))
-		if err != nil {
-			_ = st.Close()
-			_ = lock.Close()
-			return hostedError(s, cmd, err)
-		}
-		rel, relErr := filepath.Rel(home, exportPath)
-		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			_ = st.Close()
-			lock.Close()
-			return hostedError(s, cmd, reason.Invalid("unresolved export must be outside hosted home"))
-		}
-		if err := store.WriteHostedExport(exportPath, func(writer io.Writer) error {
-			_, exportErr := svc.WriteHostedRetirementExport(ctx, writer)
-			return exportErr
-		}); err != nil {
-			_ = st.Close()
-			lock.Close()
-			return hostedError(s, cmd, err)
-		}
-	}
-	if err := st.CloseDatabase(); err != nil {
-		lock.Close()
-		return hostedError(s, cmd, err)
-	}
-	if err := store.RemoveHostedFiles(lock); err != nil {
-		lock.Close()
-		return hostedError(s, cmd, err)
-	}
-	if err := lock.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
 	fields := map[string]any{"home": home, "exported": cmd.Bool("force"), "unresolved": status.Unresolved}
@@ -894,4 +864,261 @@ func hostedRetire(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	}
 	_, err = fmt.Fprintf(s.writer, "server-retire completed; retired home %s\n", home)
 	return err
+}
+
+func hostedReset(s *boundary, ctx context.Context, cmd *urfave.Command) error {
+	home, configPath, err := resolveResetHome(cmd)
+	if err != nil {
+		return hostedError(s, cmd, err)
+	}
+	if !cmd.Bool("confirm-reset") {
+		return hostedError(s, cmd, reason.Invalid(fmt.Sprintf("reset is destructive; no changes made to resolved home %s; rerun with --confirm-reset", home)))
+	}
+	invitePath := strings.TrimSpace(cmd.String("bootstrap-invite-file"))
+	if invitePath == "" {
+		invitePath = filepath.Join(filepath.Dir(configPath), "bootstrap.invite")
+	}
+	invitePath, err = filepath.Abs(filepath.Clean(invitePath))
+	if err != nil {
+		return hostedError(s, cmd, err)
+	}
+	if err := validateResetExportTargets(cmd, configPath, invitePath); err != nil {
+		return hostedError(s, cmd, err)
+	}
+	status, err := clearHostedAuthority(ctx, cmd, home, true, invitePath, func(svc *lease.Service, authorityID string) (func() error, error) {
+		if err := rejectStagedBootstrapSecret(invitePath); err != nil {
+			return nil, err
+		}
+		return prepareMatchingBootstrapArtifactRemoval(ctx, svc, invitePath, authorityID)
+	})
+	if err != nil {
+		return hostedError(s, cmd, err)
+	}
+	fields := map[string]any{"home": home, "bootstrapInviteFile": invitePath, "exported": cmd.Bool("force"), "unresolved": status.Unresolved}
+	if s.jsonRequested(cmd) {
+		return output.WriteSuccess(s.writer, "server-reset", fields)
+	}
+	_, err = fmt.Fprintf(s.writer, "server-reset completed; reset home %s\nnext: worklease server init --server-config %s\n", home, shellQuote(configPath))
+	return err
+}
+
+func clearHostedAuthority(ctx context.Context, cmd *urfave.Command, home string, reset bool, resetInvitePath string, prepareClear func(*lease.Service, string) (func() error, error)) (lease.RetirementStatus, error) {
+	lock, err := store.AcquireHostedLock(ctx, home)
+	if err != nil {
+		return lease.RetirementStatus{}, err
+	}
+	intent, resetting, err := store.ReadHostedResetIntent(lock)
+	if err != nil {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, err
+	}
+	exportPath := strings.TrimSpace(cmd.String("unresolved-export"))
+	if exportPath != "" {
+		exportPath, err = filepath.Abs(filepath.Clean(exportPath))
+		if err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if resetting && (!reset || intent.BootstrapInvitePath != resetInvitePath || intent.UnresolvedExportPath != exportPath || cmd.Bool("force") != (intent.UnresolvedExportPath != "")) {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, reason.Invalid("hosted reset is already in progress with different recovery arguments")
+	}
+	databasePath := filepath.Join(home, store.DatabaseFileName)
+	if _, statErr := os.Lstat(databasePath); errors.Is(statErr, os.ErrNotExist) {
+		if !resetting {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, reason.New(reason.ReasonStorageFailure, "hosted authority database is missing without a durable reset intent")
+		}
+		if err := resetArtifactsAbsent(resetInvitePath); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+		if err := store.RemoveHostedFiles(lock); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+		if err := store.RemoveHostedResetIntent(lock); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+		return lease.RetirementStatus{}, lock.Close()
+	} else if statErr != nil {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, statErr
+	}
+	st, err := store.Open(ctx, home, store.Options{HostedWriter: true, RequireHostedReady: !reset, HostedLock: lock})
+	if err != nil {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, err
+	}
+	closeAll := func() {
+		_ = st.Close()
+		_ = lock.Close()
+	}
+	svc := lease.New(st, nil, nil, lease.Defaults{})
+	status, err := svc.HostedRetirementStatus(ctx)
+	if err != nil {
+		closeAll()
+		return lease.RetirementStatus{}, err
+	}
+	if reset && status.ActiveClaims > 0 {
+		closeAll()
+		return lease.RetirementStatus{}, reason.Invalid("hosted authority has active claims; release or revoke them before reset")
+	}
+	if !resetting && !cmd.Bool("force") && (status.ActiveClaims > 0 || status.Unresolved > 0) {
+		closeAll()
+		return lease.RetirementStatus{}, reason.Invalid("hosted authority has active claims or unresolved operations")
+	}
+	var clearArtifact func() error
+	if prepareClear != nil {
+		clearArtifact, err = prepareClear(svc, st.AuthorityID())
+		if err != nil {
+			closeAll()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if cmd.Bool("force") && !resetting {
+		if exportPath == "" {
+			closeAll()
+			return lease.RetirementStatus{}, reason.Invalid("--force requires --unresolved-export")
+		}
+		rel, relErr := filepath.Rel(home, exportPath)
+		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			closeAll()
+			return lease.RetirementStatus{}, reason.Invalid("unresolved export must be outside hosted home")
+		}
+		if err := store.WriteHostedExport(exportPath, func(writer io.Writer) error {
+			_, exportErr := svc.WriteHostedRetirementExport(ctx, writer)
+			return exportErr
+		}); err != nil {
+			closeAll()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if reset {
+		ready, readyErr := store.HostedReady(home)
+		if readyErr != nil {
+			closeAll()
+			return lease.RetirementStatus{}, readyErr
+		}
+		if resetting && ready {
+			closeAll()
+			return lease.RetirementStatus{}, reason.New(reason.ReasonStorageFailure, "hosted reset intent exists while the authority is still ready")
+		}
+		if !resetting {
+			if err := store.ClearHostedReady(lock); err != nil {
+				closeAll()
+				return lease.RetirementStatus{}, err
+			}
+			if err := store.WriteHostedResetIntent(lock, store.HostedResetIntent{Version: 1, BootstrapInvitePath: resetInvitePath, UnresolvedExportPath: exportPath}); err != nil {
+				closeAll()
+				return lease.RetirementStatus{}, err
+			}
+		}
+	}
+	if err := st.CloseDatabase(); err != nil {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, err
+	}
+	if reset && beforeResetArtifactRemovalHook != nil {
+		if err := beforeResetArtifactRemovalHook(); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if clearArtifact != nil {
+		if err := clearArtifact(); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if err := store.RemoveHostedFiles(lock); err != nil {
+		_ = lock.Close()
+		return lease.RetirementStatus{}, err
+	}
+	if reset {
+		if err := store.RemoveHostedResetIntent(lock); err != nil {
+			_ = lock.Close()
+			return lease.RetirementStatus{}, err
+		}
+	}
+	if err := lock.Close(); err != nil {
+		return lease.RetirementStatus{}, err
+	}
+	return status, nil
+}
+
+func validateResetExportTargets(cmd *urfave.Command, configPath, invitePath string) error {
+	if !cmd.Bool("force") {
+		return nil
+	}
+	exportPath := strings.TrimSpace(cmd.String("unresolved-export"))
+	if exportPath == "" {
+		return nil
+	}
+	exportPath, err := filepath.Abs(filepath.Clean(exportPath))
+	if err != nil {
+		return err
+	}
+	reserved := []string{configPath, invitePath, invitePath + ".legacy-secret", filepath.Join(filepath.Dir(configPath), "server.crt"), filepath.Join(filepath.Dir(configPath), "server.key")}
+	if cfg, loadErr := workleaseserver.LoadConfig(configPath); loadErr == nil {
+		reserved = append(reserved, cfg.TLSCert, cfg.TLSKey)
+	}
+	for _, path := range reserved {
+		if path == "" {
+			continue
+		}
+		resolved, resolveErr := filepath.Abs(filepath.Clean(path))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if resolved == exportPath {
+			return reason.Invalid("unresolved export conflicts with a server deployment artifact")
+		}
+	}
+	return nil
+}
+
+func resetArtifactsAbsent(invitePath string) error {
+	for _, path := range []string{invitePath, invitePath + ".legacy-secret"} {
+		present, err := handle.ValidateMetadata(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if present {
+			return reason.New(reason.ReasonCredentialUnsafe, "reset cannot verify the existing bootstrap credential without the authority database; move it explicitly before retrying")
+		}
+	}
+	return nil
+}
+
+func prepareMatchingBootstrapArtifactRemoval(ctx context.Context, svc *lease.Service, path, authorityID string) (func() error, error) {
+	data, err := handle.ReadOwnerPrivate(path, authority.MaxInviteArtifactBytes+1)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	artifact, err := authority.DecodeInviteArtifact(strings.TrimSuffix(string(data), "\n"))
+	if err != nil {
+		return nil, reason.New(reason.ReasonCredentialUnsafe, "bootstrap invite is not a Worklease invite artifact; move it explicitly before reset")
+	}
+	if artifact.AuthorityID != authorityID {
+		return nil, reason.New(reason.ReasonAuthorityMismatch, "bootstrap invite belongs to a different authority")
+	}
+	matches, err := svc.HostedBootstrapSecretMatches(ctx, artifact.Invite)
+	if err != nil {
+		return nil, err
+	}
+	if !matches {
+		return nil, reason.New(reason.ReasonCredentialUnsafe, "bootstrap invite is not the bootstrap credential recorded by this authority")
+	}
+	return func() error {
+		return handle.RemoveOwnerPrivateIfContent(path, data, authority.MaxInviteArtifactBytes+1)
+	}, nil
 }

@@ -245,12 +245,15 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "enroll", "--invite-file", bootstrapPath}, "test", "unknown", "unknown", &out, &stderr); err != nil {
 		t.Fatalf("admin enroll: %v stderr=%s", err, stderr.String())
 	}
+	if !strings.Contains(out.String(), "enrolled profile remote (role: admin)") {
+		t.Fatalf("bootstrap enrollment did not separate profile and role: %s", out.String())
+	}
 	out.Reset()
 	stderr.Reset()
 	if err := Run(context.Background(), []string{"worklease", "invite", "issue"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
 		t.Fatalf("zero-flag invite issue: %v stderr=%s", err, stderr.String())
 	}
-	clientInvite := filepath.Join(adminHome, ".config", "worklease", "admin.invite")
+	clientInvite := filepath.Join(adminHome, ".config", "worklease", "remote.invite")
 	if !strings.Contains(out.String(), clientInvite) || !strings.Contains(out.String(), "worklease enroll --invite-file") {
 		t.Fatalf("invite handoff is incomplete: %s", out.String())
 	}
@@ -407,11 +410,33 @@ func TestGuidedServerInitGeneratesTLSAndHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(artifactBytes)))
-	if err != nil || artifact.ProfileHint != "admin" || artifact.Endpoint != cfg.AdvertisedEndpoint || artifact.CertificateSHA256 != certificateFingerprint(leaf) {
+	if err != nil || artifact.ProfileHint != "remote" || artifact.Endpoint != cfg.AdvertisedEndpoint || artifact.CertificateSHA256 != certificateFingerprint(leaf) {
 		t.Fatalf("bootstrap artifact=%+v err=%v", artifact, err)
 	}
 	if strings.Contains(out.String(), artifact.Invite) {
 		t.Fatal("bootstrap invite leaked in output")
+	}
+	legacyArtifact := artifact
+	legacyArtifact.ProfileHint = "admin"
+	legacyEncoded, err := authority.EncodeInviteArtifact(legacyArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invitePath, []byte(legacyEncoded+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", invitePath, "--json"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("v1.6.0 bootstrap artifact upgrade: %v stderr=%s", err, stderr.String())
+	}
+	upgradedBytes, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(upgradedBytes)))
+	if err != nil || upgraded.ProfileHint != "remote" {
+		t.Fatalf("upgraded bootstrap artifact=%+v err=%v", upgraded, err)
 	}
 	if _, err := os.Stat(invitePath + ".legacy-secret"); !os.IsNotExist(err) {
 		t.Fatalf("legacy staging secret remains after artifact publication: %v", err)
@@ -1007,6 +1032,7 @@ func TestHostedCommandsRefuseHeldLockBeforeOpeningDatabase(t *testing.T) {
 		{"worklease", "server", "init", "--home", home, "--server-config", cfg, "--bootstrap-invite-file", invite},
 		{"worklease", "server", "restore", "--home", home, "--from", backup, "--selected-cutoff", now.Format(time.RFC3339Nano), "--loss-interval-start", now.Format(time.RFC3339Nano), "--loss-interval-end", now.Format(time.RFC3339Nano), "--bootstrap-invite-file", filepath.Join(secretDir, "restored")},
 		{"worklease", "server", "bootstrap-reissue", "--home", home, "--bootstrap-invite-file", filepath.Join(secretDir, "next")},
+		{"worklease", "server", "reset", "--home", home, "--bootstrap-invite-file", invite, "--confirm-reset"},
 		{"worklease", "server", "retire", "--home", home, "--confirm-retire"},
 	}
 	for _, args := range commands {
@@ -1016,6 +1042,359 @@ func TestHostedCommandsRefuseHeldLockBeforeOpeningDatabase(t *testing.T) {
 		if failure := reason.As(err); failure == nil || failure.Reason != reason.ReasonHostedLockHeld {
 			t.Fatalf("%v lock error=%v", args, err)
 		}
+	}
+}
+
+func TestServerResetPreservesDeploymentAndSupportsReinitialization(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config", "worklease", "server.yaml")
+	invitePath := filepath.Join(root, "config", "worklease", "bootstrap.invite")
+	cfg, err := workleaseserver.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCertificate, err := os.ReadFile(cfg.TLSCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStore, err := store.Open(context.Background(), cfg.Home, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalAuthority := originalStore.AuthorityID()
+	if err := originalStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset"}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), cfg.Home) || !strings.Contains(err.Error(), "--confirm-reset") {
+		t.Fatalf("reset preview error=%v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Home, store.DatabaseFileName)); err != nil {
+		t.Fatalf("reset preview mutated authority: %v", err)
+	}
+
+	legacyPath := invitePath + ".legacy-secret"
+	if err := store.WriteHostedSecret(legacyPath, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonCredentialUnsafe {
+		t.Fatalf("staged-secret reset error=%v", err)
+	}
+	if err := os.Rename(legacyPath, legacyPath+".parked"); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset", "--force", "--unresolved-export", configPath}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "conflicts with a server deployment artifact") {
+		t.Fatalf("config-collision reset error=%v", err)
+	}
+	if current, err := os.ReadFile(configPath); err != nil || string(current) != string(originalConfig) {
+		t.Fatalf("config-collision reset changed config: err=%v", err)
+	}
+
+	aliasParent := filepath.Join(filepath.Dir(configPath), "home-alias")
+	if err := os.Symlink(cfg.Home, aliasParent); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset", "--force", "--unresolved-export", filepath.Join(aliasParent, "export.json")}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+		t.Fatalf("aliased-export reset error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Home, "export.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("aliased export entered hosted home: %v", err)
+	}
+
+	artifactBytes, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "bootstrap-reissue"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	currentArtifactBytes, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invitePath, artifactBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonCredentialUnsafe {
+		t.Fatalf("superseded-bootstrap reset error=%v", err)
+	}
+	if err := os.WriteFile(invitePath, currentArtifactBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactBytes = currentArtifactBytes
+	artifact, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(artifactBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.AuthorityID = strings.Repeat("f", 32)
+	conflicting, err := authority.EncodeInviteArtifact(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invitePath, []byte(conflicting+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	mismatchExport := filepath.Join(filepath.Dir(configPath), "mismatch-export.json")
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset", "--force", "--unresolved-export", mismatchExport}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonAuthorityMismatch {
+		t.Fatalf("conflicting bootstrap reset error=%v", err)
+	}
+	if _, err := os.Stat(mismatchExport); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("conflicting bootstrap reset wrote export: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Home, store.DatabaseFileName)); err != nil {
+		t.Fatalf("conflicting bootstrap reset mutated authority: %v", err)
+	}
+	artifact.AuthorityID = originalAuthority
+	artifact.Invite = strings.Repeat("b", 64)
+	nonBootstrap, err := authority.EncodeInviteArtifact(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invitePath, []byte(nonBootstrap+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonCredentialUnsafe {
+		t.Fatalf("non-bootstrap artifact reset error=%v", err)
+	}
+	if err := os.WriteFile(invitePath, artifactBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset", "--json"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("reset: %v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+	for _, path := range []string{filepath.Join(cfg.Home, store.DatabaseFileName), filepath.Join(cfg.Home, store.HostedReadyFileName), invitePath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("reset retained %s: %v", path, err)
+		}
+	}
+	if current, err := os.ReadFile(configPath); err != nil || string(current) != string(originalConfig) {
+		t.Fatalf("reset changed config: err=%v", err)
+	}
+	if current, err := os.ReadFile(cfg.TLSCert); err != nil || string(current) != string(originalCertificate) {
+		t.Fatalf("reset changed certificate: err=%v", err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("reinitialize after reset: %v stderr=%s", err, stderr.String())
+	}
+	reinitialized, err := store.Open(context.Background(), cfg.Home, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reinitialized.AuthorityID() == originalAuthority {
+		t.Fatal("reset reused the retired authority ID")
+	}
+	if err := reinitialized.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerResetRecoversMissingDefaultConfiguration(t *testing.T) {
+	root := t.TempDir()
+	configRoot := filepath.Join(root, "config")
+	stateRoot := filepath.Join(root, "state")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configRoot, "worklease", "server.yaml")
+	cfg, err := workleaseserver.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(root, "parked")
+	if err := os.Mkdir(parked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{configPath, cfg.TLSCert, cfg.TLSKey} {
+		if err := os.Rename(path, filepath.Join(parked, filepath.Base(path))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("WORKLEASE_SERVER_CONFIG", configPath)
+	out.Reset()
+	stderr.Reset()
+	err = Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "worklease server reset --home") || !strings.Contains(err.Error(), cfg.Home) {
+		t.Fatalf("missing-config guidance=%v stdout=%s stderr=%s", err, out.String(), stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--home", cfg.Home, "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("missing-config reset: %v stderr=%s", err, stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("guided init over retired home: %v stderr=%s", err, stderr.String())
+	}
+	if _, err := workleaseserver.LoadConfig(configPath); err != nil {
+		t.Fatalf("replacement config: %v", err)
+	}
+}
+
+func TestServerResetClearsReadinessBeforeArtifactRemoval(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config", "worklease", "server.yaml")
+	invitePath := filepath.Join(root, "config", "worklease", "bootstrap.invite")
+	cfg, err := workleaseserver.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeResetArtifactRemovalHook = func() error { return errors.New("injected reset interruption") }
+	t.Cleanup(func() { beforeResetArtifactRemovalHook = nil })
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "injected reset interruption") {
+		t.Fatalf("interrupted reset error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Home, store.HostedReadyFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted reset retained readiness: %v", err)
+	}
+	for _, path := range []string{invitePath, filepath.Join(cfg.Home, store.DatabaseFileName), filepath.Join(cfg.Home, store.HostedResetFileName)} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("interrupted reset lost recovery state %s: %v", path, err)
+		}
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "serve"}, "test", "unknown", "unknown", &out, &stderr); err == nil {
+		t.Fatal("serve restarted an authority after reset readiness was cleared")
+	}
+	beforeResetArtifactRemovalHook = nil
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("reset retry after interruption: %v stderr=%s", err, stderr.String())
+	}
+}
+
+func TestServerResetResumesInterruptedCleanupStates(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config", "worklease", "server.yaml")
+	invitePath := filepath.Join(root, "config", "worklease", "bootstrap.invite")
+	cfg, err := workleaseserver.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireHostedLock(context.Background(), cfg.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHostedReady(lock); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("resume after readiness removal: %v stderr=%s", err, stderr.String())
+	}
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(root, "parked")
+	if err := os.Mkdir(parked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(cfg.Home, store.DatabaseFileName)
+	missingDatabase := filepath.Join(parked, store.DatabaseFileName)
+	if err := os.Rename(databasePath, missingDatabase); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonStorageFailure {
+		t.Fatalf("missing database without intent error=%v", err)
+	}
+	if err := os.Rename(missingDatabase, databasePath); err != nil {
+		t.Fatal(err)
+	}
+	lock, err = store.AcquireHostedLock(context.Background(), cfg.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHostedReady(lock); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := store.WriteHostedResetIntent(lock, store.HostedResetIntent{Version: 1, BootstrapInvitePath: invitePath}); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{invitePath, databasePath} {
+		if err := os.Rename(path, filepath.Join(parked, filepath.Base(path))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--confirm-reset"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("resume after database removal: %v stderr=%s", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Home, store.HostedReadyFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resumed reset retained readiness: %v", err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("init after resumed reset: %v stderr=%s", err, stderr.String())
 	}
 }
 
@@ -1084,6 +1463,15 @@ func TestHostedRestoreAndForcedRetirement(t *testing.T) {
 	}
 	if err := restored.Close(); err != nil {
 		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	resetExport := filepath.Join(secretDir, "reset.json")
+	if err := Run(context.Background(), []string{"worklease", "server", "reset", "--home", home, "--bootstrap-invite-file", firstSecret, "--confirm-reset", "--force", "--unresolved-export", resetExport}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "active claims") {
+		t.Fatalf("active-claim reset error=%v", err)
+	}
+	if _, err := os.Stat(resetExport); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active-claim reset wrote export: %v", err)
 	}
 	out.Reset()
 	stderr.Reset()

@@ -49,6 +49,7 @@ local default, or reports the missing required input without guessing.
 | `server init` | Secure TLS loopback at `127.0.0.1:8443`, HTTPS endpoint, generated pin, coordination namespace, XDG paths | `--guided` is only an alias; LAN requires endpoint and consent; HTTP requires acknowledgement |
 | `server restore` | Report missing backup/recovery inputs | Destructive state replacement requires explicit inputs |
 | `server bootstrap-reissue` | Resolve server config/home and default bootstrap artifact | Names the resolved authority on errors |
+| `server reset` | Resolve server config/home and default bootstrap artifact, then refuse mutation without `--confirm-reset` | Always refuses active claims; unresolved operations require an external redacted export |
 | `server retire` | Resolve server config/home, name it, and refuse mutation without `--confirm-retire` | Explicitly destructive; output names resolved home |
 | `serve` | Resolve and serve configured authority | TLS by default; HTTP requires explicit allowance |
 | `mcp` | Serve MCP over stdio | Network only when selected by profile |

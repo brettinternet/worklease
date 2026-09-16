@@ -514,6 +514,30 @@ func TestLockRejectsDifferentSiblingHandle(t *testing.T) {
 	}
 }
 
+func TestRemoveOwnerPrivateIfContentRequiresExactCurrentContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "artifact")
+	original := []byte("original\n")
+	if err := WriteOwnerPrivateNoReplace(path, original, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveOwnerPrivateIfContent(path, []byte("different\n"), 1024); err == nil {
+		t.Fatal("removed private file with different content")
+	}
+	if current, err := os.ReadFile(path); err != nil || string(current) != string(original) {
+		t.Fatalf("mismatch changed file: contents=%q err=%v", current, err)
+	}
+	if err := RemoveOwnerPrivateIfContent(path, original, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("matching private file remains: %v", err)
+	}
+}
+
 func TestAcquireLocksCanonicalizesDarwinSystemAliasesBeforeSorting(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Darwin system alias behavior")

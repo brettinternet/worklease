@@ -18,6 +18,42 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
+func TestWriteHostedExportRefusesReplacementAndSymlinkedParents(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(root, "existing.json")
+	if err := os.WriteFile(existing, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write := func(writer io.Writer) error {
+		_, err := io.WriteString(writer, "replacement\n")
+		return err
+	}
+	if err := WriteHostedExport(existing, write); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonInvalidArgument {
+		t.Fatalf("existing export error=%v", err)
+	}
+	if contents, err := os.ReadFile(existing); err != nil || string(contents) != "keep\n" {
+		t.Fatalf("existing export changed: contents=%q err=%v", contents, err)
+	}
+	realParent := filepath.Join(root, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasParent := filepath.Join(root, "alias")
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Fatal(err)
+	}
+	aliasExport := filepath.Join(aliasParent, "export.json")
+	if err := WriteHostedExport(aliasExport, write); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+		t.Fatalf("symlinked export parent error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(realParent, "export.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlinked parent received export: %v", err)
+	}
+}
+
 func TestHostedMarkerRefusesLocalWritesBeforeDatabaseOpen(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "hosted")
 	if err := MarkHosted(home); err != nil {
