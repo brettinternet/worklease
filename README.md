@@ -3,6 +3,7 @@
 [![CI](https://github.com/brettinternet/worklease/actions/workflows/ci.yml/badge.svg)](https://github.com/brettinternet/worklease/actions/workflows/ci.yml)
 
 Provider-neutral coordination for humans and coding agents. 
+
 Tell your agents to claim work with `worklease` to prevent them from
 working on top of each other or competing for the same resources and tasks.
 Compatible with whatever backlog or provider you're using.
