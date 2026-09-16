@@ -21,17 +21,25 @@ import (
 const insecureHTTPWarning = "warning: insecure HTTP exposes Worklease credentials and claim data to the network"
 
 func profileCommands(s *boundary) []*urfave.Command {
-	leaf := func(name, usage string, flags []urfave.Flag, action func(context.Context, *urfave.Command) error) *urfave.Command {
-		return &urfave.Command{Name: name, Usage: usage, UsageText: "worklease profile " + name, Description: usage + ".\n\nExamples:\n  worklease profile " + name, Flags: flags, Action: action}
+	leaf := func(name, usage, args, detail string, flags []urfave.Flag, action func(context.Context, *urfave.Command) error) *urfave.Command {
+		usageText := "worklease profile " + name
+		if args != "" {
+			usageText += " " + args
+		}
+		description := usage + "."
+		if detail != "" {
+			description += " " + detail
+		}
+		return &urfave.Command{Name: name, Usage: usage, UsageText: usageText, Description: description + "\n\nExamples:\n  " + usageText, Flags: flags, Action: action}
 	}
-	add := leaf("add", "add a trusted remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.StringFlag{Name: "certificate-sha256", Usage: "expected DER leaf certificate SHA-256 `HEX`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP to the remote authority"}}, profileAddAction(s))
-	list := leaf("list", "list trusted remote authority profiles", nil, profileListAction(s))
+	add := leaf("add", "add a trusted remote authority profile", "NAME", "NAME is required.", []urfave.Flag{&urfave.StringFlag{Name: "endpoint", Usage: "remote authority `URL`"}, &urfave.StringFlag{Name: "authority-id", Usage: "expected authority `ID`"}, &urfave.StringFlag{Name: "certificate-sha256", Usage: "expected DER leaf certificate SHA-256 `HEX`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "allow cleartext HTTP to the remote authority"}}, profileAddAction(s))
+	list := leaf("list", "list trusted remote authority profiles", "", "", nil, profileListAction(s))
 	list.Aliases = []string{"ls"}
-	show := leaf("show", "show one trusted remote authority profile", nil, profileShowAction(s))
-	remove := leaf("remove", "remove one trusted remote authority profile", nil, profileRemoveAction(s))
-	def := leaf("default", "select the default remote authority profile", nil, profileDefaultAction(s))
-	bind := leaf("bind", "bind this checkout to a remote authority profile", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
-	unbind := leaf("unbind", "remove this checkout's remote authority binding", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
+	show := leaf("show", "show one trusted remote authority profile", "[NAME]", "Without NAME, normal profile selection precedence chooses the profile and the selecting rule is reported.", nil, profileShowAction(s))
+	remove := leaf("remove", "remove one trusted remote authority profile", "NAME", "NAME is required.", nil, profileRemoveAction(s))
+	def := leaf("default", "show or select the default remote authority profile", "[NAME]", "Without NAME, reports the current default without changing it.", nil, profileDefaultAction(s))
+	bind := leaf("bind", "bind this checkout to a remote authority profile", "NAME [--cwd DIR]", "NAME is required.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
+	unbind := leaf("unbind", "remove this checkout's remote authority binding", "[--cwd DIR]", "This command takes no profile NAME.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
 	profile := &urfave.Command{Name: "profile", Usage: "manage trusted remote authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>", Description: "Manage owner-private remote authority profiles and checkout bindings.\n\nExamples:\n  worklease profile list", Commands: []*urfave.Command{add, list, show, remove, def, bind, unbind}}
 	enroll := &urfave.Command{Name: "enroll", Usage: "enroll this installation with a remote authority", UsageText: "worklease enroll [--profile NAME] [--invite-file FILE | --invite-fd N] [--label TEXT]", Description: "Redeem an invitation without exposing either bearer in argv or output. Without an invite option, an interactive terminal prompts without echo. HTTP artifacts additionally require --allow-insecure-http.\n\nExamples:\n  worklease enroll --invite-file invite.artifact", Flags: []urfave.Flag{&urfave.StringFlag{Name: "invite-file", Usage: "owner-private invite artifact or legacy secret `FILE`"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited invite descriptor `N`", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "installation label `TEXT`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "explicitly allow an HTTP invite artifact"}}, Action: enrollAction(s)}
 	return []*urfave.Command{profile, enroll}
@@ -124,9 +132,20 @@ func profileListAction(s *boundary) func(context.Context, *urfave.Command) error
 }
 func profileShowAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error {
-		name, err := profileNameArg(cmd)
-		if err != nil {
-			return s.handle(cmd, err)
+		name := strings.TrimSpace(cmd.Args().First())
+		if name == "" {
+			selected, err := profileSelection(cmd)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			if selected.Profile == nil {
+				return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "no remote profile is selected; run 'worklease profile list' to inspect profiles or 'worklease enroll' to add one"))
+			}
+			if s.jsonRequested(cmd) {
+				return output.WriteSuccess(s.writer, "profile-show", map[string]any{"profile": selected.Profile, "selectionSource": selected.Source})
+			}
+			_, err = fmt.Fprintf(s.writer, "%s (selected by %s)\n", selected.Name, selected.Source)
+			return err
 		}
 		profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
 		if err != nil {
@@ -165,14 +184,26 @@ func profileRemoveAction(s *boundary) func(context.Context, *urfave.Command) err
 }
 func profileDefaultAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(_ context.Context, cmd *urfave.Command) error {
-		name, err := profileNameArg(cmd)
+		name := strings.TrimSpace(cmd.Args().First())
+		paths := config.UserProfilePaths(os.Getenv)
+		profiles, defaultName, err := config.LoadProfiles(paths)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		paths := config.UserProfilePaths(os.Getenv)
-		profiles, _, err := config.LoadProfiles(paths)
-		if err != nil {
-			return s.handle(cmd, err)
+		if name == "" {
+			if s.jsonRequested(cmd) {
+				var value any
+				if defaultName != "" {
+					value = defaultName
+				}
+				return output.WriteSuccess(s.writer, "profile-default", map[string]any{"default": value})
+			}
+			if defaultName == "" {
+				_, err = fmt.Fprintln(s.writer, "no default profile")
+			} else {
+				_, err = fmt.Fprintln(s.writer, defaultName)
+			}
+			return err
 		}
 		if _, ok := profiles[name]; !ok {
 			return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "profile is not defined"))
