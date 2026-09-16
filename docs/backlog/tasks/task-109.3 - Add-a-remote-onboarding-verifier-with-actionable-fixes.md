@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-16 01:06'
+updated_date: '2026-09-16 01:07'
 labels:
   - remote-authority
   - ergonomics
@@ -55,6 +55,8 @@ Role and prefix checks need server evidence, not inference from a successful lis
 Implemented typed admitted-prefix metadata and authenticated self-role inspection, actionable bounded remote doctor checks with optional resource admission evaluation, safe resource-not-enrolled details, protocol documentation, and focused compatibility/security tests. Focused Go tests pass for authority, server, CLI, and lease packages.
 
 Validation: mise run lint, mise run format-check, mise run test, and mise run typecheck pass. Independent adversarial review found one unpinned-authority false-positive; fixed it and added regression coverage. Focused authority/server/CLI/lease tests pass after the fix.
+
+Implementation commit: a8fc830 (Add remote onboarding diagnostics).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
