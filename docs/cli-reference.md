@@ -161,7 +161,7 @@ Guarded-operation guarantees:
 | Command | Purpose |
 | --- | --- |
 | `policy list` / `policy describe` | Inspect static built-in policies. |
-| `doctor` | Run read-only configuration, permissions, authority, handle, clock, MCP, Git, and Python-era-state diagnostics. |
+| `doctor` | Run read-only local diagnostics, or verify a selected remote profile's transport, identity, credential, role, recovery state, and advertised prefixes. Use `--resource KEY` to check remote admission for one key. |
 | `instructions loop|safety` | Print canonical agent instructions. |
 | `setup mcp` | Preview/apply/remove Claude Code, Cursor, or generic MCP setup. |
 | `setup guard` | Preview/apply/remove optional native edit-hook setup. |

@@ -210,7 +210,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	detail(watchCommand, "Block until the watched resources reach --until, or until any lifecycle event lands after --cursor. A timeout is a normal outcome, not an error.")
 	textOutput(watchCommand, "The text view starts with the observed outcome, omits routine false booleans, shows relative expiry and actionable gap guidance, and includes the next cursor only in a copyable resume command.")
 
-	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor\n  worklease doctor --json")
+	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor\n  worklease doctor --profile NAME --resource KEY\n  worklease doctor --json", resourceFlag("optional remote resource `KEY` to evaluate against advertised prefixes"))
 	doctorCommand.Action = doctorAction(s)
 	detail(doctorCommand, "Check configuration, authority home safety, database schema, handles, clocks, Git, and MCP availability without writing anything. Exit status is non-zero when a check fails.")
 

@@ -57,6 +57,19 @@ type Response struct {
 	RestoreID     string
 	AuthorityTime time.Time
 	Result        json.RawMessage
+	Metadata      *MetadataResult
+}
+
+type MetadataResult struct {
+	AuthorityID               string    `json:"authorityId"`
+	RestoreID                 string    `json:"restoreId"`
+	SupportedProtocolVersions []string  `json:"supportedProtocolVersions"`
+	AuthorityTime             time.Time `json:"authorityTime"`
+	AdmittedPrefixes          *[]string `json:"admittedPrefixes,omitempty"`
+}
+
+type InstallationSelfResult struct {
+	Role string `json:"role"`
 }
 type envelope struct {
 	OK              bool            `json:"ok"`
@@ -111,7 +124,29 @@ func (c *HTTPClient) Metadata(ctx context.Context) (Response, error) {
 	if err := c.validate(resp, true); err != nil {
 		return Response{}, err
 	}
+	var metadata MetadataResult
+	if err := decodeStrict(resp.Result, &metadata); err != nil || metadata.AuthorityID != "" && metadata.AuthorityID != resp.AuthorityID || metadata.RestoreID != "" && metadata.RestoreID != resp.RestoreID {
+		return Response{}, reason.Invalid("remote metadata result is invalid")
+	}
+	metadata.AuthorityID, metadata.RestoreID, metadata.AuthorityTime = resp.AuthorityID, resp.RestoreID, resp.AuthorityTime
+	if len(metadata.SupportedProtocolVersions) == 0 {
+		metadata.SupportedProtocolVersions = []string{protocolVersion}
+	}
+	resp.Metadata = &metadata
 	return resp, nil
+}
+
+func (c *HTTPClient) InstallationSelf(ctx context.Context) (InstallationSelfResult, error) {
+	body, _ := json.Marshal(map[string]any{"protocolVersion": protocolVersion, "authorityId": c.profile.AuthorityID, "expectedRestoreId": c.profile.RestoreID})
+	resp, err := c.Call(ctx, RequestSpec{Path: "/v1/installations/self", Body: body, Kind: "installation-self"})
+	if err != nil {
+		return InstallationSelfResult{}, err
+	}
+	var result InstallationSelfResult
+	if err := decodeStrict(resp.Result, &result); err != nil || (result.Role != "read" && result.Role != "write" && result.Role != "admin") {
+		return InstallationSelfResult{}, reason.Invalid("remote installation self result is invalid")
+	}
+	return result, nil
 }
 func requestDeadline(body []byte) (time.Time, error) {
 	if !utf8.Valid(body) || duplicateJSON(body) != nil {
@@ -130,7 +165,7 @@ func requestDeadline(body []byte) (time.Time, error) {
 
 func remotePath(path string) (mutating bool, known bool) {
 	switch path {
-	case "/.well-known/worklease", "/healthz", "/v1/claims/status", "/v1/claims/list", "/v1/claims/verify", "/v1/operations/inspect", "/v1/events", "/v1/history", "/v1/watch", "/v1/admin/installations/list", "/v1/admin/recovery/status":
+	case "/.well-known/worklease", "/healthz", "/v1/installations/self", "/v1/claims/status", "/v1/claims/list", "/v1/claims/verify", "/v1/operations/inspect", "/v1/events", "/v1/history", "/v1/watch", "/v1/admin/installations/list", "/v1/admin/recovery/status":
 		return false, true
 	case "/v1/enroll", "/v1/claims/acquire", "/v1/claims/heartbeat", "/v1/claims/checkpoint", "/v1/claims/release", "/v1/claims/transfer", "/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete", "/v1/operations/reconcile", "/v1/admin/gc", "/v1/admin/invites/issue", "/v1/admin/installations/revoke", "/v1/admin/claims/revoke", "/v1/admin/recovery/reopen":
 		return true, true
@@ -576,7 +611,24 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 		if e.Error == nil || e.Error.Reason == "" {
 			return Response{}, reason.Invalid("remote error envelope is invalid")
 		}
-		return Response{AuthorityID: e.AuthorityID, RestoreID: e.RestoreID, AuthorityTime: e.AuthorityTime}, reason.New(e.Error.Reason, "remote request failed")
+		remoteErr := reason.New(e.Error.Reason, "remote request failed")
+		if e.Error.Reason == reason.ReasonResourceNotEnrolled {
+			if prefixes, ok := e.Error.Details["admittedPrefixes"].([]any); ok {
+				values := make([]string, 0, len(prefixes))
+				for _, prefix := range prefixes {
+					value, valid := prefix.(string)
+					if !valid || len(value) > 256 {
+						values = nil
+						break
+					}
+					values = append(values, value)
+				}
+				if values != nil {
+					remoteErr.With("admittedPrefixes", values)
+				}
+			}
+		}
+		return Response{AuthorityID: e.AuthorityID, RestoreID: e.RestoreID, AuthorityTime: e.AuthorityTime}, remoteErr
 	}
 	return Response{AuthorityID: e.AuthorityID, RestoreID: e.RestoreID, AuthorityTime: e.AuthorityTime, Result: e.Result}, nil
 }

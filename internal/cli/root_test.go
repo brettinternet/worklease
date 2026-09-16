@@ -197,7 +197,7 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "events", example: "worklease events", flags: []string{"cursor", "limit", "full"}},
 		{path: "watch", example: "worklease watch --resource RESOURCE --until free", flags: []string{"resource", "cursor", "until", "timeout"}},
 		{path: "gc", example: "worklease gc --apply --cutoff 2026-08-14T00:00:00Z", flags: []string{"retention-days", "cutoff", "apply"}},
-		{path: "doctor", example: "worklease doctor", flags: []string{}},
+		{path: "doctor", example: "worklease doctor", flags: []string{"resource"}},
 		{path: "policy list", example: "worklease policy list", flags: []string{"full"}},
 		{path: "policy describe", example: "worklease policy describe path", flags: []string{"full"}},
 		{path: "op inspect", example: "worklease op inspect --operation-id ID", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "operation-id", "full"}},

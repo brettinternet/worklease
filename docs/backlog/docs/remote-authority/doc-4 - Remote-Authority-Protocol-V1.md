@@ -61,7 +61,10 @@ Content-Type: application/json; charset=utf-8   # requests with bodies
 
 A missing or unsupported protocol header returns HTTP 426 and an error envelope
 whose `details.supportedProtocolVersions` is exactly `["worklease-http/1"]`.
-The metadata result also reports that list. V1 accepts no version range.
+The metadata result also reports that list and the configured delimiter-terminated
+`admittedPrefixes`. Clients must tolerate an absent prefix field from older
+servers and report admission as unavailable rather than inferring it. V1 accepts
+no version range.
 
 Every Worklease application response, including errors and exact replay, is one
 of these JSON objects:
@@ -203,7 +206,9 @@ envelope adds current `restoreId` and `authorityTime`.
 These are named typed extensions owned by the tasks in section 1:
 
 ```text
-MetadataResultV1 { authorityId, restoreId, supportedProtocolVersions[], authorityTime }
+MetadataResultV1 { authorityId, restoreId, supportedProtocolVersions[], authorityTime,
+                   admittedPrefixes[]? }
+InstallationSelfResultV1 { role }
 EnrollRequestV1 { protocolVersion, authorityId, expectedRestoreId, requestId,
                   requestNotAfter, installationId, label }
 EnrollResultV1 { installationId, role, label, enrolledAt }
@@ -254,6 +259,7 @@ request field is part of V1.
 | --- | --- | --- | --- |
 | `GET /healthz` | none | no body or query | `{"ok":true}` only; liveness, not authority readiness |
 | `GET /.well-known/worklease` | none | no body or query; version header required | `MetadataResultV1` |
+| `POST /v1/installations/self` | installation | `AuthenticatedContextV1` | `InstallationSelfResultV1`; current role only |
 | `POST /v1/enroll` | invite plus new-installation headers | `EnrollRequestV1` | `EnrollResultV1` |
 
 Enrollment validates invite authentication, revocation/burn state, role,
@@ -566,7 +572,9 @@ Every read and cursor call is installation-authenticated and incarnation-bound.
 The words `public`, `redacted`, and `full` describe projection visibility inside
 the authorized namespace, never unauthenticated access. Health proves only that
 the process can answer HTTP. Metadata reveals only `authorityId`, `restoreId`,
-supported protocol versions, and `authorityTime`.
+supported protocol versions, `authorityTime`, and configured admitted resource
+prefixes. Authenticated self inspection reveals only the caller's current role;
+it never returns installation identity or labels.
 
 This V1 surface explicitly excludes remote provider execution, remote
 `replace-file`, retirement over HTTP, enrollment through MCP, recovery import,

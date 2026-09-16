@@ -41,6 +41,22 @@ func (s *Server) issueInvite(ctx context.Context, r *http.Request, b []byte) (an
 	return s.service.IssueInvite(ctx, a, lease.IssueInviteRequest{OperationID: q.OperationID, RequestNotAfter: d, InviteID: q.InviteID, Role: q.Role, Label: q.Label, ExpiresAt: expires, InviteSha256: q.InviteSHA256})
 }
 
+func (s *Server) installationSelf(ctx context.Context, r *http.Request, b []byte) (any, error) {
+	var q authWire
+	if e := decode(b, &q); e != nil {
+		return nil, e
+	}
+	a, e := s.authenticated(r, b, "read")
+	if e != nil {
+		return nil, e
+	}
+	role, e := s.service.RemoteSelf(ctx, a)
+	if e != nil {
+		return nil, e
+	}
+	return map[string]any{"role": role}, nil
+}
+
 type installsWire struct {
 	authWire
 	IncludeRevoked bool `json:"includeRevoked"`

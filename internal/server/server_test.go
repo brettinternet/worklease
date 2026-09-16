@@ -103,6 +103,14 @@ func TestEnrollmentAcquireAndHeartbeatUseDistinctBearers(t *testing.T) {
 	if err := json.Unmarshal(metadata.Body.Bytes(), &discovered); err != nil {
 		t.Fatal(err)
 	}
+	metadataResult, ok := discovered.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata result = %#v", discovered.Result)
+	}
+	prefixes, ok := metadataResult["admittedPrefixes"].([]any)
+	if !ok || len(prefixes) != 1 || prefixes[0] != "coordination:" {
+		t.Fatalf("metadata prefixes = %#v", metadataResult["admittedPrefixes"])
+	}
 	installationCredential := strings.Repeat("b", 64)
 	installationID := strings.Repeat("1", 32)
 	deadline := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
@@ -110,6 +118,30 @@ func TestEnrollmentAcquireAndHeartbeatUseDistinctBearers(t *testing.T) {
 	enrolled := request(t, srv, http.MethodPost, "/v1/enroll", enroll, map[string]string{"Authorization": "Invite " + invite, "Worklease-New-Installation-Authorization": "Bearer " + installationCredential})
 	if enrolled.Code != http.StatusOK {
 		t.Fatalf("enroll status = %d: %s", enrolled.Code, enrolled.Body.String())
+	}
+	selfBody := map[string]any{"protocolVersion": ProtocolVersion, "authorityId": discovered.AuthorityID, "expectedRestoreId": discovered.RestoreID}
+	self := request(t, srv, http.MethodPost, "/v1/installations/self", selfBody, map[string]string{"Authorization": "Bearer " + installationCredential})
+	if self.Code != http.StatusOK || !strings.Contains(self.Body.String(), `"role":"admin"`) || strings.Contains(self.Body.String(), installationID) {
+		t.Fatalf("installation self = %d: %s", self.Code, self.Body.String())
+	}
+	adminActor := lease.RemoteActor{AuthorityID: discovered.AuthorityID, ExpectedRestoreID: discovered.RestoreID, Credential: installationCredential}
+	for index, role := range []string{"read", "write"} {
+		inviteSecret := strings.Repeat(string(rune('d'+index)), 64)
+		inviteID := strings.Repeat(string(rune('6'+index)), 32)
+		if _, err := srv.service.IssueInvite(context.Background(), adminActor, lease.IssueInviteRequest{OperationID: inviteID, RequestNotAfter: time.Now().UTC().Add(time.Hour), InviteID: inviteID, Role: role, Label: role, InviteSha256: lease.HashSecret(inviteSecret)}); err != nil {
+			t.Fatalf("issue %s invite: %v", role, err)
+		}
+		roleCredential := strings.Repeat(string(rune('e'+index)), 64)
+		roleID := strings.Repeat(string(rune('8'+index)), 32)
+		roleEnroll := map[string]any{"protocolVersion": ProtocolVersion, "authorityId": discovered.AuthorityID, "expectedRestoreId": discovered.RestoreID, "requestId": roleID, "requestNotAfter": deadline, "installationId": roleID, "label": role}
+		roleEnrolled := request(t, srv, http.MethodPost, "/v1/enroll", roleEnroll, map[string]string{"Authorization": "Invite " + inviteSecret, "Worklease-New-Installation-Authorization": "Bearer " + roleCredential})
+		if roleEnrolled.Code != http.StatusOK {
+			t.Fatalf("enroll %s = %d: %s", role, roleEnrolled.Code, roleEnrolled.Body.String())
+		}
+		roleSelf := request(t, srv, http.MethodPost, "/v1/installations/self", selfBody, map[string]string{"Authorization": "Bearer " + roleCredential})
+		if roleSelf.Code != http.StatusOK || !strings.Contains(roleSelf.Body.String(), `"role":"`+role+`"`) || strings.Contains(roleSelf.Body.String(), roleID) {
+			t.Fatalf("%s self = %d: %s", role, roleSelf.Code, roleSelf.Body.String())
+		}
 	}
 	claimToken := strings.Repeat("c", 64)
 	claimID := strings.Repeat("3", 32)
@@ -121,6 +153,12 @@ func TestEnrollmentAcquireAndHeartbeatUseDistinctBearers(t *testing.T) {
 	acquired := request(t, srv, http.MethodPost, "/v1/claims/acquire", acquire, map[string]string{"Authorization": "Bearer " + installationCredential, "Worklease-New-Claim-Authorization": "Bearer " + claimToken})
 	if acquired.Code != http.StatusOK {
 		t.Fatalf("acquire status = %d: %s", acquired.Code, acquired.Body.String())
+	}
+	unadmitted := cloneMap(acquire)
+	unadmitted["claimId"], unadmitted["resources"] = strings.Repeat("9", 32), []string{"github:outside"}
+	rejectedPrefix := request(t, srv, http.MethodPost, "/v1/claims/acquire", unadmitted, map[string]string{"Authorization": "Bearer " + installationCredential, "Worklease-New-Claim-Authorization": "Bearer " + strings.Repeat("d", 64)})
+	if rejectedPrefix.Code != http.StatusForbidden || !strings.Contains(rejectedPrefix.Body.String(), `"admittedPrefixes":["coordination:"]`) || strings.Contains(rejectedPrefix.Body.String(), installationCredential) {
+		t.Fatalf("unadmitted resource response = %d: %s", rejectedPrefix.Code, rejectedPrefix.Body.String())
 	}
 	if strings.Contains(acquired.Body.String(), "localReplaceAllowed") || strings.Contains(acquired.Body.String(), "installationId") {
 		t.Fatalf("remote grant exposed local-only fields: %s", acquired.Body.String())

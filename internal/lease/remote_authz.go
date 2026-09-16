@@ -27,3 +27,14 @@ func (s *Service) AuthorizeRemote(ctx context.Context, actor RemoteActor, requir
 	check := s.RemoteTransactionCheck(actor, requiredRole)
 	return s.st.Read(ctx, func(tx *store.Tx) error { return check(ctx, tx) })
 }
+
+// RemoteSelf returns only the authenticated installation's current role.
+func (s *Service) RemoteSelf(ctx context.Context, actor RemoteActor) (string, error) {
+	err := s.st.Read(ctx, func(tx *store.Tx) error {
+		return s.authorizeRemoteContext(ctx, tx, &actor, "read")
+	})
+	if err != nil {
+		return "", err
+	}
+	return actor.Role, nil
+}

@@ -178,6 +178,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		result, err = s.gc(r.Context(), r, body)
 	case "/v1/admin/invites/issue":
 		result, err = s.issueInvite(r.Context(), r, body)
+	case "/v1/installations/self":
+		result, err = s.installationSelf(r.Context(), r, body)
 	case "/v1/admin/installations/list":
 		result, err = s.installations(r.Context(), r, body)
 	case "/v1/admin/installations/revoke":
@@ -218,7 +220,7 @@ func hasBody(r *http.Request) bool {
 
 func knownRoute(path string) bool {
 	switch path {
-	case "/v1/enroll", "/v1/claims/acquire", "/v1/claims/status", "/v1/claims/list", "/v1/claims/heartbeat", "/v1/claims/checkpoint", "/v1/claims/release", "/v1/claims/transfer", "/v1/claims/verify", "/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete", "/v1/operations/inspect", "/v1/operations/reconcile", "/v1/events", "/v1/history", "/v1/watch", "/v1/admin/gc", "/v1/admin/invites/issue", "/v1/admin/installations/list", "/v1/admin/installations/revoke", "/v1/admin/claims/revoke", "/v1/admin/recovery/status", "/v1/admin/recovery/reopen":
+	case "/v1/enroll", "/v1/installations/self", "/v1/claims/acquire", "/v1/claims/status", "/v1/claims/list", "/v1/claims/heartbeat", "/v1/claims/checkpoint", "/v1/claims/release", "/v1/claims/transfer", "/v1/claims/verify", "/v1/operations/begin", "/v1/operations/renew", "/v1/operations/complete", "/v1/operations/inspect", "/v1/operations/reconcile", "/v1/events", "/v1/history", "/v1/watch", "/v1/admin/gc", "/v1/admin/invites/issue", "/v1/admin/installations/list", "/v1/admin/installations/revoke", "/v1/admin/claims/revoke", "/v1/admin/recovery/status", "/v1/admin/recovery/reopen":
 		return true
 	default:
 		return false
@@ -255,7 +257,7 @@ func responseStatus(w http.ResponseWriter) int {
 func (s *Server) health(w http.ResponseWriter) { writeRaw(w, 200, []byte(`{"ok":true}`), 1024) }
 func (s *Server) metadata(w http.ResponseWriter) {
 	ctx := s.service.ResponseContext()
-	s.write(w, 200, map[string]any{"authorityId": ctx.AuthorityID, "restoreId": ctx.RestoreID, "supportedProtocolVersions": []string{ProtocolVersion}, "authorityTime": ctx.AuthorityTime}, 4000)
+	s.write(w, 200, map[string]any{"authorityId": ctx.AuthorityID, "restoreId": ctx.RestoreID, "supportedProtocolVersions": []string{ProtocolVersion}, "authorityTime": ctx.AuthorityTime, "admittedPrefixes": append([]string(nil), s.cfg.Prefixes...)}, 4000)
 }
 func (s *Server) version(r *http.Request) bool {
 	return r.Header.Get("Worklease-Protocol-Version") == ProtocolVersion

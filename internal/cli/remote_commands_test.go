@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -260,7 +264,11 @@ func TestRemoteCLIInspectsAndReconcilesInterruptedExec(t *testing.T) {
 
 func TestRemoteDoctorAuthenticatesWithoutExposingCredential(t *testing.T) {
 	profile, clientHome, _ := remoteCLIFixture(t)
-	out, err := runRemoteCLI(t, "doctor", "--profile", profile, "--home", clientHome, "--json")
+	before, err := os.ReadDir(clientHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := runRemoteCLI(t, "doctor", "--profile", profile, "--home", clientHome, "--resource", "coordination:doctor", "--json")
 	if err != nil {
 		t.Fatalf("doctor: %v output=%s", err, out)
 	}
@@ -272,8 +280,120 @@ func TestRemoteDoctorAuthenticatesWithoutExposingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, credential) || !strings.Contains(out, "remote.authentication") || !strings.Contains(out, "remote.recovery") {
-		t.Fatalf("doctor output=%s", out)
+	for _, want := range []string{"remote.profile", "remote.credential", "remote.reachability", "remote.tls", "remote.protocol", "remote.metadata", "remote.prefixes", "remote.authentication", "remote.role", "remote.recovery", `current installation role is admin`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, credential) {
+		t.Fatalf("doctor exposed credential: %s", out)
+	}
+	after, err := os.ReadDir(clientHome)
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("doctor mutated local home: before=%v after=%v err=%v", before, after, err)
+	}
+
+	out, err = runRemoteCLI(t, "doctor", "--profile", profile, "--home", clientHome, "--resource", "github:not-admitted", "--json")
+	if err == nil || !strings.Contains(out, `"id":"remote.prefixes","status":"fail"`) || strings.Contains(out, credential) {
+		t.Fatalf("unadmitted doctor err=%v output=%s", err, out)
+	}
+
+	out, err = runRemoteCLI(t, "doctor", "--profile", profile, "--home", clientHome)
+	if err != nil || !strings.HasPrefix(out, "PASS remote onboarding diagnostics\n") || !strings.Contains(out, "rerun with --resource KEY") {
+		t.Fatalf("doctor text err=%v output=%s", err, out)
+	}
+}
+
+func TestRemoteDoctorReportsOldServerDiagnosticsUnavailable(t *testing.T) {
+	clearWorkleaseEnvironment(t)
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	authorityID, restoreID := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	timestamp := "2026-01-01T00:00:00Z"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch r.URL.Path {
+		case "/.well-known/worklease":
+			fmt.Fprintf(w, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"%s","restoreId":"%s","authorityTime":"%s","result":{}}`, authorityID, restoreID, timestamp)
+		case "/v1/installations/self":
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"ok":false,"protocolVersion":"worklease-http/1","authorityId":"%s","restoreId":"%s","authorityTime":"%s","error":{"reason":"invalid-path","message":"old server"}}`, authorityID, restoreID, timestamp)
+		case "/v1/claims/list":
+			fmt.Fprintf(w, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"%s","restoreId":"%s","authorityTime":"%s","result":{"claims":[]}}`, authorityID, restoreID, timestamp)
+		default:
+			t.Fatalf("unexpected diagnostic route %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	paths := config.UserProfilePaths(os.Getenv)
+	credentialPath := filepath.Join(configRoot, "worklease", "credentials", "old")
+	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(credentialPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialPath, []byte(strings.Repeat("c", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := config.Profile{Name: "old", Endpoint: server.URL, AuthorityID: authorityID, RestoreID: restoreID, AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: credentialPath}}
+	if err := config.SaveProfiles(paths, []config.Profile{profile}, "old"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runRemoteCLI(t, "doctor", "--profile", "old", "--home", t.TempDir(), "--json")
+	if err != nil || !strings.Contains(out, `"id":"remote.prefixes","status":"warn"`) || !strings.Contains(out, `"id":"remote.role","status":"warn"`) || !strings.Contains(out, "not verified") {
+		t.Fatalf("old-server doctor err=%v output=%s", err, out)
+	}
+
+	profile.AuthorityID = ""
+	if err := config.SaveProfiles(paths, []config.Profile{profile}, "old"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runRemoteCLI(t, "doctor", "--profile", "old", "--home", t.TempDir(), "--json")
+	if err == nil || !strings.Contains(out, `"id":"remote.metadata","status":"fail"`) || !strings.Contains(out, "does not pin both authority and restore identities") || strings.Contains(out, `"id":"remote.authentication","status":"ok"`) {
+		t.Fatalf("unpinned-profile doctor err=%v output=%s", err, out)
+	}
+}
+
+func TestRemoteDoctorBoundsNetworkProbes(t *testing.T) {
+	clearWorkleaseEnvironment(t)
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	paths := config.UserProfilePaths(os.Getenv)
+	credentialPath := filepath.Join(configRoot, "worklease", "credentials", "slow")
+	if err := handle.StoreCredentialNoReplace(credentialPath, strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
+	profile := config.Profile{Name: "slow", Endpoint: server.URL, AuthorityID: strings.Repeat("a", 32), RestoreID: strings.Repeat("b", 32), AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: credentialPath}}
+	if err := config.SaveProfiles(paths, []config.Profile{profile}, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	previousTimeout := remoteDoctorProbeTimeout
+	remoteDoctorProbeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { remoteDoctorProbeTimeout = previousTimeout })
+	started := time.Now()
+	out, err := runRemoteCLI(t, "doctor", "--profile", "slow", "--home", t.TempDir(), "--json")
+	if err == nil || time.Since(started) > time.Second || !strings.Contains(out, "timed out within the diagnostic deadline") || !strings.Contains(out, "possible causes") {
+		t.Fatalf("bounded doctor duration=%s err=%v output=%s", time.Since(started), err, out)
+	}
+}
+
+func TestRemoteDoctorProbeErrorClassification(t *testing.T) {
+	if got := classifyRemoteProbeError(&net.DNSError{Err: "missing", Name: "redacted.invalid"}); got != "dns" {
+		t.Fatalf("DNS classification = %q", got)
+	}
+	if got := classifyRemoteProbeError(syscall.ECONNREFUSED); got != "refused" {
+		t.Fatalf("refused classification = %q", got)
+	}
+	if got := classifyRemoteProbeError(context.DeadlineExceeded); got != "timeout" {
+		t.Fatalf("timeout classification = %q", got)
+	}
+	if got := classifyRemoteProbeError(reason.New(reason.ReasonAuthorityMismatch, "remote certificate does not match pinned certificate")); got != "tls" {
+		t.Fatalf("TLS classification = %q", got)
+	}
+	if got := classifyRemoteProbeError(reason.New(reason.ReasonProtocolVersionUnsupported, "unsupported")); got != "protocol" {
+		t.Fatalf("protocol classification = %q", got)
 	}
 }
 

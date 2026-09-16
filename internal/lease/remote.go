@@ -23,6 +23,7 @@ const (
 // authority incarnation in the same transaction as each operation.
 type RemoteActor struct {
 	InstallationID    string
+	Role              string
 	AuthorityID       string
 	ExpectedRestoreID string
 	// Credential is the installation bearer. It is accepted only at the
@@ -94,6 +95,19 @@ func reservedRemoteResource(resource string) bool {
 	return strings.HasPrefix(resource, "path:") || strings.HasPrefix(resource, "backlog-md:") || strings.HasPrefix(resource, "markdown:")
 }
 
+// ResourceAdmitted applies the server's exact remote prefix admission rule.
+func ResourceAdmitted(prefixes []string, resource string) bool {
+	if reservedRemoteResource(resource) {
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(resource, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) ResponseContext() ResponseContext {
 	return ResponseContext{AuthorityID: s.st.AuthorityID(), RestoreID: s.st.RestoreID(), AuthorityTime: s.clock.Now().UTC()}
 }
@@ -159,6 +173,7 @@ func (s *Service) authorizeRemoteContext(ctx context.Context, tx *store.Tx, acto
 		return reason.New(reason.ReasonAuthenticationRequired, "installation authentication is required")
 	}
 	actor.InstallationID = installation
+	actor.Role = role
 	if revokedAt != nil {
 		return reason.New(reason.ReasonInstallationRevoked, "installation is revoked")
 	}
@@ -199,18 +214,12 @@ func (s *Service) remoteAdmission(resources []string, ttl, maxHold time.Duration
 		return 0, err
 	}
 	for _, resource := range resources {
-		if reservedRemoteResource(resource) {
-			return 0, reason.New(reason.ReasonResourceNotEnrolled, "host-local resource is not admitted remotely")
-		}
-		allowed := false
-		for _, prefix := range s.remote.Prefixes {
-			if strings.HasPrefix(resource, prefix) {
-				allowed = true
-				break
+		if !ResourceAdmitted(s.remote.Prefixes, resource) {
+			message := "resource prefix is not admitted remotely"
+			if reservedRemoteResource(resource) {
+				message = "host-local resource is not admitted remotely"
 			}
-		}
-		if !allowed {
-			return 0, reason.New(reason.ReasonResourceNotEnrolled, "resource prefix is not admitted remotely")
+			return 0, reason.New(reason.ReasonResourceNotEnrolled, message).With("admittedPrefixes", append([]string(nil), s.remote.Prefixes...))
 		}
 	}
 	return maxHold, nil

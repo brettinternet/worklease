@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/reason"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -84,6 +86,49 @@ func TestRemoteRejectsRedirectAndValidatesEnvelope(t *testing.T) {
 	}
 	if _, err := c.Metadata(context.Background()); err == nil {
 		t.Fatal("unknown envelope field accepted")
+	}
+}
+
+func TestMetadataDecodesOptionalPrefixesAndOldServers(t *testing.T) {
+	p := profileForTest(t)
+	for _, test := range []struct {
+		name, result string
+		wantPrefixes bool
+	}{
+		{name: "old server", result: `{}`, wantPrefixes: false},
+		{name: "prefixes", result: `{"authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","supportedProtocolVersions":["worklease-http/1"],"authorityTime":"2026-01-01T00:00:00Z","admittedPrefixes":["coordination:"]}`, wantPrefixes: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := NewHTTPClient(p, NewFilePendingStore(t.TempDir()), roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(200, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorityTime":"2026-01-01T00:00:00Z","result":`+test.result+`}`), nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata, err := c.Metadata(context.Background())
+			if err != nil || metadata.Metadata == nil || (metadata.Metadata.AdmittedPrefixes != nil) != test.wantPrefixes {
+				t.Fatalf("metadata=%#v err=%v", metadata.Metadata, err)
+			}
+		})
+	}
+}
+
+func TestRemoteErrorPreservesSafeDetails(t *testing.T) {
+	p := profileForTest(t)
+	credential := strings.Repeat("c", 64)
+	if err := handle.StoreCredentialNoReplace(p.Credential.Path, credential); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewHTTPClient(p, NewFilePendingStore(t.TempDir()), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(403, `{"ok":false,"protocolVersion":"worklease-http/1","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorityTime":"2026-01-01T00:00:00Z","error":{"reason":"resource-not-enrolled","message":"redacted","details":{"admittedPrefixes":["coordination:"]}}}`), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Call(context.Background(), RequestSpec{Path: "/v1/claims/list", Body: []byte(`{}`), Kind: "list"})
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonResourceNotEnrolled || classified.Details["admittedPrefixes"] == nil {
+		t.Fatalf("error=%#v", err)
 	}
 }
 
