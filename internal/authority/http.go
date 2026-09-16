@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +15,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -91,6 +94,10 @@ func NewHTTPClient(profile config.Profile, pending PendingStore, transport http.
 	}
 	if transport == nil {
 		transport = http.DefaultTransport
+	}
+	transport, err := withCertificatePin(profile, transport)
+	if err != nil {
+		return nil, err
 	}
 	return &HTTPClient{profile: profile, http: &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, pending: pending, clock: NewAuthorityClock(nil)}, nil
 }
@@ -173,7 +180,7 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 		if credentialRef == "" {
 			credentialRef = c.profile.Credential.Path
 		}
-		p := PendingRequest{RequestID: s.RequestID, OperationID: s.RequestID, Kind: s.Kind, Route: s.Path, TargetOperationID: s.TargetOperationID, CredentialRef: credentialRef, ClaimHandleRef: s.ClaimHandlePath, ClaimCredentialRef: s.ClaimCredentialPath, NewClaimHandleRef: s.NewClaimHandlePath, NewClaimCredentialRef: s.NewClaimCredentialPath, TargetHandleRef: s.TargetHandlePath, AuthorityID: c.profile.AuthorityID, ExpectedRestoreID: c.profile.RestoreID, RequestNotAfter: deadline, Request: s.Body, RequestSHA256: hex.EncodeToString(sum[:]), ParentRequestID: s.ParentRequestID, EffectEvidence: s.EffectEvidence, State: "pending"}
+		p := PendingRequest{RequestID: s.RequestID, OperationID: s.RequestID, Kind: s.Kind, Route: s.Path, TargetOperationID: s.TargetOperationID, CredentialRef: credentialRef, ClaimHandleRef: s.ClaimHandlePath, ClaimCredentialRef: s.ClaimCredentialPath, NewClaimHandleRef: s.NewClaimHandlePath, NewClaimCredentialRef: s.NewClaimCredentialPath, TargetHandleRef: s.TargetHandlePath, AuthorityID: c.profile.AuthorityID, Endpoint: c.profile.Endpoint, CertificateSHA256: c.profile.CertificateSHA256, ExpectedRestoreID: c.profile.RestoreID, RequestNotAfter: deadline, Request: s.Body, RequestSHA256: hex.EncodeToString(sum[:]), ParentRequestID: s.ParentRequestID, EffectEvidence: s.EffectEvidence, State: "pending"}
 		if s.HandlePath != "" {
 			if err := persistHandleRequest(s.HandlePath, s.ClaimID, p, s.NewClaimCredential); err != nil {
 				if !errors.Is(err, errHandlePending) || s.Kind == "operations/begin" {
@@ -238,6 +245,10 @@ func routeForHandleKind(kind string) (string, string, bool) {
 }
 
 // ReplayHandle retries the exact request retained in a named remote handle.
+func (c *HTTPClient) pendingTrustMatches(p PendingRequest) bool {
+	return p.Endpoint != "" && p.Endpoint == c.profile.Endpoint && p.CertificateSHA256 == c.profile.CertificateSHA256 && p.AuthorityID == c.profile.AuthorityID && p.ExpectedRestoreID == c.profile.RestoreID
+}
+
 func (c *HTTPClient) ReplayHandle(ctx context.Context, path string) (Response, error) {
 	h, err := handle.Read(path)
 	if err != nil {
@@ -245,6 +256,10 @@ func (c *HTTPClient) ReplayHandle(ctx context.Context, path string) (Response, e
 	}
 	if h.PendingRequest == nil {
 		return Response{}, reason.Invalid("handle has no pending request")
+	}
+	trust := PendingRequest{Endpoint: h.PendingRequest.Endpoint, CertificateSHA256: h.PendingRequest.CertificateSHA256, AuthorityID: h.PendingRequest.AuthorityID, ExpectedRestoreID: h.PendingRequest.ExpectedRestoreID}
+	if !c.pendingTrustMatches(trust) {
+		return Response{}, reason.New(reason.ReasonAuthorityMismatch, "pending request trust does not match profile")
 	}
 	route, kind, ok := routeForHandleKind(h.PendingRequest.Kind)
 	if !ok {
@@ -299,6 +314,9 @@ func (c *HTTPClient) Replay(ctx context.Context, id string) (Response, error) {
 	p, err := c.pending.Load(id)
 	if err != nil {
 		return Response{}, err
+	}
+	if !c.pendingTrustMatches(p) {
+		return Response{}, reason.New(reason.ReasonAuthorityMismatch, "pending request trust does not match profile")
 	}
 	if p.Kind == "enroll" {
 		return Response{}, reason.Invalid("enrollment replay requires the invite secret")
@@ -391,7 +409,35 @@ func (c *HTTPClient) ReplayEnrollment(ctx context.Context, id, invite string, pr
 	if p.Kind != "enroll" {
 		return config.Profile{}, lease.EnrollResult{}, reason.Invalid("pending request is not enrollment")
 	}
-	if c.clock.ResampleNeeded() {
+	if !hex64(invite) {
+		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonCredentialMalformed, "invite is malformed")
+	}
+	metadataVerified := false
+	if p.Endpoint == "" {
+		if p.CertificateSHA256 != "" || p.AuthorityID != c.profile.AuthorityID || c.profile.AuthorityID == "" {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityMismatch, "legacy pending enrollment trust cannot be established")
+		}
+		metadata, metadataErr := c.Metadata(ctx)
+		if metadataErr != nil {
+			return config.Profile{}, lease.EnrollResult{}, metadataErr
+		}
+		if metadata.AuthorityID != p.AuthorityID || metadata.RestoreID != p.ExpectedRestoreID {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityRestored, "pending enrollment authority incarnation changed")
+		}
+		if err := c.pending.BindTrust(p.RequestID, c.profile.Endpoint, c.profile.CertificateSHA256); err != nil {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonStorageFailure, "legacy pending enrollment trust could not be durably upgraded")
+		}
+		p.Endpoint, p.CertificateSHA256 = c.profile.Endpoint, c.profile.CertificateSHA256
+		c.profile.AuthorityID, c.profile.RestoreID = p.AuthorityID, p.ExpectedRestoreID
+		metadataVerified = true
+	}
+	if p.Endpoint != c.profile.Endpoint || p.CertificateSHA256 != c.profile.CertificateSHA256 || p.AuthorityID != c.profile.AuthorityID {
+		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityMismatch, "pending enrollment trust does not match profile")
+	}
+	if c.profile.RestoreID != "" && p.ExpectedRestoreID != c.profile.RestoreID {
+		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityRestored, "pending enrollment authority incarnation changed")
+	}
+	if !metadataVerified {
 		metadata, err := c.Metadata(ctx)
 		if err != nil {
 			return config.Profile{}, lease.EnrollResult{}, err
@@ -628,18 +674,97 @@ func validateProfileForClient(p config.Profile) error { // config validation is 
 	if p.RestoreID != "" && !validID(p.RestoreID) {
 		return reason.New(reason.ReasonConfigInvalid, "profile restore ID is invalid")
 	}
+	if p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || u.Scheme != "https") {
+		return reason.New(reason.ReasonConfigInvalid, "profile certificate pin requires HTTPS and 64 lowercase hexadecimal characters")
+	}
 	return nil
+}
+
+// withCertificatePin makes the pinned leaf the TLS trust root. Hostname/IP
+// and validity checks remain explicit because pinned deployments commonly use
+// a private or self-signed certificate.
+func withCertificatePin(profile config.Profile, transport http.RoundTripper) (http.RoundTripper, error) {
+	if profile.CertificateSHA256 == "" || !strings.HasPrefix(strings.ToLower(profile.Endpoint), "https://") {
+		return transport, nil
+	}
+	base, ok := transport.(*http.Transport)
+	if !ok {
+		return nil, reason.New(reason.ReasonConfigInvalid, "pinned HTTPS requires the standard HTTP transport")
+	}
+	//lint:ignore SA1019 DialTLS is deprecated but must still be rejected because it bypasses TLSClientConfig.
+	if base.DialTLS != nil || base.DialTLSContext != nil {
+		return nil, reason.New(reason.ReasonConfigInvalid, "pinned HTTPS rejects custom TLS dialers")
+	}
+	clone := base.Clone()
+	tlsConfig := clone.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	tlsConfig.InsecureSkipVerify = true // certificate pin is the configured trust root
+	tlsConfig.VerifyConnection = certificatePinVerifier(profile.Endpoint, profile.CertificateSHA256)
+	clone.TLSClientConfig = tlsConfig
+	return clone, nil
+}
+
+func certificatePinVerifier(endpoint, expected string) func(tls.ConnectionState) error {
+	u, _ := url.Parse(endpoint)
+	host := u.Hostname()
+	return func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) == 0 {
+			return reason.New(reason.ReasonAuthorityMismatch, "remote certificate is missing")
+		}
+		leaf := state.PeerCertificates[0]
+		now := time.Now()
+		if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+			return reason.New(reason.ReasonAuthorityMismatch, "remote certificate is not currently valid")
+		}
+		if err := leaf.VerifyHostname(host); err != nil {
+			return reason.New(reason.ReasonAuthorityMismatch, "remote certificate does not match endpoint hostname")
+		}
+		digest := sha256.Sum256(leaf.Raw)
+		decoded, err := hex.DecodeString(expected)
+		if err != nil || len(decoded) != sha256.Size || subtle.ConstantTimeCompare(digest[:], decoded) != 1 {
+			return reason.New(reason.ReasonAuthorityMismatch, "remote certificate does not match pinned certificate")
+		}
+		return nil
+	}
 }
 
 // Enroll performs metadata trust establishment, then writes the credential and
 // exact request before sending it. The profile is returned only after success.
 func (c *HTTPClient) Enroll(ctx context.Context, invite, label string, profilePath config.ProfilePaths) (config.Profile, lease.EnrollResult, error) {
+	pending, err := c.pending.List()
+	if err != nil {
+		return config.Profile{}, lease.EnrollResult{}, err
+	}
+	var enrollment *PendingRequest
+	for i := range pending {
+		if pending[i].Kind != "enroll" {
+			continue
+		}
+		if enrollment != nil {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonCredentialSourceConflict, "multiple pending enrollments require explicit recovery")
+		}
+		copy := pending[i]
+		enrollment = &copy
+	}
+	if enrollment != nil {
+		if enrollment.CredentialRef != c.profile.Credential.Path {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonCredentialUnsafe, "pending enrollment credential path conflicts with profile")
+		}
+		return c.ReplayEnrollment(ctx, enrollment.RequestID, invite, profilePath)
+	}
 	if c.profile.AuthorityID == "" {
 		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityMismatch, "enrollment requires a pinned expected authority")
 	}
 	metadata, err := c.Metadata(ctx)
 	if err != nil {
 		return config.Profile{}, lease.EnrollResult{}, err
+	}
+	if c.profile.RestoreID != "" && metadata.RestoreID != c.profile.RestoreID {
+		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityRestored, "remote authority incarnation does not match profile")
 	}
 	// Discovery establishes the immutable identities used by the durable
 	// enrollment request and every subsequent profile request.
@@ -652,7 +777,7 @@ func (c *HTTPClient) Enroll(ctx context.Context, invite, label string, profilePa
 	if err != nil {
 		return config.Profile{}, lease.EnrollResult{}, err
 	}
-	if err := handle.StoreCredential(c.profile.Credential.Path, cred); err != nil {
+	if err := handle.StoreCredentialNoReplace(c.profile.Credential.Path, cred); err != nil {
 		return config.Profile{}, lease.EnrollResult{}, err
 	}
 	deadline := metadata.AuthorityTime.Add(24 * time.Hour)
@@ -660,6 +785,11 @@ func (c *HTTPClient) Enroll(ctx context.Context, invite, label string, profilePa
 	spec := RequestSpec{Path: "/v1/enroll", Body: body, Kind: "enroll", RequestID: id, Mutating: true, Terminal: true, Invite: invite, NewCredential: cred}
 	response, err := c.Call(ctx, spec)
 	if err != nil {
+		if _, pendingErr := c.pending.Load(id); errors.Is(pendingErr, os.ErrNotExist) {
+			if removeErr := handle.RemoveOwnerPrivate(c.profile.Credential.Path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonStorageFailure, "failed enrollment credential cleanup")
+			}
+		}
 		return config.Profile{}, lease.EnrollResult{}, err
 	}
 	return c.activateEnrollment(id, response, profilePath)
@@ -673,7 +803,7 @@ func (c *HTTPClient) activateEnrollment(id string, response Response, profilePat
 	if !validID(enrolled.InstallationID) || (enrolled.Role != "read" && enrolled.Role != "write" && enrolled.Role != "admin") || enrolled.EnrolledAt.IsZero() {
 		return config.Profile{}, lease.EnrollResult{}, reason.Invalid("remote enrollment result is invalid")
 	}
-	out := config.Profile{Name: c.profile.Name, Endpoint: c.profile.Endpoint, AuthorityID: c.profile.AuthorityID, RestoreID: c.profile.RestoreID, AllowInsecureHTTP: c.profile.AllowInsecureHTTP, Credential: c.profile.Credential}
+	out := config.Profile{Name: c.profile.Name, Endpoint: c.profile.Endpoint, AuthorityID: c.profile.AuthorityID, RestoreID: c.profile.RestoreID, CertificateSHA256: c.profile.CertificateSHA256, AllowInsecureHTTP: c.profile.AllowInsecureHTTP, Credential: c.profile.Credential}
 	if profilePath.Profiles == "" {
 		return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonStorageFailure, "profile activation path is required")
 	}
@@ -681,7 +811,18 @@ func (c *HTTPClient) activateEnrollment(id string, response Response, profilePat
 	if err != nil {
 		return config.Profile{}, lease.EnrollResult{}, err
 	}
+	if existing, ok := profiles[out.Name]; ok {
+		if existing.Endpoint != out.Endpoint || existing.AuthorityID != out.AuthorityID || existing.CertificateSHA256 != out.CertificateSHA256 {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonAuthorityMismatch, "profile trust does not match invite artifact")
+		}
+		if existing.Credential.Path != out.Credential.Path {
+			return config.Profile{}, lease.EnrollResult{}, reason.New(reason.ReasonCredentialUnsafe, "profile credential path collision")
+		}
+	}
 	profiles[out.Name] = out
+	if defaultName == "" {
+		defaultName = out.Name
+	}
 	list := make([]config.Profile, 0, len(profiles))
 	for _, profile := range profiles {
 		list = append(list, profile)

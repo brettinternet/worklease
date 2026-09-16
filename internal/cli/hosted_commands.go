@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/authority"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -184,8 +187,9 @@ func validateHostedInitContents(home, invitePath string) error {
 		store.DatabaseFileName + "-shm": true,
 		"handles":                       true,
 	}
-	if relative, relErr := filepath.Rel(home, invitePath); relErr == nil && filepath.Dir(relative) == "." {
-		allowed[filepath.Base(relative)] = true
+	if relative, relErr := filepath.Rel(home, invitePath); relErr == nil && filepath.Dir(relative) == "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		allowed[relative] = true
+		allowed[relative+".legacy-secret"] = true
 	}
 	for _, entry := range entries {
 		if !allowed[entry.Name()] {
@@ -209,6 +213,73 @@ func stageHostedSecret(path string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+// Init keeps a durable legacy secret beside the artifact until initialization
+// is ready. This preserves crash recovery while making the transferred file a
+// single self-contained artifact.
+func stageHostedInitSecret(path string, allowArtifact bool) (string, error) {
+	if data, err := handle.ReadOwnerPrivate(path, authority.MaxInviteArtifactBytes+1); err == nil {
+		if artifact, decodeErr := authority.DecodeInviteArtifact(strings.TrimSuffix(string(data), "\n")); decodeErr == nil {
+			if !allowArtifact {
+				return "", reason.New(reason.ReasonCredentialUnsafe, "preexisting invite artifact requires a recoverable hosted authority")
+			}
+			return artifact.Invite, nil
+		}
+		return store.ReadHostedSecret(path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	legacy := path + ".legacy-secret"
+	return stageHostedSecret(legacy)
+}
+
+func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup *guidedSetupResult, secret string, advertisedEndpoint string, listen string, insecure bool) error {
+	endpoint, pin := "", ""
+	if setup != nil {
+		endpoint, pin = setup.Endpoint, setup.Fingerprint
+	}
+	if endpoint == "" {
+		endpoint = strings.TrimSpace(advertisedEndpoint)
+	}
+	if endpoint == "" {
+		scheme := "https"
+		if insecure {
+			scheme = "http"
+		}
+		endpoint = scheme + "://" + listen
+	}
+	desired := authority.InviteArtifact{Version: 1, Endpoint: endpoint, AuthorityID: result.AuthorityID, CertificateSHA256: pin, ProfileHint: "admin", Invite: secret}
+	encoded, err := authority.EncodeInviteArtifact(desired)
+	if err != nil {
+		return err
+	}
+	data, readErr := handle.ReadOwnerPrivate(path, authority.MaxInviteArtifactBytes+1)
+	if readErr == nil {
+		value := strings.TrimSuffix(string(data), "\n")
+		if existing, decodeErr := authority.DecodeInviteArtifact(value); decodeErr == nil {
+			if existing != desired {
+				return reason.New(reason.ReasonAuthorityMismatch, "existing invite artifact conflicts with hosted authority")
+			}
+		} else {
+			legacy, legacyErr := store.ReadHostedSecret(path)
+			if legacyErr != nil || legacy != secret {
+				return reason.New(reason.ReasonCredentialUnsafe, "existing bootstrap invite conflicts with hosted authority")
+			}
+			if err := handle.WriteOwnerPrivate(path, []byte(encoded+"\n"), authority.MaxInviteArtifactBytes+1); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	} else if err := handle.WriteOwnerPrivateNoReplace(path, []byte(encoded+"\n"), authority.MaxInviteArtifactBytes+1); err != nil {
+		return err
+	}
+	legacyPath := path + ".legacy-secret"
+	if err := handle.RemoveOwnerPrivate(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 func parseHostedTime(value, name string, required bool) (time.Time, error) {
 	if strings.TrimSpace(value) == "" {
@@ -401,6 +472,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		return hostedError(s, cmd, reason.New(reason.ReasonHomeUnsafe, "hosted marker is unsafe"))
 	}
 	guidedCommitted = true
+	allowArtifact := false
 	if resuming {
 		if err := validateHostedInitContents(home, invitePath); err != nil {
 			return hostedError(s, cmd, err)
@@ -409,6 +481,7 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		if readyErr != nil {
 			return hostedError(s, cmd, readyErr)
 		}
+		allowArtifact = ready
 		if ready {
 			if _, databaseErr := os.Lstat(filepath.Join(home, store.DatabaseFileName)); errors.Is(databaseErr, os.ErrNotExist) {
 				return hostedError(s, cmd, reason.New(reason.ReasonStorageFailure, "ready server authority database is missing"))
@@ -417,14 +490,18 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 			}
 		}
 		if _, secretErr := os.Lstat(invitePath); errors.Is(secretErr, os.ErrNotExist) {
-			if _, databaseErr := os.Lstat(filepath.Join(home, store.DatabaseFileName)); !errors.Is(databaseErr, os.ErrNotExist) {
-				return hostedError(s, cmd, reason.Invalid("incomplete hosted home requires its staged bootstrap secret"))
+			if _, legacyErr := os.Lstat(invitePath + ".legacy-secret"); errors.Is(legacyErr, os.ErrNotExist) {
+				if _, databaseErr := os.Lstat(filepath.Join(home, store.DatabaseFileName)); !errors.Is(databaseErr, os.ErrNotExist) {
+					return hostedError(s, cmd, reason.Invalid("incomplete hosted home requires its staged bootstrap secret"))
+				}
+			} else if legacyErr != nil {
+				return hostedError(s, cmd, legacyErr)
 			}
 		} else if secretErr != nil {
 			return hostedError(s, cmd, secretErr)
 		}
 	}
-	secret, err := stageHostedSecret(invitePath)
+	secret, err := stageHostedInitSecret(invitePath, allowArtifact)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
@@ -448,6 +525,21 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 		return hostedError(s, cmd, err)
 	}
 	if err := st.Close(); err != nil {
+		return hostedError(s, cmd, err)
+	}
+	artifactSetup := guided
+	if artifactSetup == nil && config.AdvertisedEndpoint != "" && config.TLSCert != "" {
+		endpoint, parseErr := url.Parse(config.AdvertisedEndpoint)
+		if parseErr != nil {
+			return hostedError(s, cmd, reason.New(reason.ReasonConfigInvalid, "advertised endpoint is invalid"))
+		}
+		fingerprint, _, _, inspectErr := inspectGuidedCertificate(config.TLSCert, config.TLSKey, endpoint.Hostname())
+		if inspectErr != nil {
+			return hostedError(s, cmd, inspectErr)
+		}
+		artifactSetup = &guidedSetupResult{Endpoint: config.AdvertisedEndpoint, Fingerprint: fingerprint}
+	}
+	if err := writeHostedInviteArtifact(invitePath, result, artifactSetup, secret, config.AdvertisedEndpoint, config.Listen, config.AllowInsecureHTTP); err != nil {
 		return hostedError(s, cmd, err)
 	}
 	if guided != nil {

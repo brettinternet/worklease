@@ -25,6 +25,7 @@ type Profile struct {
 	Endpoint          string               `yaml:"endpoint" json:"endpoint"`
 	AuthorityID       string               `yaml:"authorityId" json:"authorityId"`
 	RestoreID         string               `yaml:"restoreId" json:"restoreId"`
+	CertificateSHA256 string               `yaml:"certificateSha256,omitempty" json:"certificateSha256,omitempty"`
 	AllowInsecureHTTP bool                 `yaml:"allowInsecureHTTP,omitempty" json:"allowInsecureHTTP,omitempty"`
 	Credential        CredentialDescriptor `yaml:"credential" json:"credential"`
 }
@@ -170,9 +171,16 @@ func SaveBindings(paths ProfilePaths, bindings map[string]string) error {
 	return writePrivate(paths.Bindings, data)
 }
 
-func validateProfile(p Profile) error {
-	if p.Name == "" || strings.TrimSpace(p.Name) != p.Name || strings.ContainsAny(p.Name, "/\\\x00\r\n") {
+func ValidateProfileName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.TrimSpace(name) != name || len(name) > 128 || strings.ContainsAny(name, "/\\\x00\r\n") {
 		return fmt.Errorf("profile name is invalid")
+	}
+	return nil
+}
+
+func validateProfile(p Profile) error {
+	if err := ValidateProfileName(p.Name); err != nil {
+		return err
 	}
 	u, err := url.Parse(p.Endpoint)
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" && u.Path != "/" {
@@ -189,11 +197,26 @@ func validateProfile(p Profile) error {
 	if p.RestoreID != "" && !hexID(p.RestoreID) {
 		return fmt.Errorf("profile restore ID is invalid")
 	}
+	if p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || u.Scheme != "https") {
+		return fmt.Errorf("profile certificate pin requires HTTPS and 64 lowercase hexadecimal characters")
+	}
 	if p.Credential.Path == "" || !filepath.IsAbs(p.Credential.Path) {
 		return fmt.Errorf("credential path must be absolute")
 	}
 	return nil
 }
+func hex64(s string) bool {
+	if len(s) != 64 || s != strings.ToLower(s) {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func hexID(s string) bool {
 	if len(s) != 32 || s != strings.ToLower(s) {
 		return false

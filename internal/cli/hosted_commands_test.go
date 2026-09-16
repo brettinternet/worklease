@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/reason"
 	workleaseserver "github.com/brettinternet/worklease/internal/server"
@@ -204,8 +205,19 @@ func TestGuidedServerInitGeneratesTLSAndHandoff(t *testing.T) {
 			t.Fatalf("guided JSON output lacks %q: %s", required, out.String())
 		}
 	}
-	if secret, err := os.ReadFile(invitePath); err != nil || strings.Contains(out.String(), strings.TrimSpace(string(secret))) {
-		t.Fatalf("bootstrap secret leaked or unreadable: err=%v", err)
+	artifactBytes, err := os.ReadFile(invitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(artifactBytes)))
+	if err != nil || artifact.ProfileHint != "admin" || artifact.Endpoint != cfg.AdvertisedEndpoint || artifact.CertificateSHA256 != certificateFingerprint(leaf) {
+		t.Fatalf("bootstrap artifact=%+v err=%v", artifact, err)
+	}
+	if strings.Contains(out.String(), artifact.Invite) {
+		t.Fatal("bootstrap invite leaked in output")
+	}
+	if _, err := os.Stat(invitePath + ".legacy-secret"); !os.IsNotExist(err) {
+		t.Fatalf("legacy staging secret remains after artifact publication: %v", err)
 	}
 }
 

@@ -2,9 +2,15 @@ package authority
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
@@ -19,6 +25,51 @@ func TestClientAllowsExplicitInsecureLANEndpoint(t *testing.T) {
 	profile.AllowInsecureHTTP = false
 	if _, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(dir, "pending-secure")), nil); err == nil {
 		t.Fatal("insecure LAN endpoint accepted without explicit opt-in")
+	}
+}
+
+func TestPinnedTLSAppliesBeforeEnrollmentAndLaterBearerRequests(t *testing.T) {
+	const authorityID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const restoreID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	var calls int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/.well-known/worklease" && r.Header.Get("Authorization") != "Bearer "+strings.Repeat("d", 64) {
+			t.Errorf("later request bearer=%q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"%s","restoreId":"%s","authorityTime":%q,"result":{}}`, authorityID, restoreID, time.Now().UTC().Format(time.RFC3339Nano))
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	credentialPath := filepath.Join(root, "credential")
+	if err := handle.StoreCredential(credentialPath, strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	pin := sha256.Sum256(server.Certificate().Raw)
+	profile := config.Profile{Name: "pinned", Endpoint: server.URL, AuthorityID: authorityID, RestoreID: restoreID, CertificateSHA256: hex.EncodeToString(pin[:]), Credential: config.CredentialDescriptor{Path: credentialPath}}
+	client, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "pending")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Metadata(context.Background()); err != nil {
+		t.Fatalf("pinned metadata: %v", err)
+	}
+	if _, err := client.Call(context.Background(), RequestSpec{Path: "/v1/claims/list"}); err != nil {
+		t.Fatalf("pinned later request: %v", err)
+	}
+	before := calls
+	profile.CertificateSHA256 = strings.Repeat("0", 64)
+	wrong, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "wrong-pending")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrong.Call(context.Background(), RequestSpec{Path: "/v1/claims/list"}); err == nil {
+		t.Fatal("wrong certificate pin was accepted")
+	}
+	if calls != before {
+		t.Fatal("bearer request reached handler before wrong pin rejection")
 	}
 }
 

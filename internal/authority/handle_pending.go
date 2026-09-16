@@ -53,7 +53,7 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 	if kind == "operations/begin" {
 		kind = "exec"
 	}
-	h.PendingRequest = &handle.PendingRequest{OperationID: p.OperationID, Kind: kind, AuthorityID: p.AuthorityID, ClaimID: h.ClaimID, RequestHash: p.RequestSHA256, RequestNotAfter: p.RequestNotAfter, ExpectedRestoreID: p.ExpectedRestoreID, Request: append([]byte(nil), p.Request...), ParentRequestID: p.ParentRequestID, EffectEvidence: append([]byte(nil), p.EffectEvidence...), Inputs: map[string]any{"request": string(p.Request), "expectedRestoreId": p.ExpectedRestoreID, "parentRequestId": p.ParentRequestID, "newClaimHandleRef": p.NewClaimHandleRef}}
+	h.PendingRequest = &handle.PendingRequest{OperationID: p.OperationID, Kind: kind, AuthorityID: p.AuthorityID, Endpoint: p.Endpoint, CertificateSHA256: p.CertificateSHA256, ClaimID: h.ClaimID, RequestHash: p.RequestSHA256, RequestNotAfter: p.RequestNotAfter, ExpectedRestoreID: p.ExpectedRestoreID, Request: append([]byte(nil), p.Request...), ParentRequestID: p.ParentRequestID, EffectEvidence: append([]byte(nil), p.EffectEvidence...), Inputs: map[string]any{"request": string(p.Request), "expectedRestoreId": p.ExpectedRestoreID, "parentRequestId": p.ParentRequestID, "newClaimHandleRef": p.NewClaimHandleRef}}
 	if kind == "transfer" {
 		h.PendingRequest.SuccessorToken = newToken
 	}

@@ -93,6 +93,8 @@ type PendingRequest struct {
 	OperationID       string          `json:"operationId,omitempty"`
 	Kind              string          `json:"kind"`
 	AuthorityID       string          `json:"authorityId"`
+	Endpoint          string          `json:"endpoint,omitempty"`
+	CertificateSHA256 string          `json:"certificateSha256,omitempty"`
 	ClaimID           string          `json:"claimId,omitempty"`
 	RequestHash       string          `json:"requestSha256,omitempty"`
 	RequestNotAfter   time.Time       `json:"requestNotAfter,omitempty"`
@@ -949,6 +951,53 @@ func ReadCredential(path string) (string, error) {
 	}
 	return readCredential(bytes.NewReader(b))
 }
+func ReadBoundedFD(fd int, max int64) ([]byte, error) {
+	if fd < 0 || max < 0 {
+		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
+	}
+	dup, e := unix.Dup(fd)
+	if e != nil {
+		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
+	}
+	unix.CloseOnExec(dup)
+	file := os.NewFile(uintptr(dup), "bounded-input")
+	if file == nil {
+		_ = unix.Close(dup)
+		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
+	}
+	defer file.Close()
+	data, e := io.ReadAll(io.LimitReader(file, max+1))
+	if e != nil || int64(len(data)) > max {
+		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential source is oversized")
+	}
+	return data, nil
+}
+
+func WriteBoundedFD(fd int, data []byte, max int64) error {
+	if fd < 0 || max < 0 || int64(len(data)) > max {
+		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
+	}
+	dup, err := unix.Dup(fd)
+	if err != nil {
+		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be written")
+	}
+	unix.CloseOnExec(dup)
+	file := os.NewFile(uintptr(dup), "bounded-output")
+	if file == nil {
+		_ = unix.Close(dup)
+		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be written")
+	}
+	if _, err = file.Write(data); err == nil {
+		err = file.Close()
+	} else {
+		_ = file.Close()
+	}
+	if err != nil {
+		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be written")
+	}
+	return nil
+}
+
 func ReadCredentialFD(fd int) (string, error) {
 	if fd < 0 {
 		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
@@ -974,10 +1023,10 @@ func readCredential(r io.Reader) (string, error) {
 	if len(b) > 0 && b[len(b)-1] == '\n' {
 		b = b[:len(b)-1]
 	}
-	if len(b) != 64 {
+	v := string(b)
+	if len(v) != 64 {
 		return "", newHandleError(reason.ReasonCredentialMalformed, "credential is malformed")
 	}
-	v := string(b)
 	if err := validateToken(v); err != nil {
 		return "", err
 	}
@@ -997,12 +1046,25 @@ func ResolveCredential(path string, fd *int) (string, error) {
 // plaintext is accepted only in memory and is never part of a profile or
 // request record.
 func StoreCredential(path, credential string) error {
+	return storeCredential(path, credential, false)
+}
+
+// StoreCredentialNoReplace creates an enrollment credential without replacing
+// an existing enrolled credential.
+func StoreCredentialNoReplace(path, credential string) error {
+	return storeCredential(path, credential, true)
+}
+
+func storeCredential(path, credential string, noReplace bool) error {
 	if err := validateToken(credential); err != nil {
 		return err
 	}
 	parent := filepath.Dir(path)
 	if err := EnsureOwnerPrivateDir(parent); err != nil {
 		return newHandleError(reason.ReasonCredentialUnsafe, "credential source directory is unsafe")
+	}
+	if noReplace {
+		return WriteOwnerPrivateNoReplace(path, []byte(credential+"\n"), MaxCredentialBytes+1)
 	}
 	return WriteOwnerPrivate(path, []byte(credential+"\n"), MaxCredentialBytes+1)
 }

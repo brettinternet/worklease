@@ -18,7 +18,8 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 type failingStore struct{}
 
-func (failingStore) Save(PendingRequest) error { return errors.New("disk full") }
+func (failingStore) Save(PendingRequest) error              { return errors.New("disk full") }
+func (failingStore) BindTrust(string, string, string) error { return errors.New("disk full") }
 func (failingStore) Load(string) (PendingRequest, error) {
 	return PendingRequest{}, errors.New("missing")
 }

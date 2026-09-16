@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,53 @@ func TestInviteFromCommandUsesHiddenPromptWithoutInviteOption(t *testing.T) {
 	invite, err := inviteFromCommand(command)
 	if err != nil || invite != strings.Repeat("a", 64) {
 		t.Fatalf("hidden invite=%q err=%v", invite, err)
+	}
+}
+
+func TestInviteFromCommandParsesHiddenArtifact(t *testing.T) {
+	original := readHiddenInvite
+	artifact, err := authority.EncodeInviteArtifact(authority.InviteArtifact{Endpoint: "https://authority.example", AuthorityID: strings.Repeat("a", 32), ProfileHint: "team", Invite: strings.Repeat("b", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readHiddenInvite = func() (string, error) { return artifact, nil }
+	t.Cleanup(func() { readHiddenInvite = original })
+	invite, err := inviteFromCommand(&urfave.Command{})
+	if err != nil || invite != strings.Repeat("b", 64) {
+		t.Fatalf("hidden artifact invite=%q err=%v", invite, err)
+	}
+}
+
+func TestArtifactEnrollmentRejectsEstablishedProfileCollision(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	paths := config.UserProfilePaths(os.Getenv)
+	credentialPath := filepath.Join(configRoot, "worklease", "credentials", "team")
+	existing := config.Profile{Name: "team", Endpoint: "https://established.example", AuthorityID: strings.Repeat("a", 32), Credential: config.CredentialDescriptor{Path: credentialPath}}
+	if err := config.SaveProfiles(paths, []config.Profile{existing}, ""); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := authority.EncodeInviteArtifact(authority.InviteArtifact{Endpoint: "https://replacement.example", AuthorityID: existing.AuthorityID, ProfileHint: "team", Invite: strings.Repeat("b", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactRoot = filepath.Join(artifactRoot, "secrets")
+	if err := handle.EnsureOwnerPrivateDir(artifactRoot); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(artifactRoot, "invite")
+	if err := handle.WriteOwnerPrivateNoReplace(artifactPath, []byte(artifact+"\n"), authority.MaxInviteArtifactBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRemoteCLI(t, "enroll", "--invite-file", artifactPath, "--json"); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonAuthorityMismatch {
+		t.Fatalf("profile collision error=%v", err)
+	}
+	if _, err := os.Stat(credentialPath); !os.IsNotExist(err) {
+		t.Fatalf("profile collision created credential: %v", err)
 	}
 }
 
@@ -238,6 +286,64 @@ func TestRemoteReplaceRejectsBeforeReadingFiles(t *testing.T) {
 	}
 }
 
+func TestArtifactEnrollmentFromFileAndFDActivatesDefaultProfile(t *testing.T) {
+	adminProfile, adminHome, _ := remoteCLIFixture(t)
+	secretRoot := filepath.Join(t.TempDir(), "secrets")
+	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {
+		t.Fatal(err)
+	}
+	fileArtifact := filepath.Join(secretRoot, "file.invite")
+	fdArtifact := filepath.Join(secretRoot, "fd.invite")
+	if out, err := runRemoteCLI(t, "invite", "issue", "--profile", adminProfile, "--home", adminHome, "--invite-file", fileArtifact, "--label", "file-team", "--json"); err != nil {
+		t.Fatalf("file invite issue: %v output=%s", err, out)
+	}
+	if out, err := runRemoteCLI(t, "invite", "issue", "--profile", adminProfile, "--home", adminHome, "--invite-file", fdArtifact, "--label", "fd-team", "--json"); err != nil {
+		t.Fatalf("fd invite issue: %v output=%s", err, out)
+	}
+
+	fileConfig := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", fileConfig)
+	if out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", fileArtifact, "--allow-insecure-http", "--json"); err != nil {
+		t.Fatalf("artifact file enrollment: %v output=%s", err, out)
+	}
+	profiles, defaultName, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil || defaultName != "file-team" || profiles[defaultName].AuthorityID == "" {
+		t.Fatalf("file enrollment profiles=%+v default=%q err=%v", profiles, defaultName, err)
+	}
+	if out, err := runRemoteCLI(t, "list", "--home", t.TempDir(), "--json"); err != nil {
+		t.Fatalf("default profile later request: %v output=%s", err, out)
+	}
+
+	fdConfig := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", fdConfig)
+	input, err := os.Open(fdArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	if out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-fd", strconv.Itoa(int(input.Fd())), "--allow-insecure-http", "--json"); err != nil {
+		t.Fatalf("artifact fd enrollment: %v output=%s", err, out)
+	}
+	profiles, defaultName, err = config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil || defaultName != "fd-team" || profiles[defaultName].AuthorityID == "" {
+		t.Fatalf("fd enrollment profiles=%+v default=%q err=%v", profiles, defaultName, err)
+	}
+}
+
+func TestDefinitiveInviteIssueFailureClearsStage(t *testing.T) {
+	profile, clientHome, _ := remoteCLIFixture(t)
+	secretRoot := filepath.Join(t.TempDir(), "secrets")
+	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRemoteCLI(t, "invite", "issue", "--profile", profile, "--home", clientHome, "--role", "invalid", "--invite-file", filepath.Join(secretRoot, "invalid"), "--json"); err == nil {
+		t.Fatal("invalid invite role was accepted")
+	}
+	if out, err := runRemoteCLI(t, "invite", "issue", "--profile", profile, "--home", clientHome, "--role", "read", "--invite-file", filepath.Join(secretRoot, "valid"), "--json"); err != nil {
+		t.Fatalf("valid issue after definitive failure: %v output=%s", err, out)
+	}
+}
+
 func TestRemoteInviteWritesOnlyProtectedSecretFile(t *testing.T) {
 	profile, clientHome, _ := remoteCLIFixture(t)
 	secretRoot, err := filepath.EvalSymlinks(t.TempDir())
@@ -253,11 +359,15 @@ func TestRemoteInviteWritesOnlyProtectedSecretFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invite: %v output=%s", err, out)
 	}
-	secret, err := handle.ReadCredential(secretPath)
+	raw, err := handle.ReadOwnerPrivate(secretPath, authority.MaxInviteArtifactBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, secret) {
+	artifact, err := authority.DecodeInviteArtifact(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, artifact.Invite) {
 		t.Fatal("ordinary output exposed invite secret")
 	}
 }

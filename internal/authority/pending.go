@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,8 @@ type PendingRequest struct {
 	OperationID           string          `json:"operationId,omitempty"`
 	Kind                  string          `json:"kind"`
 	AuthorityID           string          `json:"authorityId"`
+	Endpoint              string          `json:"endpoint"`
+	CertificateSHA256     string          `json:"certificateSha256,omitempty"`
 	ExpectedRestoreID     string          `json:"expectedRestoreId"`
 	RequestNotAfter       time.Time       `json:"requestNotAfter"`
 	Request               []byte          `json:"request"`
@@ -41,6 +44,7 @@ type PendingRequest struct {
 
 type PendingStore interface {
 	Save(PendingRequest) error
+	BindTrust(string, string, string) error
 	Load(string) (PendingRequest, error)
 	Clear(string) error
 	List() ([]PendingRequest, error)
@@ -97,6 +101,31 @@ func (s *FilePendingStore) Save(p PendingRequest) error {
 	}
 	return syncDir(s.Dir)
 }
+func (s *FilePendingStore) BindTrust(id, endpoint, certificateSHA256 string) error {
+	p, err := s.Load(id)
+	if err != nil {
+		return err
+	}
+	if p.Endpoint != "" {
+		if p.Endpoint == endpoint && p.CertificateSHA256 == certificateSHA256 {
+			return nil
+		}
+		return fmt.Errorf("pending request trust is already bound differently")
+	}
+	p.Endpoint, p.CertificateSHA256 = endpoint, certificateSHA256
+	if err := validatePending(p); err != nil {
+		return err
+	}
+	data, err := json.Marshal(p)
+	if err != nil || len(data) > maxPendingBytes {
+		return fmt.Errorf("pending request trust update is invalid")
+	}
+	if err := handle.WriteOwnerPrivate(s.path(id), data, maxPendingBytes); err != nil {
+		return err
+	}
+	return syncDir(s.Dir)
+}
+
 func (s *FilePendingStore) Load(id string) (PendingRequest, error) {
 	var p PendingRequest
 	if err := s.validateDir(); err != nil {
@@ -158,7 +187,7 @@ func (s *FilePendingStore) read(id string) ([]byte, error) {
 	return handle.ReadOwnerPrivate(s.path(id), maxPendingBytes)
 }
 func validatePending(p PendingRequest) error {
-	if !validRequestID(p.RequestID) || p.Kind == "" || !strings.HasPrefix(p.Route, "/v1/") || !validID(p.AuthorityID) || !validID(p.ExpectedRestoreID) || p.RequestNotAfter.IsZero() || len(p.Request) == 0 || len(p.Request) > maxPendingBytes {
+	if !validRequestID(p.RequestID) || p.Kind == "" || !strings.HasPrefix(p.Route, "/v1/") || !validID(p.AuthorityID) || (p.Endpoint != "" && !validEndpoint(p.Endpoint)) || (p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || !strings.HasPrefix(p.Endpoint, "https://"))) || !validID(p.ExpectedRestoreID) || p.RequestNotAfter.IsZero() || len(p.Request) == 0 || len(p.Request) > maxPendingBytes {
 		return fmt.Errorf("pending request is malformed")
 	}
 	for _, ref := range []string{p.CredentialRef, p.ClaimHandleRef, p.ClaimCredentialRef, p.NewClaimHandleRef, p.NewClaimCredentialRef, p.TargetHandleRef} {
@@ -172,6 +201,10 @@ func validatePending(p PendingRequest) error {
 		return fmt.Errorf("pending request hash is malformed")
 	}
 	return nil
+}
+func validEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	return err == nil && u.Scheme != "" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/") && (u.Scheme == "http" || u.Scheme == "https")
 }
 func validRequestID(s string) bool { return validID(s) }
 func validID(s string) bool {

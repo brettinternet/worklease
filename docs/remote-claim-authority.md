@@ -94,7 +94,7 @@ remove and re-add the profile. Credential-bearing redirects are refused.
 The exact profile commands are:
 
 ```text
-worklease profile add NAME --endpoint URL --authority-id ID [--allow-insecure-http]
+worklease profile add NAME --endpoint URL --authority-id ID [--certificate-sha256 HEX] [--allow-insecure-http]
 worklease profile list                         # alias: profile ls
 worklease profile show NAME
 worklease profile remove NAME
@@ -105,25 +105,28 @@ worklease profile unbind [--cwd DIR]
 
 `profile add` performs bounded metadata discovery and pins the supplied
 `authorityId` and the discovered `restoreId` before saving. Its only command
-flags are `--endpoint URL`, `--authority-id ID`, and
-`--allow-insecure-http`. `profile list` is local and setup-free; profile
+flags are `--endpoint URL`, `--authority-id ID`, `--certificate-sha256 HEX`,
+and `--allow-insecure-http`. `profile list` is local and setup-free; profile
 credentials are not printed.
 
 An admin issues a one-time invite to an owner-private file or inherited file
 descriptor, then the new installation enrolls with that invite:
 
 ```text
-worklease invite issue --profile NAME --role read|write|admin \
+worklease invite issue --profile NAME [--role read|write|admin] \
   (--invite-file FILE|--invite-fd N) [--label TEXT] [--expires-at RFC3339] \
   [--operation-id ID] [--request-not-after RFC3339]
-worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]
+worklease enroll [--profile NAME] (--invite-file FILE|--invite-fd N) [--label TEXT]
 ```
 
 Invite and enrollment rules:
 
-- `invite issue` requires one output source and supports the long-only replay
-  flags shown above.
-- File output is durable before dispatch; fd callers own durable capture.
+- `invite issue` requires one output source, defaults to the `write` role, and
+  supports the long-only replay flags shown above.
+- File output is a self-contained invite artifact and is durable before
+  dispatch; fd callers own durable capture. See
+  [Remote invite artifacts](remote-invite-artifact.md) for trust and legacy
+  recovery details.
 - Only the invite SHA-256 reaches the authority.
 - Non-interactive enrollment requires one file or fd; terminals may prompt
   without echo.
