@@ -108,6 +108,13 @@ Claims live in an owner-private local SQLite authority. Each session has a
 private, authority-bound handle. Use a different `-s` for each concurrent loop
 in one checkout. Credentials are never printed.
 
+Worklease exposes non-secret claimant metadata:
+
+- `agentId` — the claimant identity
+- `sessionId` — the agent loop/session
+- `workKey` — what it says it’s working on
+- `claimId` and expiry
+
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
 
