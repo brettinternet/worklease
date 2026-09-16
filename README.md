@@ -1,5 +1,7 @@
 # worklease
 
+[![CI](https://github.com/brettinternet/worklease/actions/workflows/ci.yml/badge.svg)](https://github.com/brettinternet/worklease/actions/workflows/ci.yml)
+
 Provider-neutral, same-host coordination for humans and coding agents. Worklease
 prevents cooperating local loops from duplicating work. Your backlog or provider
 remains authoritative.

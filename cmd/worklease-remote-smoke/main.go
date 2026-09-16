@@ -2393,6 +2393,9 @@ func (h *harness) cliHiddenInvite(c client, invitePath string, args ...string) e
 	}()
 	select {
 	case <-capture.prompt:
+		// ReadPassword disables echo immediately after printing the prompt. Give
+		// the child time to apply that terminal setting before sending the invite.
+		time.Sleep(50 * time.Millisecond)
 		_, err = fmt.Fprintln(terminal, strings.TrimSpace(string(invite)))
 	case <-time.After(5 * time.Second):
 		err = errors.New("hidden invite prompt timed out")
