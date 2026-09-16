@@ -50,6 +50,8 @@ Scope is TASK-109.1 through TASK-109.4 in dependency order. This parent is an in
 
 <!-- SECTION:NOTES:BEGIN -->
 Parent integration verification passed on main after all four subtasks completed. Executed: mise run doc-test; mise run remote-smoke (dist/remote-acceptance/20260916T021800.061820000Z/report.json); mise run remote-smoke-vm (dist/remote-acceptance/vm-20260916T021821Z/report.json); mise run lint; mise run format-check; mise run test; mise run typecheck. Independent verifier passed all six parent criteria with no findings and reran focused guided-setup, artifact-enrollment, pinned-TLS, and full repository checks.
+
+Integration record commit: e5e9a24 (Complete TASK-109 integration).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
