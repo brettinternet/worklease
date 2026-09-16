@@ -1,10 +1,11 @@
 ---
 id: TASK-115
 title: Report truthful recovery errors for remote pending requests
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-16 17:51'
-updated_date: '2026-09-16 18:02'
+updated_date: '2026-09-16 20:06'
 labels: []
 dependencies: []
 references:
@@ -17,6 +18,16 @@ references:
   - internal/authority/regression_test.go
   - internal/cli/remote_commands_test.go
   - internal/reason/reason.go
+modified_files:
+  - docs/remote-claim-authority.md
+  - internal/authority/authority.go
+  - internal/authority/authority_test.go
+  - internal/authority/http.go
+  - internal/authority/pending.go
+  - internal/cli/guard_commands_test.go
+  - internal/cli/lease_commands.go
+  - internal/cli/remote_commands_test.go
+  - internal/cli/remote_lifecycle.go
 priority: high
 type: bug
 ordinal: 157000
@@ -46,17 +57,17 @@ Independently deliverable from TASK-114 (epoch replacement) and TASK-116 (text p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A newly attempted mutation that fails durable staging before any dispatch reports commitState not-committed, preserves an existing safe classified cause (including operation-request-mismatch), and uses storage-failure only for actual unclassified persistence failures. Tests prove zero mutation dispatch and unchanged older pending state; a previously dispatched identical request is not falsely declared uncommitted.
-- [ ] #2 Failures after possible dispatch retain commitState unknown and the exact durable pending request unless validated authoritative evidence establishes otherwise. CLI mutationFailure preserves an explicitly established state; storage-failure is not globally reclassified as definitive.
-- [ ] #3 Heartbeat, checkpoint, release, and transfer encountering a pending acquire fail before dispatch with a recovery-required explanation and the pending acquire identity/path, rather than an unexplained mismatch for the newly attempted lifecycle action. Exact pending acquire recovery remains available.
-- [ ] #4 Bounded recovery hints identify an existing executable exact-replay action and distinguish the attempted request from older pending uncertainty. Fresh acquire is suggested only for definitive inactivity without unresolved pending work; --session is described only as an independent-loop selector, never an uncertainty bypass.
-- [ ] #5 Text and JSON tests cover staging persistence failure, secondary request collision, previously dispatched retry, definitive remote rejection, uncertain transport, pending-acquire lifecycle refusal, and validated exact replay. Assert stable reason/state, dispatch count, pending preservation/cleanup, actionable hints, and absence of credentials/private payloads.
+- [x] #1 A newly attempted mutation that fails durable staging before any dispatch reports commitState not-committed, preserves an existing safe classified cause (including operation-request-mismatch), and uses storage-failure only for actual unclassified persistence failures. Tests prove zero mutation dispatch and unchanged older pending state; a previously dispatched identical request is not falsely declared uncommitted.
+- [x] #2 Failures after possible dispatch retain commitState unknown and the exact durable pending request unless validated authoritative evidence establishes otherwise. CLI mutationFailure preserves an explicitly established state; storage-failure is not globally reclassified as definitive.
+- [x] #3 Heartbeat, checkpoint, release, and transfer encountering a pending acquire fail before dispatch with a recovery-required explanation and the pending acquire identity/path, rather than an unexplained mismatch for the newly attempted lifecycle action. Exact pending acquire recovery remains available.
+- [x] #4 Bounded recovery hints identify an existing executable exact-replay action and distinguish the attempted request from older pending uncertainty. Fresh acquire is suggested only for definitive inactivity without unresolved pending work; --session is described only as an independent-loop selector, never an uncertainty bypass.
+- [x] #5 Text and JSON tests cover staging persistence failure, secondary request collision, previously dispatched retry, definitive remote rejection, uncertain transport, pending-acquire lifecycle refusal, and validated exact replay. Assert stable reason/state, dispatch count, pending preservation/cleanup, actionable hints, and absence of credentials/private payloads.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Add regression tests that fail before the fix and pass afterward; record the commands and evidence in this task without claiming unexecuted scenarios.
-- [ ] #2 Run mise run lint, mise run format-check, mise run test, and mise run typecheck; stage intended changes and run mise run hooks before committing.
+- [x] #1 Add regression tests that fail before the fix and pass afterward; record the commands and evidence in this task without claiming unexecuted scenarios.
+- [x] #2 Run mise run lint, mise run format-check, mise run test, and mise run typecheck; stage intended changes and run mise run hooks before committing.
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -67,3 +78,17 @@ Independently deliverable from TASK-114 (epoch replacement) and TASK-116 (text p
 3. Add narrow pending-acquire lifecycle guards and bounded hints using the existing recovery CLI. Verify the referenced commands and retain replay trust/identity/deadline checks.
 4. Update the recovery section of docs/remote-claim-authority.md with the attempted-versus-pending distinction and supported next actions; run focused and repository gates.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented truthful pre-dispatch staging classification, pending-acquire lifecycle refusal and exact acquire replay, typed-result uncertainty preservation, bounded recovery hints, docs, and focused authority/CLI regressions. Focused checks: go test ./internal/authority; isolated-home go test ./internal/cli.
+
+Validation after review fixes: mise run lint, mise run format-check, mise run test, mise run typecheck, and staged mise run hooks all passed with an isolated HOME to avoid the operator default remote profile. Regression coverage exercises zero-dispatch staging failures and collisions, retained same-request uncertainty, definitive rejection cleanup, uncertain transport preservation, all four pending-acquire lifecycle refusals, redacted JSON details, and successful exact acquire replay. Independent review found five recovery-state/path issues; all were corrected before final gates. Implementation commit f2949c4 was fast-forwarded to main.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented truthful remote recovery reporting and exact pending-acquire recovery. Pre-dispatch failures now preserve safe causes and distinguish new attempts from previously staged uncertainty; typed-result failures remain unknown; pending acquire blocks unrelated lifecycle mutations with actionable safe hints; exact acquire replay works from the retained handle without resource flags. Added authority/CLI regressions and updated remote recovery docs. Verified with focused tests, all repository gates, staged hooks, and independent review; merged as f2949c4.
+<!-- SECTION:FINAL_SUMMARY:END -->
