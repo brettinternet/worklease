@@ -1,10 +1,11 @@
 ---
 id: TASK-114
 title: Reacquire expired remote contextual claims with a fresh epoch
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-16 17:50'
-updated_date: '2026-09-16 18:02'
+updated_date: '2026-09-16 18:59'
 labels: []
 dependencies: []
 references:
@@ -17,6 +18,17 @@ references:
   - internal/cli/remote_commands_test.go
   - internal/authority/regression_test.go
   - docs/cli-reference.md
+modified_files:
+  - docs/claim-model.md
+  - docs/cli-reference.md
+  - internal/authority/authority.go
+  - internal/authority/handle_pending.go
+  - internal/authority/http.go
+  - internal/authority/regression_test.go
+  - internal/cli/remote_commands_test.go
+  - internal/cli/remote_lifecycle.go
+  - internal/handle/handle.go
+  - internal/lease/service.go
 priority: high
 type: bug
 ordinal: 156000
@@ -45,17 +57,17 @@ No prerequisite task. TASK-115 owns recovery error classification/hints and TASK
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With a selected remote profile and a definitively inactive ready contextual handle, acquire creates a different claim ID and token at the same selected path without requiring --session or --handle. The new exact request is durably pending before dispatch and becomes ready only after a validated grant; the completed old acquire is not returned as fresh success.
-- [ ] #2 An active remote claim, ambiguous/failed status lookup, authority mismatch, or unresolved pending/recovery request prevents fresh-epoch replacement. Pending request bytes, identity, deadline, and credentials remain recoverable; client wall-clock expiry alone is insufficient.
-- [ ] #3 A fresh epoch uses the current resource set, agent/session selection, work key, TTL, coordination mode, and request deadline rather than stale epoch metadata. Default selection remains stable; an explicit session selects an independent contextual handle.
-- [ ] #4 Remote CLI/adapter regression tests cover singleton and multi-resource expiry, changed acquisition inputs, stale local expiry with remote activity, status failure, pending acquire and non-acquire preservation, default and explicit session selection, and concurrent handle change. A lost response leaves the new pending request recoverable and exact replay yields only that new epoch.
-- [ ] #5 docs/claim-model.md and the relevant CLI reference explain ready versus pending replacement, generated claim session metadata versus the optional session selector, and why changing session is not recovery for an uncertain request.
+- [x] #1 With a selected remote profile and a definitively inactive ready contextual handle, acquire creates a different claim ID and token at the same selected path without requiring --session or --handle. The new exact request is durably pending before dispatch and becomes ready only after a validated grant; the completed old acquire is not returned as fresh success.
+- [x] #2 An active remote claim, ambiguous/failed status lookup, authority mismatch, or unresolved pending/recovery request prevents fresh-epoch replacement. Pending request bytes, identity, deadline, and credentials remain recoverable; client wall-clock expiry alone is insufficient.
+- [x] #3 A fresh epoch uses the current resource set, agent/session selection, work key, TTL, coordination mode, and request deadline rather than stale epoch metadata. Default selection remains stable; an explicit session selects an independent contextual handle.
+- [x] #4 Remote CLI/adapter regression tests cover singleton and multi-resource expiry, changed acquisition inputs, stale local expiry with remote activity, status failure, pending acquire and non-acquire preservation, default and explicit session selection, and concurrent handle change. A lost response leaves the new pending request recoverable and exact replay yields only that new epoch.
+- [x] #5 docs/claim-model.md and the relevant CLI reference explain ready versus pending replacement, generated claim session metadata versus the optional session selector, and why changing session is not recovery for an uncertain request.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Add regression tests that fail before the fix and pass afterward; record the commands and evidence in this task without claiming unexecuted scenarios.
-- [ ] #2 Run mise run lint, mise run format-check, mise run test, and mise run typecheck; stage intended changes and run mise run hooks before committing.
+- [x] #1 Add regression tests that fail before the fix and pass afterward; record the commands and evidence in this task without claiming unexecuted scenarios.
+- [x] #2 Run mise run lint, mise run format-check, mise run test, and mise run typecheck; stage intended changes and run mise run hooks before committing.
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -66,3 +78,17 @@ No prerequisite task. TASK-115 owns recovery error classification/hints and TASK
 3. Exercise the acceptance matrix, including concurrent-change rejection and lost-response replay; assert claim IDs, persisted token differences (never print tokens), request bytes, and dispatched request counts.
 4. Update contextual-handle documentation and run the required repository gates.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented remote ready-handle status validation, lock-bound fresh-epoch staging, exact pending acquire replay, grant activation metadata refresh, regression coverage for expired reacquire/current inputs, stale local expiry with remote activity, lost-response replay, and concurrent handle changes. Focused checks: go test ./internal/authority ./internal/lease; go test ./internal/cli -run 'TestRemoteCLI'.
+
+Review found and fixed three boundary defects: authoritative inactivity can replace a locally future-dated ready handle through exact locked revalidation; nested status claim identity is validated; mismatched grant metadata leaves the new request pending. Independent verifier passed all criteria. Required gates passed: mise run lint, format-check, test, typecheck, and hooks under an isolated HOME using the existing mise installation. Post-merge focused packages also passed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Remote acquire now status-checks ready contextual claims, stages a lock-bound fresh epoch only for authoritative inactivity, replays pending requests exactly, validates nested status and grant identity, and preserves uncertain outcomes. Added lost-response, concurrent-change, stale-local-expiry, current-input, default/explicit-session, and identity regression coverage plus docs. Committed and fast-forwarded as ab4f23b; all required gates and post-merge focused tests passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
