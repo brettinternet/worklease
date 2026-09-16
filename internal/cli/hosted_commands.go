@@ -230,8 +230,21 @@ func stageHostedInitSecret(path string, allowArtifact bool) (string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	legacy := path + ".legacy-secret"
-	return stageHostedSecret(legacy)
+	return stageHostedSecret(path + ".legacy-secret")
+}
+
+// rejectStagedBootstrapSecret refuses a fresh initialization that would adopt
+// a bootstrap secret staged by an unrelated or interrupted run. That bearer may
+// already be known to a previous holder, and HostedInitialize would grant it
+// the new authority's admin role.
+func rejectStagedBootstrapSecret(invitePath string) error {
+	legacyPath := invitePath + ".legacy-secret"
+	if _, err := os.Lstat(legacyPath); err == nil {
+		return reason.New(reason.ReasonCredentialUnsafe, "staged bootstrap secret "+legacyPath+" belongs to another initialization; remove it or resume that authority")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func writeHostedInviteArtifact(path string, result lease.BootstrapResult, setup *guidedSetupResult, secret string, advertisedEndpoint string, listen string, insecure bool) error {
@@ -463,6 +476,12 @@ func hostedInit(s *boundary, ctx context.Context, cmd *urfave.Command) error {
 	marked, markErr := os.Lstat(filepath.Join(home, store.HostedMarkerFileName))
 	resuming := markErr == nil
 	if errors.Is(markErr, os.ErrNotExist) {
+		if err := rejectStagedBootstrapSecret(invitePath); err != nil {
+			if guided != nil {
+				rollbackGuided(guided.created)
+			}
+			return hostedError(s, cmd, err)
+		}
 		if err := store.MarkHosted(home); err != nil {
 			return hostedError(s, cmd, err)
 		}

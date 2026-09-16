@@ -153,7 +153,11 @@ func (s *FilePendingStore) Clear(id string) error {
 	if err := handle.RemoveOwnerPrivate(s.path(id)); err != nil {
 		return err
 	}
-	return syncDir(s.Dir)
+	// Clearing a request that was never recorded is already the desired state.
+	if err := syncDir(s.Dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 func (s *FilePendingStore) List() ([]PendingRequest, error) {
 	if err := s.validateDir(); err != nil {

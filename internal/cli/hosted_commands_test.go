@@ -838,3 +838,73 @@ func TestHostedExportManifestIsCompleteAndRedacted(t *testing.T) {
 		t.Fatal("export contains private argv")
 	}
 }
+
+func TestServerInitRefusesStagedBootstrapSecretFromAnotherRun(t *testing.T) {
+	root := t.TempDir()
+	secretDir := filepath.Join(root, "secrets")
+	if err := os.Mkdir(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invitePath := filepath.Join(secretDir, "bootstrap")
+	stale := strings.Repeat("b", 64)
+	if err := store.WriteHostedSecret(invitePath+".legacy-secret", stale); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "authority")
+	cfg := hostedTestFile(t, root, "server.conf", home, 0o600)
+	var out, stderr strings.Builder
+	err := Run(context.Background(), []string{"worklease", "server", "init", "--home", home, "--server-config", cfg, "--bootstrap-invite-file", invitePath}, "test", "unknown", "unknown", &out, &stderr)
+	if failure := reason.As(err); failure == nil || failure.Reason != reason.ReasonCredentialUnsafe {
+		t.Fatalf("stale staged secret accepted: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, store.HostedMarkerFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("rejected init marked the authority home: %v", statErr)
+	}
+	if _, statErr := os.Stat(invitePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("rejected init published a bootstrap artifact: %v", statErr)
+	}
+
+	// An interrupted initialization of this same authority still resumes and
+	// reuses its own staged secret.
+	if err := store.MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "init", "--home", home, "--server-config", cfg, "--bootstrap-invite-file", invitePath}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("resume with staged secret: %v stderr=%s", err, stderr.String())
+	}
+	data, readErr := os.ReadFile(invitePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	artifact, decodeErr := authority.DecodeInviteArtifact(strings.TrimSpace(string(data)))
+	if decodeErr != nil || artifact.Invite != stale {
+		t.Fatalf("resumed artifact did not reuse its staged secret: artifact=%+v err=%v", artifact, decodeErr)
+	}
+}
+
+func TestGuidedServerInitRefusesStagedBootstrapSecret(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("WORKLEASE_SERVER_CONFIG", "")
+	configPath := filepath.Join(root, "config", "worklease", "guided.yaml")
+	invitePath := filepath.Join(root, "config", "worklease", "admin.invite")
+	if err := os.MkdirAll(filepath.Dir(invitePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteHostedSecret(invitePath+".legacy-secret", strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr strings.Builder
+	args := []string{"worklease", "server", "init", "--guided", "--server-config", configPath, "--bootstrap-invite-file", invitePath, "--listen", "127.0.0.1:9443", "--endpoint", "https://localhost:9443", "--transport", "tls", "--admitted-prefix", "task:", "--json"}
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &out, &stderr); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonInvalidArgument {
+		t.Fatalf("guided init accepted a staged bootstrap secret: %v", err)
+	}
+	for _, path := range []string{configPath, invitePath, configPath + ".guided-incomplete"} {
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("rejected guided init created %s: %v", path, statErr)
+		}
+	}
+}

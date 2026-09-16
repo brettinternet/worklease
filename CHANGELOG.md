@@ -6,6 +6,12 @@
 
 - `worklease server init --guided` creates a validated LAN-ready server configuration, generates or validates owner-private TLS material, and prints the endpoint, authority ID, certificate fingerprint, and bootstrap handoff commands. `serve` reports its bound address and advertised endpoint after successful startup.
 
+### Fixed
+
+- `worklease server init` no longer adopts a bootstrap secret staged beside the invite file by an unrelated or interrupted run. A fresh initialization is refused before the authority home is marked, so a previously transferred bearer can never become the new authority's administrator. Resuming an interrupted initialization of the same authority still reuses its own staged secret.
+- Definitively rejected remote mutations, such as an invalid `invite issue` role, now clear their durable recovery record instead of accumulating against the bounded pending store until valid mutations fail locally. Uncertain outcomes are still retained for exact replay.
+- Guided setup syncs the parent directory after creating and after clearing its recovery journal, configuration, certificate, and key, so those directory entries survive a power failure alongside their already-synced contents.
+
 ## 1.4.0 - 2026-09-15
 
 ### Breaking

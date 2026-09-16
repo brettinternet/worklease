@@ -258,7 +258,17 @@ func common(c *HTTPClient, id string) map[string]any {
 }
 func (a *RemoteAuthority) Execute(ctx context.Context, s RequestSpec) (Response, error) {
 	response, err := a.Client.Call(ctx, s)
-	if err != nil || !s.Mutating || s.Path == "/v1/operations/begin" {
+	if err != nil {
+		// A definitively rejected mutation cannot commit later, so its durable
+		// recovery record must not accumulate against the bounded store.
+		if s.Mutating && reason.DefinitiveNoCommit(err) {
+			if clearErr := a.Client.finalize(s.RequestID, s.HandlePath); clearErr != nil {
+				return Response{}, clearErr
+			}
+		}
+		return response, err
+	}
+	if !s.Mutating || s.Path == "/v1/operations/begin" {
 		return response, err
 	}
 	var result map[string]json.RawMessage

@@ -464,6 +464,27 @@ func TestDefinitiveInviteIssueFailureClearsStage(t *testing.T) {
 	}
 }
 
+func TestDefinitiveAdminFailureClearsPendingRecoveryRecord(t *testing.T) {
+	profile, clientHome, _ := remoteCLIFixture(t)
+	secretRoot := filepath.Join(t.TempDir(), "secrets")
+	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := runRemoteCLI(t, "invite", "issue", "--profile", profile, "--home", clientHome, "--role", "invalid", "--invite-file", filepath.Join(secretRoot, "invalid"), "--json"); err == nil {
+			t.Fatal("invalid invite role was accepted")
+		}
+	}
+	pendingDir := filepath.Join(clientHome, "pending", profile)
+	entries, err := os.ReadDir(pendingDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("definitively rejected mutations retained %d pending records", len(entries))
+	}
+}
+
 func TestRemoteInviteWritesOnlyProtectedSecretFile(t *testing.T) {
 	profile, clientHome, _ := remoteCLIFixture(t)
 	secretRoot, err := filepath.EvalSymlinks(t.TempDir())

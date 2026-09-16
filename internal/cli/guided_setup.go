@@ -614,7 +614,7 @@ func completeGuidedSetup(result *guidedSetupResult) error {
 	if result == nil || result.JournalPath == "" {
 		return nil
 	}
-	if err := os.Remove(result.JournalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeDurable(result.JournalPath); err != nil {
 		return reason.New(reason.ReasonStorageFailure, "guided setup initialized the authority but could not clear its recovery record; rerun server init without --guided using --server-config "+shellQuote(result.ConfigPath))
 	}
 	return nil
@@ -633,14 +633,16 @@ func completeRecoveredGuidedSetup(configPath, home string) error {
 	if err := json.Unmarshal(data, &manifest); err != nil || !validGuidedManifest(configPath, manifest) || filepath.Clean(manifest.Home) != filepath.Clean(home) {
 		return reason.Invalid("guided setup recovery record does not match this server configuration; inspect " + journalPath)
 	}
-	if err := os.Remove(journalPath); err != nil {
+	if err := removeDurable(journalPath); err != nil {
 		return reason.New(reason.ReasonStorageFailure, "server initialization completed but could not clear guided recovery record "+journalPath)
 	}
 	return nil
 }
 
 func preflightGuidedTargets(configPath, invitePath string, result *guidedSetupResult, generated bool) error {
-	paths := []string{configPath, invitePath, configPath + ".guided-incomplete"}
+	// Guided setup always initializes a fresh authority, so a staged bootstrap
+	// secret from another run must block it before any state is committed.
+	paths := []string{configPath, invitePath, invitePath + ".legacy-secret", configPath + ".guided-incomplete"}
 	collisionPaths := append([]string(nil), paths...)
 	if result.CertificatePath != "" {
 		collisionPaths = append(collisionPaths, result.CertificatePath, result.KeyPath)
@@ -694,8 +696,38 @@ func writeGuidedExclusive(path string, contents []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
+	// Sync the parent so the new directory entry survives a power failure
+	// alongside the already-synced contents.
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return err
+	}
 	ok = true
 	return nil
+}
+
+func syncDir(dir string) error {
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+// removeDurable deletes path and commits the unlink to stable storage so a
+// cleared recovery record cannot reappear after a crash.
+func removeDurable(path string) error {
+	if err := os.Remove(path); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return syncDir(filepath.Dir(path))
 }
 
 func (result *guidedSetupResult) release() {
