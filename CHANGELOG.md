@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.6.0 - 2026-09-16
+
+### Added
+
+- Remote authority setup now has a secure zero-flag path: `server init` creates a pinned-TLS loopback authority with owner-private artifacts, `invite issue` supplies safe defaults, and the printed commands carry the setup through enrollment and normal claim lifecycle operations.
+- A checked-in zero-flag command audit documents every leaf command's default behavior and safety boundary.
+
+### Changed
+
+- `profile show` now uses normal profile selection when no name is supplied, while `profile default` reports the current default without changing it.
+- Cross-host coordination, claimant metadata, LAN exposure, and remote authority customization are documented around the streamlined setup flow.
+
+### Fixed
+
+- Contextual claim commands now consistently direct users to acquire a claim when none is selected, and `checkpoint` reports the exact required data inputs.
+- Server administration commands resolve configured authority paths consistently and preserve explicit consent requirements for non-loopback or cleartext exposure.
+
 ## 1.5.0 - 2026-09-16
 
 ### Added
