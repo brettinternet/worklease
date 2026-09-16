@@ -284,7 +284,10 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 		h, e := handle.Read(path)
 		if e != nil {
 			backend.Close()
-			return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonVerifyFailed, "selected handle is unavailable").With("cause", "missing-handle")
+			if isMissingHandle(e) {
+				e = missingContextualClaim()
+			}
+			return lease.Credentials{}, nil, nil, nil, e
 		}
 		if h.AuthorityID != backend.AuthorityID() {
 			backend.Close()
@@ -295,13 +298,19 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 	lock, e := handle.AcquireExistingLock(ctx, path+".lock")
 	if e != nil {
 		backend.Close()
+		if isMissingHandle(e) {
+			e = missingContextualClaim()
+		}
 		return lease.Credentials{}, nil, nil, nil, e
 	}
 	h, e := lock.Read(path)
 	if e != nil {
 		lock.Close()
 		backend.Close()
-		return lease.Credentials{}, nil, nil, nil, reason.New(reason.ReasonVerifyFailed, "selected handle is unavailable").With("cause", "missing-handle")
+		if isMissingHandle(e) {
+			e = missingContextualClaim()
+		}
+		return lease.Credentials{}, nil, nil, nil, e
 	}
 	if h.AuthorityID != backend.AuthorityID() {
 		lock.Close()

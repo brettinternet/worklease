@@ -192,6 +192,11 @@ authority or storage failure, `124` child timeout, and `130` interruption. Domai
 credentials, requests, command output, file contents, checkpoints, or provider
 payloads.
 
+| Input error | Reason | Message |
+| --- | --- | --- |
+| No contextual claim for `status`, `verify`, `heartbeat`, `checkpoint`, or `release` | `claim-selection-missing` | `no contextual claim is available; run worklease acquire --path FILE` |
+| `checkpoint` without `--data` or `--data-file` | `invalid-argument` | `checkpoint requires --data JSON or --data-file FILE; for example: worklease checkpoint --data '{"phase":"tests"}'` |
+
 ## Selection and concurrency
 
 Selection precedence is explicit handle, configured handle, exact credentials,

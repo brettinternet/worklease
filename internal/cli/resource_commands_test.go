@@ -14,6 +14,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 )
 
@@ -221,6 +222,66 @@ func TestHandlelessTransferIsRejected(t *testing.T) {
 	var statusOut bytes.Buffer
 	if err := Run(context.Background(), []string{"worklease", "status", "--json", "--home", home}, "dev", "unknown", "unknown", &statusOut, &bytes.Buffer{}); err == nil || !strings.Contains(statusOut.String(), `"reason":"claim-selection-missing"`) {
 		t.Fatalf("empty status err=%v output=%q", err, statusOut.String())
+	}
+}
+
+func TestBareContextualCommandsShareMissingClaimGuidance(t *testing.T) {
+	t.Setenv("WORKLEASE_HANDLE", "")
+	const message = "no contextual claim is available; run worklease acquire --path FILE"
+	for _, command := range []string{"status", "verify", "heartbeat", "checkpoint", "release"} {
+		t.Run(command+" text", func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Chmod(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			err := Run(context.Background(), []string{"worklease", command, "--home", home}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+			classified := reason.As(err)
+			if classified == nil || classified.Reason != reason.ReasonClaimSelectionMissing || classified.Message != message {
+				t.Fatalf("err=%v classified=%#v", err, classified)
+			}
+		})
+		t.Run(command+" json", func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Chmod(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := Run(context.Background(), []string{"worklease", command, "--json", "--home", home}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+			if err == nil {
+				t.Fatal("command succeeded without a claim")
+			}
+			var envelope map[string]any
+			if decodeErr := json.Unmarshal(out.Bytes(), &envelope); decodeErr != nil {
+				t.Fatalf("decode output %q: %v", out.String(), decodeErr)
+			}
+			failure, ok := envelope["error"].(map[string]any)
+			if !ok || failure["reason"] != reason.ReasonClaimSelectionMissing || failure["message"] != message {
+				t.Fatalf("output=%s", out.String())
+			}
+		})
+	}
+}
+
+func TestCheckpointRequiresPayloadOptions(t *testing.T) {
+	home := t.TempDir()
+	if err := Run(context.Background(), []string{"worklease", "acquire", "--home", home, "--resource", "checkpoint-input"}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	const message = "checkpoint requires --data JSON or --data-file FILE; for example: worklease checkpoint --data '{\"phase\":\"tests\"}'"
+	var out bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "checkpoint", "--json", "--home", home}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonInvalidArgument || classified.Message != message {
+		t.Fatalf("err=%v classified=%#v output=%q", err, classified, out.String())
+	}
+	if !strings.Contains(out.String(), `"reason":"invalid-argument"`) || !strings.Contains(out.String(), `"message":"checkpoint requires --data JSON or --data-file FILE;`) {
+		t.Fatalf("output=%q", out.String())
+	}
+
+	err = Run(context.Background(), []string{"worklease", "checkpoint", "--home", home, "--data", ""}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	classified = reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonInvalidArgument || classified.Message != "checkpoint must be canonical JSON no larger than 8 KiB" {
+		t.Fatalf("supplied invalid payload err=%v classified=%#v", err, classified)
 	}
 }
 

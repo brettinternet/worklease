@@ -365,7 +365,10 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 			}
 			h, e := handle.Read(path)
 			if e != nil {
-				return s.handle(cmd, reason.New(reason.ReasonClaimSelectionMissing, "selected handle is unavailable"))
+				if isMissingHandle(e) {
+					return s.handle(cmd, missingContextualClaim())
+				}
+				return s.handle(cmd, e)
 			}
 			if h.AuthorityID != backend.AuthorityID() {
 				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
@@ -448,6 +451,9 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 		h, e := handle.Read(path)
 		if e != nil {
 			backend.Close()
+			if isMissingHandle(e) {
+				e = missingContextualClaim()
+			}
 			return lease.Credentials{}, nil, nil, nil, nil, "", e
 		}
 		if h.AuthorityID != backend.AuthorityID() {
@@ -465,6 +471,9 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 	if e != nil {
 		lk.Close()
 		backend.Close()
+		if isMissingHandle(e) {
+			e = missingContextualClaim()
+		}
 		return lease.Credentials{}, nil, nil, nil, nil, "", e
 	}
 	if h.AuthorityID != backend.AuthorityID() {
@@ -474,6 +483,16 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 	}
 	return lease.Credentials{AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path}, backend.API, backend, lk, &h, path, nil
 }
+func missingContextualClaim() *reason.Error {
+	return reason.New(reason.ReasonClaimSelectionMissing, "no contextual claim is available; run worklease acquire --path FILE")
+}
+
+func isMissingHandle(err error) bool {
+	classified := reason.As(err)
+	return classified != nil && ((classified.Reason == reason.ReasonHandleMalformed && classified.Message == "handle is missing") ||
+		(classified.Reason == reason.ReasonHandleUnsafe && classified.Message == "handle lock is unavailable"))
+}
+
 func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadline time.Time, inputs map[string]any, locks ...*handle.Lock) error {
 	if h == nil || h.SchemaVersion == handle.RemoteSchemaVersion {
 		return nil
@@ -787,6 +806,9 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		}()
 		if h != nil && h.RecoveryRequest != nil {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
+		if !cmd.IsSet("data") && !cmd.IsSet("data-file") {
+			return s.handle(cmd, reason.Invalid("checkpoint requires --data JSON or --data-file FILE; for example: worklease checkpoint --data '{\"phase\":\"tests\"}'"))
 		}
 		data := []byte(cmd.String("data"))
 		if p := cmd.String("data-file"); p != "" {
