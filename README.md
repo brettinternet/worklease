@@ -2,9 +2,10 @@
 
 [![CI](https://github.com/brettinternet/worklease/actions/workflows/ci.yml/badge.svg)](https://github.com/brettinternet/worklease/actions/workflows/ci.yml)
 
-Provider-neutral coordination for humans and coding agents. Use the setup-free
-local authority on one host or a self-hosted remote authority across hosts. Your
-backlog or provider remains authoritative.
+Provider-neutral coordination for humans and coding agents. 
+Tell your agents to claim work with `worklease` to prevent them from
+working on top of each other or competing for the same resources and tasks.
+Compatible with whatever backlog or provider you're using.
 
 ![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
 
