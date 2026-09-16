@@ -1,8 +1,9 @@
 # Claim, operation, and recovery model
 
-Worklease coordinates cooperating processes through one owner-private SQLite
-authority. It does not replace a backlog, prove provider writes, or stop remote
-work.
+Worklease coordinates cooperating workers through one selected authority. The
+default owner-private SQLite authority coordinates one host; the experimental
+self-hosted remote authority coordinates enrolled clients across hosts. Neither
+mode replaces a backlog, proves provider writes, or stops uncooperative work.
 
 ## Exact resources and claims
 
@@ -11,10 +12,10 @@ claim atomically owns one to 32 ordered, unique resources. Overlap conflicts;
 there is no partial acquisition. Built-in policies derive deterministic keys,
 but the claim service does not interpret them.
 
-Repository, Markdown, Backlog.md, and path identities are host-local. A future
-remote namespace must be caller-selected rather than guessed from a Git remote,
-login, worktree, or path. Portable provider keys may be used today without
-claiming cross-host exclusion.
+Repository, Markdown, Backlog.md, and path identities are host-local and are
+rejected by remote authorities. Remote clients use caller-selected portable
+resources such as `coordination:` or `github:` keys admitted by the server; no
+identity is guessed from a Git remote, login, worktree, or path.
 
 A claim has an immutable claim ID, hashed client-held credential, current
 revision, expiry, checkpoint, and agent/work metadata. MCP leases have an
@@ -60,8 +61,10 @@ cannot still write.
 
 | Operation | Honest guarantee |
 | --- | --- |
-| Claim lifecycle, `exec`, or a provider CLI/API invoked locally | `local-coordination` among cooperating callers on this host |
-| `replace-file` with exact path membership and expected hash | `local-serialized-replace` for that local replacement |
+| Local-authority claim lifecycle | Lease exclusion among cooperating callers on one host |
+| Remote-authority claim lifecycle | Lease exclusion among enrolled, cooperating clients across hosts |
+| `exec` or a provider CLI/API | `local-coordination` for the client-local effect, even when the claim authority is remote |
+| `replace-file` with exact path membership and expected hash | `local-serialized-replace` for that local replacement; unsupported remotely |
 | Provider mutation with its own conditional write/fence | Provider's separately evidenced guarantee |
 
 Expiry ends authorization but does not stop arbitrary child or remote work.
@@ -104,10 +107,10 @@ retired today is retained from that recorded end, not its old expiry.
 
 ## Authority identity and copies
 
-Each local authority creates one immutable random authority ID. Handles,
-requests, receipts, and cursors bind to it. A home path is only a locator.
-Copying an active database to create another independent authority with the same
-ID is unsafe and unsupported.
+Each authority creates one immutable random authority ID. Handles, requests,
+receipts, and cursors bind to it. A local home path or remote profile is only a
+locator. Copying an active database to create another independent authority with
+the same ID is unsafe and unsupported.
 
 ## Legacy Python state
 
@@ -118,6 +121,7 @@ Worklease does not import or delete Python-era state. Migrate it manually:
    `WORKLEASE_HOME` into a private backup.
 3. Keep the backup until rollback and historical inspection are unnecessary.
 
-See [CLI reference](cli-reference.md) for commands and
-[MCP and JSON](mcp.md) for agent orchestration. The remote authority design
-document is explicitly deferred.
+See [CLI reference](cli-reference.md) for commands,
+[MCP and JSON](mcp.md) for agent orchestration, and the
+[experimental remote authority guide](remote-claim-authority.md) for cross-host
+setup, admission, and recovery.

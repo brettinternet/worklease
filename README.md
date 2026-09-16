@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/brettinternet/worklease/actions/workflows/ci.yml/badge.svg)](https://github.com/brettinternet/worklease/actions/workflows/ci.yml)
 
-Provider-neutral, same-host coordination for humans and coding agents. Worklease
-prevents cooperating local loops from duplicating work. Your backlog or provider
-remains authoritative.
+Provider-neutral coordination for humans and coding agents. Use the setup-free
+local authority on one host or a self-hosted remote authority across hosts. Your
+backlog or provider remains authoritative.
 
 ![Two workers coordinating ownership of the same task with Worklease](docs/demo.gif)
 
@@ -28,11 +28,10 @@ sequenceDiagram
 
 | Choose | When |
 | --- | --- |
-| A lockfile | One process or file needs a critical section. You do not need lease ownership, expiry, history, or recovery. |
-| Worklease | Independent local workers claim tasks or resources and need TTLs, waiting, status, history, guarded commands, or recovery (e.g. agentic loops). |
+| A lockfile | Processes on one host need a critical section. You do not need lease ownership, expiry, history, or recovery. |
+| Worklease | Independent workers claim tasks or resources and need TTLs, waiting, status, history, guarded commands, or recovery. Use the local authority on one host or a remote authority across hosts. |
 
-Both coordinate cooperating processes on one host. Neither stops arbitrary
-external work.
+Both coordinate cooperating workers. Neither stops arbitrary external work.
 
 ## Install
 
