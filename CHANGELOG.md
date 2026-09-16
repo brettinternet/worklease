@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.6.2 - 2026-09-16
+
+### Fixed
+
+- Remote acquire now starts a fresh claim epoch when a contextual handle has expired, while exact replay remains required for genuinely pending acquires and conflicting recovery state or changed inputs are rejected.
+- Remote mutation failures now report truthful commit state after dispatch, preserve recovery hints and paths in text output, validate replayed results without depending on resource order, and retain durable pending state whenever the outcome is uncertain.
+- Remote request staging preserves storage-failure classification, validates acquire inputs before opening local state, and prevents a new lifecycle request from replacing an older pending operation.
+
 ## 1.6.1 - 2026-09-16
 
 ### Added
