@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -126,13 +127,17 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 }
 func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
-		in, err := ResolveResourceInput(cmd)
-		if err != nil {
-			return s.handle(cmd, err)
-		}
 		explicitHandle := strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != ""
 		if cmd.Bool("no-handle") && explicitHandle {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "--no-handle cannot be mixed with a handle"))
+		}
+		var in ResourceInput
+		var err error
+		if !explicitHandle {
+			in, err = ResolveResourceInput(cmd)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
 		}
 		backend, err := authorityFor(ctx, cmd, true)
 		if err != nil {
@@ -140,6 +145,21 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		}
 		defer backend.Close()
 		svc, st, cfg := backend.Local, backend.Store, backend.Config
+		if backend.Remote && explicitHandle {
+			path, pathErr := acquireHandlePath(cmd, cfg)
+			if pathErr != nil {
+				return s.handle(cmd, pathErr)
+			}
+			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path); replayed {
+				return replayErr
+			}
+		}
+		if explicitHandle {
+			in, err = ResolveResourceInput(cmd)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+		}
 		resources := make([]string, 0, len(in.Keys))
 		for _, key := range in.Keys {
 			resources = append(resources, key.Resource)
@@ -629,6 +649,33 @@ func inputBytes(m map[string]any, key string) []byte {
 	}
 	return nil
 }
+func pendingAcquireRecovery(h *handle.Handle, path string) error {
+	if h == nil || h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
+		return nil
+	}
+	p := h.PendingRequest
+	return reason.New(reason.ReasonRecoveryRequired, "pending acquire requires exact recovery before this lifecycle action").
+		With("operationId", p.OperationID).
+		With("pendingPath", path).
+		With("commitState", "not-committed").
+		With("recoveryHint", fmt.Sprintf("rerun worklease acquire --handle <pendingPath> to replay operation %s exactly; substitute the separately reported pendingPath and do not change inputs", p.OperationID))
+}
+
+func pendingRecoveryHint(path string) string {
+	if path == "" {
+		return "use the existing lifecycle command with the original inputs to replay the retained request exactly"
+	}
+	h, err := handle.Read(path)
+	if err != nil || h.PendingRequest == nil {
+		return "use the existing lifecycle command with the original inputs to replay the retained request exactly"
+	}
+	kind := h.PendingRequest.Kind
+	if kind == "operations/begin" {
+		kind = "exec"
+	}
+	return fmt.Sprintf("rerun worklease %s --handle <pendingPath> with the original inputs to replay operation %s exactly; substitute the separately reported pendingPath", kind, h.PendingRequest.OperationID)
+}
+
 func mutationFailure(err error, claim, op, path string) error {
 	if err == nil {
 		return nil
@@ -643,6 +690,11 @@ func mutationFailure(err error, claim, op, path string) error {
 				state = "unknown"
 			}
 			e.With("commitState", state)
+		}
+		if _, hinted := e.Details["recoveryHint"]; !hinted {
+			if h, readErr := handle.Read(path); readErr == nil && h.PendingRequest != nil {
+				e.With("recoveryHint", pendingRecoveryHint(path))
+			}
 		}
 	}
 	return err
@@ -740,6 +792,9 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 		if h != nil && h.RecoveryRequest != nil {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
 		}
+		if pendingErr := pendingAcquireRecovery(h, hp); pendingErr != nil {
+			return s.handle(cmd, pendingErr)
+		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {
 			return s.handle(cmd, err)
@@ -806,6 +861,9 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		}()
 		if h != nil && h.RecoveryRequest != nil {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
+		if pendingErr := pendingAcquireRecovery(h, hp); pendingErr != nil {
+			return s.handle(cmd, pendingErr)
 		}
 		if !cmd.IsSet("data") && !cmd.IsSet("data-file") {
 			return s.handle(cmd, reason.Invalid("checkpoint requires --data JSON or --data-file FILE; for example: worklease checkpoint --data '{\"phase\":\"tests\"}'"))
@@ -887,6 +945,9 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		}()
 		if h != nil && h.RecoveryRequest != nil {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+		}
+		if pendingErr := pendingAcquireRecovery(h, hp); pendingErr != nil {
+			return s.handle(cmd, pendingErr)
 		}
 		deadline, err := requestDeadlineCLI(cmd)
 		if err != nil {

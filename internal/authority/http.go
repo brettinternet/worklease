@@ -178,12 +178,50 @@ func remotePath(path string) (mutating bool, known bool) {
 	}
 }
 
+func (c *HTTPClient) requestPreviouslyStaged(p PendingRequest, handlePath string) bool {
+	if handlePath != "" {
+		if h, err := handle.Read(handlePath); err == nil && h.PendingRequest != nil && h.PendingRequest.OperationID == p.OperationID && h.PendingRequest.RequestHash == p.RequestSHA256 && bytes.Equal(h.PendingRequest.Request, p.Request) {
+			return true
+		}
+	}
+	old, err := c.pending.Load(p.RequestID)
+	return err == nil && old.RequestSHA256 == p.RequestSHA256 && bytes.Equal(old.Request, p.Request)
+}
+
+func (c *HTTPClient) stagingFailure(err error, previouslyStaged bool, fallback string) error {
+	var classified *reason.Error
+	switch {
+	case errors.Is(err, errPendingRequestMismatch), errors.Is(err, errHandlePending):
+		classified = reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
+	default:
+		classified = reason.As(err)
+		if classified == nil || !reason.Registered(classified.Reason) {
+			classified = reason.New(reason.ReasonStorageFailure, fallback)
+		}
+	}
+	state := "not-committed"
+	if previouslyStaged {
+		state = "unknown"
+	}
+	classified.With("commitState", state)
+	return classified
+}
+
+func pendingRecoveryFailure(path string, pending *handle.PendingRequest) error {
+	return reason.New(reason.ReasonRecoveryRequired, "pending acquire requires exact recovery before this lifecycle action").
+		With("operationId", pending.OperationID).
+		With("pendingPath", path).
+		With("commitState", "not-committed").
+		With("recoveryHint", fmt.Sprintf("rerun worklease acquire --handle <pendingPath> to replay operation %s exactly; substitute the separately reported pendingPath and do not change inputs", pending.OperationID))
+}
+
 func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) {
 	mutation, known := remotePath(s.Path)
 	if !known || mutation != s.Mutating || strings.Contains(s.Path, "?") || strings.Contains(s.Path, "#") {
 		return Response{}, reason.Invalid("remote request path or mutation class is invalid")
 	}
 	public := s.Path == "/.well-known/worklease" || s.Path == "/healthz"
+	previouslyStaged := false
 	if !public && (c.profile.AuthorityID == "" || c.profile.RestoreID == "") {
 		return Response{}, reason.New(reason.ReasonAuthorityMismatch, "remote profile identity is not pinned")
 	}
@@ -220,23 +258,27 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 			credentialRef = c.profile.Credential.Path
 		}
 		p := PendingRequest{RequestID: s.RequestID, OperationID: s.RequestID, Kind: s.Kind, Route: s.Path, TargetOperationID: s.TargetOperationID, CredentialRef: credentialRef, ClaimHandleRef: s.ClaimHandlePath, ClaimCredentialRef: s.ClaimCredentialPath, NewClaimHandleRef: s.NewClaimHandlePath, NewClaimCredentialRef: s.NewClaimCredentialPath, TargetHandleRef: s.TargetHandlePath, AuthorityID: c.profile.AuthorityID, Endpoint: c.profile.Endpoint, CertificateSHA256: c.profile.CertificateSHA256, ExpectedRestoreID: c.profile.RestoreID, RequestNotAfter: deadline, Request: s.Body, RequestSHA256: hex.EncodeToString(sum[:]), ParentRequestID: s.ParentRequestID, EffectEvidence: s.EffectEvidence, State: "pending"}
+		previouslyStaged = c.requestPreviouslyStaged(p, s.HandlePath)
 		if s.HandlePath != "" {
 			replacement := handleReplacement{ClaimID: s.PreviousClaimID, Token: s.PreviousToken, Revision: s.PreviousRevision, ExpiresAt: s.PreviousExpiresAt}
 			if err := persistHandleRequest(s.HandlePath, s.ClaimID, p, s.NewClaimCredential, replacement); err != nil {
 				if !errors.Is(err, errHandlePending) || s.Kind == "operations/begin" {
-					return Response{}, reason.New(reason.ReasonStorageFailure, "handle request could not be durably recorded")
+					return Response{}, c.stagingFailure(err, previouslyStaged, "handle request could not be durably recorded")
+				}
+				if pending, readErr := handle.Read(s.HandlePath); readErr == nil && pending.PendingRequest != nil && pending.PendingRequest.Kind == "acquire" && s.Kind != "acquire" {
+					return Response{}, pendingRecoveryFailure(s.HandlePath, pending.PendingRequest)
 				}
 				if err := c.pending.Save(p); err != nil {
-					return Response{}, reason.New(reason.ReasonStorageFailure, "secondary remote request could not be durably recorded")
+					return Response{}, c.stagingFailure(err, previouslyStaged, "secondary remote request could not be durably recorded")
 				}
 			}
 			if s.Kind == "acquire" && s.AutoRenewOwner != "" {
 				if err := setHandleAutoRenewOwner(s.HandlePath, s.AutoRenewOwner); err != nil {
-					return Response{}, reason.New(reason.ReasonStorageFailure, "automatic renewal state could not be durably recorded")
+					return Response{}, c.stagingFailure(err, previouslyStaged, "automatic renewal state could not be durably recorded")
 				}
 			}
 		} else if err := c.pending.Save(p); err != nil {
-			return Response{}, reason.New(reason.ReasonStorageFailure, "remote request could not be durably recorded")
+			return Response{}, c.stagingFailure(err, previouslyStaged, "remote request could not be durably recorded")
 		}
 	}
 	method := "POST"
@@ -254,6 +296,24 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 	if err != nil {
 		if s.Mutating && (resp.AuthorityID == "" || !reason.DefinitiveNoCommit(err)) {
 			return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote request outcome is uncertain")
+		}
+		if s.Mutating {
+			classified := reason.As(err)
+			if previouslyStaged {
+				if classified != nil {
+					classified.With("commitState", "unknown")
+				}
+				return resp, err
+			}
+			if clearErr := c.finalize(s.RequestID, s.HandlePath); clearErr != nil {
+				if classified != nil {
+					classified.With("commitState", "not-committed").With("recoveryHint", "retry the same lifecycle command with the original inputs to clear the retained definitively rejected request")
+				}
+				return resp, err
+			}
+			if classified != nil {
+				classified.With("commitState", "not-committed")
+			}
 		}
 		return resp, err
 	}
@@ -329,12 +389,12 @@ func (c *HTTPClient) ReplayHandle(ctx context.Context, path string) (Response, e
 	}
 	pending := PendingRequest{RequestID: spec.RequestID, Kind: kind, Route: route, Request: spec.Body}
 	if err := validateReplayResult(pending, response.Result); err != nil {
-		return Response{}, err
+		return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated")
 	}
 	if kind == "acquire" || kind == "transfer" {
 		var grant lease.Grant
 		if err := decodeResult(response.Result, &grant); err != nil {
-			return Response{}, err
+			return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated")
 		}
 		if kind == "acquire" {
 			err = activateGrantHandle(path, grant)
@@ -342,7 +402,7 @@ func (c *HTTPClient) ReplayHandle(ctx context.Context, path string) (Response, e
 			err = activateTransferHandle(path, spec.NewClaimHandlePath, grant)
 		}
 		if err != nil {
-			return Response{}, err
+			return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated")
 		}
 	} else if err := c.finalize(spec.RequestID, path); err != nil {
 		return Response{}, err
@@ -371,7 +431,7 @@ func (c *HTTPClient) Replay(ctx context.Context, id string) (Response, error) {
 		return response, err
 	}
 	if err := validateReplayResult(p, response.Result); err != nil {
-		return Response{}, err
+		return Response{}, reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated")
 	}
 	if err := c.finalize(p.RequestID, ""); err != nil {
 		return Response{}, err

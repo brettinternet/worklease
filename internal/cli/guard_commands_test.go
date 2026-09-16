@@ -219,6 +219,20 @@ func TestGuardLifecycleKeepsPendingRequestAfterStart(t *testing.T) {
 	}
 }
 
+func TestPendingAcquireLifecycleRefusalNamesExactRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claim.json")
+	h := &handle.Handle{PendingRequest: &handle.PendingRequest{Kind: "acquire", OperationID: strings.Repeat("a", 32)}}
+	err := pendingAcquireRecovery(h, path)
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonRecoveryRequired || classified.Details["commitState"] != "not-committed" || classified.Details["operationId"] != strings.Repeat("a", 32) || classified.Details["pendingPath"] != path {
+		t.Fatalf("pending acquire refusal=%v", err)
+	}
+	hint, _ := classified.Details["recoveryHint"].(string)
+	if !strings.Contains(hint, "worklease acquire") || !strings.Contains(hint, "<pendingPath>") || strings.Contains(hint, path) || strings.Contains(hint, "token") {
+		t.Fatalf("recovery hint=%q", hint)
+	}
+}
+
 // mutationFailure must not overwrite a commit state the guard already
 // established after its started intent committed.
 func TestMutationFailurePreservesGuardCommitState(t *testing.T) {

@@ -269,9 +269,19 @@ Remote differences:
 - GC is apply-only: use `gc --apply` with `--cutoff TIME` or
   `--retention-days N` (default 30).
 - Every mutation, including `--no-handle`, records its exact pending request
-  before dispatch.
-- After an uncertain dispatch, inspect or replay the same request; never issue a
-  new effect.
+  before dispatch. A durable staging failure is `not-committed` for the newly
+  attempted request; an older retained request remains independently uncertain.
+- After an uncertain dispatch, retry the same lifecycle command with the same
+  handle and original inputs. Worklease replays the retained operation through
+  the existing `acquire`, `heartbeat`, `checkpoint`, `release`, or `transfer`
+  entry point; never change inputs, extend its deadline, delete the handle, or
+  start a new session to bypass uncertainty. A pending acquire blocks unrelated
+  lifecycle actions as `not-committed` for the new attempt while the acquire
+  remains uncertain; `acquire --handle PATH` replays it exactly. `--session`
+  selects an independent loop only; it is not an uncertainty recovery bypass.
+- A fresh acquire is appropriate only after definitive inactivity and no
+  unresolved pending request. Recovery output identifies the pending operation
+  and handle path while omitting credentials and private request payloads.
 
 Remote admission accepts only configured portable prefixes. `path:`,
 `backlog-md:`, and `markdown:` are host-local and always rejected remotely.

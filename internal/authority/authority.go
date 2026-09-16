@@ -208,17 +208,24 @@ func decodeResult(b json.RawMessage, v any) error {
 	}
 	return nil
 }
+func uncertainRemoteResult(err error) error {
+	if err == nil {
+		return nil
+	}
+	return reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated")
+}
+
 func finish(c *HTTPClient, id, handlePath, expectedOperation, expectedClaim string, b json.RawMessage, out any) error {
 	if err := decodeResult(b, out); err != nil {
-		return err
+		return uncertainRemoteResult(err)
 	}
 	if err := validateResult(out); err != nil {
-		return err
+		return uncertainRemoteResult(err)
 	}
 	switch x := out.(type) {
 	case *lease.Receipt:
 		if x.OperationID != expectedOperation || (expectedClaim != "" && x.ClaimID != expectedClaim) {
-			return reason.Invalid("remote receipt does not match request")
+			return uncertainRemoteResult(reason.Invalid("remote receipt does not match request"))
 		}
 		if err := updateHandleRevision(handlePath, x.Revision); err != nil {
 			return err
@@ -264,13 +271,6 @@ func common(c *HTTPClient, id string) map[string]any {
 func (a *RemoteAuthority) Execute(ctx context.Context, s RequestSpec) (Response, error) {
 	response, err := a.Client.Call(ctx, s)
 	if err != nil {
-		// A definitively rejected mutation cannot commit later, so its durable
-		// recovery record must not accumulate against the bounded store.
-		if s.Mutating && reason.DefinitiveNoCommit(err) {
-			if clearErr := a.Client.finalize(s.RequestID, s.HandlePath); clearErr != nil {
-				return Response{}, clearErr
-			}
-		}
 		return response, err
 	}
 	if !s.Mutating || s.Path == "/v1/operations/begin" {
@@ -278,7 +278,7 @@ func (a *RemoteAuthority) Execute(ctx context.Context, s RequestSpec) (Response,
 	}
 	var result map[string]json.RawMessage
 	if err := decodeStrict(response.Result, &result); err != nil || result == nil {
-		return Response{}, reason.Invalid("remote mutation result is invalid")
+		return Response{}, uncertainRemoteResult(reason.Invalid("remote mutation result is invalid"))
 	}
 	if err := a.Client.finalize(s.RequestID, s.HandlePath); err != nil {
 		return Response{}, err
@@ -308,7 +308,10 @@ func (a *RemoteAuthority) Acquire(ctx context.Context, r lease.AcquireRequest) (
 	if e == nil && (out.ClaimID != id || out.Receipt.OperationID != id || out.Receipt.ClaimID != id) {
 		e = reason.Invalid("remote grant does not match request")
 	}
-	if e == nil && r.HandlePath != "" {
+	if e != nil {
+		return out, uncertainRemoteResult(e)
+	}
+	if r.HandlePath != "" {
 		e = activateGrantHandle(r.HandlePath, out)
 	} else if e == nil {
 		e = a.Client.finalize(id, "")
@@ -412,7 +415,10 @@ func (a *RemoteAuthority) Transfer(ctx context.Context, c lease.Credentials, r l
 	if e == nil && (out.ClaimID != r.SuccessorClaimID || out.Receipt.OperationID != r.OperationID || out.Receipt.ClaimID != c.ClaimID) {
 		e = reason.Invalid("remote transfer does not match request")
 	}
-	if e == nil && c.HandlePath != "" {
+	if e != nil {
+		return out, uncertainRemoteResult(e)
+	}
+	if c.HandlePath != "" {
 		e = activateTransferHandle(c.HandlePath, r.SuccessorHandlePath, out)
 	} else if e == nil {
 		e = a.Client.finalize(r.OperationID, "")
@@ -450,19 +456,19 @@ func (a *RemoteAuthority) BeginOperation(ctx context.Context, c lease.Credential
 		if h, err := handle.Read(c.HandlePath); err == nil && h.PendingRequest != nil && h.PendingRequest.OperationID == r.OperationID {
 			response, replayErr := a.Client.ReplayHandle(ctx, c.HandlePath)
 			var out lease.Started
-			if replayErr == nil {
-				replayErr = decodeResult(response.Result, &out)
+			if replayErr != nil {
+				return out, replayErr
 			}
-			if replayErr == nil {
-				replayErr = validateResult(&out)
+			if replayErr = decodeResult(response.Result, &out); replayErr != nil {
+				return out, uncertainRemoteResult(replayErr)
 			}
-			if replayErr == nil && (out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind) {
-				replayErr = reason.Invalid("remote operation result does not match request")
+			if replayErr = validateResult(&out); replayErr != nil {
+				return out, uncertainRemoteResult(replayErr)
 			}
-			if replayErr == nil {
-				replayErr = updateHandleRevision(c.HandlePath, out.Revision)
+			if out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind {
+				return out, uncertainRemoteResult(reason.Invalid("remote operation result does not match request"))
 			}
-			if replayErr == nil && out.Completed {
+			if replayErr = updateHandleRevision(c.HandlePath, out.Revision); replayErr == nil && out.Completed {
 				replayErr = a.Client.finalize(r.OperationID, c.HandlePath)
 			}
 			return out, replayErr
@@ -473,19 +479,19 @@ func (a *RemoteAuthority) BeginOperation(ctx context.Context, c lease.Credential
 	q["claimId"], q["revision"], q["kind"], q["request"], q["requestSha256"], q["ttlMicros"] = c.ClaimID, c.Revision, r.Kind, r.Request, r.RequestHash, r.TTL.Microseconds()
 	b, e := a.request(ctx, "/v1/operations/begin", "operations/begin", r.OperationID, q, true, false, c.Token, "", c.HandlePath, "", "", c.CredentialPath)
 	var out lease.Started
-	if e == nil {
-		e = decodeResult(b, &out)
+	if e != nil {
+		return out, e
 	}
-	if e == nil {
-		e = validateResult(&out)
+	if e = decodeResult(b, &out); e != nil {
+		return out, uncertainRemoteResult(e)
 	}
-	if e == nil && (out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind || r.RequestHash != "" && out.RequestHash != r.RequestHash) {
-		e = reason.Invalid("remote operation result does not match request")
+	if e = validateResult(&out); e != nil {
+		return out, uncertainRemoteResult(e)
 	}
-	if e == nil {
-		e = updateHandleRevision(c.HandlePath, out.Revision)
+	if out.OperationID != r.OperationID || out.ClaimID != c.ClaimID || out.Kind != r.Kind || r.RequestHash != "" && out.RequestHash != r.RequestHash {
+		return out, uncertainRemoteResult(reason.Invalid("remote operation result does not match request"))
 	}
-	if e == nil && out.Completed {
+	if e = updateHandleRevision(c.HandlePath, out.Revision); e == nil && out.Completed {
 		e = a.Client.finalize(r.OperationID, c.HandlePath)
 	}
 	return out, e

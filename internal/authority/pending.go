@@ -18,6 +18,8 @@ import (
 
 const maxPendingBytes = 1 << 20
 
+var errPendingRequestMismatch = errors.New("pending request already records a different effect")
+
 type PendingRequest struct {
 	RequestID             string          `json:"requestId"`
 	OperationID           string          `json:"operationId,omitempty"`
@@ -80,7 +82,7 @@ func (s *FilePendingStore) Save(p PendingRequest) error {
 	path := s.path(p.RequestID)
 	if old, loadErr := s.Load(p.RequestID); loadErr == nil {
 		if old.RequestSHA256 != p.RequestSHA256 || !bytes.Equal(old.Request, p.Request) {
-			return fmt.Errorf("pending request already records a different effect")
+			return errPendingRequestMismatch
 		}
 		return nil
 	} else if !errors.Is(loadErr, os.ErrNotExist) {

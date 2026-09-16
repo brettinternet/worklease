@@ -33,6 +33,9 @@ func remoteTransfer(ctx context.Context, s *boundary, cmd *urfave.Command, backe
 	if h.AuthorityID != backend.AuthorityID() {
 		return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 	}
+	if pendingErr := pendingAcquireRecovery(&h, predecessorPath); pendingErr != nil {
+		return s.handle(cmd, pendingErr)
+	}
 	toAgent, toSession := strings.TrimSpace(cmd.String("to-agent")), strings.TrimSpace(cmd.String("to-session"))
 	if toAgent == "" || toSession == "" {
 		return s.handle(cmd, reason.Invalid("successor identity is required"))
@@ -73,6 +76,28 @@ func remoteTransfer(ctx context.Context, s *boundary, cmd *urfave.Command, backe
 		return s.handle(cmd, mutationFailure(err, h.ClaimID, request.OperationID, predecessorPath))
 	}
 	return writeLeaseResult(s, cmd, "transfer", transferFields(grant, successorPath))
+}
+
+func replayPendingRemoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backend *authorityContext, path string) (bool, error) {
+	existing, err := handle.Read(path)
+	if err != nil || existing.PendingRequest == nil {
+		return false, nil
+	}
+	if existing.AuthorityID != backend.AuthorityID() {
+		return true, s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
+	}
+	if existing.PendingRequest.Kind != "acquire" {
+		return true, s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
+	}
+	response, replayErr := backend.HTTP.ReplayHandle(ctx, path)
+	if replayErr != nil {
+		return true, s.handle(cmd, mutationFailure(replayErr, existing.ClaimID, existing.PendingRequest.OperationID, path))
+	}
+	var grant lease.Grant
+	if err := json.Unmarshal(response.Result, &grant); err != nil {
+		return true, s.handle(cmd, reason.New(reason.ReasonUnknownOutcome, "remote mutation result could not be validated").With("commitState", "unknown"))
+	}
+	return true, writeLeaseResult(s, cmd, "acquire", acquireFields(grant))
 }
 
 func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backend *authorityContext, resources []string, localReplaceAllowed bool) error {
@@ -126,19 +151,8 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 			if existing.RecoveryRequest != nil {
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
 			}
-			if existing.PendingRequest != nil {
-				if existing.PendingRequest.Kind != "acquire" {
-					return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
-				}
-				response, replayErr := backend.HTTP.ReplayHandle(ctx, path)
-				if replayErr != nil {
-					return s.handle(cmd, mutationFailure(replayErr, existing.ClaimID, existing.PendingRequest.OperationID, path))
-				}
-				var grant lease.Grant
-				if err := json.Unmarshal(response.Result, &grant); err != nil {
-					return s.handle(cmd, reason.Invalid("remote result is invalid"))
-				}
-				return writeLeaseResult(s, cmd, "acquire", acquireFields(grant))
+			if replayed, replayErr := replayPendingRemoteAcquire(ctx, s, cmd, backend, path); replayed {
+				return replayErr
 			}
 			if existing.State != "ready" {
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "handle is not ready"))

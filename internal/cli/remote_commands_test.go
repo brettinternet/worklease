@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,10 @@ import (
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
 )
+
+type cliRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f cliRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func remoteCLIFixture(t *testing.T) (string, string, string) {
 	t.Helper()
@@ -178,6 +183,59 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 	out, err = runRemoteCLI(t, "release", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--json")
 	if err != nil {
 		t.Fatalf("release: %v output=%s", err, out)
+	}
+}
+
+func TestPendingAcquireBlocksLifecycleAndReplaysWithoutResourceFlags(t *testing.T) {
+	profileName, clientHome, claimHandle := remoteCLIFixture(t)
+	profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := profiles[profileName]
+	mutationCalls := 0
+	transport := cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response, roundTripErr := http.DefaultTransport.RoundTrip(request)
+		if request.URL.Path != "/v1/claims/acquire" || roundTripErr != nil {
+			return response, roundTripErr
+		}
+		mutationCalls++
+		_ = response.Body.Close()
+		return nil, errors.New("lost acquire response")
+	})
+	client, err := authority.NewHTTPClient(profile, authority.NewFilePendingStore(filepath.Join(t.TempDir(), "pending")), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := authority.NewRemoteAuthority(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimID := strings.Repeat("c", 32)
+	_, err = remote.Acquire(context.Background(), lease.AcquireRequest{ClaimID: claimID, Token: strings.Repeat("d", 64), Resources: []string{"coordination:pending"}, AgentID: "agent", SessionID: "session", WorkKey: "pending", TTL: 30 * time.Second, MaxHold: time.Hour, RequestNotAfter: time.Now().Add(time.Hour), HandlePath: claimHandle})
+	if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonUnknownOutcome || mutationCalls != 1 {
+		t.Fatalf("staged acquire=%v calls=%d", err, mutationCalls)
+	}
+	before, err := handle.Read(claimHandle)
+	if err != nil || before.PendingRequest == nil || before.PendingRequest.Kind != "acquire" {
+		t.Fatalf("pending acquire=%#v err=%v", before, err)
+	}
+	out, err := runRemoteCLI(t, "heartbeat", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--ttl", "30s", "--json")
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonRecoveryRequired || !strings.Contains(out, `"commitState":"not-committed"`) || !strings.Contains(out, claimHandle) || !strings.Contains(out, claimID) || strings.Contains(out, strings.Repeat("d", 64)) {
+		t.Fatalf("pending acquire heartbeat err=%v output=%s", err, out)
+	}
+	afterRefusal, err := handle.Read(claimHandle)
+	if err != nil || afterRefusal.PendingRequest == nil || afterRefusal.PendingRequest.OperationID != claimID {
+		t.Fatalf("refusal changed pending acquire: %#v err=%v", afterRefusal, err)
+	}
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--json")
+	if err != nil || !strings.Contains(out, `"resources":["coordination:pending"]`) {
+		t.Fatalf("exact acquire replay: %v output=%s", err, out)
+	}
+	ready, err := handle.Read(claimHandle)
+	if err != nil || ready.State != "ready" || ready.PendingRequest != nil || ready.ClaimID != claimID {
+		t.Fatalf("replayed acquire handle=%#v err=%v", ready, err)
 	}
 }
 
