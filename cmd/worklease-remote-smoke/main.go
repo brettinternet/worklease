@@ -44,6 +44,7 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/creack/pty"
 	sqlite "modernc.org/sqlite"
@@ -105,25 +106,25 @@ type report struct {
 }
 
 type harness struct {
-	binary, self, root, endpoint, cert, configPath, authorityHome   string
-	remoteHost, remoteRoot, remoteAddress, sshConfig                string
-	remoteGOOS, remoteGOARCH                                        string
-	remotePort                                                      int
-	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey string
-	commandLog                                                      string
-	server                                                          *exec.Cmd
-	faultProxy                                                      *exec.Cmd
-	faultEndpoint, faultControl, faultLog                           string
-	clients                                                         [2]client
-	report                                                          report
-	realHost                                                        bool
-	supportingTests                                                 []supportingTestEvidence
-	immutableEnrollmentClient, zeroPendingClient                    client
-	immutableEnrollmentID, immutableEnrollmentInvite                string
-	immutableEnrollmentBefore                                       authority.PendingRequest
-	pendingSurvivalBefore                                           []byte
-	fullVolumeMaxPageCount                                          int64
-	preRestoreCursor                                                string
+	binary, self, root, endpoint, cert, key, configPath, authorityHome string
+	remoteHost, remoteRoot, remoteAddress, sshConfig                   string
+	remoteGOOS, remoteGOARCH                                           string
+	remotePort                                                         int
+	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey    string
+	commandLog                                                         string
+	server                                                             *exec.Cmd
+	faultProxy                                                         *exec.Cmd
+	faultEndpoint, faultControl, faultLog                              string
+	clients                                                            [2]client
+	report                                                             report
+	realHost                                                           bool
+	supportingTests                                                    []supportingTestEvidence
+	immutableEnrollmentClient, zeroPendingClient                       client
+	immutableEnrollmentID, immutableEnrollmentInvite                   string
+	immutableEnrollmentBefore                                          authority.PendingRequest
+	pendingSurvivalBefore                                              []byte
+	fullVolumeMaxPageCount                                             int64
+	preRestoreCursor                                                   string
 }
 
 type client struct {
@@ -252,7 +253,11 @@ func main() {
 			if readErr != nil {
 				fatal(readErr)
 			}
-			_, _, err = client.ReplayEnrollment(context.Background(), os.Args[5], strings.TrimSpace(string(invite)), paths)
+			inviteValue := strings.TrimSpace(string(invite))
+			if artifact, decodeErr := authority.DecodeInviteArtifact(inviteValue); decodeErr == nil {
+				inviteValue = artifact.Invite
+			}
+			_, _, err = client.ReplayEnrollment(context.Background(), os.Args[5], inviteValue, paths)
 		}
 		if err != nil {
 			if classified := reason.As(err); classified != nil {
@@ -734,8 +739,8 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	throughputKind := "development"
 	if h.realHost {
 		throughputKind = "real-host"
-		if size, sizeErr := h.remoteSize(filepath.Join(h.remoteRoot, "authority", "worklease.db")); sizeErr == nil {
-			h.report.Storage = fmt.Sprintf("remote authority database bytes=%s (%s:%s)", size, h.remoteHost, filepath.Join(h.remoteRoot, "authority", "worklease.db"))
+		if size, sizeErr := h.remoteSize(filepath.Join(h.authorityHome, "worklease.db")); sizeErr == nil {
+			h.report.Storage = fmt.Sprintf("remote authority database bytes=%s (%s:%s)", size, h.remoteHost, filepath.Join(h.authorityHome, "worklease.db"))
 		}
 	} else if info, err := os.Stat(filepath.Join(root, "authority", "worklease.db")); err == nil {
 		h.report.Storage = fmt.Sprintf("authority database bytes=%d", info.Size())
@@ -772,16 +777,10 @@ func (h *harness) provision(evidence string) error {
 	if h.realHost {
 		return h.provisionRemote(evidence)
 	}
-	authorityHome := filepath.Join(h.root, "authority")
 	secretDir := filepath.Join(h.root, "secrets")
 	if err := os.MkdirAll(secretDir, 0o700); err != nil {
 		return err
 	}
-	cert, key := filepath.Join(secretDir, "tls.crt"), filepath.Join(secretDir, "tls.key")
-	if err := writeCertificate(cert, key); err != nil {
-		return err
-	}
-	h.cert = cert
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -789,21 +788,28 @@ func (h *harness) provision(evidence string) error {
 	address := listener.Addr().String()
 	_ = listener.Close()
 	h.endpoint = "https://" + address
-	configPath := filepath.Join(secretDir, "server.yaml")
-	h.configPath, h.authorityHome = configPath, authorityHome
-	config := h.serverConfig(authorityHome, []string{"coordination:"}, "1h", "24h")
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		return err
-	}
+	h.configPath = filepath.Join(secretDir, "server.yaml")
 	bootstrap := filepath.Join(secretDir, "bootstrap.invite")
-	h.logCommand("authority", []string{"worklease", "--json", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", bootstrap})
-	initResult, err := runJSON(nil, "", h.binary, "--json", "server", "init", "--server-config", configPath, "--bootstrap-invite-file", bootstrap)
+	initArgs := []string{"--json", "server", "init", "--guided", "--server-config", h.configPath, "--bootstrap-invite-file", bootstrap, "--listen", address, "--endpoint", h.endpoint, "--transport", "tls", "--admitted-prefix", "coordination:"}
+	h.logCommand("authority guided setup", append([]string{"worklease"}, initArgs...))
+	serverEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(h.root, "server-config"), "XDG_STATE_HOME="+filepath.Join(h.root, "server-state"))
+	initResult, err := runJSON(serverEnv, "", h.binary, initArgs...)
 	if err != nil {
 		return err
 	}
 	h.report.Authority, _ = initResult["authorityId"].(string)
-	h.logCommand("authority", []string{"worklease", "serve", "--server-config", configPath})
-	h.server = exec.Command(h.binary, "serve", "--server-config", configPath)
+	h.cert, _ = initResult["certificateFile"].(string)
+	h.key, _ = initResult["keyFile"].(string)
+	cfg, err := server.LoadConfig(h.configPath)
+	if err != nil {
+		return err
+	}
+	h.authorityHome = cfg.Home
+	if h.cert == "" || h.key == "" {
+		return errors.New("guided setup did not report generated TLS paths")
+	}
+	h.logCommand("authority", []string{"worklease", "serve", "--server-config", h.configPath})
+	h.server = exec.Command(h.binary, "serve", "--server-config", h.configPath)
 	serverLog, err := os.OpenFile(filepath.Join(evidence, "authority.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -814,7 +820,7 @@ func (h *harness) provision(evidence string) error {
 		return err
 	}
 	_ = serverLog.Close()
-	if err := waitHealthy(h.endpoint, cert); err != nil {
+	if err := waitHealthy(h.endpoint, h.cert); err != nil {
 		return err
 	}
 	for index, name := range []string{"client-a", "client-b"} {
@@ -825,20 +831,23 @@ func (h *harness) provision(evidence string) error {
 		if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
 			return fmt.Errorf("git init %s: %w: %s", name, err, output)
 		}
-		c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+cert, "WORKLEASE_AGENT_ID="+name, "WORKLEASE_SESSION_ID="+name+"-session")
+		c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+name, "WORKLEASE_SESSION_ID="+name+"-session")
 		h.clients[index] = c
-		if _, err := h.cli(c, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority); err != nil {
-			return err
-		}
 	}
 	if _, err := h.cli(h.clients[0], "enroll", "--profile", "team", "--invite-file", bootstrap, "--label", "acceptance-admin"); err != nil {
 		return err
 	}
-	workerInvite := filepath.Join(secretDir, "worker.invite")
-	if _, err := h.cli(h.clients[0], "--profile", "team", "invite", "issue", "--role", "write", "--invite-file", workerInvite, "--label", "acceptance-worker"); err != nil {
+	if _, err := h.cli(h.clients[0], "doctor", "--resource", "coordination:onboarding"); err != nil {
 		return err
 	}
-	if _, err := h.cli(h.clients[1], "enroll", "--profile", "team", "--invite-file", workerInvite, "--label", "acceptance-worker"); err != nil {
+	workerInvite := filepath.Join(secretDir, "worker.invite")
+	if _, err := h.cli(h.clients[0], "invite", "issue", "--role", "write", "--invite-file", workerInvite, "--label", "team"); err != nil {
+		return err
+	}
+	if _, err := h.cli(h.clients[1], "enroll", "--invite-file", workerInvite, "--label", "acceptance-worker"); err != nil {
+		return err
+	}
+	if _, err := h.cli(h.clients[1], "doctor", "--resource", "coordination:onboarding"); err != nil {
 		return err
 	}
 	h.report.ClientRoots = []string{h.clients[0].checkout, h.clients[1].checkout}
@@ -937,20 +946,6 @@ func (h *harness) provisionRemote(evidence string) error {
 	if err := os.MkdirAll(secretDir, 0o700); err != nil {
 		return err
 	}
-	cert, key := filepath.Join(secretDir, "tls.crt"), filepath.Join(secretDir, "tls.key")
-	if err := writeCertificate(cert, key, net.ParseIP(address), address, h.remoteHost); err != nil {
-		return err
-	}
-	h.cert = cert
-	h.remoteCert, h.remoteKey = filepath.Join(h.remoteRoot, "tls.crt"), filepath.Join(h.remoteRoot, "tls.key")
-	for local, remote := range map[string]string{cert: h.remoteCert, key: h.remoteKey} {
-		if err := runSCP(h.remoteHost, local, remote); err != nil {
-			return fmt.Errorf("copy TLS material: %w", err)
-		}
-	}
-	if _, err := runSSH(h.remoteHost, "chmod", "600", h.remoteCert, h.remoteKey); err != nil {
-		return err
-	}
 	portOutput, err := runSSH(h.remoteHost, h.remoteHelper, "free-port")
 	if err != nil {
 		return err
@@ -960,26 +955,31 @@ func (h *harness) provisionRemote(evidence string) error {
 		return fmt.Errorf("remote helper returned invalid port %q", strings.TrimSpace(portOutput))
 	}
 	h.remotePort = port
-	authorityHome := filepath.Join(h.remoteRoot, "authority")
 	h.remoteConfig = filepath.Join(h.remoteRoot, "server.yaml")
-	h.configPath, h.authorityHome = h.remoteConfig, authorityHome
-	config := h.serverConfig(authorityHome, []string{"coordination:"}, "1h", "24h")
-	configLocal := filepath.Join(secretDir, "server.yaml")
-	if err := os.WriteFile(configLocal, []byte(config), 0o600); err != nil {
-		return err
-	}
-	if err := runSCP(h.remoteHost, configLocal, h.remoteConfig); err != nil {
-		return err
-	}
+	h.configPath = h.remoteConfig
 	h.endpoint = fmt.Sprintf("https://%s:%d", address, port)
 	bootstrapRemote := filepath.Join(h.remoteRoot, "bootstrap.invite")
-	initArgs := []string{"--json", "server", "init", "--server-config", h.remoteConfig, "--bootstrap-invite-file", bootstrapRemote}
-	h.logCommand("authority@"+h.remoteHost, append([]string{"worklease"}, initArgs...))
-	initResult, err := h.remoteJSON(h.remoteBinary, initArgs...)
+	initArgs := []string{"--json", "server", "init", "--guided", "--server-config", h.remoteConfig, "--bootstrap-invite-file", bootstrapRemote, "--listen", fmt.Sprintf("0.0.0.0:%d", port), "--endpoint", h.endpoint, "--transport", "tls", "--admitted-prefix", "coordination:", "--confirm-non-loopback"}
+	h.logCommand("authority guided setup@"+h.remoteHost, append([]string{"worklease"}, initArgs...))
+	serverConfigRoot := filepath.Join(h.remoteRoot, "server-config")
+	serverStateRoot := filepath.Join(h.remoteRoot, "server-state")
+	remoteInitArgs := append([]string{"XDG_CONFIG_HOME=" + serverConfigRoot, "XDG_STATE_HOME=" + serverStateRoot, h.remoteBinary}, initArgs...)
+	initResult, err := h.remoteJSON("env", remoteInitArgs...)
 	if err != nil {
 		return err
 	}
 	h.report.Authority, _ = initResult["authorityId"].(string)
+	h.remoteCert, _ = initResult["certificateFile"].(string)
+	h.remoteKey, _ = initResult["keyFile"].(string)
+	if h.remoteCert == "" || h.remoteKey == "" {
+		return errors.New("remote guided setup did not report generated TLS paths")
+	}
+	h.authorityHome = filepath.Join(serverStateRoot, "worklease", "server")
+	cert := filepath.Join(secretDir, "tls.crt")
+	if err := runSCP(h.remoteHost, h.remoteHost+":"+h.remoteCert, cert); err != nil {
+		return fmt.Errorf("fetch generated TLS certificate: %w", err)
+	}
+	h.cert = cert
 	bootstrap := filepath.Join(secretDir, "bootstrap.invite")
 	if err := runSCP(h.remoteHost, h.remoteHost+":"+bootstrapRemote, bootstrap); err != nil {
 		return fmt.Errorf("fetch bootstrap invite: %w", err)
@@ -1007,24 +1007,24 @@ func (h *harness) provisionRemote(evidence string) error {
 		return fmt.Errorf("git init client-b: %w", err)
 	}
 	h.clients[1] = b
-	if _, err := h.cli(a, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority); err != nil {
-		return err
-	}
-	if _, err := h.cli(b, "profile", "add", "team", "--endpoint", h.endpoint, "--authority-id", h.report.Authority); err != nil {
-		return err
-	}
 	if _, err := h.cli(a, "enroll", "--profile", "team", "--invite-file", bootstrap, "--label", "acceptance-admin"); err != nil {
 		return err
 	}
+	if _, err := h.cli(a, "doctor", "--resource", "coordination:onboarding"); err != nil {
+		return err
+	}
 	workerInvite := filepath.Join(secretDir, "worker.invite")
-	if _, err := h.cli(a, "--profile", "team", "invite", "issue", "--role", "write", "--invite-file", workerInvite, "--label", "acceptance-worker"); err != nil {
+	if _, err := h.cli(a, "invite", "issue", "--role", "write", "--invite-file", workerInvite, "--label", "team"); err != nil {
 		return err
 	}
 	workerRemote := filepath.Join(h.remoteRoot, "worker.invite")
 	if err := runSCP(h.remoteHost, workerInvite, workerRemote); err != nil {
 		return err
 	}
-	if _, err := h.cli(b, "enroll", "--profile", "team", "--invite-file", workerRemote, "--label", "acceptance-worker"); err != nil {
+	if _, err := h.cli(b, "enroll", "--invite-file", workerRemote, "--label", "acceptance-worker"); err != nil {
+		return err
+	}
+	if _, err := h.cli(b, "doctor", "--resource", "coordination:onboarding"); err != nil {
 		return err
 	}
 	h.report.ClientRoots = []string{a.checkout, h.remoteHost + ":" + b.checkout}
@@ -1295,7 +1295,7 @@ func (h *harness) startFaultProxy(evidence string) error {
 	if err != nil {
 		return err
 	}
-	listen, cert, key, helper := fmt.Sprintf("127.0.0.1:%d", port), h.cert, filepath.Join(h.root, "secrets", "tls.key"), h.self
+	listen, cert, key, helper := fmt.Sprintf("127.0.0.1:%d", port), h.cert, h.key, h.self
 	h.faultControl, h.faultLog = filepath.Join(h.root, "fault-control"), filepath.Join(evidence, "fault-proxy.log")
 	pidPath := filepath.Join(h.root, "fault-proxy.pid")
 	if h.realHost {
@@ -1776,7 +1776,7 @@ func claimsContain(result map[string]any, claimID string) bool {
 }
 
 func (h *harness) serverConfig(home string, prefixes []string, maxTTL, maxHold string) string {
-	listen, cert, key := strings.TrimPrefix(h.endpoint, "https://"), h.cert, filepath.Join(h.root, "secrets", "tls.key")
+	listen, cert, key := strings.TrimPrefix(h.endpoint, "https://"), h.cert, h.key
 	if h.realHost {
 		listen = fmt.Sprintf("0.0.0.0:%d", h.remotePort)
 		cert, key = h.remoteCert, h.remoteKey
@@ -2499,6 +2499,10 @@ func (h *harness) mismatchedEnrollment(inviteFile, label, evidencePath string) (
 	if err != nil {
 		return "", nil, err
 	}
+	inviteValue := strings.TrimSpace(string(invite))
+	if artifact, decodeErr := authority.DecodeInviteArtifact(inviteValue); decodeErr == nil {
+		inviteValue = artifact.Invite
+	}
 	requestID, err := randomRequestID()
 	if err != nil {
 		return "", nil, err
@@ -2518,7 +2522,7 @@ func (h *harness) mismatchedEnrollment(inviteFile, label, evidencePath string) (
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	request.Header.Set("Worklease-Protocol-Version", "worklease-http/1")
-	request.Header.Set("Authorization", "Invite "+strings.TrimSpace(string(invite)))
+	request.Header.Set("Authorization", "Invite "+inviteValue)
 	request.Header.Set("Worklease-New-Installation-Authorization", "Bearer "+string(credentialText))
 	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}).Do(request)
 	if err != nil {
@@ -2539,7 +2543,7 @@ func (h *harness) mismatchedEnrollment(inviteFile, label, evidencePath string) (
 	if err != nil {
 		return "", nil, err
 	}
-	if bytes.Contains(recorded, bytes.TrimSpace(invite)) || bytes.Contains(recorded, credentialText) {
+	if bytes.Contains(recorded, []byte(inviteValue)) || bytes.Contains(recorded, credentialText) {
 		return "", nil, errors.New("mismatched enrollment response disclosed a bearer secret")
 	}
 	if err := os.WriteFile(evidencePath, append(recorded, '\n'), 0o600); err != nil {
@@ -2681,11 +2685,24 @@ func (h *harness) group3BootstrapCrash(evidence string) error {
 	if before.ReadyMarker || !before.BootstrapReady || before.ActiveInvites != 1 || before.RevokedInvites != 0 || before.SecretMode != "0600" {
 		return fmt.Errorf("unexpected bootstrap state after crash: %+v", before)
 	}
-	secretCopy := invite
+	stagedInvite := invite + ".legacy-secret"
+	if !h.realHost {
+		if _, statErr := os.Stat(invite); statErr == nil {
+			stagedInvite = invite
+		}
+	}
+	secretCopy := filepath.Join(h.root, "secrets", ".bootstrap-crash.secret-copy")
 	if h.realHost {
-		secretCopy = filepath.Join(h.root, "secrets", ".bootstrap-crash.remote.invite")
-		if err := runSCP(h.remoteHost, h.remoteHost+":"+invite, secretCopy); err != nil {
+		if err := runSCP(h.remoteHost, h.remoteHost+":"+stagedInvite, secretCopy); err != nil {
 			return err
+		}
+	} else {
+		stagedSecret, readErr := os.ReadFile(stagedInvite)
+		if readErr != nil {
+			return readErr
+		}
+		if writeErr := os.WriteFile(secretCopy, stagedSecret, 0o600); writeErr != nil {
+			return writeErr
 		}
 	}
 	secret, err := os.ReadFile(secretCopy)
@@ -2780,13 +2797,9 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 	if err := requireReason(lostIssue, "unknown-outcome"); err != nil {
 		return err
 	}
-	if err := h.replayPending(admin, issueID); err != nil {
+	if _, err := h.cli(admin, "--profile", "team", "invite", "issue", "--operation-id", issueID, "--role", "write", "--invite-file", issueInvite, "--label", "lost-issue"); err != nil {
 		return err
 	}
-	if err := h.switchProfileEndpoint(admin, h.endpoint); err != nil {
-		return err
-	}
-
 	redeemer, err := h.newLocalEnrollmentClient("enrollment-replay", h.faultEndpoint)
 	if err != nil {
 		return err
@@ -2857,6 +2870,9 @@ func (h *harness) group3EnrollmentFaults(evidence string) error {
 	h.immutableEnrollmentBefore = immutablePending
 	immutableEvidence, _ := json.MarshalIndent(map[string]string{"requestId": immutableID, "authorityId": immutablePending.AuthorityID, "expectedRestoreId": immutablePending.ExpectedRestoreID, "requestSha256": immutablePending.RequestSHA256}, "", "  ")
 	if err := os.WriteFile(filepath.Join(evidence, "immutable-enrollment-before-restore.json"), append(immutableEvidence, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := h.switchProfileEndpoint(admin, h.endpoint); err != nil {
 		return err
 	}
 
@@ -3093,16 +3109,24 @@ func validateAcceptanceDatabase(database string) error {
 	if err != nil {
 		return err
 	}
-	root := filepath.Dir(filepath.Dir(resolved))
-	if resolved != filepath.Join(root, "authority", "worklease.db") {
+	if filepath.Base(resolved) != store.DatabaseFileName {
 		return errors.New("retention fixture requires the acceptance authority database")
 	}
-	marker := filepath.Join(root, ".worklease-acceptance-owner")
-	info, err := os.Stat(marker)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return errors.New("retention fixture requires an owner-private acceptance marker")
+	for root := filepath.Dir(resolved); ; root = filepath.Dir(root) {
+		marker := filepath.Join(root, ".worklease-acceptance-owner")
+		info, statErr := os.Stat(marker)
+		if statErr == nil {
+			if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+				return errors.New("retention fixture requires an owner-private acceptance marker")
+			}
+			return nil
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			break
+		}
 	}
-	return nil
+	return errors.New("retention fixture requires an owner-private acceptance marker")
 }
 
 func ageRetentionFixture(database string, at int64) (err error) {
@@ -3198,10 +3222,7 @@ func installRecoveryClosureFixture(database string) (result map[string]any, err 
 }
 
 func (h *harness) ageRetentionState(evidence string) error {
-	database := filepath.Join(h.root, "authority", "worklease.db")
-	if h.realHost {
-		database = filepath.Join(h.remoteRoot, "authority", "worklease.db")
-	}
+	database := filepath.Join(h.authorityHome, "worklease.db")
 	h.stopServer()
 	at := strconv.FormatInt(time.Now().Add(-72*time.Hour).UnixMicro(), 10)
 	h.logCommand("fixture@"+h.remoteHost, []string{"age-retention-fixture", database, at})
@@ -3324,10 +3345,7 @@ func readStorageSnapshot(database string) (snapshot storageSnapshot, err error) 
 }
 
 func (h *harness) authorityDatabase() string {
-	if h.realHost {
-		return filepath.Join(h.remoteRoot, "authority", "worklease.db")
-	}
-	return filepath.Join(h.root, "authority", "worklease.db")
+	return filepath.Join(h.authorityHome, "worklease.db")
 }
 
 func (h *harness) fixtureJSON(command string, target any) error {
@@ -3707,18 +3725,11 @@ func (h *harness) group4(evidence string) error {
 	if err := os.WriteFile(retentionEvidence, append(retentionData, '\n'), 0o600); err != nil {
 		return err
 	}
-	if err := h.startFaultProxy(evidence); err != nil {
-		return err
-	}
-	if err := h.switchProfileEndpoint(h.immutableEnrollmentClient, h.faultEndpoint); err != nil {
-		h.stopFaultProxy()
-		return err
-	}
+	// Reuse the enrollment fault proxy so the retained request's pinned endpoint
+	// remains identical while replay expiry is observed.
 	replayExpiredOutput, replayExpiredErr := h.replayPendingFailure(h.immutableEnrollmentClient, h.immutableEnrollmentID, h.immutableEnrollmentInvite)
 	collectErr := h.collectFaultLog(evidence)
-	restoreEndpointErr := h.switchProfileEndpoint(h.immutableEnrollmentClient, h.endpoint)
-	h.stopFaultProxy()
-	if err := errors.Join(replayExpiredErr, collectErr, restoreEndpointErr); err != nil {
+	if err := errors.Join(replayExpiredErr, collectErr); err != nil {
 		return err
 	}
 	inviteSecret, err := os.ReadFile(h.immutableEnrollmentInvite)
@@ -4492,10 +4503,7 @@ func (h *harness) exerciseRecoveryReopen(evidence, retainedOperationID, installa
 }
 
 func (h *harness) exerciseOver32RecoveryClosure(evidence string) (string, error) {
-	database := filepath.Join(h.root, "authority", "worklease.db")
-	if h.realHost {
-		database = filepath.Join(h.remoteRoot, "authority", "worklease.db")
-	}
+	database := filepath.Join(h.authorityHome, "worklease.db")
 	h.stopServer()
 	var fixtureOutput []byte
 	var err error
@@ -4548,10 +4556,7 @@ func (h *harness) exerciseOver32RecoveryClosure(evidence string) (string, error)
 }
 
 func (h *harness) group5(evidence string) error {
-	authorityDB := filepath.Join(h.root, "authority", "worklease.db")
-	if h.realHost {
-		authorityDB = filepath.Join(h.remoteRoot, "authority", "worklease.db")
-	}
+	authorityDB := filepath.Join(h.authorityHome, "worklease.db")
 	retainedCredentialClient, retainedInstallationID, err := h.provisionRaceClient("restore-retained-installation")
 	if err != nil {
 		return err
@@ -4813,10 +4818,12 @@ func (h *harness) group5(evidence string) error {
 	if err := requireReason(oldInviteResult, "invite-invalid", "invite-used"); err != nil {
 		return fmt.Errorf("superseded bootstrap invite remained redeemable: %w", err)
 	}
-	if _, err := h.cli(h.clients[0], "enroll", "--profile", "team", "--invite-file", clientRestoreInvite, "--label", "acceptance-restored-cursor"); err != nil {
+	restoredAdmin, err := h.enrollRestoreValidationClient("acceptance-restored-cursor", clientRestoreInvite, restoredRestoreID)
+	if err != nil {
 		return err
 	}
-	installationInventory, err := h.cli(h.clients[0], "--profile", "team", "installation", "list", "--include-revoked")
+	h.clients[0] = restoredAdmin
+	installationInventory, err := h.cli(restoredAdmin, "--profile", "team", "installation", "list", "--include-revoked")
 	if err != nil {
 		return fmt.Errorf("new post-restore credential is unusable: %w", err)
 	}
@@ -5890,10 +5897,7 @@ func writeCertificate(certPath, keyPath string, sanValues ...any) error {
 }
 
 func authorityDBRoot(h *harness) string {
-	if h.realHost {
-		return filepath.Join(h.remoteRoot, "authority")
-	}
-	return filepath.Join(h.root, "authority")
+	return h.authorityHome
 }
 
 func readBootstrapState(home, secretPath string) (bootstrapState, error) {
@@ -5907,6 +5911,9 @@ func readBootstrapState(home, secretPath string) (bootstrapState, error) {
 	}
 	defer database.Close()
 	secretInfo, err := os.Stat(secretPath)
+	if errors.Is(err, os.ErrNotExist) {
+		secretInfo, err = os.Stat(secretPath + ".legacy-secret")
+	}
 	if err != nil {
 		return bootstrapState{}, err
 	}

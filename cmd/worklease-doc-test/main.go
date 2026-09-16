@@ -2,13 +2,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/server"
@@ -33,7 +37,9 @@ func main() {
 	}
 	validateCurrentDocs()
 	validateRemoteDocs()
+	validateOnboardingDocs()
 	validateDocumentedExitFamilies()
+	testInsecureOnboarding(binary)
 	testContention(binary)
 	testMCPTwoLoops(binary)
 	fmt.Println("worklease documentation examples passed")
@@ -125,11 +131,13 @@ func fencedBlocks(markdown string) []string {
 func validateRemoteDocs() {
 	guides := map[string][]string{
 		"README.md": {
-			"experimental", "no listener", "no network request", "Local reads remain setup-free",
-			"Remote failures do", "not fall back to local coordination",
+			"experimental", "no listener", "no network request", "Local reads remain", "setup-free",
+			"Remote failures do", "not fall back to local coordination", "server init --guided",
+			"worklease doctor --resource coordination:demo", "worklease list --full",
 		},
 		"docs/remote-claim-authority.md": {
-			"**experimental**", "worklease profile add NAME", "--authority-id ID", "--allow-insecure-http",
+			"**experimental**", "## Two-machine quickstart", "Temporary trusted-LAN cleartext test only",
+			"worklease profile add NAME", "--authority-id ID", "--allow-insecure-http",
 			"--invite-file FILE", "--invite-fd N", "--role read|write|admin", "--expected-recovery-revision N",
 			"--attestation-file FILE", "--selected-cutoff RFC3339", "--loss-interval-start RFC3339", "gc --apply", "--cutoff TIME", "--retention-days N",
 			"--loss-interval-end RFC3339", "--cutoff-unknown", "--unresolved-export FILE", "| Capability | Trigger |",
@@ -142,9 +150,8 @@ func validateRemoteDocs() {
 			"+2,218,770 B", "+5,344,688 B", "+2,396,120 B", "+5,856,672 B",
 		},
 		"docs/cli-reference.md": {
-			"## Experimental remote authority", "--profile NAME", "WORKLEASE_PROFILE", "--local",
-			"worklease server restore", "worklease recovery reopen", "--cutoff-unknown",
-			"`--wait` is a client loop", "--poll-interval", "GC requires `--apply`", "--cutoff TIME", "--retention-days N", "unsupported",
+			"## Experimental remote authority", "--profile", "--local", "server restore", "recovery status|reopen",
+			"one namespace", "SQLite writer", "does not provide HA", "unsupported operations",
 		},
 		"docs/mcp.md": {
 			"Experimental remote profile", "--profile NAME", "local reads remain setup-free",
@@ -155,6 +162,9 @@ func validateRemoteDocs() {
 			"provider-neutral contract above is unchanged", "--profile NAME", "WORKLEASE_PROFILE", "--local",
 			"no network request", "durable exact pending requests", "Provider execution, provider", "cessation, and file replacement remain client-local",
 			"Recovery import", "HA", "Postgres", "browser control plane",
+		},
+		"docs/container.md": {
+			"server init --guided", "--transport tls", "generated certificate pin", "invite issue --role write",
 		},
 	}
 	for path, fragments := range guides {
@@ -179,6 +189,44 @@ func validateRemoteDocs() {
 		}
 	}
 	validateRemoteServerConfig(string(remote))
+}
+
+func validateOnboardingDocs() {
+	remote, err := os.ReadFile("docs/remote-claim-authority.md")
+	if err != nil {
+		fatal(err)
+	}
+	text := string(remote)
+	start := strings.Index(text, "## Two-machine quickstart")
+	end := strings.Index(text, "## Deployment boundary")
+	if start < 0 || end <= start {
+		fatal(fmt.Errorf("remote guide quickstart boundary is missing"))
+	}
+	quickstart := text[start:end]
+	for _, forbidden := range []string{"curl ", "Worklease-Protocol-Version", "--json", "--authority-id", "profile add", "```yaml"} {
+		if strings.Contains(quickstart, forbidden) {
+			fatal(fmt.Errorf("primary remote quickstart contains protocol-oriented step %q", forbidden))
+		}
+	}
+	for _, required := range []string{"server init --guided", "--transport tls", "scp ", "enroll --invite-file", "invite issue --role write", "doctor --resource", "acquire --resource", "heartbeat --session", "list --full", "release --session", "--acknowledge-cleartext-credentials", "--allow-insecure-http"} {
+		if !strings.Contains(quickstart, required) {
+			fatal(fmt.Errorf("primary remote quickstart missing command %q", required))
+		}
+	}
+	tape, err := os.ReadFile("docs/remote-demo.tape")
+	if err != nil {
+		fatal(err)
+	}
+	for _, forbidden := range []string{"--json", "sed -", "--authority-id", "profile add", "http://"} {
+		if strings.Contains(string(tape), forbidden) {
+			fatal(fmt.Errorf("remote demo contains stale onboarding step %q", forbidden))
+		}
+	}
+	for _, required := range []string{"server init --guided", "enroll --invite-file", "invite issue --role write", "doctor --resource", "acquire --resource", "list --full", "heartbeat", "release --reason"} {
+		if !strings.Contains(string(tape), required) {
+			fatal(fmt.Errorf("remote demo missing journey command %q", required))
+		}
+	}
 }
 
 func validateRemoteServerConfig(markdown string) {
@@ -210,6 +258,70 @@ func validateRemoteServerConfig(markdown string) {
 	}
 	if strings.Join(loaded.Prefixes, ",") != "github:,coordination:" {
 		fatal(fmt.Errorf("remote guide canonical server prefixes parsed as %q", loaded.Prefixes))
+	}
+}
+
+func testInsecureOnboarding(binary string) {
+	root, err := os.MkdirTemp("", "worklease-doc-insecure-onboarding-")
+	if err != nil {
+		fatal(err)
+	}
+	defer os.RemoveAll(root)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	configPath := filepath.Join(root, "server.yaml")
+	bootstrap := filepath.Join(root, "bootstrap.invite")
+	serverEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "server-config"), "XDG_STATE_HOME="+filepath.Join(root, "server-state"))
+	runDocCommand(binary, serverEnv, "server", "init", "--guided", "--server-config", configPath, "--bootstrap-invite-file", bootstrap, "--listen", address, "--endpoint", "http://"+address, "--transport", "http", "--admitted-prefix", "coordination:", "--confirm-non-loopback", "--acknowledge-cleartext-credentials")
+	serverLog := &bytes.Buffer{}
+	server := exec.Command(binary, "serve", "--server-config", configPath)
+	server.Env, server.Stdout, server.Stderr = serverEnv, serverLog, serverLog
+	if err := server.Start(); err != nil {
+		fatal(err)
+	}
+	defer func() {
+		_ = server.Process.Signal(os.Interrupt)
+		_ = server.Wait()
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		request, _ := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
+		request.Header.Set("Accept", "application/json")
+		response, requestErr := (&http.Client{Timeout: 200 * time.Millisecond}).Do(request)
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			fatal(fmt.Errorf("insecure onboarding server did not become ready: %v: %s", requestErr, serverLog.String()))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	adminEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "admin-config"), "WORKLEASE_HOME="+filepath.Join(root, "admin-home"), "WORKLEASE_AGENT_ID=docs-admin")
+	clientEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "client-config"), "WORKLEASE_HOME="+filepath.Join(root, "client-home"), "WORKLEASE_AGENT_ID=docs-client")
+	clientInvite := filepath.Join(root, "client.invite")
+	runDocCommand(binary, adminEnv, "enroll", "--invite-file", bootstrap, "--allow-insecure-http")
+	runDocCommand(binary, adminEnv, "doctor", "--resource", "coordination:docs")
+	runDocCommand(binary, adminEnv, "invite", "issue", "--role", "write", "--invite-file", clientInvite, "--label", "client")
+	runDocCommand(binary, clientEnv, "enroll", "--invite-file", clientInvite, "--allow-insecure-http")
+	runDocCommand(binary, clientEnv, "doctor", "--resource", "coordination:docs")
+	runDocCommand(binary, clientEnv, "acquire", "--resource", "coordination:docs", "--session", "client")
+	runDocCommand(binary, adminEnv, "list", "--full")
+	runDocCommand(binary, clientEnv, "heartbeat", "--session", "client")
+	runDocCommand(binary, clientEnv, "release", "--session", "client", "--reason", "done")
+}
+
+func runDocCommand(binary string, env []string, args ...string) {
+	command := exec.Command(binary, args...)
+	command.Env = env
+	if output, err := command.CombinedOutput(); err != nil {
+		fatal(fmt.Errorf("documented command %s: %w: %s", strings.Join(args, " "), err, output))
 	}
 }
 

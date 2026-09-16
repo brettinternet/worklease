@@ -18,7 +18,7 @@ Set MarginFill "#11111b"
 Set BorderRadius 10
 Set WindowBar "ColorfulRight"
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 25ms
+Set TypingSpeed 20ms
 Set Framerate 20
 
 Hide
@@ -26,22 +26,26 @@ Type `export PATH="$PWD/bin:$PATH"`
 Enter
 Type `export WORKLEASE_DEMO_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/worklease-remote-demo.XXXXXX")`
 Enter
-Type `touch "$WORKLEASE_DEMO_ROOT/.owner"; mkdir -m 700 "$WORKLEASE_DEMO_ROOT/config" "$WORKLEASE_DEMO_ROOT/state"`
+Type `touch "$WORKLEASE_DEMO_ROOT/.owner"; mkdir -m 700 "$WORKLEASE_DEMO_ROOT/server" "$WORKLEASE_DEMO_ROOT/server-state" "$WORKLEASE_DEMO_ROOT/admin-config" "$WORKLEASE_DEMO_ROOT/admin-home" "$WORKLEASE_DEMO_ROOT/client-config" "$WORKLEASE_DEMO_ROOT/client-home"`
 Enter
-Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/config" XDG_STATE_HOME="$WORKLEASE_DEMO_ROOT/state"`
+Type `export XDG_STATE_HOME="$WORKLEASE_DEMO_ROOT/server-state"`
 Enter
-Type `worklease --json server init > "$WORKLEASE_DEMO_ROOT/init.json"`
+Type `worklease server init --guided --server-config "$WORKLEASE_DEMO_ROOT/server/server.yaml" --bootstrap-invite-file "$WORKLEASE_DEMO_ROOT/server/admin.invite" --listen 127.0.0.1:18443 --endpoint https://127.0.0.1:18443 --transport tls --admitted-prefix coordination:`
 Enter
-Type `export WORKLEASE_AUTHORITY_ID=$(sed -E 's/.*"authorityId":"([^"]+)".*/\1/' "$WORKLEASE_DEMO_ROOT/init.json")`
-Enter
-Type `worklease serve > "$WORKLEASE_DEMO_ROOT/server.log" 2>&1 & export WORKLEASE_SERVER_PID=$!`
+Type `worklease serve --server-config "$WORKLEASE_DEMO_ROOT/server/server.yaml" > "$WORKLEASE_DEMO_ROOT/server.log" 2>&1 & export WORKLEASE_SERVER_PID=$!`
 Enter
 Sleep 1s
-Type `worklease profile add demo --endpoint http://127.0.0.1:8443 --authority-id "$WORKLEASE_AUTHORITY_ID" --allow-insecure-http`
+Type `install -m 600 "$WORKLEASE_DEMO_ROOT/server/admin.invite" "$WORKLEASE_DEMO_ROOT/admin.invite"`
 Enter
-Type `worklease enroll --profile demo --invite-file "$XDG_CONFIG_HOME/worklease/bootstrap.invite"`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease enroll --profile team --invite-file "$WORKLEASE_DEMO_ROOT/admin.invite" --label administrator`
 Enter
-Type `export WORKLEASE_PROFILE=demo WORKLEASE_SESSION_ID=a WORKLEASE_AGENT_ID=worker-a PS1='worker-a@remote $ '`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease invite issue --role write --invite-file "$WORKLEASE_DEMO_ROOT/client.invite" --label team`
+Enter
+Type `install -m 600 "$WORKLEASE_DEMO_ROOT/client.invite" "$WORKLEASE_DEMO_ROOT/client-config/client.invite"`
+Enter
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/client-config/client.invite" --label client`
+Enter
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" WORKLEASE_PROFILE=team WORKLEASE_SESSION_ID=client WORKLEASE_AGENT_ID=client PS1='client@remote $ '`
 Enter
 Type `SHELL=/bin/bash tmux -f /dev/null new-session -s worklease-remote-demo /bin/bash --noprofile --norc`
 Enter
@@ -49,7 +53,7 @@ Sleep 1s
 Type `tmux set-option -g status off; tmux set-option -g default-command 'exec /bin/bash --noprofile --norc'; tmux split-window -h`
 Enter
 Sleep 1s
-Type `export WORKLEASE_SESSION_ID=b WORKLEASE_AGENT_ID=worker-b PS1='worker-b@remote $ '; clear`
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" WORKLEASE_PROFILE=team WORKLEASE_SESSION_ID=admin WORKLEASE_AGENT_ID=admin PS1='admin@remote $ '; clear`
 Enter
 Ctrl+B
 Type `o`
@@ -58,37 +62,25 @@ Enter
 Sleep 1s
 Show
 
-Type `echo 'Using worklease serve at http://127.0.0.1:8443'`
+Type `worklease doctor --resource coordination:demo`
 Enter
 Sleep 2s
-Type `worklease acquire -r coordination:demo`
-Enter
-Sleep 2s
-Type `echo 'Working on coordination:demo...'`
+Type `worklease acquire --resource coordination:demo`
 Enter
 Sleep 2s
 
 Ctrl+B
 Type `o`
-Type `worklease acquire -r coordination:demo`
+Type `worklease list --full`
 Enter
 Sleep 3s
 
 Ctrl+B
 Type `o`
-Type `worklease release`
+Type `worklease heartbeat`
 Enter
 Sleep 2s
-
-Ctrl+B
-Type `o`
-Type `worklease acquire -r coordination:demo`
-Enter
-Sleep 2s
-Type `echo 'Remote claim acquired — worker-b can start'`
-Enter
-Sleep 3s
-Type `worklease release`
+Type `worklease release --reason done`
 Enter
 Sleep 3s
 

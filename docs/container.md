@@ -48,56 +48,55 @@ safe.
 
 ## Configuration, TLS, and initialization
 
-Configuration and TLS material are deployment secrets. Keep them outside the
-image, owner-private, and mount them read-only. For example,
-`/etc/worklease/server.yaml` can contain:
-
-```yaml
-home: /var/lib/worklease
-listen: 0.0.0.0:7443
-tlsCert: /run/worklease-tls/tls.crt
-tlsKey: /run/worklease-tls/tls.key
-admittedPrefixes:
-  - 'coordination:'
-maxTTL: 1h
-maxHold: 24h
-shutdownTimeout: 10s
-healthRate: 100
-metadataRate: 100
-enrollmentRate: 20
-```
-
-Initialize once. The bootstrap output directory is a writable secret sink, not
-part of the image or hosted home; import the resulting invite into the intended
-secret manager and remove it according to that system's policy.
+Use guided setup instead of hand-writing YAML or handling authority metadata.
+The setup directory is writable only for initialization so Worklease can create
+its owner-private configuration, generated pinned certificate, private key, and
+bootstrap artifact. Keep every mounted directory outside source checkouts.
 
 ```sh
 docker run --rm \
-  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease \
-  --mount type=bind,src=/etc/worklease,dst=/run/worklease,readonly \
-  --mount type=bind,src=/etc/worklease/tls,dst=/run/worklease-tls,readonly \
+  --env XDG_STATE_HOME=/var/lib \
+  --env XDG_CONFIG_HOME=/run \
+  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease/server \
+  --mount type=bind,src=/etc/worklease,dst=/run/worklease \
   --mount type=bind,src=/srv/worklease/bootstrap,dst=/run/bootstrap \
   ghcr.io/brettinternet/worklease:v1.2.0 \
-  server init --server-config /run/worklease/server.yaml \
-  --bootstrap-invite-file /run/bootstrap/admin.invite
+  server init --guided \
+  --server-config /run/worklease/server.yaml \
+  --bootstrap-invite-file /run/bootstrap/admin.invite \
+  --listen 0.0.0.0:7443 \
+  --endpoint https://worklease.example.com:7443 \
+  --transport tls \
+  --admitted-prefix coordination: \
+  --confirm-non-loopback
 ```
 
-Run the authority with only the hosted home writable:
+Transfer `/srv/worklease/bootstrap/admin.invite` through an authenticated
+secret channel to the administrator and enroll with
+`worklease enroll --invite-file FILE`. The artifact carries the endpoint,
+authority identity, and generated certificate pin; do not parse or copy those
+fields manually. The administrator then issues a write artifact with
+`worklease invite issue --role write --invite-file FILE --label client` for the
+separate client. Follow the complete claim, doctor, observation, heartbeat, and
+release journey in the [remote authority quickstart](remote-claim-authority.md#two-machine-quickstart).
+
+Run the authority with only the hosted home writable and generated setup mounted
+read-only:
 
 ```sh
 docker run --detach --name worklease --restart unless-stopped \
   --publish 7443:7443 \
-  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease \
+  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease/server \
   --mount type=bind,src=/etc/worklease,dst=/run/worklease,readonly \
-  --mount type=bind,src=/etc/worklease/tls,dst=/run/worklease-tls,readonly \
   ghcr.io/brettinternet/worklease:v1.2.0 \
   serve --server-config /run/worklease/server.yaml
 ```
 
 Do not bake configuration, TLS private keys, invite secrets, installation
-credentials, or backup credentials into an image. A TLS-terminating proxy is
-optional; if used, follow the server's trusted-edge requirements rather than
-passing identity headers as authorization.
+credentials, or backup credentials into an image. Import one-time artifacts
+into the intended secret manager and remove them according to that system's
+policy. A TLS-terminating proxy is optional; if used, follow the server's
+trusted-edge requirements rather than passing identity headers as authorization.
 
 ## Backup and upgrade
 

@@ -18,6 +18,95 @@ selects a remote profile, or runs `serve`. Local reads remain setup-free. A
 configured profile is not a reason for an unqualified local read to contact the
 network unless that profile is selected by the normal precedence rules.
 
+## Two-machine quickstart
+
+The default setup generates a self-signed TLS certificate and pins its leaf
+fingerprint into each invite artifact. Runtime state, private keys, invites, and
+installation credentials stay in owner-private user directories outside the
+checkout.
+
+On the server, substitute a DNS name or IP reachable from both client machines:
+
+```sh
+install -d -m 0700 ~/.config/worklease
+worklease server init --guided \
+  --listen 0.0.0.0:8443 \
+  --endpoint https://worklease.example.com:8443 \
+  --transport tls \
+  --admitted-prefix coordination: \
+  --confirm-non-loopback
+worklease serve
+```
+
+First create the owner-private artifact directory on the administrator and
+client machines:
+
+```sh
+install -d -m 0700 ~/.config/worklease
+```
+
+Transfer the generated bootstrap artifact through an authenticated secret
+channel. For example, from the server:
+
+```sh
+scp ~/.config/worklease/bootstrap.invite admin@admin-machine:~/.config/worklease/bootstrap.invite
+```
+
+On the administrator machine, enrollment creates and selects the profile from
+the artifact; no authority ID, YAML, or response parsing is required:
+
+```sh
+worklease enroll --invite-file ~/.config/worklease/bootstrap.invite
+worklease doctor --resource coordination:demo
+worklease invite issue --role write \
+  --invite-file ~/.config/worklease/client.invite \
+  --label client
+scp ~/.config/worklease/client.invite client@client-machine:~/.config/worklease/client.invite
+```
+
+On the separate client machine:
+
+```sh
+worklease enroll --invite-file ~/.config/worklease/client.invite
+worklease doctor --resource coordination:demo
+worklease acquire --resource coordination:demo --session client
+worklease heartbeat --session client
+```
+
+Back on the administrator machine, `worklease list --full` shows the client's
+claim. Finish on the client with:
+
+```sh
+worklease release --session client --reason done
+```
+
+The artifacts are bearer secrets. Keep them and the generated server files out
+of repositories, logs, and command output; remove one-time artifacts according
+to the receiving secret store's policy.
+
+### Temporary trusted-LAN cleartext test only
+
+Use this only for a short-lived test on a trusted, isolated network. Cleartext
+HTTP exposes invite, installation, and claim credentials to anyone who can
+observe the network. It is not the default setup:
+
+```sh
+worklease server init --guided \
+  --listen 0.0.0.0:8080 \
+  --endpoint http://worklease-test.lan:8080 \
+  --transport http \
+  --admitted-prefix coordination: \
+  --confirm-non-loopback \
+  --acknowledge-cleartext-credentials
+worklease serve
+worklease enroll --invite-file ~/.config/worklease/bootstrap.invite \
+  --allow-insecure-http
+```
+
+Use the same secure artifact handoff and client commands from the TLS journey;
+the client enrollment also requires `--allow-insecure-http`. Reinitialize with
+TLS rather than carrying this exception into a real deployment.
+
 ## Deployment boundary
 
 Each authority has these deployment invariants:
@@ -76,7 +165,7 @@ write fence. It can lose acknowledged writes. Choose and measure a backup
 cutoff and recovery downtime; backup lag does not by itself bound the lost
 history interval.
 
-## Profiles and enrollment
+## Advanced profiles and enrollment
 
 Profiles and bindings are owner-private user files, never repository config.
 Selection order is:
@@ -91,7 +180,9 @@ Selection order is:
 selection. Remote failures never fall back to local. To change an endpoint,
 remove and re-add the profile. Credential-bearing redirects are refused.
 
-The exact profile commands are:
+Artifact enrollment in the quickstart creates and selects profiles automatically.
+For endpoint changes, recovery, or legacy bare-secret enrollment, the exact
+advanced profile commands are:
 
 ```text
 worklease profile add NAME --endpoint URL --authority-id ID [--certificate-sha256 HEX] [--allow-insecure-http]

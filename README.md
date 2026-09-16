@@ -112,30 +112,58 @@ polling, coordination-only, and guarded-operation options.
 
 ## Remote authority
 
-Coordinate clients across hosts through one explicitly selected, self-hosted
-authority:
+Set up a pinned-TLS authority and enroll two machines without copying IDs or
+editing configuration. Run this on the server, using its client-reachable name:
 
 ```sh
-# Server
-worklease serve --server-config server.yaml
-
-# Client
-worklease profile add team --endpoint https://worklease.example.com --authority-id AUTHORITY_ID
-worklease enroll --profile team --invite-file invite.secret
-worklease acquire --profile team --resource github:org/repo#42
+install -d -m 0700 ~/.config/worklease
+worklease server init --guided \
+  --listen 0.0.0.0:8443 \
+  --endpoint https://worklease.example.com:8443 \
+  --transport tls \
+  --admitted-prefix coordination: \
+  --confirm-non-loopback
+worklease serve
 ```
+
+Securely transfer `~/.config/worklease/bootstrap.invite` to the administrator.
+On the administrator machine, keep artifacts outside the checkout:
+
+```sh
+install -d -m 0700 ~/.config/worklease
+worklease enroll --invite-file ~/.config/worklease/bootstrap.invite
+worklease doctor --resource coordination:demo
+worklease invite issue --role write \
+  --invite-file ~/.config/worklease/client.invite \
+  --label client
+```
+
+Securely transfer `client.invite` to the separate client machine, then run:
+
+```sh
+install -d -m 0700 ~/.config/worklease
+worklease enroll --invite-file ~/.config/worklease/client.invite
+worklease doctor --resource coordination:demo
+worklease acquire --resource coordination:demo --session client
+worklease heartbeat --session client
+```
+
+The administrator can now run `worklease list --full` and see the client's
+claim. The client finishes with `worklease release --session client --reason done`.
+Invite artifacts and installation credentials are bearer secrets; transfer them
+with an authenticated secret channel such as `scp`, keep them outside source
+checkouts, and remove one-time artifacts under your secret-retention policy.
 
 ![Two workers coordinating through a Worklease remote authority](docs/remote-demo.gif)
 
 `serve` owns one namespace and one SQLite writer. Guarded commands and provider
 effects still run on clients. The standard binary opens no listener and makes
-no network request unless remote operation is explicit.
-Local reads remain setup-free.
-Remote failures do not fall back to local coordination. This feature is
-experimental: it provides no high availability,
-provider fencing, or exactly-once execution. See the
-[remote authority guide](docs/remote-claim-authority.md)
-for deployment, enrollment, administration, and recovery.
+no network request unless remote operation is explicit. Local reads remain
+setup-free. Remote failures do not fall back to local coordination. This feature
+is experimental: it provides no high availability, provider fencing, or
+exactly-once execution. See the [remote authority guide](docs/remote-claim-authority.md)
+for the explicitly insecure test path, advanced profile management,
+administration, and recovery.
 
 ## JSON and MCP quick start
 

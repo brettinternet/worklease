@@ -1,10 +1,11 @@
 ---
 id: TASK-109.4
 title: Ship a two-machine quickstart and clean-state acceptance journey
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-15 21:20'
-updated_date: '2026-09-15 21:56'
+updated_date: '2026-09-16 02:15'
 labels:
   - remote-authority
   - ergonomics
@@ -16,6 +17,14 @@ references:
   - cmd/worklease-remote-smoke/main.go
   - cmd/worklease-doc-test/main.go
   - scripts/test-remote-vm.sh
+modified_files:
+  - README.md
+  - cmd/worklease-doc-test/main.go
+  - cmd/worklease-remote-smoke/main.go
+  - docs/container.md
+  - docs/remote-claim-authority.md
+  - docs/remote-demo.gif
+  - docs/remote-demo.tape
 parent_task_id: TASK-109
 priority: high
 type: docs
@@ -46,3 +55,11 @@ The onboarding experience is only complete when a new user can follow the shorte
 2. Extend cmd/worklease-remote-smoke and cmd/worklease-doc-test, reusing scripts/test-remote-vm.sh rather than adding a parallel harness. Validate clean-state admin and write-client roles with separate homes and default selections.
 3. Run doc-test, remote-smoke, remote-smoke-vm and repository quality gates; regenerate and inspect the disposable-credential demo. Record executed commands and cross-host evidence before checking acceptance.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented the guided onboarding journey across README.md, docs/remote-claim-authority.md, docs/container.md, and docs/remote-demo.tape. The remote acceptance harness now provisions both local and real-host authorities through flag-driven guided TLS setup, transfers self-contained artifacts, enrolls default profiles in isolated roots, runs doctor, and preserves the existing lifecycle/recovery matrix. Doc-test now validates the primary journey and executes the explicitly insecure journey.
+
+Verification: mise run doc-test; mise run remote-smoke (dist/remote-acceptance/20260916T014135.904027000Z/report.json); mise run remote-smoke-vm (dist/remote-acceptance/vm-20260916T014649Z/report.json, retained owner-marked remote workspace); mise run lint; mise run format-check; mise run test; mise run typecheck. Regenerated docs/remote-demo.gif with disposable temporary credentials and inspected a rendered frame: it shows doctor, cross-client claim visibility, heartbeat, and release without invite or installation secrets. Independent verifier passed criteria 2-7 and identified missing client artifact-directory setup for criterion 1; added explicit owner-private directory creation on the administrator and client paths, then reran doc-test and all repository quality gates.
+<!-- SECTION:NOTES:END -->
