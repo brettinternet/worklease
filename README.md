@@ -105,9 +105,8 @@ worklease exec -s loop-a -- worklease version
 worklease release -s loop-a -m done
 ```
 
-Claims live in an owner-private local SQLite authority. Each session has a
-private, authority-bound handle. Use a different `-s` for each concurrent loop
-in one checkout. Credentials are never printed.
+Local claims use owner-private SQLite. Give each concurrent loop a unique `-s`;
+its authority-bound handle stays private.
 
 Worklease exposes non-secret claimant metadata:
 
@@ -121,27 +120,18 @@ polling, coordination-only, and guarded-operation options.
 
 ## Remote authority
 
-Start the secure local authority in one terminal:
+Start an authority with local TLS and the `coordination:` prefix:
 
 ```sh
+# Authority host
 worklease server init
 worklease serve
-```
 
-`server init` creates TLS for `https://127.0.0.1:8443`, admits
-`coordination:`, and prints the owner-private bootstrap artifact path and next
-commands. Transfer that artifact through an authenticated secret channel. On
-the administrator machine, enroll and issue the second invite:
-
-```sh
+# Administrator: securely copy the bootstrap invite printed by server init
 worklease enroll --invite-file PATH_PRINTED_BY_INIT
 worklease invite issue
-```
 
-Bare `worklease enroll` provides a hidden terminal prompt instead. Transfer the
-artifact path printed by `invite issue` to the second client, then run:
-
-```sh
+# Worker: securely copy the invite printed by invite issue
 worklease enroll --invite-file PATH_PRINTED_BY_INVITE_ISSUE
 worklease acquire --resource coordination:demo
 worklease list
@@ -149,15 +139,12 @@ worklease heartbeat
 worklease release
 ```
 
-Invite artifacts and installation credentials are bearer secrets. Keep them
-outside source checkouts and logs, and remove one-time artifacts under your
-secret-retention policy.
+Invite files and credentials are bearer secrets: keep them out of checkouts and
+logs, then remove one-time invites. Bare `worklease enroll` uses a hidden prompt.
 
 ### Remote
 
-To expose the authority directly on a remote host, provide one explicit
-exposure consent and a client-reachable endpoint. Wildcard listeners are never
-advertised to clients:
+For a non-loopback listener, set the client endpoint explicitly:
 
 ```sh
 worklease server init \
@@ -169,22 +156,24 @@ worklease serve
 
 ### Customize
 
-Override the local defaults only when needed. Use `--admitted-prefix`,
-`--tls-cert` with `--tls-key`, `--bootstrap-invite-file`, or `--server-config`;
-then `WORKLEASE_SERVER_CONFIG`; then the matching `server.yaml` keys for a
-managed deployment. `--guided` is a no-op compatibility alias. Cleartext also
-requires `--transport http --acknowledge-cleartext-credentials`.
+Configuration precedence is flags, then `WORKLEASE_SERVER_CONFIG`, then
+`server.yaml`. Common flags are `--admitted-prefix`, `--tls-cert` with
+`--tls-key`, `--bootstrap-invite-file`, and `--server-config`.
+
+Cleartext requires both `--transport http` and
+`--acknowledge-cleartext-credentials`.
 
 ![Two workers coordinating through a Worklease remote authority](docs/remote-demo.gif)
 
-`serve` owns one namespace and one SQLite writer. Guarded commands and provider
-effects still run on clients. The standard binary opens no listener and makes
-no network request unless remote operation is explicit. Local reads remain
-setup-free. Remote failures do not fall back to local coordination. This feature
-is experimental: it provides no high availability, provider fencing, or
-exactly-once execution. See the [remote authority guide](docs/remote-claim-authority.md)
-for the explicitly insecure test path, advanced profile management,
-administration, and recovery.
+Remote mode is explicit. The default CLI opens no listener and makes no network request.
+Local reads remain setup-free. Remote failures do not fall back to local coordination.
+`serve` owns one namespace and SQLite writer; guarded commands and provider effects
+stay on clients.
+
+Remote authority is experimental. It provides no high availability, provider
+fencing, or exactly-once execution. See the
+[remote authority guide](docs/remote-claim-authority.md) for test setup,
+profiles, administration, and recovery.
 
 ## JSON and MCP quick start
 
