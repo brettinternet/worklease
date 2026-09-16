@@ -36,17 +36,11 @@ Enter
 Type `worklease serve > "$WORKLEASE_DEMO_ROOT/server.log" 2>&1 & export WORKLEASE_SERVER_PID=$!`
 Enter
 Sleep 1s
-Type `cp "$WORKLEASE_DEMO_ROOT/server-config/worklease/bootstrap.invite" "$WORKLEASE_DEMO_ROOT/admin.invite"`
+Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/worker-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/worker-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/server-config/worklease/bootstrap.invite"`
 Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/admin.invite"`
+Type `kill "$WORKLEASE_SERVER_PID"; wait "$WORKLEASE_SERVER_PID" 2>/dev/null || true`
 Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" worklease invite issue`
-Enter
-Type `cp "$WORKLEASE_DEMO_ROOT/admin-config/worklease/admin.invite" "$WORKLEASE_DEMO_ROOT/client.invite"`
-Enter
-Type `XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" worklease enroll --invite-file "$WORKLEASE_DEMO_ROOT/client.invite"`
-Enter
-Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/client-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/client-home" WORKLEASE_SESSION_ID=client WORKLEASE_AGENT_ID=client PS1='client@remote $ '`
+Type `export WORKLEASE_SESSION_ID=server WORKLEASE_AGENT_ID=server PS1='server $ '`
 Enter
 Type `SHELL=/bin/bash tmux -f /dev/null new-session -s worklease-remote-demo /bin/bash --noprofile --norc`
 Enter
@@ -54,7 +48,7 @@ Sleep 1s
 Type `tmux set-option -g status off; tmux set-option -g default-command 'exec /bin/bash --noprofile --norc'; tmux split-window -h`
 Enter
 Sleep 1s
-Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/admin-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/admin-home" WORKLEASE_PROFILE=admin WORKLEASE_SESSION_ID=admin WORKLEASE_AGENT_ID=admin PS1='admin@remote $ '; clear`
+Type `export XDG_CONFIG_HOME="$WORKLEASE_DEMO_ROOT/worker-config" WORKLEASE_HOME="$WORKLEASE_DEMO_ROOT/worker-home" WORKLEASE_SESSION_ID=worker WORKLEASE_AGENT_ID=worker PS1='worker $ '; clear`
 Enter
 Ctrl+B
 Type `o`
@@ -63,24 +57,18 @@ Enter
 Sleep 1s
 Show
 
-Type `worklease doctor --resource coordination:demo`
-Enter
-Sleep 2s
-Type `worklease acquire --resource coordination:demo`
+Type `worklease serve`
 Enter
 Sleep 2s
 
 Ctrl+B
 Type `o`
-Type `worklease list`
+Type `worklease acquire -r coordination:demo`
 Enter
 Sleep 3s
-
-Ctrl+B
-Type `o`
-Type `worklease heartbeat`
+Type `worklease status`
 Enter
-Sleep 2s
+Sleep 3s
 Type `worklease release`
 Enter
 Sleep 3s
@@ -93,7 +81,5 @@ Ctrl+B
 Type `:kill-session`
 Enter
 Sleep 1s
-Type `kill "$WORKLEASE_SERVER_PID"; wait "$WORKLEASE_SERVER_PID" 2>/dev/null || true`
-Enter
 Type `cleanup_worklease_remote_demo() { local worklease_demo_target worklease_temp_root; worklease_demo_target=$(realpath "$WORKLEASE_DEMO_ROOT"); worklease_temp_root=$(realpath "${TMPDIR:-/tmp}"); case "$worklease_demo_target" in "$worklease_temp_root"/worklease-remote-demo.*) test -f "$worklease_demo_target/.owner" && trash "$worklease_demo_target" ;; esac; }; cleanup_worklease_remote_demo`
 Enter

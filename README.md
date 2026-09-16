@@ -152,10 +152,11 @@ Invite artifacts and installation credentials are bearer secrets. Keep them
 outside source checkouts and logs, and remove one-time artifacts under your
 secret-retention policy.
 
-### LAN
+### Remote
 
-A LAN listener needs one explicit exposure consent and a client-reachable
-endpoint. Wildcard listeners are never advertised to clients:
+To expose the authority directly on a remote host, provide one explicit
+exposure consent and a client-reachable endpoint. Wildcard listeners are never
+advertised to clients:
 
 ```sh
 worklease server init \

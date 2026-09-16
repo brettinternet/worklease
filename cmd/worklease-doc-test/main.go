@@ -89,7 +89,7 @@ func runExample(binary, name, body string) {
 	}
 	command := exec.Command("sh", "-eu", "-c", body)
 	command.Dir = root
-	command.Env = append(os.Environ(), "PATH="+filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs")
+	command.Env = append(os.Environ(), "PATH="+filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"), "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs")
 	if output, err := command.CombinedOutput(); err != nil {
 		fatal(fmt.Errorf("runnable example %s: %w: %s", name, err, output))
 	}
@@ -222,7 +222,7 @@ func validateOnboardingDocs() {
 			fatal(fmt.Errorf("remote demo contains stale onboarding step %q", forbidden))
 		}
 	}
-	for _, required := range []string{"worklease server init", "enroll --invite-file", "worklease invite issue", "acquire --resource coordination:demo", "worklease list", "worklease heartbeat", "worklease release"} {
+	for _, required := range []string{"worklease server init", "enroll --invite-file", "tmux split-window -h", "Type `worklease serve`", "Type `worklease acquire -r coordination:demo`", "Type `worklease status`", "Type `worklease release`"} {
 		if !strings.Contains(string(tape), required) {
 			fatal(fmt.Errorf("remote demo missing journey command %q", required))
 		}
@@ -358,7 +358,7 @@ func testContention(binary string) {
 	if output, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
 		fatal(fmt.Errorf("contention git init: %w: %s", err, output))
 	}
-	env := append(os.Environ(), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs")
+	env := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs")
 	run := func(session string) ([]byte, error) {
 		cmd := exec.Command(binary, "--json", "acquire", "--resource", "shared", "--session", session)
 		cmd.Dir, cmd.Env = root, env
@@ -393,7 +393,7 @@ func testMCPTwoLoops(binary string) {
 	}
 	defer os.RemoveAll(root)
 	command := exec.Command(binary, "mcp")
-	command.Env = append(os.Environ(), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs-mcp")
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs-mcp")
 	input, err := command.StdinPipe()
 	if err != nil {
 		fatal(err)

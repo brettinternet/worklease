@@ -170,6 +170,10 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 	for _, name := range []string{"WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG"} {
 		t.Setenv(name, "")
 	}
+	if connection, err := net.DialTimeout("tcp", "127.0.0.1:8443", 100*time.Millisecond); err == nil {
+		connection.Close()
+		t.Skip("default authority port is already in use")
+	}
 	probe, err := net.Listen("tcp", "127.0.0.1:8443")
 	if err != nil {
 		t.Skipf("default authority port is unavailable: %v", err)
