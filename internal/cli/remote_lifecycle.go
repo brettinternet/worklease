@@ -118,27 +118,49 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 			return s.handle(cmd, err)
 		}
 		request.HandlePath = path
-		if existing, readErr := handle.Read(path); readErr == nil {
+		existing, readErr := handle.Read(path)
+		if readErr == nil {
 			if existing.AuthorityID != backend.AuthorityID() {
 				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "handle authority does not match"))
 			}
-			if existing.State == "ready" && existing.ExpiresAt.After(time.Now()) {
+			if existing.RecoveryRequest != nil {
+				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
+			}
+			if existing.PendingRequest != nil {
+				if existing.PendingRequest.Kind != "acquire" {
+					return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
+				}
+				response, replayErr := backend.HTTP.ReplayHandle(ctx, path)
+				if replayErr != nil {
+					return s.handle(cmd, mutationFailure(replayErr, existing.ClaimID, existing.PendingRequest.OperationID, path))
+				}
+				var grant lease.Grant
+				if err := json.Unmarshal(response.Result, &grant); err != nil {
+					return s.handle(cmd, reason.Invalid("remote result is invalid"))
+				}
+				return writeLeaseResult(s, cmd, "acquire", acquireFields(grant))
+			}
+			if existing.State != "ready" {
+				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "handle is not ready"))
+			}
+			current, statusErr := backend.API.Status(ctx, lease.Selector{ClaimID: existing.ClaimID})
+			if statusErr != nil {
+				return s.handle(cmd, statusErr)
+			}
+			if len(current.Claims) != 0 || len(current.Resources) != 0 || current.Claim != nil && current.Claim.ClaimID != existing.ClaimID {
+				return s.handle(cmd, reason.Invalid("remote status does not match claim"))
+			}
+			if current.Claim != nil && current.Claim.Active {
 				return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "active handle is in use"))
 			}
-			request.ClaimID, request.Token = existing.ClaimID, existing.Token
-			request.AgentID, request.SessionID = existing.AgentID, existing.SessionID
-			request.Resources = append([]string(nil), existing.Resources...)
-			if existing.PendingRequest != nil {
-				request.RequestNotAfter = existing.PendingRequest.RequestNotAfter
-			}
-		} else if !errors.Is(readErr, os.ErrNotExist) && reason.As(readErr) == nil {
+			request.PreviousClaimID, request.PreviousToken = existing.ClaimID, existing.Token
+			request.PreviousRevision, request.PreviousExpiresAt = existing.Revision, existing.ExpiresAt
+		} else if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
 			return s.handle(cmd, readErr)
 		}
-		if request.ClaimID == "" {
-			request.ClaimID, request.Token = randomHex(16), randomHex(32)
-			if request.SessionID == "" {
-				request.SessionID = randomHex(16)
-			}
+		request.ClaimID, request.Token = randomHex(16), randomHex(32)
+		if request.SessionID == "" {
+			request.SessionID = randomHex(16)
 		}
 	}
 	waitUntil := time.Now().Add(wait)

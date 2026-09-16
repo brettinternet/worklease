@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
@@ -13,9 +15,16 @@ import (
 
 var errHandlePending = errors.New("handle has a different pending request")
 
+type handleReplacement struct {
+	ClaimID   string
+	Token     string
+	Revision  int64
+	ExpiresAt time.Time
+}
+
 // persistHandleRequest uses the existing owner-private handle slot for named
 // claim mutations. A different unresolved request can never replace it.
-func persistHandleRequest(path, claimID string, p PendingRequest, newToken string) error {
+func persistHandleRequest(path, claimID string, p PendingRequest, newToken string, replacement handleReplacement) error {
 	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
@@ -25,20 +34,29 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 	}
 	defer lock.Close()
 	h, err := lock.Read(path)
-	if err != nil && p.Kind == "acquire" {
-		var request struct {
-			ClaimID, AgentID, SessionID string
-			Resources                   []string
-		}
+	var replaced *handle.Handle
+	var request struct {
+		ClaimID, AgentID, SessionID string
+		Resources                   []string
+	}
+	if p.Kind == "acquire" {
 		if decodeErr := json.Unmarshal(p.Request, &request); decodeErr != nil || request.ClaimID != claimID {
 			return fmt.Errorf("pending acquire request is malformed")
 		}
-		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
-	} else if err != nil {
-		return err
 	}
-	if h.ClaimID != claimID {
-		return fmt.Errorf("handle claim does not match request")
+	if err != nil {
+		present, metadataErr := handle.ValidateMetadata(path)
+		if p.Kind != "acquire" || metadataErr != nil || present {
+			return err
+		}
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
+	} else if h.ClaimID != claimID {
+		if p.Kind != "acquire" || replacement.ClaimID == "" || h.AuthorityID != p.AuthorityID || h.SchemaVersion != handle.RemoteSchemaVersion || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil || h.ClaimID != replacement.ClaimID || h.Token != replacement.Token || h.Revision != replacement.Revision || !h.ExpiresAt.Equal(replacement.ExpiresAt) {
+			return fmt.Errorf("handle claim does not match request")
+		}
+		old := h
+		replaced = &old
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
 	}
 	if h.PendingRequest != nil {
 		existing := h.PendingRequest
@@ -59,6 +77,9 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 	}
 	if len(p.EffectEvidence) > 0 {
 		h.PendingRequest.Inputs["effectEvidence"] = json.RawMessage(p.EffectEvidence)
+	}
+	if replaced != nil {
+		return lock.ReplaceReady(path, *replaced, h)
 	}
 	return lock.Write(path, h)
 }
@@ -128,10 +149,18 @@ func activateGrantHandle(path string, grant lease.Grant) error {
 	if err != nil {
 		return err
 	}
-	if h.ClaimID != grant.ClaimID || h.PendingRequest == nil || h.PendingRequest.OperationID != grant.ClaimID {
+	if h.ClaimID != grant.ClaimID || h.PendingRequest == nil || h.PendingRequest.OperationID != grant.ClaimID || h.PendingRequest.Kind != "acquire" {
 		return errHandlePending
 	}
+	var request struct {
+		AuthorityID, ClaimID, AgentID, SessionID, WorkKey string
+		Resources                                         []string
+	}
+	if err := json.Unmarshal(h.PendingRequest.Request, &request); err != nil || request.AuthorityID != grant.AuthorityID || request.ClaimID != grant.ClaimID || request.AgentID != grant.AgentID || request.SessionID != grant.SessionID || request.WorkKey != grant.WorkKey || !slices.Equal(request.Resources, grant.Resources) {
+		return fmt.Errorf("remote grant does not match pending acquire")
+	}
 	h.Revision, h.ExpiresAt, h.State, h.PendingRequest = grant.Revision, grant.ExpiresAt, "ready", nil
+	h.AuthorityID, h.Resources, h.AgentID, h.SessionID, h.LocalReplaceAllowed = grant.AuthorityID, append([]string(nil), grant.Resources...), grant.AgentID, grant.SessionID, grant.LocalReplaceAllowed
 	return lock.Write(path, h)
 }
 

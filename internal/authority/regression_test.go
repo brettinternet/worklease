@@ -13,6 +13,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
 )
 
 func TestCredentialBearingReadRequiresPinnedProfile(t *testing.T) {
@@ -29,6 +30,23 @@ func TestCredentialBearingReadRequiresPinnedProfile(t *testing.T) {
 	authority, _ := NewRemoteAuthority(client)
 	if _, err := authority.Status(context.Background(), lease.Selector{ClaimID: strings.Repeat("c", 32)}); err == nil || calls != 0 {
 		t.Fatalf("unpinned credential request dispatched: err=%v calls=%d", err, calls)
+	}
+}
+
+func TestRemoteStatusRejectsNestedClaimIdentityMismatch(t *testing.T) {
+	profile := profileForTest(t)
+	if err := handle.StoreCredential(profile.Credential.Path, strings.Repeat("9", 64)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(t.TempDir(), "pending")), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorityTime":"2026-01-01T00:00:00Z","result":{"claim":{"claimId":"cccccccccccccccccccccccccccccccc","authorityId":"dddddddddddddddddddddddddddddddd","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active":false}}}`), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, _ := NewRemoteAuthority(client)
+	if _, err := authority.Status(context.Background(), lease.Selector{ClaimID: strings.Repeat("c", 32)}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonAuthorityMismatch {
+		t.Fatalf("nested status identity mismatch accepted: %v", err)
 	}
 }
 
@@ -148,6 +166,126 @@ func TestRemoteTransferAcceptsSuccessorGrant(t *testing.T) {
 	}
 	if records, err := store.List(); err != nil || len(records) != 0 {
 		t.Fatalf("transfer recovery not finalized: %d %v", len(records), err)
+	}
+}
+
+func TestFreshEpochAcquirePersistsBeforeDispatchAndReplaysExactly(t *testing.T) {
+	root := t.TempDir()
+	profile := profileForTest(t)
+	if err := handle.StoreCredential(profile.Credential.Path, strings.Repeat("9", 64)); err != nil {
+		t.Fatal(err)
+	}
+	handlePath := filepath.Join(root, "handles", "claim.json")
+	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(handlePath)); err != nil {
+		t.Fatal(err)
+	}
+	old := handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: profile.AuthorityID, ClaimID: strings.Repeat("c", 32), Token: strings.Repeat("6", 64), Revision: 4, Resources: []string{"coordination:old"}, ExpiresAt: time.Now().Add(-time.Minute), AgentID: "old-agent", SessionID: "old-session", State: "ready"}
+	if err := handle.Write(handlePath, old); err != nil {
+		t.Fatal(err)
+	}
+	newID, newToken := strings.Repeat("d", 32), strings.Repeat("7", 64)
+	deadline := time.Now().Add(time.Hour).UTC()
+	first, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "pending")), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("lost response")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := first.Clock().Sample(now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	authority, _ := NewRemoteAuthority(first)
+	request := lease.AcquireRequest{ClaimID: newID, Token: newToken, Resources: []string{"coordination:new-a", "coordination:new-b"}, AgentID: "new-agent", SessionID: "new-session", WorkKey: "new-work", TTL: 20 * time.Second, MaxHold: time.Hour, CoordinationOnly: true, RequestNotAfter: deadline, HandlePath: handlePath, PreviousClaimID: old.ClaimID, PreviousToken: old.Token, PreviousRevision: old.Revision, PreviousExpiresAt: old.ExpiresAt}
+	if _, err := authority.Acquire(context.Background(), request); err == nil {
+		t.Fatal("lost acquire response was not reported")
+	}
+	pending, err := handle.Read(handlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.State != "pending" || pending.ClaimID != newID || pending.Token != newToken || pending.PendingRequest == nil || pending.PendingRequest.OperationID != newID || pending.PendingRequest.RequestNotAfter != deadline {
+		t.Fatalf("fresh request was not durably staged: %#v", pending)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(pending.PendingRequest.Request, &saved); err != nil || saved["workKey"] != "new-work" || saved["agentId"] != "new-agent" || saved["sessionId"] != "new-session" {
+		t.Fatalf("fresh request bytes=%s err=%v", pending.PendingRequest.Request, err)
+	}
+
+	mismatched, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "pending")), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorityTime":"2099-01-01T00:00:00Z","result":{"claimId":"dddddddddddddddddddddddddddddddd","resources":["coordination:wrong"],"agentId":"new-agent","sessionId":"new-session","workKey":"new-work","revision":1,"expiresAt":"2099-01-01T00:01:00Z","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","receipt":{"operationId":"dddddddddddddddddddddddddddddddd","claimId":"dddddddddddddddddddddddddddddddd","kind":"acquire","requestSha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","revision":1,"committed":true}}}`), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mismatched.Clock().Sample(now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mismatched.ReplayHandle(context.Background(), handlePath); err == nil {
+		t.Fatal("mismatched grant activated")
+	}
+	stillPending, err := handle.Read(handlePath)
+	if err != nil || stillPending.State != "pending" || stillPending.PendingRequest == nil || stillPending.ClaimID != newID {
+		t.Fatalf("mismatched grant did not preserve pending request: %#v err=%v", stillPending, err)
+	}
+
+	second, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "pending")), roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Worklease-New-Claim-Authorization") != "Bearer "+newToken {
+			t.Fatal("replay did not use the staged new token")
+		}
+		return response(200, `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restoreId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorityTime":"2099-01-01T00:00:00Z","result":{"claimId":"dddddddddddddddddddddddddddddddd","resources":["coordination:new-a","coordination:new-b"],"agentId":"new-agent","sessionId":"new-session","workKey":"new-work","revision":1,"expiresAt":"2099-01-01T00:01:00Z","authorityId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","receipt":{"operationId":"dddddddddddddddddddddddddddddddd","claimId":"dddddddddddddddddddddddddddddddd","kind":"acquire","requestSha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","revision":1,"committed":true}}}`), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Clock().Sample(now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.ReplayHandle(context.Background(), handlePath); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := handle.Read(handlePath)
+	if err != nil || ready.State != "ready" || ready.ClaimID != newID || ready.PendingRequest != nil || strings.Join(ready.Resources, ",") != "coordination:new-a,coordination:new-b" {
+		t.Fatalf("replayed fresh epoch was not activated: %#v err=%v", ready, err)
+	}
+}
+
+func TestFreshEpochAcquireRejectsConcurrentHandleChange(t *testing.T) {
+	root := t.TempDir()
+	profile := profileForTest(t)
+	if err := handle.StoreCredential(profile.Credential.Path, strings.Repeat("9", 64)); err != nil {
+		t.Fatal(err)
+	}
+	handlePath := filepath.Join(root, "handles", "claim.json")
+	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(handlePath)); err != nil {
+		t.Fatal(err)
+	}
+	old := handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: profile.AuthorityID, ClaimID: strings.Repeat("c", 32), Token: strings.Repeat("6", 64), Revision: 4, Resources: []string{"coordination:old"}, ExpiresAt: time.Now().Add(-time.Minute), AgentID: "old-agent", SessionID: "old-session", State: "ready"}
+	changed := old
+	changed.Revision++
+	if err := handle.Write(handlePath, changed); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	client, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(root, "pending")), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("must not dispatch")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := client.Clock().Sample(now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	authority, _ := NewRemoteAuthority(client)
+	_, err = authority.Acquire(context.Background(), lease.AcquireRequest{ClaimID: strings.Repeat("d", 32), Token: strings.Repeat("7", 64), Resources: []string{"coordination:new"}, AgentID: "new", SessionID: "new", WorkKey: "new", TTL: time.Minute, MaxHold: time.Hour, RequestNotAfter: time.Now().Add(time.Hour), HandlePath: handlePath, PreviousClaimID: old.ClaimID, PreviousToken: old.Token, PreviousRevision: old.Revision, PreviousExpiresAt: old.ExpiresAt})
+	if err == nil || calls != 0 {
+		t.Fatalf("concurrent handle change was overwritten: err=%v calls=%d", err, calls)
+	}
+	after, readErr := handle.Read(handlePath)
+	if readErr != nil || after.Revision != changed.Revision || after.ClaimID != old.ClaimID || after.PendingRequest != nil {
+		t.Fatalf("changed handle was mutated: %#v err=%v", after, readErr)
 	}
 }
 

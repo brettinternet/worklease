@@ -38,6 +38,21 @@ pending exact request. It is written atomically with owner-only permissions and
 serialized across processes. It is convenience state, not ownership or a
 provider checkpoint. Two loops in one checkout must use distinct sessions.
 
+A ready contextual handle may be replaced only after the selected authority
+confirms that its claim is inactive. The replacement is a new ownership epoch:
+Worklease generates a new claim ID and credential, uses the current acquire
+inputs, and writes the exact request as pending before dispatch. A validated
+grant alone promotes that pending handle to ready. Local wall-clock expiry,
+failed or ambiguous status, an authority mismatch, or a concurrent handle
+change never authorizes replacement.
+
+A pending request always takes precedence over ready-handle replacement. Its
+original bytes, identity, deadline, credential, and authority binding are
+replayed exactly. Selecting another `--session` chooses a different contextual
+handle; it is not recovery for an uncertain request. The generated claim
+`sessionId` is epoch metadata, while optional `--session` participates in
+contextual handle selection.
+
 ## Revisions, replay, and unknown outcomes
 
 Every mutation names an operation ID and exact normalized request with a bounded

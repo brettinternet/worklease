@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
@@ -534,7 +535,7 @@ func encoded(h Handle) ([]byte, error) {
 	}
 	return b, nil
 }
-func writeAt(parent *os.File, name string, h Handle) error {
+func writeAt(parent *os.File, name string, h Handle, expected ...*Handle) error {
 	b, err := encoded(h)
 	if err != nil {
 		return err
@@ -553,7 +554,8 @@ func writeAt(parent *os.File, name string, h Handle) error {
 		if old.State == "pending" && old.ClaimID != h.ClaimID {
 			return newHandleError(reason.ReasonHandleInUse, "pending handle is in use")
 		}
-		if old.State == "ready" && old.ClaimID != h.ClaimID && old.ExpiresAt.After(time.Now()) {
+		replacingExpectedReady := len(expected) == 1 && expected[0] != nil && old.State == "ready" && reflect.DeepEqual(old, *expected[0])
+		if old.State == "ready" && old.ClaimID != h.ClaimID && old.ExpiresAt.After(time.Now()) && !replacingExpectedReady {
 			return newHandleError(reason.ReasonHandleInUse, "active handle is in use")
 		}
 	} else if !errors.Is(statErr, unix.ENOENT) {
@@ -882,6 +884,27 @@ func (l *Lock) Write(path string, h Handle) error {
 		return err
 	}
 	if err := writeAt(l.parent, name, h); err != nil {
+		return err
+	}
+	return l.validateAfter(path)
+}
+
+// ReplaceReady atomically replaces one exactly revalidated ready handle. It is
+// used only after an external authority has established that the old epoch is
+// inactive; ordinary writes retain the local-expiry overwrite guard.
+func (l *Lock) ReplaceReady(path string, expected, next Handle) error {
+	name, err := l.validateFor(path)
+	if err != nil {
+		return err
+	}
+	old, err := readAt(l.parent, name)
+	if err != nil {
+		return err
+	}
+	if old.State != "ready" || !reflect.DeepEqual(old, expected) {
+		return newHandleError(reason.ReasonHandleInUse, "handle changed before replacement")
+	}
+	if err := writeAt(l.parent, name, next, &expected); err != nil {
 		return err
 	}
 	return l.validateAfter(path)

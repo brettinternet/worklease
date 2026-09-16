@@ -138,32 +138,7 @@ func NewRemoteAuthority(c *HTTPClient) (*RemoteAuthority, error) {
 	return &RemoteAuthority{Client: c}, nil
 }
 func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id string, body any, mutating bool, terminal bool, claim string, newClaim string, refs ...string) (json.RawMessage, error) {
-	if mutating && a.Client.clock.ResampleNeeded() {
-		if _, e := a.Client.Metadata(ctx); e != nil {
-			return nil, e
-		}
-	}
-	if m, ok := body.(map[string]any); ok && mutating {
-		missing := m["requestNotAfter"] == nil
-		if value, isTime := m["requestNotAfter"].(time.Time); isTime && value.IsZero() {
-			missing = true
-		}
-		if missing {
-			d, e := a.Client.clock.RequestNotAfter()
-			if e != nil {
-				return nil, reason.New(reason.ReasonClockRegression, "authority time is unsampled")
-			}
-			m["requestNotAfter"] = d
-		}
-	}
-	b, e := json.Marshal(body)
-	if e != nil {
-		return nil, reason.Invalid("remote request encoding failed")
-	}
-	spec := RequestSpec{Path: path, Kind: kind, RequestID: id, Body: b, Mutating: mutating, Terminal: terminal, ClaimCredential: claim, NewClaimCredential: newClaim}
-	if m, ok := body.(map[string]any); ok {
-		spec.ClaimID, _ = m["claimId"].(string)
-	}
+	spec := RequestSpec{Path: path, Kind: kind, RequestID: id, Mutating: mutating, Terminal: terminal, ClaimCredential: claim, NewClaimCredential: newClaim}
 	if len(refs) > 0 {
 		spec.ClaimHandlePath = refs[0]
 		if mutating {
@@ -188,6 +163,36 @@ func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id str
 	if len(refs) > 6 {
 		spec.AutoRenewOwner = refs[6]
 	}
+	return a.dispatch(ctx, spec, body)
+}
+
+func (a *RemoteAuthority) dispatch(ctx context.Context, spec RequestSpec, body any) (json.RawMessage, error) {
+	if spec.Mutating && a.Client.clock.ResampleNeeded() {
+		if _, e := a.Client.Metadata(ctx); e != nil {
+			return nil, e
+		}
+	}
+	if m, ok := body.(map[string]any); ok {
+		if spec.Mutating {
+			missing := m["requestNotAfter"] == nil
+			if value, isTime := m["requestNotAfter"].(time.Time); isTime && value.IsZero() {
+				missing = true
+			}
+			if missing {
+				d, e := a.Client.clock.RequestNotAfter()
+				if e != nil {
+					return nil, reason.New(reason.ReasonClockRegression, "authority time is unsampled")
+				}
+				m["requestNotAfter"] = d
+			}
+		}
+		spec.ClaimID, _ = m["claimId"].(string)
+	}
+	b, e := json.Marshal(body)
+	if e != nil {
+		return nil, reason.Invalid("remote request encoding failed")
+	}
+	spec.Body = b
 	r, e := a.Client.Call(ctx, spec)
 	if e != nil {
 		return nil, e
@@ -288,7 +293,8 @@ func (a *RemoteAuthority) Acquire(ctx context.Context, r lease.AcquireRequest) (
 	q := common(a.Client, id)
 	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["resources"], q["agentId"], q["sessionId"], q["workKey"], q["ttlMicros"], q["maxHoldMicros"], q["coordinationOnly"] = r.ClaimID, r.Resources, r.AgentID, r.SessionID, r.WorkKey, r.TTL.Microseconds(), r.MaxHold.Microseconds(), r.CoordinationOnly
-	b, e := a.request(ctx, "/v1/claims/acquire", "acquire", id, q, true, false, "", r.Token, r.HandlePath, r.HandlePath, "", "", r.CredentialPath, "", r.AutoRenewOwner)
+	spec := RequestSpec{Path: "/v1/claims/acquire", Kind: "acquire", RequestID: id, Mutating: true, NewClaimCredential: r.Token, HandlePath: r.HandlePath, ClaimHandlePath: r.HandlePath, NewClaimHandlePath: r.HandlePath, NewClaimCredentialPath: r.CredentialPath, AutoRenewOwner: r.AutoRenewOwner, PreviousClaimID: r.PreviousClaimID, PreviousToken: r.PreviousToken, PreviousRevision: r.PreviousRevision, PreviousExpiresAt: r.PreviousExpiresAt}
+	b, e := a.dispatch(ctx, spec, q)
 	if e != nil {
 		return lease.Grant{}, e
 	}
@@ -318,6 +324,28 @@ func (a *RemoteAuthority) Status(ctx context.Context, r lease.Selector) (lease.S
 	}
 	var out lease.Status
 	e = decodeResult(b, &out)
+	if e == nil {
+		validateClaim := func(claim *lease.ClaimView) error {
+			if claim == nil {
+				return nil
+			}
+			if claim.AuthorityID != a.Client.profile.AuthorityID || claim.RestoreID != "" && claim.RestoreID != a.Client.profile.RestoreID || r.ClaimID != "" && claim.ClaimID != r.ClaimID {
+				return reason.New(reason.ReasonAuthorityMismatch, "remote status claim identity does not match")
+			}
+			return nil
+		}
+		e = validateClaim(out.Claim)
+		for i := range out.Claims {
+			if e == nil {
+				e = validateClaim(&out.Claims[i])
+			}
+		}
+		for i := range out.Resources {
+			if e == nil {
+				e = validateClaim(out.Resources[i].Claim)
+			}
+		}
+	}
 	return out, e
 }
 func (a *RemoteAuthority) List(ctx context.Context, r string, x *lease.RemoteActor) ([]lease.ClaimView, error) {

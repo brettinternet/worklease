@@ -51,6 +51,10 @@ type RequestSpec struct {
 	TargetOperationID      string
 	TargetHandlePath       string
 	AutoRenewOwner         string
+	PreviousClaimID        string
+	PreviousToken          string
+	PreviousRevision       int64
+	PreviousExpiresAt      time.Time
 }
 type Response struct {
 	AuthorityID   string
@@ -217,7 +221,8 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 		}
 		p := PendingRequest{RequestID: s.RequestID, OperationID: s.RequestID, Kind: s.Kind, Route: s.Path, TargetOperationID: s.TargetOperationID, CredentialRef: credentialRef, ClaimHandleRef: s.ClaimHandlePath, ClaimCredentialRef: s.ClaimCredentialPath, NewClaimHandleRef: s.NewClaimHandlePath, NewClaimCredentialRef: s.NewClaimCredentialPath, TargetHandleRef: s.TargetHandlePath, AuthorityID: c.profile.AuthorityID, Endpoint: c.profile.Endpoint, CertificateSHA256: c.profile.CertificateSHA256, ExpectedRestoreID: c.profile.RestoreID, RequestNotAfter: deadline, Request: s.Body, RequestSHA256: hex.EncodeToString(sum[:]), ParentRequestID: s.ParentRequestID, EffectEvidence: s.EffectEvidence, State: "pending"}
 		if s.HandlePath != "" {
-			if err := persistHandleRequest(s.HandlePath, s.ClaimID, p, s.NewClaimCredential); err != nil {
+			replacement := handleReplacement{ClaimID: s.PreviousClaimID, Token: s.PreviousToken, Revision: s.PreviousRevision, ExpiresAt: s.PreviousExpiresAt}
+			if err := persistHandleRequest(s.HandlePath, s.ClaimID, p, s.NewClaimCredential, replacement); err != nil {
 				if !errors.Is(err, errHandlePending) || s.Kind == "operations/begin" {
 					return Response{}, reason.New(reason.ReasonStorageFailure, "handle request could not be durably recorded")
 				}

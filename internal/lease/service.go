@@ -112,7 +112,13 @@ type AcquireRequest struct {
 	MaxHold time.Duration
 	// AutoRenewOwner is client-local handle state and is never sent to an authority.
 	AutoRenewOwner string
-	Actor          *RemoteActor
+	// Previous* binds remote contextual-handle replacement to the ready epoch
+	// whose inactive status was confirmed before the fresh acquire was staged.
+	PreviousClaimID   string
+	PreviousToken     string
+	PreviousRevision  int64
+	PreviousExpiresAt time.Time
+	Actor             *RemoteActor
 	// LegacyRequestHash permits only an adapter-recorded pre-hold-binding request
 	// to replay. New operations always persist the hold-bound request hash.
 	LegacyRequestHash  string

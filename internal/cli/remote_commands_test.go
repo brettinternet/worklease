@@ -181,6 +181,110 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 	}
 }
 
+func TestRemoteCLIReacquiresExpiredContextualClaimWithFreshInputs(t *testing.T) {
+	profile, clientHome, claimHandle := remoteCLIFixture(t)
+	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:old", "--ttl", "1s", "--json")
+	if err != nil {
+		t.Fatalf("initial acquire: %v output=%s", err, out)
+	}
+	old, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	old.ExpiresAt = time.Now().Add(time.Hour)
+	if err := handle.Write(claimHandle, old); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:new-a", "--resource", "coordination:new-b", "--agent", "fresh-agent", "--session", "fresh-session", "--work-key", "fresh-work", "--ttl", "20s", "--coordination-only", "--json")
+	if err != nil {
+		t.Fatalf("reacquire: %v output=%s", err, out)
+	}
+	fresh, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ClaimID == old.ClaimID || fresh.Token == old.Token {
+		t.Fatalf("expired epoch was reused: old=%s fresh=%s", old.ClaimID, fresh.ClaimID)
+	}
+	if fresh.AgentID != "fresh-agent" || fresh.SessionID != "fresh-session" || strings.Join(fresh.Resources, ",") != "coordination:new-a,coordination:new-b" || fresh.State != "ready" || fresh.PendingRequest != nil {
+		t.Fatalf("fresh handle did not use current inputs: %#v", fresh)
+	}
+	if strings.Contains(out, old.ClaimID) || !strings.Contains(out, fresh.ClaimID) || !strings.Contains(out, `"workKey":"fresh-work"`) {
+		t.Fatalf("reacquire returned stale success: %s", out)
+	}
+}
+
+func TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles(t *testing.T) {
+	profile, clientHome, _ := remoteCLIFixture(t)
+	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--resource", "coordination:default-old", "--ttl", "1s", "--json")
+	if err != nil {
+		t.Fatalf("default acquire: %v output=%s", err, out)
+	}
+	paths, err := filepath.Glob(filepath.Join(clientHome, "handles", "*.json"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("default handles=%v err=%v", paths, err)
+	}
+	old, err := handle.Read(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	out, err = runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--resource", "coordination:default-new", "--ttl", "20s", "--json")
+	if err != nil {
+		t.Fatalf("default reacquire: %v output=%s", err, out)
+	}
+	fresh, err := handle.Read(paths[0])
+	if err != nil || fresh.ClaimID == old.ClaimID || fresh.Token == old.Token || strings.Join(fresh.Resources, ",") != "coordination:default-new" {
+		t.Fatalf("default handle was not replaced: %#v err=%v", fresh, err)
+	}
+	out, err = runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--session", "other", "--resource", "coordination:other", "--ttl", "20s", "--json")
+	if err != nil {
+		t.Fatalf("explicit-session acquire: %v output=%s", err, out)
+	}
+	paths, err = filepath.Glob(filepath.Join(clientHome, "handles", "*.json"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("session handles=%v err=%v", paths, err)
+	}
+	foundOther := false
+	for _, path := range paths {
+		h, readErr := handle.Read(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		foundOther = foundOther || h.SessionID == "other" && strings.Join(h.Resources, ",") == "coordination:other"
+	}
+	if !foundOther {
+		t.Fatalf("explicit session did not select an independent handle: %v", paths)
+	}
+}
+
+func TestRemoteCLIRefusesLocallyExpiredButRemotelyActiveClaim(t *testing.T) {
+	profile, clientHome, claimHandle := remoteCLIFixture(t)
+	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:active", "--ttl", "30s", "--json")
+	if err != nil {
+		t.Fatalf("acquire: %v output=%s", err, out)
+	}
+	stored, err := handle.Read(claimHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := stored
+	stale.ExpiresAt = time.Now().Add(-time.Minute)
+	if err := handle.Write(claimHandle, stale); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:replacement", "--ttl", "30s", "--json")
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonHandleInUse {
+		t.Fatalf("stale local expiry replaced active claim: err=%v output=%s", err, out)
+	}
+	after, readErr := handle.Read(claimHandle)
+	if readErr != nil || after.ClaimID != stored.ClaimID || after.Token != stored.Token {
+		t.Fatalf("active handle changed: %#v err=%v", after, readErr)
+	}
+}
+
 func TestRemoteCLIExplicitLifecycleAndGuardRetainCredentialPath(t *testing.T) {
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:explicit", "--ttl", "30s", "--json")
