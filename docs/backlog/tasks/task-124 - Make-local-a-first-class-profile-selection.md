@@ -1,10 +1,11 @@
 ---
 id: TASK-124
 title: Make local a first-class profile selection
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-17 23:00'
-updated_date: '2026-09-17 23:03'
+updated_date: '2026-09-17 23:42'
 labels:
   - ergonomics
   - remote-authority
@@ -42,14 +43,14 @@ Non-goals: changing enrollment auto-default behavior, changing local storage sco
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Selection tests cover local at flag, environment, binding and default layers, plus implicit fallback, with competing remote lower-priority selections. Each resolves to local with correct name/source and without constructing a remote client or reading remote credentials; unknown names remain errors.
-- [ ] #2 profile default local round-trips an explicit default: local without creating a persisted local profile, changing bindings, or altering retained remote profiles/credentials. profile default distinguishes explicit local from an unset default; --profile NAME still selects a retained remote profile.
-- [ ] #3 profile bind local [--cwd DIR] persists the existing canonical checkout-root binding and overrides a user remote default. Flag/environment selections still win, other checkouts are unchanged, and unbind restores normal fallback.
-- [ ] #4 profile list/ls always exposes the built-in local selection separately from persisted remote profiles. profile show local and unqualified profile show work for local without setup or network access; text/JSON distinguish built-in identity, effective selection source, and configured versus unset default while retaining existing remote JSON shapes.
-- [ ] #5 profile add local, enrollment targeting local (explicitly or via artifact hint), and profile remove local fail with actionable errors and no discovery/redemption requests, credential writes or config changes. Remote-only operations selected through local fail clearly rather than panic or fall back to remote.
-- [ ] #6 --local continues to bypass bindings/defaults and unreadable/invalid profile stores, conflicts with any nonempty flag/environment profile selection including local, and remains network-free. Inspection distinguishes forced local from implicit local fallback.
-- [ ] #7 Existing stores without reserved-name collisions retain their behavior. A persisted remote profile named local causes an actionable fail-closed migration error, never silent authority switching or mutation; migration documentation explains renaming the profile and its default/binding references while retaining the credential path. Tests cover this collision and the --local escape hatch.
-- [ ] #8 CLI help and user/CLI documentation explain precedence, explicit versus implicit local, checkout overrides, unbinding, reserved-name errors and migration. Focused config/CLI tests cover text/JSON inspection and failure side effects, and shared authority resolution is verified for ordinary commands and MCP startup.
+- [x] #1 Selection tests cover local at flag, environment, binding and default layers, plus implicit fallback, with competing remote lower-priority selections. Each resolves to local with correct name/source and without constructing a remote client or reading remote credentials; unknown names remain errors.
+- [x] #2 profile default local round-trips an explicit default: local without creating a persisted local profile, changing bindings, or altering retained remote profiles/credentials. profile default distinguishes explicit local from an unset default; --profile NAME still selects a retained remote profile.
+- [x] #3 profile bind local [--cwd DIR] persists the existing canonical checkout-root binding and overrides a user remote default. Flag/environment selections still win, other checkouts are unchanged, and unbind restores normal fallback.
+- [x] #4 profile list/ls always exposes the built-in local selection separately from persisted remote profiles. profile show local and unqualified profile show work for local without setup or network access; text/JSON distinguish built-in identity, effective selection source, and configured versus unset default while retaining existing remote JSON shapes.
+- [x] #5 profile add local, enrollment targeting local (explicitly or via artifact hint), and profile remove local fail with actionable errors and no discovery/redemption requests, credential writes or config changes. Remote-only operations selected through local fail clearly rather than panic or fall back to remote.
+- [x] #6 --local continues to bypass bindings/defaults and unreadable/invalid profile stores, conflicts with any nonempty flag/environment profile selection including local, and remains network-free. Inspection distinguishes forced local from implicit local fallback.
+- [x] #7 Existing stores without reserved-name collisions retain their behavior. A persisted remote profile named local causes an actionable fail-closed migration error, never silent authority switching or mutation; migration documentation explains renaming the profile and its default/binding references while retaining the credential path. Tests cover this collision and the --local escape hatch.
+- [x] #8 CLI help and user/CLI documentation explain precedence, explicit versus implicit local, checkout overrides, unbinding, reserved-name errors and migration. Focused config/CLI tests cover text/JSON inspection and failure side effects, and shared authority resolution is verified for ordinary commands and MCP startup.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -65,4 +66,14 @@ Non-goals: changing enrollment auto-default behavior, changing local storage sco
 
 <!-- SECTION:NOTES:BEGIN -->
 Design refinement only: inspected internal/config/profile.go, internal/cli/profile_commands.go and internal/cli/authority_context.go. Current selection already uses nil Profile for local; current --local bypasses profile loading and conflicts with any explicit/environment name. ValidateProfileName currently allows local, including in invite artifacts, so reserving it requires an explicit compatibility policy. Implementation remains To Do.
+
+Implemented built-in local selection, persistence, inspection, reserved-name protections, compatibility diagnostics, shared CLI/MCP resolution, focused regression coverage, documentation, and Unreleased notes in the isolated task-124-local-profile worktree. Independent review found JSON-shape, collision-classification, invite-hint side-effect, and help-detail defects; all four were fixed with regression tests before full gates.
+
+Verification passed after review fixes: go test ./internal/config ./internal/cli; mise run lint; mise run format-check; mise run test; mise run typecheck; staged mise run hooks; post-merge go test ./internal/config ./internal/cli ./internal/mcp. Regression tests cover all selection layers, explicit/unset defaults, canonical local bindings, local inspection/list JSON and text, mutation/enrollment side-effect refusal, forced-local bypass/conflicts, typed legacy-collision migration diagnostics, remote-only commands, and MCP startup. Implementation commit after rebase: 431dec6.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Made local a reserved first-class built-in profile selection without persisting a fake remote profile. Added explicit default and checkout binding support, inspection metadata, reserved-name and remote-only safety, fail-closed legacy collision guidance, shared CLI/MCP resolution coverage, and user/CLI documentation. Independent review findings were fixed; all repository gates, staged hooks, and post-merge config/CLI/MCP tests passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
