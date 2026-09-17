@@ -67,6 +67,10 @@ func TestBundleAcquireContentionUsesCallerOrderAndRollsBack(t *testing.T) {
 	if failure == nil || failure.Reason != reason.ReasonAlreadyClaimed || failure.Details["resource"] != "busy-two" {
 		t.Fatalf("contention=%v", err)
 	}
+	holder, ok := failure.Details["holder"].(map[string]any)
+	if !ok || holder["claimId"] != strings.Repeat("2", 32) || holder["agentId"] != "agent-2" || holder["workKey"] != "busy-two" || holder["expiresAt"] == nil {
+		t.Fatalf("holder=%#v", failure.Details["holder"])
+	}
 	status, err := svc.Status(context.Background(), Selector{Resources: []string{"free", "busy-two", "busy-one"}})
 	if err != nil || len(status.Resources) != 3 || status.Resources[0].State != "free" || status.Resources[1].Claim == nil || status.Resources[1].Claim.ClaimID != strings.Repeat("2", 32) {
 		t.Fatalf("status=%+v err=%v", status, err)

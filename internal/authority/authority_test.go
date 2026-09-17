@@ -292,6 +292,62 @@ func TestRemoteErrorPreservesSafeDetails(t *testing.T) {
 	}
 }
 
+func TestRemoteAlreadyClaimedPreservesOnlyBoundedHolderProjection(t *testing.T) {
+	p := profileForTest(t)
+	if err := handle.StoreCredential(p.Credential.Path, strings.Repeat("9", 64)); err != nil {
+		t.Fatal(err)
+	}
+	store := NewFilePendingStore(t.TempDir())
+	authorityTime := time.Now().UTC()
+	holderID := strings.Repeat("a", 32)
+	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"private wire message","details":{"resource":"coordination:busy","holder":{"claimId":%q,"agentId":"holder-agent","workKey":"holder-work","expiresAt":"2026-09-12T00:00:00.000000Z","token":"%s","checkpoint":{"private":"evidence"},"unexpected":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("b", 64))
+	client, err := NewHTTPClient(p, store, roundTripFunc(func(*http.Request) (*http.Response, error) { return response(409, body), nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Clock().Sample(authorityTime, authorityTime, authorityTime); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Call(context.Background(), RequestSpec{Path: "/v1/claims/list", Kind: "list"})
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonAlreadyClaimed || classified.Details["resource"] != "coordination:busy" {
+		t.Fatalf("remote contention=%#v", err)
+	}
+	holder, ok := classified.Details["holder"].(map[string]any)
+	if !ok || len(holder) != 4 || holder["claimId"] != holderID || holder["agentId"] != "holder-agent" || holder["workKey"] != "holder-work" {
+		t.Fatalf("holder=%#v", classified.Details["holder"])
+	}
+	if _, present := holder["token"]; present {
+		t.Fatal("holder credential survived HTTP projection")
+	}
+}
+
+func TestRemoteAlreadyClaimedDropsMalformedHolderFieldsButKeepsResource(t *testing.T) {
+	p := profileForTest(t)
+	if err := handle.StoreCredential(p.Credential.Path, strings.Repeat("9", 64)); err != nil {
+		t.Fatal(err)
+	}
+	authorityTime := time.Now().UTC()
+	holderID := strings.Repeat("a", 32)
+	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"ignored","details":{"resource":"coordination:busy","holder":{"claimId":%q,"agentId":"bad\nfield","workKey":"%s","expiresAt":"not-a-time","private":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("x", 1025))
+	client, err := NewHTTPClient(p, NewFilePendingStore(t.TempDir()), roundTripFunc(func(*http.Request) (*http.Response, error) { return response(409, body), nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Clock().Sample(authorityTime, authorityTime, authorityTime); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Call(context.Background(), RequestSpec{Path: "/v1/claims/list", Kind: "list"})
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonAlreadyClaimed || classified.Details["resource"] != "coordination:busy" {
+		t.Fatalf("malformed contention=%#v", err)
+	}
+	holder, ok := classified.Details["holder"].(map[string]any)
+	if !ok || len(holder) != 1 || holder["claimId"] != holderID {
+		t.Fatalf("valid holder fields did not survive malformed optionals: %#v", classified.Details["holder"])
+	}
+}
+
 func TestAuthorityTimeIsConservativeUnderAsymmetricLatency(t *testing.T) {
 	current := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
 	c := NewAuthorityClock(func() time.Time { return current })

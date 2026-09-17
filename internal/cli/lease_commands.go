@@ -711,7 +711,15 @@ func mutationFailure(err error, claim, op, path string) error {
 		return nil
 	}
 	if e := reason.As(err); e != nil {
-		e.With("claimId", claim).With("operationId", op).With("pendingPath", path)
+		// Contention responses contain the holder's claimId. Keep the generated
+		// identifier for the failed request, but name it explicitly so it cannot
+		// be mistaken for the holder.
+		if e.Reason == reason.ReasonAlreadyClaimed || e.Details["holder"] != nil {
+			e.With("requestClaimId", claim)
+		} else {
+			e.With("claimId", claim)
+		}
+		e.With("operationId", op).With("pendingPath", path)
 		// A guard that already committed its started intent reports its own
 		// commit state; only classify errors that have not been classified.
 		if _, classified := e.Details["commitState"]; !classified {

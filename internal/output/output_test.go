@@ -98,7 +98,7 @@ func TestErrorRenderersPreserveSafeRecoveryPathAndRedaction(t *testing.T) {
 	if envelope.Error.Details["pendingPath"] != pendingPath {
 		t.Fatalf("JSON pendingPath = %#v", envelope.Error.Details["pendingPath"])
 	}
-	if holder, ok := envelope.Error.Details["holder"].(map[string]any); !ok || holder["token"] != "[REDACTED]" || holder["note"] != "[REDACTED]" || holder["checkpoint"] != "[REDACTED]" {
+	if holder, ok := envelope.Error.Details["holder"].(map[string]any); !ok || len(holder) != 0 {
 		t.Fatalf("JSON holder was not safely projected: %#v", envelope.Error.Details["holder"])
 	}
 	if strings.Contains(jsonOut.String(), secret) {
@@ -120,7 +120,7 @@ func TestErrorRenderersPreserveSafeRecoveryPathAndRedaction(t *testing.T) {
 					t.Fatalf("text exposed %q: %q", disallowed, text)
 				}
 			}
-			for _, want := range []string{"request [REDACTED] is pending", "resource: [REDACTED]", "recoveryHint:", `retry\\nwith [REDACTED]`, "token:[REDACTED]", "note:[REDACTED]", "checkpoint:[REDACTED]"} {
+			for _, want := range []string{"request [REDACTED] is pending", "resource: [REDACTED]", "recoveryHint:", `retry\\nwith [REDACTED]`, "holder: map[]"} {
 				if !strings.Contains(text, want) {
 					t.Fatalf("text missing %q: %q", want, text)
 				}
@@ -156,6 +156,30 @@ func TestWriteTextErrorIncludesSafeHolderMetadata(t *testing.T) {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("text error missing %q: %q", phrase, text)
 		}
+	}
+}
+
+func TestHolderProjectionKeepsOnlyBoundedPublicFields(t *testing.T) {
+	t.Parallel()
+	claimID := strings.Repeat("a", 32)
+	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "coordination:test").With("holder", map[string]any{
+		"claimId": claimID, "agentId": "agent", "workKey": "work", "expiresAt": "2026-09-12T00:00:00.000000Z",
+		"token": strings.Repeat("b", 64), "checkpoint": map[string]any{"secret": "private"}, "unexpected": "drop",
+	})
+	failure := Classify(err)
+	holder, ok := failure.Details["holder"].(map[string]any)
+	if !ok || len(holder) != 4 || holder["claimId"] != claimID || holder["agentId"] != "agent" || holder["workKey"] != "work" {
+		t.Fatalf("holder projection=%#v", failure.Details["holder"])
+	}
+	if _, present := holder["unexpected"]; present {
+		t.Fatal("unexpected holder field survived")
+	}
+	var out bytes.Buffer
+	if err := WriteTextError(&out, reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("holder", map[string]any{"agentId": "agent\n-injected", "workKey": strings.Repeat("x", 1025)})); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "injected") || strings.Contains(out.String(), "workKey") {
+		t.Fatalf("malformed holder field rendered: %q", out.String())
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -699,6 +700,14 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 			return Response{}, reason.Invalid("remote error envelope is invalid")
 		}
 		remoteErr := reason.New(e.Error.Reason, "remote request failed")
+		if e.Error.Reason == reason.ReasonAlreadyClaimed {
+			if resource, ok := boundedRemoteText(e.Error.Details["resource"], 1024); ok {
+				remoteErr.With("resource", resource)
+			}
+			if holder := boundedRemoteHolder(e.Error.Details["holder"]); len(holder) > 0 {
+				remoteErr.With("holder", holder)
+			}
+		}
 		if e.Error.Reason == reason.ReasonResourceNotEnrolled {
 			if prefixes, ok := e.Error.Details["admittedPrefixes"].([]any); ok {
 				values := make([]string, 0, len(prefixes))
@@ -719,6 +728,46 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 	}
 	return Response{AuthorityID: e.AuthorityID, RestoreID: e.RestoreID, AuthorityTime: e.AuthorityTime, Result: e.Result}, nil
 }
+
+// boundedRemoteHolder admits only the redacted holder projection emitted by
+// the authority. Error details are untrusted wire data, so malformed fields
+// are omitted rather than forwarded to CLI renderers.
+func boundedRemoteHolder(value any) map[string]any {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	projected := make(map[string]any, 4)
+	if claimID, ok := boundedRemoteText(raw["claimId"], 32); ok && validID(claimID) {
+		projected["claimId"] = claimID
+	}
+	if agentID, ok := boundedRemoteText(raw["agentId"], 128); ok {
+		projected["agentId"] = agentID
+	}
+	if workKey, ok := boundedRemoteText(raw["workKey"], 1024); ok {
+		projected["workKey"] = workKey
+	}
+	if expiresAt, ok := boundedRemoteText(raw["expiresAt"], 128); ok {
+		if _, err := time.Parse(time.RFC3339Nano, expiresAt); err == nil {
+			projected["expiresAt"] = expiresAt
+		}
+	}
+	return projected
+}
+
+func boundedRemoteText(value any, max int) (string, bool) {
+	text, ok := value.(string)
+	if !ok || !utf8.ValidString(text) || len(text) == 0 || len(text) > max {
+		return "", false
+	}
+	for _, r := range text {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			return "", false
+		}
+	}
+	return text, true
+}
+
 func (c *HTTPClient) validate(r Response, metadata bool) error {
 	if r.AuthorityID != c.profile.AuthorityID && c.profile.AuthorityID != "" {
 		return reason.New(reason.ReasonAuthorityMismatch, "remote authority identity does not match profile")

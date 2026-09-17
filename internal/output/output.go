@@ -10,6 +10,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/brettinternet/worklease/internal/reason"
@@ -197,7 +199,7 @@ func writeTextError(w io.Writer, err error, color bool) error {
 
 func safeTextDetail(key string) bool {
 	switch key {
-	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "resource", "requestNotAfter", "recoveryHint":
+	case "claimId", "commitState", "expiresAt", "holder", "operationId", "pendingPath", "requestClaimId", "resource", "requestNotAfter", "recoveryHint":
 		return true
 	default:
 		return false
@@ -220,6 +222,9 @@ func RedactPublic(value any) any {
 func redact(value any, key string, public bool) any {
 	if isSecretKey(key) || public && isPrivatePayloadKey(key) {
 		return "[REDACTED]"
+	}
+	if key == "holder" {
+		return redactHolder(value)
 	}
 	switch typed := value.(type) {
 	case map[string]any:
@@ -361,4 +366,59 @@ func redactMap(values map[string]any, public bool) map[string]any {
 	}
 	redacted, _ := redact(values, "", public).(map[string]any)
 	return redacted
+}
+
+// redactHolder keeps contention diagnostics to the four public holder fields.
+// Unlike general output maps, holder data is a protocol projection and unknown
+// fields must not survive merely because they were nested under an admitted
+// key.
+func redactHolder(value any) map[string]any {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return map[string]any{}
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.UseNumber()
+		if decoder.Decode(&raw) != nil {
+			return map[string]any{}
+		}
+	}
+	projected := make(map[string]any, 4)
+	for _, field := range []string{"claimId", "agentId", "workKey", "expiresAt"} {
+		text, ok := raw[field].(string)
+		if !ok || !safeHolderText(text, holderFieldLimit(field)) {
+			continue
+		}
+		if field == "expiresAt" {
+			if _, err := time.Parse(time.RFC3339Nano, text); err != nil {
+				continue
+			}
+		}
+		projected[field] = RedactString(text)
+	}
+	return projected
+}
+
+func holderFieldLimit(field string) int {
+	if field == "claimId" {
+		return 32
+	}
+	if field == "agentId" {
+		return 128
+	}
+	return 1024
+}
+
+func safeHolderText(value string, max int) bool {
+	if !utf8.ValidString(value) || len(value) == 0 || len(value) > max {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+	}
+	return true
 }

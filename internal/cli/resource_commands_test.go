@@ -322,6 +322,40 @@ func TestAcquireRejectsMixedHandleAndStatelessSelection(t *testing.T) {
 	}
 }
 
+func TestAcquireWaitTimeoutDistinguishesRequestAndHolderClaimIDs(t *testing.T) {
+	home := t.TempDir()
+	holderHandle := filepath.Join(home, "handles", "holder.json")
+	var holderOut bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--local", "acquire", "--json", "--home", home, "--handle", holderHandle, "--resource", "wait-busy"}, "dev", "unknown", "unknown", &holderOut, &bytes.Buffer{}); err != nil {
+		t.Fatalf("holder acquire: %v output=%s", err, holderOut.String())
+	}
+	var holderResult struct {
+		ClaimID string `json:"claimId"`
+	}
+	if err := json.Unmarshal(holderOut.Bytes(), &holderResult); err != nil || holderResult.ClaimID == "" {
+		t.Fatalf("holder result=%s err=%v", holderOut.String(), err)
+	}
+
+	var contenderOut bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "--local", "acquire", "--json", "--home", home, "--handle", filepath.Join(home, "handles", "contender.json"), "--resource", "wait-busy", "--wait", "20ms", "--poll-interval", "10ms"}, "dev", "unknown", "unknown", &contenderOut, &bytes.Buffer{})
+	var failure struct {
+		Error struct {
+			Reason  string `json:"reason"`
+			Details struct {
+				ClaimID        string         `json:"claimId"`
+				RequestClaimID string         `json:"requestClaimId"`
+				Holder         map[string]any `json:"holder"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if decodeErr := json.Unmarshal(contenderOut.Bytes(), &failure); decodeErr != nil {
+		t.Fatalf("decode wait timeout: %v output=%s", decodeErr, contenderOut.String())
+	}
+	if err == nil || failure.Error.Reason != reason.ReasonWaitTimeout || failure.Error.Details.RequestClaimID == "" || failure.Error.Details.ClaimID != "" || failure.Error.Details.Holder["claimId"] != holderResult.ClaimID || failure.Error.Details.RequestClaimID == holderResult.ClaimID {
+		t.Fatalf("wait timeout identifiers: err=%v output=%s", err, contenderOut.String())
+	}
+}
+
 func TestProcessesSerializeOneHandleAndConcurrentMutations(t *testing.T) {
 	home := t.TempDir()
 	handlePath := filepath.Join(home, "handles", "shared.json")

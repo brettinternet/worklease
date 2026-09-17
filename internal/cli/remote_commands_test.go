@@ -21,6 +21,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
@@ -183,6 +184,65 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 	out, err = runRemoteCLI(t, "release", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--json")
 	if err != nil {
 		t.Fatalf("release: %v output=%s", err, out)
+	}
+}
+
+func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing.T) {
+	profileName, clientHome, holderHandle := remoteCLIFixture(t)
+	out, err := runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", holderHandle, "--resource", "coordination:busy", "--ttl", "30s", "--json")
+	if err != nil {
+		t.Fatalf("holder acquire: %v output=%s", err, out)
+	}
+	var holderResult struct {
+		ClaimID string `json:"claimId"`
+		AgentID string `json:"agentId"`
+		WorkKey string `json:"workKey"`
+	}
+	if err := json.Unmarshal([]byte(out), &holderResult); err != nil || holderResult.ClaimID == "" {
+		t.Fatalf("holder result=%s err=%v", out, err)
+	}
+	attemptHandle := filepath.Join(t.TempDir(), "attempt.json")
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", attemptHandle, "--resource", "coordination:busy", "--ttl", "30s", "--json")
+	if err == nil || !strings.Contains(out, `"reason":"already-claimed"`) || !strings.Contains(out, `"resource":"coordination:busy"`) || !strings.Contains(out, holderResult.ClaimID) {
+		t.Fatalf("contention JSON=%v output=%s", err, out)
+	}
+	if !strings.Contains(out, `"requestClaimId"`) || strings.Contains(out, `"sessionId"`) || strings.Contains(out, `"token"`) {
+		t.Fatalf("contention identifiers/redaction=%s", out)
+	}
+	if _, statErr := os.Stat(attemptHandle); !os.IsNotExist(statErr) {
+		t.Fatalf("definitive contention retained attempt handle: %v", statErr)
+	}
+
+	multiHandle := filepath.Join(t.TempDir(), "attempt-multi.json")
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", multiHandle, "--resource", "coordination:free", "--resource", "coordination:busy", "--ttl", "30s", "--json")
+	if err == nil || !strings.Contains(out, `"reason":"already-claimed"`) || !strings.Contains(out, `"resource":"coordination:busy"`) || !strings.Contains(out, holderResult.ClaimID) {
+		t.Fatalf("multi-resource contention=%v output=%s", err, out)
+	}
+	if _, statErr := os.Stat(multiHandle); !os.IsNotExist(statErr) {
+		t.Fatalf("multi-resource contention retained attempt handle: %v", statErr)
+	}
+	freeHandle := filepath.Join(t.TempDir(), "free.json")
+	if out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", freeHandle, "--resource", "coordination:free", "--ttl", "30s", "--json"); err != nil {
+		t.Fatalf("multi-resource contention did not roll back free member: %v output=%s", err, out)
+	}
+	if out, err = runRemoteCLI(t, "verify", "--profile", profileName, "--home", clientHome, "--handle", holderHandle, "--json"); err != nil || !strings.Contains(out, holderResult.ClaimID) {
+		t.Fatalf("contention changed existing holder: %v output=%s", err, out)
+	}
+
+	textHandle := filepath.Join(t.TempDir(), "attempt-text.json")
+	var textOut, textErr bytes.Buffer
+	err = Run(context.Background(), []string{"worklease", "acquire", "--profile", profileName, "--home", clientHome, "--handle", textHandle, "--resource", "coordination:busy", "--ttl", "30s"}, "test", "unknown", "unknown", &textOut, &textErr)
+	if err == nil {
+		t.Fatalf("text contention unexpectedly succeeded: stdout=%s stderr=%s", textOut.String(), textErr.String())
+	}
+	if err := output.WriteTextError(&textErr, err); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textErr.String(), "resource: coordination:busy") || !strings.Contains(textErr.String(), holderResult.ClaimID) || !strings.Contains(textErr.String(), "holder:") || !strings.Contains(textErr.String(), "agentId") || !strings.Contains(textErr.String(), "workKey") || !strings.Contains(textErr.String(), "expiresAt") {
+		t.Fatalf("contention text=%v stdout=%s stderr=%s", err, textOut.String(), textErr.String())
+	}
+	if _, statErr := os.Stat(textHandle); !os.IsNotExist(statErr) {
+		t.Fatalf("definitive text contention retained attempt handle: %v", statErr)
 	}
 }
 

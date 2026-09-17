@@ -202,7 +202,7 @@ local coordination into cross-host or provider-side fencing. See
 JSON failures use:
 
 ```json
-{"schemaVersion":2,"ok":false,"operation":"acquire","error":{"reason":"already-claimed","exitCode":2,"message":"resource is already claimed","details":{}}}
+{"schemaVersion":2,"ok":false,"operation":"acquire","error":{"reason":"already-claimed","exitCode":2,"message":"resource is already claimed","details":{"resource":"coordination:busy","requestClaimId":"…attempted…","operationId":"…operation…","holder":{"claimId":"…holder…","agentId":"agent","workKey":"work","expiresAt":"2026-09-12T00:00:00.000000Z"},"commitState":"not-committed"}}}
 ```
 
 Exit families are: `0` success, `1` internal failure, `2` ownership/contention,
