@@ -1,10 +1,11 @@
 ---
 id: TASK-117
 title: Report actionable remote transport errors during enrollment
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-16 23:48'
-updated_date: '2026-09-17 00:10'
+updated_date: '2026-09-17 04:02'
 labels: []
 dependencies: []
 references:
@@ -14,6 +15,13 @@ references:
   - internal/cli/remote_commands_test.go
   - internal/authority/enrollment_test.go
   - internal/authority/commit_truth_test.go
+modified_files:
+  - docs/remote-claim-authority.md
+  - internal/authority/enrollment_test.go
+  - internal/authority/http.go
+  - internal/cli/doctor_commands.go
+  - internal/cli/remote_commands_test.go
+  - internal/reason/reason.go
 priority: medium
 type: bug
 ordinal: 159000
@@ -27,26 +35,34 @@ Enrollment begins with unauthenticated metadata discovery. When the advertised e
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An enrollment whose metadata endpoint refuses or cannot establish a connection reports a stable, actionable non-internal error instead of `internal: unexpected internal failure`.
-- [ ] #2 The enrollment failure remains `commitState: not-committed`, does not create an enrolled profile, and does not expose invite, installation, URL-embedded, or lower-level sensitive data.
-- [ ] #3 Transport classification preserves conservative mutation semantics: an error after a mutating request may have been dispatched remains an unknown outcome and retains its pending recovery record.
-- [ ] #4 Remote doctor continues to distinguish at least DNS failure, connection refusal, timeout, and TLS/pin failure with its existing actionable checks.
-- [ ] #5 Automated regression coverage reproduces the enrollment metadata transport failure through the client or CLI boundary and verifies the public text and JSON error envelopes.
-- [ ] #6 Deterministic coverage includes metadata DNS failure, refusal, timeout, and TLS/pin failure without real external services; public messages omit raw transport errors and URL credentials/query data.
-- [ ] #7 Any new public reason has a registered exit code and documentation; safe transport classification does not treat a received enrollment mutation error or dropped response as proof that the invite was unused.
+- [x] #1 An enrollment whose metadata endpoint refuses or cannot establish a connection reports a stable, actionable non-internal error instead of `internal: unexpected internal failure`.
+- [x] #2 The enrollment failure remains `commitState: not-committed`, does not create an enrolled profile, and does not expose invite, installation, URL-embedded, or lower-level sensitive data.
+- [x] #3 Transport classification preserves conservative mutation semantics: an error after a mutating request may have been dispatched remains an unknown outcome and retains its pending recovery record.
+- [x] #4 Remote doctor continues to distinguish at least DNS failure, connection refusal, timeout, and TLS/pin failure with its existing actionable checks.
+- [x] #5 Automated regression coverage reproduces the enrollment metadata transport failure through the client or CLI boundary and verifies the public text and JSON error envelopes.
+- [x] #6 Deterministic coverage includes metadata DNS failure, refusal, timeout, and TLS/pin failure without real external services; public messages omit raw transport errors and URL credentials/query data.
+- [x] #7 Any new public reason has a registered exit code and documentation; safe transport classification does not treat a received enrollment mutation error or dropped response as proof that the invite was unused.
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Add deterministic client/CLI metadata-failure tests using injected transport or local test servers, not real DNS or external endpoints.
-2. Classify safe pre-enrollment transport failures with stable public reason/exit-code mapping and actionable sanitized guidance. Reuse existing reasons where their meaning fits; register and document any new reason consistently.
-3. Preserve dispatch-aware mutation outcome and pending replay logic. Keep enrollment/profile credential persistence unchanged on failure.
-4. Verify text/JSON envelopes, doctor checks, redaction, and dropped-response mutation recovery.
+1. Add deterministic HTTP-client and CLI regression coverage for metadata DNS, refusal, timeout, and TLS/pin transport failures, including redaction and no-profile assertions.
+2. Introduce a stable sanitized public transport classification at the safe pre-enrollment metadata boundary, reusing existing reason/exit-code infrastructure where possible.
+3. Verify mutating enrollment dispatch still produces unknown commit truth and retains pending recovery state.
+4. Run focused tests, repository quality gates, independent review, and merge the committed worktree change into main.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Validation: HTTPClient.do in internal/authority/http.go returns http.Client.Do errors unchanged; HTTPClient.Enroll calls Metadata before its mutating enrollment request. internal/output/output.go maps untyped errors to internal. Remote doctor already classifies DNS/refusal/timeout/TLS at its own boundary. Keep that taxonomy intact and do not forward raw net/url error strings. This task is independent of holder projection (TASK-121), although both touch the HTTP client.
+
+Implemented remote-transport-failure (exit 75) with sanitized DNS/refused/timeout/TLS/connect detail at the HTTP transport boundary. Caller cancellation/deadline remains interrupted, while client-side transport deadlines classify as timeout. Mutating requests still convert dispatch failures to unknown-outcome and retain pending recovery state. Verification passed: focused Go tests; mise run lint; mise run format-check; mise run test; mise run typecheck; staged mise run hooks; post-merge mise run test. Deterministic tests cover metadata DNS, refusal, transport timeout including client deadline, TLS/pin, text/JSON envelopes, redaction, no profile/credential creation, and doctor taxonomy. Existing TestRemoteMutationWritesBeforeDispatchAndRetainsUncertainty verifies dropped mutating responses retain pending recovery.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added stable, actionable, redacted remote transport failures for enrollment metadata discovery while preserving conservative unknown outcomes for dispatched mutations. Registered and documented the new exit-75 reason, preserved doctor DNS/refusal/timeout/TLS checks, and added deterministic envelope, redaction, persistence, and taxonomy coverage. Implementation commit ec19720 merged to main; all repository quality gates, hooks, and post-merge tests passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
