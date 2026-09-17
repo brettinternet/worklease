@@ -1,10 +1,11 @@
 ---
 id: TASK-118
 title: Prompt invite-file cleanup after successful enrollment
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-16 23:56'
-updated_date: '2026-09-17 00:09'
+updated_date: '2026-09-17 05:49'
 labels: []
 dependencies: []
 references:
@@ -35,13 +36,15 @@ Successful enrollment currently reports only the profile and role. The invite is
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Extend successful text enrollment from --invite-file with consumed-invite and conditional local cleanup guidance, without printing the bearer or file contents.
-2. Preserve JSON success shape and existing file/FD/prompt input behavior; never take ownership of caller files.
-3. Test file contents and existence after success, definitive failure and uncertain outcome; assert no consumption guidance for failures and no file guidance for FD/prompt input. Update the enrollment example.
+1. Add successful text-mode cleanup guidance only when --invite-file was explicitly supplied.
+2. Extend enrollment tests to prove success guidance, file preservation across success/failure/uncertain outcomes, and no guidance for FD/prompt or JSON paths.
+3. Update the remote enrollment documentation example and run focused plus repository quality gates.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Validation: enrollCommand in internal/cli/profile_commands.go has separate JSON success and text success branches; inviteInputFromCommand distinguishes file, descriptor and prompt. Current text prints only profile and role. Keep guidance in the CLI text-success branch, based on the supplied --invite-file rather than merely the presence of a decoded artifact. Existing file/FD integration coverage is in internal/cli/remote_commands_test.go. No authority protocol, artifact format, or enrollment persistence change is needed.
+
+Implemented conditional text-only cleanup guidance, preserved JSON/FD/prompt behavior, added success/definitive-failure/uncertain-outcome file-preservation tests, and updated the remote enrollment guide. Focused CLI tests pass.
 <!-- SECTION:NOTES:END -->
