@@ -86,7 +86,7 @@ func TestReconcileAtCurrentRevisionAuthenticatesAndRejectsChangedReplay(t *testi
 }
 
 func TestReconcileRejectsPartialCoverageHashAndMalformedEvidence(t *testing.T) {
-	svc, st, _ := openLeaseTest(t)
+	svc, st, clock := openLeaseTest(t)
 	ctx := context.Background()
 	id, token := strings.Repeat("1", 32), strings.Repeat("a", 64)
 	g, err := svc.Acquire(ctx, AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: id, Token: token, Resources: []string{"a", "b"}, AgentID: "a", SessionID: "s", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
@@ -109,7 +109,7 @@ func TestReconcileRejectsPartialCoverageHashAndMalformedEvidence(t *testing.T) {
 	if _, err := svc.Reconcile(ctx, credentials(st, id, token, started.Revision), bad); reason.As(err) == nil || reason.As(err).Code != reason.ExitInvalid {
 		t.Fatalf("evidence err=%v", err)
 	}
-	if err := st.Write(ctx, func(tx *store.Tx) error {
+	if err := st.WriteAt(ctx, clock.Now(), func(tx *store.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM claim_resources WHERE resource='b'`)
 		return err
 	}); err != nil {

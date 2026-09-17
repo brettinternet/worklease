@@ -36,6 +36,8 @@ type runtimeLease struct {
 	holdUntil time.Time
 	ctx       context.Context
 	cancel    context.CancelFunc
+	stop      chan struct{}
+	done      chan struct{}
 	status    string
 }
 

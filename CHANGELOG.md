@@ -13,6 +13,10 @@
 
 - `setup instructions` now prints a concise project template for verified authority, source, and resource choices, with pointers to lifecycle and safety guidance instead of embedding both guides.
 
+### Fixed
+
+- Explicit MCP release waits for an in-flight automatic renewal to settle, preventing request mismatches at renewal boundaries.
+
 ## 1.6.4 - 2026-09-17
 
 ### Fixed

@@ -87,6 +87,9 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 	if e != nil || ref == "" {
 		return nil, reason.Invalid("lease reference is required")
 	}
+	if kind == "release" {
+		stopRenewal(s, ref)
+	}
 	h, path, lk, e := s.readLease(ctx, ref, true)
 	if e != nil {
 		return nil, e

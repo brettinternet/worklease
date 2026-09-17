@@ -11,7 +11,7 @@ import (
 
 func (s *Server) startRenewal(ref string, ttl time.Duration, hold time.Time) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &runtimeLease{ref: ref, path: s.handlePath(ref), ttl: ttl, holdUntil: hold, ctx: ctx, cancel: cancel, status: "active"}
+	r := &runtimeLease{ref: ref, path: s.handlePath(ref), ttl: ttl, holdUntil: hold, ctx: ctx, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{}), status: "active"}
 	s.mu.Lock()
 	s.leases[ref] = r
 	s.mu.Unlock()
@@ -22,16 +22,20 @@ func stopRenewal(s *Server, ref string) {
 	r := s.leases[ref]
 	if r != nil {
 		r.status = "stopped"
-		r.cancel()
+		close(r.stop)
 		delete(s.leases, ref)
 	}
 	s.mu.Unlock()
+	if r != nil {
+		<-r.done
+	}
 }
 
 // renewLoop renews one lease this server acquired until its hold deadline,
 // expiry, an ownership failure, release, or shutdown. Every exit path marks the
 // runtime status stopped so tool results never report a dead renewer as active.
 func (s *Server) renewLoop(r *runtimeLease) {
+	defer close(r.done)
 	defer s.markRenewalStopped(r)
 	for {
 		h, err := handle.Read(r.path)
@@ -55,6 +59,9 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		}
 		t := time.NewTimer(wait)
 		select {
+		case <-r.stop:
+			t.Stop()
+			return
 		case <-r.ctx.Done():
 			t.Stop()
 			return
@@ -194,10 +201,16 @@ func (s *Server) markRenewalStopped(r *runtimeLease) {
 
 func (s *Server) stopAllRenewals() {
 	s.mu.Lock()
+	leases := make([]*runtimeLease, 0, len(s.leases))
 	for _, r := range s.leases {
 		r.status = "stopped"
+		close(r.stop)
 		r.cancel()
+		leases = append(leases, r)
 	}
 	s.leases = map[string]*runtimeLease{}
 	s.mu.Unlock()
+	for _, r := range leases {
+		<-r.done
+	}
 }
