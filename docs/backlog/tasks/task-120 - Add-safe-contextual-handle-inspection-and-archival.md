@@ -1,10 +1,11 @@
 ---
 id: TASK-120
 title: Add safe contextual handle inspection and archival
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-16 23:57'
-updated_date: '2026-09-17 00:08'
+updated_date: '2026-09-17 04:37'
 labels:
   - cli
   - handles
@@ -41,14 +42,16 @@ Operators can encounter a stale or foreign contextual handle but have no support
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Add bounded CLI handle inspect/archive commands using TASK-119 selection and explicit --handle for legacy or foreign files; keep both operations offline.
-2. Build a strict public metadata projection. Label lifecycle information as locally recorded, not verified authority status, and distinguish requested selector from unknown stored provenance.
-3. Archive through pinned locking and durable no-overwrite storage: retain the source until a complete private archive is durable; return the recoverable path and explicit-handle recovery guidance. Refuse malformed or unsafe inputs rather than weakening validation.
-4. Exercise pending/ready/recovery and foreign handles, consent refusal, destination collisions, write failures and replacement races; document that archival neither releases a claim nor resolves an uncertain operation.
+1. Add offline handle inspect and archive commands that reuse authority-aware contextual/explicit handle selection.
+2. Introduce redacted metadata projection plus owner-private, pinned, durable no-overwrite archival with explicit acknowledgement for pending/recovery state.
+3. Cover ready, pending, recovery, foreign, missing, malformed, unsafe, collision, and race cases; update help and handle documentation.
+4. Run focused and repository quality gates, review the diff, then finalize and integrate.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Validation: internal/handle/handle.go provides private validated reads, pinned locks, writes, and removal but no supported archive operation; the CLI has no handle inspection/archive surface. Handle.State is pending or ready; RecoveryRequest is separate, and ExpiresAt alone cannot prove authority-side expiry. Contextual filenames are hashes and the handle does not store the checkout/selector, so inspection cannot reconstruct selector provenance from an arbitrary file. TASK-119 is a real prerequisite because contextual selection and legacy lookup must agree.
+
+Implementation complete in task-120-handle-archive: added offline handle inspect/archive commands, strict redacted projections, snapshot-bound no-overwrite archival, contextual-destination rejection, recovery metadata validation, and race/collision/unsafe-input coverage. Independent security review found and drove fixes for pre-copy replacement consent bypass, contextual-slot archive injection, malformed recovery metadata projection, and shell-unsafe recovery commands. Validation passed: mise run lint, format-check, test, and typecheck.
 <!-- SECTION:NOTES:END -->
