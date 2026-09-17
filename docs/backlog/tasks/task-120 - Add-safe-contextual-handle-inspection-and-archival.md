@@ -1,11 +1,11 @@
 ---
 id: TASK-120
 title: Add safe contextual handle inspection and archival
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-16 23:57'
-updated_date: '2026-09-17 04:37'
+updated_date: '2026-09-17 04:39'
 labels:
   - cli
   - handles
@@ -15,6 +15,19 @@ dependencies:
 references:
   - internal/handle/handle.go
   - docs/claim-model.md
+  - internal/handle/handle_test.go
+  - 8b1b7a8
+  - b30cb91
+modified_files:
+  - CHANGELOG.md
+  - docs/claim-model.md
+  - docs/cli-reference.md
+  - docs/cli-zero-flag-audit.md
+  - internal/cli/commands.go
+  - internal/cli/handle_commands.go
+  - internal/cli/handle_commands_test.go
+  - internal/cli/root_test.go
+  - internal/handle/handle.go
   - internal/handle/handle_test.go
 priority: medium
 type: feature
@@ -29,14 +42,14 @@ Operators can encounter a stale or foreign contextual handle but have no support
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A CLI command inspects the selected or explicitly named handle and reports only redacted authority, claim, selector, lifecycle state, resources, and recovery-relevant metadata
-- [ ] #2 A CLI command archives a handle into owner-private recoverable storage without contacting, releasing, revoking, or otherwise mutating any authority
-- [ ] #3 Archival clearly warns that an active claim may remain and requires explicit acknowledgement before preserving aside pending or recovery state
-- [ ] #4 Inspection and archival reject unsafe paths and concurrent changes, preserve owner-only permissions, and never expose credentials or private evidence
-- [ ] #5 Help, documentation, and tests cover ready, pending, recovery, authority-mismatched, missing, malformed, and unsafe handles
-- [ ] #6 Inspection is offline and non-mutating: it neither contacts an authority nor creates a missing handle/store. Recorded expiry is not reported as proof that the claim is inactive; selector provenance is unknown when it cannot be established.
-- [ ] #7 Archive storage is durable and no-overwrite before the original is removed; any failure preserves at least one complete recoverable copy with exact credentials, pending request bytes, and recovery state. Successful output gives a usable explicit-handle recovery path without exposing file contents.
-- [ ] #8 Pending/recovery archival requires an explicit noninteractive acknowledgement; refusal leaves the source unchanged. Malformed and unsafe inputs fail closed, and an archive is never automatically selected as a fresh contextual handle.
+- [x] #1 A CLI command inspects the selected or explicitly named handle and reports only redacted authority, claim, selector, lifecycle state, resources, and recovery-relevant metadata
+- [x] #2 A CLI command archives a handle into owner-private recoverable storage without contacting, releasing, revoking, or otherwise mutating any authority
+- [x] #3 Archival clearly warns that an active claim may remain and requires explicit acknowledgement before preserving aside pending or recovery state
+- [x] #4 Inspection and archival reject unsafe paths and concurrent changes, preserve owner-only permissions, and never expose credentials or private evidence
+- [x] #5 Help, documentation, and tests cover ready, pending, recovery, authority-mismatched, missing, malformed, and unsafe handles
+- [x] #6 Inspection is offline and non-mutating: it neither contacts an authority nor creates a missing handle/store. Recorded expiry is not reported as proof that the claim is inactive; selector provenance is unknown when it cannot be established.
+- [x] #7 Archive storage is durable and no-overwrite before the original is removed; any failure preserves at least one complete recoverable copy with exact credentials, pending request bytes, and recovery state. Successful output gives a usable explicit-handle recovery path without exposing file contents.
+- [x] #8 Pending/recovery archival requires an explicit noninteractive acknowledgement; refusal leaves the source unchanged. Malformed and unsafe inputs fail closed, and an archive is never automatically selected as a fresh contextual handle.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,4 +67,12 @@ Operators can encounter a stale or foreign contextual handle but have no support
 Validation: internal/handle/handle.go provides private validated reads, pinned locks, writes, and removal but no supported archive operation; the CLI has no handle inspection/archive surface. Handle.State is pending or ready; RecoveryRequest is separate, and ExpiresAt alone cannot prove authority-side expiry. Contextual filenames are hashes and the handle does not store the checkout/selector, so inspection cannot reconstruct selector provenance from an arbitrary file. TASK-119 is a real prerequisite because contextual selection and legacy lookup must agree.
 
 Implementation complete in task-120-handle-archive: added offline handle inspect/archive commands, strict redacted projections, snapshot-bound no-overwrite archival, contextual-destination rejection, recovery metadata validation, and race/collision/unsafe-input coverage. Independent security review found and drove fixes for pre-copy replacement consent bypass, contextual-slot archive injection, malformed recovery metadata projection, and shell-unsafe recovery commands. Validation passed: mise run lint, format-check, test, and typecheck.
+
+Post-merge verification on main: go test ./internal/handle ./internal/cli passed. Implementation commit 8b1b7a8 merged as b30cb91; the isolated worktree and branch were removed by Worktrunk.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added offline redacted handle inspection and safe archival. Archive copies the exact validated snapshot durably with owner-only no-overwrite semantics before exact source removal, requires explicit acknowledgement for pending/recovery state, rejects contextual destinations, and never contacts or mutates an authority. Verified ready, pending, recovery, authority-mismatch, missing, malformed, unsafe, collision, replacement-race, redaction, and non-creation paths with Go tests; repository lint, formatting, tests, typecheck, hooks, and independent security review passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
