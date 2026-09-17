@@ -114,7 +114,7 @@ func writeStatusTextAt(w io.Writer, value lease.Status, full, color bool, now ti
 				"expiresAt: "+claim.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
 				"claimId: "+escapeTerminalCell(claim.ClaimID),
 				"resources: "+fullResources(claim.Resources),
-				"sessionId: "+escapeTerminalCell(output.RedactString(claim.SessionID)),
+				"claimSessionId: "+escapeTerminalCell(output.RedactString(claim.SessionID)),
 				"workKey: "+escapeTerminalCell(output.RedactString(claim.WorkKey)),
 				fmt.Sprintf("revision: %d", claim.Revision),
 				"acquiredAt: "+claim.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
@@ -203,7 +203,7 @@ func writeAcquireText(w io.Writer, fields map[string]any) error {
 	}
 	lines := []string{"resources: " + summarizeResources(resources)}
 	lines = appendFieldLine(lines, fields, "agentId", "agentId")
-	lines = appendFieldLine(lines, fields, "sessionId", "sessionId")
+	lines = appendFieldLine(lines, fields, "sessionId", "claimSessionId")
 	lines = appendFieldLine(lines, fields, "revision", "revision")
 	lines = appendFieldLine(lines, fields, "expiresAt", "expiresAt")
 	lines = appendFieldLine(lines, fields, "guarantee", "guarantee")
@@ -230,7 +230,7 @@ func writeTransferText(w io.Writer, fields map[string]any) error {
 		lines = append(lines, "resources: "+fullResources(resources))
 	}
 	lines = appendFieldLine(lines, fields, "agentId", "agentId")
-	lines = appendFieldLine(lines, fields, "sessionId", "sessionId")
+	lines = appendFieldLine(lines, fields, "sessionId", "claimSessionId")
 	lines = appendFieldLine(lines, fields, "revision", "revision")
 	lines = appendFieldLine(lines, fields, "expiresAt", "expiresAt")
 	lines = appendFieldLine(lines, fields, "guarantee", "guarantee")
@@ -699,7 +699,7 @@ func writeHistoryTextAt(w io.Writer, page ledger.HistoryPage, full, color bool, 
 				" agentId=" + escapeTerminalCell(output.RedactString(epoch.AgentID)) +
 				" status=" + styledState(escapeTerminalCell(epoch.Status), color) +
 				" acquiredAt=" + epoch.AcquiredAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00") +
-				" sessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) +
+				" claimSessionId=" + escapeTerminalCell(output.RedactString(epoch.SessionID)) +
 				" workKey=" + escapeTerminalCell(output.RedactString(epoch.WorkKey)) +
 				" resources=" + fullResources(epoch.Resources)
 			if epoch.EndedAt != nil {

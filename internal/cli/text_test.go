@@ -84,7 +84,7 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if err := writeStatusTextAt(&full, lease.Status{Claim: claim}, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(compact.String(), "sessionId:") || strings.Contains(compact.String(), "expiresAt:") || !strings.Contains(compact.String(), "expires: 1m left") || !strings.Contains(full.String(), "sessionId: session") || !strings.Contains(full.String(), "expiresAt: 2026-09-13T02:14:09.000000Z") || !strings.Contains(full.String(), "resources: exact-resource") {
+	if strings.Contains(compact.String(), "claimSessionId:") || strings.Contains(compact.String(), "expiresAt:") || !strings.Contains(compact.String(), "expires: 1m left") || !strings.Contains(full.String(), "claimSessionId: session") || !strings.Contains(full.String(), "expiresAt: 2026-09-13T02:14:09.000000Z") || !strings.Contains(full.String(), "resources: exact-resource") {
 		t.Fatalf("compact=%q full=%q", compact.String(), full.String())
 	}
 
@@ -102,7 +102,7 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 	if strings.Contains(compact.String(), hash) || !strings.Contains(compact.String(), "agent open acquired 2m ago operations exec") || strings.Contains(compact.String(), "acquiredAt=") || strings.Contains(compact.String(), "claimId=") {
 		t.Fatalf("compact=%q", compact.String())
 	}
-	for _, want := range []string{"claimId=" + claimID, "acquiredAt=2026-09-13T02:11:09.000000Z", "workKey=work", "resources=exact-resource", "startedAt=2026-09-13T02:12:09.000000Z", "completedAt=2026-09-13T02:12:39.000000Z", "requestSha256=" + hash} {
+	for _, want := range []string{"claimId=" + claimID, "acquiredAt=2026-09-13T02:11:09.000000Z", "workKey=work", "resources=exact-resource", "claimSessionId=session", "startedAt=2026-09-13T02:12:09.000000Z", "completedAt=2026-09-13T02:12:39.000000Z", "requestSha256=" + hash} {
 		if !strings.Contains(full.String(), want) {
 			t.Fatalf("full output missing %q: %q", want, full.String())
 		}

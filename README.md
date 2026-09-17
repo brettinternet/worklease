@@ -107,12 +107,13 @@ worklease release -s loop-a -m done
 ```
 
 Local claims use owner-private SQLite. Give each concurrent loop a unique `-s`;
-its authority-bound handle stays private.
+its authority-bound handle stays private. `-s` is the contextual handle
+selector, not a resource namespace.
 
 Worklease exposes non-secret claimant metadata:
 
 - `agentId` — the claimant identity
-- `sessionId` — the agent loop/session
+- `sessionId` — ownership-epoch metadata (generated when no selector is set)
 - `workKey` — what it says it’s working on
 - `claimId` and expiry
 
