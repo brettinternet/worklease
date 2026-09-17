@@ -407,7 +407,12 @@ func enrollAction(s *boundary) func(context.Context, *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return output.WriteSuccess(s.writer, "enroll", map[string]any{"profile": profile.Name, "installation": result})
 		}
-		_, err = fmt.Fprintf(s.writer, "enrolled profile %s (role: %s)\n", profile.Name, result.Role)
+		if _, err = fmt.Fprintf(s.writer, "enrolled profile %s (role: %s)\n", profile.Name, result.Role); err != nil {
+			return err
+		}
+		if strings.TrimSpace(cmd.String("invite-file")) != "" {
+			_, err = fmt.Fprintln(s.writer, "invite consumed; remove the local invite file when it is no longer needed")
+		}
 		return err
 	}
 }
