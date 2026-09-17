@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `worklease handle inspect` and `worklease handle archive` provide offline redacted inspection and durable owner-private recovery storage without mutating an authority.
+
 ### Fixed
 
 - Contextual handles are scoped by authority identity, so local and remote authorities can safely share a checkout and session while matching legacy handles migrate without overwriting recovery state.

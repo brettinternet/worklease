@@ -27,6 +27,8 @@ local default, or reports the missing required input without guessing.
 | `policy describe` | Report missing policy name | Read-only |
 | `op inspect` | Inspect contextual operation | Read-only; acquire first for private context |
 | `op reconcile` | Report missing reconciliation inputs | Requires explicit evidence and target |
+| `handle inspect` | Inspect the selected contextual handle offline | Read-only; does not contact an authority or create missing state |
+| `handle archive` | Archive the selected contextual handle offline | Pending/recovery state requires explicit acknowledgement; never mutates an authority |
 | `instructions loop` | Print lifecycle guidance | Read-only |
 | `instructions safety` | Print safety guidance | Read-only |
 | `setup mcp` | Preview integration changes | Writes only with `--apply` |

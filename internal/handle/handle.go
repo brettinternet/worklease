@@ -99,6 +99,17 @@ func ContextualPath(home, root, sessionSelector, authorityID string) string {
 	return filepath.Join(home, "handles", "ctx-"+hex.EncodeToString(sum[:])+".json")
 }
 
+// InContextualDirectory reports whether path is a direct child of the private
+// directory reserved for automatically selected contextual handles.
+func InContextualDirectory(home, path string) bool {
+	directory, err := canonicalPath(filepath.Join(home, "handles"))
+	if err != nil {
+		return false
+	}
+	candidate, err := canonicalPath(path)
+	return err == nil && filepath.Dir(candidate) == directory
+}
+
 // ResolveContextualPath returns the authority-scoped path and migrates a
 // matching legacy handle while holding both path locks. A legacy handle for a
 // different authority is left untouched. If both matching paths exist, neither
@@ -262,7 +273,7 @@ func validateHandle(h Handle) error {
 		}
 		seen[r] = true
 	}
-	if h.AgentID == "" || h.SessionID == "" || !validPublicText(h.AgentID) || !validPublicText(h.SessionID) {
+	if h.AgentID == "" || h.SessionID == "" || !validPublicText(h.AgentID) || !validPublicText(h.SessionID) || (h.AutoRenewOwner != "" && !validID(h.AutoRenewOwner)) {
 		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if h.State == "ready" && (h.Revision < 1 || h.ExpiresAt.IsZero() || h.PendingRequest != nil) {
@@ -285,7 +296,10 @@ func validateHandle(h Handle) error {
 		}
 	}
 	if r := h.RecoveryRequest; r != nil {
-		if !validID(r.OperationID) || (!validID(r.TargetClaimID) && !validID(r.TargetOperationID)) || r.RequestHash == "" || !validHash(r.RequestHash) || r.RequestNotAfter.IsZero() {
+		targetPresent := r.TargetClaimID != "" || r.TargetOperationID != ""
+		targetsValid := (r.TargetClaimID == "" || validID(r.TargetClaimID)) && (r.TargetOperationID == "" || validID(r.TargetOperationID))
+		outcomeValid := r.Outcome == "" || r.Outcome == "observed-success" || r.Outcome == "observed-failure"
+		if !validID(r.OperationID) || !targetPresent || !targetsValid || !outcomeValid || r.RequestHash == "" || !validHash(r.RequestHash) || r.RequestNotAfter.IsZero() {
 			return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 		}
 	}
@@ -476,6 +490,34 @@ func ValidateMetadata(path string) (present bool, err error) {
 	return true, nil
 }
 
+func decode(data []byte) (Handle, error) {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
+	}
+	var h Handle
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(&h); err != nil {
+		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
+	}
+	if err := validateHandle(h); err != nil {
+		return Handle{}, err
+	}
+	limit := MaxBytes
+	if h.SchemaVersion == RemoteSchemaVersion {
+		limit = RemoteMaxBytes
+	}
+	if len(data) > limit {
+		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
+	}
+	return h, nil
+}
+
 func readAt(parent *os.File, name string) (Handle, error) {
 	fd, openErr := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if openErr != nil {
@@ -497,29 +539,9 @@ func readAt(parent *os.File, name string) (Handle, error) {
 	if err != nil || len(b) > RemoteMaxBytes {
 		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
 	}
-	if err := rejectDuplicateJSONKeys(b); err != nil {
-		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
-	}
-	var h Handle
-	dec := json.NewDecoder(strings.NewReader(string(b)))
-	dec.DisallowUnknownFields()
-	dec.UseNumber()
-	if err := dec.Decode(&h); err != nil {
-		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); err != io.EOF {
-		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
-	}
-	if err := validateHandle(h); err != nil {
+	h, err := decode(b)
+	if err != nil {
 		return Handle{}, err
-	}
-	limit := MaxBytes
-	if h.SchemaVersion == RemoteSchemaVersion {
-		limit = RemoteMaxBytes
-	}
-	if len(b) > limit {
-		return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is oversized")
 	}
 	current, err := statAt(parent, name)
 	if err != nil || validateLeafStat(&current, true) != nil || !sameIdentity(identity(&st), identity(&current)) {
@@ -1040,6 +1062,49 @@ func MoveNoReplace(sourceLock *Lock, source string, destinationLock *Lock, desti
 		return newHandleError(reason.ReasonHandleWriteFailed, fmt.Sprintf("legacy handle copied but could not be removed; recover explicitly with --handle %s or --handle %s", source, destination))
 	}
 	return destinationLock.validateAfter(destination)
+}
+
+var afterArchiveCopyForTest = func() {}
+
+// ArchiveNoReplace durably copies one validated handle byte-for-byte to a new
+// owner-private path before removing the exact source contents. The caller must
+// hold sourceLock. Destination collisions and concurrent source replacement
+// fail closed; either the source or the durable archive (and sometimes both)
+// retains the complete recovery record.
+func ArchiveNoReplace(sourceLock *Lock, source, destination string, expected Handle) error {
+	sourcePath, err := canonicalPath(source)
+	if err != nil {
+		return err
+	}
+	destinationPath, err := canonicalPath(destination)
+	if err != nil {
+		return err
+	}
+	if sourcePath == destinationPath {
+		return newHandleError(reason.ReasonCredentialSourceConflict, "archive destination must differ from the handle")
+	}
+	if _, err = sourceLock.validateFor(sourcePath); err != nil {
+		return err
+	}
+	data, err := ReadOwnerPrivate(sourcePath, RemoteMaxBytes)
+	if err != nil {
+		return err
+	}
+	current, err := decode(data)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return newHandleError(reason.ReasonHandleInUse, "handle changed before archival")
+	}
+	if err = WriteOwnerPrivateNoReplace(destinationPath, data, RemoteMaxBytes); err != nil {
+		return err
+	}
+	afterArchiveCopyForTest()
+	if err = RemoveOwnerPrivateIfContent(sourcePath, data, RemoteMaxBytes); err != nil {
+		return reason.New(reason.ReasonHandleWriteFailed, "handle was archived but the source could not be removed safely").With("recoveryHint", fmt.Sprintf("recover with --handle %s; inspect the original path before changing either copy", destinationPath))
+	}
+	return sourceLock.validateAfter(sourcePath)
 }
 func (l *Lock) validateAfter(path string) error {
 	_, err := l.validateFor(path)

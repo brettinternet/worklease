@@ -74,7 +74,7 @@ func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 
 func TestCommandTreeRegistrationHelpAndShortOptions(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
-	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "server", "serve", "mcp", "help"}
+	want := []string{"version", "key", "policy", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file", "op", "handle", "history", "events", "watch", "gc", "doctor", "instructions", "setup", "server", "serve", "mcp", "help"}
 	future := []string{}
 	got := map[string]bool{}
 	for _, command := range root.Commands {
@@ -202,6 +202,8 @@ func TestCanonicalCommandHelpPathsFlagsAndExamples(t *testing.T) {
 		{path: "policy describe", example: "worklease policy describe path", flags: []string{"full"}},
 		{path: "op inspect", example: "worklease op inspect --operation-id ID", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "resource", "operation-id", "full"}},
 		{path: "op reconcile", example: "worklease op reconcile --target-operation-id ID --outcome observed-success --evidence '{\"outcome\":\"observed-success\",\"executorStopped\":true}'", flags: []string{"handle", "lease", "claim-id", "token-file", "token-fd", "revision", "session", "ttl", "operation-id", "request-not-after", "target-claim-id", "target-operation-id", "outcome", "evidence", "expected-request-sha256"}},
+		{path: "handle inspect", example: "worklease handle inspect", flags: []string{"handle", "session"}},
+		{path: "handle archive", example: "worklease handle archive", flags: []string{"handle", "session", "destination", "acknowledge-pending-recovery"}},
 		{path: "instructions loop", example: "worklease instructions loop", flags: []string{}},
 		{path: "instructions safety", example: "worklease instructions safety", flags: []string{}},
 		{path: "setup mcp", example: "worklease setup mcp --client claude-code --scope project", flags: []string{"client", "scope", "agent", "apply", "remove"}},
