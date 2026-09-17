@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.3 - 2026-09-17
+
 ### Added
 
 - `worklease handle inspect` and `worklease handle archive` provide offline redacted inspection and durable owner-private recovery storage without mutating an authority.
@@ -9,6 +11,10 @@
 ### Fixed
 
 - Contextual handles are scoped by authority identity, so local and remote authorities can safely share a checkout and session while matching legacy handles migrate without overwriting recovery state.
+- Session flags and environment values consistently select contextual handles without becoming resource namespaces or being confused with generated claim-session metadata.
+- Remote enrollment and authority requests classify DNS, connection, timeout, and TLS failures as bounded `remote-transport-failure` errors instead of exposing raw transport details.
+- Remote contention errors preserve the redacted current-holder projection while distinguishing the attempted request claim ID.
+- Successful file-based enrollment now reminds operators to remove consumed invite files without deleting artifacts needed for failed or uncertain replay.
 
 ## 1.6.2 - 2026-09-16
 
