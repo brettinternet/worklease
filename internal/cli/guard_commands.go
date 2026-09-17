@@ -271,10 +271,14 @@ func verifyCredsAt(ctx context.Context, cmd *urfave.Command, contextualCWD strin
 			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, rootErr
 		}
-		path = handle.ContextualPath(cfg.Home, root, cfg.SessionID)
+		path, err = contextualHandlePath(ctx, cfg, root, backend.AuthorityID(), false)
+		if err != nil {
+			backend.Close()
+			return lease.Credentials{}, nil, nil, nil, err
+		}
 	}
 	if path == "" {
-		path, err = acquireHandlePath(cmd, cfg)
+		path, err = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), false)
 		if err != nil {
 			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, err

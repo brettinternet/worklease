@@ -43,7 +43,7 @@ func TestReadCredentialFDOwnsDuplicateUntilClose(t *testing.T) {
 		t.Fatalf("credential descriptor finalizer closed a reused descriptor: %v", err)
 	}
 }
-func TestContextRootAndContextualPathAreStableAndSessionScoped(t *testing.T) {
+func TestContextRootAndContextualPathAreStableSessionAndAuthorityScoped(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(sub, 0o700); err != nil {
@@ -57,14 +57,201 @@ func TestContextRootAndContextualPathAreStableAndSessionScoped(t *testing.T) {
 	if got != resolved {
 		t.Fatalf("root=%q want=%q", got, resolved)
 	}
-	if ContextualPath("/state", root, "one") == ContextualPath("/state", root, "two") {
+	authorityA, authorityB := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	if ContextualPath("/state", root, "one", authorityA) == ContextualPath("/state", root, "two", authorityA) {
 		t.Fatal("sessions share contextual path")
 	}
-	first := ContextualPath("/state", root, "one")
-	if filepath.Base(first) == "" {
+	first := ContextualPath("/state", root, "one", authorityA)
+	if first == ContextualPath("/state", root, "one", authorityB) {
+		t.Fatal("authorities share contextual path")
+	}
+	if first != ContextualPath("/state", root, "one", authorityA) || filepath.Base(first) == "" {
 		t.Fatal("context path is unstable")
 	}
 }
+
+func TestResolveContextualPathMigratesMatchingLegacyHandleExactly(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandle()
+	h.PendingRequest = &PendingRequest{OperationID: h.ClaimID, Kind: "checkpoint", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: strings.Repeat("d", 64), RequestNotAfter: time.Now().Add(time.Hour), Inputs: map[string]any{"checkpoint": "exact"}}
+	h.RecoveryRequest = &RecoveryRequest{OperationID: strings.Repeat("e", 32), TargetClaimID: h.ClaimID, RequestHash: strings.Repeat("f", 64), RequestNotAfter: time.Now().Add(time.Hour), Outcome: "unknown"}
+	h.State = "pending"
+	legacy := LegacyContextualPath(home, root, "session")
+	if err := Write(legacy, h); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := ResolveContextualPath(context.Background(), home, root, "session", h.AuthorityID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("migration rewrote handle contents")
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy handle remains: %v", err)
+	}
+}
+
+func TestResolveContextualPathPreservesMismatchesAndConflicts(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	legacyHandle := testHandle()
+	legacy := LegacyContextualPath(home, root, "session")
+	if err := Write(legacy, legacyHandle); err != nil {
+		t.Fatal(err)
+	}
+	otherAuthority := strings.Repeat("d", 32)
+	otherPath, err := ResolveContextualPath(context.Background(), home, root, "session", otherAuthority, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherPath != ContextualPath(home, root, "session", otherAuthority) {
+		t.Fatal("wrong authority-scoped path")
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("mismatched legacy handle was changed: %v", err)
+	}
+	destination := ContextualPath(home, root, "session", legacyHandle.AuthorityID)
+	if err := Write(destination, legacyHandle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveContextualPath(context.Background(), home, root, "session", legacyHandle.AuthorityID, true); err == nil || !strings.Contains(err.Error(), "--handle") {
+		t.Fatalf("conflict error=%v", err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("legacy conflict was changed: %v", err)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("destination conflict was changed: %v", err)
+	}
+}
+func TestResolveContextualPathReadOnlySelectsLegacyWithoutWriting(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandle()
+	legacy := LegacyContextualPath(home, root, "session")
+	if err := Write(legacy, h); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := ResolveContextualPath(context.Background(), home, root, "session", h.AuthorityID, false)
+	if err != nil || selected != legacy {
+		t.Fatalf("read-only selection=%q err=%v", selected, err)
+	}
+	if _, err := os.Stat(ContextualPath(home, root, "session", h.AuthorityID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only selection created scoped handle: %v", err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(home, "handles", "*.lock")); err != nil || len(matches) != 0 {
+		t.Fatalf("read-only selection created locks: %v err=%v", matches, err)
+	}
+}
+
+func TestResolveContextualPathSerializesConcurrentMigration(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandle()
+	legacy := LegacyContextualPath(home, root, "session")
+	if err := Write(legacy, h); err != nil {
+		t.Fatal(err)
+	}
+	const workers = 8
+	errorsSeen := make(chan error, workers)
+	for range workers {
+		go func() {
+			_, err := ResolveContextualPath(context.Background(), home, root, "session", h.AuthorityID, true)
+			errorsSeen <- err
+		}()
+	}
+	var migrationErrors []error
+	for range workers {
+		if err := <-errorsSeen; err != nil {
+			migrationErrors = append(migrationErrors, err)
+		}
+	}
+	if len(migrationErrors) > 0 {
+		t.Fatalf("concurrent migration: %v", migrationErrors)
+	}
+	if _, err := Read(ContextualPath(home, root, "session", h.AuthorityID)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveContextualPathUsesCanonicalLockOrder(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandle()
+	legacy := LegacyContextualPath(home, root, "session")
+	destination := ContextualPath(home, root, "session", h.AuthorityID)
+	if err := Write(legacy, h); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	errorsSeen := make(chan error, 2)
+	go func() {
+		_, err := ResolveContextualPath(ctx, home, root, "session", h.AuthorityID, true)
+		errorsSeen <- err
+	}()
+	go func() {
+		locks, err := AcquireLocks(ctx, destination+".lock", legacy+".lock")
+		for _, lock := range locks {
+			_ = lock.Close()
+		}
+		errorsSeen <- err
+	}()
+	for range 2 {
+		if err := <-errorsSeen; err != nil {
+			t.Fatalf("canonical migration lock order: %v", err)
+		}
+	}
+}
+
+func TestResolveContextualPathConcurrentAuthoritiesDoNotLoseLegacyState(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	if err := EnsureOwnerPrivateDir(filepath.Join(home, "handles")); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandle()
+	if err := Write(LegacyContextualPath(home, root, "session"), h); err != nil {
+		t.Fatal(err)
+	}
+	authorities := []string{h.AuthorityID, strings.Repeat("d", 32)}
+	errorsSeen := make(chan error, len(authorities))
+	for _, authorityID := range authorities {
+		go func() {
+			_, err := ResolveContextualPath(context.Background(), home, root, "session", authorityID, true)
+			errorsSeen <- err
+		}()
+	}
+	for range authorities {
+		if err := <-errorsSeen; err != nil {
+			t.Fatalf("concurrent authority resolution: %v", err)
+		}
+	}
+	migrated, err := Read(ContextualPath(home, root, "session", h.AuthorityID))
+	if err != nil || migrated.AuthorityID != h.AuthorityID {
+		t.Fatalf("matching authority state lost: %#v err=%v", migrated, err)
+	}
+}
+
 func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {

@@ -31,12 +31,17 @@ credential from:
 1. an explicit private handle;
 2. configured handle selection;
 3. `--token-file` or `--token-fd` with claim/revision inputs; or
-4. an authority-bound contextual handle selected by root and stable session.
+4. an authority-bound contextual handle selected by root, stable session, and
+   authority ID.
 
 A handle includes authority ID, resources, claim ID, revision, credential, and
 pending exact request. It is written atomically with owner-only permissions and
 serialized across processes. It is convenience state, not ownership or a
 provider checkpoint. Two loops in one checkout must use distinct sessions.
+Profiles that name the same authority ID share one contextual slot regardless
+of profile name, endpoint, credential path, or restore ID. Switching authorities
+selects an independent slot, so a newly initialized authority cannot overwrite
+or retarget the previous authority's handle.
 
 A ready contextual handle may be replaced only after the selected authority
 confirms that its claim is inactive. The replacement is a new ownership epoch:
@@ -51,7 +56,11 @@ original bytes, identity, deadline, credential, and authority binding are
 replayed exactly. Selecting another `--session` chooses a different contextual
 handle; it is not recovery for an uncertain request. The generated claim
 `sessionId` is epoch metadata, while optional `--session` participates in
-contextual handle selection.
+contextual handle selection. A legacy root-and-session handle migrates only
+when its embedded authority ID matches the selected authority. Mismatched
+legacy state remains at its original path. If both legacy and scoped paths
+exist, Worklease changes neither and reports both paths for explicit `--handle`
+recovery.
 
 ## Revisions, replay, and unknown outcomes
 

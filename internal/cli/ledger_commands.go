@@ -123,7 +123,7 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 			if req.ClaimID == "" && req.Resource == "" {
 				path := selectedHandle
 				if path == "" {
-					path, err = acquireHandlePath(cmd, cfg)
+					path, err = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), false)
 					if err != nil {
 						return s.handle(cmd, err)
 					}
@@ -153,7 +153,7 @@ func inspectAction(s *boundary) func(context.Context, *urfave.Command) error {
 					if strings.TrimSpace(cmd.String("lease")) != "" {
 						return s.handle(cmd, reason.Invalid("private lease references are only available through MCP"))
 					}
-					path, err = acquireHandlePath(cmd, cfg)
+					path, err = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), false)
 					if err != nil {
 						return s.handle(cmd, err)
 					}

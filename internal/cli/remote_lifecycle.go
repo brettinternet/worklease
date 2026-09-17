@@ -19,7 +19,7 @@ func remoteTransfer(ctx context.Context, s *boundary, cmd *urfave.Command, backe
 	if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision") {
 		return s.handle(cmd, reason.Invalid("remote transfer requires a named predecessor handle"))
 	}
-	predecessorPath, err := acquireHandlePath(cmd, backend.Config)
+	predecessorPath, err := acquireHandlePath(ctx, cmd, backend.Config, backend.AuthorityID(), true)
 	if err != nil {
 		return s.handle(cmd, err)
 	}
@@ -156,7 +156,7 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 		if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "explicit credentials require --no-handle"))
 		}
-		path, err := acquireHandlePath(cmd, cfg)
+		path, err := acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), true)
 		if err != nil {
 			return s.handle(cmd, err)
 		}

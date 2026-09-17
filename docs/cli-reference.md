@@ -98,10 +98,15 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 
 Use `--session NAME` for each concurrent loop. Without an explicit handle,
 Worklease selects an authority-bound contextual handle by Git worktree root (or
-resolved current directory) and session. A handle is convenience state, not the
-claim or an authoritative provider checkpoint. The selector and claim metadata
-are distinct: `--session` chooses a contextual handle, while the claim's
-`sessionId` identifies that ownership epoch.
+resolved current directory), session, and authority ID. Profiles for the same
+authority share the slot even if their name, endpoint, credential path, or
+restore ID changes. Switching to another authority selects an independent slot;
+switching back resumes the matching handle. A handle is convenience state, not
+the claim or an authoritative provider checkpoint. The selector and claim
+metadata are distinct: `--session` chooses a contextual handle, while the
+claim's `sessionId` identifies that ownership epoch. Explicit `--handle`,
+`WORKLEASE_HANDLE`, stateless credentials, and MCP lease references keep their
+existing path selection and are not remapped.
 
 Re-running remote `acquire` on a ready contextual handle replaces it only after
 the authority confirms the old claim is inactive. Worklease stages a fresh
@@ -110,6 +115,10 @@ then publishes ready state only after validating the grant. Active claims,
 status failures, authority mismatches, and concurrent handle changes fail
 closed. An existing pending request is replayed exactly instead; changing
 `--session` selects another handle and does not recover an uncertain request.
+Legacy root-and-session handles migrate only when their embedded authority ID
+matches. Mismatches remain recoverable at the legacy path, and a legacy/scoped
+path conflict changes neither file and reports explicit `--handle` recovery
+choices.
 
 One claim covers all `--resource` values atomically. Resources contend by exact
 bytes and are never silently normalized.

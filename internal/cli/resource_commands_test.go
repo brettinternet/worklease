@@ -442,6 +442,18 @@ func TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs(t *
 	run("release", "--json", "--home", home, "--handle", successor)
 }
 
+func TestReadOnlyContextualSelectionDoesNotCreateMissingAuthority(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "missing-authority")
+	var out bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "status", "--local", "--home", home, "--json"}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("status unexpectedly opened a missing authority")
+	}
+	if _, statErr := os.Stat(home); !os.IsNotExist(statErr) {
+		t.Fatalf("read-only selection created authority home: %v", statErr)
+	}
+}
+
 func TestContextualDefaultRunsCompleteLifecycle(t *testing.T) {
 	home := t.TempDir()
 	run := func(args ...string) string {
