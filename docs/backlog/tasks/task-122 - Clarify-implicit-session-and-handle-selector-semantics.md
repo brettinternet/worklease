@@ -1,10 +1,11 @@
 ---
 id: TASK-122
 title: Clarify implicit session and handle-selector semantics
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-16 23:57'
-updated_date: '2026-09-17 00:11'
+updated_date: '2026-09-17 04:46'
 labels:
   - cli
   - docs
@@ -51,4 +52,6 @@ Omitting both --session and configured session selection uses an empty-selector 
 
 <!-- SECTION:NOTES:BEGIN -->
 Validation: internal/cli/lease_commands.go generates a random session only when cfg.SessionID is empty; acquireHandlePath passes the configured selector to ContextualPath. internal/config/config.go also resolves WORKLEASE_SESSION_ID and config-file session values, so an omitted flag is not necessarily unscoped. docs/claim-model.md already explains generated epoch metadata and uncertain-request recovery. TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles covers slot separation but not all terminology. TASK-119 profile-switch examples should land with the authority-scoping change; this terminology task need not wait for that implementation.
+
+Implemented selector/session terminology across help, lifecycle text, diagnostics, and docs. Added coverage proving the unscoped empty selector remains distinct from generated claim session metadata, explicit flags override WORKLEASE_SESSION_ID, and separate selectors still contend on one exact resource. Focused internal/cli and internal/doctor tests pass.
 <!-- SECTION:NOTES:END -->
