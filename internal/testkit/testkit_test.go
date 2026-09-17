@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,18 +63,60 @@ func TestHomeAndEnvironmentArePrivateAndProcessIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o700 || values["WORKLEASE_HOME"] != home {
+	if info.Mode().Perm() != 0o700 || values["WORKLEASE_HOME"] != home || values["HOME"] == "" || values["XDG_CONFIG_HOME"] == "" || values["XDG_STATE_HOME"] == "" {
 		t.Fatalf("home = %s mode=%o env=%v", home, info.Mode().Perm(), values)
 	}
-	child := Environment([]string{"PATH=/bin", "WORKLEASE_HOME=leak", "GIT_DIR=leak", "LANG=C"}, map[string]string{"WORKLEASE_HOME": home, "GIT_CONFIG_NOSYSTEM": "1"})
+	child := Environment([]string{"PATH=/bin", "HOME=leak", "XDG_CONFIG_HOME=leak", "WORKLEASE_HOME=leak", "WORKLEASE_PROFILE=leak", "GIT_DIR=leak", "LANG=C"}, values)
 	joined := strings.Join(child, "\n")
-	for _, want := range []string{"PATH=/bin", "LANG=C", "WORKLEASE_HOME=" + home, "GIT_CONFIG_NOSYSTEM=1"} {
+	for key, value := range values {
+		if !strings.Contains(joined, key+"="+value) {
+			t.Errorf("environment missing %s=%s: %v", key, value, child)
+		}
+	}
+	for _, want := range []string{"PATH=/bin", "LANG=C"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("environment missing %q: %v", want, child)
 		}
 	}
 	if strings.Contains(joined, "=leak") || os.Getenv("WORKLEASE_HOME") != before {
 		t.Fatalf("environment leaked or mutated process: %v", child)
+	}
+}
+
+func TestIsolateProcessEnvironmentRemovesHostileConfiguration(t *testing.T) {
+	root := t.TempDir()
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER"} {
+		t.Setenv(key, filepath.Join(root, key))
+	}
+	restore, err := IsolateProcessEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"} {
+		value := os.Getenv(key)
+		if value == "" || strings.HasPrefix(value, root) {
+			t.Fatalf("%s was not isolated: %q", key, value)
+		}
+		info, statErr := os.Stat(value)
+		if statErr != nil || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s=%q is not a private temporary directory: %v", key, value, statErr)
+		}
+	}
+	for _, key := range []string{"WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER"} {
+		if value, ok := os.LookupEnv(key); ok {
+			t.Fatalf("hostile %s survived isolation: %q", key, value)
+		}
+	}
+}
+
+func TestHelperEnvironmentIsPreservedOnlyForMatchingReexec(t *testing.T) {
+	environment := []string{"WORKLEASE_TEST_HELPER=echo", "WORKLEASE_DRIVER_HELPER=crash"}
+	if got := helperEnvironmentForInvocation(environment, []string{"test", "-test.run=^TestProcessHelper$"}); len(got) != 1 || got["WORKLEASE_TEST_HELPER"] != "echo" {
+		t.Fatalf("matching helper environment = %v", got)
+	}
+	if got := helperEnvironmentForInvocation(environment, []string{"test", "-test.run=TestOrdinaryTest"}); len(got) != 0 {
+		t.Fatalf("ordinary invocation preserved helper environment: %v", got)
 	}
 }
 
