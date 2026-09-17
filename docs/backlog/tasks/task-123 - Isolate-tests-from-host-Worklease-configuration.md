@@ -1,10 +1,11 @@
 ---
 id: TASK-123
 title: Isolate tests from host Worklease configuration
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-17 00:15'
-updated_date: '2026-09-17 00:18'
+updated_date: '2026-09-17 03:10'
 labels:
   - test
   - config
@@ -21,6 +22,33 @@ references:
   - internal/doctor/doctor_test.go
   - mise.toml
   - lefthook.yml
+  - 46d373f
+modified_files:
+  - cmd/worklease-release/isolation_test.go
+  - cmd/worklease-remote-smoke/isolation_test.go
+  - cmd/worklease/isolation_test.go
+  - internal/authority/isolation_test.go
+  - internal/cli/isolation_regression_test.go
+  - internal/cli/isolation_test.go
+  - internal/config/isolation_test.go
+  - internal/doctor/isolation_test.go
+  - internal/gc/isolation_test.go
+  - internal/guard/isolation_test.go
+  - internal/handle/isolation_test.go
+  - internal/lease/isolation_test.go
+  - internal/ledger/isolation_test.go
+  - internal/mcp/isolation_test.go
+  - internal/output/isolation_test.go
+  - internal/reason/isolation_test.go
+  - internal/release/isolation_test.go
+  - internal/resource/isolation_test.go
+  - internal/server/isolation_test.go
+  - internal/setup/isolation_test.go
+  - internal/store/isolation_test.go
+  - internal/testkit/environment.go
+  - internal/testkit/isolation_test.go
+  - internal/testkit/testkit_test.go
+  - internal/watch/isolation_test.go
 priority: high
 type: bug
 ordinal: 165000
@@ -38,11 +66,11 @@ Scope: shared test utilities, affected Go package tests, and existing mise/hook 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 All tests and spawned test subprocesses use temporary HOME, XDG_CONFIG_HOME, and XDG_STATE_HOME directories rather than host paths
-- [ ] #2 Test setup clears or overrides every Worklease configuration variable, including remote profile and server configuration selection
-- [ ] #3 A regression test seeds sentinel host configuration and verifies that tests neither read it nor attempt network access to its endpoint
-- [ ] #4 Test isolation applies consistently through mise run test and repository hooks without requiring callers to sanitize their shell
-- [ ] #5 Focused tests and the full test suite pass when the real user configuration contains a selected remote profile
+- [x] #1 All tests and spawned test subprocesses use temporary HOME, XDG_CONFIG_HOME, and XDG_STATE_HOME directories rather than host paths
+- [x] #2 Test setup clears or overrides every Worklease configuration variable, including remote profile and server configuration selection
+- [x] #3 A regression test seeds sentinel host configuration and verifies that tests neither read it nor attempt network access to its endpoint
+- [x] #4 Test isolation applies consistently through mise run test and repository hooks without requiring callers to sanitize their shell
+- [x] #5 Focused tests and the full test suite pass when the real user configuration contains a selected remote profile
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -61,4 +89,16 @@ Scope: shared test utilities, affected Go package tests, and existing mise/hook 
 
 <!-- SECTION:NOTES:BEGIN -->
 Refinement only: implementation has not started and all acceptance criteria remain unchecked. AC #1 refers to ambient Worklease configuration/state paths for the Go test suite and its child processes, not forbidding Go toolchain/cache access. AC #2 excludes intentional test-authored overrides after sanitization. AC #3 must prove configuration is not consumed as well as no requests/mutations. AC #5 must be verified with a synthetic equivalent of a selected user remote profile, never by accessing or editing real operator configuration. Existing remote fixtures remain authorized network traffic; only the hostile sentinel endpoint must see zero requests.
+
+Claimed for implementation under local Worklease claim b55e8ea1ff1…cf5c6237ef6e (session 01a0ad43-b587-708f-9f93-d92635e17f41). Provider writes are locally coordinated, not provider-fenced.
+
+Implemented shared process isolation with owner-private HOME/XDG roots and complete WORKLEASE_* sanitization across every Go package that has tests. Recognized re-exec helpers preserve only the variables for their explicitly selected helper test. Added a synthetic hostile selected-profile/config regression covering in-process and child CLI execution, poisoned config non-consumption, and zero endpoint requests.
+
+Verification passed: focused go tests for testkit/cli/config/mcp/doctor; mise run lint; mise run format-check; mise run test; mise run typecheck; hostile HOME/XDG/WORKLEASE_* full go test ./... -count=1; mise run hooks; commit hooks. go test -race ./... exposed the pre-existing timing-sensitive internal/mcp claim-expiry failure noted during implementation; the ordinary full suite and focused MCP suite passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Isolated every Go test package and its re-exec helpers from caller HOME, XDG, and Worklease configuration. Added hostile remote-profile regression coverage for in-process and child execution. Merged commit 46d373f; required checks, hooks, focused tests, and a full synthetic-hostile-environment suite passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
