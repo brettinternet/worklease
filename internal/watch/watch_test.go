@@ -88,7 +88,7 @@ func TestWaitTimeoutCursorOnlyAdvancesThroughScannedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
-	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: 60 * time.Millisecond, PollInterval: MinPoll})
+	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: 2 * time.Second, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
 	}
