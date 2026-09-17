@@ -1,20 +1,100 @@
 package authority
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/output"
+	"github.com/brettinternet/worklease/internal/reason"
 )
+
+type enrollmentTimeoutError struct{}
+
+func (enrollmentTimeoutError) Error() string {
+	return "timeout https://user:secret@example.invalid/?invite=redacted"
+}
+func (enrollmentTimeoutError) Timeout() bool   { return true }
+func (enrollmentTimeoutError) Temporary() bool { return true }
+
+func TestEnrollmentMetadataTransportFailuresAreStableAndRedacted(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		kind string
+	}{
+		{name: "dns", err: &url.Error{Op: "Get", URL: "https://user:secret@example.invalid/?invite=secret", Err: &net.DNSError{Err: "no such host", Name: "example.invalid"}}, kind: "dns"},
+		{name: "refused", err: &url.Error{Op: "Get", URL: "https://user:secret@example.invalid/?invite=secret", Err: syscall.ECONNREFUSED}, kind: "refused"},
+		{name: "timeout", err: &url.Error{Op: "Get", URL: "https://user:secret@example.invalid/?invite=secret", Err: enrollmentTimeoutError{}}, kind: "timeout"},
+		{name: "client-timeout", err: &url.Error{Op: "Get", URL: "https://user:secret@example.invalid/?invite=secret", Err: context.DeadlineExceeded}, kind: "timeout"},
+		{name: "tls-pin", err: &url.Error{Op: "Get", URL: "https://user:secret@example.invalid/?invite=secret", Err: reason.New(reason.ReasonAuthorityMismatch, "remote certificate does not match pinned certificate")}, kind: "tls"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			profile := config.Profile{Name: "new", Endpoint: "https://authority.example", AuthorityID: strings.Repeat("a", 32), Credential: config.CredentialDescriptor{Path: filepath.Join(root, "credential")}}
+			pending := NewFilePendingStore(filepath.Join(root, "pending"))
+			client, err := NewHTTPClient(profile, pending, roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, test.err }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			profilesPath := config.ProfilePaths{Profiles: filepath.Join(root, "profiles.yaml")}
+			_, _, err = client.Enroll(context.Background(), strings.Repeat("b", 64), "agent", profilesPath)
+			classified := reason.As(err)
+			if classified == nil || classified.Reason != reason.ReasonRemoteTransportFailure || classified.Details["transport"] != test.kind {
+				t.Fatalf("metadata transport classification=%#v", err)
+			}
+			for _, secret := range []string{"user:secret", "invite=secret", "example.invalid"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("raw transport data leaked: %q in %q", secret, err.Error())
+				}
+			}
+			if _, statErr := os.Stat(profile.Credential.Path); !os.IsNotExist(statErr) {
+				t.Fatalf("failed enrollment created credential: %v", statErr)
+			}
+			if _, statErr := os.Stat(profilesPath.Profiles); !os.IsNotExist(statErr) {
+				t.Fatalf("failed enrollment created profile: %v", statErr)
+			}
+			records, listErr := pending.List()
+			if listErr != nil || len(records) != 0 {
+				t.Fatalf("failed metadata enrollment retained pending request: %d %v", len(records), listErr)
+			}
+
+			var text bytes.Buffer
+			if writeErr := output.WriteTextError(&text, err); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if strings.Contains(text.String(), "https://") || strings.Contains(text.String(), "example.invalid") || strings.Contains(text.String(), "secret") || !strings.Contains(text.String(), "run worklease doctor") {
+				t.Fatalf("unsafe or non-actionable text envelope: %s", text.String())
+			}
+			var jsonOut bytes.Buffer
+			if writeErr := output.WriteError(&jsonOut, "enroll", err); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			var envelope struct {
+				Error *output.Failure `json:"error"`
+			}
+			if decodeErr := json.Unmarshal(jsonOut.Bytes(), &envelope); decodeErr != nil || envelope.Error == nil || envelope.Error.Reason != reason.ReasonRemoteTransportFailure || envelope.Error.ExitCode != reason.ExitAuthority || envelope.Error.Details["commitState"] != "not-committed" || envelope.Error.Details["transport"] != test.kind {
+				t.Fatalf("JSON envelope=%s decode=%v", jsonOut.String(), decodeErr)
+			}
+		})
+	}
+}
 
 func TestClientAllowsExplicitInsecureLANEndpoint(t *testing.T) {
 	dir := t.TempDir()

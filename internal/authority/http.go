@@ -7,16 +7,19 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -581,6 +584,50 @@ func (c *HTTPClient) ReplayEnrollment(ctx context.Context, id, invite string, pr
 	}
 	return c.activateEnrollment(id, response, profilePath)
 }
+
+// classifyRemoteTransportError converts only failures from the HTTP exchange
+// into stable public errors. It deliberately drops the wrapped url/net error:
+// those strings can contain endpoints, credentials, or implementation detail.
+// Context cancellation remains distinct so callers retain interrupted semantics.
+func classifyRemoteTransportError(ctx context.Context, err error) error {
+	if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+		return err
+	}
+	kind := "connect"
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	var hostnameErr x509.HostnameError
+	var authorityErr x509.UnknownAuthorityError
+	var certificateErr x509.CertificateInvalidError
+	var recordErr tls.RecordHeaderError
+	classified := reason.As(err)
+	certificateReason := classified != nil && classified.Reason == reason.ReasonAuthorityMismatch && strings.Contains(strings.ToLower(classified.Message), "certificate")
+	switch {
+	case errors.As(err, &dnsErr):
+		kind = "dns"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		kind = "refused"
+	case errors.As(err, &hostnameErr), errors.As(err, &authorityErr), errors.As(err, &certificateErr), errors.As(err, &recordErr):
+		kind = "tls"
+	case errors.As(err, &netErr) && netErr.Timeout():
+		kind = "timeout"
+	case certificateReason:
+		kind = "tls"
+	}
+	message := "the remote endpoint could not be reached; run worklease doctor"
+	switch kind {
+	case "dns":
+		message = "DNS lookup for the remote endpoint failed; run worklease doctor"
+	case "refused":
+		message = "the remote endpoint refused the connection; run worklease doctor"
+	case "timeout":
+		message = "the remote endpoint timed out; run worklease doctor"
+	case "tls":
+		message = "remote TLS or certificate pin verification failed; run worklease doctor"
+	}
+	return reason.New(reason.ReasonRemoteTransportFailure, message).With("transport", kind)
+}
+
 func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s RequestSpec) (Response, error) {
 	base, err := url.Parse(c.profile.Endpoint)
 	if err != nil {
@@ -657,7 +704,7 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 	sent := time.Now()
 	res, err := c.http.Do(req)
 	if err != nil {
-		return Response{}, err
+		return Response{}, classifyRemoteTransportError(ctx, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 && res.StatusCode < 400 {

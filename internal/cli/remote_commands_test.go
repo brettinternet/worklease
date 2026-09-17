@@ -805,6 +805,11 @@ func TestRemoteDoctorProbeErrorClassification(t *testing.T) {
 	if got := classifyRemoteProbeError(reason.New(reason.ReasonAuthorityMismatch, "remote certificate does not match pinned certificate")); got != "tls" {
 		t.Fatalf("TLS classification = %q", got)
 	}
+	for _, kind := range []string{"dns", "refused", "timeout", "tls"} {
+		if got := classifyRemoteProbeError(reason.New(reason.ReasonRemoteTransportFailure, "sanitized").With("transport", kind)); got != kind {
+			t.Fatalf("typed %s classification = %q", kind, got)
+		}
+	}
 	if got := classifyRemoteProbeError(reason.New(reason.ReasonProtocolVersionUnsupported, "unsupported")); got != "protocol" {
 		t.Fatalf("protocol classification = %q", got)
 	}

@@ -246,17 +246,21 @@ Remote reasons are stable values, not prose to parse:
 
 ```text
 authentication-required  installation-revoked  authorization-denied
-authority-mismatch       authority-restored     resource-not-enrolled
-recovery-required        recovery-closed        already-claimed
+authority-mismatch       authority-restored     remote-transport-failure
+resource-not-enrolled     recovery-required     recovery-closed
+already-claimed
 stale-claim              stale-revision         operation-request-mismatch
 unknown-outcome          operation-ambiguous    replay-expired
 operation-kind-unsupported  invite-invalid      invite-expired  invite-used
 ```
 
-Common validation, rate-limit, storage, and clock reasons also apply. Exit
-families remain `2` ownership/contention, `3` ledger/replay/ambiguity, `64`
-invalid input/configuration, and `75` authority/storage. Details are bounded and
-redacted.
+Common validation, rate-limit, storage, and clock reasons also apply. A
+`remote-transport-failure` during metadata discovery is safe to retry and includes
+only a bounded transport class (`dns`, `refused`, `timeout`, `tls`, or `connect`);
+run `worklease doctor` for the corresponding reachability check. Exit families
+remain `2` ownership/contention, `3` ledger/replay/ambiguity, `64` invalid
+input/configuration, and `75` authority/storage/remote transport. Details are
+bounded and redacted.
 
 ## Remote CLI surface
 
