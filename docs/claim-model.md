@@ -31,13 +31,16 @@ credential from:
 1. an explicit private handle;
 2. configured handle selection;
 3. `--token-file` or `--token-fd` with claim/revision inputs; or
-4. an authority-bound contextual handle selected by root, stable session, and
-   authority ID.
+4. an authority-bound contextual handle selected by root, stable contextual
+   handle selector, and authority ID.
 
 A handle includes authority ID, resources, claim ID, revision, credential, and
 pending exact request. It is written atomically with owner-only permissions and
 serialized across processes. It is convenience state, not ownership or a
-provider checkpoint. Two loops in one checkout must use distinct sessions.
+provider checkpoint. Two loops in one checkout must use distinct contextual
+handle selectors. The selector resolves from `--session`, then
+`WORKLEASE_SESSION_ID`, then the empty value; human output renders the empty
+value as `"" (unscoped)`, but `unscoped` is not stored as the selector.
 Profiles that name the same authority ID share one contextual slot regardless
 of profile name, endpoint, credential path, or restore ID. Switching authorities
 selects an independent slot, so a newly initialized authority cannot overwrite
@@ -56,7 +59,12 @@ original bytes, identity, deadline, credential, and authority binding are
 replayed exactly. Selecting another `--session` chooses a different contextual
 handle; it is not recovery for an uncertain request. The generated claim
 `sessionId` is epoch metadata, while optional `--session` participates in
-contextual handle selection. A legacy root-and-session handle migrates only
+contextual handle selection. With an explicit selector the values may coincide,
+but they retain those separate roles. When the resolved selector is empty,
+acquire still generates a non-empty claim `sessionId`; using that generated value as a later
+selector chooses another slot rather than rediscovering the unscoped handle.
+Selectors never enter resource keys, so different selectors still contend on
+the same exact resource. A legacy root-and-session handle migrates only
 when its embedded authority ID matches the selected authority. Mismatched
 legacy state remains at its original path. If both legacy and scoped paths
 exist, Worklease changes neither and reports both paths for explicit `--handle`
@@ -64,9 +72,12 @@ recovery.
 
 `worklease handle inspect` reads the selected contextual handle, or an explicit
 `--handle`, entirely offline. It reports only redacted authority, claim,
-selector, locally recorded lifecycle, resource, and recovery metadata. It does
-not create a missing handle or authority store, and a recorded expiry is never
-proof that authority-side ownership or external work has ended. An explicitly
+selector, locally recorded lifecycle, resource, and recovery metadata. Text
+renders an empty resolved selector as `"" (unscoped)` and quotes nonempty
+selectors; JSON keeps `selectorSession` as the exact string and reports claim
+metadata separately as `claimSessionId`. It does not create a missing handle or
+authority store, and a recorded expiry is never proof that authority-side
+ownership or external work has ended. An explicitly
 named handle cannot reveal how it was originally selected, so its selector
 provenance is reported as unknown.
 

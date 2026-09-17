@@ -27,8 +27,11 @@ worklease [--json] [--home PATH] [--config PATH] COMMAND
 
 Configuration precedence is flags, environment, YAML, then defaults. Important
 environment variables are `WORKLEASE_HOME`, `WORKLEASE_CONFIG`,
-`WORKLEASE_AGENT_ID`, and `WORKLEASE_SESSION_ID`. Text output is for humans;
-`--json` emits one schema-version 2 envelope.
+`WORKLEASE_AGENT_ID`, and `WORKLEASE_SESSION_ID`. For contextual handles,
+an explicit `--session` overrides `WORKLEASE_SESSION_ID`; when neither resolves
+to a value, the selector is empty and human output renders it as `"" (unscoped)`.
+`unscoped` is a display label, not a literal selector. Text output is for
+humans; `--json` emits one schema-version 2 envelope.
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
@@ -98,13 +101,18 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 
 Use `--session NAME` for each concurrent loop. Without an explicit handle,
 Worklease selects an authority-bound contextual handle by Git worktree root (or
-resolved current directory), session, and authority ID. Profiles for the same
-authority share the slot even if their name, endpoint, credential path, or
-restore ID changes. Switching to another authority selects an independent slot;
-switching back resumes the matching handle. A handle is convenience state, not
-the claim or an authoritative provider checkpoint. The selector and claim
-metadata are distinct: `--session` chooses a contextual handle, while the
-claim's `sessionId` identifies that ownership epoch. Explicit `--handle`,
+resolved current directory), contextual handle selector, and authority ID. The
+selector resolves from `--session`, then `WORKLEASE_SESSION_ID`, then the empty
+unscoped value. Profiles for the same authority share the slot even if their
+name, endpoint, credential path, or restore ID changes. Switching to another
+authority selects an independent slot; switching back resumes the matching
+handle. A handle is convenience state, not the claim or an authoritative
+provider checkpoint. The selector and claim metadata are distinct:
+`--session` chooses a contextual handle, while the claim's `sessionId`
+identifies that ownership epoch. With an explicit selector the two values may
+coincide, but they retain those separate roles. When acquire uses the unscoped
+slot it still generates a non-empty claim `sessionId`; that generated value
+cannot select or recover the unscoped handle. Explicit `--handle`,
 `WORKLEASE_HANDLE`, stateless credentials, and MCP lease references keep their
 existing path selection and are not remapped.
 
@@ -121,7 +129,9 @@ path conflict changes neither file and reports explicit `--handle` recovery
 choices.
 
 One claim covers all `--resource` values atomically. Resources contend by exact
-bytes and are never silently normalized.
+bytes and are never silently normalized. Contextual handle selectors only
+separate private handles: another selector cannot bypass contention on the same
+resource.
 
 ## Output conventions
 
@@ -144,9 +154,11 @@ Common inspection forms:
 | `history --resource KEY` | Agent, status, acquire/end times, end reason, and operation kinds. |
 
 `status` uses relative expiry; `status --full` adds complete non-secret metadata.
-Lifecycle results show only fields relevant to the operation. Checkpoint reports
-persisted bytes, transfer shows the successor handle and resources, and verify
-keeps full unresolved operation IDs.
+Human lifecycle output labels claim metadata as `claimSessionId`; JSON retains
+the stable `sessionId` field. Neither is presented as a contextual handle
+selector. Lifecycle results show only fields relevant to the operation.
+Checkpoint reports persisted bytes, transfer shows the successor handle and
+resources, and verify keeps full unresolved operation IDs.
 
 `history` without a resource aliases `events`. Text views omit cursors; page with
 `--json` and `--cursor`. `watch` prints a cursor only as a runnable
@@ -241,7 +253,45 @@ authority.
 A claim contains one immutable claim ID, one credential, one revision stream,
 and one to 32 resources. All lifecycle mutations apply to the whole claim.
 MCP leases have an absolute `maxHold` deadline; ordinary CLI claims do not.
-Concurrent sessions need distinct selectors even in one checkout.
+Concurrent loops need distinct contextual handle selectors even in one checkout.
+The selector is not part of a resource key and does not create an independent
+resource-lock namespace.
+
+Stable explicit-selector lifecycle:
+
+```sh
+worklease acquire --session loop-a --resource coordination:demo
+worklease heartbeat --session loop-a
+worklease status --session loop-a
+worklease release --session loop-a --reason done
+```
+
+`WORKLEASE_SESSION_ID` supplies the selector when the flag is absent, and an
+explicit flag wins:
+
+```sh
+export WORKLEASE_SESSION_ID=loop-a
+worklease status                       # selects loop-a
+worklease status --session loop-b      # selects loop-b instead
+worklease doctor --session loop-b      # diagnoses the explicit override
+```
+
+Two selectors still contend on one exact resource:
+
+```sh
+worklease acquire --session loop-a --resource coordination:shared
+worklease acquire --session loop-b --resource coordination:shared # already claimed
+```
+
+Authority selection is another independent part of the contextual slot. A
+profile switch selects the slot for that authority, and switching back resumes
+the original authority's slot:
+
+```sh
+worklease --profile team acquire --session loop-a --resource coordination:team
+worklease --local acquire --session loop-a --resource coordination:local
+worklease --profile team status --session loop-a # resumes the team-authority slot
+```
 
 ## Experimental remote authority
 

@@ -25,7 +25,7 @@ const (
 
 // selectionHelp explains the shared claim-selection options that every
 // contextual command accepts; usage lines refer to it as [selection].
-const selectionHelp = "Selection: with no selection option the command uses the private contextual handle for the current Git worktree and --session. If no claim is selected, acquire one first. Pass --handle PATH for an explicit handle, or --claim-id ID --revision N with --token-file FILE or --token-fd N for explicit credentials."
+const selectionHelp = "Selection: with no selection option the command uses the private contextual handle for the current Git worktree and resolved --session selector. An empty resolved selector uses the unscoped slot. A claim sessionId is ownership-epoch metadata, not a resource namespace; an explicit selector may give it the same value, but a generated unscoped claim sessionId cannot select that handle. If no claim is selected, acquire one first. Pass --handle PATH for an explicit handle, or --claim-id ID --revision N with --token-file FILE or --token-fd N for explicit credentials."
 
 // flagUsage is the single source of option help for flags whose meaning is
 // the same everywhere. A backquoted word becomes the value placeholder.
@@ -34,7 +34,7 @@ var flagUsage = map[string]string{
 	"lease":                   "private lease `REF` issued by the MCP server",
 	"claim-id":                "claim `ID` for explicit credentials; pair with --revision and one token source",
 	"token-file":              "`FILE` holding the claim credential for explicit credentials",
-	"session":                 "session `NAME` that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]",
+	"session":                 "contextual handle selector `NAME` that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]",
 	"agent":                   "agent identity `NAME` [$WORKLEASE_AGENT_ID]",
 	"provider":                "built-in policy `NAME` for a provider key; pair with --source and --item (see policy list)",
 	"source":                  "provider `SOURCE` such as a repository path, backlog directory, or project",
@@ -137,7 +137,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		)...)
 	acquireCommand.Action = acquireActionReal(s)
 	usageText(acquireCommand, "worklease acquire "+resourceInputUsage+" [options]", "worklease acquire "+resourceInputUsage+" --no-handle --claim-id ID --session NAME (--token-file FILE | --token-fd N)")
-	detail(acquireCommand, "Atomically claim one to 32 ordered resources and write a private contextual handle for later commands. A second form acquires statelessly with explicit credentials and never writes a handle.")
+	detail(acquireCommand, "Atomically claim one to 32 ordered resources and write a private contextual handle for later commands. --session selects that handle; when the resolved selector is empty, Worklease uses the unscoped slot and generates a separate claim sessionId as ownership-epoch metadata. A second form acquires statelessly with explicit credentials and never writes a handle.")
 
 	statusCommand := jsonless("status", "show claim status", "worklease status\n  worklease status --resource KEY --full", append(selection(), resourceFlag("public status for exact resource `KEY`; repeatable"), full("show complete identifiers, metadata, and absolute timestamps"))...)
 	statusCommand.Action = statusActionReal(s)
@@ -210,7 +210,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	detail(watchCommand, "Block until the watched resources reach --until, or until any lifecycle event lands after --cursor. A timeout is a normal outcome, not an error.")
 	textOutput(watchCommand, "The text view starts with the observed outcome, omits routine false booleans, shows relative expiry and actionable gap guidance, and includes the next cursor only in a copyable resume command.")
 
-	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor\n  worklease doctor --profile NAME --resource KEY\n  worklease doctor --json", resourceFlag("optional remote resource `KEY` to evaluate against advertised prefixes"))
+	doctorCommand := jsonless("doctor", "run read-only diagnostics", "worklease doctor\n  worklease doctor --session NAME\n  worklease doctor --profile NAME --resource KEY\n  worklease doctor --json", resourceFlag("optional remote resource `KEY` to evaluate against advertised prefixes"), flag("session", "s"))
 	doctorCommand.Action = doctorAction(s)
 	detail(doctorCommand, "Check configuration, authority home safety, database schema, handles, clocks, Git, and MCP availability without writing anything. Exit status is non-zero when a check fails.")
 

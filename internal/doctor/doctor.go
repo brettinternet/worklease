@@ -110,11 +110,11 @@ func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
 	if contextErr != nil {
 		add("context.root", "fail", "repository context cannot be resolved", "run from an accessible directory")
 	} else {
-		session := cfg.SessionID
-		if session == "" {
-			session = "<unscoped>"
+		selector := fmt.Sprintf("%q", cfg.SessionID)
+		if cfg.SessionID == "" {
+			selector += " (unscoped)"
 		}
-		add("context.root", "ok", "context root: "+root+"; session selector: "+session, "")
+		add("context.root", "ok", "context root: "+root+"; contextual handle selector: "+selector, "")
 	}
 
 	handlePath := os.Getenv("WORKLEASE_HANDLE")

@@ -63,7 +63,7 @@ func doctorAction(s *boundary) func(context.Context, *urfave.Command) error {
 			return remoteDoctorAction(s, ctx, cmd)
 		}
 		cfg, err := config.Load(config.Input{Flags: map[string]string{
-			"home": cmd.String("home"), "config": cmd.String("config"),
+			"home": cmd.String("home"), "config": cmd.String("config"), "session": cmd.String("session"),
 		}})
 		if err != nil {
 			return s.handle(cmd, err)

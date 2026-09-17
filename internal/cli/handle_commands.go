@@ -157,7 +157,21 @@ func writeOfflineHandleResult(s *boundary, cmd *urfave.Command, operation string
 	if s.jsonRequested(cmd) {
 		return output.WritePublicSuccess(s.writer, operation, fields)
 	}
-	return output.WritePublicText(s.writer, operation, fields)
+	textFields := fields
+	if fields["selectorType"] == "contextual" {
+		textFields = make(map[string]any, len(fields))
+		for key, value := range fields {
+			textFields[key] = value
+		}
+		selector, _ := textFields["selectorSession"].(string)
+		delete(textFields, "selectorSession")
+		display := fmt.Sprintf("%q", selector)
+		if selector == "" {
+			display += " (unscoped)"
+		}
+		textFields["contextualHandleSelector"] = display
+	}
+	return output.WritePublicText(s.writer, operation, textFields)
 }
 
 func handleInspectAction(s *boundary) func(context.Context, *urfave.Command) error {

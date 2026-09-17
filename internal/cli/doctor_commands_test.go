@@ -134,6 +134,114 @@ func TestContextualLoopsUseSessionEnvironmentOnly(t *testing.T) {
 	}
 }
 
+func TestUnscopedContextualSelectorIsDistinctFromClaimSessionMetadata(t *testing.T) {
+	clearWorkleaseEnvironment(t)
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		var out bytes.Buffer
+		base := []string{"worklease", "--local", "--home", home}
+		err := Run(context.Background(), append(base, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+		return out.String(), err
+	}
+
+	acquired, err := run("--json", "acquire", "--resource", "coordination:shared")
+	if err != nil {
+		t.Fatalf("unscoped acquire: %v output=%s", err, acquired)
+	}
+	var acquireEnvelope map[string]any
+	if err := json.Unmarshal([]byte(acquired), &acquireEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	claimSession, _ := acquireEnvelope["sessionId"].(string)
+	if claimSession == "" || acquireEnvelope["claimSessionId"] != nil {
+		t.Fatalf("acquire JSON changed stable sessionId fields: %s", acquired)
+	}
+
+	inspected, err := run("--json", "handle", "inspect")
+	if err != nil {
+		t.Fatalf("inspect unscoped handle: %v output=%s", err, inspected)
+	}
+	var inspectEnvelope map[string]any
+	if err := json.Unmarshal([]byte(inspected), &inspectEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if inspectEnvelope["selectorSession"] != "" || inspectEnvelope["claimSessionId"] != claimSession {
+		t.Fatalf("selector and claim metadata were conflated: %s", inspected)
+	}
+	inspectText, err := run("handle", "inspect")
+	if err != nil || !strings.Contains(inspectText, `contextualHandleSelector: "" (unscoped)`) || strings.Contains(inspectText, "selectorSession:") {
+		t.Fatalf("unscoped inspection text err=%v output=%s", err, inspectText)
+	}
+
+	if selected, selectErr := run("--json", "status", "--session", claimSession); selectErr == nil || strings.Contains(selected, `"sessionId"`) {
+		t.Fatalf("generated claim session selected the unscoped handle: err=%v output=%s", selectErr, selected)
+	}
+	contended, contentionErr := run("--json", "acquire", "--session", "other", "--resource", "coordination:shared")
+	if contentionErr == nil || !strings.Contains(contended, `"reason":"already-claimed"`) || strings.Contains(contended, `"sessionId"`) {
+		t.Fatalf("same resource did not contend independently of selector: err=%v output=%s", contentionErr, contended)
+	}
+
+	diagnosed, err := run("--json", "doctor")
+	if err != nil || !strings.Contains(diagnosed, `contextual handle selector: \"\" (unscoped)`) {
+		t.Fatalf("unscoped doctor err=%v output=%s", err, diagnosed)
+	}
+	t.Setenv("WORKLEASE_SESSION_ID", "environment-loop")
+	diagnosed, err = run("--json", "doctor")
+	if err != nil || !strings.Contains(diagnosed, `contextual handle selector: \"environment-loop\"`) || !strings.Contains(diagnosed, "session=env") {
+		t.Fatalf("environment doctor selector err=%v output=%s", err, diagnosed)
+	}
+	diagnosed, err = run("--json", "doctor", "--session", "flag-loop")
+	if err != nil || !strings.Contains(diagnosed, `contextual handle selector: \"flag-loop\"`) || !strings.Contains(diagnosed, "session=flag") {
+		t.Fatalf("doctor selector precedence err=%v output=%s", err, diagnosed)
+	}
+	t.Setenv("WORKLEASE_SESSION_ID", "")
+
+	if released, releaseErr := run("release"); releaseErr != nil {
+		t.Fatalf("release unscoped handle: %v output=%s", releaseErr, released)
+	}
+	textAcquire, err := run("acquire", "--resource", "coordination:next")
+	if err != nil || !strings.Contains(textAcquire, "claimSessionId:") || strings.Contains(textAcquire, "\nsessionId:") {
+		t.Fatalf("acquire text did not distinguish claim metadata: err=%v output=%s", err, textAcquire)
+	}
+	status, err := run("status", "--full")
+	if err != nil || !strings.Contains(status, "claimSessionId:") || strings.Contains(status, "\nsessionId:") {
+		t.Fatalf("status text did not distinguish claim metadata: err=%v output=%s", err, status)
+	}
+	if released, releaseErr := run("release"); releaseErr != nil {
+		t.Fatalf("release second unscoped claim: %v output=%s", releaseErr, released)
+	}
+
+	for _, command := range [][]string{
+		{"acquire", "--session", "loop-a", "--resource", "coordination:explicit"},
+		{"heartbeat", "--session", "loop-a"},
+		{"status", "--session", "loop-a", "--full"},
+		{"release", "--session", "loop-a"},
+	} {
+		output, commandErr := run(command...)
+		if commandErr != nil {
+			t.Fatalf("explicit selector lifecycle %v: %v output=%s", command, commandErr, output)
+		}
+		if command[0] == "acquire" && !strings.Contains(output, "claimSessionId: loop-a") {
+			t.Fatalf("explicit selector acquire metadata=%s", output)
+		}
+	}
+
+	literal := "unscoped (empty resolved selector)"
+	if output, acquireErr := run("acquire", "--session", literal, "--resource", "coordination:literal"); acquireErr != nil {
+		t.Fatalf("literal selector acquire: %v output=%s", acquireErr, output)
+	}
+	literalInspect, err := run("handle", "inspect", "--session", literal)
+	if err != nil || !strings.Contains(literalInspect, `contextualHandleSelector: "unscoped (empty resolved selector)"`) || strings.Contains(literalInspect, `contextualHandleSelector: "" (unscoped)`) {
+		t.Fatalf("literal selector inspection err=%v output=%s", err, literalInspect)
+	}
+	literalDoctor, err := run("--json", "doctor", "--session", literal)
+	if err != nil || !strings.Contains(literalDoctor, `contextual handle selector: \"unscoped (empty resolved selector)\"`) || strings.Contains(literalDoctor, `contextual handle selector: \"\" (unscoped)`) {
+		t.Fatalf("literal selector doctor err=%v output=%s", err, literalDoctor)
+	}
+}
+
 func TestInstructionsAndDoctorAreReadOnly(t *testing.T) {
 	clearWorkleaseEnvironment(t)
 	t.Setenv("HOME", t.TempDir())

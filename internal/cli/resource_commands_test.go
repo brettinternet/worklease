@@ -464,7 +464,7 @@ func TestContextualTransferPersistsSuccessorAndSupportsGeneratedOperationIDs(t *
 	if strings.Contains(transferred, "token") {
 		t.Fatal("transfer exposed a bearer token")
 	}
-	for _, want := range []string{"transferred ownership", "successorHandle: " + successor, "resources: transfer-resource", "agentId: next", "sessionId: next-session"} {
+	for _, want := range []string{"transferred ownership", "successorHandle: " + successor, "resources: transfer-resource", "agentId: next", "claimSessionId: next-session"} {
 		if !strings.Contains(transferred, want) {
 			t.Fatalf("transfer output missing %q: %q", want, transferred)
 		}
