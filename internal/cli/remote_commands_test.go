@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -824,25 +825,32 @@ func TestRemoteReplaceRejectsBeforeReadingFiles(t *testing.T) {
 	}
 }
 
-func TestArtifactEnrollmentFromFileAndFDActivatesDefaultProfile(t *testing.T) {
+func TestArtifactEnrollmentCleanupGuidanceAndInputPreservation(t *testing.T) {
 	adminProfile, adminHome, _ := remoteCLIFixture(t)
 	secretRoot := filepath.Join(t.TempDir(), "secrets")
 	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {
 		t.Fatal(err)
 	}
-	fileArtifact := filepath.Join(secretRoot, "file.invite")
-	fdArtifact := filepath.Join(secretRoot, "fd.invite")
-	if out, err := runRemoteCLI(t, "invite", "issue", "--profile", adminProfile, "--home", adminHome, "--invite-file", fileArtifact, "--label", "file-team", "--json"); err != nil {
-		t.Fatalf("file invite issue: %v output=%s", err, out)
-	}
-	if out, err := runRemoteCLI(t, "invite", "issue", "--profile", adminProfile, "--home", adminHome, "--invite-file", fdArtifact, "--label", "fd-team", "--json"); err != nil {
-		t.Fatalf("fd invite issue: %v output=%s", err, out)
+	artifacts := map[string]string{}
+	for _, label := range []string{"file-team", "fd-team", "prompt-team", "json-team"} {
+		path := filepath.Join(secretRoot, label+".invite")
+		if out, err := runRemoteCLI(t, "invite", "issue", "--profile", adminProfile, "--home", adminHome, "--invite-file", path, "--label", label, "--json"); err != nil {
+			t.Fatalf("%s invite issue: %v output=%s", label, err, out)
+		}
+		artifacts[label] = path
 	}
 
-	fileConfig := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", fileConfig)
-	if out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", fileArtifact, "--allow-insecure-http", "--json"); err != nil {
-		t.Fatalf("artifact file enrollment: %v output=%s", err, out)
+	fileBytes, err := os.ReadFile(artifacts["file-team"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", artifacts["file-team"], "--allow-insecure-http")
+	if err != nil || !strings.Contains(out, "invite consumed") || !strings.Contains(out, "remove the local invite file") || strings.Contains(out, strings.TrimSpace(string(fileBytes))) {
+		t.Fatalf("file enrollment guidance: err=%v output=%s", err, out)
+	}
+	if after, readErr := os.ReadFile(artifacts["file-team"]); readErr != nil || !bytes.Equal(after, fileBytes) {
+		t.Fatalf("successful enrollment changed invite file: err=%v", readErr)
 	}
 	profiles, defaultName, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
 	if err != nil || defaultName != "file-team" || profiles[defaultName].AuthorityID == "" {
@@ -852,19 +860,91 @@ func TestArtifactEnrollmentFromFileAndFDActivatesDefaultProfile(t *testing.T) {
 		t.Fatalf("default profile later request: %v output=%s", err, out)
 	}
 
-	fdConfig := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", fdConfig)
-	input, err := os.Open(fdArtifact)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err = runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", artifacts["file-team"], "--allow-insecure-http")
+	if err == nil || strings.Contains(out, "invite consumed") || strings.Contains(out, "remove the local invite file") {
+		t.Fatalf("definitive failure reported consumption: err=%v output=%s", err, out)
+	}
+	if after, readErr := os.ReadFile(artifacts["file-team"]); readErr != nil || !bytes.Equal(after, fileBytes) {
+		t.Fatalf("definitive failure changed invite file: err=%v", readErr)
+	}
+
+	fdBytes, err := os.ReadFile(artifacts["fd-team"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.Open(artifacts["fd-team"])
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer input.Close()
-	if out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-fd", strconv.Itoa(int(input.Fd())), "--allow-insecure-http", "--json"); err != nil {
-		t.Fatalf("artifact fd enrollment: %v output=%s", err, out)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err = runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-fd", strconv.Itoa(int(input.Fd())), "--allow-insecure-http")
+	if err != nil || strings.Contains(out, "invite consumed") || strings.Contains(out, "local invite file") {
+		t.Fatalf("fd enrollment mentioned a local file: err=%v output=%s", err, out)
 	}
-	profiles, defaultName, err = config.LoadProfiles(config.UserProfilePaths(os.Getenv))
-	if err != nil || defaultName != "fd-team" || profiles[defaultName].AuthorityID == "" {
-		t.Fatalf("fd enrollment profiles=%+v default=%q err=%v", profiles, defaultName, err)
+	if after, readErr := os.ReadFile(artifacts["fd-team"]); readErr != nil || !bytes.Equal(after, fdBytes) {
+		t.Fatalf("fd enrollment changed invite file: err=%v", readErr)
+	}
+
+	promptBytes, err := os.ReadFile(artifacts["prompt-team"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPrompt := readHiddenInvite
+	readHiddenInvite = func() (string, error) { return strings.TrimSpace(string(promptBytes)), nil }
+	t.Cleanup(func() { readHiddenInvite = originalPrompt })
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err = runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--allow-insecure-http")
+	if err != nil || strings.Contains(out, "invite consumed") || strings.Contains(out, "local invite file") {
+		t.Fatalf("prompt enrollment mentioned a local file: err=%v output=%s", err, out)
+	}
+	if after, readErr := os.ReadFile(artifacts["prompt-team"]); readErr != nil || !bytes.Equal(after, promptBytes) {
+		t.Fatalf("prompt enrollment changed invite file: err=%v", readErr)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err = runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", artifacts["json-team"], "--allow-insecure-http", "--json")
+	var envelope map[string]any
+	if err != nil || json.Unmarshal([]byte(out), &envelope) != nil || envelope["operation"] != "enroll" || strings.Contains(out, "invite consumed") || strings.Contains(out, "local invite file") {
+		t.Fatalf("JSON enrollment output changed: err=%v output=%s", err, out)
+	}
+}
+
+func TestUncertainEnrollmentPreservesInviteWithoutConsumptionGuidance(t *testing.T) {
+	artifact, err := authority.EncodeInviteArtifact(authority.InviteArtifact{Endpoint: "http://authority.example", AuthorityID: strings.Repeat("a", 32), ProfileHint: "team", Invite: strings.Repeat("c", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretRoot := filepath.Join(t.TempDir(), "secrets")
+	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(secretRoot, "uncertain.invite")
+	artifactBytes := []byte(artifact + "\n")
+	if err := handle.WriteOwnerPrivateNoReplace(artifactPath, artifactBytes, authority.MaxInviteArtifactBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/.well-known/worklease" {
+			body := `{"ok":true,"protocolVersion":"worklease-http/1","authorityId":"` + strings.Repeat("a", 32) + `","restoreId":"` + strings.Repeat("b", 32) + `","authorityTime":"2026-01-01T00:00:00Z","result":{"supportedProtocolVersions":["worklease-http/1"]}}`
+			header := make(http.Header)
+			header.Set("Content-Type", "application/json")
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		}
+		return nil, io.ErrUnexpectedEOF
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	out, err := runRemoteCLI(t, "enroll", "--home", t.TempDir(), "--invite-file", artifactPath, "--allow-insecure-http")
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonUnknownOutcome || strings.Contains(out, "invite consumed") || strings.Contains(out, "remove the local invite file") {
+		t.Fatalf("uncertain enrollment output: err=%v output=%s", err, out)
+	}
+	if after, readErr := os.ReadFile(artifactPath); readErr != nil || !bytes.Equal(after, artifactBytes) {
+		t.Fatalf("uncertain enrollment changed invite file: err=%v", readErr)
 	}
 }
 

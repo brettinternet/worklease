@@ -54,8 +54,11 @@ worklease release
 ```
 
 Artifacts are bearer secrets. Keep them and generated server files out of
-repositories and logs, and remove one-time artifacts under your secret-retention
-policy.
+repositories and logs. After successful enrollment from `--invite-file`, the
+text output confirms that the invite was consumed and reminds you to remove the
+local file when it is no longer needed. Worklease never deletes the file; retain
+it when enrollment fails or reports an uncertain outcome so exact replay remains
+possible.
 
 ### LAN
 
