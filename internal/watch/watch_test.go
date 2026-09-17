@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,12 +213,22 @@ func TestWaitUntilChangeReturnsActiveReacquireEvent(t *testing.T) {
 	clock := testkit.NewClock(base.Add(500 * time.Millisecond))
 	resultCh := make(chan Result, 1)
 	errCh := make(chan error, 1)
+	initialSnapshot := make(chan struct{})
+	var initialSnapshotOnce sync.Once
+	check := func(checkCtx context.Context, tx *store.Tx) error {
+		var watermark string
+		if err := tx.QueryRowContext(checkCtx, `SELECT value FROM meta WHERE key='last_event_seq'`).Scan(&watermark); err != nil {
+			return err
+		}
+		initialSnapshotOnce.Do(func() { close(initialSnapshot) })
+		return nil
+	}
 	go func() {
-		result, waitErr := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: time.Second, PollInterval: MinPoll, Clock: clock})
+		result, waitErr := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: time.Second, PollInterval: MinPoll, Clock: clock, Check: check})
 		resultCh <- result
 		errCh <- waitErr
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-initialSnapshot
 	if err := st.Write(ctx, func(tx *store.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO claims(claim_id,token_hash,revision,agent_id,session_id,work_key,guarantee,local_replace_allowed,acquired_at,ttl_us,heartbeat_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, newClaim, "hash", 1, "new", "s", "w", "local-coordination", 1, baseMicros, 1_000_000, baseMicros, baseMicros+3_000_000); err != nil {
 			return err

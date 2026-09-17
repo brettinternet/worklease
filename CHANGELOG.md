@@ -7,6 +7,7 @@
 ### Fixed
 
 - Cross-interface MCP recovery coverage builds its CLI helper before starting a short-lived claim, preventing cold module downloads from expiring the claim in CI.
+- Active-to-active watch coverage synchronizes on its initial snapshot instead of relying on scheduler timing under the race detector.
 
 ## 1.6.3 - 2026-09-17
 
