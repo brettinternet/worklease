@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/brettinternet/worklease/internal/instructions"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -483,15 +482,20 @@ func instructionsResult(version string) (Result, error) {
 	if strings.TrimSpace(version) == "" {
 		version = "dev"
 	}
-	loop, _ := instructions.For("loop")
-	safety, _ := instructions.For("safety")
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- worklease:begin v%s -->\n", version)
-	b.WriteString("# Worklease coordination\n\n")
-	for _, line := range append(loop, safety...) {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
+	b.WriteString(`# Worklease coordination
+
+Authority selection: <verified local state home or remote profile selection>
+Work source: <authoritative source for eligibility and progress>
+Resource convention: <exact shared canonical keys; include admitted prefixes for remote>
+
+Fill these non-secret settings before using this block; do not guess missing values.
+Read worklease instructions loop and worklease instructions safety before work.
+Use the recorded authority and exact resources across all contenders, with distinct sessions.
+Claim before work, heartbeat before half the TTL, stop on ownership loss, and release after verified progress.
+Keep credentials, invitations, and private handles out of project instructions and logs.
+`)
 	b.WriteString("<!-- worklease:end -->\n")
 	return Result{Preview: b.String()}, nil
 }

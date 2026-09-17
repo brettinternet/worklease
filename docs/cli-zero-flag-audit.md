@@ -29,6 +29,9 @@ local default, or reports the missing required input without guessing.
 | `op reconcile` | Report missing reconciliation inputs | Requires explicit evidence and target |
 | `handle inspect` | Inspect the selected contextual handle offline | Read-only; does not contact an authority or create missing state |
 | `handle archive` | Archive the selected contextual handle offline | Pending/recovery state requires explicit acknowledgement; never mutates an authority |
+| `instructions setup` | Print setup and verification guidance | Read-only |
+| `instructions remote` | Print guidance for joining an existing authority | Read-only |
+| `instructions server` | Print claim-authority hosting guidance (not MCP) | Read-only |
 | `instructions loop` | Print lifecycle guidance | Read-only |
 | `instructions safety` | Print safety guidance | Read-only |
 | `setup mcp` | Preview integration changes | Writes only with `--apply` |

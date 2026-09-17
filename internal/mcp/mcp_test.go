@@ -92,6 +92,13 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 	acquireDescription := ""
 	var acquireSchema map[string]any
 	for _, tool := range s.tools() {
+		if tool["name"] == "instructions" {
+			input := tool["inputSchema"].(map[string]any)
+			topic := input["properties"].(map[string]any)["topic"].(map[string]any)
+			if fmt.Sprint(topic["enum"]) != fmt.Sprint(instructions.Topics()) {
+				t.Fatalf("instruction schema drift: %v", topic)
+			}
+		}
 		if tool["name"] == "acquire" {
 			acquireDescription, _ = tool["description"].(string)
 			acquireSchema, _ = tool["inputSchema"].(map[string]any)

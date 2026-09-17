@@ -27,6 +27,10 @@ Legacy clients send `initialize` with protocol version `2025-11-25`, then
 The eleven tools are `key`, `acquire`, `status`, `list`, `heartbeat`,
 `checkpoint`, `release`, `verify`, `watch`, `events`, and `instructions`.
 Schemas reject unknown inputs and return schema-version 2 domain envelopes.
+The `instructions` tool accepts `topic: setup|remote|server|loop|safety` and
+returns the same guidance as the CLI. These are read-only instructions, not
+MCP tools for enrollment or server administration; `server` describes the remote
+claim authority, not this stdio server.
 
 MCP intentionally is not CLI parity. `exec`, `replace-file`, transfer, operation
 inspection/reconciliation, history, garbage collection, doctor, setup, and

@@ -570,7 +570,7 @@ func (s *Server) instructions(a map[string]any) (any, error) {
 	}
 	lines, e := instructions.For(topic)
 	if e != nil {
-		return nil, reason.Invalid("topic must be loop or safety")
+		return nil, reason.Invalid(e.Error())
 	}
 	return map[string]any{"lines": lines}, nil
 }

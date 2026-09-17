@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Agent setup guide and `instructions setup`, `instructions remote`, and `instructions server` topics distinguish local coordination, joining an authority, and hosting one, with verification steps available through CLI and MCP.
+
+### Changed
+
+- `setup instructions` now prints a concise project template for verified authority, source, and resource choices, with pointers to lifecycle and safety guidance instead of embedding both guides.
+
 ## 1.6.4 - 2026-09-17
 
 ### Fixed

@@ -1,7 +1,9 @@
 # Optional agent setup
 
-A fresh Worklease install needs no client configuration. Use `worklease acquire`,
-`status`, and `release` directly. MCP and native edit guards are separate,
+A fresh local Worklease install needs no client configuration. Use `worklease acquire`,
+`status`, and `release` directly. For agent-led installation, local/remote selection,
+and verification, start with the [agent setup guide](agent-setup.md) or
+`worklease instructions setup`. MCP and native edit guards are separate,
 optional integrations.
 
 ## MCP
@@ -75,6 +77,10 @@ guard.
 
 ## Agent instructions
 
-`worklease setup instructions` prints the canonical loop and safety text inside
-versioned `<!-- worklease:begin ... -->` / `<!-- worklease:end -->` markers for
-an `AGENTS.md` integration.
+`worklease setup instructions` prints a short project template inside versioned
+`<!-- worklease:begin ... -->` / `<!-- worklease:end -->` markers. It does not
+edit files. Fill in the verified non-secret authority selection, work source,
+and exact resource convention, then merge it into `AGENTS.md` without replacing
+unrelated instructions or duplicating an existing block. The template points
+agents to `worklease instructions loop` and `worklease instructions safety`
+instead of embedding the full guides. Never put credentials or invitations in it.

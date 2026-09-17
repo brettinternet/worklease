@@ -214,7 +214,12 @@ func TestGenericAndInstructionsOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(instructionsResult.Preview, "<!-- worklease:begin v1.2.3 -->") || !strings.Contains(instructionsResult.Preview, "worklease:end") {
-		t.Fatal(instructionsResult.Preview)
+	for _, want := range []string{"<!-- worklease:begin v1.2.3 -->", "<!-- worklease:end -->", "Authority selection: <", "Work source: <", "Resource convention: <", "worklease instructions loop", "worklease instructions safety", "stop on ownership loss"} {
+		if !strings.Contains(instructionsResult.Preview, want) {
+			t.Fatalf("missing %q in template: %s", want, instructionsResult.Preview)
+		}
+	}
+	if instructionsResult.Applied || strings.Count(instructionsResult.Preview, "\n") > 16 {
+		t.Fatalf("expected concise print-only template: %+v", instructionsResult)
 	}
 }

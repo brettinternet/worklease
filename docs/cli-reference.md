@@ -208,7 +208,7 @@ Guarded-operation guarantees:
 | --- | --- |
 | `policy list` / `policy describe` | Inspect static built-in policies. |
 | `doctor` | Run read-only local diagnostics, or verify a selected remote profile's transport, identity, credential, role, recovery state, and advertised prefixes. Use `--resource KEY` to check remote admission for one key. |
-| `instructions loop|safety` | Print canonical agent instructions. |
+| `instructions [setup|remote|server|loop|safety]` | List topics, or print version-matched agent guidance: setup and verification, joining a remote authority, hosting an authority (not MCP), lifecycle, or safety. Instruction topics support `--json`; the bare topic directory is text help. |
 | `setup mcp` | Preview/apply/remove Claude Code, Cursor, or generic MCP setup. |
 | `setup guard` | Preview/apply/remove optional native edit-hook setup. |
 | `setup instructions` | Generate the managed AGENTS.md block. |

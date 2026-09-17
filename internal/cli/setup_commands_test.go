@@ -86,7 +86,7 @@ func TestSetupGuardAndInstructionsJSON(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "setup", "instructions"}, "1.2.3", "unknown", "unknown", &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "worklease:begin v1.2.3") || !strings.Contains(out.String(), "provider remains authoritative") {
+	if !strings.Contains(out.String(), "worklease:begin v1.2.3") || !strings.Contains(out.String(), "Work source: <authoritative source for eligibility and progress>") {
 		t.Fatal(out.String())
 	}
 }

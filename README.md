@@ -61,6 +61,18 @@ and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
 `checksums.txt`. Linux amd64 and arm64 server images are published to
 `ghcr.io/brettinternet/worklease:vVERSION`; see [container deployment](docs/container.md).
 
+### Set up with your agent
+
+Point your agent to the [agent setup guide](docs/agent-setup.md) and tell it the
+intended topology: coordinate locally, join an existing remote authority, or host
+a new one. The guide covers installation, scope, verification, and the small
+project instruction block to leave behind. Share remote invites privately, not
+in the prompt or repository.
+
+Once Worklease is installed, start with `worklease instructions setup`.
+`worklease instructions remote` covers joining an authority;
+`worklease instructions server` covers hosting one, not the optional MCP server.
+
 ### Shell completion
 
 Add the matching line to your shell configuration:

@@ -15,6 +15,7 @@ import (
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/instructions"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -219,7 +220,7 @@ func (s *Server) tools() []map[string]any {
 		"watch":        schema(nil, map[string]any{"cursor": str(), "resources": resources, "until": str(), "timeout": map[string]any{"type": "number", "minimum": 0, "maximum": 60}}),
 		"events":       schema(nil, map[string]any{"cursor": str(), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}),
 		"release":      schema([]string{"lease"}, map[string]any{"lease": str(), "reason": str()}),
-		"instructions": schema([]string{"topic"}, map[string]any{"topic": map[string]any{"type": "string", "enum": []string{"loop", "safety"}}}),
+		"instructions": schema([]string{"topic"}, map[string]any{"topic": map[string]any{"type": "string", "enum": instructions.Topics()}}),
 	}
 	defs["key"]["oneOf"] = []any{map[string]any{"required": []string{"path"}}, map[string]any{"required": []string{"provider", "source", "item"}}}
 	defs["acquire"]["oneOf"] = []any{map[string]any{"required": []string{"lease"}, "maxProperties": 1}, map[string]any{"required": []string{"resources"}}, map[string]any{"required": []string{"provider", "source", "item"}}, map[string]any{"required": []string{"path"}}}
@@ -422,8 +423,8 @@ func validateArgs(name string, a map[string]any) error {
 	}
 	if name == "instructions" {
 		topic, _ := a["topic"].(string)
-		if topic != "loop" && topic != "safety" {
-			return reason.Invalid("topic must be loop or safety")
+		if _, err := instructions.For(topic); err != nil {
+			return reason.Invalid(err.Error())
 		}
 	}
 	if name == "status" {

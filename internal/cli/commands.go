@@ -281,13 +281,19 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	detail(handleArchiveCommand, "Durably preserve the exact selected handle in owner-private no-overwrite storage before removing the source. This command never contacts, releases, or mutates an authority; the claim may remain active. Pending or recovery state requires --acknowledge-pending-recovery.")
 	handleCommand := group("handle", "inspect or archive private handles offline", "worklease handle inspect", handleInspectCommand, handleArchiveCommand)
 
+	setupGuide := jsonless("setup", "set up and verify agent coordination", "worklease instructions setup")
+	setupGuide.Action = instructionsAction(s, "setup")
+	remoteGuide := jsonless("remote", "join an existing remote claim authority", "worklease instructions remote")
+	remoteGuide.Action = instructionsAction(s, "remote")
+	serverGuide := jsonless("server", "host a remote claim authority (not MCP)", "worklease instructions server")
+	serverGuide.Action = instructionsAction(s, "server")
 	loopCommand := jsonless("loop", "print loop instructions", "worklease instructions loop")
 	loopCommand.Action = instructionsAction(s, "loop")
 	detail(loopCommand, "Print the canonical acquire, verify, checkpoint, release loop that agents should follow.")
 	safetyCommand := jsonless("safety", "print safety instructions", "worklease instructions safety")
 	safetyCommand.Action = instructionsAction(s, "safety")
 	detail(safetyCommand, "Print the canonical safety rules for credentials, guarded mutation, and recovery.")
-	instructions := group("instructions", "print canonical instructions", "worklease instructions loop", loopCommand, safetyCommand)
+	instructions := group("instructions", "print canonical instructions", "worklease instructions setup", setupGuide, remoteGuide, serverGuide, loopCommand, safetyCommand)
 
 	setupMCP := jsonless("mcp", "preview optional MCP client configuration; write only with --apply or --remove", "worklease setup mcp --client claude-code --scope project\n  worklease setup mcp --client cursor --apply",
 		&urfavecli.StringFlag{Name: "client", Usage: "MCP `CLIENT`: claude-code, cursor, or generic (print only)", DefaultText: "claude-code"},
