@@ -118,8 +118,8 @@ func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
 	}
 
 	handlePath := os.Getenv("WORKLEASE_HANDLE")
-	if handlePath == "" && contextErr == nil {
-		handlePath = handle.ContextualPath(cfg.Home, root, cfg.SessionID)
+	if handlePath == "" && contextErr == nil && st != nil && !st.Empty() {
+		handlePath = handle.ContextualPath(cfg.Home, root, cfg.SessionID, st.AuthorityID())
 	}
 	if handlePath == "" {
 		add("handle.present", "unknown", "contextual handle path cannot be resolved", "")

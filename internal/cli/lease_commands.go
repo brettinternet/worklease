@@ -159,7 +159,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			resources = append(resources, key.Resource)
 		}
 		if backend.Remote && explicitHandle {
-			path, pathErr := acquireHandlePath(cmd, cfg)
+			path, pathErr := acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), true)
 			if pathErr != nil {
 				return s.handle(cmd, pathErr)
 			}
@@ -198,7 +198,7 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "explicit credentials require --no-handle"))
 		}
-		path, e := acquireHandlePath(cmd, cfg)
+		path, e := acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), true)
 		if e != nil {
 			return s.handle(cmd, e)
 		}
@@ -339,18 +339,22 @@ func randomHex(n int) string {
 	}
 	return hex.EncodeToString(b)
 }
-func acquireHandlePath(cmd *urfave.Command, cfg config.Config) (string, error) {
+func acquireHandlePath(ctx context.Context, cmd *urfave.Command, cfg config.Config, authorityID string, migrate bool) (string, error) {
 	if p := strings.TrimSpace(cmd.String("handle")); p != "" {
 		return filepath.Clean(p), nil
 	}
 	if p := strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")); p != "" {
 		return filepath.Clean(p), nil
 	}
-	root, e := handle.ContextRoot(mustGetwd(), nil)
-	if e != nil {
-		return "", e
+	root, err := handle.ContextRoot(mustGetwd(), nil)
+	if err != nil {
+		return "", err
 	}
-	return handle.ContextualPath(cfg.Home, root, cfg.SessionID), nil
+	return contextualHandlePath(ctx, cfg, root, authorityID, migrate)
+}
+
+func contextualHandlePath(ctx context.Context, cfg config.Config, root, authorityID string, migrate bool) (string, error) {
+	return handle.ResolveContextualPath(ctx, cfg.Home, root, cfg.SessionID, authorityID, migrate)
 }
 func mustGetwd() string {
 	v, e := os.Getwd()
@@ -384,7 +388,7 @@ func statusActionReal(s *boundary) func(context.Context, *urfave.Command) error 
 		if selectedHandle != "" || (claimID == "" && len(resources) == 0) {
 			path := selectedHandle
 			if path == "" {
-				path, err = acquireHandlePath(cmd, cfg)
+				path, err = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), false)
 				if err != nil {
 					return s.handle(cmd, err)
 				}
@@ -467,7 +471,7 @@ func credsCLI(ctx context.Context, cmd *urfave.Command) (lease.Credentials, comm
 	path := strings.TrimSpace(cmd.String("handle"))
 	var e error
 	if path == "" {
-		path, e = acquireHandlePath(cmd, cfg)
+		path, e = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), true)
 		if e != nil {
 			backend.Close()
 			return lease.Credentials{}, nil, nil, nil, nil, "", e
@@ -1071,7 +1075,7 @@ func transferActionReal(s *boundary) func(context.Context, *urfave.Command) erro
 		explicit := strings.TrimSpace(cmd.String("claim-id")) != "" || strings.TrimSpace(cmd.String("token-file")) != "" || cmd.IsSet("token-fd") || cmd.IsSet("revision")
 		predecessorPath := ""
 		if !explicit {
-			predecessorPath, err = acquireHandlePath(cmd, cfg)
+			predecessorPath, err = acquireHandlePath(ctx, cmd, cfg, backend.AuthorityID(), true)
 			if err != nil {
 				return s.handle(cmd, err)
 			}

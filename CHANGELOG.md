@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Contextual handles are scoped by authority identity, so local and remote authorities can safely share a checkout and session while matching legacy handles migrate without overwriting recovery state.
+
 ## 1.6.2 - 2026-09-16
 
 ### Fixed

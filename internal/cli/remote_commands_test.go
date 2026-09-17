@@ -450,6 +450,64 @@ func TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles(t *testing.
 	}
 }
 
+func TestContextualHandlesSwitchByAuthorityAndProfileAliasesShareSlot(t *testing.T) {
+	profile, clientHome, _ := remoteCLIFixture(t)
+	remoteOut, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--resource", "coordination:remote", "--ttl", "30s", "--json")
+	if err != nil {
+		t.Fatalf("remote acquire: %v output=%s", err, remoteOut)
+	}
+	localOut, err := runRemoteCLI(t, "acquire", "--local", "--home", clientHome, "--resource", "local", "--json")
+	if err != nil {
+		t.Fatalf("local acquire: %v output=%s", err, localOut)
+	}
+	var localEnvelope struct {
+		Result struct {
+			ClaimID string `json:"claimId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(localOut), &localEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := filepath.Glob(filepath.Join(clientHome, "handles", "*.json"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("authority-scoped handles=%v err=%v", paths, err)
+	}
+	localStatus, err := runRemoteCLI(t, "status", "--local", "--home", clientHome, "--json")
+	if err != nil || !strings.Contains(localStatus, localEnvelope.Result.ClaimID) {
+		t.Fatalf("switching back did not resume local handle: %v output=%s", err, localStatus)
+	}
+
+	profilePaths := config.UserProfilePaths(os.Getenv)
+	profiles, defaultName, err := config.LoadProfiles(profilePaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := profiles[profile]
+	alias.Name = "alias"
+	if err := config.SaveProfiles(profilePaths, []config.Profile{profiles[profile], alias}, defaultName); err != nil {
+		t.Fatal(err)
+	}
+	aliasStatus, err := runRemoteCLI(t, "status", "--profile", alias.Name, "--home", clientHome, "--json")
+	if err != nil {
+		t.Fatalf("alias status: %v output=%s", err, aliasStatus)
+	}
+	var remoteEnvelope struct {
+		Result struct {
+			ClaimID string `json:"claimId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(remoteOut), &remoteEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(aliasStatus, remoteEnvelope.Result.ClaimID) {
+		t.Fatalf("profile alias selected another handle: %s", aliasStatus)
+	}
+	paths, err = filepath.Glob(filepath.Join(clientHome, "handles", "*.json"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("profile alias created a slot: %v err=%v", paths, err)
+	}
+}
+
 func TestRemoteCLIRefusesLocallyExpiredButRemotelyActiveClaim(t *testing.T) {
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:active", "--ttl", "30s", "--json")

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -84,10 +85,100 @@ func defaultGitRunner(cwd string, args ...string) (string, error) {
 // execCommand is variable for tests and keeps ContextRoot easy to exercise.
 var execCommand = func(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
 
-func ContextualPath(home, root, sessionSelector string) string {
+// LegacyContextualPath returns the pre-authority-scoped contextual handle path.
+func LegacyContextualPath(home, root, sessionSelector string) string {
 	encoded, _ := json.Marshal([]string{root, sessionSelector})
 	sum := sha256.Sum256(encoded)
 	return filepath.Join(home, "handles", "ctx-"+hex.EncodeToString(sum[:])+".json")
+}
+
+// ContextualPath scopes a checkout and session selector to one authority.
+func ContextualPath(home, root, sessionSelector, authorityID string) string {
+	encoded, _ := json.Marshal([]string{root, sessionSelector, authorityID})
+	sum := sha256.Sum256(encoded)
+	return filepath.Join(home, "handles", "ctx-"+hex.EncodeToString(sum[:])+".json")
+}
+
+// ResolveContextualPath returns the authority-scoped path and migrates a
+// matching legacy handle while holding both path locks. A legacy handle for a
+// different authority is left untouched. If both matching paths exist, neither
+// is changed and the caller receives explicit recovery paths.
+func ResolveContextualPath(ctx context.Context, home, root, sessionSelector, authorityID string, migrate bool) (string, error) {
+	destination := ContextualPath(home, root, sessionSelector, authorityID)
+	legacy := LegacyContextualPath(home, root, sessionSelector)
+	present, err := ValidateMetadata(legacy)
+	if errors.Is(err, os.ErrNotExist) || err == nil && !present {
+		return destination, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !migrate {
+		legacyHandle, readErr := Read(legacy)
+		if readErr != nil {
+			if legacyPresent, metadataErr := ValidateMetadata(legacy); (metadataErr == nil && !legacyPresent) || errors.Is(metadataErr, os.ErrNotExist) {
+				return destination, nil
+			}
+			return "", readErr
+		}
+		if legacyHandle.AuthorityID != authorityID {
+			return destination, nil
+		}
+		if destinationPresent, metadataErr := ValidateMetadata(destination); metadataErr != nil && !errors.Is(metadataErr, os.ErrNotExist) {
+			return "", metadataErr
+		} else if destinationPresent {
+			return "", contextualConflict(legacy, destination)
+		}
+		return legacy, nil
+	}
+	locks, err := AcquireLocks(ctx, legacy+".lock", destination+".lock")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		for _, lock := range locks {
+			_ = lock.Close()
+		}
+	}()
+	legacyLock, destinationLock := lockForHandlePath(locks, legacy), lockForHandlePath(locks, destination)
+	legacyPresent, legacyMetadataErr := ValidateMetadata(legacy)
+	if legacyMetadataErr != nil && !errors.Is(legacyMetadataErr, os.ErrNotExist) {
+		return "", legacyMetadataErr
+	}
+	destinationPresent, destinationMetadataErr := ValidateMetadata(destination)
+	if destinationMetadataErr != nil && !errors.Is(destinationMetadataErr, os.ErrNotExist) {
+		return "", destinationMetadataErr
+	}
+	if !legacyPresent {
+		return destination, nil
+	}
+	legacyHandle, err := legacyLock.Read(legacy)
+	if err != nil {
+		return "", err
+	}
+	if legacyHandle.AuthorityID != authorityID {
+		return destination, nil
+	}
+	if destinationPresent {
+		return "", contextualConflict(legacy, destination)
+	}
+	if err := MoveNoReplace(legacyLock, legacy, destinationLock, destination); err != nil {
+		return "", err
+	}
+	return destination, nil
+}
+
+func contextualConflict(legacy, destination string) error {
+	return newHandleError(reason.ReasonHandleInUse, fmt.Sprintf("legacy and authority-scoped handles both exist; recover explicitly with --handle %s or --handle %s", legacy, destination))
+}
+
+func lockForHandlePath(locks []*Lock, path string) *Lock {
+	for _, lock := range locks {
+		if lock.Matches(path) {
+			return lock
+		}
+	}
+	return nil
 }
 
 type PendingRequest struct {
@@ -751,7 +842,14 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 		parent.Close()
 		return nil, err
 	}
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	var fd int
+	for attempt := 0; attempt < 8; attempt++ {
+		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		if err == nil || !errors.Is(err, unix.ENOENT) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if err != nil {
 		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
@@ -918,6 +1016,30 @@ func (l *Lock) Remove(path string) error {
 		return err
 	}
 	return l.validateAfter(path)
+}
+
+// MoveNoReplace copies a handle byte-for-byte and then removes the source while
+// both path locks are held. It never replaces an existing destination. A crash
+// or source-removal failure can leave both files for explicit recovery, but
+// never loses either record.
+func MoveNoReplace(sourceLock *Lock, source string, destinationLock *Lock, destination string) error {
+	if _, err := sourceLock.validateFor(source); err != nil {
+		return err
+	}
+	if _, err := destinationLock.validateFor(destination); err != nil {
+		return err
+	}
+	data, err := ReadOwnerPrivate(source, RemoteMaxBytes)
+	if err != nil {
+		return err
+	}
+	if err = WriteOwnerPrivateNoReplace(destination, data, RemoteMaxBytes); err != nil {
+		return err
+	}
+	if err = sourceLock.Remove(source); err != nil {
+		return newHandleError(reason.ReasonHandleWriteFailed, fmt.Sprintf("legacy handle copied but could not be removed; recover explicitly with --handle %s or --handle %s", source, destination))
+	}
+	return destinationLock.validateAfter(destination)
 }
 func (l *Lock) validateAfter(path string) error {
 	_, err := l.validateFor(path)
