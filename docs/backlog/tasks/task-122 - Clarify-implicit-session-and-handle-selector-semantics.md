@@ -1,11 +1,11 @@
 ---
 id: TASK-122
 title: Clarify implicit session and handle-selector semantics
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-16 23:57'
-updated_date: '2026-09-17 04:46'
+updated_date: '2026-09-17 05:43'
 labels:
   - cli
   - docs
@@ -30,13 +30,13 @@ Omitting both --session and configured session selection uses an empty-selector 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 CLI help and lifecycle documentation name the contextual handle selector separately from claim session metadata
-- [ ] #2 Commands and diagnostics represent an omitted selector consistently as unscoped and explain when a claim sessionId is generated
-- [ ] #3 User-visible acquire, status, list, and contention output does not imply that a generated claim sessionId can recover a contextual handle or bypass exact-resource contention
-- [ ] #4 Examples demonstrate stable explicit session use across acquire, heartbeat, status, and release, plus profile switching and same-resource contention
-- [ ] #5 Tests cover omitted and explicit selectors and verify stable, unambiguous text and structured output terminology
-- [ ] #6 Unscoped means the resolved selector is empty after flag/environment/config precedence, not merely that --session was omitted; documented examples cover WORKLEASE_SESSION_ID and explicit override.
-- [ ] #7 This change preserves existing JSON field names and claim sessionId values, session generation, handle selection, and exact-resource contention semantics; terminology changes do not turn the display label unscoped into a literal selector.
+- [x] #1 CLI help and lifecycle documentation name the contextual handle selector separately from claim session metadata
+- [x] #2 Commands and diagnostics represent an omitted selector consistently as unscoped and explain when a claim sessionId is generated
+- [x] #3 User-visible acquire, status, list, and contention output does not imply that a generated claim sessionId can recover a contextual handle or bypass exact-resource contention
+- [x] #4 Examples demonstrate stable explicit session use across acquire, heartbeat, status, and release, plus profile switching and same-resource contention
+- [x] #5 Tests cover omitted and explicit selectors and verify stable, unambiguous text and structured output terminology
+- [x] #6 Unscoped means the resolved selector is empty after flag/environment/config precedence, not merely that --session was omitted; documented examples cover WORKLEASE_SESSION_ID and explicit override.
+- [x] #7 This change preserves existing JSON field names and claim sessionId values, session generation, handle selection, and exact-resource contention semantics; terminology changes do not turn the display label unscoped into a literal selector.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,4 +54,12 @@ Omitting both --session and configured session selection uses an empty-selector 
 Validation: internal/cli/lease_commands.go generates a random session only when cfg.SessionID is empty; acquireHandlePath passes the configured selector to ContextualPath. internal/config/config.go also resolves WORKLEASE_SESSION_ID and config-file session values, so an omitted flag is not necessarily unscoped. docs/claim-model.md already explains generated epoch metadata and uncertain-request recovery. TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles covers slot separation but not all terminology. TASK-119 profile-switch examples should land with the authority-scoping change; this terminology task need not wait for that implementation.
 
 Implemented selector/session terminology across help, lifecycle text, diagnostics, and docs. Added coverage proving the unscoped empty selector remains distinct from generated claim session metadata, explicit flags override WORKLEASE_SESSION_ID, and separate selectors still contend on one exact resource. Focused internal/cli and internal/doctor tests pass.
+
+Validation passed on merged main: mise run lint, mise run format-check, mise run test, and mise run typecheck. Staged pre-commit hooks passed. Independent review found three selector-display/test ambiguities; all were fixed by qualifying generated session metadata, quoting exact selectors, and adding env-only plus explicit lifecycle coverage. Implementation commit baaa48a merged as b06d0ab.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Clarified contextual handle selectors versus claim session metadata in help, text output, diagnostics, and lifecycle docs. Empty selectors now display unambiguously as "" (unscoped) while JSON and selection semantics remain unchanged. Added tests for generated IDs, environment and flag precedence, explicit lifecycle reuse, literal-selector display, and exact-resource contention; all repository quality gates pass on merged main.
+<!-- SECTION:FINAL_SUMMARY:END -->
