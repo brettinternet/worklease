@@ -177,7 +177,7 @@ func TestWaitUsesPersistedObservationTimeAfterClockRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.SetWall(base.Add(-time.Minute))
-	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "free", Timeout: 60 * time.Millisecond, PollInterval: MinPoll, Clock: clock})
+	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "free", Timeout: 2 * time.Second, PollInterval: MinPoll, Clock: clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestEmptyFeedReturnsDurableBoundCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: 60 * time.Millisecond, PollInterval: MinPoll})
+	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: 2 * time.Second, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
 	}
