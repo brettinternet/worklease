@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.6.4 - 2026-09-17
+
+### Fixed
+
+- Cross-interface MCP recovery coverage builds its CLI helper before starting a short-lived claim, preventing cold module downloads from expiring the claim in CI.
+
 ## 1.6.3 - 2026-09-17
 
 ### Added

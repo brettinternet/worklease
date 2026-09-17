@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,12 @@ func TestOversizedInputAndExactElevenToolSchemas(t *testing.T) {
 
 func TestReferencesCrossServerPendingRecoveryAndRestartHold(t *testing.T) {
 	home, _ := testkit.Home(t)
+	cliPath := filepath.Join(t.TempDir(), "worklease")
+	buildCommand := exec.Command("go", "build", "-o", cliPath, "../../cmd/worklease")
+	buildCommand.Dir = "."
+	if buildOutput, err := buildCommand.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v: %s", err, buildOutput)
+	}
 	first, err := NewServer(Options{Home: home, AgentID: "first", SessionID: "session-one"})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +176,7 @@ func TestReferencesCrossServerPendingRecoveryAndRestartHold(t *testing.T) {
 	if status, err := second.Call(context.Background(), "status", map[string]any{"lease": ref}); err != nil || status["isError"] == true {
 		t.Fatalf("second server could not use reference: %v %v", status, err)
 	}
-	verifyCommand := exec.Command("go", "run", "../../cmd/worklease", "--home", home, "--json", "verify", "--handle", path)
+	verifyCommand := exec.Command(cliPath, "--home", home, "--json", "verify", "--handle", path)
 	verifyCommand.Dir = "."
 	verifyOutput, err := verifyCommand.CombinedOutput()
 	if err != nil {
