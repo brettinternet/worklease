@@ -271,6 +271,16 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	detail(reconcileCommand, "Resolve a predecessor operation whose outcome is unknown by recording what was observed, so blocked resources become claimable again.\n\n"+selectionHelp)
 	op := group("op", "inspect or reconcile operations", "worklease op inspect --operation-id ID", inspectCommand, reconcileCommand)
 
+	handleInspectCommand := jsonless("inspect", "inspect a private handle offline", "worklease handle inspect\n  worklease handle inspect --handle PATH", flag("handle"), flag("session", "s"))
+	handleInspectCommand.Action = handleInspectAction(s)
+	usageText(handleInspectCommand, "worklease handle inspect [--session NAME | --handle PATH]")
+	detail(handleInspectCommand, "Read and validate the selected handle without contacting an authority or creating missing state. Output contains only redacted claim, selector, locally recorded lifecycle, resource, and recovery metadata. Recorded expiry never proves that a claim is inactive.")
+	handleArchiveCommand := jsonless("archive", "archive a private handle offline", "worklease handle archive\n  worklease handle archive --handle PATH --destination ARCHIVE", flag("handle"), flag("session", "s"), &urfavecli.StringFlag{Name: "destination", Usage: "owner-private no-overwrite archive `PATH`"}, &urfavecli.BoolFlag{Name: "acknowledge-pending-recovery", Usage: "acknowledge that pending or recovery state and a possibly active claim are only being preserved aside"})
+	handleArchiveCommand.Action = handleArchiveAction(s)
+	usageText(handleArchiveCommand, "worklease handle archive [--session NAME | --handle PATH] [--destination PATH] [--acknowledge-pending-recovery]")
+	detail(handleArchiveCommand, "Durably preserve the exact selected handle in owner-private no-overwrite storage before removing the source. This command never contacts, releases, or mutates an authority; the claim may remain active. Pending or recovery state requires --acknowledge-pending-recovery.")
+	handleCommand := group("handle", "inspect or archive private handles offline", "worklease handle inspect", handleInspectCommand, handleArchiveCommand)
+
 	loopCommand := jsonless("loop", "print loop instructions", "worklease instructions loop")
 	loopCommand.Action = instructionsAction(s, "loop")
 	detail(loopCommand, "Print the canonical acquire, verify, checkpoint, release loop that agents should follow.")
@@ -348,7 +358,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	usageText(serve, "worklease serve [--server-config FILE] [--allow-insecure-http]")
 	detail(serve, "Serve one marked hosted authority using --server-config, WORKLEASE_SERVER_CONFIG, or the default user configuration. TLS is required unless insecure HTTP is explicitly enabled by the file or flag.")
-	all := append(commands, policy, op, instructions, setup)
+	all := append(commands, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)
 	all = append(all, server, serve, mcp, helpCommand(s))
@@ -356,7 +366,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		switch command.Name {
 		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":
 			command.Category = categoryLifecycle
-		case "history", "events", "watch", "op", "doctor":
+		case "history", "events", "watch", "op", "handle", "doctor":
 			command.Category = categoryInspection
 		default:
 			command.Category = categoryAdmin

@@ -1,6 +1,7 @@
 package handle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,7 +78,7 @@ func TestResolveContextualPathMigratesMatchingLegacyHandleExactly(t *testing.T) 
 	}
 	h := testHandle()
 	h.PendingRequest = &PendingRequest{OperationID: h.ClaimID, Kind: "checkpoint", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: strings.Repeat("d", 64), RequestNotAfter: time.Now().Add(time.Hour), Inputs: map[string]any{"checkpoint": "exact"}}
-	h.RecoveryRequest = &RecoveryRequest{OperationID: strings.Repeat("e", 32), TargetClaimID: h.ClaimID, RequestHash: strings.Repeat("f", 64), RequestNotAfter: time.Now().Add(time.Hour), Outcome: "unknown"}
+	h.RecoveryRequest = &RecoveryRequest{OperationID: strings.Repeat("e", 32), TargetClaimID: h.ClaimID, RequestHash: strings.Repeat("f", 64), RequestNotAfter: time.Now().Add(time.Hour), Outcome: "observed-failure"}
 	h.State = "pending"
 	legacy := LegacyContextualPath(home, root, "session")
 	if err := Write(legacy, h); err != nil {
@@ -480,6 +481,16 @@ func TestHandleSchemaRejectsTrailingPendingAndAuthorityErrors(t *testing.T) {
 	if err := Write(p, pending); err == nil {
 		t.Fatal("accepted malformed pending replacement")
 	}
+	pending.PendingRequest.Inputs = map[string]any{"ttl": int64(1)}
+	pending.RecoveryRequest.TargetOperationID = "private evidence"
+	if err := Write(p, pending); err == nil {
+		t.Fatal("accepted malformed recovery target")
+	}
+	pending.RecoveryRequest.TargetOperationID = ""
+	pending.RecoveryRequest.Outcome = "private outcome"
+	if err := Write(p, pending); err == nil {
+		t.Fatal("accepted malformed recovery outcome")
+	}
 }
 
 func TestExistingMalformedHandleIsNeverReplaceable(t *testing.T) {
@@ -698,6 +709,139 @@ func TestLockRejectsDifferentSiblingHandle(t *testing.T) {
 	}
 	if _, err := os.Stat(otherPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("different sibling was created: %v", err)
+	}
+}
+
+func TestArchiveNoReplacePreservesExactHandleAndFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source.json")
+	destination := filepath.Join(dir, "archive.json")
+	h := testHandle()
+	h.State = "pending"
+	h.PendingRequest = &PendingRequest{OperationID: strings.Repeat("1", 32), Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: strings.Repeat("2", 64), RequestNotAfter: time.Now().Add(time.Hour), Request: []byte{0, 1, 2, 255}, Inputs: map[string]any{"ttl": int64(1)}}
+	if err := Write(source, h); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := Read(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(context.Background(), source+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := ArchiveNoReplace(lock, source, destination, persisted); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("archive changed bytes: equal=%v err=%v", bytes.Equal(after, before), err)
+	}
+	if _, err := os.Stat(source); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source remains after archive: %v", err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("archive mode=%v", info.Mode().Perm())
+	}
+	if err := Write(source, testHandle()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ArchiveNoReplace(lock, source, destination, testHandle()); err == nil {
+		t.Fatal("overwrote existing archive")
+	}
+	if _, err := Read(source); err != nil {
+		t.Fatalf("collision changed source: %v", err)
+	}
+}
+
+func TestArchiveNoReplaceRejectsReplacementBeforeCopy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source.json")
+	destination := filepath.Join(dir, "archive.json")
+	expected := testHandle()
+	if err := Write(source, expected); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := Read(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(context.Background(), source+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	replacement := expected
+	replacement.State = "pending"
+	replacement.PendingRequest = &PendingRequest{OperationID: strings.Repeat("1", 32), Kind: "heartbeat", AuthorityID: replacement.AuthorityID, ClaimID: replacement.ClaimID, RequestHash: strings.Repeat("2", 64), RequestNotAfter: time.Now().Add(time.Hour), Inputs: map[string]any{"ttl": int64(1)}}
+	if err := Write(source, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err := ArchiveNoReplace(lock, source, destination, expected); err == nil {
+		t.Fatal("archived replacement without matching the acknowledged snapshot")
+	}
+	if current, err := Read(source); err != nil || current.State != "pending" {
+		t.Fatalf("replacement was not preserved: state=%q err=%v", current.State, err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched snapshot created archive: %v", err)
+	}
+}
+
+func TestArchiveNoReplaceConcurrentReplacementKeepsBothCopies(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source.json")
+	destination := filepath.Join(dir, "archive.json")
+	original := testHandle()
+	if err := Write(source, original); err != nil {
+		t.Fatal(err)
+	}
+	original, err := Read(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(context.Background(), source+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	replacement := testHandle()
+	replacement.Revision++
+	replacementBytes, err := encoded(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterArchiveCopyForTest = func() {
+		if err := os.WriteFile(source, replacementBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { afterArchiveCopyForTest = func() {} }()
+	if err := ArchiveNoReplace(lock, source, destination, original); err == nil {
+		t.Fatal("archived through concurrent source replacement")
+	}
+	archived, archiveErr := Read(destination)
+	current, sourceErr := Read(source)
+	if archiveErr != nil || sourceErr != nil || archived.Revision != original.Revision || current.Revision != replacement.Revision {
+		t.Fatalf("copies not recoverable: archive=%#v err=%v source=%#v err=%v", archived, archiveErr, current, sourceErr)
 	}
 }
 

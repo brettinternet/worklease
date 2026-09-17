@@ -163,7 +163,22 @@ the exact apply command.
 | `op reconcile` | Resolve a predecessor unknown outcome with explicit evidence. |
 | `history` / `events` | Show the latest global lifecycle events; add `history --resource RESOURCE` for retained epochs of one resource. |
 | `watch` | Wait for a resource state or event cursor change. |
+| `handle inspect` | Validate and inspect a selected or explicit private handle offline. |
+| `handle archive` | Preserve a selected or explicit private handle aside without authority mutation. |
 | `gc` | Preview or apply contiguous-prefix retention. |
+
+`handle inspect` reports only redacted authority, claim, selector, locally
+recorded lifecycle, resource, and recovery metadata. It does not contact an
+authority or create a missing handle/store. Explicit paths report selector
+provenance as unknown, and recorded expiry does not prove inactivity.
+
+`handle archive` uses owner-private durable no-overwrite storage and prints the
+archive path plus an explicit-handle inspection command. It never releases,
+revokes, or contacts the authority, so the claim may remain active. Pending or
+recovery state requires `--acknowledge-pending-recovery`; refusal leaves the
+source untouched. Use `--destination PATH` only with an existing owner-private
+directory; the contextual handle directory is rejected as a destination.
+Archives are not contextual slots and are never selected automatically.
 
 Guarded-operation guarantees:
 

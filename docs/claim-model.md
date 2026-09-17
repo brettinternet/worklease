@@ -62,6 +62,23 @@ legacy state remains at its original path. If both legacy and scoped paths
 exist, Worklease changes neither and reports both paths for explicit `--handle`
 recovery.
 
+`worklease handle inspect` reads the selected contextual handle, or an explicit
+`--handle`, entirely offline. It reports only redacted authority, claim,
+selector, locally recorded lifecycle, resource, and recovery metadata. It does
+not create a missing handle or authority store, and a recorded expiry is never
+proof that authority-side ownership or external work has ended. An explicitly
+named handle cannot reveal how it was originally selected, so its selector
+provenance is reported as unknown.
+
+`worklease handle archive` sets a stale or foreign handle aside without
+contacting, releasing, revoking, or otherwise mutating any authority. The exact
+owner-private record is durably copied to no-overwrite archive storage before
+the original is removed. Pending or recovery state requires
+`--acknowledge-pending-recovery`; refusal leaves the source unchanged. A
+successful archive prints an explicit `--handle` recovery path. The archive is
+never selected as a contextual handle, and the underlying claim may remain
+active.
+
 ## Revisions, replay, and unknown outcomes
 
 Every mutation names an operation ID and exact normalized request with a bounded
