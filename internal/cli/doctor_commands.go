@@ -297,6 +297,14 @@ func appendAuthenticationFailure(add func(string, string, string, string), err e
 func classifyRemoteProbeError(err error) string {
 	if classified := reason.As(err); classified != nil {
 		switch classified.Reason {
+		case reason.ReasonRemoteTransportFailure:
+			if transport, ok := classified.Details["transport"].(string); ok {
+				switch transport {
+				case "dns", "refused", "timeout", "tls":
+					return transport
+				}
+			}
+			return "connect"
 		case reason.ReasonProtocolVersionUnsupported, reason.ReasonInvalidArgument:
 			return "protocol"
 		case reason.ReasonAuthorityMismatch:

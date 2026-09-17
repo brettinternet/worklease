@@ -81,6 +81,7 @@ const (
 	ReasonRateLimited                    = "rate-limited"
 	ReasonRequestTooLarge                = "request-too-large"
 	ReasonResponseTooLarge               = "response-too-large"
+	ReasonRemoteTransportFailure         = "remote-transport-failure"
 	ReasonOperationKindUnsupported       = "operation-kind-unsupported"
 	ReasonCancelled                      = "cancelled"
 )
@@ -177,6 +178,7 @@ var registry = map[string]int{
 	ReasonSetupConfigMalformed: ExitInvalid, ReasonHookInputInvalid: ExitInvalid,
 	ReasonProtocolVersionUnsupported: ExitInvalid, ReasonRateLimited: ExitInvalid,
 	ReasonRequestTooLarge: ExitInvalid, ReasonResponseTooLarge: ExitInvalid,
+	ReasonRemoteTransportFailure:   ExitAuthority,
 	ReasonOperationKindUnsupported: ExitInvalid, ReasonCancelled: ExitInterrupted,
 	ReasonHomeUnsafe: ExitAuthority, ReasonStorageFailure: ExitAuthority, ReasonSchemaUnsupported: ExitAuthority,
 	ReasonSchemaCorrupt: ExitAuthority, ReasonHostedHomeRequiresRemote: ExitAuthority, ReasonHostedLockHeld: ExitAuthority,
@@ -200,7 +202,7 @@ func DefinitiveNoCommit(err error) bool {
 		return false
 	}
 	switch e.Reason {
-	case ReasonUnknownOutcome, ReasonUnknownOutcomePending, ReasonReplayExpired, ReasonStorageFailure, ReasonHandleWriteFailed, ReasonOwnershipLost, ReasonChildTimeout, ReasonInterrupted:
+	case ReasonUnknownOutcome, ReasonUnknownOutcomePending, ReasonReplayExpired, ReasonStorageFailure, ReasonHandleWriteFailed, ReasonOwnershipLost, ReasonChildTimeout, ReasonInterrupted, ReasonRemoteTransportFailure:
 		return false
 	}
 	return true
