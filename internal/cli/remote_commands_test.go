@@ -948,6 +948,19 @@ func TestUncertainEnrollmentPreservesInviteWithoutConsumptionGuidance(t *testing
 	}
 }
 
+func TestInviteIssueRejectsReservedLocalHintBeforeProfileLoading(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	out, err := runRemoteCLI(t, "invite", "issue", "--profile", "missing", "--label", "local", "--home", t.TempDir(), "--json")
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonConfigInvalid || !strings.Contains(out, "reserved for the built-in local authority") {
+		t.Fatalf("reserved invite hint output=%s err=%v", out, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "worklease")); !os.IsNotExist(statErr) {
+		t.Fatalf("reserved invite hint touched profile or staging storage: %v", statErr)
+	}
+}
+
 func TestInviteIssueDefaultsToPrivateArtifactAndPrintsEnrollCommand(t *testing.T) {
 	profile, clientHome, _ := remoteCLIFixture(t)
 	paths := config.UserProfilePaths(os.Getenv)

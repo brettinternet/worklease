@@ -5,6 +5,7 @@
 ### Added
 
 - Agent setup guide and `instructions setup`, `instructions remote`, and `instructions server` topics distinguish local coordination, joining an authority, and hosting one, with verification steps available through CLI and MCP.
+- `local` is a first-class built-in profile selection for flags, environment, checkout bindings, and user defaults, with explicit inspection and migration guidance for legacy naming collisions.
 
 ### Changed
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +48,68 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 	got, err = SelectProfile(nil, func(string) string { return "" }, "/other", paths)
 	if err != nil || got.Profile != nil || got.Source != "local" {
 		t.Fatalf("local fallback: %#v %v", got, err)
+	}
+}
+
+func TestLocalSelectionIsReservedAndStopsEveryPrecedenceLayer(t *testing.T) {
+	dir := t.TempDir()
+	paths := ProfilePaths{Profiles: filepath.Join(dir, "profiles.yaml"), Bindings: filepath.Join(dir, "bindings.yaml")}
+	remote := func(name string) Profile {
+		return Profile{Name: name, Endpoint: "https://" + name + ".example", AuthorityID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Credential: CredentialDescriptor{Path: filepath.Join(dir, name)}}
+	}
+	if err := SaveProfiles(paths, []Profile{remote("lower"), remote("default")}, "local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBindings(paths, map[string]string{"/checkout": "local"}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, source string
+		flags        map[string]string
+		env          string
+		root         string
+	}{
+		{"flag", "flag", map[string]string{"profile": "local"}, "lower", "/checkout"},
+		{"env", "env", nil, "local", "/checkout"},
+		{"binding", "binding", nil, "", "/checkout"},
+		{"default", "default", nil, "", "/other"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := SelectProfile(test.flags, func(key string) string {
+				if key == "WORKLEASE_PROFILE" {
+					return test.env
+				}
+				return ""
+			}, test.root, paths)
+			if err != nil || got.Profile != nil || got.Name != LocalProfileName || got.Source != test.source {
+				t.Fatalf("selection=%#v err=%v", got, err)
+			}
+		})
+	}
+	got, err := SelectProfile(nil, func(string) string { return "" }, "/missing", ProfilePaths{Profiles: filepath.Join(dir, "missing"), Bindings: filepath.Join(dir, "missing-bindings")})
+	if err != nil || got.Profile != nil || got.Name != LocalProfileName || got.Source != "local" {
+		t.Fatalf("implicit selection=%#v err=%v", got, err)
+	}
+	if err := SaveProfiles(paths, []Profile{remote("lower")}, LocalProfileName); err != nil {
+		t.Fatal(err)
+	}
+	_, defaultName, err := LoadProfiles(paths)
+	if err != nil || defaultName != LocalProfileName {
+		t.Fatalf("explicit default=%q err=%v", defaultName, err)
+	}
+}
+
+func TestPersistedLocalProfileFailsClosedWithMigrationGuidance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profiles.yaml")
+	data := []byte("profiles:\n  - name: local\n    endpoint: https://old.example\n    credential:\n      path: " + filepath.Join(dir, "credential") + "\ndefault: local\n")
+	if err := writePrivate(path, data); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadProfiles(ProfilePaths{Profiles: path})
+	if err == nil || !strings.Contains(err.Error(), "rename") || !strings.Contains(err.Error(), "credential path") {
+		t.Fatalf("collision error=%v", err)
 	}
 }
 

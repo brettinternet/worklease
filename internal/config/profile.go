@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/reason"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,9 +31,11 @@ type Profile struct {
 	Credential        CredentialDescriptor `yaml:"credential" json:"credential"`
 }
 
+const LocalProfileName = "local"
+
 type ProfileSelection struct {
 	Profile *Profile
-	Source  string // flag, env, binding, default, or local
+	Source  string // flag, env, binding, default, local, or forced-local
 	Name    string
 }
 
@@ -70,6 +73,9 @@ func LoadProfiles(paths ProfilePaths) (map[string]Profile, string, error) {
 		return nil, "", err
 	}
 	for _, p := range doc.Profiles {
+		if p.Name == LocalProfileName {
+			return nil, "", reason.New(reason.ReasonConfigInvalid, fmt.Sprintf("profile %q is reserved for the built-in local authority; rename the remote profile and update its default and checkout bindings manually (retain credential path %q)", LocalProfileName, p.Credential.Path))
+		}
 		if err := validateProfile(p); err != nil {
 			return nil, "", err
 		}
@@ -123,7 +129,10 @@ func SelectProfile(flags map[string]string, env func(string) string, checkoutRoo
 		name, source = strings.TrimSpace(defaultName), "default"
 	}
 	if name == "" {
-		return ProfileSelection{Source: "local"}, nil
+		return ProfileSelection{Source: "local", Name: LocalProfileName}, nil
+	}
+	if name == LocalProfileName {
+		return ProfileSelection{Source: source, Name: LocalProfileName}, nil
 	}
 	p, ok := profiles[name]
 	if !ok {
@@ -138,7 +147,7 @@ func SaveProfiles(paths ProfilePaths, profiles []Profile, defaultName string) er
 			return err
 		}
 	}
-	if defaultName != "" {
+	if defaultName != "" && defaultName != LocalProfileName {
 		found := false
 		for _, p := range profiles {
 			found = found || p.Name == defaultName
@@ -161,6 +170,9 @@ func SaveBindings(paths ProfilePaths, bindings map[string]string) error {
 		if !filepath.IsAbs(root) || strings.TrimSpace(name) == "" {
 			return fmt.Errorf("invalid project binding")
 		}
+		if err := ValidateProfileName(strings.TrimSpace(name)); err != nil {
+			return fmt.Errorf("invalid project binding: %w", err)
+		}
 	}
 	data, err := yaml.Marshal(struct {
 		Bindings map[string]string `yaml:"bindings"`
@@ -178,8 +190,20 @@ func ValidateProfileName(name string) error {
 	return nil
 }
 
+// ValidateRemoteProfileName validates names that identify persisted remote
+// profiles. local is a built-in selection and must never be persisted as one.
+func ValidateRemoteProfileName(name string) error {
+	if err := ValidateProfileName(name); err != nil {
+		return err
+	}
+	if name == LocalProfileName {
+		return fmt.Errorf("profile name %q is reserved for the built-in local authority; choose a different remote profile name", LocalProfileName)
+	}
+	return nil
+}
+
 func validateProfile(p Profile) error {
-	if err := ValidateProfileName(p.Name); err != nil {
+	if err := ValidateRemoteProfileName(p.Name); err != nil {
 		return err
 	}
 	u, err := url.Parse(p.Endpoint)

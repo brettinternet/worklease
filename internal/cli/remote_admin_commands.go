@@ -56,13 +56,20 @@ func remoteAdminCommands(s *boundary) []*urfave.Command {
 }
 
 func remoteBackend(ctx context.Context, s *boundary, cmd *urfave.Command) (*authorityContext, error) {
+	selected, err := profileSelection(cmd)
+	if err != nil {
+		return nil, s.handle(cmd, err)
+	}
+	if selected.Profile == nil {
+		return nil, s.handle(cmd, reason.New(reason.ReasonConfigMissing, "a remote profile is required; local authority does not support this command"))
+	}
 	backend, err := authorityFor(ctx, cmd, true)
 	if err != nil {
 		return nil, s.handle(cmd, err)
 	}
 	if !backend.Remote {
 		backend.Close()
-		return nil, s.handle(cmd, reason.New(reason.ReasonConfigMissing, "a remote profile is required"))
+		return nil, s.handle(cmd, reason.New(reason.ReasonConfigMissing, "a remote profile is required; local authority does not support this command"))
 	}
 	return backend, nil
 }
@@ -197,6 +204,10 @@ func inviteIssueAction(s *boundary) func(context.Context, *urfave.Command) error
 		if file != "" && fdSet {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "invite-file and invite-fd are mutually exclusive"))
 		}
+		label := strings.TrimSpace(cmd.String("label"))
+		if label == config.LocalProfileName {
+			return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "invite profile hint \"local\" is reserved for the built-in local authority; choose a different label"))
+		}
 		backend, err := remoteBackend(ctx, s, cmd)
 		if err != nil {
 			return err
@@ -205,7 +216,7 @@ func inviteIssueAction(s *boundary) func(context.Context, *urfave.Command) error
 		if file == "" && !fdSet {
 			file = defaultInviteArtifactPath(backend.ProfileName)
 		}
-		role, label, expiry := strings.TrimSpace(cmd.String("role")), strings.TrimSpace(cmd.String("label")), strings.TrimSpace(cmd.String("expires-at"))
+		role, expiry := strings.TrimSpace(cmd.String("role")), strings.TrimSpace(cmd.String("expires-at"))
 		if role == "" {
 			role = "write"
 		}

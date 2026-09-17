@@ -172,11 +172,27 @@ Selection order is:
 2. `WORKLEASE_PROFILE`
 3. user-side checkout binding
 4. user default
-5. local authority
+5. implicit local authority
 
-`--local` overrides bindings/defaults and conflicts with explicit profile
-selection. Remote failures never fall back to local. To change an endpoint,
-remove and re-add the profile. Credential-bearing redirects are refused.
+The exact, case-sensitive name `local` is a built-in authority selection at
+every layer. `--profile local`, `WORKLEASE_PROFILE=local`, `profile bind local`,
+and `profile default local` select local without creating a persisted profile;
+an absent default remains an implicit local fallback. `profile default` reports
+the configured default (or unset), while `profile show` reports the effective
+selection and its source. `profile bind local` overrides a remote default for
+that checkout; `profile unbind` removes the override and restores normal
+fallback. `--local` remains a forced bypass of bindings, defaults, and profile
+store loading, and conflicts with any nonempty `--profile` or
+`WORKLEASE_PROFILE`, including `local`. Remote failures never fall back to
+local. To change an endpoint, remove and re-add the profile. Credential-bearing
+redirects are refused.
+
+`local` is reserved and cannot be added, enrolled, or removed as a remote
+profile. A persisted remote profile named `local` is a compatibility collision:
+Worklease fails closed and does not rewrite files or credentials. Manually rename
+the remote profile and update its default and checkout binding references,
+while retaining its existing credential path; no automatic migration command is
+provided.
 
 Artifact enrollment in the quickstart creates and selects profiles automatically.
 For endpoint changes, recovery, or legacy bare-secret enrollment, the exact
@@ -195,8 +211,10 @@ worklease profile unbind [--cwd DIR]
 `profile add` performs bounded metadata discovery and pins the supplied
 `authorityId` and the discovered `restoreId` before saving. Its only command
 flags are `--endpoint URL`, `--authority-id ID`, `--certificate-sha256 HEX`,
-and `--allow-insecure-http`. `profile list` is local and setup-free; profile
-credentials are not printed.
+and `--allow-insecure-http`. `profile list` is local and setup-free; it always
+lists the built-in `local` selection separately from persisted remote profiles,
+and profile credentials are not printed. `profile show local` is also setup-free
+and does not contact a remote authority.
 
 An admin issues a one-time invite to an owner-private file or inherited file
 descriptor, then the new installation enrolls with that invite:
@@ -268,7 +286,10 @@ bounded and redacted.
 ## Remote CLI surface
 
 Lifecycle, inspection, guarded-operation, event, watch, and GC commands use the
-selected profile. See the [CLI reference](cli-reference.md) for shared flags.
+selected profile. Selecting `local` uses the local authority; remote-only
+administration commands fail with an explicit remote-profile-required error
+rather than falling through to another profile. See the [CLI reference](cli-reference.md)
+for shared flags.
 Remote differences:
 
 - `--wait` is a client loop capped at 60 seconds.
@@ -306,7 +327,10 @@ implemented.
 ## Local stdio MCP
 
 The remote authority is not an MCP endpoint. `worklease mcp` remains a local,
-one-process stdio adapter. With a selected profile it keeps credentials,
+one-process stdio adapter. With `local` selected (explicitly or by fallback), it
+uses the local authority and does not construct a remote client; remote-only
+administration tools are not exposed by MCP. With a remote profile selected it
+keeps credentials,
 opaque lease handles, and pending requests on the client host and calls the
 remote HTTPS client. The eleven existing tools are exactly:
 

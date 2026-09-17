@@ -34,6 +34,13 @@ func TestInviteArtifactRoundTripAndBounds(t *testing.T) {
 	}
 }
 
+func TestHTTPClientRejectsReservedLocalProfile(t *testing.T) {
+	profile := config.Profile{Name: config.LocalProfileName, Endpoint: "https://authority.example", AuthorityID: strings.Repeat("a", 32), Credential: config.CredentialDescriptor{Path: filepath.Join(t.TempDir(), "credential")}}
+	if _, err := NewHTTPClient(profile, NewFilePendingStore(filepath.Join(t.TempDir(), "pending")), nil); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("reserved profile accepted: %v", err)
+	}
+}
+
 func TestPinnedHTTPSRejectsCustomTransportBeforeDispatch(t *testing.T) {
 	profile := config.Profile{Name: "team", Endpoint: "https://authority.example", AuthorityID: strings.Repeat("a", 32), CertificateSHA256: strings.Repeat("b", 64), Credential: config.CredentialDescriptor{Path: filepath.Join(t.TempDir(), "credential")}}
 	called := false

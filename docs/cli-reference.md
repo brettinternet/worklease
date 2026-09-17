@@ -283,8 +283,28 @@ worklease acquire --session loop-a --resource coordination:shared
 worklease acquire --session loop-b --resource coordination:shared # already claimed
 ```
 
-Authority selection is another independent part of the contextual slot. A
-profile switch selects the slot for that authority, and switching back resumes
+Authority selection is another independent part of the contextual slot. The
+selection precedence is `--profile`, `WORKLEASE_PROFILE`, checkout binding,
+configured user default, then implicit local. The exact case-sensitive name
+`local` is a built-in selection at every layer and never a persisted remote
+profile. `profile default local` records an explicit local user default without
+changing bindings; `profile bind local` overrides the remote default for that
+checkout, and `profile unbind` removes that override so normal fallback resumes.
+`profile default` reports configured default versus unset, while `profile show`
+reports the effective selection and source. `profile list` always shows `local`
+separately from remote profiles, and `profile show local` inspects it without
+network access.
+
+A remote profile named `local` from an older store is a compatibility collision:
+selection fails closed with migration guidance. Manually rename that remote
+profile and its default/checkout-binding references while retaining the existing
+credential path. `local` cannot be added, enrolled, or removed as a remote
+profile. Remote-only administration commands fail clearly when local is
+selected. `--local` remains the forced, network-free bypass of bindings,
+defaults, and profile-store loading; it conflicts with any nonempty
+`--profile` or `WORKLEASE_PROFILE`, including `local`.
+
+A profile switch selects the slot for that authority, and switching back resumes
 the original authority's slot:
 
 ```sh

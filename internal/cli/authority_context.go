@@ -76,7 +76,7 @@ func profileSelection(cmd *urfave.Command) (config.ProfileSelection, error) {
 		if explicit != "" || strings.TrimSpace(os.Getenv("WORKLEASE_PROFILE")) != "" {
 			return config.ProfileSelection{}, reason.New(reason.ReasonCredentialSourceConflict, "--local conflicts with remote profile selection")
 		}
-		return config.ProfileSelection{Source: "local"}, nil
+		return config.ProfileSelection{Source: "forced-local", Name: config.LocalProfileName}, nil
 	}
 	selected, err := config.SelectProfile(map[string]string{"profile": explicit}, os.Getenv, root, paths)
 	if err != nil {
@@ -105,7 +105,7 @@ func authorityFor(ctx context.Context, cmd *urfave.Command, write bool) (*author
 			st.Close()
 			return nil, err
 		}
-		return &authorityContext{API: authorityWithDefaults{Authority: local, ttl: cfg.TTL, local: svc}, Local: svc, Store: st, Config: cfg}, nil
+		return &authorityContext{API: authorityWithDefaults{Authority: local, ttl: cfg.TTL, local: svc}, Local: svc, Store: st, Config: cfg, ProfileName: config.LocalProfileName}, nil
 	}
 	pending := authority.NewFilePendingStore(filepath.Join(cfg.Home, "pending", selected.Name))
 	client, err := authority.NewHTTPClient(*selected.Profile, pending, nil)

@@ -891,6 +891,9 @@ func duplicateJSON(b []byte) error {
 }
 func validateClientProfile(p config.Profile) error { return validateProfileForClient(p) }
 func validateProfileForClient(p config.Profile) error { // config validation is intentionally repeated at the transport boundary
+	if p.Name == config.LocalProfileName {
+		return reason.New(reason.ReasonConfigInvalid, "profile name \"local\" is reserved for the built-in local authority")
+	}
 	if strings.TrimSpace(p.Endpoint) == "" {
 		return reason.New(reason.ReasonConfigInvalid, "profile endpoint is required")
 	}
