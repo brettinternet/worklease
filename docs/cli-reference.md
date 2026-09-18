@@ -226,6 +226,82 @@ Guarded-operation guarantees:
 - Replay requires the same operation ID and normalized request within the
   recovery window; changed intent is rejected.
 
+### Guarded exec and takeover example
+
+The normal path claims a resource, runs a supervised command, records its
+completion, and releases the claim:
+
+```sh
+worklease acquire --resource coordination:deploy --session worker-a
+worklease exec --session worker-a -- ./deploy.sh
+worklease release --session worker-a --reason done
+```
+
+`exec` records the operation as started before spawning the child. While it
+runs, Worklease renews the claim and supervises the local process group. A
+normal completion records the argv, execution directory, exit code, and bounded
+stdout and stderr.
+
+If worker A disappears after the operation starts, the claim eventually
+expires but the operation remains unresolved. Worker B can acquire the same
+resource and inspect the operation reported in `unknownOperations`:
+
+```sh
+worklease --json acquire \
+  --resource coordination:deploy \
+  --session worker-b
+worklease --json op inspect --operation-id OPERATION_ID
+```
+
+Worker B owns the resource, but another guarded command remains blocked because
+Worklease cannot tell whether `deploy.sh` did nothing, partly ran, or completed
+without recording its receipt. Before continuing, the worker must inspect the
+actual target system and establish that the old executor and any asynchronous
+effect have stopped.
+
+After determining the outcome, worker B records that evidence against the exact
+predecessor operation:
+
+```sh
+worklease op reconcile \
+  --session worker-b \
+  --target-claim-id OLD_CLAIM_ID \
+  --target-operation-id OPERATION_ID \
+  --expected-request-sha256 REQUEST_HASH \
+  --outcome observed-success \
+  --evidence '{"outcome":"observed-success","executorStopped":true,"checked":"deployment API"}'
+```
+
+Use `observed-failure` only when inspection establishes failure. The claim ID,
+operation ID, and request hash are available in the structured acquire and
+inspection results. Reconciliation does not discover the outcome; it records
+the operator's independently established outcome and cessation evidence. Once
+it succeeds, guarded work can continue:
+
+```sh
+worklease exec --session worker-b -- ./next-step.sh
+worklease release --session worker-b --reason done
+```
+
+For a guarded local file update, claim the exact path and require its current
+content hash. The replacement fails without changing the file if another writer
+changed it first:
+
+```sh
+worklease acquire --path config.json --session config-update
+worklease replace-file \
+  --session config-update \
+  --path config.json \
+  --expected-sha256 CURRENT_SHA256 \
+  --content-file new-config.json
+worklease release --session config-update --reason done
+```
+
+Worklease is not a complete activity log. Public history contains redacted
+lifecycle metadata, completed exec output is bounded, and a started operation
+may have no completion receipt. Use checkpoints, commits, and the selected work
+provider for human or agent handoff context.
+
 ## Policy and administration
 
 | Command | Purpose |
