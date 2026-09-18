@@ -288,8 +288,9 @@ selection precedence is `--profile`, `WORKLEASE_PROFILE`, checkout binding,
 configured user default, then implicit local. The exact case-sensitive name
 `local` is a built-in selection at every layer and never a persisted remote
 profile. `profile default local` records an explicit local user default without
-changing bindings; `profile bind local` overrides the remote default for that
-checkout, and `profile unbind` removes that override so normal fallback resumes.
+changing bindings; `profile bind local` (alias `profile use local`) overrides the
+remote default for that checkout, and `profile unbind` (alias `profile unuse`)
+removes that override so normal fallback resumes.
 `profile default` reports configured default versus unset, while `profile show`
 reports the effective selection and source. `profile list` always shows `local`
 separately from remote profiles, and `profile show local` inspects it without
@@ -343,7 +344,7 @@ Cleartext additionally requires
 
 | Task | Commands |
 | --- | --- |
-| Select an authority | `profile add|list|show|remove|default|bind|unbind`, `--profile`, `--local` |
+| Select an authority | `profile add|list|show|remove|default|bind|unbind` (`use`/`unuse` alias checkout binding), `--profile`, `--local` |
 | Enroll a client | `invite issue`, `enroll` |
 | Issue an invite with defaults | `invite issue` defaults to write/profile-label/15-minute expiry, writes an owner-private artifact, and prints its path plus exact enroll command without the bearer. |
 | Administer access | `installation list|revoke`, `claim revoke` |

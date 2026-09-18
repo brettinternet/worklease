@@ -38,8 +38,10 @@ func profileCommands(s *boundary) []*urfave.Command {
 	show := leaf("show", "show one trusted remote authority profile", "[NAME]", "Without NAME, normal profile selection precedence chooses the profile and the selecting rule is reported.", nil, profileShowAction(s))
 	remove := leaf("remove", "remove one trusted remote authority profile", "NAME", "NAME is required; the built-in local selection cannot be removed.", nil, profileRemoveAction(s))
 	def := leaf("default", "show or select the default authority profile", "[NAME]", "Without NAME, reports the configured default (including local) or that no default is configured.", nil, profileDefaultAction(s))
-	bind := leaf("bind", "bind this checkout to an authority profile", "NAME [--cwd DIR]", "NAME is required; local binds this checkout to the built-in authority.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
-	unbind := leaf("unbind", "remove this checkout's remote authority binding", "[--cwd DIR]", "This command takes no profile NAME.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
+	bind := leaf("bind", "bind this checkout to an authority profile", "NAME [--cwd DIR]", "NAME is required; local binds this checkout to the built-in authority. Alias: use.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
+	bind.Aliases = []string{"use"}
+	unbind := leaf("unbind", "remove this checkout's remote authority binding", "[--cwd DIR]", "This command takes no profile NAME. Alias: unuse.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
+	unbind.Aliases = []string{"unuse"}
 	profile := &urfave.Command{
 		Name: "profile", Usage: "manage authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>",
 		Description: "Manage owner-private remote authority profiles and checkout bindings. Selection precedence is --profile, WORKLEASE_PROFILE, checkout binding, user default, then implicit local. Selecting local explicitly stops fallback without creating a remote profile; --local instead forces local and conflicts with any profile flag or environment selection. Unbind removes only the checkout override. A persisted remote profile named local must be renamed manually together with its default and binding references while retaining its credential path.\n\nExamples:\n  worklease profile list",

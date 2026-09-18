@@ -204,8 +204,8 @@ worklease profile list                         # alias: profile ls
 worklease profile show NAME
 worklease profile remove NAME
 worklease profile default NAME
-worklease profile bind NAME [--cwd DIR]
-worklease profile unbind [--cwd DIR]
+worklease profile bind NAME [--cwd DIR]          # alias: profile use
+worklease profile unbind [--cwd DIR]              # alias: profile unuse
 ```
 
 `profile add` performs bounded metadata discovery and pins the supplied

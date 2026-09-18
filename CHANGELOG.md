@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `profile use` and `profile unuse` provide concise aliases for checkout-scoped `profile bind` and `profile unbind`.
+
 ## 1.7.1 - 2026-09-17
 
 ### Fixed

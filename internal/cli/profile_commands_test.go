@@ -237,6 +237,28 @@ func TestProfileDefaultLocalAndBindLocalPersistSelectionsWithoutRemoteProfile(t 
 	}
 }
 
+func TestProfileUseAliasesBindAndUnbind(t *testing.T) {
+	saveTestProfiles(t, []config.Profile{testProfile("remote")}, "")
+	checkoutRoot, err := handle.ContextRoot(mustGetwd(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runProfileCLI(t, "profile", "use", "remote"); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := config.LoadBinding(config.UserProfilePaths(nil), checkoutRoot)
+	if err != nil || binding != "remote" {
+		t.Fatalf("binding=%q err=%v", binding, err)
+	}
+	if _, err = runProfileCLI(t, "profile", "unuse"); err != nil {
+		t.Fatal(err)
+	}
+	binding, err = config.LoadBinding(config.UserProfilePaths(nil), checkoutRoot)
+	if err != nil || binding != "" {
+		t.Fatalf("binding=%q err=%v", binding, err)
+	}
+}
+
 func TestProfileDefaultWithoutConfiguredDefault(t *testing.T) {
 	saveTestProfiles(t, []config.Profile{testProfile("one")}, "")
 	out, err := runProfileCLI(t, "profile", "default")
