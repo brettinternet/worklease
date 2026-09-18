@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-17 23:00'
-updated_date: '2026-09-17 23:42'
+updated_date: '2026-09-18 00:06'
 labels:
   - ergonomics
   - remote-authority
@@ -70,10 +70,14 @@ Design refinement only: inspected internal/config/profile.go, internal/cli/profi
 Implemented built-in local selection, persistence, inspection, reserved-name protections, compatibility diagnostics, shared CLI/MCP resolution, focused regression coverage, documentation, and Unreleased notes in the isolated task-124-local-profile worktree. Independent review found JSON-shape, collision-classification, invite-hint side-effect, and help-detail defects; all four were fixed with regression tests before full gates.
 
 Verification passed after review fixes: go test ./internal/config ./internal/cli; mise run lint; mise run format-check; mise run test; mise run typecheck; staged mise run hooks; post-merge go test ./internal/config ./internal/cli ./internal/mcp. Regression tests cover all selection layers, explicit/unset defaults, canonical local bindings, local inspection/list JSON and text, mutation/enrollment side-effect refusal, forced-local bypass/conflicts, typed legacy-collision migration diagnostics, remote-only commands, and MCP startup. Implementation commit after rebase: 431dec6.
+
+Delivery: main push CI passed at https://github.com/brettinternet/worklease/actions/runs/35288999477 after release-gating stabilization commit 1983b6e. Tagged and published v1.7.0 from 1983b6e; tagged CI passed at https://github.com/brettinternet/worklease/actions/runs/35289287098 and the release workflow passed at https://github.com/brettinternet/worklease/actions/runs/35289287094. All four archives and checksums were published; downloaded checksums verified and the macOS arm64 binary reported version 1.7.0 and commit 1983b6e521475169422e6520cf747b450ab164c9. Release: https://github.com/brettinternet/worklease/releases/tag/v1.7.0.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Made local a reserved first-class built-in profile selection without persisting a fake remote profile. Added explicit default and checkout binding support, inspection metadata, reserved-name and remote-only safety, fail-closed legacy collision guidance, shared CLI/MCP resolution coverage, and user/CLI documentation. Independent review findings were fixed; all repository gates, staged hooks, and post-merge config/CLI/MCP tests passed.
+
+Published and verified v1.7.0 with passing tagged CI, release assets, container publication, mise installation checks, downloaded checksums, and binary version smoke.
 <!-- SECTION:FINAL_SUMMARY:END -->
