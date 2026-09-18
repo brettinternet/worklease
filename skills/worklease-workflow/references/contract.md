@@ -77,9 +77,24 @@ WorkClaim {
 }
 ```
 
-Absence of a claim is represented by `WorkItem.claim: null` plus a structured `capability` or guarantee outcome, never by a synthetic `WorkClaim`. A new attempt may replace an expired claim with a fresh claim ID and credential, but may not adopt or renew an unexpired claim because its agent or session identity matches. An active claim is one bounded ownership epoch over one to 32 exact authority resources. `local-coordination` excludes only cooperating callers under the stated local scope. `local-serialized-replace` applies only to the exact expected-hash local file replacement.
+Absence of a claim is represented by `WorkItem.claim: null` plus a structured
+`capability` or guarantee outcome, never by a synthetic `WorkClaim`.
 
-`WorkClaim` is normalized adapter state, not the raw Worklease wire object. A Worklease adapter records `guaranteeScope` and `providerMutationFenced` from caller/provider evidence because Worklease does not emit provider guarantees. Keep provider source versions in provider metadata or a separate provider receipt; never overload claim revision or event sequence.
+A new attempt may replace an expired claim with a fresh claim ID and credential,
+but may not adopt or renew an unexpired claim because its agent or session
+identity matches.
+
+An active claim is one bounded ownership epoch over one to 32 exact authority
+resources. `local-coordination` excludes only cooperating callers under the
+stated local scope. `local-serialized-replace` applies only to the exact
+expected-hash local file replacement.
+
+`WorkClaim` is normalized adapter state, not the raw Worklease wire object.
+A Worklease adapter records `guaranteeScope` and `providerMutationFenced` from
+caller/provider evidence because Worklease does not emit provider guarantees.
+
+Keep provider source versions in provider metadata or a separate provider
+receipt; never overload claim revision or event sequence.
 
 The credential is a bearer secret held in an authority-bound private handle or file/fd source. Pass it only to claim mutations and guarded operations. Never include it in grants, read-only status, diagnostics, provider checkpoints, logs, or handoffs.
 
@@ -129,11 +144,27 @@ The caller exposes equivalent provider and claim-authority operations and suppli
 10. `resolveReviewBoundary(scope, requestedBoundary, authority)` resolves an explicitly requested provider boundary and its exact members.
 11. `archive(source, target, authority, claim?)` performs an explicitly authorized caller-owned archive operation.
 
-The caller passes authority and scope unchanged to mutations. Reads and resolution cannot expand either. The caller or provider adapter must supply opaque claim resources and merge claim-authority reads into scheduling state before selection; the generic workflow never infers a resource from provider values. A provider write receipt must identify the durable source/version where the caller can discover the result; a claim or guarded-operation receipt alone does not satisfy that requirement.
+The caller passes authority and scope unchanged to mutations. Reads and
+resolution cannot expand either.
+
+The caller or provider adapter must supply opaque claim resources and merge
+claim-authority reads into scheduling state before selection. The generic
+workflow never infers a resource from provider values.
+
+A provider write receipt must identify the durable source/version where the caller
+can discover the result. A claim or guarded-operation receipt alone does not
+satisfy that requirement.
 
 ### Generic workflow operations
 
-The generic workflow, not a provider adapter, builds and validates the dependency graph, implements `selectNext(scope, mode)` and `selectWave(scope, mode)`, applies source/selector ordering and tie-breakers, and returns structured no-work outcomes. It supplies the default one-item review boundary and calls `resolveReviewBoundary` only for an explicit larger request. Provider adapters supply normalized fields and operations; they do not reimplement scheduling.
+The generic workflow, not a provider adapter, builds and validates the dependency
+graph. It implements `selectNext(scope, mode)` and `selectWave(scope, mode)`,
+applies source/selector ordering and tie-breakers, and returns structured no-work
+outcomes.
+
+It supplies the default one-item review boundary and calls
+`resolveReviewBoundary` only for an explicit larger request. Provider adapters
+supply normalized fields and operations; they do not reimplement scheduling.
 
 ## Resolution and selection
 
@@ -175,11 +206,26 @@ The caller must state the exact scope and guarantee it can prove:
 
 Set `providerMutationFenced` to `false` by default. Set it to `true` only when the durable provider mutation itself shares the provider compare-and-set/fencing boundary and returns evidence. Pre/post reads under a local claim can detect some races but do not prevent them.
 
-Never promote a lock, lease, assignment, status, comment, branch, worktree, local cache, or local command receipt into a stronger guarantee. A provider CLI or remote API invoked from a locally guarded process is still not provider-fenced unless the provider mutation itself shares the CAS/fence and returns evidence of it.
+Never promote a lock, lease, assignment, status, comment, branch, worktree, local
+cache, or local command receipt into a stronger guarantee.
+
+A provider CLI or remote API invoked from a locally guarded process is still not
+provider-fenced unless the provider mutation itself shares the CAS/fence and
+returns evidence of it.
 
 ## Durable authority and archive
 
-The caller's backing source remains authoritative for item content, dependencies, status, progress, review, and completion. Any local claim store or cache is coordination/context only and is never a writable shadow source. A local guarded-operation receipt proves only that local operation's outcome and scope; it does not replace a provider receipt or verified provider state. Review and archive are caller operations, not scheduling shortcuts: they require explicit authority, matching claim where applicable, and a durable provider receipt. Deleting a source is not an archive operation unless the caller's own contract explicitly defines deletion as archive.
+The caller's backing source remains authoritative for item content, dependencies,
+status, progress, review, and completion. Any local claim store or cache is
+coordination/context only and is never a writable shadow source.
+
+A local guarded-operation receipt proves only that local operation's outcome and
+scope; it does not replace a provider receipt or verified provider state.
+
+Review and archive are caller operations, not scheduling shortcuts. They require
+explicit authority, a matching claim where applicable, and a durable provider
+receipt. Deleting a source is not an archive operation unless the caller's own
+contract explicitly defines deletion as archive.
 
 ## Structured result vocabulary
 

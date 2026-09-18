@@ -2,9 +2,11 @@
 
 The release workflow publishes the same statically linked Linux binary from the
 release archives as `ghcr.io/brettinternet/worklease:vVERSION` for Linux amd64
-and arm64. The runtime image is `scratch`: it contains only `/worklease`, runs as
-UID/GID `65532:65532`, and adds no container-only Worklease behavior. Pass the
-same CLI commands and server configuration used by a native installation.
+and arm64.
+
+The runtime image is `scratch`: it contains only `/worklease`, runs as UID/GID
+`65532:65532`, and adds no container-only Worklease behavior. Pass the same CLI
+commands and server configuration used by a native installation.
 
 Version tags are immutable release identities. Publication fails when
 `vVERSION` already exists; a later release must use a new version and cannot
@@ -40,11 +42,14 @@ Keep current and future authority files on one mount. Never mount individual
 files or split the home across volumes.
 
 SQLite WAL requires a local, single-host filesystem. Network filesystems are
-unsupported. Run one writable container against a hosted home, never multiple
-replicas or two writable copies. Upgrades are stop-before-start: stop the old
-container completely, retain the home, then start the new image. The hosted lock
-rejects a second cooperating writer but cannot make independent writable copies
-safe.
+unsupported.
+
+Run one writable container against a hosted home, never multiple replicas or two
+writable copies. Upgrades are stop-before-start: stop the old container
+completely, retain the home, then start the new image.
+
+The hosted lock rejects a second cooperating writer but cannot make independent
+writable copies safe.
 
 ## Configuration, TLS, and initialization
 
@@ -72,13 +77,16 @@ docker run --rm \
 ```
 
 Transfer `/srv/worklease/bootstrap/admin.invite` through an authenticated
-secret channel to the administrator and enroll with
-`worklease enroll --invite-file FILE`. The artifact carries the endpoint,
-authority identity, and generated certificate pin; do not parse or copy those
-fields manually. The administrator then issues a write artifact with
-`worklease invite issue --role write --invite-file FILE --label client` for the
-separate client. Follow the complete claim, doctor, observation, heartbeat, and
-release journey in the [remote authority quickstart](remote-claim-authority.md#two-machine-quickstart).
+secret channel to the administrator. Enroll with
+`worklease enroll --invite-file FILE`.
+
+The artifact carries the endpoint, authority identity, and generated certificate pin;
+do not parse or copy those fields manually. The administrator then issues a write
+artifact with `worklease invite issue --role write --invite-file FILE --label client`
+for the separate client.
+
+Follow the complete claim, doctor, observation, heartbeat, and release journey in
+the [remote authority quickstart](remote-claim-authority.md#two-machine-quickstart).
 
 Run the authority with only the hosted home writable and generated setup mounted
 read-only:
@@ -93,19 +101,23 @@ docker run --detach --name worklease --restart unless-stopped \
 ```
 
 Do not bake configuration, TLS private keys, invite secrets, installation
-credentials, or backup credentials into an image. Import one-time artifacts
-into the intended secret manager and remove them according to that system's
-policy. A TLS-terminating proxy is optional; if used, follow the server's
-trusted-edge requirements rather than passing identity headers as authorization.
+credentials, or backup credentials into an image.
+
+Import one-time artifacts into the intended secret manager and remove them
+according to that system's policy. A TLS-terminating proxy is optional; if used,
+follow the server's trusted-edge requirements rather than passing identity
+headers as authorization.
 
 ## Backup and upgrade
 
-A restart or stop-before-start image upgrade reuses the mounted home unchanged,
-which preserves the authority identity, restore identity, claims, replay, and
-authentication state. Back up SQLite through a supported online SQLite backup or
-replication integration; do not copy a live database file independently of its
-WAL state. Optional asynchronous object replication is disaster recovery, not
-high availability.
+A restart or stop-before-start image upgrade reuses the mounted home unchanged.
+This preserves the authority identity, restore identity, claims, replay, and
+authentication state.
+
+Back up SQLite through a supported online SQLite backup or replication
+integration; do not copy a live database file independently of its WAL state.
+Optional asynchronous object replication is disaster recovery, not high
+availability.
 
 For backup integrations:
 

@@ -26,18 +26,20 @@ credential source, or mutation authority.
 ## Layer boundary
 
 The generic contract owns all provider-independent invariants. This layer maps
-provider values and operations into that contract. Provider references may
-define resolution, discovery, normalized fields, resource policy,
-authoritative mutations, receipts, review boundaries, and archive behavior.
-They must not reimplement dependency scheduling, active-claim filtering,
-tie-breakers, ownership epochs, heartbeat cadence, checkpoint-before-release,
-or generic result vocabulary.
+provider values and operations into that contract.
+
+Provider references may define resolution, discovery, normalized fields, resource
+policy, authoritative mutations, receipts, review boundaries, and archive
+behavior. They must not reimplement dependency scheduling, active-claim filtering,
+tie-breakers, ownership epochs, heartbeat cadence, checkpoint-before-release, or
+generic result vocabulary.
 
 Worklease's static built-in key policies derive deterministic resource keys and
-local capabilities after the caller supplies a provider, source, and item. They
-do not discover provider work, authenticate, execute provider writes, or prove
-provider-side fencing. A source workflow adapter may use a built-in policy; it
-still owns caller-authorized provider reads, writes, and receipts.
+local capabilities after the caller supplies a provider, source, and item.
+
+They do not discover provider work, authenticate, execute provider writes, or
+prove provider-side fencing. A source workflow adapter may use a built-in policy;
+it still owns caller-authorized provider reads, writes, and receipts.
 
 ## Required composition
 
@@ -60,11 +62,12 @@ never authorize a local shadow backlog or weaker mutation path.
 ## Guarantee mapping
 
 Default `providerMutationFenced` to `false`. Worklease claim lifecycle and
-supervised exec provide `local-coordination`; exact expected-hash replacement
-may provide `local-serialized-replace` only for that file operation. A provider
-CLI or remote API inside a guarded local process remains `local-coordination`
-unless the provider mutation itself uses compare-and-set or fencing and returns
-evidence.
+supervised exec provide `local-coordination`; exact expected-hash replacement may
+provide `local-serialized-replace` only for that file operation.
+
+A provider CLI or remote API inside a guarded local process remains
+`local-coordination` unless the provider mutation itself uses compare-and-set or
+fencing and returns evidence.
 
 A loose-Markdown `replace-file` path may report fencing only for the exact
 source-file mutation guarded by the matching source claim and expected
@@ -74,12 +77,13 @@ provider fencing.
 
 ## Safe provider operation
 
-Refresh the exact `WorkRef`, dependencies, claim, and provider version before
-a durable mutation. Preserve unrelated provider fields. Retain both the
-Worklease operation receipt and provider receipt, but treat only verified
-provider state as the checkpoint. Stop without release or further mutation on
-ambiguity, ownership loss, version conflict, unsupported capability, or a
-missing receipt.
+Refresh the exact `WorkRef`, dependencies, claim, and provider version before a
+durable mutation. Preserve unrelated provider fields.
+
+Retain both the Worklease operation receipt and provider receipt, but treat only
+verified provider state as the checkpoint. Stop without release or further
+mutation on ambiguity, ownership loss, version conflict, unsupported capability,
+or a missing receipt.
 
 Never expose the claim token in provider comments, status, checkpoints, logs,
 diagnostics, examples, or handoffs. Pass it only to claim mutations and

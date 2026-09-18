@@ -36,78 +36,96 @@ credential from:
 
 A handle includes authority ID, resources, claim ID, revision, credential, and
 pending exact request. It is written atomically with owner-only permissions and
-serialized across processes. It is convenience state, not ownership or a
-provider checkpoint. Two loops in one checkout must use distinct contextual
-handle selectors. The selector resolves from `--session`, then
-`WORKLEASE_SESSION_ID`, then the empty value; human output renders the empty
-value as `"" (unscoped)`, but `unscoped` is not stored as the selector.
-Profiles that name the same authority ID share one contextual slot regardless
-of profile name, endpoint, credential path, or restore ID. Switching authorities
-selects an independent slot, so a newly initialized authority cannot overwrite
-or retarget the previous authority's handle.
+serialized across processes.
+
+It is convenience state, not ownership or a provider checkpoint. Two loops in one
+checkout must use distinct contextual handle selectors.
+
+The selector resolves from `--session`, then `WORKLEASE_SESSION_ID`, then the
+empty value. Human output renders the empty value as `"" (unscoped)`, but
+`unscoped` is not stored as the selector.
+
+Profiles that name the same authority ID share one contextual slot regardless of
+profile name, endpoint, credential path, or restore ID. Switching authorities
+selects an independent slot, so a newly initialized authority cannot overwrite or
+retarget the previous authority's handle.
 
 A ready contextual handle may be replaced only after the selected authority
-confirms that its claim is inactive. The replacement is a new ownership epoch:
-Worklease generates a new claim ID and credential, uses the current acquire
-inputs, and writes the exact request as pending before dispatch. A validated
-grant alone promotes that pending handle to ready. Local wall-clock expiry,
-failed or ambiguous status, an authority mismatch, or a concurrent handle
-change never authorizes replacement.
+confirms that its claim is inactive.
+
+The replacement is a new ownership epoch. Worklease generates a new claim ID and
+credential, uses the current acquire inputs, and writes the exact request as
+pending before dispatch. A validated grant alone promotes that pending handle to
+ready.
+
+Local wall-clock expiry, failed or ambiguous status, an authority mismatch, or a
+concurrent handle change never authorizes replacement.
 
 A pending request always takes precedence over ready-handle replacement. Its
-original bytes, identity, deadline, credential, and authority binding are
-replayed exactly. Selecting another `--session` chooses a different contextual
-handle; it is not recovery for an uncertain request. The generated claim
-`sessionId` is epoch metadata, while optional `--session` participates in
-contextual handle selection. With an explicit selector the values may coincide,
-but they retain those separate roles. When the resolved selector is empty,
-acquire still generates a non-empty claim `sessionId`; using that generated value as a later
-selector chooses another slot rather than rediscovering the unscoped handle.
-Selectors never enter resource keys, so different selectors still contend on
-the same exact resource. A legacy root-and-session handle migrates only
-when its embedded authority ID matches the selected authority. Mismatched
-legacy state remains at its original path. If both legacy and scoped paths
-exist, Worklease changes neither and reports both paths for explicit `--handle`
-recovery.
+original bytes, identity, deadline, credential, and authority binding are replayed
+exactly.
+
+Selecting another `--session` chooses a different contextual handle; it is not
+recovery for an uncertain request. The generated claim `sessionId` is epoch
+metadata, while optional `--session` participates in contextual handle selection.
+With an explicit selector the values may coincide, but they retain those separate
+roles.
+
+When the resolved selector is empty, acquire still generates a non-empty claim
+`sessionId`. Using that generated value as a later selector chooses another slot
+rather than rediscovering the unscoped handle. Selectors never enter resource
+keys, so different selectors still contend on the same exact resource.
+
+A legacy root-and-session handle migrates only when its embedded authority ID
+matches the selected authority. Mismatched legacy state remains at its original
+path. If both legacy and scoped paths exist, Worklease changes neither and
+reports both paths for explicit `--handle` recovery.
 
 `worklease handle inspect` reads the selected contextual handle, or an explicit
-`--handle`, entirely offline. It reports only redacted authority, claim,
-selector, locally recorded lifecycle, resource, and recovery metadata. Text
-renders an empty resolved selector as `"" (unscoped)` and quotes nonempty
-selectors; JSON keeps `selectorSession` as the exact string and reports claim
-metadata separately as `claimSessionId`. It does not create a missing handle or
-authority store, and a recorded expiry is never proof that authority-side
-ownership or external work has ended. An explicitly
-named handle cannot reveal how it was originally selected, so its selector
-provenance is reported as unknown.
+`--handle`, entirely offline. It reports only redacted authority, claim, selector,
+locally recorded lifecycle, resource, and recovery metadata.
+
+Text renders an empty resolved selector as `"" (unscoped)` and quotes nonempty
+selectors. JSON keeps `selectorSession` as the exact string and reports claim
+metadata separately as `claimSessionId`.
+
+It does not create a missing handle or authority store. A recorded expiry is
+never proof that authority-side ownership or external work has ended. An
+explicitly named handle cannot reveal how it was originally selected, so its
+selector provenance is reported as unknown.
 
 `worklease handle archive` sets a stale or foreign handle aside without
-contacting, releasing, revoking, or otherwise mutating any authority. The exact
-owner-private record is durably copied to no-overwrite archive storage before
-the original is removed. Pending or recovery state requires
-`--acknowledge-pending-recovery`; refusal leaves the source unchanged. A
-successful archive prints an explicit `--handle` recovery path. The archive is
+contacting, releasing, revoking, or otherwise mutating any authority.
+
+The exact owner-private record is durably copied to no-overwrite archive storage
+before the original is removed. Pending or recovery state requires
+`--acknowledge-pending-recovery`; refusal leaves the source unchanged.
+
+A successful archive prints an explicit `--handle` recovery path. The archive is
 never selected as a contextual handle, and the underlying claim may remain
 active.
 
 ## Revisions, replay, and unknown outcomes
 
 Every mutation names an operation ID and exact normalized request with a bounded
-`requestNotAfter`. Omit the operation ID for ordinary work. Reuse it only to
-replay the same request after losing a response. A changed resource set, cwd,
-content digest, duration, checkpoint, or other protected intent conflicts.
+`requestNotAfter`. Omit the operation ID for ordinary work.
+
+Reuse it only to replay the same request after losing a response. A changed
+resource set, cwd, content digest, duration, checkpoint, or other protected intent
+conflicts.
 
 A committed response can remain unknown to the client. The pending request in
 the handle permits authenticated replay during the recovery window. Acquire and
 transfer replays remain authenticated even after the original epoch ends; no
 public replay can recover a credential.
 
-Guarded operations record intent before side effects. If ownership is lost,
-the operation remains started. A predecessor started operation blocks new
-guarded work until an authorized operator checks the authoritative effect,
-proves the old executor has ceased, and records explicit reconciliation. A file
-already matching a proposed hash is not enough evidence that an old executor
-cannot still write.
+Guarded operations record intent before side effects. If ownership is lost, the
+operation remains started.
+
+A predecessor started operation blocks new guarded work until an authorized
+operator checks the authoritative effect, proves the old executor has ceased, and
+records explicit reconciliation. A file already matching a proposed hash is not
+enough evidence that an old executor cannot still write.
 
 ## Guarantees
 

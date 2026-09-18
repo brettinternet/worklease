@@ -20,7 +20,12 @@ The static built-in Linear key policy is coordination-only:
 worklease key --provider linear --source "$source_locator" --item "$issue_id"
 ```
 
-It derives a deterministic item resource but cannot guard the remote mutation. Keep the Worklease guarantee `local-coordination` and `providerMutationFenced: false` unless the caller supplies a Linear operation that atomically rejects stale versions and returns fencing evidence. Assignment, status, or a comment is visibility, not a claim.
+It derives a deterministic item resource but cannot guard the remote mutation.
+Keep the Worklease guarantee `local-coordination` and
+`providerMutationFenced: false` unless the caller supplies a Linear operation
+that atomically rejects stale versions and returns fencing evidence.
+
+Assignment, status, or a comment is visibility, not a claim.
 
 ## Authoritative operations
 

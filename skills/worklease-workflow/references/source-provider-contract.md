@@ -87,8 +87,19 @@ Record two separate facts:
 1. Worklease claim `guarantee` and `guaranteeScope`, describing the guarded local operation or local coordination boundary.
 2. `providerMutationFenced`, describing whether the durable provider mutation itself shared a provider compare-and-set/fencing boundary.
 
-`providerMutationFenced` defaults to `false`. Set it to `true` only when `conditionalWrite` is true and `fencingEvidence` proves the provider rejected stale writers as part of the same durable mutation. Pre/post reads detect some conflicts but do not fence the mutation.
+`providerMutationFenced` defaults to `false`. Set it to `true` only when
+`conditionalWrite` is true and `fencingEvidence` proves the provider rejected
+stale writers as part of the same durable mutation.
+
+Pre/post reads detect some conflicts but do not fence the mutation.
 
 ## Generic workflow handoff
 
-After producing normalized sources, items, resource policy, and declared capabilities, hand them to `worklease-workflow`. The provider adapter responds to capability calls when invoked; it does not expose a scheduler, work loop, `selectNext`, `selectWave`, claim lifecycle, or release policy. The normative contract alone decides graph construction, operation ordering, claim/revalidation timing, checkpoint-before-release, and structured outcomes.
+After producing normalized sources, items, resource policy, and declared
+capabilities, hand them to `worklease-workflow`.
+
+The provider adapter responds to capability calls when invoked. It does not
+expose a scheduler, work loop, `selectNext`, `selectWave`, claim lifecycle, or
+release policy. The normative contract alone decides graph construction,
+operation ordering, claim/revalidation timing, checkpoint-before-release, and
+structured outcomes.

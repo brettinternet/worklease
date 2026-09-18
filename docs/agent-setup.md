@@ -20,10 +20,12 @@ worklease instructions setup
 ```
 
 The first command lists topics; the second guides configuration and verification.
-Instruction commands only print guidance. Follow the installed binary's
-instructions and matching release documentation rather than assuming the latest
-repository documentation describes an older binary. If the installed version
-lacks these topics, ask before upgrading and use its matching setup reference.
+Instruction commands only print guidance.
+
+Follow the installed binary's instructions and matching release documentation.
+Do not assume the latest repository documentation describes an older binary.
+If the installed version lacks these topics, ask before upgrading and use its
+matching setup reference.
 
 ## Choose the intended topology
 
@@ -33,23 +35,29 @@ lacks these topics, ask before upgrading and use its matching setup reference.
 | Use an existing remote authority | Follow `instructions remote`; obtain an administrator-issued invite privately. |
 | Host a new remote authority | Follow `instructions server`; confirm deployment and network exposure before making changes. |
 
-Remote authority is experimental. Hosting a claim authority with `worklease serve`
-is separate from the optional local MCP stdio server, `worklease mcp`.
+Remote authority is experimental.
+
+Hosting a claim authority with `worklease serve` is separate from the optional
+local MCP stdio server, `worklease mcp`.
+
 Do not create a server when the user only asked to join one. Do not fall back to
 local coordination when remote setup fails.
 
 Also resolve the authoritative work source, exact resource convention, and
-configuration scope. Distinct sessions separate handles, not resource namespaces.
-Remote resources must be admitted cross-host keys; host-local path, Backlog.md,
-and Markdown keys cannot simply be reused remotely. Do not invent a mapping
-without agreement from the other contenders.
+configuration scope.
+
+- Distinct sessions separate handles, not resource namespaces.
+- Remote resources must be admitted cross-host keys.
+- Host-local path, Backlog.md, and Markdown keys cannot simply be reused remotely.
+- Do not invent a mapping without agreement from the other contenders.
 
 Use the CLI by default. Configure [MCP or native hooks](setup.md) only when
-requested or needed; preview before applying. Do not change user-wide defaults
-for a checkout-only request. Inspect `worklease profile list` and
-`worklease profile default` before enrollment: when no user default exists,
-enrollment sets one. Obtain approval for that broader scope before proceeding;
-existing defaults are preserved. Verify the resulting selection explicitly.
+requested or needed; preview before applying.
+
+- Do not change user-wide defaults for a checkout-only request.
+- Inspect `worklease profile list` and `worklease profile default` before enrollment.
+- If no user default exists, enrollment sets one; obtain approval before proceeding.
+- Existing defaults are preserved. Verify the resulting selection explicitly.
 
 ## Verify before declaring completion
 
@@ -71,13 +79,16 @@ release an unrelated claim or reset authority state to make a check pass.
 ## Leave a small project nudge
 
 Run `worklease setup instructions` to print a version-marked project block.
-Fill its authority, work-source, and resource-convention placeholders with the
-verified non-secret choices, then merge it into the project's agent instructions.
-Preserve unrelated content and replace an existing Worklease block rather than
-appending duplicates. This command prints a template; it does not edit files.
 
-Keep installation steps and operator runbooks out of the persistent block. Future
-agents need the project choices and pointers to `instructions loop` and
-`instructions safety`, not the entire setup guide. Use the
-[workflow skill](../skills/worklease-workflow/SKILL.md) only when dependency-aware
-work selection, provider progress, review, or handoff requires its fuller contract.
+1. Fill its authority, work-source, and resource-convention placeholders with the verified non-secret choices.
+2. Merge it into the project's agent instructions.
+3. Preserve unrelated content and replace an existing Worklease block rather than appending duplicates.
+
+This command prints a template; it does not edit files.
+
+Keep installation steps and operator runbooks out of the persistent block.
+
+Future agents need the project choices and pointers to `instructions loop` and
+`instructions safety`, not the entire setup guide. Use the [workflow
+skill](../skills/worklease-workflow/SKILL.md) only when dependency-aware work
+selection, provider progress, review, or handoff requires its fuller contract.

@@ -27,9 +27,10 @@ Legacy clients send `initialize` with protocol version `2025-11-25`, then
 The eleven tools are `key`, `acquire`, `status`, `list`, `heartbeat`,
 `checkpoint`, `release`, `verify`, `watch`, `events`, and `instructions`.
 Schemas reject unknown inputs and return schema-version 2 domain envelopes.
+
 The `instructions` tool accepts `topic: setup|remote|server|loop|safety` and
-returns the same guidance as the CLI. These are read-only instructions, not
-MCP tools for enrollment or server administration; `server` describes the remote
+returns the same guidance as the CLI. These are read-only instructions, not MCP
+tools for enrollment or server administration. `server` describes the remote
 claim authority, not this stdio server.
 
 MCP intentionally is not CLI parity. `exec`, `replace-file`, transfer, operation
@@ -63,8 +64,10 @@ in results, errors, logs, checkpoints, or schemas.
 
 The server can renew an active claim before half its TTL while a tool call is in
 flight. Every MCP heartbeat, automatic or explicit, is capped by the original
-absolute `maxHold` deadline. The server keeps reading stdin so cancellation and
-EOF are prompt. Restarting does not auto-renew an old handle.
+absolute `maxHold` deadline.
+
+The server keeps reading stdin so cancellation and EOF are prompt. Restarting
+does not auto-renew an old handle.
 
 Mutations save exact pending requests before dispatch:
 
@@ -104,8 +107,9 @@ handles, and pending requests remain on the client host.
 The same eleven tools remain available. Remote acquire accepts only configured
 portable prefixes; `path`, `backlog-md`, and `markdown` keys are rejected.
 `wait` is a client loop capped at 60 seconds, while the server owns polling.
-Enrollment, administration, transfer, exec, replacement, reconciliation,
-history, profiles, and recovery remain outside MCP. Enroll with:
+
+Enrollment, administration, transfer, exec, replacement, reconciliation, history,
+profiles, and recovery remain outside MCP. Enroll with:
 
 ```text
 worklease enroll --profile NAME (--invite-file FILE|--invite-fd N) [--label TEXT]

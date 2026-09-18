@@ -20,10 +20,20 @@ Use the static built-in Backlog.md key policy after resolution:
 worklease key --provider backlog-md --source "$project_path" --item "$task_id"
 ```
 
-This produces an item-scoped local key. Its local guarded-operation capability does not make a Backlog.md CLI, MCP, SDK, or remote write provider-fenced. Normalize direct provider mutations as `local-coordination` and set `providerMutationFenced: false` unless the provider operation itself returns conditional-write evidence.
+This produces an item-scoped local key. Its local guarded-operation capability
+does not make a Backlog.md CLI, MCP, SDK, or remote write provider-fenced.
+
+Normalize direct provider mutations as `local-coordination` and set
+`providerMutationFenced: false` unless the provider operation itself returns
+conditional-write evidence.
 
 ## Authoritative operations
 
-The caller supplies authorized Backlog.md reads and writes. Refresh the task and dependency state before mutation. Preserve fields outside the requested patch. A durable receipt is the resulting task ID plus provider state/version that can be read again from the project; a Worklease `exec` receipt or command exit status alone is insufficient.
+The caller supplies authorized Backlog.md reads and writes. Refresh the task and
+dependency state before mutation. Preserve fields outside the requested patch.
+
+A durable receipt is the resulting task ID plus provider state/version that can
+be read again from the project. A Worklease `exec` receipt or command exit status
+alone is insufficient.
 
 Use Backlog.md's documented status, progress, review, document, and archive operations when authorized. If the installed interface cannot perform or verify a requested operation, return `capability`; never edit `docs/backlog/` records directly or maintain a writable local shadow.

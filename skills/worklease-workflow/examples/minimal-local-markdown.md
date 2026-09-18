@@ -24,8 +24,11 @@ worklease release --session "$session" --reason "provider checkpoint verified"
 ```
 
 The caller extracts the exact resource string from the JSON key envelope and
-owns IDs, paths, candidate content, and provider verification. For this exact
-expected-hash replacement the provider is the local file and
+owns IDs, paths, candidate content, and provider verification.
+
+For this exact expected-hash replacement, the provider is the local file and
 `local-serialized-replace` describes only that mutation. Direct edits, arbitrary
-commands, and moves remain unfenced. Credentials stay in the private handle and
-never appear in provider state or output.
+commands, and moves remain unfenced.
+
+Credentials stay in the private handle and never appear in provider state or
+output.

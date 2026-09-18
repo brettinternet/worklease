@@ -56,18 +56,25 @@ mise run build
 ./bin/worklease version
 ```
 
-Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
-and contain `bin/worklease` and `share/man/man1/worklease.1`. Checksums are in
-`checksums.txt`. Linux amd64 and arm64 server images are published to
-`ghcr.io/brettinternet/worklease:vVERSION`; see [container deployment](docs/container.md).
+Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`.
+They contain `bin/worklease` and `share/man/man1/worklease.1`.
+
+Checksums are in `checksums.txt`. Linux amd64 and arm64 server images are
+published to `ghcr.io/brettinternet/worklease:vVERSION`; see [container
+deployment](docs/container.md).
 
 ### Set up with your agent
 
-Point your agent to the [agent setup guide](docs/agent-setup.md) and tell it the
-intended topology: coordinate locally, join an existing remote authority, or host
-a new one. The guide covers installation, scope, verification, and the small
-project instruction block to leave behind. Share remote invites privately, not
-in the prompt or repository.
+Point your agent to the [agent setup guide](docs/agent-setup.md) and state the
+intended topology:
+
+- Coordinate locally.
+- Join an existing remote authority.
+- Host a new remote authority.
+
+The guide covers installation, scope, verification, and the small project
+instruction block to leave behind. Share remote invites privately, not in the
+prompt or repository.
 
 Once Worklease is installed, start with `worklease instructions setup`.
 `worklease instructions remote` covers joining an authority;
@@ -153,8 +160,10 @@ worklease heartbeat
 worklease release
 ```
 
-Invite files and credentials are bearer secrets: keep them out of checkouts and
-logs, then remove one-time invites. Bare `worklease enroll` uses a hidden prompt.
+Invite files and credentials are bearer secrets. Keep them out of checkouts and
+logs, then remove one-time invites.
+
+Bare `worklease enroll` uses a hidden prompt.
 
 ### Remote
 
@@ -280,6 +289,8 @@ runs clean-checkout end-to-end smoke, and renders the manual.
 
 The changelog command rejects empty entries, invalid versions or dates,
 duplicates, and existing releases. The tagged workflow publishes the matching
-changelog section verbatim. Tagging and publishing require separate owner
-authorization. Experimental remote artifact jobs may build and smoke-test on
-matching runners without publishing, tagging, or pushing.
+changelog section verbatim.
+
+Tagging and publishing require separate owner authorization. Experimental remote
+artifact jobs may build and smoke-test on matching runners without publishing,
+tagging, or pushing.

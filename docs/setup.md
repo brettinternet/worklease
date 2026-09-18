@@ -21,10 +21,11 @@ only the generated `mcpServers.worklease` entry. Existing unrelated JSON keys
 are retained. `--client generic` prints a snippet; copy it into the client's MCP
 server configuration yourself.
 
-The generated server command uses the absolute running Worklease binary. An
-explicit global `--home` or `--config` is copied into its argument list, and
-`--agent` adds `WORKLEASE_AGENT_ID` to the server environment. This keeps the
-CLI and MCP server on the same local authority without putting credentials in
+The generated server command uses the absolute running Worklease binary.
+
+An explicit global `--home` or `--config` is copied into its argument list, and
+`--agent` adds `WORKLEASE_AGENT_ID` to the server environment. This keeps the CLI
+and MCP server on the same local authority without putting credentials in
 configuration.
 
 MCP returns an opaque lease reference. CLI contextual handles and MCP lease
@@ -79,8 +80,12 @@ guard.
 
 `worklease setup instructions` prints a short project template inside versioned
 `<!-- worklease:begin ... -->` / `<!-- worklease:end -->` markers. It does not
-edit files. Fill in the verified non-secret authority selection, work source,
-and exact resource convention, then merge it into `AGENTS.md` without replacing
-unrelated instructions or duplicating an existing block. The template points
-agents to `worklease instructions loop` and `worklease instructions safety`
-instead of embedding the full guides. Never put credentials or invitations in it.
+edit files.
+
+Fill in the verified non-secret authority selection, work source, and exact
+resource convention. Merge it into `AGENTS.md` without replacing unrelated
+instructions or duplicating an existing block.
+
+The template points agents to `worklease instructions loop` and
+`worklease instructions safety` instead of embedding the full guides. Never put
+credentials or invitations in it.

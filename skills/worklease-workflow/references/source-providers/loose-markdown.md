@@ -21,7 +21,13 @@ worklease key --provider markdown --source "$source_path" --item "$item_id"
 
 The returned resource is source-scoped, so every item in the same file contends on one claim. Build complete replacement content separately, retain the current SHA-256, and call `MarkdownAdapter.replace_file` or the equivalent core guarded replacement with the matching source resource.
 
-For that exact expected-hash file replacement, the durable provider is the file itself: the matching source claim, ownership validation, expected SHA-256, and atomic replacement may support `providerMutationFenced: true` for that one mutation. Direct edits, arbitrary commands, moves, or writes outside the guarded replacement remain unfenced and must not inherit that value.
+For that exact expected-hash file replacement, the durable provider is the file
+itself. The matching source claim, ownership validation, expected SHA-256, and
+atomic replacement may support `providerMutationFenced: true` for that one
+mutation.
+
+Direct edits, arbitrary commands, moves, or writes outside the guarded replacement
+remain unfenced and must not inherit that value.
 
 ## Authoritative operations
 

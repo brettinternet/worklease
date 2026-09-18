@@ -12,11 +12,13 @@ The authority coordinates cooperating clients across hosts. The guarded child,
 provider CLI/API call, and file edit always run on the client host. The remote
 service never executes a provider operation or a child process.
 
-A standard binary is inert: it permanently opens no listener and makes no
+A standard binary is inert. It permanently opens no listener and makes no
 network request unless the user explicitly invokes remote profile management,
-selects a remote profile, or runs `serve`. Local reads remain setup-free. A
-configured profile is not a reason for an unqualified local read to contact the
-network unless that profile is selected by the normal precedence rules.
+selects a remote profile, or runs `serve`.
+
+Local reads remain setup-free. A configured profile is not a reason for an
+unqualified local read to contact the network unless that profile is selected by
+the normal precedence rules.
 
 ## Two-machine quickstart
 
@@ -54,11 +56,14 @@ worklease release
 ```
 
 Artifacts are bearer secrets. Keep them and generated server files out of
-repositories and logs. After successful enrollment from `--invite-file`, the
-text output confirms that the invite was consumed and reminds you to remove the
-local file when it is no longer needed. Worklease never deletes the file; retain
-it when enrollment fails or reports an uncertain outcome so exact replay remains
-possible.
+repositories and logs.
+
+After successful enrollment from `--invite-file`, the text output confirms that
+the invite was consumed and reminds you to remove the local file when it is no
+longer needed.
+
+Worklease never deletes the file. Retain it when enrollment fails or reports an
+uncertain outcome so exact replay remains possible.
 
 ### LAN
 
@@ -76,10 +81,13 @@ worklease serve
 ### Customize
 
 Use command flags first: `--admitted-prefix`, `--tls-cert` with `--tls-key`,
-`--bootstrap-invite-file`, and `--server-config`. Use
-`WORKLEASE_SERVER_CONFIG` for process-wide selection, or the corresponding
+`--bootstrap-invite-file`, and `--server-config`.
+
+Use `WORKLEASE_SERVER_CONFIG` for process-wide selection, or the corresponding
 `server.yaml` keys for managed deployments. `--guided` is a no-op compatibility
-alias. Cleartext additionally requires
+alias.
+
+Cleartext additionally requires
 `--transport http --acknowledge-cleartext-credentials`.
 
 ### Temporary trusted-LAN cleartext test only
@@ -158,10 +166,11 @@ Cleartext HTTP requires `allowInsecureHTTP: true` or
 `serve --allow-insecure-http` and exposes credentials and claim data.
 
 An optional asynchronous SQLite backup (for example, WAL replication to object
-storage) is a disaster-recovery backup, not failover, a coordinator, or a
-write fence. It can lose acknowledged writes. Choose and measure a backup
-cutoff and recovery downtime; backup lag does not by itself bound the lost
-history interval.
+storage) is a disaster-recovery backup, not failover, a coordinator, or a write
+fence. It can lose acknowledged writes.
+
+Choose and measure a backup cutoff and recovery downtime. Backup lag does not by
+itself bound the lost history interval.
 
 ## Advanced profiles and enrollment
 
@@ -175,24 +184,33 @@ Selection order is:
 5. implicit local authority
 
 The exact, case-sensitive name `local` is a built-in authority selection at
-every layer. `--profile local`, `WORKLEASE_PROFILE=local`, `profile bind local`,
-and `profile default local` select local without creating a persisted profile;
-an absent default remains an implicit local fallback. `profile default` reports
-the configured default (or unset), while `profile show` reports the effective
-selection and its source. `profile bind local` overrides a remote default for
-that checkout; `profile unbind` removes the override and restores normal
-fallback. `--local` remains a forced bypass of bindings, defaults, and profile
-store loading, and conflicts with any nonempty `--profile` or
-`WORKLEASE_PROFILE`, including `local`. Remote failures never fall back to
-local. To change an endpoint, remove and re-add the profile. Credential-bearing
-redirects are refused.
+every layer.
+
+`--profile local`, `WORKLEASE_PROFILE=local`, `profile bind local`, and
+`profile default local` select local without creating a persisted profile. An
+absent default remains an implicit local fallback.
+
+`profile default` reports the configured default (or unset), while `profile show`
+reports the effective selection and its source. `profile bind local` overrides a
+remote default for that checkout; `profile unbind` removes the override and
+restores normal fallback.
+
+`--local` remains a forced bypass of bindings, defaults, and profile store
+loading. It conflicts with any nonempty `--profile` or `WORKLEASE_PROFILE`,
+including `local`. Remote failures never fall back to local.
+
+To change an endpoint, remove and re-add the profile. Credential-bearing redirects
+are refused.
 
 `local` is reserved and cannot be added, enrolled, or removed as a remote
-profile. A persisted remote profile named `local` is a compatibility collision:
-Worklease fails closed and does not rewrite files or credentials. Manually rename
-the remote profile and update its default and checkout binding references,
-while retaining its existing credential path; no automatic migration command is
-provided.
+profile.
+
+A persisted remote profile named `local` is a compatibility collision. Worklease
+fails closed and does not rewrite files or credentials.
+
+Manually rename the remote profile and update its default and checkout binding
+references while retaining its existing credential path. No automatic migration
+command is provided.
 
 Artifact enrollment in the quickstart creates and selects profiles automatically.
 For endpoint changes, recovery, or legacy bare-secret enrollment, the exact
@@ -209,12 +227,14 @@ worklease profile unbind [--cwd DIR]              # alias: profile unuse
 ```
 
 `profile add` performs bounded metadata discovery and pins the supplied
-`authorityId` and the discovered `restoreId` before saving. Its only command
-flags are `--endpoint URL`, `--authority-id ID`, `--certificate-sha256 HEX`,
-and `--allow-insecure-http`. `profile list` is local and setup-free; it always
-lists the built-in `local` selection separately from persisted remote profiles,
-and profile credentials are not printed. `profile show local` is also setup-free
-and does not contact a remote authority.
+`authorityId` and the discovered `restoreId` before saving. Its only command flags
+are `--endpoint URL`, `--authority-id ID`, `--certificate-sha256 HEX`, and
+`--allow-insecure-http`.
+
+`profile list` is local and setup-free. It always lists the built-in `local`
+selection separately from persisted remote profiles, and profile credentials are
+not printed. `profile show local` is also setup-free and does not contact a
+remote authority.
 
 An admin issues a one-time invite to an owner-private file or inherited file
 descriptor, then the new installation enrolls with that invite:
@@ -275,13 +295,15 @@ unknown-outcome          operation-ambiguous    replay-expired
 operation-kind-unsupported  invite-invalid      invite-expired  invite-used
 ```
 
-Common validation, rate-limit, storage, and clock reasons also apply. A
-`remote-transport-failure` during metadata discovery is safe to retry and includes
-only a bounded transport class (`dns`, `refused`, `timeout`, `tls`, or `connect`);
-run `worklease doctor` for the corresponding reachability check. Exit families
-remain `2` ownership/contention, `3` ledger/replay/ambiguity, `64` invalid
-input/configuration, and `75` authority/storage/remote transport. Details are
-bounded and redacted.
+Common validation, rate-limit, storage, and clock reasons also apply.
+
+A `remote-transport-failure` during metadata discovery is safe to retry and
+includes only a bounded transport class (`dns`, `refused`, `timeout`, `tls`, or
+`connect`). Run `worklease doctor` for the corresponding reachability check.
+
+Exit families remain `2` ownership/contention, `3` ledger/replay/ambiguity, `64`
+invalid input/configuration, and `75` authority/storage/remote transport.
+Details are bounded and redacted.
 
 ## Remote CLI surface
 
@@ -300,15 +322,18 @@ Remote differences:
   before dispatch. A durable staging failure is `not-committed` for the newly
   attempted request; an older retained request remains independently uncertain.
 - After an uncertain dispatch, retry the same lifecycle command with the same
-  handle and original inputs. Worklease replays the retained operation through
-  the existing `acquire`, `heartbeat`, `checkpoint`, `release`, or `transfer`
-  entry point; never change inputs, extend its deadline, delete the handle, or
-  start a new session to bypass uncertainty. A pending acquire blocks unrelated
-  lifecycle actions as `not-committed` for the new attempt while the acquire
-  remains uncertain; `acquire --handle PATH` replays it exactly, either bare or
-  with the same resource selection. Supplying different resources reports
-  `recovery-required` rather than substituting a new request. `--session`
-  selects an independent loop only; it is not an uncertainty recovery bypass.
+  handle and original inputs.
+- Worklease replays the retained operation through the existing `acquire`,
+  `heartbeat`, `checkpoint`, `release`, or `transfer` entry point.
+- Never change inputs, extend its deadline, delete the handle, or start a new
+  session to bypass uncertainty.
+- A pending acquire blocks unrelated lifecycle actions as `not-committed` for
+  the new attempt while the acquire remains uncertain.
+- `acquire --handle PATH` replays the pending request exactly, either bare or
+  with the same resource selection.
+- Supplying different resources reports `recovery-required` rather than
+  substituting a new request. `--session` selects an independent loop only; it
+  is not an uncertainty recovery bypass.
 - An outcome is `unknown` whenever the request reached a server, including when
   the response fails authority or restore identity validation and when a
   validated grant cannot be activated locally. Only a pre-dispatch failure or a
@@ -319,6 +344,7 @@ Remote differences:
 
 Remote admission accepts only configured portable prefixes. `path:`,
 `backlog-md:`, and `markdown:` are host-local and always rejected remotely.
+
 Use an agreed portable `github:` or `coordination:` resource (including a
 `generic` source) on every host. Remote same-host transfer requires a named
 predecessor handle and remains same-installation; cross-host transfer is not
@@ -327,12 +353,15 @@ implemented.
 ## Local stdio MCP
 
 The remote authority is not an MCP endpoint. `worklease mcp` remains a local,
-one-process stdio adapter. With `local` selected (explicitly or by fallback), it
-uses the local authority and does not construct a remote client; remote-only
-administration tools are not exposed by MCP. With a remote profile selected it
-keeps credentials,
-opaque lease handles, and pending requests on the client host and calls the
-remote HTTPS client. The eleven existing tools are exactly:
+one-process stdio adapter.
+
+With `local` selected (explicitly or by fallback), it uses the local authority
+and does not construct a remote client. Remote-only administration tools are not
+exposed by MCP.
+
+With a remote profile selected, it keeps credentials, opaque lease handles, and
+pending requests on the client host and calls the remote HTTPS client. The
+eleven existing tools are exactly:
 
 ```text
 key acquire status list heartbeat checkpoint verify watch events release instructions
@@ -352,8 +381,8 @@ client-local; remote admission rejects host-local keys.
 
 ## Server operator commands
 
-All server lifecycle commands are offline-only, never use a remote profile, and take the
-hosted lock before opening SQLite:
+All server lifecycle commands are offline-only and never use a remote profile.
+They take the hosted lock before opening SQLite:
 
 ```text
 worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
@@ -390,11 +419,14 @@ HTTP requires the separate `--acknowledge-cleartext-credentials` flag.
 TLS setup generates an ECDSA P-256 self-signed leaf certificate and
 owner-private key when `--tls-cert` and `--tls-key` are omitted. The generated
 leaf is valid for 365 days and covers the advertised endpoint host or IP.
-Supplied files must be owner-private, matched, and currently valid; a SAN
+
+Supplied files must be owner-private, matched, and currently valid. A SAN
 mismatch is reported as a warning because a CA-verified client may use another
-name. Success output includes the endpoint, authority ID, DER-certificate
-SHA-256 fingerprint, created paths, start command, and bootstrap enrollment
-command. Fresh setup defaults the admitted prefix to `coordination:`. The legacy
+name.
+
+Success output includes the endpoint, authority ID, DER-certificate SHA-256
+fingerprint, created paths, start command, and bootstrap enrollment command.
+Fresh setup defaults the admitted prefix to `coordination:`. The legacy
 `--guided` flag is accepted only as a compatibility alias.
 
 `server init` stages the bootstrap secret before the authority transaction and
@@ -460,18 +492,24 @@ deferred.
 ## Reset, retirement, and unsupported boundaries
 
 `server reset` prepares a stopped authority for fresh initialization. It always
-refuses active claims. Unresolved operations require
-`--force --unresolved-export FILE`; the redacted export must be outside the
-hosted home. Reset removes the database readiness state and only a matching
-owner-private bootstrap artifact. It preserves the deployment configuration,
-TLS files, hosted marker, and stable lock. Running `server init` afterward
-creates a new authority ID and invalidates every old enrolled client.
+refuses active claims.
+
+Unresolved operations require `--force --unresolved-export FILE`; the redacted
+export must be outside the hosted home. Reset removes the database readiness
+state and only a matching owner-private bootstrap artifact.
+
+It preserves the deployment configuration, TLS files, hosted marker, and stable
+lock. Running `server init` afterward creates a new authority ID and invalidates
+every old enrolled client.
 
 `server retire` refuses active claims or unresolved started operations unless
-forced. Forced retirement requires `--force --unresolved-export FILE`, writes a
-redacted export outside the hosted home, and records only safe active/unresolved
-metadata. It is not a recovery import and does not erase unresolved risk. Both
-commands are offline; there is no HTTP reset or retirement route.
+forced.
+
+Forced retirement requires `--force --unresolved-export FILE`, writes a redacted
+export outside the hosted home, and records only safe active/unresolved metadata.
+It is not a recovery import and does not erase unresolved risk.
+
+Both commands are offline; there is no HTTP reset or retirement route.
 
 The experimental release explicitly does **not** support:
 

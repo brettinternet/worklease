@@ -34,7 +34,10 @@ providerMutationFenced: false
 ```
 
 Pre/post provider reads can detect a changed version or wrong result but do not
-exclude another host or direct writer. On version mismatch, ownership loss,
-permission failure, or ambiguous response, stop and reconcile the provider
-checkpoint or allow expiry. Assignment, status, comments, local command success,
-and Worklease receipts do not replace the provider receipt.
+exclude another host or direct writer.
+
+On version mismatch, ownership loss, permission failure, or ambiguous response,
+stop and reconcile the provider checkpoint or allow expiry.
+
+Assignment, status, comments, local command success, and Worklease receipts do
+not replace the provider receipt.

@@ -20,7 +20,12 @@ Use the bundled GitHub key policy after repository and issue resolution:
 worklease key --provider github --source "$repository" --item "$issue_number"
 ```
 
-This creates an item-scoped local key. A locally guarded GitHub command is not a provider-fenced issue mutation; other hosts and direct writers remain possible. Default to `providerMutationFenced: false` and normalize the mutation guarantee as `local-coordination` unless the selected GitHub operation atomically enforces a supplied provider version and returns evidence.
+This creates an item-scoped local key. A locally guarded GitHub command is not a
+provider-fenced issue mutation; other hosts and direct writers remain possible.
+
+Default to `providerMutationFenced: false` and normalize the mutation guarantee
+as `local-coordination` unless the selected GitHub operation atomically enforces
+a supplied provider version and returns evidence.
 
 ## Authoritative operations
 

@@ -1,11 +1,14 @@
 # CLI reference
 
 Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
-example. `worklease help --all` prints the root help followed by every
-command and subcommand once, in tree order, without touching any state; it is
-the one-shot onboarding read for people and agents. Top-level help groups
-commands into *Claim lifecycle*, *Inspection and recovery*, and *Setup and
-administration*.
+example.
+
+`worklease help --all` prints the root help followed by every command and
+subcommand once, in tree order, without touching any state. It is the one-shot
+onboarding read for people and agents.
+
+Top-level help groups commands into *Claim lifecycle*, *Inspection and recovery*,
+and *Setup and administration*.
 
 Usage lines expose required inputs and alternate forms:
 
@@ -25,13 +28,17 @@ help. Help shows runtime defaults, including `--ttl` 15m, `--max-duration` 1h,
 worklease [--json] [--home PATH] [--config PATH] COMMAND
 ```
 
-Configuration precedence is flags, environment, YAML, then defaults. Important
-environment variables are `WORKLEASE_HOME`, `WORKLEASE_CONFIG`,
-`WORKLEASE_AGENT_ID`, and `WORKLEASE_SESSION_ID`. For contextual handles,
-an explicit `--session` overrides `WORKLEASE_SESSION_ID`; when neither resolves
-to a value, the selector is empty and human output renders it as `"" (unscoped)`.
-`unscoped` is a display label, not a literal selector. Text output is for
-humans; `--json` emits one schema-version 2 envelope.
+Configuration precedence is flags, environment, YAML, then defaults.
+
+Important environment variables are `WORKLEASE_HOME`, `WORKLEASE_CONFIG`,
+`WORKLEASE_AGENT_ID`, and `WORKLEASE_SESSION_ID`.
+
+For contextual handles, an explicit `--session` overrides
+`WORKLEASE_SESSION_ID`. When neither resolves to a value, the selector is empty
+and human output renders it as `"" (unscoped)`. `unscoped` is a display label,
+not a literal selector.
+
+Text output is for humans; `--json` emits one schema-version 2 envelope.
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
@@ -65,10 +72,12 @@ ls`, `policy ls`, `profile ls`, and `installation ls`. The canonical names remai
 `worklease completion (bash|zsh|fish)` prints a deterministic, ANSI-free shell
 completion script derived from the registered command tree. It includes visible
 root and nested commands, command aliases, global options, and command-local
-options. Generation and completion requests do not inspect or mutate claim
-state; the framework's completion protocol remains hidden from suggestions.
-Unsupported shell names fail with an `invalid-argument` error listing the three
-supported shells.
+options.
+
+Generation and completion requests do not inspect or mutate claim state. The
+framework's completion protocol remains hidden from suggestions. Unsupported
+shell names fail with an `invalid-argument` error listing the three supported
+shells.
 
 Enable completion with the matching shell setup:
 
@@ -99,34 +108,44 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 | `transfer` | Atomically create a client-credentialled successor claim. |
 | `verify` | Verify current ownership, optionally with exact path coverage. |
 
-Use `--session NAME` for each concurrent loop. Without an explicit handle,
-Worklease selects an authority-bound contextual handle by Git worktree root (or
-resolved current directory), contextual handle selector, and authority ID. The
-selector resolves from `--session`, then `WORKLEASE_SESSION_ID`, then the empty
-unscoped value. Profiles for the same authority share the slot even if their
-name, endpoint, credential path, or restore ID changes. Switching to another
-authority selects an independent slot; switching back resumes the matching
-handle. A handle is convenience state, not the claim or an authoritative
-provider checkpoint. The selector and claim metadata are distinct:
-`--session` chooses a contextual handle, while the claim's `sessionId`
-identifies that ownership epoch. With an explicit selector the two values may
-coincide, but they retain those separate roles. When acquire uses the unscoped
-slot it still generates a non-empty claim `sessionId`; that generated value
-cannot select or recover the unscoped handle. Explicit `--handle`,
-`WORKLEASE_HANDLE`, stateless credentials, and MCP lease references keep their
-existing path selection and are not remapped.
+Use `--session NAME` for each concurrent loop.
+
+Without an explicit handle, Worklease selects an authority-bound contextual
+handle by Git worktree root (or resolved current directory), contextual handle
+selector, and authority ID. The selector resolves from `--session`, then
+`WORKLEASE_SESSION_ID`, then the empty unscoped value.
+
+Profiles for the same authority share the slot even if their name, endpoint,
+credential path, or restore ID changes. Switching to another authority selects an
+independent slot; switching back resumes the matching handle.
+
+A handle is convenience state, not the claim or an authoritative provider
+checkpoint.
+
+The selector and claim metadata are distinct. `--session` chooses a contextual
+handle, while the claim's `sessionId` identifies that ownership epoch. With an
+explicit selector the two values may coincide, but they retain those separate
+roles.
+
+When acquire uses the unscoped slot it still generates a non-empty claim
+`sessionId`; that generated value cannot select or recover the unscoped handle.
+Explicit `--handle`, `WORKLEASE_HANDLE`, stateless credentials, and MCP lease
+references keep their existing path selection and are not remapped.
 
 Re-running remote `acquire` on a ready contextual handle replaces it only after
-the authority confirms the old claim is inactive. Worklease stages a fresh
-claim ID, credential, and the current acquire inputs as a pending exact request,
-then publishes ready state only after validating the grant. Active claims,
-status failures, authority mismatches, and concurrent handle changes fail
-closed. An existing pending request is replayed exactly instead; changing
-`--session` selects another handle and does not recover an uncertain request.
+the authority confirms the old claim is inactive.
+
+Worklease stages a fresh claim ID, credential, and the current acquire inputs as
+a pending exact request, then publishes ready state only after validating the
+grant. Active claims, status failures, authority mismatches, and concurrent
+handle changes fail closed.
+
+An existing pending request is replayed exactly instead. Changing `--session`
+selects another handle and does not recover an uncertain request.
+
 Legacy root-and-session handles migrate only when their embedded authority ID
-matches. Mismatches remain recoverable at the legacy path, and a legacy/scoped
-path conflict changes neither file and reports explicit `--handle` recovery
-choices.
+matches. Mismatches remain recoverable at the legacy path. A legacy/scoped path
+conflict changes neither file and reports explicit `--handle` recovery choices.
 
 One claim covers all `--resource` values atomically. Resources contend by exact
 bytes and are never silently normalized. Contextual handle selectors only
@@ -156,9 +175,11 @@ Common inspection forms:
 `status` uses relative expiry; `status --full` adds complete non-secret metadata.
 Human lifecycle output labels claim metadata as `claimSessionId`; JSON retains
 the stable `sessionId` field. Neither is presented as a contextual handle
-selector. Lifecycle results show only fields relevant to the operation.
-Checkpoint reports persisted bytes, transfer shows the successor handle and
-resources, and verify keeps full unresolved operation IDs.
+selector.
+
+Lifecycle results show only fields relevant to the operation. Checkpoint reports
+persisted bytes, transfer shows the successor handle and resources, and verify
+keeps full unresolved operation IDs.
 
 `history` without a resource aliases `events`. Text views omit cursors; page with
 `--json` and `--cursor`. `watch` prints a cursor only as a runnable
@@ -186,10 +207,13 @@ provenance as unknown, and recorded expiry does not prove inactivity.
 
 `handle archive` uses owner-private durable no-overwrite storage and prints the
 archive path plus an explicit-handle inspection command. It never releases,
-revokes, or contacts the authority, so the claim may remain active. Pending or
-recovery state requires `--acknowledge-pending-recovery`; refusal leaves the
-source untouched. Use `--destination PATH` only with an existing owner-private
-directory; the contextual handle directory is rejected as a destination.
+revokes, or contacts the authority, so the claim may remain active.
+
+Pending or recovery state requires `--acknowledge-pending-recovery`; refusal
+leaves the source untouched. Use `--destination PATH` only with an existing
+owner-private directory; the contextual handle directory is rejected as a
+destination.
+
 Archives are not contextual slots and are never selected automatically.
 
 Guarded-operation guarantees:
@@ -232,9 +256,15 @@ JSON failures use:
 {"schemaVersion":2,"ok":false,"operation":"acquire","error":{"reason":"already-claimed","exitCode":2,"message":"resource is already claimed","details":{"resource":"coordination:busy","requestClaimId":"…attempted…","operationId":"…operation…","holder":{"claimId":"…holder…","agentId":"agent","workKey":"work","expiresAt":"2026-09-12T00:00:00.000000Z"},"commitState":"not-committed"}}}
 ```
 
-Exit families are: `0` success, `1` internal failure, `2` ownership/contention,
-`3` ledger, replay, or ambiguous outcome, `64` invalid input/configuration, `75`
-authority or storage failure, `124` child timeout, and `130` interruption. Domain details include safe holder or recovery metadata, never
+Exit families are:
+
+- `0` success; `1` internal failure.
+- `2` ownership/contention; `3` ledger, replay, or ambiguous outcome.
+- `64` invalid input/configuration; `75`
+authority or storage failure.
+- `124` child timeout; `130` interruption.
+
+Domain details include safe holder or recovery metadata. They never include
 credentials, requests, command output, file contents, checkpoints, or provider
 payloads.
 
@@ -252,6 +282,7 @@ authority.
 
 A claim contains one immutable claim ID, one credential, one revision stream,
 and one to 32 resources. All lifecycle mutations apply to the whole claim.
+
 MCP leases have an absolute `maxHold` deadline; ordinary CLI claims do not.
 Concurrent loops need distinct contextual handle selectors even in one checkout.
 The selector is not part of a resource key and does not create an independent
@@ -283,27 +314,35 @@ worklease acquire --session loop-a --resource coordination:shared
 worklease acquire --session loop-b --resource coordination:shared # already claimed
 ```
 
-Authority selection is another independent part of the contextual slot. The
-selection precedence is `--profile`, `WORKLEASE_PROFILE`, checkout binding,
-configured user default, then implicit local. The exact case-sensitive name
-`local` is a built-in selection at every layer and never a persisted remote
-profile. `profile default local` records an explicit local user default without
-changing bindings; `profile bind local` (alias `profile use local`) overrides the
-remote default for that checkout, and `profile unbind` (alias `profile unuse`)
-removes that override so normal fallback resumes.
+Authority selection is another independent part of the contextual slot.
+
+Selection precedence is `--profile`, `WORKLEASE_PROFILE`, checkout binding,
+configured user default, then implicit local.
+
+The exact case-sensitive name `local` is a built-in selection at every layer and
+never a persisted remote profile.
+
+`profile default local` records an explicit local user default without changing
+bindings. `profile bind local` (alias `profile use local`) overrides the remote
+default for that checkout. `profile unbind` (alias `profile unuse`) removes that
+override so normal fallback resumes.
+
 `profile default` reports configured default versus unset, while `profile show`
 reports the effective selection and source. `profile list` always shows `local`
 separately from remote profiles, and `profile show local` inspects it without
 network access.
 
-A remote profile named `local` from an older store is a compatibility collision:
-selection fails closed with migration guidance. Manually rename that remote
-profile and its default/checkout-binding references while retaining the existing
-credential path. `local` cannot be added, enrolled, or removed as a remote
-profile. Remote-only administration commands fail clearly when local is
-selected. `--local` remains the forced, network-free bypass of bindings,
-defaults, and profile-store loading; it conflicts with any nonempty
-`--profile` or `WORKLEASE_PROFILE`, including `local`.
+A remote profile named `local` from an older store is a compatibility collision;
+selection fails closed with migration guidance.
+
+Manually rename that remote profile and its default/checkout-binding references
+while retaining the existing credential path. `local` cannot be added, enrolled,
+or removed as a remote profile.
+
+Remote-only administration commands fail clearly when local is selected.
+`--local` remains the forced, network-free bypass of bindings, defaults, and
+profile-store loading. It conflicts with any nonempty `--profile` or
+`WORKLEASE_PROFILE`, including `local`.
 
 A profile switch selects the slot for that authority, and switching back resumes
 the original authority's slot:

@@ -68,16 +68,21 @@ worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
 Use distinct `--session` values for concurrent loops in one checkout. Use
-`--handle PATH` only when an explicit private handle is required. Handles are
-authority-bound convenience state, never claims or provider checkpoints.
-Acquire/transfer credentials are generated and persisted before dispatch and
-never appear in output. Explicit credentials are accepted only through
-`--token-file` or `--token-fd`, never argv token text.
+`--handle PATH` only when an explicit private handle is required.
+
+Handles are authority-bound convenience state, never claims or provider
+checkpoints. Acquire/transfer credentials are generated and persisted before
+dispatch and never appear in output.
+
+Explicit credentials are accepted only through `--token-file` or `--token-fd`,
+never argv token text.
 
 Omit `--operation-id` for a fresh mutation. Reuse one only to replay the exact
-same pending request after a lost response. Changed intent conflicts. A started
-guarded operation has an unknown outcome; inspect the provider effect, prove the
-old executor ceased, and use explicit CLI reconciliation before retrying.
+same pending request after a lost response. Changed intent conflicts.
+
+A started guarded operation has an unknown outcome. Inspect the provider effect,
+prove the old executor ceased, and use explicit CLI reconciliation before
+retrying.
 
 ## Guarantees
 
@@ -109,11 +114,13 @@ Expiry ends ownership but does not prove an external process stopped.
 ## Provider boundary
 
 The source layer owns source detection, authentication, normalized state,
-provider-specific writes, receipts, and review/archive behavior. Worklease
-checkpoints are local recovery metadata, not provider progress. Verify the
-authoritative provider receipt before checkpoint and release. Assignment,
-status, comments, branches, worktrees, local locks, and operation receipts are
-not substitutes for a claim or provider checkpoint.
+provider-specific writes, receipts, and review/archive behavior.
+
+Worklease checkpoints are local recovery metadata, not provider progress. Verify
+the authoritative provider receipt before checkpoint and release.
+
+Assignment, status, comments, branches, worktrees, local locks, and operation
+receipts are not substitutes for a claim or provider checkpoint.
 
 ## Experimental remote authority operations
 
@@ -125,24 +132,27 @@ provider authority.
 
 The experimental self-hosted remote authority is selected by explicit
 `--profile NAME`, then `WORKLEASE_PROFILE`, user-side checkout binding, user
-default, or local. `--local` is an explicit local override. Configured remote
-failure never silently falls back. The standard binary opens no listener and
-makes no network request unless remote profile management, a selected remote
-profile, or `serve` is explicitly invoked; local reads remain setup-free.
+default, or local. `--local` is an explicit local override.
+
+Configured remote failure never silently falls back. The standard binary opens no
+listener and makes no network request unless remote profile management, a selected
+remote profile, or `serve` is explicitly invoked. Local reads remain setup-free.
 
 One remote namespace is one `serve` process and one SQLite writer on one host,
-protected by the hosted lock. Remote `--wait` is client-side (maximum 60s),
-remote mutations retain durable exact pending requests, and remote same-host
-transfer requires a named predecessor handle. Provider execution, provider
-cessation, and file replacement remain client-local; `path`, `backlog-md`, and
-`markdown` keys are host-local and rejected by remote admission. See
-[`docs/remote-claim-authority.md`](../../docs/remote-claim-authority.md) for
+protected by the hosted lock.
+
+Remote `--wait` is client-side (maximum 60s). Remote mutations retain durable exact pending requests, and remote same-host transfer requires a named predecessor handle.
+
+Provider execution, provider cessation, and file replacement remain client-local.
+`path`, `backlog-md`, and `markdown` keys are host-local and rejected by remote
+admission.
+
+See [`docs/remote-claim-authority.md`](../../docs/remote-claim-authority.md) for
 experimental setup, operator restart, restore/reopen evidence, and unsupported
 boundaries.
 
 Never report remote claim ownership as provider fencing. On uncertain remote
 mutation, retain the exact pending request, inspect/replay or reconcile it, and
-establish executor/provider cessation before retrying. Recovery import,
-completed-history journaling, cross-host transfer, repository enrollment, HA,
-Postgres, multi-namespace serving, backpressure, and browser control plane are
-not available.
+establish executor/provider cessation before retrying.
+
+Recovery import, completed-history journaling, cross-host transfer, repository enrollment, HA, Postgres, multi-namespace serving, backpressure, and browser control plane are not available.
