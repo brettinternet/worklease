@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## 1.7.2 - 2026-09-18
+
 ### Added
 
 - `profile use` and `profile unuse` provide concise aliases for checkout-scoped `profile bind` and `profile unbind`.
+
+### Changed
+
+- Loop instructions now require ownership verification after waits, subagents, long commands, pauses, and resumed or new iterations before any mutation; they also clarify that MCP auto-heartbeat is process-scoped and claim expiry is not a handoff.
 
 ## 1.7.1 - 2026-09-17
 

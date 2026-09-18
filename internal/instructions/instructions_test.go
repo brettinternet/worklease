@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testing.T) {
+	loop, err := For("loop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(loop, "\n")
+	for _, want := range []string{
+		"MCP automatic heartbeat is process-scoped",
+		"After every subagent run, wait, long command, human pause, resumed session, or new loop iteration",
+		"before any filesystem edit, mutating command, provider write, commit, merge, or cleanup",
+		"Claim expiry does not prove the prior worker stopped",
+		"require explicit handoff or authoritative abandonment evidence",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing loop ownership guardrail %q", want)
+		}
+	}
+}
+
 func TestRemoteSetupPreservesAuthoritySelection(t *testing.T) {
 	remote, err := For("remote")
 	if err != nil {
