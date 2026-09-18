@@ -266,6 +266,20 @@ func TestProfileDefaultWithoutConfiguredDefault(t *testing.T) {
 	}
 }
 
+func TestProfileNameWithoutShowReportsActionableUsageError(t *testing.T) {
+	saveTestProfiles(t, []config.Profile{testProfile("remote")}, "remote")
+	for _, name := range []string{"local", "remote"} {
+		out, err := runProfileCLI(t, "--json", "profile", name)
+		classified := reason.As(err)
+		if classified == nil || classified.Reason != reason.ReasonInvalidArgument {
+			t.Fatalf("profile %s error = %v", name, err)
+		}
+		if !strings.Contains(out, `"reason":"invalid-argument"`) || !strings.Contains(out, "worklease profile show "+name) {
+			t.Fatalf("profile %s output = %q", name, out)
+		}
+	}
+}
+
 func TestProfileCommandHelpDocumentsNameArguments(t *testing.T) {
 	out, err := runProfileCLI(t, "profile", "--help")
 	if err != nil {

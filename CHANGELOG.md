@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.1 - 2026-09-17
+
+### Fixed
+
+- Invalid `profile` subcommands now report an actionable usage error instead of an internal failure, including the correct `profile show NAME` form.
+
 ## 1.7.0 - 2026-09-17
 
 ### Added

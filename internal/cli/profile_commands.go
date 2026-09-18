@@ -40,7 +40,23 @@ func profileCommands(s *boundary) []*urfave.Command {
 	def := leaf("default", "show or select the default authority profile", "[NAME]", "Without NAME, reports the configured default (including local) or that no default is configured.", nil, profileDefaultAction(s))
 	bind := leaf("bind", "bind this checkout to an authority profile", "NAME [--cwd DIR]", "NAME is required; local binds this checkout to the built-in authority.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
 	unbind := leaf("unbind", "remove this checkout's remote authority binding", "[--cwd DIR]", "This command takes no profile NAME.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
-	profile := &urfave.Command{Name: "profile", Usage: "manage authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>", Description: "Manage owner-private remote authority profiles and checkout bindings. Selection precedence is --profile, WORKLEASE_PROFILE, checkout binding, user default, then implicit local. Selecting local explicitly stops fallback without creating a remote profile; --local instead forces local and conflicts with any profile flag or environment selection. Unbind removes only the checkout override. A persisted remote profile named local must be renamed manually together with its default and binding references while retaining its credential path.\n\nExamples:\n  worklease profile list", Commands: []*urfave.Command{add, list, show, remove, def, bind, unbind}}
+	profile := &urfave.Command{
+		Name: "profile", Usage: "manage authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>",
+		Description: "Manage owner-private remote authority profiles and checkout bindings. Selection precedence is --profile, WORKLEASE_PROFILE, checkout binding, user default, then implicit local. Selecting local explicitly stops fallback without creating a remote profile; --local instead forces local and conflicts with any profile flag or environment selection. Unbind removes only the checkout override. A persisted remote profile named local must be renamed manually together with its default and binding references while retaining its credential path.\n\nExamples:\n  worklease profile list",
+		Commands:    []*urfave.Command{add, list, show, remove, def, bind, unbind},
+		OnUsageError: func(_ context.Context, cmd *urfave.Command, err error, _ bool) error {
+			return s.handle(cmd, reason.Invalid(err.Error()))
+		},
+		Action: func(_ context.Context, cmd *urfave.Command) error {
+			if cmd.Args().Len() > 0 {
+				return s.handle(cmd, reason.Invalid(fmt.Sprintf("unknown command %q; use 'worklease profile show %s' to inspect a profile", cmd.Args().First(), cmd.Args().First())))
+			}
+			if s.jsonRequested(cmd) {
+				return s.handle(cmd, reason.Invalid("profile requires a subcommand"))
+			}
+			return urfave.ShowSubcommandHelp(cmd)
+		},
+	}
 	enroll := &urfave.Command{Name: "enroll", Usage: "enroll this installation with a remote authority", UsageText: "worklease enroll [--profile NAME] [--invite-file FILE | --invite-fd N] [--label TEXT]", Description: "Redeem an invitation without exposing either bearer in argv or output. Without an invite option, an interactive terminal prompts without echo. HTTP artifacts additionally require --allow-insecure-http.\n\nExamples:\n  worklease enroll --invite-file invite.artifact", Flags: []urfave.Flag{&urfave.StringFlag{Name: "invite-file", Usage: "owner-private invite artifact or legacy secret `FILE`"}, &urfave.IntFlag{Name: "invite-fd", Usage: "inherited invite descriptor `N`", HideDefault: true}, &urfave.StringFlag{Name: "label", Usage: "installation label `TEXT`"}, &urfave.BoolFlag{Name: "allow-insecure-http", Usage: "explicitly allow an HTTP invite artifact"}}, Action: enrollAction(s)}
 	return []*urfave.Command{profile, enroll}
 }
