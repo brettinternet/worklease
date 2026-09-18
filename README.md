@@ -294,3 +294,24 @@ changelog section verbatim.
 Tagging and publishing require separate owner authorization. Experimental remote
 artifact jobs may build and smoke-test on matching runners without publishing,
 tagging, or pushing.
+
+## Prior art
+
+Worklease builds on established task-claiming, agent-coordination, and
+distributed-locking patterns. The closest widely used projects differ mainly in
+what they coordinate and how much workflow they own. Worklease can claim exact
+resource names such as `task:bd-a1b2`, `file:src/auth.go`, `port:3000`, and
+`deploy:staging`.
+
+| Project | Coordinates | Claim model | Worklease advantage |
+| --- | --- | --- | --- |
+| [Beads](https://github.com/gastownhall/beads) | Backlog tasks | Atomic assignment with expiring leases and heartbeats | Claims tasks, files, ports, deployments, or any other exact resource name. |
+| [Gas Town](https://github.com/gastownhall/gastown) | Multi-agent workspaces and tasks | Agent assignment backed by Beads work state | Coordinates workers without owning their runtime, worktrees, or backlog. |
+| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) | Agent messages and files | Advisory TTL reservations for files and globs | Coordinates any resource and can run commands only while a claim is held. |
+| [Consul](https://github.com/hashicorp/consul) | Distributed processes and services | Session-backed locks and semaphores with guarded commands | Works locally without a service and can move to a remote authority when needed. |
+| [etcd](https://github.com/etcd-io/etcd) | Distributed processes | TTL-backed mutexes with guarded commands | Provides an agent-focused CLI, JSON, MCP, history, and recovery model. |
+
+Worklease stays deliberately narrower than the agent platforms and task
+trackers above. It provides local or remote claims, expiry, waiting, history,
+guarded commands, and recovery without owning the backlog or orchestrating the
+agents.
