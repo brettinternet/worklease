@@ -12,6 +12,10 @@ func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testin
 	}
 	joined := strings.Join(loop, "\n")
 	for _, want := range []string{
+		"Use a harness-provided loop-run ID unchanged",
+		"For CLI, set it as WORKLEASE_SESSION_ID",
+		"For MCP, pass it as acquire.sessionId, persist the returned lease before work",
+		"Never truncate or derive the identity",
 		"MCP automatic heartbeat is process-scoped",
 		"After every subagent run, wait, long command, human pause, resumed session, or new loop iteration",
 		"before any filesystem edit, mutating command, provider write, commit, merge, or cleanup",
