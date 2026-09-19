@@ -17,7 +17,10 @@ provider selection. IDs, statuses, metadata, and receipts remain opaque.
    matching provider reference.
 3. Declare source reads/writes, exact claim resources, claim authority,
    provider receipts, and review/archive capabilities.
-4. Use only caller-authorized capabilities. Missing capability is structured,
+4. Before claim lifecycle work, run the version-matched `worklease instructions
+   safety`; run `worklease instructions loop` only for repeated autonomous
+   loops. Installed guidance is authoritative for that installed version.
+5. Use only caller-authorized capabilities. Missing capability is structured,
    never an invented fallback.
 
 ## Worklease boundary
@@ -67,8 +70,16 @@ worklease checkpoint --session "$SESSION" --data '{"phase":"tests"}'
 worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
-Use distinct `--session` values for concurrent loops in one checkout. Use
-`--handle PATH` only when an explicit private handle is required.
+Give each independent loop one full, collision-resistant stable ID. Preserve a
+harness workflow/loop-run ID unchanged; otherwise generate and persist a full
+UUID. Never truncate or derive it from labels, agent names, turns, iterations,
+or replacement sessions. Map it consistently to CLI `WORKLEASE_SESSION_ID` /
+`--session`; for MCP, use `acquire.sessionId` and persist the returned opaque
+lease. Use `--handle PATH` only when an explicit private handle is required.
+
+Successful `verify` proves current access and ownership, not that this worker
+created the claim; matching agent/session identity is insufficient to adopt an
+existing claim.
 
 Handles are authority-bound convenience state, never claims or provider
 checkpoints. Acquire/transfer credentials are generated and persisted before
@@ -109,7 +120,9 @@ private source and revalidating ownership.
 Never expose credentials, exact private requests, command output, file contents,
 checkpoints, reconciliation evidence, or provider payloads in status, events,
 comments, logs, or handoffs. Handles and cursors must match the authority ID.
-Expiry ends ownership but does not prove an external process stopped.
+Expiry ends authorization but does not prove prior executor cessation. Before
+resuming prior work, require explicit handoff or authoritative
+abandonment/cessation evidence.
 
 ## Provider boundary
 
