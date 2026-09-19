@@ -51,6 +51,9 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.PollInterval == 0 {
 		opts.PollInterval = config.DefaultPollInterval
 	}
+	if opts.SessionID == "" {
+		opts.SessionID = opID()
+	}
 	s := &Server{options: opts, requests: map[string]*requestState{}, seen: map[string]struct{}{}, leases: map[string]*runtimeLease{}}
 	if opts.Profile != nil {
 		profile := *opts.Profile
@@ -667,9 +670,6 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 	}
 	if session == "" {
 		session = s.options.SessionID
-	}
-	if session == "" {
-		session = opID()
 	}
 	work, _ := argString(a, "workKey")
 	if work == "" {

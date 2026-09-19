@@ -1,11 +1,18 @@
 ---
 id: TASK-125
 title: Default MCP acquire session identity to the server process
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-19 05:00'
+updated_date: '2026-09-19 05:25'
 labels: []
 dependencies: []
+modified_files:
+  - internal/mcp/mcp.go
+  - internal/mcp/mcp_test.go
+  - docs/mcp.md
+  - CHANGELOG.md
 ordinal: 167000
 ---
 
@@ -17,9 +24,29 @@ When neither acquire.sessionId nor WORKLEASE_SESSION_ID is set, the MCP server f
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With no acquire.sessionId and no WORKLEASE_SESSION_ID, every acquire in one MCP server process reports the same non-empty sessionId, and a restarted server reports a different one
-- [ ] #2 acquire.sessionId and WORKLEASE_SESSION_ID still take precedence over the generated default, in that order
-- [ ] #3 Repeat acquires on different resources within one unconfigured MCP server process each succeed and return distinct lease references
-- [ ] #4 A test covers the process-scoped default and its precedence
-- [ ] #5 docs/mcp.md states the fallback in one sentence
+- [x] #1 With no acquire.sessionId and no WORKLEASE_SESSION_ID, every acquire in one MCP server process reports the same non-empty sessionId, and a restarted server reports a different one
+- [x] #2 acquire.sessionId and WORKLEASE_SESSION_ID still take precedence over the generated default, in that order
+- [x] #3 Repeat acquires on different resources within one unconfigured MCP server process each succeed and return distinct lease references
+- [x] #4 A test covers the process-scoped default and its precedence
+- [x] #5 docs/mcp.md states the fallback in one sentence
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Generate and store one default session ID when each MCP Server is constructed, while preserving per-call and configured-session precedence.
+2. Add MCP tests for stable process defaults, restart uniqueness, precedence, and distinct leases across resources.
+3. Update docs/mcp.md and run focused plus repository quality gates.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented a process-scoped fallback by generating Options.SessionID once in NewServer; explicit acquire.sessionId still overrides configured WORKLEASE_SESSION_ID. Verified with go test ./internal/mcp and full mise lint, format-check, test, and typecheck gates.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+MCP servers now generate one stable fallback session identity at startup, while explicit and environment identities retain precedence. Regression coverage proves same-process reuse, restart uniqueness, distinct lease references, and precedence; all repository quality gates passed.
+<!-- SECTION:FINAL_SUMMARY:END -->

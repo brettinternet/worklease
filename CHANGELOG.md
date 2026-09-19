@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.7.3 - 2026-09-19
+
+### Fixed
+
+- MCP acquires without an explicit or environment session ID now reuse one generated identity for the lifetime of the server process.
+
 ## 1.7.2 - 2026-09-18
 
 ### Added

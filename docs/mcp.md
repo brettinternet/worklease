@@ -53,9 +53,10 @@ boundaries.
 ## Two isolated loops
 
 Each MCP `acquire` may carry a stable `sessionId`; it defaults to
-`WORKLEASE_SESSION_ID`, then a fresh value per acquire. The server keeps a
-private authority-bound handle under that selector and returns an opaque `lease`
-reference; later lifecycle calls use the reference, not the session selector.
+`WORKLEASE_SESSION_ID`, then a value generated once when the server process
+starts. The server keeps a private authority-bound handle under that selector
+and returns an opaque `lease` reference; later lifecycle calls use the reference,
+not the session selector.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"acquire","arguments":{"resources":["task:a"],"sessionId":"loop-a","agentId":"agent-a"}},"_meta":{"protocolVersion":"2026-07-28"}}

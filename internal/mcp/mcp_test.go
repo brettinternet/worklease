@@ -53,6 +53,57 @@ func TestCallLifecycleAndRedaction(t *testing.T) {
 	}
 }
 
+func TestMCPAcquireSessionDefaultsAndPrecedence(t *testing.T) {
+	home, _ := testkit.Home(t)
+	acquire := func(t *testing.T, s *Server, resource string, arguments map[string]any) (string, string) {
+		t.Helper()
+		arguments["resources"] = []any{resource}
+		arguments["autoHeartbeat"] = false
+		result, err := s.Call(context.Background(), "acquire", arguments)
+		if err != nil || result["isError"] == true {
+			t.Fatalf("acquire %q: %v %s", resource, err, jsonText(result))
+		}
+		content := result["structuredContent"].(map[string]any)
+		claim := content["claim"].(map[string]any)
+		return content["lease"].(string), claim["sessionId"].(string)
+	}
+
+	first, err := NewServer(Options{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLease, firstSession := acquire(t, first, "default-one", map[string]any{})
+	secondLease, secondSession := acquire(t, first, "default-two", map[string]any{})
+	if firstSession == "" || secondSession != firstSession {
+		t.Fatalf("process default sessions differ or are empty: %q != %q", firstSession, secondSession)
+	}
+	if firstLease == secondLease {
+		t.Fatalf("different resources returned the same lease reference: %q", firstLease)
+	}
+
+	restarted, err := NewServer(Options{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, restartedSession := acquire(t, restarted, "default-restarted", map[string]any{})
+	if restartedSession == firstSession {
+		t.Fatalf("restarted server reused process default session %q", firstSession)
+	}
+
+	configured, err := NewServer(Options{Home: home, SessionID: "environment-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, configuredSession := acquire(t, configured, "configured-session", map[string]any{})
+	if configuredSession != "environment-session" {
+		t.Fatalf("configured session = %q", configuredSession)
+	}
+	_, explicitSession := acquire(t, configured, "explicit-session", map[string]any{"sessionId": "argument-session"})
+	if explicitSession != "argument-session" {
+		t.Fatalf("explicit session = %q", explicitSession)
+	}
+}
+
 func TestSubprocessStdioLifecycle(t *testing.T) {
 	home, _ := testkit.Home(t)
 	cmd := exec.Command("go", "run", "../../cmd/worklease", "mcp")
