@@ -12,6 +12,18 @@ Configure a client with `worklease setup mcp --client claude-code|cursor` or use
 {"mcpServers":{"worklease":{"command":"/absolute/path/to/worklease","args":["mcp"]}}}
 ```
 
+The server inherits `WORKLEASE_SESSION_ID` from whatever launches it and uses it
+as the default `acquire.sessionId`, so the launcher is the right place to set
+session identity; the agent never has to copy it into a tool argument:
+
+```json
+{"mcpServers":{"worklease":{"command":"/absolute/path/to/worklease","args":["mcp"],"env":{"WORKLEASE_SESSION_ID":"${PI_SESSION_ID}"}}}}
+```
+
+```sh
+WORKLEASE_SESSION_ID="$LOOP_RUN_ID" pi   # per loop run, inherited by MCP and CLI
+```
+
 Discover the modern server and list typed tools:
 
 ```text
@@ -40,8 +52,9 @@ boundaries.
 
 ## Two isolated loops
 
-Each MCP `acquire` may carry a stable `sessionId`. The server keeps a private
-authority-bound handle under that selector and returns an opaque `lease`
+Each MCP `acquire` may carry a stable `sessionId`; it defaults to
+`WORKLEASE_SESSION_ID`, then a fresh value per acquire. The server keeps a
+private authority-bound handle under that selector and returns an opaque `lease`
 reference; later lifecycle calls use the reference, not the session selector.
 
 ```json

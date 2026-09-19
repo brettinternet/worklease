@@ -383,6 +383,15 @@ worklease status --session loop-b      # selects loop-b instead
 worklease doctor --session loop-b      # diagnoses the explicit override
 ```
 
+Any unique string works as the selector, so the process that knows the identity
+should export it once and let every `worklease` and `worklease mcp` child
+inherit it:
+
+```sh
+WORKLEASE_SESSION_ID="$LOOP_RUN_ID" pi   # one loop run
+WORKLEASE_SESSION_ID=jane pi             # any unique name
+```
+
 Two selectors still contend on one exact resource:
 
 ```sh
