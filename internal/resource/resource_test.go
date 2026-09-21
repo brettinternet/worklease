@@ -12,6 +12,30 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+func TestValidationRejectsUnsafeResourceInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		valid   func() error
+		wantErr string
+	}{
+		{name: "resource edge whitespace", valid: func() error { _, err := validateResource(" resource "); return err }, wantErr: "must not start or end with whitespace"},
+		{name: "resource control char", valid: func() error { _, err := validateResource("resource\x01"); return err }, wantErr: "must not contain control characters"},
+		{name: "resource whitespace-only", valid: func() error { _, err := validateResource(" "); return err }, wantErr: "must not start or end with whitespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.valid(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+	if _, err := ValidateIdentity("item", " item "); err != nil {
+		t.Fatalf("valid identity rejected: %v", err)
+	}
+	if _, err := validateResource("ok:source"); err != nil {
+		t.Fatalf("valid resource rejected: %v", err)
+	}
+}
+
 func TestRFC3986EncodingAndCanonicalCoordinationKey(t *testing.T) {
 	if got := RFC3986Encode("a:b#c/d% e~"); got != "a%3Ab%23c%2Fd%25%20e~" {
 		t.Fatalf("encoding = %q", got)

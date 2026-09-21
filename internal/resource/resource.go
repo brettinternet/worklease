@@ -98,15 +98,22 @@ func validateResource(value string) (string, error) {
 	if len([]byte(value)) == 0 || len([]byte(value)) > maxIdentityBytes {
 		return "", invalid("resource must be 1 to 1024 bytes")
 	}
+	if err := validateOpaqueText(value, "resource", invalid); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func validateOpaqueText(value, field string, err func(string) error) error {
 	if strings.TrimSpace(value) != value {
-		return "", invalid("resource must not start or end with whitespace")
+		return err(field + " must not start or end with whitespace")
 	}
 	for _, r := range value {
 		if r < 0x20 || r == 0x7f {
-			return "", invalid("resource must not contain control characters")
+			return err(field + " must not contain control characters")
 		}
 	}
-	return value, nil
+	return nil
 }
 
 // RFC3986Encode encodes UTF-8 bytes, leaving only RFC3986 unreserved bytes.
@@ -353,13 +360,8 @@ func pathKey(in Input) (Key, error) {
 	if !utf8.ValidString(in.Path) || len([]byte(in.Path)) == 0 || len([]byte(in.Path)) > maxIdentityBytes {
 		return Key{}, invalidPath("path must be 1 to 1024 UTF-8 bytes")
 	}
-	if strings.TrimSpace(in.Path) != in.Path {
-		return Key{}, invalidPath("path must not start or end with whitespace")
-	}
-	for _, r := range in.Path {
-		if r < 0x20 || r == 0x7f {
-			return Key{}, invalidPath("path must not contain control characters")
-		}
+	if err := validateOpaqueText(in.Path, "path", invalidPath); err != nil {
+		return Key{}, err
 	}
 	for _, part := range strings.FieldsFunc(in.Path, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if part == ".." {
