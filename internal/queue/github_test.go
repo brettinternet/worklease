@@ -395,6 +395,41 @@ func TestLoaderDefersGitHubDetailsAndBatchesVisibleRows(t *testing.T) {
 	}
 }
 
+func TestGitHubCommentsLoadOnlyOnExplicitRead(t *testing.T) {
+	var calls atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, vars := githubRequest(t, r)
+		switch {
+		case strings.Contains(query, "viewer"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "comments(first:"):
+			calls.Add(1)
+			if string(vars["after"]) == `"next"` {
+				fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"comments":{"nodes":[{"id":"C2","body":"second","author":null}],"pageInfo":{"hasNextPage":false}}}}}}`)
+			} else {
+				fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"comments":{"nodes":[{"id":"C1","body":"first","author":{"login":"tester"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}}`)
+			}
+		default:
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil || calls.Load() != 0 {
+		t.Fatalf("list loaded comments: calls=%d err=%v", calls.Load(), err)
+	}
+	first, cursor, err := a.ReadComments(context.Background(), source, Ref{source.ID, "1"}, "", 1)
+	if err != nil || len(first) != 1 || first[0].Author != "tester" || cursor != "next" {
+		t.Fatalf("first comments page: %+v %q %v", first, cursor, err)
+	}
+	last, cursor, err := a.ReadComments(context.Background(), source, Ref{source.ID, "1"}, cursor, 1)
+	if err != nil || len(last) != 1 || last[0].Body != "second" || cursor != "" || calls.Load() != 2 {
+		t.Fatalf("last comments page: %+v %q %v calls=%d", last, cursor, err, calls.Load())
+	}
+}
+
 func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)

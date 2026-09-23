@@ -216,7 +216,7 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 	// Only the four vetted read operations can reach the provider. This also
 	// rejects dynamically assembled GraphQL mutations before any network I/O.
 	switch query {
-	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery:
+	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery:
 	default:
 		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
 	}
@@ -230,7 +230,7 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 		Variables any    `json:"variables,omitempty"`
 	}{query, variables})
 	priority := PriorityVisible
-	if query == githubViewerQuery || query == githubRepositoryIdentityQuery || query == githubDetailQuery || query == githubDependencyQuery {
+	if query == githubViewerQuery || query == githubRepositoryIdentityQuery || query == githubDetailQuery || query == githubDependencyQuery || query == githubCommentsQuery {
 		priority = PriorityDetail
 	}
 	key := b.generation + ":" + string(body)
@@ -780,6 +780,79 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		keepScan = true
 	}
 	return page, nil
+}
+
+// Comments are fetched only for an explicitly opened activity page; neither
+// summary listing nor batch detail hydration requests them.
+type GitHubComment struct {
+	ID        string    `json:"id"`
+	Body      string    `json:"body"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+const githubCommentsQuery = `query($owner:String!,$repo:String!,$number:Int!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issue(number:$number) { comments(first:$count,after:$after) { nodes { id body createdAt author { login } } pageInfo { hasNextPage endCursor } } } } }`
+
+func (a *GitHubAdapter) ReadComments(ctx context.Context, source Source, ref Ref, cursor string, limit int) ([]GitHubComment, string, error) {
+	b, err := a.binding(source)
+	if err != nil {
+		return nil, "", err
+	}
+	number, err := strconv.Atoi(ref.ItemID)
+	if ref.SourceID != source.ID || err != nil || number < 1 {
+		return nil, "", GitHubDiagnostic{"invalid-ref", "issue reference is invalid"}
+	}
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	parts := strings.Split(b.repository, "/")
+	var result struct {
+		Repository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			Issue         *struct {
+				Comments struct {
+					Nodes []struct {
+						ID        string    `json:"id"`
+						Body      string    `json:"body"`
+						CreatedAt time.Time `json:"createdAt"`
+						Author    *struct {
+							Login string `json:"login"`
+						} `json:"author"`
+					} `json:"nodes"`
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+				} `json:"comments"`
+			} `json:"issue"`
+		} `json:"repository"`
+	}
+	var after any
+	if cursor != "" {
+		after = cursor
+	}
+	if err := a.query(ctx, b, githubCommentsQuery, map[string]any{"owner": parts[0], "repo": parts[1], "number": number, "after": after, "count": limit}, &result); err != nil {
+		return nil, "", err
+	}
+	if result.Repository == nil || result.Repository.NameWithOwner != b.repository || result.Repository.Issue == nil {
+		return nil, "", GitHubDiagnostic{"not-found-or-inaccessible", "issue not found or access unavailable"}
+	}
+	comments := result.Repository.Issue.Comments
+	if comments.PageInfo.HasNextPage && comments.PageInfo.EndCursor == "" {
+		return nil, "", GitHubDiagnostic{"invalid-response", "comments pagination cursor missing"}
+	}
+	out := make([]GitHubComment, 0, len(comments.Nodes))
+	for _, node := range comments.Nodes {
+		comment := GitHubComment{ID: node.ID, Body: node.Body, CreatedAt: node.CreatedAt}
+		if node.Author != nil {
+			comment.Author = node.Author.Login
+		}
+		out = append(out, comment)
+	}
+	if comments.PageInfo.HasNextPage {
+		return out, comments.PageInfo.EndCursor, nil
+	}
+	return out, "", nil
 }
 
 const githubDetailQuery = `query($owner:String!,$repo:String!,$number:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issue(number:$number) { id number title body state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } }`
