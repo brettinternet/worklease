@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 18:20'
+updated_date: '2026-09-23 23:56'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.2
@@ -66,6 +67,8 @@ D11: a worker in a checkout resolves its authority from --profile, WORKLEASE_PRO
 Implemented read-only batched Status overlay, authority profile selection, claim states/admission/D11 checks; focused tests and lint, format-check, test, typecheck pass. Reviewing before commit.
 
 Evidence: TestClaimOverlayBatchesAndSplitsWithoutList, TestLargeResourceStatusSplitsOnResponseLimit (32 near-1KiB resources), TestClaimOverlayStatesAndOutage, TestQueueUnavailableRemoteNeverFallsBackToLocal, TestCheckoutBindingMismatchWithPortableKey, TestClaimOverlayAdmissionAndCheckoutAuthority, TestConfiguredSourcesPreserveKeyInputsAndNativeClaim; all repository gates and staged hooks pass. Review: corrected stale observedAt, checkout authority domain and GitHub enterprise key input; no unresolved item defects. Merged 584a571 and 8cbf9b8 into main as 25f398c and db751b4. No D1-D27 or plan text contradicted.
+
+Review: cached snapshots now get claim overlays; local checkout authority compared with worker's default local store; authority-mismatch denials no longer suppress holder observations; TUI shows stale claim state (3ff7075). Merged with TASK-129.5 overlay; late admission metadata now re-overlays under current authority (00a6b2e). Merged to main 013a058.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

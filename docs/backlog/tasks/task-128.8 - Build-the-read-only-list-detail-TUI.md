@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 18:48'
+updated_date: '2026-09-23 23:56'
 labels:
   - work-queue
   - tui
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.1
@@ -66,6 +67,8 @@ Provider text is untrusted: titles, bodies, and comments can contain terminal es
 Implemented initial read-only Bubble Tea queue in isolated task-128.8-tui worktree: snapshot list/detail, keyboard navigation/filter, source and claim labels, lazy paged History, sanitized provider rendering, safe explicit URL action, scripted model tests. Focused Go tests pass; finishing quality gates and integration.
 
 Merged to main in 51793a1, 8163047, 966948c. Scripted Bubble Tea model tests exercise navigation, view/header/coverage, resize/narrow switching, Unicode text, NO_COLOR/escape sanitization, disabled actions, dependency evidence, selection anchoring, lazy paged claim history and full IDs. CLI tests cover JSON refusal and source error labels. All required gates passed in final tree: mise run lint, format-check, test, typecheck, hooks; govulncheck found no vulnerabilities. One general review pass found a stale-offset panic; fixed and regression-tested. Follow-up concrete coverage footer truncation fixed and regression-tested. No outstanding item blocker; private queue.yaml is absent, so no live provider terminal session was claimed as verification.
+
+Review: shared claim-filter predicate (held/free) with JSON; per-source 'me' identity; history cleared on selection change; backward epoch paging on 'm' (n/N stay navigation, comments also page on 'm'); guarded duplicate page requests; widths at 80/100 cols; refresh reports completion/failure only after it finishes (c0260cd, a6991f2). Merged to main 013a058.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
