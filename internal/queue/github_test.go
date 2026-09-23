@@ -298,6 +298,59 @@ func TestGitHubNewest304DoesNotHideOlderIncrementalChange(t *testing.T) {
 	}
 }
 
+func TestLoaderNewest304StillRefreshesOlderIssue(t *testing.T) {
+	var hints, scans atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if hints.Add(1) > 1 {
+				if r.Header.Get("If-None-Match") != `"newest"` {
+					t.Errorf("conditional hint lost ETag: %q", r.Header.Get("If-None-Match"))
+				}
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", `"newest"`)
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		query, vars := githubRequest(t, r)
+		switch {
+		case strings.Contains(query, "viewer"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "nodes(ids:"):
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"title":"newest","state":"OPEN","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"older changed","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}]}}`)
+		default:
+			if strings.Contains(query, "filterBy:{since:") {
+				scans.Add(1)
+			}
+			if string(vars["after"]) == `"older"` {
+				title := "older"
+				if hints.Load() > 1 {
+					title = "older changed"
+				}
+				fmt.Fprintf(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N2","number":2,"title":%q,"state":"OPEN","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`, title)
+			} else {
+				fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"title":"newest","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"older"}}}}}`)
+			}
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	registry.adapters["github"] = a
+	loader := NewLoader(registry)
+	loader.GitHubSync = &syncTestStore{}
+	for range 3 {
+		drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	}
+	older := loader.Store.Current().Items[Ref{source.ID, "2"}.Key()]
+	if hints.Load() != 2 || scans.Load() != 4 || older.Title != "older changed" {
+		t.Fatalf("304 hid older change: hints=%d scans=%d older=%+v", hints.Load(), scans.Load(), older)
+	}
+}
+
 func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)
