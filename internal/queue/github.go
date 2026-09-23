@@ -29,17 +29,10 @@ type GitHubDiagnostic struct {
 
 func (d GitHubDiagnostic) Error() string { return d.Code + ": " + d.Detail }
 
-type githubAccountGate struct {
-	mu   sync.Mutex
-	next time.Time
-}
-
-var githubAccountLocks sync.Map // host/account -> *githubAccountGate, shared by adapter instances
-
-func githubLock(host, account string) *githubAccountGate {
-	key := strings.ToLower(host + "\x00" + account)
-	value, _ := githubAccountLocks.LoadOrStore(key, &githubAccountGate{})
-	return value.(*githubAccountGate)
+// GitHubRateDiagnostic carries a safe, machine-readable retry deadline.
+type GitHubRateDiagnostic struct {
+	GitHubDiagnostic
+	RetryAt time.Time `json:"retryAt"`
 }
 
 type githubBinding struct {
@@ -166,7 +159,7 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	return source, nil
 }
 
-// query serializes both HTTP calls and quota waits for a configured account.
+// query schedules safe reads by account quota; claims and heartbeats never use this path.
 const githubViewerQuery = `query { viewer { login } }`
 
 func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query string, variables any, dest any) error {
@@ -177,41 +170,66 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 	default:
 		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
 	}
-	gate := githubLock(b.host, b.account)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
+	identity := "github:" + strings.ToLower(b.host+"\x00"+b.account)
+	if a.APIBase != "" {
+		identity += "\x00" + a.APIBase
+	} // independent test servers do not share quota
+	gate := quotaScheduler(identity, 1)
 	body, _ := json.Marshal(struct {
 		Query     string `json:"query"`
 		Variables any    `json:"variables,omitempty"`
 	}{query, variables})
-	for attempt := 0; attempt < 3; attempt++ {
-		if delay := time.Until(gate.next); delay > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
-			case <-timer.C:
+	priority := PriorityVisible
+	if query == githubViewerQuery || query == githubDetailQuery || query == githubDependencyQuery {
+		priority = PriorityDetail
+	}
+	key := b.generation + ":" + string(body)
+	value, err := gate.schedule(ctx, priority, key, "", true, func(workCtx context.Context) (any, error) {
+		return a.queryHTTP(workCtx, b, body, gate)
+	})
+	if err != nil {
+		if diagnostic, ok := err.(ScheduleDiagnostic); ok {
+			if diagnostic.Code == "rate-limited" {
+				return GitHubRateDiagnostic{GitHubDiagnostic{"rate-limited", "provider quota exhausted; retry later"}, diagnostic.RetryAt}
 			}
+			return GitHubDiagnostic{diagnostic.Code, "provider request capacity unavailable"}
+		}
+		if ctx.Err() != nil {
+			gate.mu.Lock()
+			limited := gate.retryAt.After(time.Now())
+			gate.mu.Unlock()
+			if limited {
+				return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
+			}
+		}
+		return err
+	}
+	return json.Unmarshal(value.([]byte), dest)
+}
+
+func (a *GitHubAdapter) queryHTTP(ctx context.Context, b *githubBinding, body []byte, gate *quotaQueue) ([]byte, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := gate.waitQuota(ctx); err != nil {
+			return nil, err
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint, bytes.NewReader(body))
 		if err != nil {
-			return GitHubDiagnostic{"invalid-source", "invalid API endpoint"}
+			return nil, GitHubDiagnostic{"invalid-source", "invalid API endpoint"}
 		}
 		request.Header.Set("Authorization", "Bearer "+b.token)
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", "application/vnd.github+json")
 		response, err := a.client().Do(request)
 		if err != nil {
-			return GitHubDiagnostic{"offline", "GitHub API unavailable"}
+			return nil, GitHubDiagnostic{"offline", "GitHub API unavailable"}
 		}
 		raw, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
 		response.Body.Close()
 		if readErr != nil || len(raw) > 8<<20 {
-			return GitHubDiagnostic{"invalid-response", "GitHub response unreadable"}
+			return nil, GitHubDiagnostic{"invalid-response", "GitHub response unreadable"}
 		}
 		if response.StatusCode >= 300 && response.StatusCode < 400 {
-			return GitHubDiagnostic{"identity-changed", "GitHub redirected the configured repository; claims unavailable"}
+			return nil, GitHubDiagnostic{"identity-changed", "GitHub redirected the configured repository; claims unavailable"}
 		}
 		var payload struct {
 			Data   json.RawMessage `json:"data"`
@@ -230,7 +248,7 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 		}
 		if limited {
 			if attempt == 2 {
-				return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
+				return nil, ScheduleDiagnostic{Code: "rate-limited", RetryAt: gate.retryDeadline()}
 			}
 			delay := time.Duration(1<<attempt)*time.Second + time.Duration(rand.Int63n(int64(250*time.Millisecond)))
 			if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
@@ -242,57 +260,65 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 					delay = until
 				}
 			}
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
-			case <-timer.C:
+			gate.limitUntil(time.Now().Add(delay))
+			if attempt == 0 && delay < 2*time.Second {
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, ScheduleDiagnostic{Code: "rate-limited", RetryAt: time.Now().Add(delay)}
+				case <-timer.C:
+				}
+				// The retry is safe; reset the local backoff after waiting.
+				gate.mu.Lock()
+				gate.retryAt = time.Time{}
+				gate.mu.Unlock()
+				continue
 			}
-			continue
+			return nil, ScheduleDiagnostic{Code: "rate-limited", RetryAt: time.Now().Add(delay)}
 		}
 		switch response.StatusCode {
 		case 401:
-			return GitHubDiagnostic{"authentication", "GitHub rejected the credential"}
+			return nil, GitHubDiagnostic{"authentication", "GitHub rejected the credential"}
 		case 403:
 			if strings.Contains(lower, "saml") || response.Header.Get("X-GitHub-SSO") != "" {
-				return GitHubDiagnostic{"saml-sso", "SAML authorization required"}
+				return nil, GitHubDiagnostic{"saml-sso", "SAML authorization required"}
 			}
-			return GitHubDiagnostic{"permission-denied", "GitHub denied access"}
+			return nil, GitHubDiagnostic{"permission-denied", "GitHub denied access"}
 		case 404:
-			return GitHubDiagnostic{"not-found-or-inaccessible", "resource not found or access unavailable"}
+			return nil, GitHubDiagnostic{"not-found-or-inaccessible", "resource not found or access unavailable"}
 		case 410:
-			return GitHubDiagnostic{"gone", "GitHub resource unavailable"}
+			return nil, GitHubDiagnostic{"gone", "GitHub resource unavailable"}
 		}
 		if response.StatusCode != 200 {
-			return GitHubDiagnostic{"provider-error", "GitHub request failed"}
+			return nil, GitHubDiagnostic{"provider-error", "GitHub request failed"}
 		}
 		if len(payload.Errors) > 0 {
 			for _, issue := range payload.Errors {
 				msg := strings.ToLower(issue.Message)
 				switch strings.ToUpper(issue.Type) {
 				case "FORBIDDEN":
-					return GitHubDiagnostic{"permission-denied", "GitHub denied access"}
+					return nil, GitHubDiagnostic{"permission-denied", "GitHub denied access"}
 				case "NOT_FOUND":
-					return GitHubDiagnostic{"not-found-or-inaccessible", "resource not found or access unavailable"}
+					return nil, GitHubDiagnostic{"not-found-or-inaccessible", "resource not found or access unavailable"}
 				}
 				if strings.Contains(msg, "rate limit") {
-					return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
+					return nil, GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
 				}
 				if strings.Contains(msg, "saml") {
-					return GitHubDiagnostic{"saml-sso", "SAML authorization required"}
+					return nil, GitHubDiagnostic{"saml-sso", "SAML authorization required"}
 				}
 				if strings.Contains(msg, "blockedby") || strings.Contains(msg, "subissues") || strings.Contains(msg, "parent") {
-					return GitHubDiagnostic{"dependency-unsupported", "GitHub dependency fields unavailable"}
+					return nil, GitHubDiagnostic{"dependency-unsupported", "GitHub dependency fields unavailable"}
 				}
 			}
-			return GitHubDiagnostic{"provider-error", "GitHub GraphQL request failed"}
+			return nil, GitHubDiagnostic{"provider-error", "GitHub GraphQL request failed"}
 		}
 		if len(payload.Data) == 0 {
-			return GitHubDiagnostic{"invalid-response", "GitHub GraphQL data missing"}
+			return nil, GitHubDiagnostic{"invalid-response", "GitHub GraphQL data missing"}
 		}
-		if err := json.Unmarshal(payload.Data, dest); err != nil {
-			return GitHubDiagnostic{"invalid-response", "GitHub GraphQL data invalid"}
+		if !json.Valid(payload.Data) {
+			return nil, GitHubDiagnostic{"invalid-response", "GitHub GraphQL data invalid"}
 		}
 		// A successful response may consume the final unit of either quota.
 		var quota struct {
@@ -311,12 +337,10 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 		if quota.RateLimit.Remaining != nil && *quota.RateLimit.Remaining == 0 && quota.RateLimit.ResetAt.After(reset) {
 			reset = quota.RateLimit.ResetAt
 		}
-		if reset.After(gate.next) {
-			gate.next = reset.Add(time.Duration(rand.Int63n(int64(250 * time.Millisecond))))
-		}
-		return nil
+		gate.limitUntil(reset)
+		return payload.Data, nil
 	}
-	return GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
+	return nil, ScheduleDiagnostic{Code: "rate-limited", RetryAt: gate.retryDeadline()}
 }
 
 type githubIssue struct {

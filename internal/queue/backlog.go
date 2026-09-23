@@ -43,7 +43,6 @@ type BacklogAdapter struct {
 	Binary           string
 	Timeout          time.Duration
 	mu               sync.Mutex
-	slots            chan struct{}
 	diagnostics      map[string]BacklogSourceDiagnostics
 	consent          map[string]bool
 	details          map[string]backlogTask
@@ -54,7 +53,7 @@ func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
 	for _, s := range terminalStatuses {
 		statuses[s] = true
 	}
-	return &BacklogAdapter{TerminalStatuses: statuses, slots: make(chan struct{}, 4), diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}}
+	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}}
 }
 
 // OnDemandDetails prevents the loader from scanning every task with a view subprocess.
@@ -105,12 +104,31 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	}
 	ctx, cancel := context.WithTimeout(ctx, a.timeout())
 	defer cancel()
-	select {
-	case a.slots <- struct{}{}:
-		defer func() { <-a.slots }()
-	case <-ctx.Done():
-		return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+	priority := PriorityBackground
+	if len(args) >= 2 && args[0] == "task" {
+		priority = PriorityVisible
+		if args[1] == "view" {
+			priority = PriorityDetail
+		}
 	}
+	gate := quotaScheduler("backlog:"+cwd, 4)
+	key := binary + "\x00" + strings.Join(args, "\x00")
+	result, err := gate.schedule(ctx, priority, key, "", true, func(workCtx context.Context) (any, error) {
+		return a.runCommand(workCtx, cwd, binary, args...)
+	})
+	if err != nil {
+		if _, ok := err.(ScheduleDiagnostic); ok {
+			return nil, BacklogDiagnostic{"overloaded", "provider request capacity unavailable"}
+		}
+		if ctx.Err() != nil {
+			return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+		}
+		return nil, err
+	}
+	return result.([]byte), nil
+}
+
+func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = cwd
 	// Ignore inherited directory overrides: only the configured checkout is a source.

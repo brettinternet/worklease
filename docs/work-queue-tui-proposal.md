@@ -539,7 +539,7 @@ Push down only filters whose meaning is equivalent; evaluate residual filters ex
 
 ### Bounded work
 
-One scheduler per process shares budgets per provider quota identity, cancels superseded reads, deduplicates in-flight fetches, and reserves capacity for authoritative action checks. Heartbeats run on a separate control path that neither refresh nor indexing can delay. Lifecycle requests still serialize through the per-handle revision and pending-request rules; reserved capacity never bypasses an unresolved request or races two mutations of the same claim.
+One scheduler per process shares budgets per provider quota identity, cancels superseded reads, deduplicates in-flight fetches, and reserves capacity for authoritative action checks. GitHub serializes per host/account and Backlog.md bounds subprocesses to four per source. This coordination does not extend across processes; independent clients use jitter and backoff, with aggregate load measured in TASK-129.6. Heartbeats run on a separate control path that neither refresh nor indexing can delay. Lifecycle requests still serialize through the per-handle revision and pending-request rules; reserved capacity never bypasses an unresolved request or races two mutations of the same claim.
 
 Debounce search, prioritize visible summaries and the selected detail, and prefetch only adjacent pages. Never make a network call per row while rendering. Cap pending jobs, item and body sizes, decoded responses, dependency traversal, and memory. Retry safe reads, never uncertain writes. Stop background hydration before it spends capacity an explicit action needs.
 

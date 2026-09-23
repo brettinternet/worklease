@@ -105,8 +105,8 @@ func TestGitHubRedirectAndTypedErrors(t *testing.T) {
 	}
 }
 func TestGitHubSuccessfulQuotaLastUnit(t *testing.T) {
-	gate := githubLock("github.com", "tester")
-	t.Cleanup(func() { gate.mu.Lock(); gate.next = time.Time{}; gate.mu.Unlock() })
+	gate := quotaScheduler("github:github.com\x00tester", 1)
+	t.Cleanup(func() { gate.mu.Lock(); gate.retryAt = time.Time{}; gate.mu.Unlock() })
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		q, _ := githubRequest(t, r)
 		if strings.Contains(q, "viewer") {

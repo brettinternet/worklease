@@ -222,7 +222,10 @@ func TestBacklogReadConcurrency(t *testing.T) {
 		go func() { defer wg.Done(); _, _ = a.run(context.Background(), root, binary, "--version") }()
 	}
 	wg.Wait()
-	if len(a.slots) != 0 || cap(a.slots) != 4 {
+	gate := quotaScheduler("backlog:"+root, 4)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.running != 0 || gate.limit != 4 {
 		t.Fatal("bounded slots leaked")
 	}
 }
