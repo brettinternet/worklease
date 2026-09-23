@@ -221,10 +221,33 @@ type ItemOutcome struct {
 	Observation Observation
 }
 type SummaryPage struct {
-	Items       []Summary
-	NextCursor  string
-	Coverage    Coverage
-	Observation Observation
+	Items          []Summary
+	NextCursor     string
+	Coverage       Coverage
+	Observation    Observation
+	Incremental    bool
+	Reconciliation bool
+}
+type SyncCheckpoint struct {
+	Cursor                   string
+	CommittedWatermark       time.Time
+	ScanWatermark            time.Time
+	ReconciliationCursor     string
+	ReconciliationGeneration int64
+	ReconciliationStarted    time.Time
+}
+type GitHubSyncStore interface {
+	LockGitHubSync(context.Context, Source) (func(), error)
+	LoadGitHubSync(context.Context, Source) (SyncCheckpoint, error)
+	CommitGitHubSyncPage(context.Context, Source, []Item, string, time.Time, bool) error
+	StartGitHubReconciliation(context.Context, Source, time.Time) (SyncCheckpoint, bool, error)
+	CommitGitHubReconciliationPage(context.Context, Source, []Item, string, SyncCheckpoint, bool) ([]Ref, error)
+	RestartGitHubSync(context.Context, Source, bool) error
+	WithholdGitHubItem(context.Context, Source, Ref) error
+	WithholdGitHubSource(context.Context, Source) error
+}
+type IncrementalListAdapter interface {
+	ListIncremental(context.Context, Source, Query, string, time.Time, time.Time) (SummaryPage, error)
 }
 type Query struct {
 	Filters Filters

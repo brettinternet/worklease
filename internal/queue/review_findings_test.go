@@ -96,7 +96,8 @@ func TestSourceListFailurePreservesGitHubClassificationAndRetry(t *testing.T) {
 		retryAt time.Time
 	}{
 		{name: "429", err: GitHubRateDiagnostic{GitHubDiagnostic{Code: "rate-limited"}, retryAt}, code: "rate-limited", retryAt: retryAt},
-		{name: "403", err: GitHubDiagnostic{Code: "permission-denied"}, code: "permission-denied"},
+		// Access loss is withheld as unverified (TASK-129.3), still distinct from 429 and offline.
+		{name: "403", err: GitHubDiagnostic{Code: "permission-denied"}, code: "github-access-unverified"},
 		{name: "connection", err: GitHubDiagnostic{Code: "offline"}, code: "offline"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

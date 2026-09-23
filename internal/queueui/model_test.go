@@ -160,6 +160,50 @@ func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 		t.Fatal("late response stole detail")
 	}
 }
+func TestActivityLoadsCommentsOnDemandAndIgnoresLatePages(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	calls := 0
+	m.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
+		calls++
+		if calls == 1 && cursor != "" || calls == 2 && cursor != "next" {
+			t.Fatalf("unexpected comments cursor: %q", cursor)
+		}
+		return func() tea.Msg {
+			return CommentsMsg{Identity: "stable-1", Comments: []queue.GitHubComment{{Author: "alice", Body: "hello\x1b[31m world"}}, Cursor: map[bool]string{true: "next", false: ""}[calls == 1]}
+		}
+	}
+	if calls != 0 {
+		t.Fatal("comments fetched before activity was opened")
+	}
+	m, _ = press(m, "enter")
+	m, _ = press(m, "tab")
+	m, cmd := press(m, "tab")
+	if calls != 1 || cmd == nil {
+		t.Fatal("activity did not request comments")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if !strings.Contains(m.View(), "hello world") || strings.Contains(m.View(), "\x1b[31m") {
+		t.Fatal("comment was not rendered safely")
+	}
+	m, cmd = press(m, "m")
+	if calls != 2 || cmd == nil {
+		t.Fatal("next page did not load on demand")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if len(m.Comments) != 2 || m.CommentsCursor != "" {
+		t.Fatalf("comments pagination: %+v", m.Comments)
+	}
+	m, _ = press(m, "j")
+	next, _ = m.Update(CommentsMsg{Identity: "stable-1", Comments: []queue.GitHubComment{{Body: "late"}}})
+	if strings.Contains(next.(Model).View(), "late") {
+		t.Fatal("late comments were shown on another item")
+	}
+}
+
 func TestSelectedEdgeHydrationFollowsSelectionOnly(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

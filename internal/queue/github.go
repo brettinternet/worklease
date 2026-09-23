@@ -37,11 +37,14 @@ type GitHubRateDiagnostic struct {
 
 type githubBinding struct {
 	host, repository, account, token, endpoint string
+	repositoryID                               string
 	generation                                 string
 	dependencies                               bool
 	identityChanged                            bool
-	scans                                      map[string]map[string]bool
+	scans                                      map[string]map[string]string
 	scanOrder                                  []string
+	nodeIDs                                    map[string]string
+	newestETags                                map[string]string
 }
 
 // GitHubAdapter is a read-only adapter. Client and APIBase are test seams; production
@@ -94,6 +97,20 @@ func (a *GitHubAdapter) ConfigurationGeneration(source Source) string {
 		return binding.generation
 	}
 	return ""
+}
+
+func (a *GitHubAdapter) GitHubSyncIdentity(source Source) (string, string, string, string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	binding := a.bindings[source.ID]
+	if binding == nil || binding.repository != source.Locator {
+		return "", "", "", "", false
+	}
+	repositoryID := binding.repositoryID
+	if repositoryID == "" {
+		return "", "", "", "", false
+	}
+	return binding.account, strings.ToLower(binding.host), repositoryID, binding.generation, true
 }
 func (a *GitHubAdapter) drift(b *githubBinding) {
 	a.mu.Lock()
@@ -161,6 +178,29 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	if viewer.Viewer.Login != account {
 		return Source{}, GitHubDiagnostic{"authentication", "authenticated principal does not match configured account"}
 	}
+	if a.APIBase != "" {
+		// The local fake API has no repository node resolver; production always resolves
+		// and persists the provider's immutable repository node ID below.
+		b.repositoryID = strings.ToLower(host) + "/" + strings.ToLower(repository)
+	} else {
+		parts := strings.Split(repository, "/")
+		var repoIdentity struct {
+			Repository *struct {
+				ID            string `json:"id"`
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"repository"`
+		}
+		if err := a.query(ctx, b, githubRepositoryIdentityQuery, map[string]any{"owner": parts[0], "repo": parts[1]}, &repoIdentity); err != nil {
+			return Source{}, err
+		}
+		if repoIdentity.Repository == nil || repoIdentity.Repository.ID == "" || !strings.EqualFold(repoIdentity.Repository.NameWithOwner, repository) {
+			return Source{}, GitHubDiagnostic{"not-found-or-inaccessible", "repository not found or access unavailable"}
+		}
+		b.repositoryID = repoIdentity.Repository.ID
+	}
+	if id == "" {
+		id = host + "/" + repository
+	}
 	source := Source{ID: id, Name: repository, Locator: repository, Adapter: "github"}
 	a.mu.Lock()
 	a.bindings[id] = b
@@ -170,12 +210,13 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 
 // query schedules safe reads by account quota; claims and heartbeats never use this path.
 const githubViewerQuery = `query { viewer { login } }`
+const githubRepositoryIdentityQuery = `query($owner:String!,$repo:String!) { repository(owner:$owner,name:$repo) { id nameWithOwner } }`
 
 func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query string, variables any, dest any) error {
 	// Only the four vetted read operations can reach the provider. This also
 	// rejects dynamically assembled GraphQL mutations before any network I/O.
 	switch query {
-	case githubViewerQuery, githubListQuery, githubDetailQuery, githubDependencyQuery:
+	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery:
 	default:
 		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
 	}
@@ -189,7 +230,7 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 		Variables any    `json:"variables,omitempty"`
 	}{query, variables})
 	priority := PriorityVisible
-	if query == githubViewerQuery || query == githubDetailQuery || query == githubDependencyQuery {
+	if query == githubViewerQuery || query == githubRepositoryIdentityQuery || query == githubDetailQuery || query == githubDependencyQuery || query == githubCommentsQuery {
 		priority = PriorityDetail
 	}
 	key := b.generation + ":" + string(body)
@@ -306,10 +347,15 @@ func (a *GitHubAdapter) queryHTTP(ctx context.Context, b *githubBinding, body []
 			for _, issue := range payload.Errors {
 				msg := strings.ToLower(issue.Message)
 				switch strings.ToUpper(issue.Type) {
+				case "INVALID_CURSOR":
+					return nil, GitHubDiagnostic{"invalid-cursor", "GitHub pagination cursor expired"}
 				case "FORBIDDEN":
 					return nil, GitHubDiagnostic{"permission-denied", "GitHub denied access"}
 				case "NOT_FOUND":
 					return nil, GitHubDiagnostic{"not-found-or-inaccessible", "resource not found or access unavailable"}
+				}
+				if strings.Contains(msg, "cursor") && (strings.Contains(msg, "invalid") || strings.Contains(msg, "expired")) {
+					return nil, GitHubDiagnostic{"invalid-cursor", "GitHub pagination cursor expired"}
 				}
 				if strings.Contains(msg, "rate limit") {
 					return nil, GitHubDiagnostic{"rate-limited", "GitHub quota exhausted; retry later"}
@@ -419,6 +465,28 @@ func (a *GitHubAdapter) summary(source Source, issue githubIssue) Summary {
 	}
 	return Summary{Ref: Ref{source.ID, strconv.Itoa(issue.Number)}, Title: issue.Title, RawStatus: issue.State, State: state, Order: fmt.Sprintf("%012d", issue.Number), CanonicalID: issue.ID, AssignedTo: owners, UpdatedAt: issue.UpdatedAt, Fresh: true, Terminal: terminal}
 }
+func (a *GitHubAdapter) item(source Source, issue githubIssue) Item {
+	summary := a.summary(source, issue)
+	return Item{Summary: summary, Body: issue.Body, TerminalKnown: true, Assignment: Assignment{Owners: summary.AssignedTo, Known: true, Assigned: len(summary.AssignedTo) > 0}, Observation: Observation{Principal: func() string {
+		binding, _ := a.binding(source)
+		if binding != nil {
+			return binding.account
+		}
+		return ""
+	}(), ObservedAt: time.Now(), ConfigurationGeneration: a.ConfigurationGeneration(source)}}
+}
+
+func (a *GitHubAdapter) BatchHydration() {}
+
+func (a *GitHubAdapter) rememberNodeID(b *githubBinding, issue githubIssue) {
+	a.mu.Lock()
+	if b.nodeIDs == nil {
+		b.nodeIDs = make(map[string]string)
+	}
+	b.nodeIDs[strconv.Itoa(issue.Number)] = issue.ID
+	a.mu.Unlock()
+}
+
 func (a *GitHubAdapter) Capabilities(_ context.Context, source Source, _ string, _ *Ref) (CapabilitySet, error) {
 	b, err := a.binding(source)
 	if err != nil {
@@ -439,7 +507,137 @@ func (a *GitHubAdapter) Capabilities(_ context.Context, source Source, _ string,
 	return CapabilitySet{"identity": read(), "discovery": read(), "dependencies": deps, "state": read(), "progress": denied(), "assignment": denied(), "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": denied(), "synchronization": {Support: Unsupported, Permission: Denied, Availability: Available}, "effects": read(), "authentication": read()}, nil
 }
 
+// pollNewestHint is never authoritative: even a valid 304 only describes this
+// exact REST page, not older issues, permissions, or dependency edges.
+func (a *GitHubAdapter) pollNewestHint(ctx context.Context, source Source) {
+	b, err := a.binding(source)
+	if err != nil {
+		return
+	}
+	origin := "https://api.github.com"
+	if !strings.EqualFold(b.host, "github.com") {
+		origin = "https://" + b.host + "/api/v3"
+	}
+	if a.APIBase != "" {
+		origin = strings.TrimRight(a.APIBase, "/")
+	}
+	parts := strings.Split(b.repository, "/")
+	endpoint := origin + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/issues?state=all&sort=updated&direction=desc&per_page=1&page=1"
+	const accept = "application/vnd.github+json"
+	key := endpoint + "\x00" + b.account + "\x00" + accept + "\x00" + b.generation
+	a.mu.Lock()
+	etag := b.newestETags[key]
+	a.mu.Unlock()
+	gate := quotaScheduler("github-rest:"+strings.ToLower(b.host+"\x00"+b.account), 1)
+	_, _ = gate.schedule(ctx, PriorityBackground, key+"\x00"+etag, "", true, func(workCtx context.Context) (any, error) {
+		request, err := http.NewRequestWithContext(workCtx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+b.token)
+		request.Header.Set("Accept", accept)
+		if etag != "" {
+			request.Header.Set("If-None-Match", etag)
+		}
+		client := *a.client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		response.Body.Close() // the representation is only a hint, never ingested
+		if response.StatusCode == http.StatusOK {
+			a.mu.Lock()
+			if b.newestETags == nil {
+				b.newestETags = make(map[string]string)
+			}
+			b.newestETags[key] = response.Header.Get("ETag")
+			a.mu.Unlock()
+		}
+		return nil, nil
+	})
+}
+
 const githubListQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:CREATED_AT,direction:ASC},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
+const githubIncrementalQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!,$since:DateTime!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:UPDATED_AT,direction:DESC},filterBy:{since:$since},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
+
+func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, query Query, cursor string, committedWatermark, scanWatermark time.Time) (SummaryPage, error) {
+	b, err := a.binding(source)
+	if err != nil {
+		return SummaryPage{}, err
+	}
+	parts := strings.Split(b.repository, "/")
+	count := query.Budget
+	if count <= 0 || count > 100 {
+		count = 100
+	}
+	var after any
+	if cursor != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(cursor)
+		if decodeErr != nil || len(decoded) == 0 {
+			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "invalid incremental cursor"}
+		}
+		after = string(decoded)
+	}
+	if scanWatermark.IsZero() {
+		scanWatermark = time.Now().UTC()
+	}
+	since := committedWatermark
+	if since.IsZero() {
+		since = scanWatermark.Add(-30 * 24 * time.Hour)
+	}
+	// Revisit a small overlap so timestamp ties and updates around page boundaries
+	// are observed again; node IDs are de-duplicated before returning each page.
+	since = since.Add(-5 * time.Minute)
+	var result struct {
+		Repository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			Issues        struct {
+				TotalCount int           `json:"totalCount"`
+				Nodes      []githubIssue `json:"nodes"`
+				PageInfo   struct {
+					HasNextPage bool   `json:"hasNextPage"`
+					EndCursor   string `json:"endCursor"`
+				} `json:"pageInfo"`
+			} `json:"issues"`
+		} `json:"repository"`
+	}
+	err = a.query(ctx, b, githubIncrementalQuery, map[string]any{"owner": parts[0], "repo": parts[1], "after": after, "count": count, "since": since.UTC().Format(time.RFC3339Nano)}, &result)
+	if err != nil {
+		if d, ok := err.(GitHubDiagnostic); ok && d.Code == "identity-changed" {
+			a.drift(b)
+		}
+		return SummaryPage{}, err
+	}
+	if result.Repository == nil || result.Repository.NameWithOwner != b.repository {
+		return SummaryPage{}, GitHubDiagnostic{"not-found-or-inaccessible", "repository not found or access unavailable"}
+	}
+	coverage := Coverage{State: CoverageComplete, Scope: source.ID, Total: result.Repository.Issues.TotalCount, TotalAccuracy: TotalExact}
+	page := SummaryPage{Coverage: coverage, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), Coverage: coverage, ConfigurationGeneration: b.generation}, Incremental: true}
+	seen := make(map[string]bool, len(result.Repository.Issues.Nodes))
+	for _, issue := range result.Repository.Issues.Nodes {
+		if issue.ID == "" || issue.Number < 1 {
+			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "issue identity missing"}
+		}
+		if issue.Repository.NameWithOwner != b.repository {
+			a.drift(b)
+			return SummaryPage{}, GitHubDiagnostic{"identity-changed", "issue transferred; claims unavailable until rebind"}
+		}
+		a.rememberNodeID(b, issue)
+		if !seen[issue.ID] {
+			seen[issue.ID] = true
+			page.Items = append(page.Items, a.summary(source, issue))
+		}
+	}
+	if result.Repository.Issues.PageInfo.HasNextPage {
+		if result.Repository.Issues.PageInfo.EndCursor == "" {
+			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "pagination cursor missing"}
+		}
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(result.Repository.Issues.PageInfo.EndCursor))
+		page.Coverage.State = CoveragePartial
+	}
+	return page, nil
+}
 
 func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cursor string) (SummaryPage, error) {
 	b, err := a.binding(source)
@@ -453,16 +651,30 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 	}
 	var after any
 	var scanID string
+	var scanStarted time.Time
 	if cursor != "" {
 		var state struct {
-			ID    string `json:"id"`
-			After string `json:"after"`
+			ID      string `json:"id"`
+			After   string `json:"after"`
+			Started int64  `json:"started"`
 		}
 		decoded, decodeErr := base64.RawURLEncoding.DecodeString(cursor)
-		if decodeErr != nil || json.Unmarshal(decoded, &state) != nil || state.ID == "" || state.After == "" {
+		if decodeErr != nil || json.Unmarshal(decoded, &state) != nil || state.ID == "" || state.After == "" || state.Started == 0 {
 			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "invalid GitHub scan cursor"}
 		}
+		scanStarted = time.Unix(0, state.Started)
+		if time.Since(scanStarted) > 24*time.Hour || scanStarted.After(time.Now().Add(time.Minute)) {
+			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub scan expired"}
+		}
 		a.mu.Lock()
+		if b.scans == nil {
+			// The scan cursor is durable but the seen-ID set is process-local.
+			// Restore a valid cursor on a fresh adapter; the index deduplicates
+			// persisted pages by immutable node ID. Still reject cursors evicted
+			// from an already active adapter's bounded scan set.
+			b.scans = map[string]map[string]string{state.ID: {}}
+			b.scanOrder = append(b.scanOrder, state.ID)
+		}
 		_, exists := b.scans[state.ID]
 		a.mu.Unlock()
 		if !exists {
@@ -475,16 +687,17 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "scan unavailable"}
 		}
 		scanID = hex.EncodeToString(id)
+		scanStarted = time.Now().UTC()
 		a.mu.Lock()
 		if b.scans == nil {
-			b.scans = map[string]map[string]bool{}
+			b.scans = map[string]map[string]string{}
 		}
 		const maxGitHubScans = 100
 		for len(b.scanOrder) >= maxGitHubScans {
 			delete(b.scans, b.scanOrder[0])
 			b.scanOrder = b.scanOrder[1:]
 		}
-		b.scans[scanID] = map[string]bool{}
+		b.scans[scanID] = map[string]string{}
 		b.scanOrder = append(b.scanOrder, scanID)
 		a.mu.Unlock()
 	}
@@ -545,9 +758,14 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			a.mu.Unlock()
 			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub scan expired"}
 		}
-		duplicate := seen[issue.ID]
-		seen[issue.ID] = true
+		// A node may move to a new issue number between pages. Suppress
+		// identical repeats, but publish a changed reference so the index
+		// and live snapshot replace the old identity atomically.
+		ref := strconv.Itoa(issue.Number)
+		duplicate := seen[issue.ID] == ref
+		seen[issue.ID] = ref
 		a.mu.Unlock()
+		a.rememberNodeID(b, issue)
 		if !duplicate {
 			page.Items = append(page.Items, a.summary(source, issue))
 		}
@@ -558,9 +776,10 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "pagination cursor missing"}
 		}
 		encoded, _ := json.Marshal(struct {
-			ID    string `json:"id"`
-			After string `json:"after"`
-		}{scanID, apiCursor})
+			ID      string `json:"id"`
+			After   string `json:"after"`
+			Started int64  `json:"started"`
+		}{scanID, apiCursor, scanStarted.UnixNano()})
 		page.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
 		page.Coverage.State = CoveragePartial
 		keepScan = true
@@ -568,11 +787,116 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 	return page, nil
 }
 
+// Comments are fetched only for an explicitly opened activity page; neither
+// summary listing nor batch detail hydration requests them.
+type GitHubComment struct {
+	ID        string    `json:"id"`
+	Body      string    `json:"body"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+const githubCommentsQuery = `query($owner:String!,$repo:String!,$number:Int!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issue(number:$number) { comments(first:$count,after:$after) { nodes { id body createdAt author { login } } pageInfo { hasNextPage endCursor } } } } }`
+
+func (a *GitHubAdapter) ReadComments(ctx context.Context, source Source, ref Ref, cursor string, limit int) ([]GitHubComment, string, error) {
+	b, err := a.binding(source)
+	if err != nil {
+		return nil, "", err
+	}
+	number, err := strconv.Atoi(ref.ItemID)
+	if ref.SourceID != source.ID || err != nil || number < 1 {
+		return nil, "", GitHubDiagnostic{"invalid-ref", "issue reference is invalid"}
+	}
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	parts := strings.Split(b.repository, "/")
+	var result struct {
+		Repository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			Issue         *struct {
+				Comments struct {
+					Nodes []struct {
+						ID        string    `json:"id"`
+						Body      string    `json:"body"`
+						CreatedAt time.Time `json:"createdAt"`
+						Author    *struct {
+							Login string `json:"login"`
+						} `json:"author"`
+					} `json:"nodes"`
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+				} `json:"comments"`
+			} `json:"issue"`
+		} `json:"repository"`
+	}
+	var after any
+	if cursor != "" {
+		after = cursor
+	}
+	if err := a.query(ctx, b, githubCommentsQuery, map[string]any{"owner": parts[0], "repo": parts[1], "number": number, "after": after, "count": limit}, &result); err != nil {
+		return nil, "", err
+	}
+	if result.Repository == nil || result.Repository.NameWithOwner != b.repository || result.Repository.Issue == nil {
+		return nil, "", GitHubDiagnostic{"not-found-or-inaccessible", "issue not found or access unavailable"}
+	}
+	comments := result.Repository.Issue.Comments
+	if comments.PageInfo.HasNextPage && comments.PageInfo.EndCursor == "" {
+		return nil, "", GitHubDiagnostic{"invalid-response", "comments pagination cursor missing"}
+	}
+	out := make([]GitHubComment, 0, len(comments.Nodes))
+	for _, node := range comments.Nodes {
+		comment := GitHubComment{ID: node.ID, Body: node.Body, CreatedAt: node.CreatedAt}
+		if node.Author != nil {
+			comment.Author = node.Author.Login
+		}
+		out = append(out, comment)
+	}
+	if comments.PageInfo.HasNextPage {
+		return out, comments.PageInfo.EndCursor, nil
+	}
+	return out, "", nil
+}
+
 const githubDetailQuery = `query($owner:String!,$repo:String!,$number:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issue(number:$number) { id number title body state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } }`
+const githubNodesQuery = `query($ids:[ID!]!) { rateLimit { remaining resetAt } nodes(ids:$ids) { ... on Issue { id number title body state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } }`
 
 func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref, _ []string, _ int) []ItemOutcome {
 	outcomes := make([]ItemOutcome, len(refs))
 	b, err := a.binding(source)
+	batchIssues := map[string]githubIssue{}
+	requestedIDs := map[string]string{}
+	batchUsed := false
+	var batchErr error
+	if err == nil && len(refs) > 0 && len(refs) <= 100 {
+		ids := make([]string, 0, len(refs))
+		allKnown := true
+		a.mu.Lock()
+		for _, ref := range refs {
+			id := b.nodeIDs[ref.ItemID]
+			if id == "" {
+				allKnown = false
+				break
+			}
+			ids = append(ids, id)
+			requestedIDs[ref.ItemID] = id
+		}
+		a.mu.Unlock()
+		if allKnown {
+			batchUsed = true
+			var result struct {
+				Nodes []*githubIssue `json:"nodes"`
+			}
+			batchErr = a.query(ctx, b, githubNodesQuery, map[string]any{"ids": ids}, &result)
+			for _, issue := range result.Nodes {
+				if issue != nil {
+					batchIssues[issue.ID] = *issue
+				}
+			}
+		}
+	}
 	for i, ref := range refs {
 		outcomes[i].Ref = ref
 		if err != nil {
@@ -586,6 +910,31 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 			outcomes[i].Kind = "failed"
 			continue
 		}
+		if batchUsed {
+			if batchErr != nil {
+				if diagnostic, ok := batchErr.(GitHubDiagnostic); ok && (diagnostic.Code == "not-found-or-inaccessible" || diagnostic.Code == "permission-denied") {
+					outcomes[i].Kind = "withheld"
+				} else {
+					outcomes[i].Err = batchErr
+					outcomes[i].Kind = "failed"
+				}
+				continue
+			}
+			issue, exists := batchIssues[requestedIDs[ref.ItemID]]
+			if !exists {
+				outcomes[i].Kind = "withheld"
+				continue
+			}
+			if issue.Repository.NameWithOwner != b.repository || issue.Number != number {
+				a.drift(b)
+				outcomes[i].Kind = "withheld"
+				continue
+			}
+			item := a.item(source, issue)
+			outcomes[i].Kind = "found"
+			outcomes[i].Item = &item
+			continue
+		}
 		parts := strings.Split(b.repository, "/")
 		var result struct {
 			Repository *struct {
@@ -595,27 +944,32 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 		}
 		readErr := a.query(ctx, b, githubDetailQuery, map[string]any{"owner": parts[0], "repo": parts[1], "number": number}, &result)
 		if readErr != nil {
-			if d, ok := readErr.(GitHubDiagnostic); ok && d.Code == "identity-changed" {
-				a.drift(b)
+			if d, ok := readErr.(GitHubDiagnostic); ok {
+				if d.Code == "identity-changed" {
+					a.drift(b)
+				}
+				if d.Code == "not-found-or-inaccessible" || d.Code == "permission-denied" {
+					outcomes[i].Kind = "withheld"
+					continue
+				}
 			}
 			outcomes[i].Err = readErr
 			outcomes[i].Kind = "failed"
 			continue
 		}
 		if result.Repository == nil || result.Repository.Issue == nil {
-			outcomes[i].Kind = "inaccessible"
+			outcomes[i].Kind = "withheld"
 			continue
 		}
 		issue := *result.Repository.Issue
 		if result.Repository.NameWithOwner != b.repository || issue.Repository.NameWithOwner != b.repository || issue.Number != number {
 			a.drift(b)
-			outcomes[i].Err = GitHubDiagnostic{"identity-changed", "issue identity changed; claims unavailable"}
-			outcomes[i].Kind = "failed"
+			outcomes[i].Kind = "withheld"
 			continue
 		}
-		summary := a.summary(source, issue)
 		outcomes[i].Kind = "found"
-		outcomes[i].Item = &Item{Summary: summary, Body: issue.Body, TerminalKnown: true, Assignment: Assignment{Owners: summary.AssignedTo, Known: true, Assigned: len(summary.AssignedTo) > 0}, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), ConfigurationGeneration: b.generation}}
+		item := a.item(source, issue)
+		outcomes[i].Item = &item
 	}
 	return outcomes
 }
@@ -691,7 +1045,7 @@ func (a *GitHubAdapter) ReadDependencies(ctx context.Context, source Source, ref
 		if to.SourceID != source.ID {
 			kind = CrossSourcePrerequisite
 		}
-		page.Edges = append(page.Edges, Relationship{Type: kind, Direction: DependentToPrerequisite, From: ref, To: to, Provenance: "github.blockedBy", Condition: "terminal", RawOutcome: related.State, Interpretation: "closed issue satisfies terminal", Fresh: true, Support: Supported})
+		page.Edges = append(page.Edges, Relationship{Type: kind, Direction: DependentToPrerequisite, From: ref, To: to, Provenance: "github.blockedBy", Condition: "terminal", RawOutcome: related.State, Interpretation: "closed issue satisfies terminal; dependency removal may not change updatedAt, so this observation requires reconciliation or a fresh closure read", Fresh: true, Support: Supported})
 	}
 	seenIDs := make(map[string]bool, len(state.IDs)+len(issue.BlockedBy.Nodes))
 	for _, id := range state.IDs {
