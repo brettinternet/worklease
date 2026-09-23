@@ -364,7 +364,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	usageText(serve, "worklease serve [--server-config FILE] [--allow-insecure-http]")
 	detail(serve, "Serve one marked hosted authority using --server-config, WORKLEASE_SERVER_CONFIG, or the default user configuration. TLS is required unless insecure HTTP is explicitly enabled by the file or flag.")
-	all := append(commands, policy, op, handleCommand, instructions, setup)
+	all := append(commands, queueCommand(s), policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)
 	all = append(all, server, serve, mcp, helpCommand(s))

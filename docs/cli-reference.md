@@ -94,6 +94,17 @@ mkdir -p ~/.config/fish/completions
 worklease completion fish > ~/.config/fish/completions/worklease.fish
 ```
 
+## Read-only queue
+
+`worklease queue [--view NAME]` opens the configured view from the owner's private
+`queue.yaml` in a Bubble Tea terminal. It shows source coverage, readiness,
+assignment, native occupancy, authority-scoped Worklease claims, and lazy claim
+history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
+loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, and `?`
+shows keys. Claim, release, assignment, progress, state and launch keys explain
+that they are unavailable in this read-only slice. No claim or provider write is
+performed. Source setup and configured views are described in `docs/queue.md`.
+
 ## Common lifecycle
 
 | Command | Purpose |
