@@ -79,6 +79,7 @@ type Coverage struct {
 	Scope         string        `json:"scope,omitempty"`
 	Cursor        string        `json:"cursor,omitempty"`
 	Total         int           `json:"total,omitempty"`
+	ObservedEdges int           `json:"observedEdges,omitempty"`
 	TotalAccuracy TotalAccuracy `json:"totalAccuracy"`
 	Reason        string        `json:"reason,omitempty"`
 }

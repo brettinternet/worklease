@@ -48,6 +48,7 @@ type Model struct {
 	HistoryIdentity                string
 	HistoryCursor                  string
 	Refresh                        func() tea.Cmd
+	HydrateSelected                func(queue.Item) tea.Cmd
 	LoadHistory                    func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 }
@@ -212,8 +213,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = v.Width, v.Height
 	case SnapshotMsg:
+		previous := m.Selected
 		m.Snapshot = v.Snapshot.Clone()
 		m.anchor(m.rows())
+		if m.Selected != previous && m.HydrateSelected != nil {
+			if item, ok := m.selected(m.rows()); ok {
+				return m, m.HydrateSelected(item)
+			}
+		}
 	case HistoryMsg:
 		if v.Identity == m.Selected {
 			m.HistoryLoading = false
@@ -269,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		rows := m.rows()
+		previous := m.Selected
 		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -357,7 +365,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.HistoryIdentity = identity(i)
 				m.HistoryCursor = ""
 				m.History = ledger.HistoryPage{}
+				if m.Selected != previous && m.HydrateSelected != nil {
+					return m, tea.Batch(m.LoadHistory(i, ""), m.HydrateSelected(i))
+				}
 				return m, m.LoadHistory(i, "")
+			}
+		}
+		if m.Selected != previous && m.HydrateSelected != nil {
+			if item, ok := m.selected(m.rows()); ok {
+				return m, m.HydrateSelected(item)
 			}
 		}
 	}
@@ -472,12 +488,12 @@ func (m Model) View() string {
 		}
 	}
 	for _, i := range m.Snapshot.Items {
-		if i.DependenciesKnown {
+		if i.DependenciesKnown && i.Closure == queue.CoverageComplete && i.Fresh {
 			edges++
 		}
 	}
 	var footer strings.Builder
-	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, len(m.Snapshot.Items), clip(m.Notice, 60))
+	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, clip(m.Notice, 60))
 	if m.Filtering {
 		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
 	}

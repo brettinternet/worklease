@@ -140,6 +140,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	paths := config.UserProfilePaths(os.Getenv)
 	claims := queue.ClaimSources(cfg, sources)
+	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -154,8 +155,40 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions)
+			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay)
 		}()
+	}
+	model.HydrateSelected = func(item queue.Item) tea.Cmd {
+		return func() tea.Msg {
+			if sourceByID[item.Ref.SourceID].Adapter != "backlog-md" {
+				return nil
+			}
+			var source queue.Source
+			for _, candidate := range sources {
+				if candidate.ID == item.Ref.SourceID {
+					source = candidate
+					break
+				}
+			}
+			if source.ID == "" {
+				return nil
+			}
+			workersMu.Lock()
+			if closing {
+				workersMu.Unlock()
+				return nil
+			}
+			workers.Add(1)
+			workersMu.Unlock()
+			go func() {
+				defer workers.Done()
+				for snapshot := range loader.HydrateEdges(ctx, source, []queue.Ref{item.Ref}, nil, false) {
+					applyStoredClaims(&snapshot, &claimOverlay)
+					program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
+				}
+			}()
+			return nil
+		}
 	}
 	model.Refresh = func() tea.Cmd {
 		return func() tea.Msg {
@@ -192,6 +225,29 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
 	start()
+	for _, source := range sources {
+		adapter, ok := registry.Get(source.Adapter)
+		watcher, okWatch := adapter.(interface {
+			WatchChanges(context.Context, queue.Source, func()) error
+		})
+		if !ok || !okWatch {
+			continue
+		}
+		workers.Add(1)
+		go func(source queue.Source) {
+			defer workers.Done()
+			for ctx.Err() == nil {
+				if watchErr := watcher.WatchChanges(ctx, source, start); watchErr != nil && ctx.Err() == nil {
+					program.Send(queueui.RefreshedMsg{Err: watchErr})
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Second): // failed watch: retry after a bounded backoff
+				}
+			}
+		}(source)
+	}
 	_, err = program.Run()
 	workersMu.Lock()
 	closing = true
@@ -259,8 +315,19 @@ func queueIdentity(item queue.Item) string {
 	}
 	return item.Ref.Key()
 }
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition) {
+func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
+	for key, item := range snapshot.Items {
+		if value, ok := stored.Load(key); ok {
+			prior := value.(queue.Item)
+			item.Claim, item.Resources, item.KeyInputs, item.NativeClaim = prior.Claim, prior.Resources, prior.KeyInputs, prior.NativeClaim
+			snapshot.Items[key] = item
+		}
+	}
+}
+
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map) {
 	refreshStarted := time.Now()
+	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
 	refreshSources := make([]queue.Source, 0, len(sources))
 	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
@@ -321,6 +388,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		observed := queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv)
 		for _, item := range observed {
 			snapshot.Items[item.Ref.Key()] = item
+			stored.Store(item.Ref.Key(), item)
 		}
 		program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 	}
@@ -344,6 +412,22 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil {
 			program.Send(queueui.RefreshedMsg{Err: err})
+		}
+	}
+	// First paint and index replacement have already completed. Slow per-task
+	// Backlog views now hydrate visible rows, then the rest, without blocking UI.
+	for _, source := range refreshSources {
+		if source.Adapter != "backlog-md" || ctx.Err() != nil {
+			continue
+		}
+		ordered := queue.EvaluateView(loader.Store.Current().Items, queue.View{SourceOrder: []string{source.ID}})
+		visible := make([]queue.Ref, 0, min(35, len(ordered)))
+		for _, item := range ordered[:min(35, len(ordered))] {
+			visible = append(visible, item.Ref)
+		}
+		for snapshot := range loader.HydrateEdges(ctx, source, nil, visible, true) {
+			applyStoredClaims(&snapshot, stored)
+			program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 		}
 	}
 }

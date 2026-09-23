@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -79,7 +80,7 @@ func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, stri
 		if err == nil {
 			sum := sha256.Sum256(content)
 			generation += ":" + hex.EncodeToString(sum[:])
-		} else if !os.IsNotExist(err) {
+		} else if !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR) {
 			return "", "", "", false
 		}
 	}
@@ -109,6 +110,11 @@ type BacklogAdapter struct {
 	diagnostics      map[string]BacklogSourceDiagnostics
 	consent          map[string]bool
 	details          map[string]backlogTask
+	// Edge observations are scoped to a checkout/configuration generation. A list
+	// without dependencies never turns a metadata match into fresh edge evidence.
+	edges      map[string]backlogEdges
+	partitions map[string]string
+	revisions  map[string]uint64
 }
 
 func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
@@ -116,7 +122,7 @@ func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
 	for _, s := range terminalStatuses {
 		statuses[s] = true
 	}
-	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}}
+	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}}
 }
 
 // OnDemandDetails prevents the loader from scanning every task with a view subprocess.
@@ -172,11 +178,15 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 		priority = PriorityVisible
 		if args[1] == "view" {
 			priority = PriorityDetail
+			if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok {
+				priority = requested
+			}
 		}
 	}
 	gate := quotaScheduler("backlog:"+cwd, 4)
 	key := binary + "\x00" + strings.Join(args, "\x00")
-	result, err := gate.schedule(ctx, priority, key, "", true, func(workCtx context.Context) (any, error) {
+	coalesce := priority != PriorityAction
+	result, err := gate.schedule(ctx, priority, key, "", coalesce, func(workCtx context.Context) (any, error) {
 		return a.runCommand(workCtx, cwd, binary, args...)
 	})
 	if err != nil {
@@ -220,6 +230,8 @@ func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, arg
 	}
 	return stdout.data.Bytes(), nil
 }
+
+type backlogPriorityKey struct{}
 
 type limitedBuffer struct {
 	data     bytes.Buffer
@@ -332,6 +344,7 @@ func (a *BacklogAdapter) authorizeRead(ctx context.Context, source Source) error
 }
 
 func (a *BacklogAdapter) gitFreshness(ctx context.Context, checkout string, d *BacklogSourceDiagnostics) {
+	d.Branch, d.Head = "", "" // failed probes cannot retain the preceding partition
 	if b, err := a.run(ctx, checkout, "git", "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		d.Branch = strings.TrimSpace(string(b))
 	}
@@ -366,6 +379,101 @@ func (a *BacklogAdapter) Capabilities(_ context.Context, source Source, _ string
 	}, nil
 }
 
+type backlogEdges struct {
+	task      backlogTask
+	partition string
+	bulk      bool
+	mtime     time.Time
+	size      int64
+}
+
+func edgeFileStamp(checkout, path string) (time.Time, int64, bool) {
+	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(filepath.Clean(path), "..") {
+		return time.Time{}, 0, false
+	}
+	stat, err := os.Stat(filepath.Join(checkout, path))
+	if err != nil || !stat.Mode().IsRegular() {
+		return time.Time{}, 0, false
+	}
+	return stat.ModTime(), stat.Size(), true
+}
+
+// InvalidateEdges is called on watch loss, overflow or uncertain filesystem
+// events. The next list re-observes source state; it cannot validate old edges.
+func (a *BacklogAdapter) InvalidateEdges(source Source) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.revisions[source.ID]++
+	for key := range a.details {
+		if strings.HasPrefix(key, source.ID+"\x00") {
+			delete(a.details, key)
+		}
+	}
+	for key := range a.edges {
+		if strings.HasPrefix(key, source.ID+"\x00") {
+			delete(a.edges, key)
+		}
+	}
+}
+
+// CachedEdges only returns observed edges from the current source partition.
+// It is display evidence, never sufficient for an authoritative action check.
+func (a *BacklogAdapter) CachedEdges(source Source, ref Ref) (DependencyPage, bool) {
+	a.mu.Lock()
+	cached, ok := a.edges[ref.Key()]
+	partition := a.partitions[source.ID]
+	a.mu.Unlock()
+	if !ok || cached.partition != partition || ref.SourceID != source.ID || !cached.bulk && partition == "" {
+		return DependencyPage{}, false
+	}
+	return a.dependencyPage(source, ref, cached.task), true
+}
+
+// RefreshActionClosure rereads every prerequisite directly from the provider.
+// An action must use these observations rather than an indexed/display cache.
+func (a *BacklogAdapter) RefreshActionClosure(ctx context.Context, source Source, ref Ref) (map[string]Item, error) {
+	items := map[string]Item{}
+	var visit func(Ref) error
+	visit = func(current Ref) error {
+		if _, seen := items[current.Key()]; seen {
+			return nil
+		}
+		if current.SourceID != source.ID {
+			return BacklogDiagnostic{"invalid-ref", "prerequisite outside source"}
+		}
+		task, err := a.view(context.WithValue(ctx, backlogPriorityKey{}, PriorityAction), source, current)
+		if err != nil {
+			return err
+		}
+		deps := a.dependencyPage(source, current, task)
+		item := Item{Summary: a.summary(source, task), ReadOutcome: "found", ReadPermission: Allowed, TerminalKnown: true,
+			DependenciesKnown: deps.Completeness == CoverageComplete, Closure: deps.Completeness, Relationships: deps.Edges,
+			Observation: deps.Observation}
+		items[current.Key()] = item
+		for _, edge := range deps.Edges {
+			if edge.Type == HardPrerequisite {
+				if err := visit(edge.To); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := visit(ref); err != nil {
+		return nil, err
+	}
+	return Recompute(items, CoverageComplete), nil
+}
+
+// RefreshClosure bypasses cached edge observations for one item.
+func (a *BacklogAdapter) RefreshClosure(ctx context.Context, source Source, ref Ref) (DependencyPage, error) {
+	task, err := a.view(ctx, source, ref)
+	if err != nil {
+		return DependencyPage{}, err
+	}
+	return a.dependencyPage(source, ref, task), nil
+}
+
 type backlogTask struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
@@ -377,6 +485,7 @@ type backlogTask struct {
 	IsReady      bool      `json:"isReady"`
 	ParentTaskID string    `json:"parentTaskId"`
 	Dependencies []string  `json:"dependencies"`
+	Path         string    `json:"path"`
 	Description  string    `json:"description"`
 	Readiness    struct {
 		MissingDependencies []string `json:"missingDependencies"`
@@ -444,10 +553,55 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	d := a.diagnostics[source.ID]
 	a.mu.Unlock()
 	a.gitFreshness(ctx, source.Locator, &d)
+	_, checkout, config, valid := a.QueueCacheIdentity(source)
+	// A failed identity or Git read is uncertain invalidation: retire all edges.
+	partition := ""
+	if valid && d.Branch != "" && d.Head != "" {
+		partition = checkout + "\x00" + config + "\x00" + d.Branch + "\x00" + d.Head
+	}
 	a.mu.Lock()
+	a.revisions[source.ID]++ // list may race a view even when its metadata tuple is unchanged
+	if partition == "" || a.partitions[source.ID] != partition {
+		for key := range a.edges {
+			if strings.HasPrefix(key, source.ID+"\x00") {
+				delete(a.edges, key)
+			}
+		}
+	}
+	a.partitions[source.ID] = partition
+	for key := range a.details {
+		if strings.HasPrefix(key, source.ID+"\x00") {
+			delete(a.details, key)
+		}
+	}
+	for _, task := range payload.Tasks {
+		key := (Ref{SourceID: source.ID, ItemID: task.ID}).Key()
+		if task.Dependencies != nil { // A newer Backlog version can supply bulk edges.
+			a.edges[key] = backlogEdges{task: task, partition: partition, bulk: true}
+		} else if cached, ok := a.edges[key]; ok {
+			// A matching tuple does not establish freshness; only an uninterrupted
+			// observation stream and periodic reconciliation can preserve evidence.
+			mtime, size, stamped := edgeFileStamp(source.Locator, cached.task.Path)
+			if cached.partition != partition || cached.task.UpdatedAt != task.UpdatedAt ||
+				cached.task.Status != task.Status || cached.task.Path != "" && (!stamped || !mtime.Equal(cached.mtime) || size != cached.size) {
+				delete(a.edges, key)
+			}
+		}
+	}
+	for key := range a.edges {
+		if strings.HasPrefix(key, source.ID+"\x00") && !seen[strings.TrimPrefix(key, source.ID+"\x00")] {
+			delete(a.edges, key)
+		}
+	}
 	d.DuplicateIDs = d.DuplicateIDs[:0]
 	for id := range duplicates {
 		d.DuplicateIDs = append(d.DuplicateIDs, id)
+		delete(a.edges, (Ref{SourceID: source.ID, ItemID: id}).Key())
+	}
+	if len(duplicates) > 0 {
+		page.Coverage.State = CoverageUnknown
+		page.Coverage.Reason = "duplicate-task-ids"
+		page.Observation.Coverage = page.Coverage
 	}
 	sort.Strings(d.DuplicateIDs)
 	a.diagnostics[source.ID] = d
@@ -461,6 +615,9 @@ func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref) (back
 	if ref.SourceID != source.ID || ref.ItemID == "" || strings.HasPrefix(ref.ItemID, "-") {
 		return backlogTask{}, BacklogDiagnostic{"invalid-ref", "item not in this source"}
 	}
+	a.mu.Lock()
+	revision := a.revisions[source.ID]
+	a.mu.Unlock()
 	data, err := a.run(ctx, source.Locator, a.binary(), "task", "view", ref.ItemID, "--json")
 	if err != nil {
 		return backlogTask{}, err
@@ -475,7 +632,15 @@ func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref) (back
 		return backlogTask{}, BacklogDiagnostic{"identity-mismatch", "view did not return requested task"}
 	}
 	a.mu.Lock()
+	if revision != a.revisions[source.ID] {
+		a.mu.Unlock()
+		return backlogTask{}, BacklogDiagnostic{"observation-invalidated", "provider changed during task read"}
+	}
 	a.details[ref.Key()] = *payload.Task
+	if partition := a.partitions[source.ID]; partition != "" {
+		mtime, size, _ := edgeFileStamp(source.Locator, payload.Task.Path)
+		a.edges[ref.Key()] = backlogEdges{task: *payload.Task, partition: partition, mtime: mtime, size: size}
+	}
 	a.mu.Unlock()
 	return *payload.Task, nil
 }
@@ -512,6 +677,11 @@ func (a *BacklogAdapter) ReadDependencies(ctx context.Context, source Source, re
 	a.mu.Lock()
 	task, ok := a.details[ref.Key()]
 	delete(a.details, ref.Key())
+	if !ok {
+		if cached, found := a.edges[ref.Key()]; found && (cached.partition != "" || cached.bulk) && cached.partition == a.partitions[source.ID] {
+			task, ok = cached.task, true
+		}
+	}
 	a.mu.Unlock()
 	if !ok {
 		var err error
@@ -520,6 +690,10 @@ func (a *BacklogAdapter) ReadDependencies(ctx context.Context, source Source, re
 			return DependencyPage{}, err
 		}
 	}
+	return a.dependencyPage(source, ref, task), nil
+}
+
+func (a *BacklogAdapter) dependencyPage(source Source, ref Ref, task backlogTask) DependencyPage {
 	edges := make([]Relationship, 0, len(task.Dependencies)+1)
 	for _, id := range task.Dependencies {
 		edges = append(edges, Relationship{Type: HardPrerequisite, Direction: DependentToPrerequisite, From: ref, To: Ref{SourceID: source.ID, ItemID: id}, Provenance: "backlog-md.dependencies", Condition: "terminal", RawOutcome: "dependency", Interpretation: "caller-declared terminal status", Fresh: true, Support: Supported})
@@ -531,7 +705,7 @@ func (a *BacklogAdapter) ReadDependencies(ctx context.Context, source Source, re
 	if len(task.Readiness.MissingDependencies) > 0 {
 		completeness = CoveragePartial
 	}
-	return DependencyPage{Edges: edges, Completeness: completeness, Observation: Observation{ObservedAt: time.Now(), ConfigurationGeneration: source.Locator, Coverage: Coverage{State: completeness, Scope: ref.String(), TotalAccuracy: TotalExact}}}, nil
+	return DependencyPage{Edges: edges, Completeness: completeness, Observation: Observation{ObservedAt: time.Now(), ConfigurationGeneration: source.Locator, Coverage: Coverage{State: completeness, Scope: ref.String(), TotalAccuracy: TotalExact}}}
 }
 
 var _ Adapter = (*BacklogAdapter)(nil)
