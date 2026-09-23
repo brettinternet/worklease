@@ -71,6 +71,45 @@ func TestGitHubPrincipalAndTokenSecrecy(t *testing.T) {
 		t.Fatal("credential leaked in JSON")
 	}
 }
+func TestGitHubCredentialRotationChangesObservationGeneration(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if strings.Contains(request.Query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`)
+	})
+	opts := map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"}
+	source, err := a.Resolve(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.List(context.Background(), source, Query{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.Binary, []byte("#!/bin/sh\nprintf 'rotated-secret-token\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	source, err = a.Resolve(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.List(context.Background(), source, Query{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Observation.ConfigurationGeneration == second.Observation.ConfigurationGeneration || strings.Contains(second.Observation.ConfigurationGeneration, "rotated-secret-token") {
+		t.Fatalf("credential rotation did not safely change generation: %q %q", first.Observation.ConfigurationGeneration, second.Observation.ConfigurationGeneration)
+	}
+}
+
 func TestGitHubPagesAndRelationships(t *testing.T) {
 	var concurrent, peak atomic.Int32
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {

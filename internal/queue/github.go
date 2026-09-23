@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -43,6 +44,7 @@ func githubLock(host, account string) *githubAccountGate {
 
 type githubBinding struct {
 	host, repository, account, token, endpoint string
+	generation                                 string
 	dependencies                               bool
 	identityChanged                            bool
 	scans                                      map[string]map[string]bool
@@ -83,6 +85,16 @@ func (a *GitHubAdapter) binding(source Source) (*githubBinding, error) {
 		return nil, GitHubDiagnostic{"identity-changed", "configured repository identity changed; claims unavailable until rebind"}
 	}
 	return b, nil
+}
+
+// ConfigurationGeneration binds read-only cursor state to the resolved account credential.
+func (a *GitHubAdapter) ConfigurationGeneration(source Source) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if binding := a.bindings[source.ID]; binding != nil {
+		return binding.generation
+	}
+	return ""
 }
 func (a *GitHubAdapter) drift(b *githubBinding) {
 	a.mu.Lock()
@@ -129,7 +141,8 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	if token == "" {
 		return Source{}, GitHubDiagnostic{"authentication", "credential helper returned no token"}
 	}
-	b := &githubBinding{host: host, repository: repository, account: account, token: token, endpoint: endpoint, dependencies: true}
+	credentialDigest := sha256.Sum256([]byte(token))
+	b := &githubBinding{host: host, repository: repository, account: account, token: token, endpoint: endpoint, generation: host + "/" + repository + ":" + hex.EncodeToString(credentialDigest[:]), dependencies: true}
 	// Verify the authenticated principal before any repository or issue data request.
 	var viewer struct {
 		Viewer struct {
@@ -463,7 +476,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		return SummaryPage{}, GitHubDiagnostic{"identity-changed", "configured repository identity changed; claims unavailable until rebind"}
 	}
 	coverage := Coverage{State: CoverageComplete, Scope: source.ID, Total: result.Repository.Issues.TotalCount, TotalAccuracy: TotalExact}
-	page := SummaryPage{Coverage: coverage, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), Coverage: coverage, ConfigurationGeneration: b.host + "/" + b.repository}}
+	page := SummaryPage{Coverage: coverage, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), Coverage: coverage, ConfigurationGeneration: b.generation}}
 	for _, issue := range result.Repository.Issues.Nodes {
 		if issue.ID == "" || issue.Number < 1 {
 			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "issue identity missing"}
@@ -543,7 +556,7 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 		}
 		summary := a.summary(source, issue)
 		outcomes[i].Kind = "found"
-		outcomes[i].Item = &Item{Summary: summary, Body: issue.Body, TerminalKnown: true, Assignment: Assignment{Owners: summary.AssignedTo, Known: true, Assigned: len(summary.AssignedTo) > 0}, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), ConfigurationGeneration: b.host + "/" + b.repository}}
+		outcomes[i].Item = &Item{Summary: summary, Body: issue.Body, TerminalKnown: true, Assignment: Assignment{Owners: summary.AssignedTo, Known: true, Assigned: len(summary.AssignedTo) > 0}, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), ConfigurationGeneration: b.generation}}
 	}
 	return outcomes
 }

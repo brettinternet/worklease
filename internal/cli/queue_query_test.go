@@ -14,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
 	urfavecli "github.com/urfave/cli/v3"
+	"gopkg.in/yaml.v3"
 )
 
 func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T) {
@@ -28,7 +29,7 @@ func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T
 				if !strings.Contains(command.UsageText, "--require-complete") || !strings.Contains(command.UsageText, "--cursor") {
 					t.Fatalf("usage misses query flags: %s", command.UsageText)
 				}
-				for _, name := range []string{"view", "limit", "cursor", "require-complete"} {
+				for _, name := range []string{"limit", "cursor", "require-complete"} {
 					found := false
 					for _, flag := range command.Flags {
 						for _, alias := range flag.Names() {
@@ -54,27 +55,38 @@ func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T
 func TestQueueQueryFingerprintBindsPrincipalAndConfigurationGeneration(t *testing.T) {
 	view := &config.QueueView{Name: "Ready", Sources: []string{"source"}}
 	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "source", ItemID: "1"}}, Observation: queue.Observation{Principal: "alice", ConfigurationGeneration: "generation-1"}}
-	base := queueQueryFingerprint(view, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item})
+	base := queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item})
 	changedPrincipal := item
 	changedPrincipal.Observation.Principal = "bob"
-	if base == queueQueryFingerprint(view, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{changedPrincipal}) {
+	if base == queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{changedPrincipal}) {
 		t.Fatal("principal change did not invalidate cursor fingerprint")
 	}
 	changedGeneration := item
 	changedGeneration.Observation.ConfigurationGeneration = "generation-2"
-	if base == queueQueryFingerprint(view, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{changedGeneration}) {
+	if base == queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{changedGeneration}) {
 		t.Fatal("configuration generation change did not invalidate cursor fingerprint")
 	}
 	filteredView := &config.QueueView{Name: "Filtered", Sources: []string{"source"}, Filter: config.QueueFilter{Assigned: []string{"nobody"}}}
 	hidden := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "source", ItemID: "hidden"}, AssignedTo: []string{"other"}}}
-	hiddenFingerprint := queueQueryFingerprint(filteredView, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item, hidden})
+	hiddenFingerprint := queueQueryFingerprint(filteredView, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item, hidden})
 	hidden.Title = "changed while filtered out"
-	if hiddenFingerprint == queueQueryFingerprint(filteredView, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item, hidden}) {
+	if hiddenFingerprint == queueQueryFingerprint(filteredView, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item, hidden}) {
 		t.Fatal("filtered-out source content did not invalidate cursor fingerprint")
+	}
+	var bob yaml.Node
+	if err := yaml.Unmarshal([]byte("bob"), &bob); err != nil {
+		t.Fatal(err)
+	}
+	if base == queueQueryFingerprint(view, nil, map[string]yaml.Node{"backlog-md": bob}, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item}) {
+		t.Fatal("me mapping change did not invalidate cursor fingerprint")
+	}
+	emptyView := &config.QueueView{Name: "Empty", Sources: []string{"source"}}
+	if queueQueryFingerprint(emptyView, nil, nil, map[string]string{"source": "token-a"}, queueAuthorityJSON{}, nil, nil) == queueQueryFingerprint(emptyView, nil, nil, map[string]string{"source": "token-b"}, queueAuthorityJSON{}, nil, nil) {
+		t.Fatal("credential rotation with an empty result set did not invalidate cursor")
 	}
 	transientTime := item
 	transientTime.Observation.ObservedAt = time.Now()
-	if base != queueQueryFingerprint(view, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{transientTime}) {
+	if base != queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{transientTime}) {
 		t.Fatal("observation timestamp changed stable cursor fingerprint")
 	}
 }
@@ -210,6 +222,76 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 	var generationFailure map[string]any
 	if json.Unmarshal(generationResult, &generationFailure) != nil || generationFailure["error"].(map[string]any)["reason"] != "cursor-invalid" {
 		t.Fatalf("unexpected generation cursor result: %s (%v)", generationResult, generationErr)
+	}
+}
+
+func TestQueueQueryKeepsHealthySourceWhenAnotherCannotResolve(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[{"id":"TASK-126","title":"Healthy","status":"Open","ordinal":1,"isReady":true}]`)
+	missing := filepath.Join(filepath.Dir(h.home), "empty-checkout")
+	if err := os.MkdirAll(missing, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Insert an existing checkout without a Backlog project into the configured source list.
+	cfg := strings.Replace(h.queueConfig, "views:", fmt.Sprintf("  - id: missing\n    adapter: backlog-md\n    checkout: %s\nviews:", missing), 1)
+	cfg = strings.Replace(cfg, "sources: [local]", "sources: [local, missing]", 1)
+	h.writeQueueConfig(cfg)
+	data, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal(err)
+	}
+	query := response["query"].(map[string]any)
+	if len(query["items"].([]any)) != 1 || !query["incomplete"].(bool) {
+		t.Fatalf("healthy items lost or failure concealed: %s", data)
+	}
+	rows := query["sources"].([]any)
+	if rows[1].(map[string]any)["coverage"].(map[string]any)["state"] != "unknown" {
+		t.Fatalf("missing failure coverage: %s", data)
+	}
+	_, err = h.run("queue", "query", "--view", "Ready", "--require-complete", "--json")
+	if err == nil {
+		t.Fatal("incomplete source accepted by require-complete")
+	}
+}
+
+func TestQueueQueryRequiresCompletenessForFilteredOutItems(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[{"id":"TASK-126","title":"Unknown dependency closure","status":"Open","ordinal":1,"isReady":true}]`)
+	h.writeQueueConfig(strings.Replace(h.queueConfig, "filter: {assigned: [nobody]}", "filter: {readiness: ready}", 1))
+	data, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal(err)
+	}
+	query := response["query"].(map[string]any)
+	if len(query["items"].([]any)) != 0 || query["incomplete"] != true {
+		t.Fatalf("hidden unresolved item declared complete: %s", data)
+	}
+	_, err = h.run("queue", "query", "--view", "Ready", "--require-complete", "--json")
+	if err == nil {
+		t.Fatal("hidden incomplete dependency accepted")
+	}
+}
+
+func TestQueueQueryRedactsNonDigestResources(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	secretLikeID := strings.Repeat("a", 64)
+	h.setTasks(fmt.Sprintf(`[{"id":%q,"title":"Secret-like item ID","status":"Open","ordinal":1,"isReady":true}]`, secretLikeID))
+	cfg := strings.Replace(h.queueConfig, "    claims: {policy: generic, source: brettinternet/worklease/backlog}\n", "", 1)
+	h.writeQueueConfig(cfg)
+	data, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secretLikeID) {
+		t.Fatalf("non-digest identity bypassed redaction: %s", data)
 	}
 }
 

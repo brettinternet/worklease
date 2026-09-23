@@ -18,7 +18,6 @@ local default, or reports the missing required input without guessing.
 | `verify` | Verify contextual claim | Acquire first if no claim |
 | `exec` | Report missing child command | Requires `-- COMMAND` |
 | `replace-file` | Report missing path/content | Requires explicit replacement inputs |
-| `queue` | Browse the default configured view in a read-only TUI | Requires a private queue.yaml and a terminal; never claims or writes providers |
 | `history` | Show global lifecycle history | Read-only |
 | `events` | Show lifecycle events | Read-only |
 | `watch` | Report missing wait condition/resource or cursor | Requires explicit wait target |

@@ -16,6 +16,7 @@ import (
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfavecli "github.com/urfave/cli/v3"
+	"gopkg.in/yaml.v3"
 )
 
 type queueQueryEnvelope struct {
@@ -41,7 +42,7 @@ type queueSourceJSON struct {
 type queueQueryItem struct {
 	queue.Item
 	DisplayID string                       `json:"displayId"`
-	Resources []output.PublicDigest        `json:"resources"`
+	Resources []string                     `json:"resources"`
 	Actions   map[string]queue.Eligibility `json:"actions"`
 }
 type queueCursor struct {
@@ -51,6 +52,9 @@ type queueCursor struct {
 
 func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
+		if cmd.String("view") == "" {
+			return s.handle(cmd, reason.Invalid("--view is required for queue query"))
+		}
 		cfg, err := config.LoadQueue(nil)
 		if err != nil {
 			return s.handle(cmd, err)
@@ -67,6 +71,7 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 		}
 		registry := queue.NewRegistry()
 		sources := make([]queue.Source, 0, len(view.Sources))
+		resolveErrors := make(map[string]string)
 		for _, configured := range cfg.Sources {
 			included := false
 			for _, id := range view.Sources {
@@ -85,7 +90,8 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 			opts := map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)}
 			source, e := adapter.Resolve(ctx, opts)
 			if e != nil {
-				return s.handle(cmd, e)
+				resolveErrors[configured.ID] = "source-resolve-failed"
+				continue
 			}
 			source.ID, source.Adapter = configured.ID, configured.Adapter
 			sources = append(sources, source)
@@ -140,7 +146,22 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 		items = filtered
 		actions := []queue.Action{queue.ActionStart, queue.ActionClaim, queue.ActionLaunch, queue.ActionResume, queue.ActionReportBlocked, queue.ActionRecordProgress, queue.ActionComplete}
 		// Bind pagination to the entire snapshot, including items excluded by the view filter.
-		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, snapshot.Sources, cursorItems)
+		cursorCoverage := make(map[string]queue.Coverage, len(snapshot.Sources)+len(resolveErrors))
+		for id, coverage := range snapshot.Sources {
+			cursorCoverage[id] = coverage
+		}
+		for id, failure := range resolveErrors {
+			cursorCoverage[id] = queue.Coverage{State: queue.CoverageUnknown, TotalAccuracy: queue.TotalUnknown, Reason: failure}
+		}
+		generations := make(map[string]string, len(sources))
+		for _, source := range sources {
+			if adapter, ok := registry.Get(source.Adapter); ok {
+				if observed, ok := adapter.(interface{ ConfigurationGeneration(queue.Source) string }); ok {
+					generations[source.ID] = observed.ConfigurationGeneration(source)
+				}
+			}
+		}
+		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), cfg.Me, generations, queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, cursorCoverage, cursorItems)
 		cursor := queueCursor{Fingerprint: fingerprint}
 		if encoded := cmd.String("cursor"); encoded != "" {
 			raw, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
@@ -165,17 +186,15 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 			for action, eligibility := range queue.ClaimActions(item) {
 				available[string(action)] = eligibility
 			}
-			resources := make([]output.PublicDigest, len(item.Resources))
-			for i, resource := range item.Resources {
-				resources[i] = output.PublicDigest(resource)
-			}
-			page = append(page, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: resources, Actions: available})
+			page = append(page, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: item.Resources, Actions: available})
 		}
 		incomplete := false
 		sourceRows := make([]queueSourceJSON, 0, len(view.Sources))
 		for _, id := range view.Sources {
 			coverage, ok := snapshot.Sources[id]
-			if !ok {
+			if failure := resolveErrors[id]; failure != "" {
+				coverage = queue.Coverage{State: queue.CoverageUnknown, TotalAccuracy: queue.TotalUnknown, Reason: failure}
+			} else if !ok {
 				coverage = queue.Coverage{State: queue.CoverageUnknown, TotalAccuracy: queue.TotalUnknown, Reason: "not-observed"}
 			}
 			freshness := "fresh"
@@ -184,9 +203,12 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 				incomplete = true
 			}
 			diagnostics := queueSourceDiagnostics(registry, sourceForID(sources, id))
+			if failure := resolveErrors[id]; failure != "" {
+				diagnostics = append(diagnostics, failure)
+			}
 			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, Diagnostics: diagnostics})
 		}
-		for _, item := range items {
+		for _, item := range cursorItems {
 			if !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
 				incomplete = true
 			}
@@ -227,13 +249,17 @@ func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {
 		}
 		resources := make([]any, len(envelope.Items[index].Resources))
 		for i, resource := range envelope.Items[index].Resources {
-			resources[i] = output.PublicDigest(resource)
+			if key := envelope.Items[index].KeyInputs; key != nil && (key.Provider == "generic" || key.Provider == "linear") {
+				resources[i] = output.PublicDigest(resource)
+			} else {
+				resources[i] = resource
+			}
 		}
 		item["resources"] = resources
 	}
 	return projected
 }
-func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item) string {
+func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, me map[string]yaml.Node, generations map[string]string, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item) string {
 	stableItems := append([]queue.Item(nil), items...)
 	for i := range stableItems {
 		stableItems[i].Observation.ObservedAt = time.Time{}
@@ -241,14 +267,16 @@ func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource
 	}
 	sort.Slice(stableItems, func(i, j int) bool { return stableItems[i].Ref.Less(stableItems[j].Ref) })
 	fingerprintData, _ := json.Marshal(struct {
-		View      string
-		Filters   config.QueueFilter
-		SourceIDs []string
-		Bindings  []config.QueueSource
-		Authority queueAuthorityJSON
-		Coverage  map[string]queue.Coverage
-		Items     []queue.Item
-	}{view.Name, view.Filter, view.Sources, bindings, authority, coverage, stableItems})
+		View        string
+		Filters     config.QueueFilter
+		SourceIDs   []string
+		Bindings    []config.QueueSource
+		Me          map[string]yaml.Node
+		Generations map[string]string
+		Authority   queueAuthorityJSON
+		Coverage    map[string]queue.Coverage
+		Items       []queue.Item
+	}{view.Name, view.Filter, view.Sources, bindings, me, generations, authority, coverage, stableItems})
 	digest := sha256.Sum256(fingerprintData)
 	return hex.EncodeToString(digest[:])
 }
