@@ -98,6 +98,29 @@ func TestClaimOverlayStatesAndOutage(t *testing.T) {
 		}
 	}
 }
+func TestConfiguredSourcesPreserveKeyInputsAndNativeClaim(t *testing.T) {
+	cfg := config.QueueConfig{Sources: []config.QueueSource{
+		{ID: "github", Adapter: "github", Host: "github.com", Repository: "Owner/Repository"},
+		{ID: "enterprise", Adapter: "github", Host: "ghe.example.com", Repository: "Team/Project"},
+		{ID: "backlog", Adapter: "backlog-md", Checkout: "/checkout", Claims: &config.QueueClaims{Policy: "generic", Source: "portable"}},
+	}}
+	resolved := []Source{{ID: "github", Adapter: "github", Locator: "Owner/Repository"}, {ID: "enterprise", Adapter: "github", Locator: "Team/Project"}, {ID: "backlog", Adapter: "backlog-md", Locator: "/checkout"}}
+	sources := ClaimSources(cfg, resolved)
+	for id, expected := range map[string]string{"github": "Owner/Repository", "enterprise": "ghe.example.com/Team/Project", "backlog": "portable"} {
+		if sources[id].ClaimSource != expected {
+			t.Fatalf("%s key source: %q", id, sources[id].ClaimSource)
+		}
+	}
+	items := []Item{{Summary: Summary{Ref: Ref{SourceID: "github", ItemID: "126"}}}, {Summary: Summary{Ref: Ref{SourceID: "enterprise", ItemID: "126"}}}}
+	prefixes := []string{"github:"}
+	observed := OverlayClaims(context.Background(), items, sources, ClaimAuthority{API: &statusAuthority{}, ID: "authority", Remote: true, AdmittedPrefixes: &prefixes}, config.ProfilePaths{}, nil)
+	for i, resourceKey := range []string{"github:owner%2Frepository#126", "github:ghe.example.com%2Fteam%2Fproject#126"} {
+		if len(observed[i].Resources) != 1 || observed[i].Resources[0] != resourceKey || observed[i].NativeClaim != "not-exposed" || observed[i].Claim.NativeState != "not-exposed" {
+			t.Fatalf("source key/native state: %+v", observed[i])
+		}
+	}
+}
+
 func TestLargeResourceStatusSplitsOnResponseLimit(t *testing.T) {
 	items := make([]Item, 32)
 	indexes := make(map[string][]int)
@@ -143,7 +166,7 @@ func TestCheckoutBindingMismatchWithPortableKey(t *testing.T) {
 		}
 		return os.Getenv(key)
 	})
-	if out[0].Claim.Reason != "authority-mismatch" || ClaimActions(out[0])[ActionLaunch].Reasons[0] != "authority-mismatch" || len(a.calls) != 0 || len(out[0].Resources) != 1 || !strings.HasPrefix(out[0].Resources[0], "coordination:generic:") {
+	if out[0].Claim.Reason != "authority-mismatch" || out[0].NativeClaim != "not-exposed" || out[0].Claim.NativeState != "not-exposed" || ClaimActions(out[0])[ActionLaunch].Reasons[0] != "authority-mismatch" || len(a.calls) != 0 || len(out[0].Resources) != 1 || !strings.HasPrefix(out[0].Resources[0], "coordination:generic:") {
 		t.Fatalf("mismatch: %+v", out[0])
 	}
 	selected.ID = profile.AuthorityID

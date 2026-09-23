@@ -19,6 +19,32 @@ type ClaimSource struct {
 	Policy, ClaimSource string
 }
 
+// ClaimSources carries queue.yaml's exact key inputs into the overlay.
+func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSource {
+	byID := make(map[string]Source, len(resolved))
+	for _, source := range resolved {
+		byID[source.ID] = source
+	}
+	out := make(map[string]ClaimSource, len(cfg.Sources))
+	for _, configured := range cfg.Sources {
+		source, ok := byID[configured.ID]
+		if !ok {
+			continue
+		}
+		input := ClaimSource{Source: source}
+		if configured.Claims != nil {
+			input.Policy, input.ClaimSource = configured.Claims.Policy, configured.Claims.Source
+		} else if configured.Adapter == "github" {
+			input.ClaimSource = configured.Repository
+			if configured.Host != "github.com" {
+				input.ClaimSource = configured.Host + "/" + configured.Repository
+			}
+		}
+		out[configured.ID] = input
+	}
+	return out
+}
+
 type ClaimAuthority struct {
 	API     authority.Authority
 	ID      string
