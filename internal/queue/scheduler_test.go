@@ -130,6 +130,34 @@ func TestScheduleCoalesceAndSupersede(t *testing.T) {
 		t.Fatalf("coalesced calls=%d", calls.Load())
 	}
 }
+func TestScheduleSupersedesRunningRead(t *testing.T) {
+	q := testQueue(1)
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		_, _ = q.schedule(context.Background(), PriorityBackground, "old", "page", true, func(ctx context.Context) (any, error) {
+			close(started)
+			<-ctx.Done()
+			close(finished)
+			return nil, ctx.Err()
+		})
+	}()
+	<-started
+	result := make(chan error, 1)
+	go func() {
+		_, err := q.schedule(context.Background(), PriorityVisible, "new", "page", true, func(context.Context) (any, error) { return nil, nil })
+		result <- err
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("running read not cancelled")
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScheduleFakeClockRateAndMutationSpacing(t *testing.T) {
 	q := testQueue(1)
 	clock := time.Unix(1000, 0)

@@ -103,6 +103,21 @@ func (q *quotaQueue) schedule(ctx context.Context, priority RequestPriority, key
 		j = nil
 	}
 	if j == nil {
+		for _, old := range append([]*scheduledJob(nil), q.pending...) {
+			if supersedes != "" && old.supersedes == supersedes {
+				old.cancel()
+				old.err = ScheduleDiagnostic{Code: "superseded"}
+				close(old.done)
+				q.remove(old)
+			}
+		}
+		if supersedes != "" {
+			for old := range q.active {
+				if old.supersedes == supersedes && old.safe {
+					old.cancel()
+				}
+			}
+		}
 		if len(q.pending) >= q.maxPending {
 			// Reserve a pending slot for an authoritative action check.
 			if priority == PriorityAction {
@@ -120,14 +135,6 @@ func (q *quotaQueue) schedule(ctx context.Context, priority RequestPriority, key
 			if len(q.pending) >= q.maxPending {
 				q.mu.Unlock()
 				return nil, ScheduleDiagnostic{Code: "overloaded"}
-			}
-		}
-		for _, old := range append([]*scheduledJob(nil), q.pending...) {
-			if supersedes != "" && old.supersedes == supersedes {
-				old.cancel()
-				old.err = ScheduleDiagnostic{Code: "superseded"}
-				close(old.done)
-				q.remove(old)
 			}
 		}
 		workCtx, cancel := context.WithCancel(context.Background())
