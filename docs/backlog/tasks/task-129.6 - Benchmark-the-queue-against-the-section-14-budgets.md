@@ -1,10 +1,11 @@
 ---
 id: TASK-129.6
 title: Benchmark the queue against the section 14 budgets
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 23:33'
 labels:
   - work-queue
 milestone: m-1
@@ -45,3 +46,9 @@ Reuse the TASK-126.6 Backlog.md fixture generator, and add a GitHub fixture serv
 - [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
 - [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reuse deterministic Backlog and fake GitHub fixtures to build reproducible 10k/50k/100k queue benchmark harness with controlled latency and counters. 2. Measure section 14 rows on the D22 machine, including combined fault/refresh scenario and failure boundary; capture p50/p95/p99 and resource/quota evidence. 3. Add local mise runner and relative-only CI regression coverage. 4. Update section 14 with results and budget decisions; run all quality gates, commit, merge and verify.
+<!-- SECTION:PLAN:END -->
