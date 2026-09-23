@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 )
 
 type Snapshot struct {
@@ -336,6 +338,22 @@ func (l *Loader) publish(ctx context.Context, source string, generation uint64, 
 	}
 }
 func (l *Loader) failSource(ctx context.Context, source string, generation uint64, reason string, out chan<- Snapshot) {
+	l.failSourceDiagnostic(ctx, source, generation, reason, time.Time{}, out)
+}
+func (l *Loader) failSourceError(ctx context.Context, source string, generation uint64, err error, out chan<- Snapshot) {
+	var rate GitHubRateDiagnostic
+	if errors.As(err, &rate) {
+		l.failSourceDiagnostic(ctx, source, generation, rate.Code, rate.RetryAt, out)
+		return
+	}
+	var diagnostic GitHubDiagnostic
+	if errors.As(err, &diagnostic) {
+		l.failSourceDiagnostic(ctx, source, generation, diagnostic.Code, time.Time{}, out)
+		return
+	}
+	l.failSource(ctx, source, generation, "source-read-failed", out)
+}
+func (l *Loader) failSourceDiagnostic(ctx context.Context, source string, generation uint64, reason string, retryAt time.Time, out chan<- Snapshot) {
 	l.publish(ctx, source, generation, func(s *Snapshot) {
 		for key, item := range s.Items {
 			if item.Ref.SourceID == source {
@@ -344,7 +362,7 @@ func (l *Loader) failSource(ctx context.Context, source string, generation uint6
 				s.Items[key] = item
 			}
 		}
-		s.Sources[source] = Coverage{State: CoverageUnknown, Reason: reason, TotalAccuracy: TotalUnknown}
+		s.Sources[source] = Coverage{State: CoverageUnknown, Reason: reason, RetryAt: retryAt, TotalAccuracy: TotalUnknown}
 	}, out)
 }
 func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, generation uint64, out chan<- Snapshot) {
@@ -380,7 +398,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		}
 		page, err := a.List(ctx, source, l.Query, cursor)
 		if err != nil {
-			l.failSource(ctx, source.ID, generation, "source-read-failed", out)
+			l.failSourceError(ctx, source.ID, generation, err, out)
 			break
 		}
 		if page.Coverage.State == CoverageUnknown {

@@ -82,6 +82,7 @@ type Coverage struct {
 	ObservedEdges int           `json:"observedEdges,omitempty"`
 	TotalAccuracy TotalAccuracy `json:"totalAccuracy"`
 	Reason        string        `json:"reason,omitempty"`
+	RetryAt       time.Time     `json:"retryAt,omitempty"`
 }
 type Observation struct {
 	Principal               string    `json:"principal,omitempty"`

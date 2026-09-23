@@ -34,6 +34,18 @@ func press(m Model, key string) (Model, tea.Cmd) {
 	next, cmd := m.Update(k)
 	return next.(Model), cmd
 }
+func TestSourceReadFailureLabelsIncludeRateLimitDeadline(t *testing.T) {
+	retryAt := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	labels := []string{
+		sourceState(queue.Coverage{Reason: "rate-limited", RetryAt: retryAt}),
+		sourceState(queue.Coverage{Reason: "permission-denied"}),
+		sourceState(queue.Coverage{Reason: "offline"}),
+	}
+	if labels[0] != "rate-limited retry Jan 2 03:04:05Z" || labels[1] != "permission-denied" || labels[2] != "offline" {
+		t.Fatalf("source failure labels: %v", labels)
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
