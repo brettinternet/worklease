@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
@@ -127,7 +128,63 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
+	var liveMu sync.Mutex
+	var liveCancel context.CancelFunc
+	var liveDone chan struct{}
+	var liveKeys map[string]bool
+	var blockedIdentity atomic.Bool
 	closing := false
+	restartOverlay := func(base queue.Snapshot) {
+		liveMu.Lock()
+		defer liveMu.Unlock()
+		if blockedIdentity.Load() {
+			return
+		}
+		keys := make(map[string]bool, len(base.Items))
+		for key := range base.Items {
+			keys[key] = true
+		}
+		if len(keys) == len(liveKeys) && liveKeys != nil {
+			same := true
+			for key := range keys {
+				if !liveKeys[key] {
+					same = false
+					break
+				}
+			}
+			if same {
+				return
+			}
+		}
+		liveKeys = keys
+		if liveCancel != nil {
+			liveCancel()
+			<-liveDone
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		liveCtx, stop := context.WithCancel(ctx)
+		liveCancel = stop
+		liveDone = make(chan struct{})
+		go func(done chan struct{}) {
+			defer close(done)
+			items := make([]queue.Item, 0, len(base.Items))
+			for _, item := range base.Items {
+				items = append(items, item)
+			}
+			_ = queue.RunClaimOverlay(liveCtx, items, claims, authorityView, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
+				updated := base.Clone()
+				for _, item := range observed {
+					updated.Items[item.Ref.Key()] = item
+					if err != nil && item.Claim.Reason == "authority-mismatch" {
+						blockedIdentity.Store(true)
+					}
+				}
+				program.Send(queueui.ClaimOverlayMsg{Snapshot: updated, Rebuilding: rebuilding, Err: err})
+			})
+		}(liveDone)
+	}
 	start := func() {
 		workersMu.Lock()
 		if closing {
@@ -138,7 +195,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program)
+			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, func(snapshot queue.Snapshot) {
+				if len(snapshot.Items) > 0 {
+					restartOverlay(snapshot)
+				}
+			})
 		}()
 	}
 	model.Refresh = func() tea.Cmd {
@@ -182,6 +243,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	cancel()
 	workersMu.Unlock()
 	workers.Wait()
+	liveMu.Lock()
+	if liveCancel != nil {
+		liveCancel()
+		<-liveDone
+	}
+	liveMu.Unlock()
 	return err
 }
 
@@ -217,7 +284,7 @@ func queueIdentity(item queue.Item) string {
 	}
 	return item.Ref.Key()
 }
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program) {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, onSnapshot func(queue.Snapshot)) {
 	for snapshot := range loader.Refresh(ctx, sources) {
 		items := make([]queue.Item, 0, len(snapshot.Items))
 		for _, item := range snapshot.Items {
@@ -228,5 +295,6 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			snapshot.Items[item.Ref.Key()] = item
 		}
 		program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
+		onSnapshot(snapshot)
 	}
 }

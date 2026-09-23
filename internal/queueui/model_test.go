@@ -34,6 +34,39 @@ func press(m Model, key string) (Model, tea.Cmd) {
 	next, cmd := m.Update(k)
 	return next.(Model), cmd
 }
+func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
+	m := New(fixture())
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	key := ref.Key()
+	base := m.Snapshot.Items[key]
+	base.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(100, 0)}
+	m.Snapshot.Items[key] = base
+	newer := fixture()
+	newer.Revision = 2
+	item := newer.Items[key]
+	item.Title = "new provider state"
+	item.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(101, 0)}
+	newer.Items[key] = item
+	next, _ := m.Update(SnapshotMsg{newer})
+	m = next.(Model)
+	older := fixture()
+	older.Revision = 1
+	next, _ = m.Update(SnapshotMsg{older})
+	m = next.(Model)
+	if m.Snapshot.Items[key].Title != item.Title || m.Snapshot.Items[key].Claim.State != "held" {
+		t.Fatalf("regressed snapshot: %+v", m.Snapshot.Items[key])
+	}
+	claims := newer.Clone()
+	observed := claims.Items[key]
+	observed.Claim = queue.ClaimObservation{Known: false, Stale: true, State: "unknown", ObservedAt: time.Unix(102, 0)}
+	claims.Items[key] = observed
+	next, _ = m.Update(ClaimOverlayMsg{Snapshot: claims, Rebuilding: true})
+	m = next.(Model)
+	if m.Snapshot.Items[key].Title != item.Title || m.Snapshot.Items[key].Claim.Known || !strings.Contains(m.View(), "claims rebuilding") {
+		t.Fatalf("claim/provider freshness coupled: %+v", m.Snapshot.Items[key])
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
@@ -122,7 +155,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	m.Scope = "remote"
 	m.anchor(m.rows())
 	wide := m.View()
-	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "Views:", "Sources:", "unknown dependencies", "assigned elsewhere", "Worklease", "2 loaded of 2 (exact)", "edges 0/2", "search: loaded rows"} {
+	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "Views:", "Sources:", "unknown dependencies", "assigned elsewhere", "Worklease", "2 loaded of 2 (exact)", "edges 0/2", "provider fresh", "claims loading"} {
 		if !strings.Contains(wide, s) {
 			t.Errorf("wide view missing %q: %s", s, wide)
 		}

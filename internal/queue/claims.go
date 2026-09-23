@@ -52,6 +52,8 @@ type ClaimStatusReader interface {
 
 type ClaimAuthority struct {
 	API     ClaimStatusReader
+	LiveAPI LiveClaimReader
+	Now     func() (time.Time, error)
 	ID      string
 	Profile string
 	Remote  bool
