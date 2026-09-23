@@ -167,6 +167,30 @@ func TestOnDemandBatchAdapterHydratesVisibleRows(t *testing.T) {
 	}
 }
 
+func TestGitHubSSOExpiryWithholdsCachedProjection(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "private title", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = fake
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[ref.Key()]; !ok {
+		t.Fatal("initial source was not visible")
+	}
+	fake.errors["s"] = GitHubDiagnostic{Code: "saml-sso", Detail: "SAML authorization required"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[ref.Key()]; ok {
+		t.Fatal("SSO expiry leaked cached private title")
+	}
+	if store.state.ReconciliationCursor != "@start" {
+		t.Fatalf("SSO expiry did not schedule visibility reconciliation: %+v", store.state)
+	}
+}
+
 func TestGitHubSourceAccessRestorationRestartsReconciliation(t *testing.T) {
 	fake := newFake()
 	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "1"}, Title: "restored"}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}

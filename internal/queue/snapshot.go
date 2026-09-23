@@ -465,7 +465,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			if diagnostic, ok := err.(GitHubDiagnostic); ok && diagnostic.Code == "invalid-cursor" && source.Adapter == "github" && l.GitHubSync != nil {
 				_ = l.GitHubSync.RestartGitHubSync(ctx, source, reconcile)
 			}
-			if diagnostic, ok := err.(GitHubDiagnostic); ok && (diagnostic.Code == "not-found-or-inaccessible" || diagnostic.Code == "permission-denied" || diagnostic.Code == "identity-changed" || diagnostic.Code == "authentication") {
+			if diagnostic, ok := err.(GitHubDiagnostic); ok && (diagnostic.Code == "not-found-or-inaccessible" || diagnostic.Code == "permission-denied" || diagnostic.Code == "saml-sso" || diagnostic.Code == "identity-changed" || diagnostic.Code == "authentication") {
 				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
 			} else {
 				l.failSource(ctx, source.ID, generation, "source-read-failed", out)
