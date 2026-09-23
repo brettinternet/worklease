@@ -147,6 +147,32 @@ func TestLoaderRestartsExpiredGitHubCursorWithoutLosingWatermark(t *testing.T) {
 	}
 }
 
+type renumberedGitHubAdapter struct{ *fakeAdapter }
+
+func (*renumberedGitHubAdapter) ListIncremental(_ context.Context, source Source, _ Query, _ string, _, _ time.Time) (SummaryPage, error) {
+	return SummaryPage{Items: []Summary{{Ref: Ref{source.ID, "2"}, CanonicalID: "N1", Title: "new number"}}, Coverage: Coverage{State: CoverageComplete}, Incremental: true}, nil
+}
+
+func TestLoaderIncrementalRenumberingRemovesOldReference(t *testing.T) {
+	fake := newFake()
+	old := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: old, CanonicalID: "N1", Title: "old number"}}, Coverage: Coverage{State: CoverageComplete}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = &renumberedGitHubAdapter{fake}
+	loader := NewLoader(registry)
+	loader.GitHubSync = &syncTestStore{}
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[old.Key()]; !ok {
+		t.Fatal("initial reference missing")
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	items := loader.Store.Current().Items
+	if _, oldVisible := items[old.Key()]; oldVisible || items[Ref{source.ID, "2"}.Key()].Title != "new number" {
+		t.Fatalf("renumbered node must have one current reference: %+v", items)
+	}
+}
+
 type onDemandBatchAdapter struct{ *fakeAdapter }
 
 func (*onDemandBatchAdapter) OnDemandDetails() {}

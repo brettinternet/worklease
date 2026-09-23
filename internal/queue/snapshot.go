@@ -568,6 +568,23 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 					}
 				}
 			}
+			// A transfer or renumbering can change the ref while retaining the
+			// immutable GitHub node ID. Never display both identities at once.
+			if source.Adapter == "github" {
+				byNode := make(map[string]string, len(items))
+				for key, item := range items {
+					if item.CanonicalID != "" {
+						byNode[item.CanonicalID] = key
+					}
+				}
+				for key, existing := range s.Items {
+					if existing.Ref.SourceID == source.ID && existing.CanonicalID != "" {
+						if newKey, ok := byNode[existing.CanonicalID]; ok && newKey != key {
+							delete(s.Items, key)
+						}
+					}
+				}
+			}
 			for key, item := range items {
 				s.Items[key] = item
 			}
