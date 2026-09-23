@@ -2,7 +2,9 @@ package queueui
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -70,12 +72,22 @@ type Model struct {
 	LoadHistory                    func(queue.Item, string) tea.Cmd
 	LoadComments                   func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
+	rowCache                       *rowCache
+}
+
+type rowCache struct {
+	mu       sync.Mutex
+	key      string
+	rows     []queue.Item
+	counts   map[string]int
+	observed time.Time
+	edges    int
 }
 
 var tabs = []string{"Summary", "Dependencies", "Activity", "Claims"}
 
 func New(snapshot queue.Snapshot) Model {
-	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed"}, ViewName: "All"}
+	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed"}, ViewName: "All", rowCache: &rowCache{}}
 }
 func (m Model) Init() tea.Cmd { return nil }
 func identity(i queue.Item) string {
@@ -85,6 +97,16 @@ func identity(i queue.Item) string {
 	return i.Ref.Key()
 }
 func (m Model) rows() []queue.Item {
+	// The TUI event loop owns the model. Cache the sorted projection across
+	// navigation/paint; provider, claim, filter and view changes invalidate it.
+	key := fmt.Sprintf("%x:%d:%s:%s:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+	if m.rowCache != nil {
+		m.rowCache.mu.Lock()
+		defer m.rowCache.mu.Unlock()
+		if m.rowCache.rows != nil && m.rowCache.key == key {
+			return m.rowCache.rows
+		}
+	}
 	order := make([]string, 0, len(m.Sources))
 	for _, s := range m.Sources {
 		order = append(order, s.ID)
@@ -162,6 +184,23 @@ func (m Model) rows() []queue.Item {
 			}
 		}
 		out = append(out, i)
+	}
+	if m.rowCache != nil {
+		m.rowCache.key, m.rowCache.rows = key, out
+		m.rowCache.counts = make(map[string]int, len(m.Views))
+		for _, name := range m.Views {
+			m.rowCache.counts[name] = m.viewCount(name)
+		}
+		m.rowCache.observed = time.Time{}
+		m.rowCache.edges = 0
+		for _, item := range m.Snapshot.Items {
+			if item.Observation.ObservedAt.After(m.rowCache.observed) {
+				m.rowCache.observed = item.Observation.ObservedAt
+			}
+			if item.DependenciesKnown && item.Closure == queue.CoverageComplete && item.Fresh {
+				m.rowCache.edges++
+			}
+		}
 	}
 	return out
 }
@@ -273,6 +312,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case ClaimOverlayMsg:
+		m.rowCache = &rowCache{}
 		for key, item := range v.Snapshot.Items {
 			if current, ok := m.Snapshot.Items[key]; ok && !item.Claim.ObservedAt.Before(current.Claim.ObservedAt) {
 				current.Claim, current.Resources, current.KeyInputs = item.Claim, item.Resources, item.KeyInputs
@@ -488,14 +528,8 @@ func (m Model) View() string {
 	m.anchor(rows)
 	var b, list strings.Builder
 	age := "unknown"
-	var observed time.Time
-	for _, item := range m.Snapshot.Items {
-		if item.Observation.ObservedAt.After(observed) {
-			observed = item.Observation.ObservedAt
-		}
-	}
-	if !observed.IsZero() {
-		age = time.Since(observed).Round(time.Second).String()
+	if m.rowCache != nil && !m.rowCache.observed.IsZero() {
+		age = time.Since(m.rowCache.observed).Round(time.Second).String()
 	}
 	fmt.Fprintf(&b, "worklease queue  view: %s  authority: %s (%s)  me: %s  sources %d/%d  sync %s ago\n", clip(m.ViewName, 24), clip(m.Authority, 48), clip(m.Scope, 12), clip(m.Me, 24), healthy(m.Snapshot.Sources), len(m.Sources), age)
 	if m.Help {
@@ -508,7 +542,7 @@ func (m Model) View() string {
 	if !m.Detail || m.Width >= 100 {
 		fmt.Fprintf(&list, "Views: ")
 		for _, v := range m.Views {
-			fmt.Fprintf(&list, "%s %d  ", clip(v, 16), m.viewCount(v))
+			fmt.Fprintf(&list, "%s %d  ", clip(v, 16), m.rowCache.counts[v])
 		}
 		list.WriteByte('\n')
 		list.WriteString("Sources: ")
@@ -559,6 +593,9 @@ func (m Model) View() string {
 	}
 	total, accuracy := 0, "exact"
 	edges := 0
+	if m.rowCache != nil {
+		edges = m.rowCache.edges
+	}
 	if len(m.Snapshot.Sources) == 0 {
 		accuracy = "unknown"
 	}
@@ -568,11 +605,6 @@ func (m Model) View() string {
 			accuracy = "unknown"
 		} else if c.TotalAccuracy == queue.TotalEstimated && accuracy == "exact" {
 			accuracy = "estimated"
-		}
-	}
-	for _, i := range m.Snapshot.Items {
-		if i.DependenciesKnown && i.Closure == queue.CoverageComplete && i.Fresh {
-			edges++
 		}
 	}
 	var footer strings.Builder

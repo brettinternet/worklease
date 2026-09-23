@@ -45,6 +45,33 @@ jobs:
           sudo apt-get install --yes groff-base
           groff -mandoc -Tutf8 dist/worklease.1 >/dev/null
 
+  queue-benchmark:
+    name: Queue relative benchmarks (linux-x64)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - name: Install mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+      - name: Compare on the same runner
+        env:
+          QUEUE_BENCH_SAMPLES: '3'
+        run: |
+          if test -f base/scripts/queue-benchmark.py; then
+            (cd base && python3 scripts/queue-benchmark.py > ../base.json)
+            python3 scripts/queue-benchmark.py > head.json
+            python3 scripts/queue-benchmark-compare.py base.json head.json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No base benchmark yet; relative comparisons begin after this lands.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   compatibility:
     name: Test (${{ matrix.platform }})
     strategy:

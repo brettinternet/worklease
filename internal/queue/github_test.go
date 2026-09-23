@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func fakeGitHub(t *testing.T, handler http.HandlerFunc) (*GitHubAdapter, *httptest.Server) {
+func fakeGitHub(t testing.TB, handler http.HandlerFunc) (*GitHubAdapter, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

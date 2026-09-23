@@ -16,7 +16,7 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
-    parser.add_argument("count", type=int, choices=(102, 1000, 10000))
+    parser.add_argument("count", type=int, choices=(102, 1000, 10000, 50000, 100000))
     args = parser.parse_args()
     root = args.destination.resolve()
     temporary = Path("/tmp").resolve()
