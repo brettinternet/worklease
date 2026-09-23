@@ -1,10 +1,11 @@
 ---
 id: TASK-129.5
 title: Add the live claim overlay (D20)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 20:50'
 labels:
   - work-queue
   - authority
@@ -53,3 +54,17 @@ Filtered watches accept at most 32 resources, so use one namespace watch per aut
 - [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
 - [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extend authority-backed claim projection with cursor-before-snapshot namespace watch, targeted status, authority-time expiry, gap rebuild, and identity gate.
+2. Integrate independent claim/provider freshness and rebuilding state into queue/TUI.
+3. Add race, local/remote restore and expiry tests; run focused and repository gates; commit, merge and clean up.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Partial implementation committed on task-129.5-overlay at 4a2c81e (not merged). Live namespace cursor watch, batched/targeted status, authority-clock expiry, gap rebuild, identity failure, TUI freshness, local race/retry tests implemented. Review found stalled-provider and transient-status/watch races; corrected and retested. mise run lint, format-check, test, typecheck, hooks all passed in worktree. Remaining: real remote authority restart producing restore/gap; active queue-owned handle fail-closed/recovery test (queue-owned handles are not yet implemented until TASK-130.1); TUI stalled-source live test and broader injected expiry interleavings. Keep In Progress. Next: resume existing worktree/branch, add remote and active-handle integration tests, address defects, rerun gates, finalize, merge and clean up. Do not merge this partial branch as complete.
+<!-- SECTION:NOTES:END -->
