@@ -1,10 +1,11 @@
 ---
 id: TASK-128.6
 title: Add `worklease queue query --json`
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 19:09'
 labels:
   - work-queue
 milestone: m-1
@@ -36,17 +37,37 @@ The command builds sources from queue.yaml through the TASK-128.3 adapter regist
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `worklease queue query --view NAME --json` emits one versioned envelope. It contains the view; the authority (profile, authorityId, and local or remote scope); per-source coverage, freshness, and diagnostics; and items. Each item has ref, display ID, title, raw and normalized state, readiness with reasons, provider-reported readiness, assignment, claim observation, native claim state, `resources`, `keyInputs`, and per-action availability with reasons
-- [ ] #2 `resources` and `keyInputs` are byte-identical to `worklease key` output for the same inputs, as tested against the TASK-126.4 vectors
-- [ ] #3 `--limit` and an opaque `--cursor` give bounded pagination. The cursor is bound to view, query, sort, sources, principal, and generation, and any mismatch (changed filter, changed credential scope, stale generation) returns a structured cursor error
-- [ ] #4 `--require-complete` exits non-zero with a structured `incomplete` result when source coverage or dependency edges are incomplete
-- [ ] #5 Without `--json`, the command prints a compact human-readable table consistent with existing list output
-- [ ] #6 Output passes through the existing internal/output normalization and redaction
-- [ ] #7 The command is covered by the help, man-page, and zero-flag audit tests like other commands, and docs/queue.md and docs/cli-reference.md document it and its JSON schema
+- [x] #1 `worklease queue query --view NAME --json` emits one versioned envelope. It contains the view; the authority (profile, authorityId, and local or remote scope); per-source coverage, freshness, and diagnostics; and items. Each item has ref, display ID, title, raw and normalized state, readiness with reasons, provider-reported readiness, assignment, claim observation, native claim state, `resources`, `keyInputs`, and per-action availability with reasons
+- [x] #2 `resources` and `keyInputs` are byte-identical to `worklease key` output for the same inputs, as tested against the TASK-126.4 vectors
+- [x] #3 `--limit` and an opaque `--cursor` give bounded pagination. The cursor is bound to view, query, sort, sources, principal, and generation, and any mismatch (changed filter, changed credential scope, stale generation) returns a structured cursor error
+- [x] #4 `--require-complete` exits non-zero with a structured `incomplete` result when source coverage or dependency edges are incomplete
+- [x] #5 Without `--json`, the command prints a compact human-readable table consistent with existing list output
+- [x] #6 Output passes through the existing internal/output normalization and redaction
+- [x] #7 The command is covered by the help, man-page, and zero-flag audit tests like other commands, and docs/queue.md and docs/cli-reference.md document it and its JSON schema
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
-- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+- [x] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
+- [x] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add queue query command using configured sources, registry, snapshot loader and authority overlay. 2. Define versioned normalized output, bounded cursor validation, completeness enforcement and text table. 3. Cover schema, cursor, key vectors, help/man/audit and document command. 4. Run focused and repository gates, review, integrate and finalize.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed for implementation in isolated worktree.
+
+Implemented on task-128-6-queue-query, integrated to main as 2a007a6 and edfc385. End-to-end queue tests exercise schema, pagination, credential/principal/config fingerprint, filtered completeness, mixed failed/healthy sources, key vector equality, redaction and text output; existing CLI help/man/zero-flag tests pass. Reviewer found six concrete issues; corrected all, preserving concurrent queue TUI. mise run lint, format-check, test, typecheck, hooks passed after corrections. No D1-D27 or plan contradiction introduced; fresh snapshot query explicitly defers index/max-age to S3.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added read-only queue query JSON v1 and text output with source/claim evidence, bounded generation-bound pagination, structured incomplete/cursor errors, exact key inputs, redaction, tests and docs; integrated to main, all gates passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
