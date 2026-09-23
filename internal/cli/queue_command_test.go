@@ -9,11 +9,34 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+type cachedClaimStatus struct{}
+
+func (cachedClaimStatus) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
+	return lease.Status{Resources: []lease.ResourceStatus{{Resource: selector.Resources[0], State: "active", Claim: &lease.ClaimView{AuthorityID: selector.AuthorityID, AgentID: "worker", Active: true}}}}, nil
+}
+
+func TestCachedSnapshotOverlaysHeldClaimWithoutRefresh(t *testing.T) {
+	ref := queue.Ref{SourceID: "s", ItemID: "1"}
+	cached := queue.Snapshot{Items: map[string]queue.Item{ref.Key(): {Summary: queue.Summary{Ref: ref}}}}
+	sources := map[string]queue.ClaimSource{"s": {Source: queue.Source{ID: "s", Adapter: "generic", Locator: "project"}}}
+	var stored sync.Map
+	overlayCachedClaims(context.Background(), &cached, sources, queue.ClaimAuthority{API: cachedClaimStatus{}, ID: "authority"}, config.ProfilePaths{}, &stored)
+	item := cached.Items[ref.Key()]
+	if !item.Claim.Active || item.Claim.AgentID != "worker" {
+		t.Fatalf("cached claim was not observed: %+v", item.Claim)
+	}
+	if applied, ok := stored.Load(ref.Key()); !ok || !applied.(queue.Item).Claim.Active {
+		t.Fatalf("cached claim was not retained for hydration: %v %v", applied, ok)
+	}
+}
 
 func TestQueueFirstFrameUsesIndexBeforeProviderRefresh(t *testing.T) {
 	ctx := context.Background()

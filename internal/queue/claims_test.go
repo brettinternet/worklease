@@ -46,6 +46,13 @@ func (a *statusAuthority) Status(_ context.Context, sel lease.Selector) (lease.S
 	}
 	return result, nil
 }
+
+type heldStatusAuthority struct{}
+
+func (heldStatusAuthority) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
+	return lease.Status{Resources: []lease.ResourceStatus{{Resource: selector.Resources[0], State: "active", Claim: &lease.ClaimView{AuthorityID: selector.AuthorityID, AgentID: "holder", Active: true}}}}, nil
+}
+
 func claimFixtures(count int) ([]Item, map[string]ClaimSource) {
 	items := make([]Item, count)
 	sources := map[string]ClaimSource{"s": {Source: Source{ID: "s", Adapter: "generic", Locator: "project"}}}
@@ -199,13 +206,70 @@ func TestCheckoutBindingMismatchWithPortableKey(t *testing.T) {
 		}
 		return os.Getenv(key)
 	})
-	if out[0].Claim.Reason != "authority-mismatch" || out[0].NativeClaim != "not-exposed" || out[0].Claim.NativeState != "not-exposed" || ClaimActions(out[0])[ActionLaunch].Reasons[0] != "authority-mismatch" || len(a.calls) != 0 || len(out[0].Resources) != 1 || !strings.HasPrefix(out[0].Resources[0], "coordination:generic:") {
+	if out[0].Claim.Reason != "authority-mismatch" || out[0].NativeClaim != "not-exposed" || out[0].Claim.NativeState != "not-exposed" || ClaimActions(out[0])[ActionLaunch].Reasons[0] != "authority-mismatch" || len(a.calls) != 1 || len(out[0].Resources) != 1 || !strings.HasPrefix(out[0].Resources[0], "coordination:generic:") {
 		t.Fatalf("mismatch: %+v", out[0])
 	}
 	selected.ID = profile.AuthorityID
 	out = OverlayClaims(context.Background(), items, sources, selected, paths, func(string) string { return "" })
-	if out[0].Claim.State != "free" || len(a.calls) != 1 {
+	if out[0].Claim.State != "free" || len(a.calls) != 2 {
 		t.Fatalf("matching binding: %+v", out[0].Claim)
+	}
+}
+
+func TestCheckoutMismatchKeepsStatusObservationAndActionDenial(t *testing.T) {
+	checkout := t.TempDir()
+	private := t.TempDir()
+	paths := config.ProfilePaths{Profiles: filepath.Join(private, "profiles.yaml"), Bindings: filepath.Join(private, "bindings.yaml")}
+	profile := config.Profile{Name: "worker", Endpoint: "http://127.0.0.1:8888", AuthorityID: strings.Repeat("a", 32), AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(private, "credential")}}
+	if err := config.SaveProfiles(paths, []config.Profile{profile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveBindings(paths, map[string]string{checkout: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	items, sources := claimFixtures(1)
+	sources["s"] = ClaimSource{Source: Source{ID: "s", Adapter: "backlog-md", Locator: checkout}, Policy: "generic", ClaimSource: "portable"}
+	prefixes := []string{"coordination:"}
+	selected := ClaimAuthority{API: heldStatusAuthority{}, ID: strings.Repeat("b", 32), Profile: "view", Remote: true, AdmittedPrefixes: &prefixes}
+	out := OverlayClaims(context.Background(), items, sources, selected, paths, func(string) string { return "" })
+	if out[0].Claim.Reason != "authority-mismatch" || !out[0].Claim.Known || out[0].Claim.State != "held" || out[0].Claim.AgentID != "holder" {
+		t.Fatalf("mismatch lost holder observation: %+v", out[0].Claim)
+	}
+	for _, action := range []Action{ActionClaim, ActionLaunch} {
+		if got := ClaimActions(out[0])[action]; got.Eligible || len(got.Reasons) == 0 || got.Reasons[0] != "authority-mismatch" {
+			t.Fatalf("%s was not denied: %+v", action, got)
+		}
+	}
+}
+
+func TestLocalCheckoutAuthorityMustMatchWorkerDefaultAuthority(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	items, sources := claimFixtures(1)
+	sources["s"] = ClaimSource{Source: Source{ID: "s", Adapter: "backlog-md", Locator: checkout}}
+	api := &statusAuthority{}
+	profileDir := t.TempDir()
+	paths := config.ProfilePaths{Profiles: filepath.Join(profileDir, "profiles.yaml"), Bindings: filepath.Join(profileDir, "bindings.yaml")}
+	if err := config.SaveProfiles(paths, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveBindings(paths, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	selected := ClaimAuthority{API: api, ID: "queue-home-authority", Profile: config.LocalProfileName, LocalDefaultAuthorityID: "worker-home-authority"}
+	out := OverlayClaims(context.Background(), items, sources, selected, paths, func(string) string { return "" })
+	if out[0].Claim.Reason != "authority-mismatch" || len(api.calls) != 1 {
+		t.Fatalf("worker local authority mismatch not detected: %+v calls=%v", out[0].Claim, api.calls)
+	}
+	selected.ID = selected.LocalDefaultAuthorityID
+	if !matchingCheckoutAuthority(checkout, selected, paths, func(string) string { return "" }) {
+		t.Fatal("local checkout authority did not match")
+	}
+	out = OverlayClaims(context.Background(), items, sources, selected, paths, func(string) string { return "" })
+	if out[0].Claim.Reason != "" || !out[0].Claim.Known {
+		t.Fatalf("matching local authority rejected: %+v", out[0].Claim)
 	}
 }
 
@@ -222,7 +286,7 @@ func TestClaimOverlayAdmissionAndCheckoutAuthority(t *testing.T) {
 	prefixes = []string{"backlog-md:"}
 	selected.Remote = false
 	out = OverlayClaims(context.Background(), items, sources, selected, config.ProfilePaths{}, nil)
-	if out[0].Claim.Reason != "authority-mismatch" || len(a.calls) != 0 {
+	if out[0].Claim.Reason != "authority-mismatch" || !out[0].Claim.Known || len(a.calls) != 1 {
 		t.Fatalf("checkout: %+v", out[0].Claim)
 	}
 }
