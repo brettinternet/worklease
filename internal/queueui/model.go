@@ -472,14 +472,21 @@ func (m Model) View() string {
 			edges++
 		}
 	}
-	fmt.Fprintf(&b, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · %s\n", len(m.Snapshot.Items), total, accuracy, len(rows), edges, len(m.Snapshot.Items), clip(m.Notice, 60))
+	var footer strings.Builder
+	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, len(m.Snapshot.Items), clip(m.Notice, 60))
 	if m.Filtering {
-		fmt.Fprintf(&b, "/%s\n", clip(m.Input, m.Width-2))
+		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
 	}
 	if m.Palette {
-		fmt.Fprintf(&b, ":%s\n", clip(m.Input, m.Width-2))
+		fmt.Fprintf(&footer, "\n:%s", clip(m.Input, m.Width-2))
 	}
-	return lipgloss.NewStyle().MaxWidth(m.Width).MaxHeight(m.Height).Render(b.String())
+	footerText := lipgloss.NewStyle().MaxWidth(m.Width).Render(footer.String())
+	bodyHeight := max(0, m.Height-lipgloss.Height(footerText))
+	body := lipgloss.NewStyle().MaxWidth(m.Width).MaxHeight(bodyHeight).Render(strings.TrimRight(b.String(), "\n"))
+	if bodyHeight == 0 {
+		return footerText
+	}
+	return body + "\n" + footerText
 }
 func scrollDetail(s string, offset int) string {
 	lines := strings.Split(s, "\n")

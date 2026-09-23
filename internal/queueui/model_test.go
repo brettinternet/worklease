@@ -103,6 +103,24 @@ func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 		}
 	}
 }
+func TestCoverageFooterVisibleWithLongClaimHistory(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail = true
+	m.Tab = 3
+	m.Height = 12
+	for range 20 {
+		m.History.Epochs = append(m.History.Epochs, ledger.Epoch{AgentID: "worker", SessionID: "session"})
+	}
+	view := m.View()
+	if !strings.Contains(view, "2 loaded of 2 (exact)") {
+		t.Fatalf("coverage footer hidden by detail: %s", view)
+	}
+	if lines := len(strings.Split(strings.TrimRight(view, "\n"), "\n")); lines > m.Height {
+		t.Fatalf("render grew beyond viewport: %d", lines)
+	}
+}
 func TestClaimHistoryPagination(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
