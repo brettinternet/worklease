@@ -3,12 +3,15 @@ package queue
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,6 +25,32 @@ import (
 type BacklogDiagnostic struct{ Code, Detail string }
 
 func (d BacklogDiagnostic) Error() string { return d.Code + ": " + d.Detail }
+
+func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
+	current, err := osuser.Current()
+	if err != nil || current.Uid == "" || source.Locator == "" {
+		return "", "", "", false
+	}
+	// A checkout replaced at the same path must not inherit its predecessor's cache.
+	gitDir, err := os.Stat(filepath.Join(source.Locator, ".git"))
+	if err != nil {
+		return "", "", "", false
+	}
+	generation, ok := checkoutInstance(gitDir)
+	if !ok {
+		return "", "", "", false
+	}
+	for _, name := range []string{"backlog.config.yml", filepath.Join("backlog", "config.yml")} {
+		content, err := os.ReadFile(filepath.Join(source.Locator, name))
+		if err == nil {
+			sum := sha256.Sum256(content)
+			generation += ":" + hex.EncodeToString(sum[:])
+		} else if !os.IsNotExist(err) {
+			return "", "", "", false
+		}
+	}
+	return current.Uid, filepath.Clean(source.Locator), generation, true
+}
 
 type BacklogSourceDiagnostics struct {
 	Branch         string   `json:"branch"`
@@ -364,7 +393,7 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 		return SummaryPage{}, BacklogDiagnostic{"schema-mismatch", "missing tasks array"}
 	}
 	page := SummaryPage{Items: make([]Summary, 0, len(payload.Tasks)), Coverage: Coverage{State: CoverageComplete, Scope: source.ID, Total: len(payload.Tasks), TotalAccuracy: TotalExact}}
-	page.Observation = Observation{ObservedAt: time.Now(), Coverage: page.Coverage, ConfigurationGeneration: source.Locator}
+	page.Observation = Observation{AccessScope: source.Locator, ObservedAt: time.Now(), Coverage: page.Coverage, ConfigurationGeneration: source.Locator}
 	seen := map[string]bool{}
 	duplicates := map[string]bool{}
 	for _, task := range payload.Tasks {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfavecli "github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
@@ -34,10 +36,12 @@ type queueAuthorityJSON struct {
 	Scope   string `json:"scope"`
 }
 type queueSourceJSON struct {
-	ID          string         `json:"id"`
-	Coverage    queue.Coverage `json:"coverage"`
-	Freshness   string         `json:"freshness"`
-	Diagnostics []string       `json:"diagnostics,omitempty"`
+	ID              string         `json:"id"`
+	Coverage        queue.Coverage `json:"coverage"`
+	Freshness       string         `json:"freshness"`
+	ObservedAt      time.Time      `json:"observedAt,omitempty"`
+	ServedFromIndex bool           `json:"servedFromIndex"`
+	Diagnostics     []string       `json:"diagnostics,omitempty"`
 }
 type queueQueryItem struct {
 	queue.Item
@@ -105,10 +109,111 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			sources = append(sources, source)
 		}
 		loader := newLoader(registry)
-		updates := loader.Refresh(ctx, sources)
+		cacheDir, cacheErr := queueindex.CacheDir(os.Getenv, "")
+		if cacheErr != nil {
+			return s.handle(cmd, cacheErr)
+		}
+		index, cacheErr := queueindex.Open(ctx, cacheDir)
+		if cacheErr != nil {
+			return s.handle(cmd, cacheErr)
+		}
+		defer index.Close()
+		maxAge := time.Duration(0)
+		if cmd.IsSet("max-age") {
+			maxAge = cmd.Duration("max-age")
+			if maxAge < 0 {
+				return s.handle(cmd, reason.Invalid("--max-age must not be negative"))
+			}
+		}
+		partitions := make(map[string]queueindex.Partition)
+		observationTimes := make(map[string]time.Time)
+		servedFromIndex := make(map[string]bool)
+		cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
+		refreshSources := make([]queue.Source, 0, len(sources))
+		releases := make([]func(), 0, len(sources))
+		defer func() {
+			for _, release := range releases {
+				release()
+			}
+		}()
+		// All processes acquire partition locks in the same order, regardless of view order.
+		lockOrder := append([]queue.Source(nil), sources...)
+		sort.Slice(lockOrder, func(i, j int) bool { return lockOrder[i].ID < lockOrder[j].ID })
+		for _, source := range lockOrder {
+			adapter, _ := registry.Get(source.Adapter)
+			partition, cacheable := queueindex.ForSource(adapter, source)
+			if !cacheable {
+				refreshSources = append(refreshSources, source)
+				continue
+			}
+			partitions[source.ID] = partition
+			candidate, observed, fresh, readErr := index.Read(ctx, partition, maxAge)
+			if readErr != nil {
+				return s.handle(cmd, readErr)
+			}
+			observationTimes[source.ID] = observed
+			wantCache := cmd.IsSet("max-age") && fresh
+			if !wantCache {
+				release, acquired, lockErr := index.TryRefreshLock(partition)
+				if lockErr != nil {
+					return s.handle(cmd, lockErr)
+				}
+				if !acquired {
+					release, lockErr = index.WaitRefreshLock(ctx, partition)
+					if lockErr != nil {
+						return s.handle(cmd, lockErr)
+					}
+					candidate, observed, fresh, readErr = index.Read(ctx, partition, maxAge)
+					if readErr != nil {
+						release()
+						return s.handle(cmd, readErr)
+					}
+					observationTimes[source.ID] = observed
+					wantCache = cmd.IsSet("max-age") && fresh
+				}
+				if wantCache {
+					release()
+				} else {
+					releases = append(releases, release)
+					refreshSources = append(refreshSources, source)
+				}
+			}
+			if len(candidate.Sources) > 0 {
+				cached.Items = mergeItems(cached.Items, candidate.Items)
+				cached.Sources[source.ID] = candidate.Sources[source.ID]
+			}
+			if wantCache {
+				servedFromIndex[source.ID] = true
+			}
+		}
+		loader.Store.SeedSnapshot(cached)
+		updates := loader.Refresh(ctx, refreshSources)
 		for range updates {
 		}
 		snapshot := loader.Store.Current()
+		for _, source := range refreshSources {
+			if partition, ok := partitions[source.ID]; ok {
+				items := make([]queue.Item, 0)
+				for _, item := range snapshot.Items {
+					if item.Ref.SourceID == source.ID {
+						items = append(items, item)
+					}
+				}
+				deleted := make([]queue.Ref, 0)
+				for _, ref := range snapshot.Deleted {
+					if ref.SourceID == source.ID {
+						deleted = append(deleted, ref)
+					}
+				}
+				complete := snapshot.Sources[source.ID].State == queue.CoverageComplete
+				if writeErr := index.ReplaceWithDeletes(ctx, partition, items, deleted, complete); writeErr != nil {
+					return s.handle(cmd, writeErr)
+				}
+				if complete {
+					observationTimes[source.ID] = time.Now()
+				}
+			}
+		}
 		viewFilters := queue.Filters{}
 		switch strings.ToLower(view.Filter.Readiness) {
 		case "ready": /* readiness post-filter */
@@ -221,7 +326,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			if failure := resolveErrors[id]; failure != "" {
 				diagnostics = append(diagnostics, failure)
 			}
-			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, Diagnostics: diagnostics})
+			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, ObservedAt: observationTimes[id], ServedFromIndex: servedFromIndex[id], Diagnostics: diagnostics})
 		}
 		for _, item := range cursorItems {
 			if !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
@@ -252,6 +357,13 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 		return nil
 	}
 }
+func mergeItems(dst, src map[string]queue.Item) map[string]queue.Item {
+	for key, item := range src {
+		dst[key] = item
+	}
+	return dst
+}
+
 func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {
 	data, _ := json.Marshal(envelope)
 	var projected map[string]any

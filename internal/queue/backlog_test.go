@@ -38,6 +38,37 @@ func fakeBacklog(t *testing.T) (string, string) {
 	}
 	return root, script
 }
+func TestBacklogCacheIdentityChangesWithCheckoutInstanceAndConfig(t *testing.T) {
+	parent := t.TempDir()
+	checkout := filepath.Join(parent, "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBacklogAdapter()
+	source := Source{ID: "s", Locator: checkout}
+	_, _, original, ok := a.QueueCacheIdentity(source)
+	if !ok {
+		t.Fatal("initial cache identity unavailable")
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("project_name: changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, configured, ok := a.QueueCacheIdentity(source)
+	if !ok || configured == original {
+		t.Fatal("configuration change reused partition")
+	}
+	if err := os.Rename(checkout, filepath.Join(parent, "previous")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, replaced, ok := a.QueueCacheIdentity(source)
+	if !ok || replaced == original {
+		t.Fatal("replacement checkout reused partition")
+	}
+}
+
 func TestBacklogGoldenAndDiagnostics(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	a := NewBacklogAdapter("Done")

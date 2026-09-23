@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
@@ -88,6 +91,36 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		shownSources = append(shownSources, resolved)
 	}
 	loader := queue.NewLoader(registry)
+	cacheDir, err := queueindex.CacheDir(os.Getenv, "")
+	if err != nil {
+		return err
+	}
+	index, err := queueindex.Open(ctx, cacheDir)
+	if err != nil {
+		return err
+	}
+	defer index.Close()
+	cachePartitions := make(map[string]queueindex.Partition)
+	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
+	for _, source := range sources {
+		adapter, _ := registry.Get(source.Adapter)
+		partition, ok := queueindex.ForSource(adapter, source)
+		if !ok {
+			continue
+		}
+		cachePartitions[source.ID] = partition
+		snapshot, _, _, readErr := index.Read(ctx, partition, -1)
+		if readErr != nil {
+			return readErr
+		}
+		for key, item := range snapshot.Items {
+			cached.Items[key] = item
+		}
+		for id, coverage := range snapshot.Sources {
+			cached.Sources[id] = coverage
+		}
+	}
+	loader.Store.SeedSnapshot(cached)
 	model := queueui.New(loader.Store.Current())
 	model.Sources = shownSources
 	model.SourceErrors = sourceErrors
@@ -138,7 +171,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program)
+			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions)
 		}()
 	}
 	model.Refresh = func() tea.Cmd {
@@ -217,8 +250,61 @@ func queueIdentity(item queue.Item) string {
 	}
 	return item.Ref.Key()
 }
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program) {
-	for snapshot := range loader.Refresh(ctx, sources) {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition) {
+	refreshStarted := time.Now()
+	var releases []func()
+	refreshSources := make([]queue.Source, 0, len(sources))
+	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
+	lockOrder := append([]queue.Source(nil), sources...)
+	sort.Slice(lockOrder, func(i, j int) bool { return lockOrder[i].ID < lockOrder[j].ID })
+	for _, source := range lockOrder {
+		partition, cacheable := partitions[source.ID]
+		if !cacheable {
+			refreshSources = append(refreshSources, source)
+			continue
+		}
+		release, err := index.WaitRefreshLock(ctx, partition)
+		if err != nil {
+			for _, done := range releases {
+				done()
+			}
+			program.Send(queueui.RefreshedMsg{Err: err})
+			return
+		}
+		snapshot, observed, _, err := index.Read(ctx, partition, 0)
+		if err != nil {
+			release()
+			for _, done := range releases {
+				done()
+			}
+			program.Send(queueui.RefreshedMsg{Err: err})
+			return
+		}
+		if snapshot.Sources[source.ID].State == queue.CoverageComplete && !observed.Before(refreshStarted) {
+			release()
+			for key, item := range snapshot.Items {
+				cached.Items[key] = item
+			}
+			for id, coverage := range snapshot.Sources {
+				cached.Sources[id] = coverage
+			}
+			continue
+		}
+		releases = append(releases, release)
+		refreshSources = append(refreshSources, source)
+	}
+	if len(cached.Items) > 0 {
+		loader.Store.SeedSnapshot(cached)
+		program.Send(queueui.SnapshotMsg{Snapshot: loader.Store.Current()})
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+	var latest queue.Snapshot
+	for snapshot := range loader.Refresh(ctx, refreshSources) {
+		latest = snapshot.Clone()
 		items := make([]queue.Item, 0, len(snapshot.Items))
 		for _, item := range snapshot.Items {
 			items = append(items, item)
@@ -228,5 +314,27 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			snapshot.Items[item.Ref.Key()] = item
 		}
 		program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
+	}
+	for _, source := range refreshSources {
+		sourceID := source.ID
+		partition, ok := partitions[sourceID]
+		if !ok {
+			continue
+		}
+		items := make([]queue.Item, 0)
+		for _, item := range latest.Items {
+			if item.Ref.SourceID == sourceID {
+				items = append(items, item)
+			}
+		}
+		deleted := make([]queue.Ref, 0)
+		for _, ref := range latest.Deleted {
+			if ref.SourceID == sourceID {
+				deleted = append(deleted, ref)
+			}
+		}
+		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil {
+			program.Send(queueui.RefreshedMsg{Err: err})
+		}
 	}
 }

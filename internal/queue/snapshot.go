@@ -9,6 +9,7 @@ type Snapshot struct {
 	Revision uint64              `json:"revision"`
 	Items    map[string]Item     `json:"-"`
 	Sources  map[string]Coverage `json:"sources"`
+	Deleted  map[string]Ref      `json:"-"`
 }
 
 func (s Snapshot) Item(ref Ref) (Item, bool) {
@@ -16,7 +17,11 @@ func (s Snapshot) Item(ref Ref) (Item, bool) {
 	return cloneItem(item), ok
 }
 func (s Snapshot) Clone() Snapshot {
-	return Snapshot{Revision: s.Revision, Items: cloneItems(s.Items), Sources: cloneCoverage(s.Sources)}
+	deleted := make(map[string]Ref, len(s.Deleted))
+	for key, ref := range s.Deleted {
+		deleted[key] = ref
+	}
+	return Snapshot{Revision: s.Revision, Items: cloneItems(s.Items), Sources: cloneCoverage(s.Sources), Deleted: deleted}
 }
 func cloneCoverage(in map[string]Coverage) map[string]Coverage {
 	out := make(map[string]Coverage, len(in))
@@ -35,9 +40,36 @@ type Store struct {
 }
 
 func NewStore() *Store {
-	return &Store{current: Snapshot{Items: map[string]Item{}, Sources: map[string]Coverage{}}, subs: map[uint64]chan Snapshot{}}
+	return &Store{current: Snapshot{Items: map[string]Item{}, Sources: map[string]Coverage{}, Deleted: map[string]Ref{}}, subs: map[uint64]chan Snapshot{}}
 }
 func (s *Store) Current() Snapshot { s.mu.RLock(); defer s.mu.RUnlock(); return s.current.Clone() }
+
+// SeedSnapshot installs a previously observed cache snapshot before revalidation begins.
+func (s *Store) SeedSnapshot(seed Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for source, coverage := range seed.Sources {
+		if coverage.State == CoverageComplete {
+			for key, item := range s.current.Items {
+				if item.Ref.SourceID == source {
+					delete(s.current.Items, key)
+				}
+			}
+		}
+		s.current.Sources[source] = coverage
+	}
+	for key, item := range seed.Items {
+		s.current.Items[key] = cloneItem(item)
+	}
+	if s.current.Deleted == nil {
+		s.current.Deleted = make(map[string]Ref)
+	}
+	for key, ref := range seed.Deleted {
+		s.current.Deleted[key] = ref
+	}
+	s.next++
+	s.current.Revision = s.next
+}
 func (s *Store) Subscribe(buffer int) (<-chan Snapshot, func()) {
 	if buffer < 1 {
 		buffer = 1
@@ -245,6 +277,11 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 		}
 		l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			for key, ref := range s.Deleted {
+				if ref.SourceID == source.ID {
+					delete(s.Deleted, key)
+				}
+			}
 			if reset {
 				for key, item := range s.Items {
 					if item.Ref.SourceID == source.ID {
@@ -327,6 +364,14 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	}
 	if item == nil {
 		l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			if summary.ReadOutcome == "inaccessible" || summary.ReadOutcome == "denied" {
+				delete(s.Items, ref.Key())
+				if s.Deleted == nil {
+					s.Deleted = make(map[string]Ref)
+				}
+				s.Deleted[ref.Key()] = ref
+				return
+			}
 			summary.DependenciesKnown = false
 			summary.Closure = CoverageUnknown
 			summary.Readiness = Readiness{Status: ReadinessUnknown, Reasons: []string{"item-read-" + summary.ReadOutcome}, Freshness: FreshnessUnknown}

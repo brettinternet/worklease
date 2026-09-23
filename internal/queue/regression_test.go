@@ -17,6 +17,26 @@ func drainRefresh(ch <-chan Snapshot) {
 	}
 }
 
+func TestExplicitInaccessibleOutcomePurgesProjection(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "gone"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "secret cached title", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}, Observation: Observation{Principal: "alice", ConfigurationGeneration: "g"}}}
+	fake.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Kind: "inaccessible"}}
+	registry := NewRegistry()
+	if err := registry.Register("fake", fake); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	drainRefresh(loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "fake"}}))
+	snapshot := loader.Store.Current()
+	if _, ok := snapshot.Items[ref.Key()]; ok {
+		t.Fatal("inaccessible item remained in source projection")
+	}
+	if snapshot.Deleted[ref.Key()] != ref {
+		t.Fatalf("explicit deletion evidence missing: %+v", snapshot.Deleted)
+	}
+}
+
 func TestProviderReadyPointerIsClonedAcrossSnapshots(t *testing.T) {
 	store := NewStore()
 	ready := true

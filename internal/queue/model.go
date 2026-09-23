@@ -84,6 +84,7 @@ type Coverage struct {
 }
 type Observation struct {
 	Principal               string    `json:"principal,omitempty"`
+	AccessScope             string    `json:"-"`
 	ConfigurationGeneration string    `json:"configurationGeneration,omitempty"`
 	ObservedAt              time.Time `json:"observedAt,omitempty"`
 	ProviderVersion         string    `json:"providerVersion,omitempty"`

@@ -364,9 +364,9 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	usageText(serve, "worklease serve [--server-config FILE] [--allow-insecure-http]")
 	detail(serve, "Serve one marked hosted authority using --server-config, WORKLEASE_SERVER_CONFIG, or the default user configuration. TLS is required unless insecure HTTP is explicitly enabled by the file or flag.")
-	queueQuery := jsonless("query", "query a configured work queue", "worklease queue query --view Ready --json", &urfavecli.IntFlag{Name: "limit", Usage: "maximum items `N` per page (1-1000)", DefaultText: "50"}, &urfavecli.StringFlag{Name: "cursor", Usage: "opaque `CURSOR` from the previous page"}, &urfavecli.BoolFlag{Name: "require-complete", Usage: "fail if source coverage or dependency edges are incomplete"})
+	queueQuery := jsonless("query", "query a configured work queue", "worklease queue query --view Ready --json", &urfavecli.IntFlag{Name: "limit", Usage: "maximum items `N` per page (1-1000)", DefaultText: "50"}, &urfavecli.StringFlag{Name: "cursor", Usage: "opaque `CURSOR` from the previous page"}, &urfavecli.DurationFlag{Name: "max-age", Usage: "serve the index when observations are younger than `DURATION`", HideDefault: true}, &urfavecli.BoolFlag{Name: "require-complete", Usage: "fail if source coverage or dependency edges are incomplete"})
 	queueQuery.Action = queueQueryAction(s)
-	usageText(queueQuery, "worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--require-complete]")
+	usageText(queueQuery, "worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]")
 	detail(queueQuery, "Read one configured queue view. Query is read-only; source coverage and dependency completeness are reported explicitly.")
 	queueBrowse := queueCommand(s)
 	queueBrowse.Commands = []*urfavecli.Command{queueQuery}
