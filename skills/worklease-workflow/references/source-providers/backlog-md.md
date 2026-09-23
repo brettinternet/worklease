@@ -33,13 +33,23 @@ observations do not imply write authorization beyond the named operation.
 
 ## Worklease resource policy
 
-Use the static built-in Backlog.md key policy after resolution:
+Without a portable binding, use the static built-in Backlog.md key policy with
+the project's backlog directory (for example `docs/backlog`, from
+`backlog_directory` in the root `backlog.config.yml`), not the checkout root:
 
 ```sh
-worklease key --provider backlog-md --source "$project_path" --item "$task_id"
+worklease key --provider backlog-md --source "$backlog_directory" --item "$task_id"
 ```
 
-This produces an item-scoped local key. Its local guarded-operation capability
+When the project declares a D12 portable binding, use exactly its agreed source
+name instead; adopting it migrates every CLI, skill, and queue caller together:
+
+```sh
+worklease key --provider generic --source "$binding_source" --item "$task_id"
+```
+
+The two policies are distinct exclusion domains and never contend. The default
+produces an item-scoped local key. Its local guarded-operation capability
 does not make a Backlog.md CLI, MCP, SDK, or remote write provider-fenced.
 
 Normalize direct provider mutations as `local-coordination` and set

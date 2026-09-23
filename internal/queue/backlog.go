@@ -19,12 +19,46 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // BacklogDiagnostic is safe to display: subprocess output and paths are never embedded.
 type BacklogDiagnostic struct{ Code, Detail string }
 
 func (d BacklogDiagnostic) Error() string { return d.Code + ": " + d.Detail }
+
+// BacklogDirectory returns the project's backlog folder, the documented default
+// `backlog-md` key source, so queue and CLI callers derive identical keys.
+// It follows Backlog.md: a lexically contained backlog_directory from the root
+// backlog.config.yml (default `backlog`), otherwise an existing backlog/ or
+// .backlog/ folder.
+func BacklogDirectory(checkout string) (string, error) {
+	content, err := os.ReadFile(filepath.Join(checkout, "backlog.config.yml"))
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err == nil {
+		var cfg struct {
+			Directory *string `yaml:"backlog_directory"`
+		}
+		if err := yaml.Unmarshal(content, &cfg); err != nil {
+			return "", err
+		}
+		if cfg.Directory == nil {
+			return filepath.Join(checkout, "backlog"), nil
+		}
+		if dir := filepath.Clean(*cfg.Directory); *cfg.Directory != "" && filepath.IsLocal(dir) {
+			return filepath.Join(checkout, dir), nil
+		}
+	}
+	for _, name := range []string{"backlog", ".backlog"} {
+		if info, err := os.Stat(filepath.Join(checkout, name)); err == nil && info.IsDir() {
+			return filepath.Join(checkout, name), nil
+		}
+	}
+	return "", BacklogDiagnostic{"not-backlog-project", "checkout has no Backlog.md project"}
+}
 
 func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
 	current, err := osuser.Current()
