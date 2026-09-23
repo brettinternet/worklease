@@ -3,23 +3,19 @@ package queue
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func gitForBacklogEdges(t *testing.T, root string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testkit.GitCommand(args...)
 	cmd.Dir = root
-	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "GIT_") {
-			cmd.Env = append(cmd.Env, entry)
-		}
-	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %s: %v", args, out, err)
 	}

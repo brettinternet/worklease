@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func backlogFixture(t *testing.T, name string) []byte {
@@ -41,8 +43,13 @@ func fakeBacklog(t *testing.T) (string, string) {
 func TestBacklogCacheIdentityChangesWithCheckoutInstanceAndConfig(t *testing.T) {
 	parent := t.TempDir()
 	checkout := filepath.Join(parent, "checkout")
-	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
+	if err := os.MkdirAll(checkout, 0700); err != nil {
 		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-b", "main", checkout}, {"-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"}} {
+		if output, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
 	}
 	a := NewBacklogAdapter()
 	source := Source{ID: "s", Locator: checkout}
@@ -50,6 +57,14 @@ func TestBacklogCacheIdentityChangesWithCheckoutInstanceAndConfig(t *testing.T) 
 	if !ok {
 		t.Fatal("initial cache identity unavailable")
 	}
+	if output, err := testkit.GitCommand("-C", checkout, "checkout", "-b", "other").CombinedOutput(); err != nil {
+		t.Fatalf("git branch switch: %v: %s", err, output)
+	}
+	_, _, branched, ok := a.QueueCacheIdentity(source)
+	if !ok || branched == original {
+		t.Fatal("branch switch reused cache identity")
+	}
+	original = branched
 	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("project_name: changed\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +75,11 @@ func TestBacklogCacheIdentityChangesWithCheckoutInstanceAndConfig(t *testing.T) 
 	if err := os.Rename(checkout, filepath.Join(parent, "previous")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
-		t.Fatal(err)
+	if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "replacement").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 	_, _, replaced, ok := a.QueueCacheIdentity(source)
 	if !ok || replaced == original {
@@ -212,13 +230,8 @@ func diag(err error, code string) bool {
 // scratchGit runs git in a scratch repository without inherited GIT_*
 // variables, which Git hooks set and which would redirect it to this repository.
 func scratchGit(root string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	cmd := testkit.GitCommand(args...)
 	cmd.Dir = root
-	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "GIT_") {
-			cmd.Env = append(cmd.Env, entry)
-		}
-	}
 	return cmd
 }
 

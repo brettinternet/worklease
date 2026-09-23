@@ -59,7 +59,7 @@ func IsolateProcessEnvironment() (func(), error) {
 	preserve := helperEnvironmentForInvocation(before, os.Args)
 	for _, entry := range before {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok && strings.HasPrefix(key, "WORKLEASE_") {
+		if ok && (strings.HasPrefix(key, "WORKLEASE_") || strings.HasPrefix(key, "GIT_")) {
 			_ = os.Unsetenv(key)
 		}
 	}
@@ -91,6 +91,7 @@ var testHelperInvocations = map[string][]string{
 	"TestProcessHelper":                           {"WORKLEASE_TEST_HELPER"},
 	"TestStoreEventProcessHelper":                 {"WORKLEASE_STORE_EVENT_HOME", "WORKLEASE_STORE_EVENT_RESULT"},
 	"TestWatchSubprocessEventWakesFilteredWaiter": {"WORKLEASE_WATCH_HELPER", "WORKLEASE_WATCH_HOME", "WORKLEASE_WATCH_CURSOR"},
+	"TestQueueQueryConcurrentProcessHelper":       {"QUEUE_QUERY_CONCURRENT_ROOT"},
 }
 
 func helperEnvironmentForInvocation(environment, arguments []string) map[string]string {

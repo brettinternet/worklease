@@ -6,4 +6,4 @@ pre-commit:
       run: test -z "$(gofmt -l {staged_files})"
     test:
       glob: ["*.go", "go.mod", "go.sum"]
-      run: env -u GIT_INDEX_FILE mise run test
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE mise run test

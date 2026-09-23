@@ -3,23 +3,32 @@ package cli
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
+	"github.com/brettinternet/worklease/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
+	urfave "github.com/urfave/cli/v3"
 )
 
 func TestQueueFirstFrameUsesIndexBeforeProviderRefresh(t *testing.T) {
 	ctx := context.Background()
 	checkout := t.TempDir()
-	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0700); err != nil {
-		t.Fatal(err)
+	if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 	index, err := queueindex.Open(ctx, t.TempDir())
 	if err != nil {
@@ -46,6 +55,92 @@ func TestQueueFirstFrameUsesIndexBeforeProviderRefresh(t *testing.T) {
 	model = updated.(queueui.Model)
 	if rendered := model.View(); !strings.Contains(rendered, "Cached firs") {
 		t.Fatalf("cached first frame not rendered before provider refresh: %s", rendered)
+	}
+}
+
+func TestQueueFirstFrameDoesNotWaitForRemoteMetadata(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WORKLEASE_HOME", t.TempDir())
+	metadataRequests := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/worklease" {
+			metadataRequests <- struct{}{}
+			<-r.Context().Done()
+		}
+	}))
+	defer server.Close()
+	paths := config.UserProfilePaths(os.Getenv)
+	profile := config.Profile{Name: "remote", Endpoint: server.URL, AuthorityID: strings.Repeat("a", 32), AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(filepath.Dir(paths.Profiles), "credentials", "remote")}}
+	if err := config.SaveProfiles(paths, []config.Profile{profile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, &urfave.Command{}, "remote", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("remote authority metadata blocked cached startup for %s", elapsed)
+	}
+	if !authorityView.Remote || authorityView.AdmittedPrefixes != nil {
+		t.Fatalf("unexpected unresolved remote metadata: %+v", authorityView)
+	}
+
+	checkout := t.TempDir()
+	if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	index, err := queueindex.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	registry := queue.NewRegistry()
+	source := queue.Source{ID: "local", Adapter: "backlog-md", Locator: checkout}
+	adapter, _ := registry.Get(source.Adapter)
+	partition, ok := queueindex.ForSource(adapter, source)
+	if !ok {
+		t.Fatal("local source did not supply a stable cache identity")
+	}
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: source.ID, ItemID: "1"}, Title: "Cached first frame"}}
+	if err := index.Replace(ctx, partition, []queue.Item{item}, true); err != nil {
+		t.Fatal(err)
+	}
+	loader := queue.NewLoader(registry)
+	if _, err := seedQueueIndex(ctx, index, registry, []queue.Source{source}, loader); err != nil {
+		t.Fatal(err)
+	}
+	metadataDone := make(chan error, 1)
+	go func() {
+		_, metadataErr := backend.HTTP.Metadata(ctx)
+		metadataDone <- metadataErr
+	}()
+	select {
+	case <-metadataRequests:
+	case <-time.After(time.Second):
+		t.Fatal("remote metadata request did not reach the stalled authority")
+	}
+	model := queueui.New(loader.Store.Current())
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
+	if rendered := updated.(queueui.Model).View(); !strings.Contains(rendered, "Cached firs") {
+		t.Fatalf("cached first frame blocked by remote metadata: %s", rendered)
+	}
+	select {
+	case err := <-metadataDone:
+		t.Fatalf("metadata response unexpectedly completed before the cached frame: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case <-metadataDone:
+	case <-time.After(time.Second):
+		t.Fatal("stalled metadata request did not cancel")
 	}
 }
 

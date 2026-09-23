@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,9 +14,154 @@ import (
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueindex"
+	"github.com/brettinternet/worklease/internal/testkit"
 	urfavecli "github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
 )
+
+func TestQueueQueryConcurrentProcessHelper(t *testing.T) {
+	root := os.Getenv("QUEUE_QUERY_CONCURRENT_ROOT")
+	if root == "" {
+		return
+	}
+	for key, value := range map[string]string{
+		"HOME":              filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME":   filepath.Join(root, "config"),
+		"XDG_CACHE_HOME":    filepath.Join(root, "cache"),
+		"QUEUE_LIST_JSON":   `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-CONCURRENT","title":"Concurrent refresh","status":"Open","ordinal":1,"isReady":true}]}`,
+		"QUEUE_LIST_MARKER": filepath.Join(root, "list-count"),
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("ready-%d", os.Getpid())), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "start")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("concurrent CLI process never received start signal")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"worklease", "--home", filepath.Join(root, "state"), "queue", "query", "--view", "Ready", "--json"}
+	if err := Run(context.Background(), args, "test", "unknown", "unknown", &stdout, &stderr); err != nil {
+		t.Fatalf("queue query failed: %v: %s", err, stderr.String())
+	}
+}
+
+func TestQueueQueryConcurrentProcessesShareOneRefreshWithoutMaxAge(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	root := filepath.Dir(h.home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	marker := filepath.Join(root, "list-count")
+	t.Setenv("QUEUE_LIST_MARKER", marker)
+	if err := os.MkdirAll(filepath.Join(root, "cache"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	h.setTasks(`[{"id":"TASK-CONCURRENT","title":"Concurrent refresh","status":"Open","ordinal":1,"isReady":true}]`)
+	queueConfig := strings.Replace(h.queueConfig, "    claims: {policy: generic, source: brettinternet/worklease/backlog}\n", "", 1)
+	h.writeQueueConfig(queueConfig)
+	binary := filepath.Join(root, "bin", "backlog")
+	script := `#!/bin/sh
+case "$*" in
+  --version) printf '1.52.0\n' ;;
+  'config get autoCommit') printf 'false\n' ;;
+  'config get '*) printf 'false\n' ;;
+  'task list --json') printf x >> "$QUEUE_LIST_MARKER"; sleep 1; printf '%s\n' "$QUEUE_LIST_JSON" ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	sharedIndex, err := queueindex.Open(context.Background(), filepath.Join(root, "cache", "worklease", "queue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sharedIndex.Close(); err != nil {
+		t.Fatal(err)
+	}
+	commands := make([]*exec.Cmd, 2)
+	var outputs [2]bytes.Buffer
+	for index := range commands {
+		command := exec.Command(os.Args[0], "-test.run=^TestQueueQueryConcurrentProcessHelper$")
+		command.Env = testkit.Environment(os.Environ(), map[string]string{"QUEUE_QUERY_CONCURRENT_ROOT": root})
+		command.Stdout = &outputs[index]
+		command.Stderr = &outputs[index]
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands[index] = command
+	}
+	defer func() {
+		for _, command := range commands {
+			if command.Process != nil && command.ProcessState == nil {
+				_ = command.Process.Kill()
+				_ = command.Wait()
+			}
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ready, err := filepath.Glob(filepath.Join(root, "ready-*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ready) == len(commands) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d concurrent CLI processes became ready", len(ready))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(filepath.Join(root, "start"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for index, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatalf("queue query process %d: %v: %s", index, err, outputs[index].String())
+		}
+	}
+	countRefreshes := func() int {
+		t.Helper()
+		data, err := os.ReadFile(marker)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return len(data)
+	}
+	if got := countRefreshes(); got != 1 {
+		t.Fatalf("concurrent queue queries refreshed provider %d times, want one", got)
+	}
+	if _, err := h.run("queue", "query", "--view", "Ready", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRefreshes(); got != 2 {
+		t.Fatalf("independent queue query did not refresh provider: calls=%d", got)
+	}
+}
+
+func TestCompletedRefreshCanBeReusedWithoutMaxAge(t *testing.T) {
+	before := time.Now().Add(-time.Minute)
+	after := time.Now()
+	if !completedRefreshObserved(before, after, queue.Coverage{State: queue.CoverageComplete}, false) {
+		t.Fatal("waiter did not reuse newly completed refresh")
+	}
+	if completedRefreshObserved(after, before, queue.Coverage{State: queue.CoverageComplete}, false) {
+		t.Fatal("independent later call reused prior refresh")
+	}
+	if completedRefreshObserved(before, after, queue.Coverage{State: queue.CoveragePartial}, false) {
+		t.Fatal("incomplete refresh was reused")
+	}
+}
 
 func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T) {
 	root := NewRootCommand("test", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
@@ -419,8 +565,11 @@ func newQueueQueryHarness(t *testing.T) *queueQueryHarness {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0700); err != nil {
-		t.Fatal(err)
+	if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
 		t.Fatal(err)

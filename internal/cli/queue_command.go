@@ -55,7 +55,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	backend, authorityView, err := queueAuthorityForView(ctx, cmd, selected.Authority)
+	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, cmd, selected.Authority, false)
 	if err != nil {
 		return err
 	}
@@ -141,6 +141,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	paths := config.UserProfilePaths(os.Getenv)
 	claims := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
+	var authorityMu sync.Mutex
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -153,9 +154,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 		workers.Add(1)
 		workersMu.Unlock()
+		authorityMu.Lock()
+		selectedAuthority := authorityView
+		authorityMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay)
+			publishQueue(ctx, loader, sources, claims, selectedAuthority, paths, program, index, cachePartitions, &claimOverlay)
 		}()
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
@@ -225,6 +229,20 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
 	start()
+	if backend.HTTP != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			response, metadataErr := backend.HTTP.Metadata(ctx)
+			if metadataErr != nil || response.Metadata == nil || ctx.Err() != nil {
+				return
+			}
+			authorityMu.Lock()
+			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			authorityMu.Unlock()
+			start()
+		}()
+	}
 	for _, source := range sources {
 		adapter, ok := registry.Get(source.Adapter)
 		watcher, okWatch := adapter.(interface {
@@ -258,6 +276,22 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
+func replaceQueueIndexSnapshot(ctx context.Context, index *queueindex.Index, partition queueindex.Partition, sourceID string, snapshot queue.Snapshot) error {
+	items := make([]queue.Item, 0)
+	for _, item := range snapshot.Items {
+		if item.Ref.SourceID == sourceID {
+			items = append(items, item)
+		}
+	}
+	deleted := make([]queue.Ref, 0)
+	for _, ref := range snapshot.Deleted {
+		if ref.SourceID == sourceID {
+			deleted = append(deleted, ref)
+		}
+	}
+	return index.ReplaceWithDeletes(ctx, partition, items, deleted, snapshot.Sources[sourceID].State == queue.CoverageComplete)
+}
+
 func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
 	partitions := make(map[string]queueindex.Partition)
 	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
@@ -393,24 +427,11 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 	}
 	for _, source := range refreshSources {
-		sourceID := source.ID
-		partition, ok := partitions[sourceID]
+		partition, ok := partitions[source.ID]
 		if !ok {
 			continue
 		}
-		items := make([]queue.Item, 0)
-		for _, item := range latest.Items {
-			if item.Ref.SourceID == sourceID {
-				items = append(items, item)
-			}
-		}
-		deleted := make([]queue.Ref, 0)
-		for _, ref := range latest.Deleted {
-			if ref.SourceID == sourceID {
-				deleted = append(deleted, ref)
-			}
-		}
-		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil {
+		if err := replaceQueueIndexSnapshot(ctx, index, partition, source.ID, latest); err != nil {
 			program.Send(queueui.RefreshedMsg{Err: err})
 		}
 	}

@@ -97,6 +97,10 @@ func authorityFor(ctx context.Context, cmd *urfave.Command, write bool) (*author
 // queueAuthorityForView resolves a view's named authority, independently of
 // the invoking checkout's profile flags. The caller closes the returned context.
 func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
+	return queueAuthorityForViewWithMetadata(ctx, cmd, name, true)
+}
+
+func queueAuthorityForViewWithMetadata(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata bool) (*authorityContext, queue.ClaimAuthority, error) {
 	paths := config.UserProfilePaths(os.Getenv)
 	profiles, _, err := config.LoadProfiles(paths)
 	if err != nil {
@@ -115,9 +119,7 @@ func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string
 		return nil, queue.ClaimAuthority{}, err
 	}
 	overlay := queue.ClaimAuthority{API: backend.API, ID: backend.AuthorityID(), Profile: backend.ProfileName, Remote: backend.Remote}
-	if backend.HTTP != nil {
-		// An outage or an old server with no admission metadata leaves claims
-		// unknown; it never authorizes a fallback to local.
+	if fetchMetadata && backend.HTTP != nil {
 		if response, err := backend.HTTP.Metadata(ctx); err == nil && response.Metadata != nil {
 			overlay.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
 		}
