@@ -154,6 +154,38 @@ func TestGitHubWithheldItemRetainsUnknownIdentity(t *testing.T) {
 	}
 }
 
+func TestGitHubConfirmedAccessLossClassifiesInaccessible(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	ref := queue.Ref{SourceID: "github", ItemID: "1"}
+	item := queue.Item{Summary: queue.Summary{Ref: ref, CanonicalID: "node-1", Title: "private"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.WithholdGitHubItems(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.MarkGitHubInaccessible(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[ref] != "inaccessible" {
+		t.Fatalf("confirmed access loss: %+v %v", absences, err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	absences, err = idx.GitHubAbsences(ctx, p)
+	if err != nil || len(absences) != 0 {
+		t.Fatalf("restored access did not clear classification: %+v %v", absences, err)
+	}
+}
+
 func TestGitHubSyncResumesAfterReopenWithMovedNode(t *testing.T) {
 	ctx := context.Background()
 	indexDir := t.TempDir()

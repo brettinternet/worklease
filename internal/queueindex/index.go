@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaGeneration = 6
+const SchemaGeneration = 7
 const Retention = 30 * 24 * time.Hour
 
 type Partition struct{ Source, Principal, Scope, Generation string }
@@ -152,7 +152,7 @@ func (i *Index) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != SchemaGeneration {
+	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if version == 0 {
@@ -189,6 +189,20 @@ func (i *Index) migrate(ctx context.Context) error {
 	if version == 5 {
 		if _, err = conn.ExecContext(ctx, `CREATE TABLE github_absences (partition TEXT NOT NULL, ref TEXT NOT NULL, node_id TEXT NOT NULL, classification TEXT NOT NULL CHECK (classification IN ('moved','unknown')), observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); PRAGMA user_version=6`); err != nil {
 			return err
+		}
+		version = 6
+	}
+	if version == 6 {
+		for _, statement := range []string{
+			`CREATE TABLE github_absences_v7 (partition TEXT NOT NULL, ref TEXT NOT NULL, node_id TEXT NOT NULL, classification TEXT NOT NULL CHECK (classification IN ('moved','unknown','inaccessible')), observed INTEGER NOT NULL, PRIMARY KEY(partition,ref))`,
+			`INSERT INTO github_absences_v7 SELECT * FROM github_absences`,
+			`DROP TABLE github_absences`,
+			`ALTER TABLE github_absences_v7 RENAME TO github_absences`,
+			`PRAGMA user_version=7`,
+		} {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -422,6 +436,13 @@ func (s GitHubSyncStore) WithholdGitHubItem(ctx context.Context, source queue.So
 	}
 	return s.Index.WithholdGitHubItems(ctx, p, []queue.Ref{ref})
 }
+func (s GitHubSyncStore) MarkGitHubInaccessible(ctx context.Context, source queue.Source) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.MarkGitHubInaccessible(ctx, p)
+}
 func (s GitHubSyncStore) WithholdGitHubSource(ctx context.Context, source queue.Source) error {
 	p, ok := s.partition(source)
 	if !ok {
@@ -594,6 +615,17 @@ func (i *Index) GitHubAbsences(ctx context.Context, p Partition) (map[queue.Ref]
 		}
 	}
 	return result, rows.Err()
+}
+
+// MarkGitHubInaccessible records a definitive principal access denial without
+// mistaking an ambiguous 404 or scan absence for deletion.
+func (i *Index) MarkGitHubInaccessible(ctx context.Context, p Partition) error {
+	key, err := p.key()
+	if err != nil {
+		return err
+	}
+	_, err = i.db.ExecContext(ctx, `UPDATE github_absences SET classification='inaccessible',observed=? WHERE partition=? AND classification='unknown'`, time.Now().UnixNano(), key)
+	return err
 }
 
 // WithholdGitHubItems removes stale payloads while retaining node identity/recovery mappings.

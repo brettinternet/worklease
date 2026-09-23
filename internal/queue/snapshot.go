@@ -524,6 +524,13 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 			if diagnostic, ok := err.(GitHubDiagnostic); ok && (diagnostic.Code == "not-found-or-inaccessible" || diagnostic.Code == "permission-denied" || diagnostic.Code == "saml-sso" || diagnostic.Code == "identity-changed" || diagnostic.Code == "authentication") {
 				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
+				if diagnostic.Code == "permission-denied" || diagnostic.Code == "saml-sso" || diagnostic.Code == "authentication" {
+					if marker, ok := l.GitHubSync.(interface {
+						MarkGitHubInaccessible(context.Context, Source) error
+					}); ok {
+						_ = marker.MarkGitHubInaccessible(ctx, source)
+					}
+				}
 			} else {
 				l.failSource(ctx, source.ID, generation, "source-read-failed", out)
 			}
