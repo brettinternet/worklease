@@ -2,12 +2,14 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +22,17 @@ func TestGitHubEnterpriseUsesHostAPI(t *testing.T) {
 		if r.URL.Path != "/api/graphql" {
 			t.Errorf("enterprise API path: %s", r.URL.Path)
 		}
-		fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if strings.Contains(request.Query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		} else {
+			fmt.Fprint(w, `{"data":{"repository":{"id":"R_123","nameWithOwner":"org/repo"}}}`)
+		}
 	}))
 	defer server.Close()
 	binary := filepath.Join(t.TempDir(), "gh")

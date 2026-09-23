@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -127,6 +128,10 @@ func TestGitHubPagesAndRelationships(t *testing.T) {
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
 			return
 		}
+		if strings.Contains(query, "nodes(ids:") {
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"A","number":1,"title":"one","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}]}}`)
+			return
+		}
 		if strings.Contains(query, "blockedBy(") {
 			if string(vars["after"]) == `"next"` {
 				fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"number":1,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":2,"nodes":[{"id":"E","number":5,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":1,"nodes":[{"id":"C","number":3,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}}`)
@@ -185,6 +190,123 @@ func TestGitHubPagesAndRelationships(t *testing.T) {
 		t.Fatalf("requests overlapped: %d", peak.Load())
 	}
 }
+func TestGitHubListRejectsExpiredCursor(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, _ := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorData, _ := json.Marshal(struct {
+		ID      string `json:"id"`
+		After   string `json:"after"`
+		Started int64  `json:"started"`
+	}{"scan", "after", time.Now().Add(-25 * time.Hour).UnixNano()})
+	_, err = a.List(context.Background(), source, Query{}, base64.RawURLEncoding.EncodeToString(cursorData))
+	if diagnostic, ok := err.(GitHubDiagnostic); !ok || diagnostic.Code != "invalid-cursor" {
+		t.Fatalf("expired cursor error=%v", err)
+	}
+}
+
+func TestGitHubReadItemsBatchesVisibleNodeHydration(t *testing.T) {
+	var nodeQueries atomic.Int32
+	var nodeCount atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, vars := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		if strings.Contains(query, "nodes(ids:") {
+			nodeQueries.Add(1)
+			var ids []string
+			_ = json.Unmarshal(vars["ids"], &ids)
+			nodeCount.Store(int32(len(ids)))
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"title":"one","state":"OPEN","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"two","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"title":"one","state":"OPEN","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"two","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := a.ReadItems(context.Background(), source, []Ref{{source.ID, "1"}, {source.ID, "2"}}, nil, 100)
+	if len(outcomes) != 2 || outcomes[0].Item == nil || outcomes[1].Item == nil || nodeQueries.Load() != 1 || nodeCount.Load() != 2 {
+		t.Fatalf("batch results=%+v queries=%d ids=%d", outcomes, nodeQueries.Load(), nodeCount.Load())
+	}
+}
+
+func TestGitHubIncrementalPagesKeepFixedWatermarkAndOverlap(t *testing.T) {
+	var sinceValues []string
+	var page int
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, vars := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		if !strings.Contains(query, "filterBy:{since:$since}") {
+			t.Errorf("incremental query missing since filter: %s", query)
+		}
+		var since string
+		if err := json.Unmarshal(vars["since"], &since); err != nil {
+			t.Fatal(err)
+		}
+		sinceValues = append(sinceValues, since)
+		page++
+		if page == 1 {
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"title":"one","state":"OPEN","updatedAt":"2026-09-23T10:00:00Z","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`)
+		} else {
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"title":"edited between pages","state":"OPEN","updatedAt":"2026-09-23T10:01:00Z","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	watermark := time.Date(2026, 9, 23, 11, 0, 0, 0, time.UTC)
+	first, err := a.ListIncremental(context.Background(), source, Query{}, "", committed, watermark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.ListIncremental(context.Background(), source, Query{}, first.NextCursor, committed, watermark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSince := committed.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	if len(first.Items) != 1 || len(second.Items) != 1 || first.Items[0].CanonicalID != second.Items[0].CanonicalID || second.Items[0].Title != "edited between pages" || first.NextCursor == "" || second.NextCursor != "" || len(sinceValues) != 2 || sinceValues[0] != wantSince || sinceValues[1] != wantSince {
+		t.Fatalf("pages=%+v %+v since=%v", first, second, sinceValues)
+	}
+}
+
+func TestGitHub404WithholdsExistingIssueInsteadOfDeletingIt(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, _ := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := a.ReadItems(context.Background(), source, []Ref{{SourceID: source.ID, ItemID: "42"}}, nil, 100)
+	if len(outcomes) != 1 || outcomes[0].Kind != "withheld" || outcomes[0].Err != nil || outcomes[0].Item != nil {
+		t.Fatalf("404 outcome must withhold, not assert deletion: %+v", outcomes)
+	}
+}
+
 func TestGitHubDiagnosticsAndIdentity(t *testing.T) {
 	cases := []struct {
 		status                 int

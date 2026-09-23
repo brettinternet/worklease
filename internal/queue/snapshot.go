@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Snapshot struct {
@@ -173,9 +174,17 @@ func (s *Store) publishComputed(update func(*Snapshot), recompute bool, valid fu
 	}
 }
 
+type hydrationJob struct {
+	ref  Ref
+	item Item
+}
+
+const githubPagesPerRefresh = 5
+
 type Loader struct {
 	Registry       *Registry
 	Store          *Store
+	GitHubSync     GitHubSyncStore
 	Query          Query
 	Fields         []string
 	Budget         int
@@ -347,27 +356,86 @@ func (l *Loader) failSource(ctx context.Context, source string, generation uint6
 		s.Sources[source] = Coverage{State: CoverageUnknown, Reason: reason, TotalAccuracy: TotalUnknown}
 	}, out)
 }
+func (l *Loader) withholdSource(ctx context.Context, source Source, generation uint64, reason string, out chan<- Snapshot) {
+	if l.GitHubSync != nil {
+		if err := l.GitHubSync.WithholdGitHubSource(ctx, source); err != nil {
+			reason = "github-access-unverified-payload-purge-failed"
+		}
+	}
+	l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+		for key, item := range s.Items {
+			if item.Ref.SourceID == source.ID {
+				delete(s.Items, key)
+			}
+		}
+		s.Sources[source.ID] = Coverage{State: CoverageUnknown, Reason: reason, TotalAccuracy: TotalUnknown}
+	}, out)
+}
 func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, generation uint64, out chan<- Snapshot) {
+	if source.Adapter == "github" && l.GitHubSync != nil {
+		release, err := l.GitHubSync.LockGitHubSync(ctx, source)
+		if err != nil {
+			l.failSource(ctx, source.ID, generation, "sync-lock-unavailable", out)
+			return
+		}
+		defer release()
+	}
 	cursor := ""
+	var committedWatermark, scanWatermark time.Time
+	var checkpoint SyncCheckpoint
+	var reconcile bool
+	incrementalAdapter, supportsIncremental := a.(IncrementalListAdapter)
+	useIncremental := false
+	if source.Adapter == "github" && supportsIncremental && l.GitHubSync != nil {
+		var err error
+		checkpoint, err = l.GitHubSync.LoadGitHubSync(ctx, source)
+		if err != nil {
+			l.failSource(ctx, source.ID, generation, "sync-state-unavailable", out)
+			return
+		}
+		checkpoint, reconcile, err = l.GitHubSync.StartGitHubReconciliation(ctx, source, time.Now().UTC())
+		if err != nil {
+			l.failSource(ctx, source.ID, generation, "reconciliation-state-unavailable", out)
+			return
+		}
+		committedWatermark = checkpoint.CommittedWatermark
+		scanWatermark = checkpoint.ScanWatermark
+		if reconcile {
+			cursor = checkpoint.ReconciliationCursor
+			if cursor == "@start" {
+				cursor = ""
+			}
+		} else {
+			cursor = checkpoint.Cursor
+			useIncremental = !committedWatermark.IsZero()
+		}
+		if scanWatermark.IsZero() || cursor == "" {
+			scanWatermark = time.Now().UTC()
+		}
+	}
 	seenRefs := map[string]bool{}
 	seenCursors := map[string]bool{}
+	pagesRead := 0
 	scanComplete := true
 	limit := l.HydrationLimit
 	if limit < 1 {
 		limit = 1
 	}
-	type hydrationJob struct {
-		ref  Ref
-		item Item
-	}
-	jobs := make(chan hydrationJob, limit*4)
+	type hydrationTask struct{ batch []hydrationJob }
+	jobs := make(chan hydrationTask, limit*4)
 	var workers sync.WaitGroup
 	for range limit {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			for job := range jobs {
-				if ctx.Err() == nil {
+			for task := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				if len(task.batch) > 1 || (len(task.batch) == 1 && isBatchHydrator(a)) {
+					l.hydrateBatch(ctx, a, source, generation, task.batch, out)
+				} else if len(task.batch) == 1 {
+					job := task.batch[0]
 					l.hydrateItem(ctx, a, source, generation, job.ref, job.item, out)
 				}
 			}
@@ -378,11 +446,28 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			l.failSource(ctx, source.ID, generation, "refresh-cancelled", out)
 			break
 		}
-		page, err := a.List(ctx, source, l.Query, cursor)
+		var page SummaryPage
+		var err error
+		if reconcile {
+			page, err = a.List(ctx, source, l.Query, cursor)
+			page.Reconciliation = true
+		} else if useIncremental {
+			page, err = incrementalAdapter.ListIncremental(ctx, source, l.Query, cursor, committedWatermark, scanWatermark)
+		} else {
+			page, err = a.List(ctx, source, l.Query, cursor)
+		}
 		if err != nil {
-			l.failSource(ctx, source.ID, generation, "source-read-failed", out)
+			if diagnostic, ok := err.(GitHubDiagnostic); ok && diagnostic.Code == "invalid-cursor" && source.Adapter == "github" && l.GitHubSync != nil {
+				_ = l.GitHubSync.RestartGitHubSync(ctx, source, reconcile)
+			}
+			if diagnostic, ok := err.(GitHubDiagnostic); ok && (diagnostic.Code == "not-found-or-inaccessible" || diagnostic.Code == "permission-denied" || diagnostic.Code == "identity-changed" || diagnostic.Code == "authentication") {
+				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
+			} else {
+				l.failSource(ctx, source.ID, generation, "source-read-failed", out)
+			}
 			break
 		}
+		pagesRead++
 		if page.Coverage.State == CoverageUnknown {
 			scanComplete = false
 		}
@@ -416,6 +501,37 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 				}
 			}
 			items[key] = item
+		}
+		var retired []Ref
+		if source.Adapter == "github" && l.GitHubSync != nil {
+			pageItems := make([]Item, 0, len(items))
+			for _, item := range items {
+				pageItems = append(pageItems, item)
+			}
+			if reconcile {
+				reconCursor := page.NextCursor
+				completeRecon := reconCursor == "" && page.Coverage.State == CoverageComplete
+				if !completeRecon && reconCursor == "" {
+					reconCursor = "@start"
+				}
+				var commitErr error
+				retired, commitErr = l.GitHubSync.CommitGitHubReconciliationPage(ctx, source, pageItems, reconCursor, checkpoint, completeRecon)
+				if commitErr != nil {
+					l.failSource(ctx, source.ID, generation, "reconciliation-write-failed", out)
+					break
+				}
+				checkpoint.ReconciliationCursor = reconCursor
+			} else {
+				syncComplete := page.NextCursor == "" && page.Coverage.State == CoverageComplete
+				if err := l.GitHubSync.CommitGitHubSyncPage(ctx, source, pageItems, page.NextCursor, scanWatermark, syncComplete); err != nil {
+					l.failSource(ctx, source.ID, generation, "sync-state-write-failed", out)
+					break
+				}
+				if syncComplete && !useIncremental {
+					committedWatermark = scanWatermark
+					useIncremental = true
+				}
+			}
 		}
 		// A new principal/config generation invalidates the old source partition before exposing new summaries.
 		reset := false
@@ -458,24 +574,45 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			refs = nil
 		}
 		// A slow item consumes one bounded slot, not the page or other slots.
-		for _, ref := range refs {
+		batchHydration := isBatchHydrator(a)
+		for start := 0; start < len(refs); {
+			end := start + 1
+			if batchHydration {
+				end = start + 100
+				if end > len(refs) {
+					end = len(refs)
+				}
+			}
+			batch := make([]hydrationJob, 0, end-start)
+			for _, ref := range refs[start:end] {
+				batch = append(batch, hydrationJob{ref: ref, item: items[ref.Key()]})
+			}
 			select {
-			case jobs <- hydrationJob{ref: ref, item: items[ref.Key()]}:
+			case jobs <- hydrationTask{batch: batch}:
 			default: /* leave bounded, unhydrated summary as unknown */
 			}
+			start = end
 		}
 		cursor = page.NextCursor
 		if cursor == "" {
 			complete := scanComplete && page.Coverage.State == CoverageComplete
-			if complete {
+			if complete && (!page.Incremental || page.Reconciliation) {
 				coverage.State = CoverageComplete
 				coverage.Cursor = ""
-			}
-			if !complete {
+			} else {
 				coverage.State = CoveragePartial
+				if page.Incremental {
+					coverage.Reason = "incremental-window-complete; reconciliation-pending"
+				} else {
+					coverage.Reason = "reconciliation-incomplete"
+				}
 			}
 			l.publish(ctx, source.ID, generation, func(s *Snapshot) {
-				if complete {
+				if page.Reconciliation && complete {
+					for _, ref := range retired {
+						delete(s.Items, ref.Key())
+					}
+				} else if complete && !page.Incremental {
 					for key, item := range s.Items {
 						if item.Ref.SourceID == source.ID && !seenRefs[key] {
 							delete(s.Items, key)
@@ -491,10 +628,110 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			break
 		}
 		seenCursors[cursor] = true
+		if source.Adapter == "github" && pagesRead >= githubPagesPerRefresh {
+			coverage.State = CoveragePartial
+			coverage.Reason = "github-page-budget-reached"
+			l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Sources[source.ID] = coverage }, out)
+			break
+		}
 	}
 	close(jobs)
 	workers.Wait()
 }
+func isBatchHydrator(adapter Adapter) bool {
+	_, ok := adapter.(interface{ BatchHydration() })
+	return ok
+}
+
+func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, generation uint64, jobs []hydrationJob, out chan<- Snapshot) {
+	refs := make([]Ref, 0, len(jobs))
+	for _, job := range jobs {
+		refs = append(refs, job.ref)
+	}
+	outcomes := a.ReadItems(ctx, source, refs, l.Fields, l.Budget)
+	byRef := make(map[string]ItemOutcome, len(outcomes))
+	for _, outcome := range outcomes {
+		byRef[outcome.Ref.Key()] = outcome
+	}
+	for _, job := range jobs {
+		outcome, ok := byRef[job.ref.Key()]
+		summary := job.item
+		if !ok {
+			summary.ReadOutcome = "failed"
+			summary.Fresh = false
+		}
+		if outcome.Err != nil {
+			summary.ReadOutcome = "failed"
+			summary.Fresh = false
+		}
+		if outcome.Item == nil {
+			if outcome.Err == nil && outcome.Kind != "" {
+				summary.ReadOutcome = outcome.Kind
+			}
+			if summary.ReadOutcome == "withheld" && l.GitHubSync != nil {
+				_ = l.GitHubSync.WithholdGitHubItem(ctx, source, job.ref)
+			}
+			l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+				if summary.ReadOutcome == "withheld" {
+					delete(s.Items, job.ref.Key())
+					return
+				}
+				summary.DependenciesKnown = false
+				summary.Closure = CoverageUnknown
+				summary.Readiness = Readiness{Status: ReadinessUnknown, Reasons: []string{"item-read-" + summary.ReadOutcome}, Freshness: FreshnessUnknown}
+				s.Items[job.ref.Key()] = summary
+			}, out)
+			continue
+		}
+		item := cloneItem(*outcome.Item)
+		if item.Ref.Key() != job.ref.Key() {
+			continue
+		}
+		if item.Title == "" {
+			item.Title = summary.Title
+		}
+		if item.CanonicalID == "" {
+			item.CanonicalID = summary.CanonicalID
+		}
+		if item.Observation.Principal == "" {
+			item.Observation = summary.Observation
+		}
+		item.Coverage = summary.Coverage
+		item.ReadOutcome = "found"
+		complete := true
+		cursor := ""
+		for {
+			if ctx.Err() != nil {
+				complete = false
+				break
+			}
+			page, err := a.ReadDependencies(ctx, source, job.ref, cursor, l.Budget)
+			if err != nil {
+				complete = false
+				break
+			}
+			if page.Completeness != CoverageComplete && page.NextCursor == "" {
+				complete = false
+			}
+			item.Relationships = append(item.Relationships, page.Edges...)
+			if page.Observation.ObservedAt.After(item.Observation.ObservedAt) {
+				item.Observation = page.Observation
+			}
+			cursor = page.NextCursor
+			if cursor == "" {
+				break
+			}
+		}
+		item.DependenciesKnown = complete
+		item.Closure = CoverageUnknown
+		if complete {
+			item.Closure = CoverageComplete
+		}
+		item.Fresh = item.Fresh && summary.Fresh
+		l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[job.ref.Key()] = item }, out)
+	}
+}
+
 func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, generation uint64, ref Ref, summary Item, out chan<- Snapshot) {
 	outcomes := a.ReadItems(ctx, source, []Ref{ref}, l.Fields, l.Budget)
 	var item *Item
@@ -521,7 +758,14 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		}
 	}
 	if item == nil {
+		if summary.ReadOutcome == "withheld" && l.GitHubSync != nil {
+			_ = l.GitHubSync.WithholdGitHubItem(ctx, source, ref)
+		}
 		l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			if summary.ReadOutcome == "withheld" {
+				delete(s.Items, ref.Key())
+				return
+			}
 			if summary.ReadOutcome == "inaccessible" || summary.ReadOutcome == "denied" {
 				delete(s.Items, ref.Key())
 				if s.Deleted == nil {

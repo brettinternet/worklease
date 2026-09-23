@@ -118,6 +118,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			return s.handle(cmd, cacheErr)
 		}
 		defer index.Close()
+		loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
 		maxAge := time.Duration(0)
 		if cmd.IsSet("max-age") {
 			maxAge = cmd.Duration("max-age")
