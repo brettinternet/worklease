@@ -120,6 +120,26 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.ViewFilters[v.Name] = filters
 		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
 	}
+	model.MeBySource = make(map[string][]string)
+	for _, src := range selected.Sources {
+		configured := sourceByID[src]
+		identityKey := "backlog-md"
+		if configured.Adapter == "github" {
+			identityKey = configured.Host
+		}
+		if identity, ok := cfg.Me[identityKey]; ok {
+			var names []string
+			if configured.Adapter == "github" {
+				var name string
+				if identity.Decode(&name) == nil && name != "" {
+					names = []string{name}
+				}
+			} else {
+				_ = identity.Decode(&names)
+			}
+			model.MeBySource[src] = names
+		}
+	}
 	model.Authority = authorityView.Profile
 	model.Scope = "local"
 	if authorityView.Remote {

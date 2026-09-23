@@ -247,7 +247,7 @@ func TestClaimHistoryPagination(t *testing.T) {
 			return HistoryMsg{Identity: "stable-1", Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "second"}}}}
 		}
 	}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 	m = next.(Model)
 	if cmd == nil {
 		t.Fatal("pagination command missing")
@@ -313,6 +313,78 @@ func TestDependencyEvidenceAndCoverageRendering(t *testing.T) {
 		if !strings.Contains(view, s) {
 			t.Errorf("missing %q: %s", s, view)
 		}
+	}
+}
+func TestHistoryClearsWhenSelectionChangesAndDoesNotRenderForOtherIdentity(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail, m.Tab = true, 3
+	m.HistoryIdentity = m.Selected
+	m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "first-agent"}}}
+	m, _ = press(m, "j")
+	if len(m.History.Epochs) != 0 || m.HistoryIdentity != "" {
+		t.Fatal("selection change retained previous item's history")
+	}
+	m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "wrong-agent"}}}
+	if strings.Contains(m.View(), "wrong-agent") {
+		t.Fatal("history rendered for a different item")
+	}
+}
+func TestConfiguredClaimAndSourceSpecificMeFilters(t *testing.T) {
+	snap := fixture()
+	items := []queue.Item{}
+	for _, item := range snap.Items {
+		item.Ref.SourceID = "github"
+		item.AssignedTo = []string{"brett"}
+		item.Claim = queue.ClaimObservation{Known: true, Active: true}
+		items = append(items, item)
+	}
+	snap.Items = map[string]queue.Item{}
+	for _, item := range items {
+		snap.Items[item.Ref.Key()] = item
+	}
+	m := New(snap)
+	m.ViewName = "Mine"
+	m.Sources = []queue.Source{{ID: "github"}}
+	m.Me = "@brett"
+	m.MeBySource = map[string][]string{"backlog": {"@brett"}, "github": {"brett"}}
+	m.ViewRules = map[string]ViewRule{"Mine": {Assigned: []string{"me"}, Claim: "held"}}
+	if rows := m.rows(); len(rows) != 2 {
+		t.Fatalf("source-specific assigned: [me] / held view = %d rows", len(rows))
+	}
+	for key, item := range m.Snapshot.Items {
+		item.Claim.Active = false
+		item.Claim.State = "expired"
+		m.Snapshot.Items[key] = item
+	}
+	m.ViewRules["Mine"] = ViewRule{Assigned: []string{"me"}, Claim: "free"}
+	if rows := m.rows(); len(rows) != 2 {
+		t.Fatalf("expired known claims should satisfy free: %d rows", len(rows))
+	}
+}
+func TestClaimsPaginationDoesNotTakeNavigationKeyAndSuppressesDuplicate(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail, m.Tab = true, 3
+	m.HistoryIdentity = m.Selected
+	m.History = ledger.HistoryPage{NextCursor: "page-2"}
+	m.LoadHistory = func(queue.Item, string) tea.Cmd { return func() tea.Msg { return nil } }
+	m, _ = press(m, "n")
+	if m.Selected != "stable-2" {
+		t.Fatalf("n did not navigate to next item: %s", m.Selected)
+	}
+	m.Selected = "stable-1"
+	m.HistoryIdentity = m.Selected
+	m.History.NextCursor = "page-2"
+	m, cmd := press(m, "m")
+	if cmd == nil || !m.HistoryLoading {
+		t.Fatal("m did not begin history page load")
+	}
+	_, duplicate := press(m, "m")
+	if duplicate != nil {
+		t.Fatal("duplicate history page request while loading")
 	}
 }
 func TestFilterAfterScrolledListDoesNotPanic(t *testing.T) {

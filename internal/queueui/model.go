@@ -32,6 +32,7 @@ type Model struct {
 	ViewFilters                    map[string]queue.Filters
 	ViewRules                      map[string]ViewRule
 	ViewName, Authority, Scope, Me string
+	MeBySource                     map[string][]string
 	Sources                        []queue.Source
 	SourceErrors                   map[string]string
 	Width, Height                  int
@@ -89,7 +90,7 @@ func (m Model) rows() []queue.Item {
 		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
 			continue
 		}
-		if rule.Claim != "" && rule.Claim != "all" && claimState(i) != rule.Claim {
+		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
 			continue
 		}
 		if len(rule.Assigned) > 0 {
@@ -98,7 +99,7 @@ func (m Model) rows() []queue.Item {
 				switch kind {
 				case "me":
 					for _, name := range i.AssignedTo {
-						if name == m.Me && m.Me != "" {
+						if m.isMe(i, name) {
 							match = true
 						}
 					}
@@ -129,7 +130,7 @@ func (m Model) rows() []queue.Item {
 			case "Mine":
 				found := false
 				for _, name := range i.AssignedTo {
-					if name == m.Me && m.Me != "" {
+					if m.isMe(i, name) {
 						found = true
 					}
 				}
@@ -184,6 +185,7 @@ func (m *Model) anchor(rows []queue.Item) {
 	}
 }
 func (m *Model) move(delta int) {
+	previous := m.Selected
 	rows := m.rows()
 	m.anchor(rows)
 	if len(rows) == 0 {
@@ -207,6 +209,9 @@ func (m *Model) move(delta int) {
 	if m.Index >= m.Offset+maxRows {
 		m.Offset = m.Index - maxRows + 1
 	}
+	if m.Selected != previous {
+		m.clearHistory()
+	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
@@ -216,6 +221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previous := m.Selected
 		m.Snapshot = v.Snapshot.Clone()
 		m.anchor(m.rows())
+		if m.Selected != previous {
+			m.clearHistory()
+		}
 		if m.Selected != previous && m.HydrateSelected != nil {
 			if item, ok := m.selected(m.rows()); ok {
 				return m, m.HydrateSelected(item)
@@ -331,16 +339,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Filtering = true
 			m.Input = m.Filter
 		case "n":
-			if m.Detail && m.Tab == 3 && m.History.NextCursor != "" && m.LoadHistory != nil {
+			m.move(1)
+		case "N":
+			m.move(-1)
+		case "m":
+			if m.Detail && m.Tab == 3 && !m.HistoryLoading && m.History.NextCursor != "" && m.LoadHistory != nil {
 				if i, ok := m.selected(rows); ok && len(i.Resources) == 1 {
 					m.HistoryLoading = true
 					m.HistoryCursor = m.History.NextCursor
 					return m, m.LoadHistory(i, m.HistoryCursor)
 				}
 			}
-			m.move(1)
-		case "N":
-			m.move(-1)
 		case ":":
 			m.Palette = true
 			m.Input = ""
@@ -438,7 +447,7 @@ func (m Model) View() string {
 			fmt.Fprintf(&list, "%s %s  ", clip(s.Name, 16), clip(status, 32))
 		}
 		list.WriteByte('\n')
-		list.WriteString("ID     Title        State   Eligibility        Assigned Native  Worklease\n")
+		list.WriteString(ansi.Wrap("ID     Title        State   Eligibility        Assigned Native  Worklease", listWidth, " ") + "\n")
 		maxRows := m.Height - 8
 		if maxRows < 1 {
 			maxRows = 1
@@ -454,8 +463,8 @@ func (m Model) View() string {
 			if identity(i) == m.Selected {
 				marker = ">"
 			}
-			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), displayState(i, m.Me), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
-			list.WriteString(clip(line, listWidth))
+			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), m.displayState(i), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
+			list.WriteString(ansi.Wrap(clean(line), listWidth, " "))
 			list.WriteByte('\n')
 		}
 	}
@@ -552,7 +561,7 @@ func (m Model) viewCount(name string) int {
 		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
 			continue
 		}
-		if rule.Claim != "" && rule.Claim != "all" && claimState(i) != rule.Claim {
+		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
 			continue
 		}
 		if len(rule.Assigned) > 0 {
@@ -562,7 +571,7 @@ func (m Model) viewCount(name string) int {
 					found = true
 				}
 				for _, person := range i.AssignedTo {
-					if (kind == "me" && person == m.Me && m.Me != "") || kind == person {
+					if (kind == "me" && m.isMe(i, person)) || kind == person {
 						found = true
 					}
 				}
@@ -583,7 +592,7 @@ func (m Model) viewCount(name string) int {
 				}
 				found := false
 				for _, person := range i.AssignedTo {
-					if person == m.Me {
+					if m.isMe(i, person) {
 						found = true
 					}
 				}
@@ -599,6 +608,31 @@ func (m Model) viewCount(name string) int {
 		n++
 	}
 	return n
+}
+func (m Model) isMe(item queue.Item, owner string) bool {
+	for _, name := range m.MeBySource[item.Ref.SourceID] {
+		if strings.EqualFold(name, owner) {
+			return true
+		}
+	}
+	return m.MeBySource == nil && owner == m.Me && m.Me != ""
+}
+func matchesClaim(item queue.Item, filter string) bool {
+	switch filter {
+	case "held":
+		return item.Claim.Active
+	case "free":
+		return item.Claim.Known && !item.Claim.Active
+	default:
+		return claimState(item) == filter
+	}
+}
+func (m *Model) clearHistory() {
+	m.History = ledger.HistoryPage{}
+	m.HistoryError = ""
+	m.HistoryLoading = false
+	m.HistoryIdentity = ""
+	m.HistoryCursor = ""
 }
 func sourceState(c queue.Coverage) string {
 	if c.Reason != "" {
@@ -627,7 +661,7 @@ func readiness(i queue.Item) string {
 	}
 	return string(i.Readiness.Status)
 }
-func displayState(i queue.Item, me string) string {
+func (m Model) displayState(i queue.Item) string {
 	if i.ReadPermission == queue.Denied {
 		return "denied"
 	}
@@ -640,9 +674,9 @@ func displayState(i queue.Item, me string) string {
 	if i.Claim.Active {
 		return "occupied"
 	}
-	if me != "" {
+	if m.Me != "" || len(m.MeBySource[i.Ref.SourceID]) > 0 {
 		for _, name := range i.AssignedTo {
-			if name != me {
+			if !m.isMe(i, name) {
 				return "assigned elsewhere"
 			}
 		}
@@ -693,18 +727,20 @@ func detail(m Model, i queue.Item) string {
 		if m.HistoryError != "" {
 			fmt.Fprintf(&b, "History unavailable: %s\n", clip(m.HistoryError, 100))
 		}
-		if m.History.Gap {
-			b.WriteString("History gap: earlier epochs pruned\n")
-		}
-		for _, e := range m.History.Epochs {
-			ended := "active"
-			if e.EndedAt != nil {
-				ended = e.EndedAt.Format(time.RFC3339)
+		if m.HistoryIdentity == identity(i) {
+			if m.History.Gap {
+				b.WriteString("History gap: earlier epochs pruned\n")
 			}
-			fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
-		}
-		if m.History.NextCursor != "" {
-			b.WriteString("More retained epochs available\n")
+			for _, e := range m.History.Epochs {
+				ended := "active"
+				if e.EndedAt != nil {
+					ended = e.EndedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
+			}
+			if m.History.NextCursor != "" {
+				b.WriteString("More retained epochs available (m to load)\n")
+			}
 		}
 	}
 	return b.String()
