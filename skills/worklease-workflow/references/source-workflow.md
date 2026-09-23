@@ -30,7 +30,9 @@ provider values and operations into that contract.
 
 Provider references may define resolution, discovery, normalized fields, resource
 policy, authoritative mutations, receipts, review boundaries, and archive
-behavior. They must not reimplement dependency scheduling, active-claim filtering,
+behavior. Report raw outcomes beside interpretations and mark unsupported named
+conditions unknown/capability; do not infer a hard edge from hierarchy or related
+work. They must not reimplement dependency scheduling, active-claim filtering,
 tie-breakers, ownership epochs, heartbeat cadence, checkpoint-before-release, or
 generic result vocabulary.
 
@@ -47,7 +49,7 @@ For every resolved source, the caller or adapter must provide:
 
 - an unambiguous `Source` identity and ordered discovery operation;
 - source-qualified `WorkRef` values and normalized `WorkItem` state;
-- complete dependencies and caller-owned terminal/blocked interpretation;
+- complete candidate hard-prerequisite closure with per-edge named completion evidence and freshness, plus caller-owned terminal/blocked interpretation; legacy `dependencies` alone retains terminal semantics;
 - one exact Worklease resource and declared local capability per claim scope;
 - authoritative item refresh, mutation, and durable checkpoint operations;
 - provider version or conditional-write evidence when available;
@@ -77,7 +79,7 @@ provider fencing.
 
 ## Safe provider operation
 
-Refresh the exact `WorkRef`, dependencies, claim, and provider version before a
+Refresh the exact `WorkRef`, typed hard edges/legacy dependencies, completion evidence, claim, and provider version before a
 durable mutation. Preserve unrelated provider fields.
 
 Retain both the Worklease operation receipt and provider receipt, but treat only

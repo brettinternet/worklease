@@ -40,7 +40,8 @@ WorkItem {
   ref: WorkRef
   title: string
   body: string or opaque caller-owned content
-  dependencies: ordered WorkRef[]
+  dependencies: ordered WorkRef[] # legacy hard edges, default terminal condition
+  relationships: ordered Relationship[] or null # optional typed extension
   state: opaque caller state plus isTerminal/isBlocked booleans
   priority: opaque or null
   order: caller-defined stable ordering value or null
@@ -51,7 +52,23 @@ WorkItem {
 }
 ```
 
-`state` remains caller-owned. The booleans are the only scheduling interpretation required by this contract: a dependency is implementation-ready only when the caller reports it terminal, and blocked work is never selected.
+`state` remains caller-owned. Without the typed extension, the booleans retain their original meaning: a dependency is satisfied only when the caller reports it terminal, and blocked work is never selected. `relationships: null` means legacy mode; an empty list means the adapter explicitly observed no relationships. When both fields are supplied, `dependencies` is the legacy projection of the hard edges, not an additional set of edges. Conflicting projections are `ambiguous`, never silently unioned or deduplicated.
+
+### Typed relationships and completion evidence
+
+```text
+Relationship {
+  type: hard-prerequisite | cross-source-prerequisite | parent-child | related
+  from: WorkRef # dependent for prerequisites; parent for hierarchy
+  to: WorkRef   # prerequisite for prerequisites; child for hierarchy
+  provenance: provider relationship type, source/version/observation, or explicit caller policy
+  condition: terminal | named condition, required only for hard edges
+  evidence: raw provider outcome, configured interpretation, observation/version,
+            completeness and freshness (or explicit unknown)
+}
+```
+
+All endpoints are source-qualified. Cross-source prerequisites are hard edges only when explicitly resolved by a caller-authorized source/mapping; titles and coincident IDs are not identities. Hierarchy and related work are non-blocking by default; a provider or caller policy may declare a *separate explicit hard edge* with its own provenance and condition. Shared resources are claim contention, never dependency edges. The `terminal` condition asks whether the caller reports the prerequisite terminal, preserving legacy behavior. Other conditions are named semantics (for example `merged` or `approved`) with provider-declared verification and evidence, not predicates, executable scripts, or an implicit translation from closed to successful. Every hard edge must identify its condition (default `terminal`); a source unable to verify a requested condition reports `capability` and unknown readiness, never falls back to terminal. Preserve raw outcomes (including `not_planned` or rejected) beside their interpretation; terminal may satisfy the legacy condition but is not proof of successful implementation.
 
 ### `WorkClaim`
 
@@ -173,13 +190,17 @@ supply normalized fields and operations; they do not reimplement scheduling.
 - When no source is explicit, the caller may derive one only under its own unambiguous repository/context rules. This contract does not define those rules.
 - Resolve item selectors and dependency references to exact `WorkRef` values before graph construction. A source-local ID without its source identity is ambiguous in a multi-source scope.
 - Require one to 32 exact ordered opaque claim resources supplied by the caller or provider adapter for each target and operation scope. Derivation remains outside this contract, and every contender must receive the same byte-for-byte values.
-- Build the complete dependency graph before selecting work.
-- Missing dependencies and directed cycles block every affected item.
-- A dependency is not complete because it is assigned, claimed, in progress, reviewed, or locally marked; the caller must report it terminal.
-- Exclude completed/terminal, blocked, dependency-ineligible, and actively claimed items.
-- An unclaimed in-progress item may be resumed when the caller says it is eligible.
-- If no work is selectable, report why: `complete`, `blocked`, `active-claims`, or a structured combination. Never select a later dependent merely to avoid an empty result.
+- Establish closure completeness independently for each candidate and for the requested selection scope. Source-wide next-ready selection requires complete scoped enumeration; an explicit item can have a complete closure while the source-wide graph remains partial. Do not select from a first page as though it were complete.
+- For each candidate, evaluate hard edges (including explicit cross-source prerequisites), their named conditions and the relevant transitive closure. A current known unsatisfied condition or provider blocker yields `blocked` even if other edges are unknown. Otherwise missing, inaccessible, cyclic, incomplete, stale, or unsupported evidence yields `unknown` (`capability` for an unsupported requested condition); do not leak inaccessible item details. `ready` requires complete fresh relevant closure, every hard condition satisfied, and no provider blocker. Hierarchy and related links are not traversed for readiness absent an explicit hard edge.
+- In legacy mode a dependency is not satisfied because it is assigned, claimed, in progress, reviewed, or locally marked; the caller must report it terminal. Cycles of hard prerequisites prevent readiness proof.
+- Exclude completed/terminal, blocked, dependency-ineligible or unknown-readiness, and actively claimed items from start/resume selection.
+- An unclaimed in-progress item may be resumed only when the caller says it is eligible *and* its current prerequisites are ready. Selection for start/resume differs from maintenance by the current owner.
+- If no work is selectable, report why: `complete`, `blocked`, `active-claims`, `capability`/unknown evidence, or a structured combination. Never select a later dependent merely to avoid an empty result.
 - Within the ready wave, preserve explicit selector/source order, then apply only the caller's documented priority/order/stable-`WorkRef` tie-breakers.
+
+### Action-specific eligibility
+
+`start` and `resume` require `ready` plus normal claim, authorization, and provider checks. An existing owner whose prerequisites later become blocked or unknown cannot start/resume further implementation on that basis, but may report Blocked or record progress/evidence under its *verified current claim* and the provider's action-specific permission. These maintenance actions do not make the item start-eligible and still require revalidation, provider receipts, and checkpoint-before-release. `complete` requires the caller's declared completion evidence as well as ownership and authorization; a terminal label alone cannot satisfy a stronger declared completion condition. Unsupported action semantics yield `capability`, not an invented transition. Dependency editing, OR/conditional workflows, edge inference, and agent scheduling are not implied by this extension.
 
 ## Claim, lease, and mutation invariants
 

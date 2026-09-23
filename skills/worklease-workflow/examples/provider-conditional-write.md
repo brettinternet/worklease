@@ -48,7 +48,7 @@ Normalized workflow:
 On provider conflict:
 
 1. retain the current Worklease claim if ownership is still valid;
-2. refresh the provider item and dependencies;
+2. refresh the provider item, hard-prerequisite closure, and named completion evidence; for a current owner's Blocked/progress maintenance, changed readiness does not waive authorization or provider receipt verification;
 3. return `conflict` to the generic workflow;
 4. retry only as a new caller-authorized provider operation with a fresh expected version; and
 5. checkpoint and release only after one verified successful mutation.

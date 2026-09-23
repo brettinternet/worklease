@@ -5,8 +5,10 @@ share one source-wide mutation boundary.
 
 1. Resolve and validate the explicit source path.
 2. Parse the complete established format into source-qualified work items.
-3. Select work through the generic workflow; the provider adapter does not
-   select.
+3. Select start/resume work through the generic workflow after verifying each
+   candidate's complete fresh hard-prerequisite closure. With legacy
+   `dependencies`, the caller's terminal state remains the default condition;
+   hierarchy alone is not blocking. The provider adapter does not select.
 4. Derive and acquire the exact source resource with a private session handle.
 5. Build candidate content without modifying the source.
 6. Hash the current source and use guarded replacement.
