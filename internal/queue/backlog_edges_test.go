@@ -195,6 +195,51 @@ func TestBacklogActionClosureRereadsEveryPrerequisite(t *testing.T) {
 	}
 }
 
+func TestBacklogPeriodicReconciliationRelistsWithoutEvents(t *testing.T) {
+	root, binary := fakeBacklog(t)
+	if err := os.WriteFile(filepath.Join(root, "backlog.config.yml"), []byte("backlog_directory: records\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "records", "tasks"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBacklogAdapter("Done")
+	a.Binary = binary
+	a.reconcileInterval = 25 * time.Millisecond
+	source, err := a.Resolve(context.Background(), map[string]string{"checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	observed := make(chan error, 1)
+	finished := make(chan error, 1)
+	go func() {
+		finished <- a.WatchChanges(ctx, source, func() {
+			page, readErr := a.List(ctx, source, Query{}, "")
+			if readErr == nil && len(page.Items) != 2 {
+				readErr = BacklogDiagnostic{"incomplete", "periodic re-list omitted tasks"}
+			}
+			select {
+			case observed <- readErr:
+			default:
+			}
+		})
+	}()
+	select {
+	case err := <-observed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case err := <-finished:
+		t.Fatalf("watch stopped before reconciliation: %v", err)
+	case <-ctx.Done():
+		t.Fatal("periodic reconciliation did not re-list")
+	}
+	cancel()
+	<-finished
+}
+
 func TestBacklogFilesystemWatchInvalidatesSameMinuteEdit(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	if err := os.WriteFile(filepath.Join(root, "backlog.config.yml"), []byte("backlog_directory: records\n"), 0600); err != nil {

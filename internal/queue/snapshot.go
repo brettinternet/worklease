@@ -43,6 +43,12 @@ func NewStore() *Store {
 	return &Store{current: Snapshot{Items: map[string]Item{}, Sources: map[string]Coverage{}, Deleted: map[string]Ref{}}, subs: map[uint64]chan Snapshot{}}
 }
 func (s *Store) Current() Snapshot { s.mu.RLock(); defer s.mu.RUnlock(); return s.current.Clone() }
+func (s *Store) Item(ref Ref) (Item, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	item, ok := s.current.Items[ref.Key()]
+	return cloneItem(item), ok
+}
 
 // SeedSnapshot installs a previously observed cache snapshot before revalidation begins.
 func (s *Store) SeedSnapshot(seed Snapshot) {
@@ -199,13 +205,13 @@ func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visi
 				continue
 			}
 			seen[ref.Key()] = true
-			item, ok := l.Store.Current().Item(ref)
+			item, ok := l.Store.Item(ref)
 			if !ok {
 				continue
 			}
 			if !item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh {
 				l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, PriorityAction), a, source, generation, ref, item, out)
-				item, _ = l.Store.Current().Item(ref)
+				item, _ = l.Store.Item(ref)
 			}
 			for _, edge := range item.Relationships {
 				if edge.From == ref && edge.Type == HardPrerequisite {
@@ -226,7 +232,7 @@ func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visi
 				return
 			}
 			seen[ref.Key()] = true
-			if item, ok := l.Store.Current().Item(ref); ok && (!item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh) {
+			if item, ok := l.Store.Item(ref); ok && (!item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh) {
 				requests = append(requests, request{ref, priority})
 			}
 		}
@@ -249,7 +255,7 @@ func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visi
 			go func() {
 				defer workers.Done()
 				for job := range jobs {
-					item, ok := l.Store.Current().Item(job.ref)
+					item, ok := l.Store.Item(job.ref)
 					if ok && ctx.Err() == nil && l.current(source.ID, generation) {
 						l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, job.priority), a, source, generation, job.ref, item, out)
 					}

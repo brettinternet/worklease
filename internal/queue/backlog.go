@@ -103,13 +103,14 @@ const backlogTimeout = 15 * time.Second
 // BacklogAdapter reads only the configured checkout. TerminalStatuses is the caller's
 // project status mapping; provider isReady is never used to infer generic readiness.
 type BacklogAdapter struct {
-	TerminalStatuses map[string]bool
-	Binary           string
-	Timeout          time.Duration
-	mu               sync.Mutex
-	diagnostics      map[string]BacklogSourceDiagnostics
-	consent          map[string]bool
-	details          map[string]backlogTask
+	TerminalStatuses  map[string]bool
+	Binary            string
+	Timeout           time.Duration
+	reconcileInterval time.Duration // test-only override; production reconciles every minute
+	mu                sync.Mutex
+	diagnostics       map[string]BacklogSourceDiagnostics
+	consent           map[string]bool
+	details           map[string]backlogTask
 	// Edge observations are scoped to a checkout/configuration generation. A list
 	// without dependencies never turns a metadata match into fresh edge evidence.
 	edges      map[string]backlogEdges

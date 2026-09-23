@@ -58,7 +58,11 @@ func (a *BacklogAdapter) WatchChanges(ctx context.Context, source Source, notify
 			}
 		}
 	}
-	reconcile := time.NewTicker(time.Minute)
+	interval := a.reconcileInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	reconcile := time.NewTicker(interval)
 	defer reconcile.Stop()
 	var debounce *time.Timer
 	var pending <-chan time.Time
