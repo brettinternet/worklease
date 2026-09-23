@@ -22,7 +22,7 @@ Backlog items cite these IDs. Changing a decision means updating this table and 
 | D6 | Progress lives in the provider. Only tested operations are enabled. A Worklease checkpoint is private recovery metadata. | Design |
 | D7 | Every provider write follows intent, dispatch, receipt, read-back, then checkpoint (§8). Append-only writes carry a Worklease operation marker to locate the result after a lost response. Verification also checks the intended item, payload, and available provenance. A marker never makes a retry safe. | Design |
 | D8 | Ship as `worklease queue` in the main binary. TUI and adapter dependencies live in queue packages that claim, MCP, and server code never import. | User |
-| D9 | Build the TUI on Bubble Tea and Lip Gloss. The queue core publishes immutable snapshots; no I/O runs on the render loop. | Design; validation pending the S2 spike |
+| D9 | Build the TUI on Bubble Tea v1 and Lip Gloss v1. The queue core publishes immutable snapshots; no I/O runs on the render loop. Pin tested v1.3.10 and v1.1.0 when implementing S2 (and resolve their transitive versions with a clean vulnerability scan). | S2 spike confirmed the library choice on the D22 host; native terminal compatibility remains an S2 acceptance check (§3) |
 | D10 | Sources, views, identity mappings, and launch actions live in one owner-private user file, `$XDG_CONFIG_HOME/worklease/queue.yaml`, following the profiles/bindings trust model. v1 reads no repository-provided queue configuration. | Existing pattern |
 | D11 | Each view names its authority profile. Claims and launches are disabled for a checkout-backed source when that checkout's profile resolution yields a different authority ID. | Design |
 | D12 | A Git-tracked Backlog.md project coordinates across hosts only through an explicit portable binding: the `generic` policy with a declared source name. Existing callers must migrate to the same keys; authority agreement alone is insufficient. Duplicate task IDs block claims. | User + safety constraint |
@@ -94,6 +94,14 @@ GitHub's [API best practices](https://docs.github.com/en/rest/using-the-rest-api
 | Heartbeats append `renewed` events. Expiry without a write appends nothing. | Event volume is about active claims divided by the renewal interval. Overlays must schedule their own expiry rechecks. |
 | Remote admission defaults to `coordination:` and rejects host-local prefixes. `generic` keys are `coordination:generic:<sha256>`; GitHub keys are `github:…`. | Portable Backlog.md bindings are admitted by default. GitHub claims need an administrator to add `github:`. |
 | Profile selection order is `--profile`, `WORKLEASE_PROFILE`, checkout binding, user default, then local. | D11 checks and launch actions reuse this resolution. |
+
+### TUI spike (TASK-128.1, 2026-09-23)
+
+A disposable Go module (not merged) used Bubble Tea 1.3.10, Lip Gloss 1.1.0 and `x/ansi` 0.10.1. On the D22 Apple M1 Max / 32 GiB machine, a list/detail model held 10,000 cached rows, rendered a bounded 35-row viewport, and atomically published a new immutable snapshot every 100 ms. Across 2,500 synthetic `KeyMsg` → `Update` → `View` samples, p50 was 0.138 ms, p95 0.398 ms, p99 0.725 ms (19 background publications; max 7.093 ms). This is an in-process render benchmark, **not** end-to-end terminal input latency; S2 must measure actual terminal input-to-paint before claiming the 50 ms budget. A second run measured p95 0.156 ms / p99 0.263 ms.
+
+The model changed from split list/detail at 120 columns to list-only at 80 and back. `lipgloss.Width("仕事 🙂")` reported seven cells; CSI, OSC title and OSC hyperlink controls in a test row were stripped before rendering, as were remaining control runes. Under `NO_COLOR=1`, a colored Lip Gloss style rendered `ready` without ANSI styling. An interactive Bubble Tea instance rendered and resized in tmux at 80×25 and 120×35; the tmux capture showed the 10,000-row list. Terminal.app, iTerm2 and Ghostty are installed but **unavailable for controlled interactive verification in this unattended run**; a Herdr-pane job requested confirmation that expired. They remain unverified, not passed. S2 must test all four, plus tmux, on the shipping implementation.
+
+With `CGO_ENABLED=0 go build -trimpath` and identical repo baseline, the synthetic linked import paths increased the binary from 24,063,730 to 25,304,802 bytes (+1,241,072). The throwaway module resolved 25 dependency modules (26 including itself); in the repo baseline `go list -m all` counted 34 modules versus 55 with the UI imports. `govulncheck ./...` on the throwaway module and `govulncheck ./cmd/worklease` on the augmented repo found no vulnerabilities after upgrading its inherited `golang.org/x/sys` to a fixed version. No prototype source or dependency change is part of the shipping tree.
 
 ### Prior art in this repository
 
@@ -614,7 +622,6 @@ The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel fr
 
 These do not block S1 or S2. Each needs an answer recorded here before the named slice starts.
 
-- Which Bubble Tea and Lip Gloss major versions to pin (S2 spike).
 - Whether namespace watch polling holds at 25 clients or needs server-side coalescing (S3 measurement).
 - The shape of provider-neutral claim paging, if any feature needs to enumerate claims (before S4 if `next` requires it).
 - Whether to map GitHub Projects v2 status fields; this needs the `project` scope and per-project field discovery (before S6).
