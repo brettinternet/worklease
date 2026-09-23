@@ -187,9 +187,9 @@ func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	calls := 0
-	m.LoadHistory = func(i queue.Item, cursor string) tea.Cmd {
+	m.LoadHistory = func(i queue.Item, cursor string, before bool) tea.Cmd {
 		calls++
-		if i.Ref.ItemID != "1" || cursor != "" {
+		if i.Ref.ItemID != "1" || cursor != "" || before {
 			t.Fatal(i.Ref, cursor)
 		}
 		return func() tea.Msg {
@@ -332,23 +332,23 @@ func TestClaimHistoryPagination(t *testing.T) {
 	m.Detail = true
 	m.Tab = 3
 	m.HistoryIdentity = m.Selected
-	m.History = ledger.HistoryPage{NextCursor: "page-2", Epochs: []ledger.Epoch{{AgentID: "first"}}}
-	m.LoadHistory = func(i queue.Item, cursor string) tea.Cmd {
-		if len(i.Resources) != 1 || cursor != "page-2" {
-			t.Fatal(i.Resources, cursor)
+	m.History = ledger.HistoryPage{NextCursor: "newer-page", PreviousCursor: "older-page", Epochs: []ledger.Epoch{{AgentID: "first"}}}
+	m.LoadHistory = func(i queue.Item, cursor string, before bool) tea.Cmd {
+		if len(i.Resources) != 1 || cursor != "older-page" || !before {
+			t.Fatal(i.Resources, cursor, before)
 		}
 		return func() tea.Msg {
-			return HistoryMsg{Identity: "stable-1", Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "second"}}}}
+			return HistoryMsg{Identity: "stable-1", Before: true, Page: ledger.HistoryPage{PreviousCursor: "older-page-2", Epochs: []ledger.Epoch{{AgentID: "second"}}}}
 		}
 	}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 	m = next.(Model)
 	if cmd == nil {
 		t.Fatal("pagination command missing")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if len(m.History.Epochs) != 2 || m.History.Epochs[1].AgentID != "second" {
+	if len(m.History.Epochs) != 2 || m.History.Epochs[0].AgentID != "second" || m.History.NextCursor != "newer-page" || m.History.PreviousCursor != "older-page-2" {
 		t.Fatal(m.History)
 	}
 }
@@ -407,6 +407,78 @@ func TestDependencyEvidenceAndCoverageRendering(t *testing.T) {
 		if !strings.Contains(view, s) {
 			t.Errorf("missing %q: %s", s, view)
 		}
+	}
+}
+func TestHistoryClearsWhenSelectionChangesAndDoesNotRenderForOtherIdentity(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail, m.Tab = true, 3
+	m.HistoryIdentity = m.Selected
+	m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "first-agent"}}}
+	m, _ = press(m, "j")
+	if len(m.History.Epochs) != 0 || m.HistoryIdentity != "" {
+		t.Fatal("selection change retained previous item's history")
+	}
+	m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "wrong-agent"}}}
+	if strings.Contains(m.View(), "wrong-agent") {
+		t.Fatal("history rendered for a different item")
+	}
+}
+func TestConfiguredClaimAndSourceSpecificMeFilters(t *testing.T) {
+	snap := fixture()
+	items := []queue.Item{}
+	for _, item := range snap.Items {
+		item.Ref.SourceID = "github"
+		item.AssignedTo = []string{"brett"}
+		item.Claim = queue.ClaimObservation{Known: true, Active: true}
+		items = append(items, item)
+	}
+	snap.Items = map[string]queue.Item{}
+	for _, item := range items {
+		snap.Items[item.Ref.Key()] = item
+	}
+	m := New(snap)
+	m.ViewName = "Mine"
+	m.Sources = []queue.Source{{ID: "github"}}
+	m.Me = "@brett"
+	m.MeBySource = map[string][]string{"backlog": {"@brett"}, "github": {"brett"}}
+	m.ViewRules = map[string]ViewRule{"Mine": {Assigned: []string{"me"}, Claim: "held"}}
+	if rows := m.rows(); len(rows) != 2 {
+		t.Fatalf("source-specific assigned: [me] / held view = %d rows", len(rows))
+	}
+	for key, item := range m.Snapshot.Items {
+		item.Claim.Active = false
+		item.Claim.State = "expired"
+		m.Snapshot.Items[key] = item
+	}
+	m.ViewRules["Mine"] = ViewRule{Assigned: []string{"me"}, Claim: "free"}
+	if rows := m.rows(); len(rows) != 2 {
+		t.Fatalf("expired known claims should satisfy free: %d rows", len(rows))
+	}
+}
+func TestClaimsPaginationDoesNotTakeNavigationKeyAndSuppressesDuplicate(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail, m.Tab = true, 3
+	m.HistoryIdentity = m.Selected
+	m.History = ledger.HistoryPage{PreviousCursor: "page-2"}
+	m.LoadHistory = func(queue.Item, string, bool) tea.Cmd { return func() tea.Msg { return nil } }
+	m, _ = press(m, "n")
+	if m.Selected != "stable-2" {
+		t.Fatalf("n did not navigate to next item: %s", m.Selected)
+	}
+	m.Selected = "stable-1"
+	m.HistoryIdentity = m.Selected
+	m.History.PreviousCursor = "page-2"
+	m, cmd := press(m, "m")
+	if cmd == nil || !m.HistoryLoading {
+		t.Fatal("m did not begin history page load")
+	}
+	_, duplicate := press(m, "m")
+	if duplicate != nil {
+		t.Fatal("duplicate history page request while loading")
 	}
 }
 func TestFilterAfterScrolledListDoesNotPanic(t *testing.T) {

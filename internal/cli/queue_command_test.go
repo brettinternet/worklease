@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/lease"
@@ -83,6 +85,37 @@ func TestHydratedSnapshotsReuseClaimOverlayWithoutAuthorityReads(t *testing.T) {
 		if item.Title != "updated" || !item.Claim.Active || len(item.Resources) != 1 || item.Resources[0] != "resource:a" {
 			t.Fatalf("hydration lost claim or new detail: %+v", item)
 		}
+	}
+}
+
+func TestRefreshCompletionWaitsForFailure(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan error, 1)
+	model := queueui.New(queue.Snapshot{})
+	model.Refresh = func() tea.Cmd {
+		return refreshCompletionCmd(func() <-chan error {
+			close(started)
+			return finish
+		})
+	}
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		t.Fatal("refresh command missing")
+	}
+	model = next.(queueui.Model)
+	completed := make(chan tea.Msg, 1)
+	go func() { completed <- cmd() }()
+	<-started
+	select {
+	case msg := <-completed:
+		t.Fatalf("refresh completed before its blocked work: %#v", msg)
+	case <-time.After(25 * time.Millisecond):
+	}
+	finish <- errors.New("source-read-failed")
+	msg := <-completed
+	next, _ = model.Update(msg)
+	if got := next.(queueui.Model).Notice; got != "Refresh failed: source-read-failed" {
+		t.Fatalf("refresh outcome = %q", got)
 	}
 }
 
