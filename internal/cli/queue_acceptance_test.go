@@ -17,7 +17,7 @@ import (
 // same source and item evidence. Do not build the TUI input from query JSON.
 func TestQueueQueryAndTUIFixtureParity(t *testing.T) {
 	h := newQueueQueryHarness(t)
-	h.setTasks(`[{"id":"TASK-1","title":"Unresolved prerequisite","status":"Open","ordinal":1,"isReady":true},{"id":"TASK-2","title":"Complete","status":"Done","ordinal":2,"isReady":false}]`)
+	h.setTasks(`[{"id":"TASK-1","title":"Unresolved prerequisite","status":"Open","ordinal":1,"isReady":true,"dependencies":["TASK-404"]},{"id":"TASK-2","title":"Complete","status":"Done","ordinal":2,"isReady":false}]`)
 	assertQueueFixtureParity(t, h, false)
 	missing := filepath.Join(filepath.Dir(h.home), "missing-project")
 	if err := os.MkdirAll(missing, 0700); err != nil {
@@ -81,6 +81,9 @@ func assertQueueFixtureParity(t *testing.T, h *queueQueryHarness, missing bool) 
 		t.Fatalf("JSON/TUI item count differs: snapshot=%+v query=%s", snapshot.Sources, data)
 	}
 	for _, row := range response.Query.Items {
+		if row.Ref.ItemID == "TASK-1" && (len(row.Relationships) != 1 || row.Relationships[0].To.ItemID != "TASK-404" || row.Readiness.Status != queue.ReadinessUnknown) {
+			t.Fatalf("partial dependency edge was not preserved: %+v", row)
+		}
 		item, ok := snapshot.Item(row.Ref)
 		if !ok || item.Readiness.Status != row.Readiness.Status || item.Readiness.Freshness != row.Readiness.Freshness || item.Fresh != row.Fresh || item.Closure != row.Closure || item.Coverage.State != row.Coverage.State || item.Observation.Coverage.State != row.Observation.Coverage.State || item.Claim.State != row.Claim.State || item.Claim.Known != row.Claim.Known || item.Claim.AuthorityID != row.Claim.AuthorityID {
 			t.Fatalf("JSON/TUI item evidence differs: JSON=%+v TUI=%+v", row, item)
@@ -106,5 +109,8 @@ func assertQueueFixtureParity(t *testing.T, h *queueQueryHarness, missing bool) 
 	}
 	if !strings.Contains(view, response.Query.Authority.ID) || missing && !strings.Contains(view, "offline/unavailable") {
 		t.Fatalf("TUI hid authority/source failure: %s", view)
+	}
+	if missing && !strings.Contains(view, "of 2 (unknown)") {
+		t.Fatalf("TUI reported an exact total despite an unresolved source: %s", view)
 	}
 }

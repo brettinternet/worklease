@@ -513,8 +513,13 @@ func (m Model) View() string {
 	}
 	total, accuracy := 0, "exact"
 	edges := 0
-	if len(m.Snapshot.Sources) == 0 {
+	if len(m.Snapshot.Sources) == 0 || len(m.SourceErrors) > 0 {
 		accuracy = "unknown"
+	}
+	for _, source := range m.Sources {
+		if _, resolved := m.Snapshot.Sources[source.ID]; !resolved {
+			accuracy = "unknown"
+		}
 	}
 	for _, c := range m.Snapshot.Sources {
 		total += c.Total
