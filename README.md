@@ -265,6 +265,7 @@ See:
 - [Setup and native hooks](docs/setup.md)
 - [Container deployment](docs/container.md)
 - [Remote authority](docs/remote-claim-authority.md)
+- [Work queue configuration](docs/queue.md)
 - [Provider-backed work queue proposal](docs/work-queue-tui-proposal.md)
 
 ## Development
