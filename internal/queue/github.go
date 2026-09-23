@@ -41,7 +41,7 @@ type githubBinding struct {
 	generation                                 string
 	dependencies                               bool
 	identityChanged                            bool
-	scans                                      map[string]map[string]bool
+	scans                                      map[string]map[string]string
 	scanOrder                                  []string
 	nodeIDs                                    map[string]string
 	newestETags                                map[string]string
@@ -668,7 +668,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		}
 		a.mu.Lock()
 		if b.scans == nil {
-			b.scans = make(map[string]map[string]bool)
+			b.scans = make(map[string]map[string]string)
 		}
 		_, exists := b.scans[state.ID]
 		a.mu.Unlock()
@@ -685,14 +685,14 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		scanStarted = time.Now().UTC()
 		a.mu.Lock()
 		if b.scans == nil {
-			b.scans = map[string]map[string]bool{}
+			b.scans = map[string]map[string]string{}
 		}
 		const maxGitHubScans = 100
 		for len(b.scanOrder) >= maxGitHubScans {
 			delete(b.scans, b.scanOrder[0])
 			b.scanOrder = b.scanOrder[1:]
 		}
-		b.scans[scanID] = map[string]bool{}
+		b.scans[scanID] = map[string]string{}
 		b.scanOrder = append(b.scanOrder, scanID)
 		a.mu.Unlock()
 	}
@@ -753,8 +753,12 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			a.mu.Unlock()
 			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub scan expired"}
 		}
-		duplicate := seen[issue.ID]
-		seen[issue.ID] = true
+		// A node may move to a new issue number between pages. Suppress
+		// identical repeats, but publish a changed reference so the index
+		// and live snapshot replace the old identity atomically.
+		ref := strconv.Itoa(issue.Number)
+		duplicate := seen[issue.ID] == ref
+		seen[issue.ID] = ref
 		a.mu.Unlock()
 		a.rememberNodeID(b, issue)
 		if !duplicate {

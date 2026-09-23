@@ -128,6 +128,49 @@ func TestGitHubSyncPageAndWatermarkAreAtomic(t *testing.T) {
 	}
 }
 
+func TestGitHubSyncResumesAfterReopenWithMovedNode(t *testing.T) {
+	ctx := context.Background()
+	indexDir := t.TempDir()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	firstWatermark := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	secondWatermark := firstWatermark.Add(time.Hour)
+	idx, err := Open(ctx, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, nil, "", firstWatermark, true); err != nil {
+		t.Fatal(err)
+	}
+	old := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "1"}, CanonicalID: "node-1", Title: "before move"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{old}, "next", secondWatermark, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx, err = Open(ctx, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	state, err := idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "next" || !state.CommittedWatermark.Equal(firstWatermark) || !state.ScanWatermark.Equal(secondWatermark) {
+		t.Fatalf("recovered page and watermark: %+v %v", state, err)
+	}
+	moved := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "2"}, CanonicalID: "node-1", Title: "after move"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{moved}, "", state.ScanWatermark, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err = idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "" || !state.CommittedWatermark.Equal(secondWatermark) {
+		t.Fatalf("completed window: %+v %v", state, err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 1 || got.Items[moved.Ref.Key()].Title != "after move" {
+		t.Fatalf("moved node after recovery: %+v %v", got.Items, err)
+	}
+}
+
 func TestGitHubReconciliationRetiresOnlyAtCompletedGeneration(t *testing.T) {
 	ctx := context.Background()
 	idx, err := Open(ctx, t.TempDir())
