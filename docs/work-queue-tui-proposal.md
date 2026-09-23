@@ -1,23 +1,89 @@
 # Plan: provider-backed work queue
 
-**Status:** Product and architecture decisions for implementation planning. The queue, source adapters, and extension protocol described here are not implemented. Existing claim guarantees remain unchanged.
+**Status:** Accepted direction for backlog decomposition. Nothing described here is implemented. Existing claim guarantees, CLI defaults, authority wire protocol, resource policy version, and MCP tools remain unchanged. Performance numbers are acceptance targets unless marked as evidence. Command names, configuration keys, and interfaces are illustrative until the slice that ships them freezes them.
 
-## 1. Goal and decisions
+## 1. Goal
 
 Give humans and coding agents one fast, Vim-first work queue across existing task sources. Explain both provider readiness and coordination availability without moving tasks into a new tracker.
 
-The following product choices were confirmed during proposal development. They supersede the original open questions.
+## 2. Decision register
 
-| Decision | Direction |
+Backlog items cite these IDs. Changing a decision means updating this table and the affected sections in the same commit.
+
+| ID | Decision | Basis |
+| --- | --- | --- |
+| D1 | Scope is queue and coordination. Not an agent runtime, autonomous scheduler, or replacement tracker. | Confirmed |
+| D2 | Initial sources are built-in Backlog.md and GitHub Issues adapters. | Confirmed |
+| D3 | Source adapters run in the client. A remote Worklease authority changes claim coordination only. A separate source service waits for measured need (§15). | Confirmed |
+| D4 | Each actionable scope uses one selected Worklease authority. Provider-native claims are observed, never mirrored, and never become an authority until they pass §9 admission. Neither initial provider exposes one. | Confirmed + evidence |
+| D5 | Assignment is advisory and displayed beside claims. Claim never assigns or changes provider state. | Design |
+| D6 | Progress lives in the provider. Only tested operations are enabled. A Worklease checkpoint is private recovery metadata. | Design |
+| D7 | Every provider write follows intent, dispatch, receipt, read-back, then checkpoint (§8). Append-only writes carry a Worklease operation marker so read-back can verify a lost response. A marker never makes a retry safe. | Design |
+| D8 | Ship as `worklease queue` in the main binary. TUI and adapter dependencies live in queue packages that claim, MCP, and server code never import. | User |
+| D9 | Build the TUI on Bubble Tea and Lip Gloss. The queue core publishes immutable snapshots; no I/O runs on the render loop. | Design; confirmed by the slice 2 spike |
+| D10 | Sources, views, identity mappings, and launch actions live in one owner-private user file, `$XDG_CONFIG_HOME/worklease/queue.yaml`, following the profiles/bindings trust model. v1 reads no repository-provided queue configuration. | Existing pattern |
+| D11 | Each view names its authority profile. Claims and launches are disabled for a checkout-backed source when that checkout's profile resolution yields a different authority ID. | Design |
+| D12 | A Git-tracked Backlog.md project coordinates across hosts only through an explicit portable binding: the `generic` policy with a declared source name. Duplicate task IDs block claims. | User |
+| D13 | The Backlog.md adapter uses only `backlog … --json` commands and documented edit flags. Its MCP server is not a read path because it returns formatted text. Request bulk dependency fields upstream. Declare Git side effects from project configuration. | Evidence |
+| D14 | The GitHub adapter speaks HTTPS (GraphQL and REST) directly. It uses `gh auth token --hostname H --user U` as a credential helper for an explicitly configured account, verifies the principal, and sends requests serially per account. | Evidence |
+| D15 | Capabilities are scoped semantic facts: support, permission, availability, semantics, and limits. Unknown never means allowed. | Design |
+| D16 | External adapters arrive only after both built-ins exercise the model, as a versioned JSON-RPC 2.0 protocol over stdio. Resource policies stay static built-ins; an external adapter selects an existing policy. | Design + history |
+| D17 | Other extension seams are credential helpers, declarative views, filters, status maps, keymaps, and user-configured launch actions. No executable policy plugins, widgets, lifecycle hooks, storage plugins, or event bus. | User + design |
+| D18 | Launch actions run user-configured argv in an allowlisted environment carrying item references, never credentials or item content. The launched worker acquires its own claim, so Launch is unavailable while the queue itself holds that item. | User |
+| D19 | The source index is a disposable per-user SQLite cache partitioned by source, principal, and generation. All queue processes share it with single-flight refresh per partition. | Design |
+| D20 | Claim overlays use one namespace cursor watch per authority plus batched exact-resource status. The baseline cursor is taken before the snapshot. | Evidence |
+| D21 | Support team scale: 10,000 items per source, 50,000 per view, 25 concurrent clients, and 500 active claims per authority. Stress-test browsing at 100,000. | User |
+| D22 | Measure absolute budgets on an Apple M1 Max with 32 GiB. CI tracks relative regressions. | Design |
+| D23 | Source-wide next-ready selection requires the complete edge set for the scope. While edges are incomplete, readiness is `unknown`, never `ready` or `blocked`. | Workflow contract |
+| D24 | Reuse existing key policies. GitHub keys use the configured `owner/repo` (or `host/owner/repo`) and issue number. A detected rename, transfer, or Backlog.md ID repair disables claims until an explicit rebind. | Existing + design |
+| D25 | An unavailable remote authority never falls back to local. Cached browsing continues read-only with a stale badge. | Confirmed |
+
+## 3. Evidence
+
+Probed on 2026-09-22 on the reference machine against this repository's 102 Backlog.md tasks. Re-probe when a pinned tool version changes.
+
+### Backlog.md 1.52.0
+
+| Observation | Consequence |
 | --- | --- |
-| Initial sources | Backlog.md and GitHub Issues. Exercise both local and remote access before fixing an extension protocol. |
-| Local versus server | Provider adapters run on clients initially. A remote Worklease server changes claim coordination, not task storage or provider execution. A separate source service is a later, demand-driven option. |
-| Claim authority | Worklease first. Observe provider-native claims, but defer using a provider as the claim authority until its actual guarantees pass conformance tests. Never silently maintain two authorities. |
-| Product scope | Queue and coordination, not an agent runtime, autonomous scheduler, or replacement issue tracker. |
+| `task list --json` returns `{kind: task-list, schemaVersion: 1, tasks}` with id, title, status, assignees, priority, ordinal, labels, milestone, parentTaskId, acceptance-criteria counts, createdAt, updatedAt, and isReady in about 0.6 s. | One process enumerates the active project. Summaries never need a process per row. |
+| List output and `search --json` omit dependencies. | Edges require `task view --json` for each task. |
+| `task view --json` returns dependencies, a transitive `dependencyGraph`, `readiness` with blocking and missing dependencies, body sections, comments, and the file `path` in about 0.5 s. | One call hydrates an explicit item's closure. A full edge scan costs one process per task, about 50 s here. The cost at 10,000 tasks is unmeasured and grows further if each process loads the whole project. |
+| `task list --json --watch` re-emits the full list after each change. | Candidate long-lived invalidation source. It still carries no edges. |
+| `backlog mcp start` is long-lived, but `task_view` returns formatted text. | Not a structured read path; using it would be undocumented parsing. |
+| `task edit` offers `--status`, `--assignee` (replaces the whole list), `--append-notes`, `--comment`, `--check-ac <index>`, and no expected-version option. | Every write is unconditional and coordination-only. Assign to me is a read-modify-write. Checklist writes address criteria by index. |
+| `updatedAt` has minute resolution. | It is not a lossless change cursor. |
+| `isReady` is computed by Backlog.md with its own completion semantics. | Show it as provider-reported. The generic workflow still builds the graph. |
+| Project configuration has `remote_operations`, `check_active_branches`, `auto_commit`, `bypass_git_hooks`, and `filesystem_only`. | Reads may contact Git remotes. Writes may create commits and run hooks. |
+| `doctor` reports and repairs duplicate IDs without JSON output. Repeated IDs are visible in list JSON. | Detect duplicates from list output. A repair renumbers a task and therefore changes its claim key. |
 
-The remaining design decisions in this document make those choices implementable. Performance numbers are proposed acceptance targets, not measured claims. Illustrative interfaces and command names are not frozen APIs.
+### GitHub (gh 2.101.0 and docs.github.com)
 
-### Ownership boundaries
+| Observation | Consequence |
+| --- | --- |
+| `gh issue list --json` exposes `blockedBy`, `blocking`, `parent`, `subIssues`, `subIssuesSummary`, `issueType`, `projectItems`, and `stateReason`. | Native dependency and hierarchy data exist on github.com. Discover support per host, since GitHub Enterprise Server may differ. |
+| REST lists `blocked_by` and `blocking` per issue, at most 100 per page, and adds or removes `blocked_by` with Issues read/write permission. | Dependency completeness is per item and paginated. Dependency writes stay out of scope. |
+| An authorized conditional GET that returns 304 does not count against the primary rate limit. ETags vary with page and filter. Unsafe methods do not support conditional requests unless an endpoint documents it. | Change polling can be nearly free. No issue edit is a compare-and-set, so every GitHub write is coordination-only. |
+| GitHub asks integrations to send requests serially, wait at least 1 s between mutations, honor `retry-after` and `x-ratelimit-reset`, and back off exponentially. | One serial, prioritized request queue per host and account. |
+| The REST issues list includes pull requests. `gh auth token` accepts `--hostname` and `--user`. | Filter out pull requests. Resolve credentials for an explicit account, never the active one. |
+
+### Worklease authority (commit 9ca754c)
+
+| Observation | Consequence |
+| --- | --- |
+| `Status` accepts many exact resources. Remote requests are capped at 1 MiB and responses at 4 MiB. | Chunked batch status serves visible rows. |
+| `List` is unpaginated. A remote response over 4 MiB fails with `response-too-large`. | Never use `List` for overlays. Large namespaces need a paged read first. |
+| Filtered watches accept at most 32 resources. A cursor watch without resources covers the namespace. Each watch polls the store every 50–500 ms (250 ms by default). | Use one namespace watch per authority per client. Every watching client adds a polling loop, so measure at 25 clients. |
+| `Events("", n)` returns the tail and a head cursor. Cursors carry authority, restore, and gap semantics, with pages of at most 1,000. | A baseline cursor is cheap to obtain. |
+| Heartbeats append `renewed` events. Expiry without a write appends nothing. | Event volume is about active claims divided by the renewal interval. Overlays must schedule their own expiry rechecks. |
+| Remote admission defaults to `coordination:` and rejects host-local prefixes. `generic` keys are `coordination:generic:<sha256>`; GitHub keys are `github:…`. | Portable Backlog.md bindings are admitted by default. GitHub claims need an administrator to add `github:`. |
+| Profile selection order is `--profile`, `WORKLEASE_PROFILE`, checkout binding, user default, then local. | D11 checks and launch actions reuse this resolution. |
+
+### Prior art in this repository
+
+The Python era shipped a typed source SDK and entry-point resource-policy plugins (TASK-10, TASK-11) before any real external adapter existed. The Go rewrite removed both without replacement ([Go product contract](backlog/docs/go-rewrite/doc-2%20-%20Go-Product-Contract.md), section 16). Derive the protocol from working adapters rather than designing it ahead of them.
+
+## 4. Ownership boundaries
 
 ```text
  Backlog.md / GitHub / other sources
@@ -34,50 +100,56 @@ The remaining design decisions in this document make those choices implementable
 
 The queue owns presentation, source access, and the authorized workflow. Sources own task truth. Worklease owns claim truth. These are separate observations, not one transaction or one universal `ready` flag.
 
-Reuse the existing [source-provider contract](../skills/worklease-workflow/references/source-provider-contract.md), [authoring checklist](../skills/worklease-workflow/references/source-provider-authoring-checklist.md), and [generic workflow](../skills/worklease-workflow/references/contract.md). Adapters map provider semantics; they do not each implement selection, scheduling, or claim lifecycle. Extend those contracts alongside implementation rather than creating a conflicting second specification.
+Reuse the existing [source-provider contract](../skills/worklease-workflow/references/source-provider-contract.md), [authoring checklist](../skills/worklease-workflow/references/source-provider-authoring-checklist.md), and [generic workflow](../skills/worklease-workflow/references/contract.md). Adapters map provider semantics; they do not each implement selection, scheduling, or claim lifecycle. Extend those contracts alongside implementation rather than creating a second specification. The queue's next-ready selection implements the contract's `selectNext` in one place instead of each agent reimplementing it.
 
-## 2. Local and server behavior
+## 5. Local and server behavior
 
-“Local” describes claim coordination, not necessarily the task source. Opening a GitHub source explicitly authorizes remote source reads even with a local claim authority. Merely installing Worklease or using its existing local commands must not start network access.
+"Local" describes claim coordination, not necessarily the task source. Opening a GitHub source explicitly authorizes remote source reads even with a local claim authority. Merely installing Worklease or using its existing commands must not start network access.
 
 | Source access | Claim authority | Behavior and limit |
 | --- | --- | --- |
 | Local files or CLI | Local Worklease | No listener or provider login. Coordination covers cooperating processes sharing that authority, not independent databases on the same machine. |
-| Remote provider API or CLI | Local Worklease | Read/write the remote provider as the local user. Claims do not exclude workers using other hosts or authorities. Display `local coordination` prominently. |
-| Remote provider API or CLI | Remote Worklease | Provider calls and credentials stay on each client. Cooperating hosts must use the same authority and exact portable resource keys. |
-| Local checkout | Remote Worklease | Existing host-local Backlog.md/path keys are rejected. Require an explicitly agreed portable identity and data-sharing/write policy, or disable this combination. A shared claim does not synchronize Git clones or their task files. |
-| Later source service | Local or remote Worklease | A separately authenticated service may host adapters and source caches. It is not an extension of the claim server and does not acquire ownership for readers. |
+| Remote provider API | Local Worklease | Read and write the provider as the local user. Claims do not exclude workers on other hosts or authorities. Display `local coordination` prominently. |
+| Remote provider API | Remote Worklease | Provider calls and credentials stay on each client. Cooperating hosts must use the same authority and exact portable resource keys. |
+| Local checkout | Remote Worklease | Only through an explicit portable binding (D12, §6). Host-local `backlog-md:` keys are rejected remotely. A shared claim does not synchronize clones or task files. |
+| Later source service | Local or remote Worklease | A separately authenticated service may host adapters and caches. It is not part of the claim server and does not acquire ownership for readers. |
 
-Do not make source selection implicitly change the authority. Show the resolved authority ID/profile and identity scope before acquiring. Reject mismatched or ambiguous source bindings. Check server admission before offering Claim: the default remote server admits `coordination:`, so existing `github:` keys may need administrator configuration. Do not silently switch key policies to pass admission. A saved view can combine sources, but its actionable scope uses one selected authority initially; no claim transaction spans authorities.
+Never let source selection implicitly change the authority. Show the resolved authority profile, ID, and identity scope before acquiring. Reject mismatched or ambiguous source bindings. Check server admission before offering Claim; do not silently switch key policies to pass admission. A saved view can combine sources, but its actionable scope uses one authority; no claim transaction spans authorities.
 
-A selected remote authority becoming unavailable never falls back to local. Read-only cached browsing can continue with an unavailable/stale badge. New claims, renewals, and writes require the relevant live services. An explicit offline view makes no provider or authority requests and cannot authorize mutations.
+**Authority consistency (D11).** A CLI or agent working in a checkout resolves its authority from `--profile`, `WORKLEASE_PROFILE`, the checkout binding, or the default. If the view's authority differs from what that checkout resolves, a queue claim and a worker's claim land in different exclusion domains. The queue resolves each checkout-backed source's profile the same way and disables Claim and Launch with an explanation when the authority IDs differ.
 
-For the later source service, support local sources only on explicitly configured service-owned mounts or through a separately designed connector. Never treat a client's path as a path on the server. Do not add an arbitrary remote-command or filesystem API. File hosting also needs an authoritative checkout and publishing policy, not just a portable key.
+**Outages (D25).** A selected remote authority becoming unavailable never falls back to local. Read-only cached browsing continues with an unavailable or stale badge. New claims, renewals, and writes require the relevant live services. An explicit offline view makes no provider or authority requests and cannot authorize mutations.
 
-## 3. Identity and interoperability
+**Backlog.md Git effects.** With `remote_operations` or `check_active_branches` enabled, a Backlog.md read may contact Git remotes. The source is then treated as remote access and needs the same explicit consent as GitHub. With `auto_commit` enabled, a write creates a commit and may run hooks unless `bypass_git_hooks` is set. The mutation preview shows this effect. Test whether auto-commit captures unrelated staged changes before enabling writes in that mode.
+
+**Branches and worktrees.** A checkout-backed source reads and writes one explicit checkout and shows its branch, HEAD, and dirty state as part of source freshness. The `backlog-md` key policy uses the Git common directory, so linked worktrees share claim identity while their task files may differ. The queue never merges task state across branches or worktrees. Progress written in a feature worktree lands on that branch and becomes visible elsewhere only through Git.
+
+**Later source service.** Support local sources only on explicitly configured service-owned mounts or through a separately designed connector. Never treat a client path as a server path. Do not add an arbitrary remote-command or filesystem API. File hosting needs an authoritative checkout and publishing policy, not just a portable key.
+
+## 6. Identity and interoperability
 
 Keep four identities separate.
 
 | Identity | Purpose |
 | --- | --- |
-| `Source.id` + `WorkRef.itemID` | Stable provider-qualified item identity. Include provider instance/host and project scope; retain provider-native immutable IDs when available. |
-| Source locator | Current repository name, URL, checkout path, or project alias used to find that identity. A rename is not automatically a new item. |
-| Exact claim resource + authority ID | The exclusion domain. Every cooperating client must derive identical bytes for the same scope. |
-| Provider principal / Worklease installation / worker session | Access, audit, and ownership context. These are not interchangeable identities and do not belong in task resource keys. |
+| `Source.id` + `WorkRef.itemID` | Stable provider-qualified item identity. Include provider instance, host, and project scope; retain provider-native immutable IDs when available. |
+| Source locator | Current repository name, URL, checkout path, or alias used to find that identity. A rename is not automatically a new item. |
+| Exact claim resource + authority ID | The exclusion domain. Every cooperating client must derive identical bytes. |
+| Provider principal / Worklease installation / worker session | Access, audit, and ownership context. Not interchangeable, and never part of task resource keys. |
 
-Use the existing versioned key policies where they fit. Do not invent new queue-only keys for tasks that existing CLI/skill callers can already claim. In particular, preserve source-wide loose-Markdown locking rather than pretending every heading can be written independently.
+Use existing versioned key policies. Do not invent queue-only keys for tasks that CLI and skill callers can already claim. Preserve source-wide loose-Markdown locking.
 
-The existing GitHub policy uses the normalized supplied source locator and issue identifier, not an automatically resolved immutable repository ID. Use `owner/repo` and the issue number for public GitHub, matching existing caller examples; use an explicitly agreed `host/owner/repo` input for enterprise hosts. Record the exact inputs in the source binding and expose them to CLI/agent callers. Existing callers using URLs or different aliases need explicit reconciliation, not an assumed equivalent key. Test queue-versus-CLI contention, host separation, transfers, and renames before enabling claims. An unresolved mapping permits browsing only. Do not silently replace legacy keys with immutable-ID keys; changing an exclusion domain requires an explicit migration with old workers stopped, active claims resolved, and all clients updated.
+**GitHub.** The existing policy uses the normalized supplied locator and issue number, not a resolved immutable repository ID. Use `owner/repo` for github.com, matching existing caller examples, and an explicitly agreed `host/owner/repo` for enterprise hosts. The source binding records the exact inputs and exposes them to CLI and agent callers. The adapter compares the configured locator with the repository the API reports. On a rename or transfer (redirect, changed `nameWithOwner`, or a moved issue), claims are disabled until the binding is explicitly updated with old workers stopped and active claims resolved. Never silently replace legacy keys with immutable-ID keys.
 
-Local Backlog.md identities are host-local even when their files are Git-tracked. A portable custom mapping uses an explicit existing `generic`/`coordination:` policy with documented common inputs, never an inferred Git remote. It provides coordination only and must match every other contender. No aliases may create a second simultaneously writable claim domain.
+**Backlog.md.** Default keys are host-local even when task files are Git-tracked. The D12 portable binding declares `policy: generic` and a `source` name agreed by every contender; the resource is exactly `worklease key --provider generic --source <name> --item <task-id>`. Before enabling claims, and again before each acquisition, the adapter rejects the binding when list output contains repeated IDs. Clones can still allocate the same ID independently before a merge. That produces over-exclusion, which is safe but confusing, and a later `doctor --fix` renumbers one task and changes its key. Treat a renumber as an identity migration: resolve claims on affected IDs first. No alias may create a second simultaneously writable claim domain.
 
-Two views of the same provider item deduplicate by canonical identity. Cross-provider mirrors are separate items unless an explicit mapping establishes otherwise; do not infer equivalence from titles or links. Resource derivation, display identity, and migration behavior need fixture vectors before any write-capable adapter ships.
+Two views of the same provider item deduplicate by canonical identity. Cross-provider mirrors are separate items unless an explicit mapping says otherwise; never infer equivalence from titles or links. Resource derivation, display identity, and migration behavior need fixture vectors before any write-capable adapter ships.
 
-## 4. Backend capabilities
+## 7. Source adapter capabilities
 
-Call integrations **source adapters** to distinguish them from claim authorities or database backends. A source adapter must support explicit resolution, capability discovery, paginated summary reads, and authoritative item reads. All other operations are optional.
+Integrations are **source adapters**, distinct from claim authorities and database backends. An adapter must support explicit resolution, capability discovery, summary reads, and authoritative item reads. Everything else is optional.
 
-Capabilities describe semantics, not marketing labels or just booleans. Evaluate them at adapter, source/project, authenticated principal, and item/action scope. A supported operation can still be unauthorized or temporarily unavailable.
+Capabilities describe semantics, not marketing labels or bare booleans. They are evaluated at adapter, source, principal, and item/action scope. A supported operation can still be unauthorized or temporarily unavailable.
 
 ```text
 Capability {
@@ -86,26 +158,43 @@ Capability {
   availability: available | unavailable | authentication-required
   semantics: operation-specific facts
   limits: operation-specific bounds
-  reason: stable diagnostic, when not actionable
+  reason: stable diagnostic when not actionable
 }
 ```
 
-Unknown never means allowed. Read-only discovery must not probe capabilities by attempting a write. Cache capability discovery with an account/configuration generation; invalidate on login, scope, project-schema, or permission changes. The provider still authorizes every request.
+Unknown never means allowed. Read-only discovery never probes a capability by attempting a write. Cache discovered capabilities with an account/configuration generation and invalidate on login, scope, schema, or permission changes. The provider still authorizes every request.
 
 | Group | Facts the adapter declares |
 | --- | --- |
-| Identity | Stable item IDs, instance identity, aliases, identity scope, canonical resource policy/version, rename behavior. |
-| Discovery | Pagination/cursor semantics, stable sort and tie-breaker, fields, server filters/search, provider result caps, totals as exact/estimated/unknown. |
-| Dependencies | Supported relationship types, direction, completeness, cross-source references, and explicit terminal/blocked mapping. Hierarchy is not automatically a prerequisite. |
-| State | Raw states, per-project normalized categories, valid transitions, required fields, reopen/review/archive distinctions. |
-| Progress | Structured progress/checklists, durable notes/comments, history, read-back locations, edit/append behavior. `none` is valid. |
-| Assignment | Read/write permissions, user/team types, single/multiple cardinality, explicit mapping from worker to provider account. |
-| Native claims | Observation and mutation separately; advisory assignment, durable reservation, or actual lease; atomicity, TTL, renewal, release, replay, ownership authentication, resource scope, and fencing evidence. |
-| Mutation | Minimal patches versus full replacement, conditional writes per operation, idempotency/replay support, receipt verification, partial batch semantics. |
-| Synchronization | Delta tokens, ordering/replay, tombstones, conditional reads, webhooks, reconciliation requirements, quota identity and retry hints. |
-| Authentication | Local/CLI/helper/OAuth/app options, supported hosts, required scopes, principal identity, expiry/refresh behavior. |
+| Identity | Stable item IDs, instance identity, aliases, identity scope, key policy and version, rename behavior. |
+| Discovery | Pagination and cursor semantics, stable sort and tie-breaker, fields, server-side filters, provider caps, totals as exact, estimated, or unknown. |
+| Dependencies | Relationship types, direction, completeness, cross-source references, and terminal/blocked mapping. Hierarchy is not automatically a prerequisite. |
+| State | Raw states, normalized categories per project, valid transitions, required fields, reopen/review/archive distinctions. |
+| Progress | Structured progress or checklists, notes and comments, history, read-back location, append versus replace. `none` is valid. |
+| Assignment | Read/write permission, user or team types, cardinality, add versus replace semantics, worker-to-account mapping. |
+| Native claims | Observation and mutation separately: advisory assignment, reservation, or lease; atomicity, TTL, renewal, release, replay, owner authentication, scope, and fencing evidence. |
+| Mutation | Minimal patch versus replacement, conditional writes per operation, idempotency or marker support, receipt verification, partial batch semantics. |
+| Synchronization | Delta tokens, ordering, tombstones, conditional reads, webhooks, reconciliation needs, quota identity, retry hints. |
+| Effects | Side effects beyond the item, such as Git fetches, commits, hooks, or notifications to watchers. |
+| Authentication | Local, CLI helper, OAuth, or app options; hosts; scopes; principal identity; expiry and refresh. |
 
-Illustrative queue-facing operations extend the existing conceptual contract.
+Initial declarations, from §3 evidence:
+
+| Group | Backlog.md 1.52 | GitHub Issues (github.com) |
+| --- | --- | --- |
+| Identity | Task ID in one explicit checkout; host-local key or D12 binding; renumbered by duplicate repair | `owner/repo` and number; node IDs retained; rename and transfer detected |
+| Discovery | Complete list in one call; no cursor; exact total | GraphQL cursor pages of 100; exact `totalCount`; pull requests excluded |
+| Dependencies | Intra-project edges per task view; closure per item; provider-reported `isReady` | `blockedBy`/`blocking` per item with totals; cross-repository references; sub-issues are hierarchy only |
+| State | Configured statuses; terminal mapping from caller config | Open or closed with `stateReason`; Projects status deferred |
+| Progress | Append notes, append comment, check criterion by index | Append comment |
+| Assignment | Multiple, replace-all only | Multiple, add and remove endpoints |
+| Native claims | Not exposed | Not exposed |
+| Mutation | Unconditional CLI edits | Unconditional; no conditional unsafe methods |
+| Synchronization | Watch stream or filesystem invalidation; minute timestamps | `since` filter, conditional-GET polling; no client webhooks |
+| Effects | Optional Git fetch, commit, and hooks per project config | Notifications to watchers |
+| Authentication | OS file access | `gh` helper for an explicit host and account |
+
+Queue-facing operations extend the existing conceptual contract:
 
 ```text
 resolve(explicitConfig) -> Source
@@ -118,235 +207,345 @@ writeState / recordProgress / assign(...) -> ProviderReceipt # optional
 readReceipt(receipt) -> verified | conflict | unknown
 ```
 
-`readItems` may have a bounded fallback where provider batching is absent; it must not conceal an unbounded request fan-out. Every response carries source/principal generation, observation time, coverage, and applicable opaque provider version. Claim revision, provider version, update timestamp, and synchronization cursor are distinct values. An update timestamp or read ETag does not imply a conditional-write capability.
+`readItems` may fall back to bounded individual reads where batching is absent; it must not hide an unbounded fan-out. Every response carries source/principal generation, observation time, coverage, and opaque provider version where one exists. Claim revision, provider version, update timestamp, and sync cursor are distinct values. An update timestamp or read ETag does not imply a conditional-write capability.
 
-Preserve raw provider status alongside normalized state. Keep readiness, assignment, claim availability, freshness, and dependency completeness separate. A source with no dependency model cannot be presented as dependency-verified merely because no edges were fetched. Explicitly declared “this workflow has no prerequisites” differs from unsupported or incomplete discovery.
+Keep raw provider status beside normalized state. Keep readiness, assignment, claim availability, freshness, and dependency completeness separate. A source with no dependency model is never shown as dependency-verified because no edges were fetched; an explicit "this workflow has no prerequisites" declaration differs from unsupported or incomplete discovery.
 
-Use stable structured diagnostics for unsupported capability, authentication, authorization, conflict, rate limiting with retry time, unavailable source, incomplete graph, and unknown outcome. Map these to the existing workflow result vocabulary rather than replacing it with text parsing. TUI and JSON expose the same reasons and disabled-action explanations.
+Use stable structured diagnostics for unsupported capability, authentication, authorization, conflict, rate limiting with retry time, unavailable source, incomplete graph, and unknown outcome. Map them to the existing workflow result vocabulary. TUI and JSON expose the same reasons and disabled-action explanations.
 
-## 5. Progress, assignment, and write recovery
+## 8. Progress, assignment, and write recovery
 
 ### Progress is source-owned
 
-Prefer native structured state/progress fields. Use a provider-native note or comment only when that operation is supported and the caller explicitly authorizes it. Do not invent a percentage from elapsed lease time, status, or heartbeat count. A checklist fraction is labeled as checklist completion, not total project progress.
+Prefer native structured state and progress fields. Use a note or comment only when that operation is supported and the caller authorizes it. Never invent a percentage from lease time, status, or heartbeat count. A checklist fraction is labeled checklist completion, not project progress.
 
-The initial Backlog.md adapter uses supported CLI/API operations for reads and writes, including project-specific state and progress. It does not directly edit or use undocumented parsing of Backlog records as a substitute for that interface. If efficient bulk reads are unavailable, improve the provider-facing API or declare the limitation rather than spawning a process per row.
+| Operation | Backlog.md | GitHub | Initial availability |
+| --- | --- | --- | --- |
+| Change state | `task edit --status` with a configured status | Close or reopen with a reason | Slice 6, after transition tests |
+| Record progress | `--append-notes` or `--comment` with marker | Issue comment with marker | Slice 6 |
+| Check a criterion | `--check-ac N`, re-reading the criterion text before and after | Body task lists | Backlog.md only. GitHub is disabled because editing the body replaces it whole with no compare-and-set. |
+| Assign to me | Read-modify-write with `--assignee`; the race is declared | Add-assignees endpoint | Slice 6 |
+| Release | No provider write | No provider write | Slice 4 |
 
-The initial GitHub adapter uses `gh` JSON/API operations with explicit host and repository selection. Issue state, assignees, comments, and any supported project state remain distinct. Do not promise an In Progress field, dependency model, project workflow, or conditional write without testing the actual endpoint, account, and repository capabilities. Pin/test supported CLI versions and select explicit fields rather than parsing human output.
+If no durable progress write exists, the queue stays useful for browsing and claims but disables Record progress. Never create sidecar task files. Adding Markdown as a separately configured source is an explicit choice, not a fallback write path. Read-only adapters can still support claims, show externally recorded progress, and verify existing provider checkpoints. Nothing may manufacture a completion checkpoint. A human who claims and then abandons an item without work needs a **cancellation**: a release with a non-completion reason, allowed only when the queue started no guarded operation or provider write under that claim. The generic contract currently requires a provider checkpoint before any release, so S1 amends it to define this no-effect cancellation. Until then, the queue offers only stop-renewing on sources without a progress write.
 
-If no durable progress write exists, the queue remains useful for browsing and claims, but disables Record progress. A Worklease checkpoint is private recovery metadata, not a provider update or a public substitute backlog. Do not silently create sidecar task files. Adding Markdown as a separately configured source is an explicit product choice, not a fallback write path.
-
-Read-only adapters can still support claims, display externally recorded progress, and verify existing provider checkpoints. Unsupported writes remain disabled; an explicit non-completion release is available when no effect is unresolved. Neither path may manufacture a completion checkpoint.
-
-Separate actions are Claim, Assign, Change state, Record progress, and Release. Claim never marks In Progress or assigns a user automatically. A later convenience action may compose these only with an explicit step preview and independently reported outcomes; it cannot claim atomicity across systems.
+Claim, Assign, Change state, Record progress, and Release are separate actions. Claim never marks In Progress or assigns. A later convenience action may compose them only with an explicit step preview and independently reported outcomes, never claimed atomicity.
 
 ### Assignment is advisory
 
-Display assignees next to, not instead of, claim holders. Worklease continues to provide local or cross-host exclusion even when the provider supports only user assignment. Assignment to a person can outlive many short worker leases.
+Display assignees beside claim holders. Worklease still provides exclusion when a provider supports only assignment; assignment to a person can outlive many short worker leases. Backlog.md agents in this repository already assign session-named identities such as `@pi-01a094d6`; show them as assignees, never as claims.
 
-Default eligibility policy excludes work assigned to someone else from suggested work. A deliberate user selection may override that policy without silently reassigning the task. Assignment to me is not permission to adopt another session's claim. Multiple workers using one provider account still require distinct Worklease sessions.
+By default, suggested work excludes items assigned to someone else. A deliberate selection may override that without reassigning. Assignment to me never permits adopting another session's claim. Multiple workers sharing one provider account still need distinct Worklease sessions. The configured identity mapping (§12) defines which provider accounts and assignee strings mean "me".
 
-An authorized Assign to me operation preserves unrelated assignees according to the provider's cardinality and explicit requested intent. Release does not clear assignment or status. Never advertise assignment mirroring as a distributed lock, even if a conditional update can avoid one lost update; it does not necessarily supply lease expiry, owner-authenticated renewal, or resource exclusion.
+Assign to me preserves unrelated assignees. On GitHub that is the add endpoint; on Backlog.md it is a declared read-modify-write race. Release never clears assignment or status. Never advertise assignment mirroring as a distributed lock.
 
 ### Every write has a recoverable boundary
 
-1. Check declared capability, caller authority, exact scope, and the current claim. Refresh the item and required dependency closure from the provider; recheck native occupancy and policy eligibility. Preserve unrelated fields.
-2. Persist exact mutation intent in an owner-private recovery journal before dispatch, including operation ID, source/principal identity, requested patch, precondition, and claim/operation references. Use existing Worklease guarded-operation and pending-handle machinery for what it already owns; do not duplicate its claim journal.
-3. Use provider conditional writes and idempotency keys only where genuinely supported. Without them, report coordination-only and allow only the supported minimal operation; pre/post reads do not eliminate the race with external writers.
-4. Obtain a durable provider receipt and independently read back the authoritative result. Verify the intended fields or operation-specific receipt, not merely exit status or HTTP success. Eventual consistency produces a bounded pending-verification state, not an optimistic completion.
-5. Only after verification, record any Worklease checkpoint and resolve the guarded operation. Release as completed only after the required provider checkpoint and operation outcome are established.
+1. Check capability, caller authority, exact scope, and the current claim. Refresh the item and required dependency closure; recheck native occupancy and eligibility. Preserve unrelated fields.
+2. Persist the exact mutation intent in an owner-private recovery journal before dispatch: operation ID, source and principal, patch, precondition, and claim/operation references. Reuse Worklease guarded-operation and pending-handle machinery for what it owns; do not duplicate its journal.
+3. Use conditional writes and idempotency keys only where genuinely supported. Neither initial provider has them, so both run coordination-only with minimal operations. Pre/post reads do not remove the race with external writers.
+4. Obtain the provider receipt and independently read back the result. Verify the intended fields, not exit status or HTTP success. Eventual consistency produces bounded pending verification, not optimistic completion.
+5. Only after verification, record any Worklease checkpoint and resolve the guarded operation. Release as completed only after the provider checkpoint and operation outcome are established.
 
-A matching comment body alone cannot prove which attempt created it. Retain provider operation IDs or permitted idempotency markers where available. If a lost response cannot be disambiguated, surface Unknown outcome and require inspection/reconciliation. Do not retry non-idempotent writes under a new ID, automatically reverse a possibly successful write, or reacquire to bypass recovery.
+**Operation markers (D7).** Append-only writes include `worklease-op:<operationID>`: an HTML comment in GitHub Markdown and a trailing line in Backlog.md notes or comments. The operation ID is random and non-secret, but it discloses Worklease use to anyone who can read the item. After a lost response, read back and search for the marker. If found, the write is verified. If not, the outcome stays `unknown`, because absence is not proof: read-back can lag a committed write. The marker enables verification only; it is not idempotency. Never re-dispatch an unresolved write, even with the same marker, and never re-begin its guarded operation. The operation stays unresolved until a later read-back finds the marker, or an operator records reconciliation backed by evidence that the write did not commit and that no executor can still perform it. Never retry under a new ID, auto-reverse, or reacquire to bypass recovery.
 
-If acquiring succeeded but a subsequent pre-dispatch check fails, report Claim held / source unchanged and offer a safe release when no operation is unresolved. If a provider write succeeded but checkpointing failed, retain its receipt and finish recovery without repeating the provider write. Provider failure does not undo the claim, and claim expiry does not undo a provider effect. A provider outage stops further writes, not necessarily the worker's bounded heartbeat/recovery effort.
+If acquiring succeeded but a pre-dispatch check fails, report Claim held / source unchanged and offer a safe release. If a provider write succeeded but checkpointing failed, keep the receipt and finish recovery without repeating the write. Provider failure does not undo a claim, and claim expiry does not undo a provider effect. A provider outage stops further writes, not the worker's bounded heartbeat and recovery.
 
-The source index is disposable. Pending operation intents and receipts are not. Store them separately with restrictive permissions and bounded retention only after resolution. Logout/cache eviction must not destroy unresolved recovery records. A read-back version proves an observed result, not that no future writer will change it. A CAS on an item version protects that mutation but is not evidence that the provider enforces Worklease lease ownership.
+The source index is disposable; pending intents and receipts are not. Store them separately with restrictive permissions, and retain them only for a bounded period after resolution. Logout and cache eviction never destroy unresolved recovery records. A CAS on an item version, where one exists, protects that mutation but is not evidence that the provider enforces Worklease ownership.
 
-## 6. Distributed and provider-native claims
+## 9. Distributed and provider-native claims
 
 ### Initial policy
 
-Use one selected Worklease authority for all queue acquisitions. Remote coordination works only when all cooperating workers use that authority and identical resources. Neither local nor remote Worklease excludes arbitrary provider writers or workers using independent native claim systems.
+All queue acquisitions use the view's selected Worklease authority. Remote coordination works only when every cooperating worker uses that authority and identical resources. Neither local nor remote Worklease excludes arbitrary provider writers or independent native claim systems.
 
-Where the provider exposes native claims, show the holder, scope, observation age, and reported semantics. Fresh native occupancy blocks suggested acquisition by default. Unavailable/stale native occupancy must not be rendered as free. If the provider exposes no claim capability, show `not exposed`, not `unclaimed`; this does not disable Worklease-only coordination. Observing an empty native claim then acquiring Worklease is not a transaction with the provider; a native-only worker can race it. Deployments mixing these workers need a shared coordination policy, not a green “globally exclusive” badge.
+Where a provider exposes native claims, show holder, scope, observation age, and semantics. Fresh native occupancy blocks suggested acquisition by default; unavailable or stale occupancy is never rendered as free. Without the capability, show `not exposed`, not `unclaimed`; Worklease-only coordination still works. Observing an empty native claim and then acquiring in Worklease is not a transaction; a native-only worker can race it. Mixed deployments need a shared coordination policy, not a "globally exclusive" badge.
 
-Do not acquire a native claim merely to mirror Worklease. Two leases introduce partial acquisition, two renewals, expiry disagreement, and recovery deadlocks. Assignment or status mirroring, when requested, remains a provider mutation rather than a second authority.
+Never acquire a native claim to mirror Worklease. Two leases add partial acquisition, double renewal, expiry disagreement, and recovery deadlocks.
 
 ### Admission criteria for a later native authority
 
-Native claim support is a separate authority integration, not a source adapter method casually substituted for `acquire`. First test a real provider and document its observable contract.
+Native claim support is a separate authority integration, not an adapter method substituted for `acquire`. It requires a real provider study and documented contract.
 
-- Atomically acquire-if-free across the intended hosts, with authenticated ownership and defined expiry/renewal/release rules.
-- Identify the authority and ownership epoch, reject stale owner operations, and define clock, network partition, lost-response, replay, restart, and takeover behavior.
-- Expose scope and bundle guarantees. A single-item provider claim cannot emulate Worklease's atomic one-to-32-resource bundle or cover files/ports/deployments. Reject unsupported workflows instead of splitting a bundle into independent claims.
-- Expose operation/recovery and fencing limitations honestly. Provider task reservation alone is not a conforming replacement for the full guarded-operation API.
-- Pass contention, stale-owner, uncertain-acquire, expiry, recovery, and security tests. Capabilities must be evidenced, not inferred from a command called `claim`.
+- Atomic acquire-if-free across intended hosts, authenticated ownership, and defined expiry, renewal, and release.
+- Authority identity and ownership epoch; stale-owner rejection; defined clock, partition, lost-response, replay, restart, and takeover behavior.
+- Scope and bundle guarantees. A single-item provider claim cannot emulate the atomic 1-to-32-resource bundle or cover files, ports, or deployments. Reject unsupported workflows rather than splitting a bundle.
+- Honest operation, recovery, and fencing limits. A task reservation alone does not replace the guarded-operation API.
+- Passing contention, stale-owner, uncertain-acquire, expiry, recovery, and security tests. Evidence, not a command named `claim`.
 
-A provider offering only an indefinite reservation remains a reservation, not a renewable lease. If useful, a future mode can expose that narrower workflow explicitly; it cannot inherit Worklease guarantees by implementing methods with similar names.
-
-Selecting native authority would be explicit per actionable scope and visible in every claim/receipt. It cannot silently activate on discovery or outage. Migration from Worklease requires a quiescent, audited cutover. Never infer release or executor cessation from TTL expiry, a changed assignee, or a missing claim row. See [claim guarantees](claim-model.md#guarantees).
+An indefinite reservation remains a reservation, not a renewable lease. Selecting native authority is explicit per actionable scope, visible in every receipt, and never activated by discovery or outage. Migration requires a quiescent, audited cutover. Never infer release or executor cessation from TTL expiry, a changed assignee, or a missing row. See [claim guarantees](claim-model.md#guarantees).
 
 ### Who renews a claim?
 
-Browsing never renews someone else's claim. A worker that uses the CLI/MCP owns its existing handle, session, and heartbeat lifecycle; the TUI observes it. The first handoff path passes the item and resource/authority references to a worker, which acquires its own claim. It does not pass bearer credentials or launch an agent.
+Browsing never renews anyone's claim. A worker using the CLI or MCP owns its handle, session, and heartbeat; the queue observes it. Launch actions (D18) pass references so the worker acquires its own claim; they never pass bearer credentials.
 
-For an explicit human Claim for me, the queue owns a distinct, persisted full-UUID session and renews while that work session is active, before half the TTL with jitter and a safe deadline margin. Display the next renewal and last result. Suspend/resume or loss of ownership requires authoritative verification before further work. Network uncertainty disables writes even if a local countdown is positive.
+For an explicit human Claim for me, the queue owns a distinct persisted full-UUID session and renews while that queue process runs: before half the TTL, with jitter and a safe deadline margin, on a control path that source refresh cannot delay. The requested TTL and hold respect the authority's admitted `maxTTL` and `maxHold`. The detail view shows next renewal and last result. After suspend or resume, loss of ownership requires authoritative verification before further work. Network uncertainty disables writes even while a local countdown looks positive.
 
-On exit with owned claims, show the exact consequence. Offer verified release when safe, or stop renewing and leave the remaining lease/recovery state explicitly visible. Never release an unresolved operation as completed, silently create a renewal daemon, or promise continued ownership after closing. Reopening requires the private handle and live verification, not a matching username. A future handoff must use supported transfer semantics; current remote cross-host transfer is not implemented.
+On exit with owned claims, show the exact consequence. Offer verified release when safe, or stop renewing and leave the remaining lease and recovery state visible. Never release an unresolved operation as completed, create a renewal daemon, or promise ownership after closing. Reopening requires the private handle and live verification, not a matching username. Cross-host transfer remains unimplemented.
 
-## 7. Authentication and trust
+## 10. Authentication and trust
 
-Provider authentication is separate from Worklease enrollment. A Worklease installation's write role grants no GitHub, Linear, or Jira permission, and a provider OAuth token grants no claim ownership.
+Provider authentication is separate from Worklease enrollment. A Worklease write role grants no provider permission, and a provider token grants no claim ownership.
 
-The current remote authority's read role can inspect namespace claim metadata; it does not enforce source-specific provider ACLs. Treat an authority as a shared coordination trust domain. Do not publish task titles, descriptions, or private progress in public claim metadata. Resource keys can still reveal source/item existence, and hashing is not access control. Deployments requiring stronger separation need separately administered authorities or a separately designed authorization change, not a filtered TUI pretending to provide security.
+The remote authority's read role can inspect namespace claim metadata; it does not enforce provider ACLs. Treat an authority as a shared coordination trust domain. Never publish titles, descriptions, or private progress in claim metadata. Resource keys can still reveal item existence, and hashing is not access control. Stronger separation needs separately administered authorities or a separately designed authorization change.
 
 | Deployment | Credential behavior |
 | --- | --- |
-| Local Backlog.md / local CLI | Use OS access and the supported provider interface. No new login. Filesystem access still needs a trusted source root. |
-| Personal GitHub source | Reuse the selected host/account's `gh` login. Show the resolved provider principal before writes; never rely on whichever ambient account happens to answer first. |
-| Other personal integrations | Prefer the provider's existing credential helper; otherwise use a supported native-app OAuth flow or explicit scoped token input. No embedded application secret in a distributed CLI. |
-| Headless/team automation | Use provider-supported app/service identities, short-lived scoped credentials, or a caller-provided helper. Record both initiating worker and actual provider actor. |
-| Later source service | Server-managed secret store and credential refresh; separate queue-client authentication and per-source authorization. Choose explicitly between per-user delegation and a documented service identity. |
+| Local Backlog.md | OS access and the supported CLI. No login. A trusted, explicitly configured checkout. |
+| Personal GitHub | `gh auth token --hostname H --user U` for the configured account, run with `GH_TOKEN` and `GITHUB_TOKEN` removed from its environment unless the source explicitly selects one. Verify `viewer.login` equals the configured account before any write and after every credential change. The token stays in process memory; Worklease never persists it. |
+| Other personal integrations | The provider's credential helper, otherwise a native-app OAuth flow or explicit scoped token input. No embedded application secret. |
+| Headless or team automation | Provider app or service identities, short-lived scoped credentials, or a caller helper. Record both the initiating worker and the provider actor. |
+| Later source service | Server-managed secrets and refresh, separate client authentication, and per-source authorization. Choose explicitly between per-user delegation and a documented service identity. |
 
-Bind credential references to provider origin, tenant/project scope, and principal. Keep secrets in an OS keychain/helper or protected secret store; a supported private file/fd path is a fallback for headless use. Do not put secrets on argv, in repository configuration, keys, receipts, task comments, traces, or logs. Source configuration contains references, not tokens. Sanitize CLI stderr as well as successful JSON.
+Bind credential references to provider origin, tenant or project scope, and principal. Secrets stay in an OS keychain, helper, or protected store; a private file or fd is a headless fallback. Never put secrets on argv or in configuration, keys, receipts, comments, traces, or logs. Sanitize provider stderr as well as JSON.
 
-Offer read-only setup first. Request additional write scopes only for authorized operations and re-discover capabilities afterward. Serialize token refresh for each credential to avoid refresh races. Distinguish expired credentials, revoked scopes, permission denial, SSO requirements, quota exhaustion, and provider downtime. Never prompt for interactive login from an unattended agent operation; return an actionable structured error.
+Offer read-only setup first. Request write scopes only for authorized operations and rediscover capabilities afterward. Serialize token refresh per credential. Distinguish expired credentials, revoked scopes, permission denial, SSO/SAML enforcement, quota exhaustion, and provider downtime. Never prompt for interactive login from an unattended operation; return a structured, actionable error.
 
-A project file may suggest a source but cannot auto-install/execute an adapter, select a secret, or authorize a new endpoint. Require user trust before executing configured binaries or contacting newly introduced origins. Provider URLs, redirect destinations, local roots, and custom hosts need validation. A later service additionally needs SSRF protections and explicit host/mount allowlists.
+Only the user's queue file can install adapters, select secrets, authorize endpoints, or define launch actions. Validate provider URLs, redirects, checkout roots, and custom hosts. A later service also needs SSRF protection and explicit host and mount allowlists.
 
-Partition caches and indexes by source instance, tenant, principal/access scope, and configuration generation. Shared service caches must not expose one user's private tasks, search matches, dependency names, counts, or existence to another. Initially, do not share payloads across principals. Client-private cached data has explicit retention and offline-use consent; revocation cannot erase copies already read while disconnected. Hide/purge inaccessible cached projections after revalidation, and invalidate all derived indexes. Preserve only protected recovery material needed to resolve outstanding writes.
+Partition caches by source instance, tenant, principal/access scope, and configuration generation. Never share payloads across principals. Cached data has explicit retention, and offline use requires consent; revocation cannot erase copies read while disconnected. After revalidation, purge inaccessible projections from every derived index. Keep only the protected recovery material needed for outstanding writes.
 
-## 8. Extensibility without a framework
+**Untrusted content.** Issue titles, bodies, and comments, especially in public repositories, are attacker-controllable input to any agent that reads them. The TUI shows each item's author and whether that author is outside the repository's collaborators, where the provider exposes it. Launch actions pass references, never content, so the worker's own safety policy applies when it reads the item.
 
-Expose the optional UI as `worklease queue`, with a proposed `worklease queue query --json` agent path. Keep both thin clients of the same queue core. These names are planning choices, not implemented commands. Keep existing CLI defaults, authority wire protocol, resource policy version, and MCP tool surface compatible. Decide any new MCP query tools separately after the JSON contract is exercised.
+## 11. Extensibility
 
-Start with small internal Go interfaces and built-in Backlog.md/GitHub adapters. Reuse the authority client and safe handle/lifecycle code rather than opening its SQLite tables from the TUI. Do not spawn a new Worklease process for every visible row; versioned JSON is useful for integration but not an excuse for unbounded process overhead.
+| Seam | Decision |
+| --- | --- |
+| Source adapters | Built-in Go interfaces first. After slice 6, a versioned out-of-process protocol (D16). |
+| Resource policies | Static built-ins only. They define exclusion domains, and divergent plugin-derived keys would silently split them. External adapters select an existing policy, usually `generic`. |
+| Claim authorities | Local and remote only. Native provider authority requires §9 admission. No storage plugins. |
+| Credential helpers | Built-in `gh`. A generic helper protocol, modeled on Git credential helpers, when a third provider needs it. |
+| Views, filters, status maps, keymaps | Declarative user configuration. Readiness and resource derivation stay inspectable and deterministic. |
+| Launch actions | User-configured argv templates (D18, §12). |
+| Notifications | Later: consume the existing public events and watch stream from outside. No callbacks inside claim transactions. |
+| MCP | Existing tools unchanged. Decide queue MCP tools after the JSON contract is exercised. |
+| Executable policy, widgets, lifecycle hooks, event bus | Rejected until a concrete requirement exists. |
 
-After both sources exercise the model, add explicitly installed out-of-process adapters using a versioned JSON protocol over stdio. Any language can implement it. Use the same conformance fixtures for built-in and external adapters.
+**External adapter protocol.** JSON-RPC 2.0 over stdio with newline-delimited messages. This is the same framing as MCP stdio, so existing libraries work, but it uses a Worklease-specific method set that mirrors §7. MCP tools are not used as the adapter protocol because they carry no standard pagination, capability, coverage, or receipt semantics; mapping them is exactly the per-provider adapter work. An external adapter may itself call a provider's MCP server or API. The boundary needs:
 
-The extension boundary needs:
+- A manifest with adapter identity and version, protocol range, config schema, authentication methods, resource policy selection, and declared capabilities. Negotiate the major version. Unknown optional fields may be ignored; unknown required semantics may not.
+- Request IDs, cancellation, deadlines, bounded message and collection sizes, pagination, and backpressure. Protocol messages go on stdout, bounded redacted diagnostics on stderr. Use a supervised long-lived process, never one per item.
+- Explicit executable and version selection with user approval. No automatic download or execution. A crash isolates its source; a crash after dispatch leaves the mutation uncertain.
+- Source-scoped credential references or a narrow helper channel. Never send Worklease bearer credentials. Minimize inherited environment and configuration.
+- A fake provider, golden fixtures, identity vectors, and tests for pagination, stale writes, capability denials, cancellation, quota handling, malformed output, uncertain outcomes, and secret leakage. The same suite runs against the built-ins.
 
-- A manifest with adapter identity/version, protocol range, config schema, supported authentication methods, and declared capabilities. Negotiate major protocol compatibility; unknown optional fields may be ignored, unknown required semantics may not.
-- Request IDs, cancellation, deadlines, bounded message/collection sizes, pagination, and backpressure. Protocol output belongs on stdout; bounded redacted diagnostics go on stderr. Prefer a supervised long-lived process over per-item spawning.
-- Explicit executable/version selection and user approval. No automatic plugin download or execution from repository metadata. A crash isolates the source; a crash after dispatch leaves the mutation uncertain.
-- Source-scoped credential references or a narrowly scoped helper channel. Do not send Worklease bearer credentials to source adapters. Minimize inherited environment and accessible configuration.
-- A fake provider, golden protocol fixtures, identity vectors, and tests for pagination, stale writes, capability denials, cancellation, quota handling, malformed output, uncertain outcomes, and secret leakage.
+Process isolation is not a sandbox. An installed adapter runs with the user's privileges. Document that trust instead of promising credential isolation that stdio cannot enforce.
 
-Process isolation is not a sandbox. An installed executable runs with the user's OS privileges unless a separate sandbox is explicitly provided. Document that trust rather than promising credential isolation that stdio cannot enforce.
+## 12. Configuration
 
-Other useful seams are credential helpers and declarative saved views, filters, status mappings, ordering, and resource-policy bindings. Keep readiness and resource derivation inspectable and deterministic. Do not introduce executable policy plugins, arbitrary TUI widgets, lifecycle hooks, an agent scheduler, storage plugins, or a general event bus without a concrete requirement. A later notification integration should consume a bounded redacted public stream, not arbitrary callbacks inside claim transactions.
+One owner-private file (D10), strictly parsed like `profiles.yaml`:
 
-## 9. TUI and agent experience
-
-Default to a dense list/detail layout. A board hides too much about dependencies, authority, freshness, and partial loading; it can be considered later as another view of the same model.
-
-```text
-Worklease  Queue   authority: local [host-local]   sources: 2/2   synced 8s ago
- Sources / Views       Work queue                          Details
- > All                 ID       State   Ready   Claim      GH #184 Retry backoff
-   Backlog             TASK-42  Todo    yes     free       Assignee: brett
-   GitHub              GH #184  Open    blocked alice 4m   Source: GitHub / api
-   Mine                GH #190  Open    unknown unknown    Needs: #177 (open)
-   Ready                                                   Claim: alice / loop-7
-   Claimed by me       50 loaded / total unknown            Expires: 4m [observed]
-   Needs recovery      More pages available                 Native claim: not exposed
-                                                           Summary / dependencies
- / filter   Enter details   c claim   a assign   p progress   r refresh   ? help
+```yaml
+# $XDG_CONFIG_HOME/worklease/queue.yaml (never read from a repository)
+version: 1
+me:
+  github.com: brett                     # provider account per host
+  backlog-md: ["@brett"]                # assignee strings that mean me
+sources:
+  - id: worklease
+    adapter: backlog-md
+    checkout: ~/dev/me/worklease
+    claims:                             # omit for host-local backlog-md keys
+      policy: generic                   # D12 portable binding
+      source: brettinternet/worklease/backlog
+  - id: acme-api
+    adapter: github
+    host: github.com
+    repository: acme/api
+    account: brett
+views:
+  - name: Ready
+    authority: team                     # profile name or local
+    sources: [worklease, acme-api]
+    filter: {readiness: ready, claim: free, assigned: [me, nobody]}
+launch:
+  - name: agent
+    argv: [/usr/local/bin/start-agent, --ref, "{ref}"]
+    cwd: "{checkout}"
 ```
 
-The example is illustrative, not a guarantee that a provider supplies every column. Show assignment, provider-native occupancy, and Worklease ownership independently. A claim badge always includes authority/scope in its detail view. `Mine` distinguishes assigned to my provider account from held by my worker session.
+Launch placeholders are limited to adapter-validated identifiers: `{ref}`, `{sourceId}`, `{itemId}`, and `{checkout}`. Each substitutes into exactly one argv element; no shell runs. The child environment is built from scratch, never inherited wholesale. It contains a fixed allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TMPDIR`, and `XDG_*_HOME`), any variables the action names in an explicit `passEnv` list, and `WORKLEASE_PROFILE`, `WORKLEASE_QUEUE_AUTHORITY_ID`, `WORKLEASE_QUEUE_REF`, and `WORKLEASE_QUEUE_RESOURCES` (a JSON array). Variables such as `GH_TOKEN` from the queue's own environment never reach the child unless `passEnv` names them. The environment never includes titles, bodies, or a session ID; the worker generates its own session.
 
-- Use `j/k`, `gg/G`, `/`, `n/N`, Enter, Escape, and consistent pane navigation. Provide arrow-key equivalents and a command palette for less common actions. Explain whether search covers loaded rows, the local index, or the remote source.
-- Keep selection anchored by canonical item identity during refresh. Do not reorder beneath an open confirmation or steal focus when a detail response arrives late. Preserve scroll position; signal new rows instead of jumping.
-- Offer detail tabs for Summary, Dependencies, Activity, Claims, and Recovery. Lazy-load long bodies and comments. Show raw workflow state and why a transition/action is unavailable.
-- Distinguish blocked, occupied, assigned elsewhere, unknown dependencies, stale, permission denied, offline, rate-limited, and recovery-required. Never collapse them into “no work.”
-- Before a mutation, show source, provider actor, authority, exact scope/resources, requested change, and guarantee limitation. Unsupported actions stay discoverable with an explanation. No partial-success toast that conceals a held claim or uncertain write.
-- On narrow terminals, use list/detail switching rather than unreadable squeezed columns. Support no-color and high-contrast modes, resize, Unicode width, and text labels instead of color-only state. Plain JSON/text remains available for agents and accessibility.
-- Treat descriptions as untrusted content. Strip terminal control/OSC sequences, bound Markdown rendering, and never execute embedded commands. Opening a URL or external editor requires an explicit user action and safe argument passing.
+Launch is disabled when the D11 check fails, and while the queue holds a claim on any of the item's resources. In that case the launched worker's own acquisition would fail as already claimed. The user can release (or cancel, §8) and then launch, which is two explicit steps: another worker may acquire in between. The queue shows the worker's claim once it appears and neither supervises nor retries the worker.
 
-The JSON path reports identical items, coverage, freshness, authority, capability denials, and action outcomes. It needs bounded pagination and stable schema versioning. No workflow should require screen scraping or be safer in the TUI than in automation.
+Project-suggested sources are deferred. When added, a repository file may only propose sources, which the user copies into this file after a preview. It never proposes adapters, executables, credentials, or launch actions.
 
-## 10. Remote loading and performance
+## 13. TUI and agent experience
+
+Default to a dense list/detail layout. A board hides dependencies, authority, freshness, and partial loading; it can come later as another view of the same model.
+
+```text
+worklease queue  view: Ready  authority: team (remote 3f9c…)  me: brett  sources 2/2  synced 8s
+ Views         ID        Title                    State  Ready    Assigned  Claim      | acme/api#184
+ > Ready    3  TASK-42   Cache provider pages     To Do  ready    -         free       | Retry backoff for sync
+   Mine     5  #184      Retry backoff for sync   Open   ready    brett     me 4m      | Open, by alice (outside)
+   Claimed  1  #190      Split queue index        Open   unknown  -         -          | Ready     2/2 prereqs closed
+   Recovery 0                                                                          | Assigned  brett
+   All    214                                                                          | Claim     me, queue-7f3c, 4m
+ Sources                                                                               |           renews 1m12s, ok
+   backlog  ok                                                                         | Native    not exposed
+   github   stale 3m                                                                   | Resource  github:acme%2Fapi#184
+               3 of 214  total exact  edges 214/214                                    | [Summary] Deps Activity Claims
+ j/k move  / filter  enter open  c claim  a assign  p progress  x launch  : command  ? help
+```
+
+The mockup is illustrative; not every provider supplies every column. Assignment, native occupancy, and Worklease ownership are independent columns. A claim badge's detail always includes authority and scope. `Mine` distinguishes assigned to my account from held by my session.
+
+Every mutation opens a preview first:
+
+```text
+ Claim acme/api#184 for me
+   Authority  team, remote 3f9c…, cross-host among enrolled clients
+   Resource   github:acme%2Fapi#184
+   Session    queue-7f3c (this window), TTL 10m, renews while open
+   Provider   unchanged: no assignment or state change
+   Limits     does not stop writers outside this authority
+                                             enter confirm   esc cancel
+```
+
+| Keys | Action |
+| --- | --- |
+| `j`/`k`, arrows, `gg`/`G` | Move, top, bottom |
+| `h`/`l`, Tab, Enter, Esc | Pane focus, open, back |
+| `/`, `n`/`N` | Filter; next or previous match |
+| `c`, `R` | Claim for me; release (capital to avoid accidents) |
+| `a`, `s`, `p` | Assign to me, change state, record progress |
+| `x`, `o` | Launch action picker; open provider URL |
+| `r`, `:`, `?` | Refresh, command palette, help |
+
+Keymaps are remappable (D17).
+
+- Search states whether it covers loaded rows, the local index, or the remote source.
+- Selection stays anchored by canonical identity during refresh. Never reorder beneath an open preview or steal focus when a late detail response arrives. Preserve scroll position and signal new rows instead of jumping.
+- Detail tabs: Summary, Dependencies, Activity, Claims, and Recovery. Long bodies and comments load lazily. Show raw workflow state and why an action is unavailable.
+- Distinguish blocked, occupied, assigned elsewhere, unknown dependencies, stale, permission denied, offline, rate-limited, and recovery-required. Never collapse them into "no work".
+- No partial-success toast may conceal a held claim or uncertain write.
+- Below about 100 columns, switch between list and detail instead of squeezing columns. Support no-color and high-contrast modes, resize, Unicode width, and text labels rather than color-only state. Test Terminal.app, iTerm2, Ghostty, tmux, and Herdr panes.
+- Strip terminal control and OSC sequences from provider content, render bodies as bounded, sanitized text with minimal Markdown styling, and never execute embedded commands. Opening a URL or editor requires an explicit action with safe argument passing. The queue never opens raw Backlog.md files for editing, because writes go through the CLI.
+
+**JSON path.** `worklease queue query --view NAME --json` returns the same items, coverage, freshness, authority, capability denials, and action availability as the TUI, with a stable schema version and bounded pagination. Each item carries its exact claim `resources` and `keyInputs` so CLI callers derive identical keys. `--max-age DURATION` serves the index when it is fresh enough and otherwise joins or starts a single-flight refresh. `--require-complete` fails with a structured `incomplete` result instead of returning partial coverage. `worklease queue next --view NAME --json` runs the contract's `selectNext` over a complete scope and returns one candidate or a structured no-work reason. It does not acquire; the caller claims, and on contention it queries again. No workflow requires screen scraping, and none is safer in the TUI than in automation.
+
+## 14. Remote loading and performance
 
 ### Fast first view, honest partial knowledge
 
-Render a bounded page of cached summaries immediately, then revalidate asynchronously. A cold source fetches one summary page; bodies, comments, expanded dependencies, and history load only on demand. Slow or failed sources cannot block healthy ones. Loading completion order must not alter configured source order or workflow selection order.
+Render a bounded page of cached summaries immediately, then revalidate asynchronously. A cold source fetches one summary page; bodies, comments, expanded dependencies, and history load on demand. Slow or failed sources never block healthy ones, and completion order never changes configured source order or selection order.
 
-Store summaries and searchable fields in a disposable local SQLite index, separate from the authority database and recovery journal. Use indexed queries/FTS where appropriate, bounded detail caches, and explicit schema generations. Fetching every body to enable search is opt-in background indexing, not startup work. Label body-search coverage when only some bodies are indexed.
+The index (D19) is SQLite in WAL mode under the user cache directory, separate from the authority database and recovery journal, with FTS for searchable fields, bounded detail caches, and a schema generation. Rebuilding it is always safe. Each source partition has one refresher at a time across all queue processes, enforced by an advisory file lock. Other processes read the index and wait for or report the in-flight refresh. This keeps agents that call `queue query` in loops from multiplying provider traffic. Indexing every body for search is opt-in background work, and body-search coverage is labeled.
 
-Each query reports source coverage, scope, observation time, page cursor, exact/estimated/unknown totals, and reason for incompleteness. Distinguish these statements:
+Each query reports coverage, scope, observation time, cursor, exact/estimated/unknown totals, and the reason for incompleteness. Distinguish:
 
-- “No match in the loaded/indexed subset.”
-- “No match in the complete selected provider scope.”
-- “This exact item has a fully checked prerequisite closure.”
-- “There is no eligible work anywhere in the complete selected scope.”
+- "No match in the loaded or indexed subset."
+- "No match in the complete selected provider scope."
+- "This item has a fully checked prerequisite closure."
+- "There is no eligible work anywhere in the complete selected scope."
 
-Only the last requires full scope enumeration and the required complete graph. Paginated browsing does not relax the generic workflow's complete-graph requirement before selecting work. An explicit item action can hydrate and verify its authorized selection plus prerequisite closure; a Next ready/source-wide selection cannot silently choose from the first page. Cycles, inaccessible/missing prerequisites, exhausted graph budgets, and unsupported dependency semantics block readiness proof. Dependency reads do not authorize writes outside the selected scope.
+Only the last requires full enumeration plus the complete graph (D23). An explicit item action can hydrate and verify that item's closure; next-ready never chooses from the first page. Cycles, inaccessible or missing prerequisites, exhausted graph budgets, and unsupported dependency semantics block readiness proof. Dependency reads never authorize writes outside the selected scope.
 
-Filtering, cross-source sorting, and provider search may have incompatible order/cap semantics. Push down only filters with equivalent meaning; evaluate residual filters explicitly. Preserve stable per-source order and deterministic tie-breakers. Do not claim a globally complete top-N ranking from independently truncated source searches. Cursors bind query, sort, source, principal, and generation; filter changes or expired cursors restart the appropriate scan.
+Push down only filters whose meaning is equivalent; evaluate residual filters explicitly. Preserve stable per-source order and deterministic tie-breakers. Never claim a globally complete top-N from independently truncated searches. Cursors bind query, sort, source, principal, and generation.
 
-### Bounded work and incremental synchronization
+### Backlog.md loading
 
-Use one request scheduler per client process with shared budgets for the actual provider quota identity, not just each repository. Start with conservative bounded concurrency, provider-sized pages, cancellation of superseded reads, deduplicated in-flight fetches, and batched reads where available. Reserve capacity for authoritative action checks. Heartbeats use a separate control path and cannot sit behind source refresh or full-text indexing. Lifecycle requests still serialize through the existing per-handle revision/pending-request rules; reserved capacity must not bypass an unresolved request or race two mutations of the same claim.
+- **Summaries:** one `task list --json` per invalidation gives the complete project in one process. Summaries never need a process per row.
+- **Invalidation:** prefer the long-lived `task list --json --watch` stream. Fall back to a debounced filesystem watch on the backlog directory followed by a re-list, with overflow recovery and periodic reconciliation. Choose by measurement at 10,000 tasks (slice 3).
+- **Edges:** `task view --json` per task, with at most 4 concurrent processes, prioritized as selected-item closure, then visible rows, then background. Cache edges keyed by task ID, `updatedAt`, and the task file's path, mtime, and size; the view reports the path. Minute-resolution timestamps alone are not trusted. Next-ready over a Backlog.md source is available only once the edge cache covers the current scan generation. Until then the view shows, for example, "edges 812/10,000" and readiness `unknown`.
+- **Upstream:** propose adding `dependencies`, plus ideally a per-task content version, to `task list --json`. That turns the full graph into one process and removes the edge cache. Declare the limitation until it lands.
 
-Debounce search, prioritize visible summaries and selected details, and bound prefetch to adjacent pages. Never perform a network call per row during rendering. Cap pending jobs, item/body sizes, decoded responses, dependency traversal, and memory. If a provider has no batch interface, enforce the same budget on individual requests and show progress rather than hiding a large fan-out.
+### GitHub loading
 
-Honor provider retry hints and rate headers with exponential backoff and jitter; distinguish rate-limited from offline. Retry safe reads, not uncertain writes. Stop background hydration before spending capacity needed for an explicit action. Within a process, share polling by source/principal/query; across many clients, measure duplicated traffic before adding a daemon or service.
+- **Enumeration:** GraphQL `repository.issues` with cursor pages of 100, ordered by `UPDATED_AT`. Select summary fields and `blockedBy(first: N) { totalCount … }` so the first page already carries edges with known completeness. `totalCount` gives an exact total.
+- **Incremental sync:** filter by `since` from the high-water `updatedAt` minus an overlap window, dedupe by node ID, and apply each page together with its checkpoint atomically.
+- **Change polling:** a conditional REST GET for the single most recently updated issue, reusing its ETag; a 304 is free. Slice 1 verifies whether dependency edits bump `updatedAt`. If they do not, edge freshness relies on reconciliation plus closure refresh before any action.
+- **Reconciliation:** a periodic bounded full scan detects deletions, transfers, and visibility changes. Only a completed scan generation, or explicit 404, 410, or redirect evidence, removes rows.
+- **Details:** batched GraphQL `nodes(ids:)` for visible rows; comments lazily.
+- **Scheduling:** one serial request queue per host and account, with priorities action checks, then selected detail, then visible page, then background. Mutations are spaced at least 1 s apart. Honor `retry-after` and rate headers; distinguish rate-limited from offline.
 
-Prefer provider deltas and conditional reads when supported. Treat webhooks as invalidation hints unless the provider proves a complete ordered stream. Handle duplicates, out-of-order updates, tombstones, changed permissions, expired cursors, and fields disappearing. Reconcile periodically with a bounded authoritative scan. Do not delete missing rows from an incomplete scan; use a completed scan generation or explicit deletion evidence. Apply each page and its checkpoint atomically in the disposable cache so crashes cannot skip uncommitted data.
+### Bounded work
 
-For mutable offset pagination or weak update timestamps, deduplicate by stable identity, overlap incremental windows where appropriate, and retain an incomplete/syncing label until reconciliation. A timestamp alone is not a lossless change cursor. Local filesystem watches similarly invalidate provider reads, with overflow recovery and periodic reconciliation; they are not a substitute provider parser.
+One scheduler per process shares budgets per provider quota identity, cancels superseded reads, deduplicates in-flight fetches, and reserves capacity for authoritative action checks. Heartbeats run on a separate control path that neither refresh nor indexing can delay. Lifecycle requests still serialize through the per-handle revision and pending-request rules; reserved capacity never bypasses an unresolved request or races two mutations of the same claim.
 
-### Efficient claim overlays
+Debounce search, prioritize visible summaries and the selected detail, and prefetch only adjacent pages. Never make a network call per row while rendering. Cap pending jobs, item and body sizes, decoded responses, dependency traversal, and memory. Retry safe reads, never uncertain writes. Stop background hydration before it spends capacity an explicit action needs.
 
-Use the existing exact-resource batch `status` operation for visible/actionable items, plus events/watch to invalidate and refresh a bounded claim projection per authority. Do not poll each row or load all historical claims on every refresh. Keep provider sync and claim freshness independent. Subscribe using a baseline/cursor sequence that cannot miss changes between snapshot and watch; reconcile on gaps or authority restore and refresh before acting. Expiry needs authoritative rechecks even when no new lifecycle event arrives; a local countdown is display only.
+Treat webhooks, when a later service owns them, as invalidation hints unless the provider proves a complete ordered stream. Handle duplicates, out-of-order updates, tombstones, permission changes, expired cursors, and disappearing fields. Never delete rows missing from an incomplete scan.
 
-The current authority interface has an unpaginated `List`, optionally filtered to one exact resource; resource-filtered watches are limited to 32 resources. Event cursors already carry identity and gap semantics. Do not assume these are a scalable bulk-subscription API. Benchmark them, cap supported working sets, and introduce provider-neutral bounded snapshot/filter or paging support only if required. Never expand the watch filter limit merely to attach the entire queue. Baseline/event consistency and cursor recovery need explicit tests before an event-derived availability badge can be trusted.
+### Claim overlay (D20)
 
-### Proposed acceptance budgets
+1. Read the head cursor with `Events("", 1)`.
+2. Batch `Status` the visible and actionable resources. Size chunks for the 4 MiB response cap as well as the request cap, because each claim appears in both `claims` and `resources` and bundles carry up to 32 resources of up to 1 KiB each. On `response-too-large`, split the chunk and retry, since reads are safe to retry.
+3. Watch the namespace from the head cursor. Events between the cursor and the snapshot replay harmlessly, so nothing is missed.
+4. When an event touches a displayed resource, re-status just those resources.
+5. Schedule a re-status at each displayed claim's authority-time `expiresAt`, because expiry appends no event.
+6. On gap, restore, or authority change, discard the projection and restart from step 1.
 
-Measure on a documented reference machine with fixed fixtures and injected network latency. Include p50/p95/p99, process count, API request count, transferred bytes, RSS, disk/index size, and quota cost. Do not present provider-controlled latency as a Worklease guarantee.
+Never use `List` or filtered watches for overlays, and never widen the 32-resource filter limit to attach a whole queue. Provider sync and claim freshness stay independent. Always re-verify before acting; a local countdown is display only.
 
-| Workload | Initial target |
+### Acceptance budgets
+
+Measure on the D22 reference machine with fixed fixtures and injected network latency. Report p50, p95, and p99, process count, API request count, bytes transferred, RSS, disk and index size, and quota cost. Provider-controlled latency is never a Worklease guarantee.
+
+| Workload | Target |
 | --- | --- |
-| Warm first view, 10,000 summaries | p95 within 500 ms; no network dependency before rendering. |
-| Navigation and scrolling | p95 input-to-render within 50 ms with cached rows, including concurrent refresh. |
-| Indexed filter/search, 10,000 summaries | p95 within 100 ms; no full corpus parse or external process per keystroke. |
-| Cold remote view | Render within 150 ms of receiving the first summary page; never wait for full enumeration. Track provider latency separately. |
-| Large browsing corpus, 100,000 summaries | Remain navigable with bounded windows/caches and a provisional 256 MiB RSS budget, excluding external provider processes, which are reported separately. |
-| Failure/load scenario | Rate limiting, a hung adapter, a large graph, and full refresh cannot starve owned-claim renewal or freeze input. Measure renewal deadline margin. |
+| Warm first view, 10,000 summaries | p95 within 500 ms, with no network dependency before rendering. |
+| Navigation and scrolling | p95 input-to-render within 50 ms on cached rows, including during a concurrent refresh. |
+| Indexed filter or search, 10,000 summaries | p95 within 100 ms, with no corpus parse or external process per keystroke. |
+| Cold remote view | Render within 150 ms of the first summary page arriving, never waiting for full enumeration. |
+| View of 50,000 summaries across sources | Navigable, within a provisional 256 MiB RSS budget excluding provider processes, which are reported separately. |
+| 100,000-summary browsing stress | Remains navigable with bounded windows. Record the failure boundary. |
+| 25 clients and 500 active claims on one remote authority | Renewal p99 leaves at least 50% of the TTL margin. Namespace watches do not saturate the single writer. |
+| Rate limiting, a hung adapter, a large graph, and a full refresh together | None of them starves owned-claim renewal or freezes input. Measure the renewal deadline margin. |
 
-These numbers are prototype exit criteria to validate or revise with recorded measurements before implementation scope expands, not a reason to weaken safety. Test a larger stress corpus to find the failure boundary rather than promising unlimited scale.
+These are prototype exit criteria to validate or revise with recorded measurements before scope expands, never a reason to weaken safety.
 
-## 11. Scaling limits and overlooked failure cases
+## 15. Scaling limits and overlooked failure cases
 
 | Risk | Plan now; escalate only with evidence |
 | --- | --- |
-| Many clients polling the same account | Per-quota scheduling and jitter now. A permission-aware source service later can coalesce reads, own webhooks, and isolate tenants. A shared service identity does not inherit each viewer's provider permissions. |
-| Many claims and renewals | Estimate load as active claims / renewal interval plus acquisitions, watches, history, and recovery. Benchmark the existing single-writer authority separately from source throughput. Bound background reads so renewal latency stays safe. |
-| SQLite/WAL growth | Separate cache from authority state. Track disk headroom, write latency, checkpointing, pinned unresolved history, and recovery journal growth. Cache eviction must not erase authority evidence. Never put the authority WAL on a network filesystem. |
-| Multiple authority replicas | Existing remote mode is one writer, not HA. No writable clones, lease failover, or source-hub substitution. Storage/HA work needs separate conformance and restore evidence. |
-| Large dependency graphs | Incremental closure reads and graph indexes, cycle detection, traversal bounds, and explicit incomplete outcomes. Source-wide scheduling may legitimately require more data than browsing. |
-| Hot items and contention | Reuse bounded claim waits and jitter. No new FIFO/fairness guarantee or server-side work queue. Show contention rather than repeatedly acquiring in a tight loop. |
-| Tenant and ACL changes | Permission-aware partitioning and invalidation across summaries, FTS, bodies, graphs, and counts. Do not leak hidden dependency identifiers through explanations. |
-| Cache/reset/upgrade | Schema-versioned disposable rebuilds; durable recovery migrations separately. Invalid provider cursor, cache loss, plugin upgrade, authority restore, and principal change are different reset causes. |
-| Sleep, clock skew, and disconnect | Use authority time/lease verification, not wall-clock UI countdowns. Stop writes on uncertainty and retain recovery evidence. |
-| Source disappearance | Distinguish deleted, moved, archived, inaccessible, and temporarily unavailable. Preserve claim/recovery references even if the source no longer resolves. |
-| Bulk operations | Defer initially. Later report per-item results and cancellation boundaries; no implied cross-source atomicity or rollback. |
-| Telemetry and privacy | Opt-in diagnostics with bounded identifiers and no task bodies/tokens. Measure queue wait, provider latency, cache lag, graph coverage, renewal margin, and unknown outcomes. |
+| Agents calling `queue query` in loops | Single-flight refresh per partition, `--max-age`, and index reads. This is the dominant local traffic multiplier. |
+| Backlog.md edge hydration at 10,000 tasks | Edge cache, bounded concurrency, and the upstream bulk field. If view cost scales with project size, next-ready on large projects waits for upstream. |
+| Many clients polling one provider account | A per-account serial scheduler, conditional GETs, and jitter. A later permission-aware source service can coalesce reads and own webhooks. A shared service identity does not inherit each viewer's permissions. |
+| Namespace watch cost | Each watching client polls the store every 250 ms. Measure 25 clients. If it saturates the store, add server-side watch coalescing before raising client count. |
+| Remote `List` response cap | Overlays avoid `List`. Add provider-neutral paging before any feature enumerates claims at scale. |
+| Claims and renewals | Load is roughly active claims divided by the renewal interval, plus acquisitions, watches, history, and recovery. Benchmark the single-writer authority separately from source throughput. |
+| SQLite and WAL growth | Keep the cache separate from authority state. Track disk headroom, checkpointing, pinned history, and journal growth. Never put the authority WAL on a network filesystem. |
+| Authority replicas | Remote mode is one writer, not HA. HA needs separate conformance and restore evidence. |
+| Large dependency graphs | Incremental closure reads, cycle detection, traversal bounds, and explicit incomplete outcomes. |
+| Hot items and contention | Bounded claim waits and jitter. No FIFO guarantee or server-side work queue. Show contention instead of re-acquiring in a tight loop. |
+| Authority split brain | The D11 check. Launch actions pass `WORKLEASE_PROFILE`. |
+| Clone-local Backlog.md IDs | Duplicate-ID guard and renumber-as-migration (§6). |
+| Backlog.md Git side effects | Declared effects, previews, and consent (§5). |
+| Prompt injection through launched agents | References only, provenance display, and the worker's own policy (§10). |
+| Tenant and ACL changes | Permission-aware partitioning and invalidation across summaries, FTS, bodies, graphs, and counts. Never leak hidden dependency identifiers through explanations. |
+| Cache, reset, and upgrade | Schema-versioned disposable rebuilds; durable recovery migrations separately. Invalid provider cursors, cache loss, plugin upgrades, authority restores, and principal changes are distinct reset causes. |
+| Sleep, clock skew, and disconnect | Authority time and lease verification, not wall-clock countdowns. Stop writes on uncertainty and keep recovery evidence. |
+| Source disappearance | Distinguish deleted, moved, archived, inaccessible, and temporarily unavailable. Keep claim and recovery references even when the source no longer resolves. |
+| Bulk operations | Deferred. Later, per-item results and cancellation boundaries, with no implied cross-source atomicity. |
+| Telemetry and privacy | Opt-in diagnostics with bounded identifiers and no bodies or tokens. Measure queue wait, provider latency, cache lag, graph coverage, renewal margin, and unknown outcomes. |
 
-Also test concurrent human edits, required transition fields, changes to workflow schemas, read-only filesystems, CLI version drift, interrupted login, revoked service installations, duplicate webhooks, terminal escape injection, enormous descriptions, and adapter crashes after a write. These are acceptance scenarios, not just exception text.
+Also test concurrent human edits, required transition fields, workflow schema changes, read-only filesystems, CLI version drift, interrupted login, revoked installations, terminal escape injection, enormous descriptions, and adapter crashes after a write. These are acceptance scenarios, not just error messages.
 
-## 12. Implementation slices and decision checkpoints
+## 16. Implementation slices
 
-Create backlog items from these slices after this plan is accepted. This document does not create or complete backlog work.
+Each slice becomes one parent backlog task with subtasks. Exit criteria become acceptance criteria. Slices never change claim, data-authority, or authorization guarantees; an investigation may only narrow supported scope.
 
-1. **Contract and identity fixtures.** Extend the existing source contract with capability, pagination, coverage, freshness, and principal semantics. Correct the generated Backlog Worklease guide through the Backlog CLI: its claim that remote authority is deferred is stale; the current [experimental remote contract](remote-claim-authority.md) governs this plan. Verify GitHub canonical inputs and migration limits. Demonstrate identical queue/CLI claim resources, host separation, source-wide Markdown scope, and structured unsupported results. Keep protocol names internal.
-2. **Read-only vertical slice.** Shared query core, Backlog.md and GitHub adapters, explicit auth/source setup, summary/detail TUI, JSON query, and claim visibility. Prove incomplete graphs, unreadable sources, stale cache, and local-versus-remote authority scope are visible. No provider writes or new claim ownership yet.
-3. **Performance and synchronization.** Add the disposable index, bounded scheduler, lazy hydration, reconciliation, and claim projection. Publish benchmark fixtures/results and pagination/cursor correctness tests. Resolve any authority snapshot/paging gap needed for the supported scale before claiming live availability.
-4. **Claim lifecycle.** Explicit exact resources, acquisition revalidation, contention, private session ownership, independent heartbeat, exit/suspend behavior, and CLI worker handoff. Prove remote outages never change authority and native occupancy never becomes a false global-exclusion promise.
-5. **Provider progress and assignment.** Add only tested operations with explicit permission, durable intent, receipt read-back, conflict handling, and recovery UI. Inject lost responses and partial failures at each boundary. Verify assignment-only and progress-unsupported sources still behave honestly.
-6. **External source adapters.** Stabilize a small versioned out-of-process protocol from the two implementations. Publish an authoring guide, sample adapter, compatibility policy, and shared conformance suite. Require install/trust approval and test crashes, malformed output, cancellation, and secret redaction.
-7. **Evidence-driven additions.** Add Beads, Linear, Jira, GitLab, or another source based on actual demand. Native-authority mode requires a real provider conformance study. A source service requires measured duplicated traffic/latency, an authorization/cache design, and a deployment need. Neither is a prerequisite for the initial useful queue.
+| Slice | Depends on | Scope | Exit criteria |
+| --- | --- | --- | --- |
+| S1 Contract, identity, probes | None | Extend the source-provider contract with capabilities, pagination, coverage, freshness, principal, and effects. Amend the generic contract with the no-effect cancellation rule (§8). Correct the stale remote-authority statement in the generated Worklease guide through the Backlog CLI. Add identity fixture vectors: `backlog-md` host-local keys, D12 `generic` bindings, GitHub `owner/repo` and `host/owner/repo`, linked worktrees, and source-wide Markdown. Run live probes: whether GitHub dependency edits bump `updatedAt`, ETag behavior, Enterprise field availability where accessible, Backlog.md list and view cost on a generated 10,000-task project, and auto-commit with staged changes. File the upstream Backlog.md request. | Vectors run in tests. Queue-derived and CLI-derived keys are byte-equal. Probe results are recorded in §3 and any affected decisions updated. |
+| S2 Read-only vertical slice | S1 | Bubble Tea spike first, covering input latency, resize, Unicode width, and no-color (confirms D9). Then the queue core snapshot model, `queue.yaml` loading, Backlog.md and GitHub read adapters, the list/detail TUI, `queue query --json` schema v1, claim visibility by batch status, and the D11 check. | Incomplete graphs, unreadable sources, stale cache, and local versus remote scope are visible in both TUI and JSON. No provider writes and no claim ownership. No network access when only local sources and the local authority are selected and Backlog.md remote operations are off. A remote-authority view contacts only that authority. |
+| S3 Index, sync, overlay | S2 | SQLite index with FTS, single-flight refresh, the per-quota scheduler, GitHub GraphQL enumeration and conditional polling, the Backlog.md edge cache and invalidation choice, reconciliation generations, the D20 overlay, and benchmark fixtures. | §14 budgets met, or revised with recorded measurements. Pagination and cursor tests pass. Injected-race tests show the overlay never misses a change. The 25-client, 500-claim authority test has recorded results. |
+| S4 Claim lifecycle | S3 | Claim for me with a private session, heartbeat on the control path, exit and suspend behavior, admission checks, the D12 binding with its duplicate-ID guard, contention UX, and `queue next`. | Remote outages never change the authority. The queue and the CLI contend on identical resources. The renewal margin holds under S3 load scenarios. Native occupancy never renders as global exclusion. |
+| S5 Launch actions | S4 | Argv templates, the allowlisted environment, cwd, the D11 and held-claim gates, and display of the worker's claim once it appears. | With secret variables set in the queue's environment, none reach the child unless named in `passEnv`. Hostile titles and IDs cannot inject arguments. Claim then Launch is refused with an explanation. The launched CLI worker resolves the same authority and resources. |
+| S6 Provider writes | S4 | State, progress, checklist, and assign operations per §8, with the recovery journal, markers, read-back, cancellation, and recovery UI. | Lost responses and partial failures are injected at each boundary. A lost response with lagging read-back stays unresolved and never re-dispatches. Cancellation is refused once any write or guarded operation has started. Assignment-only and progress-unsupported sources behave honestly. |
+| S7 External adapter protocol | S6 | A JSON-RPC 2.0 stdio protocol derived from both built-ins, plus a manifest, authoring guide, sample adapter, compatibility policy, and shared conformance suite. | The built-ins pass the suite. Tests cover crashes, malformed output, cancellation, and secret redaction. Installation requires explicit approval. |
+| S8 Evidence-driven additions | S7 or measured need | Beads, Linear, Jira, or GitLab by demand. A native-authority study per §9. A source service once duplicated traffic, latency, and authorization needs are measured. | Each is its own decision, with evidence recorded here first. |
 
-Before splitting implementation work, retain explicit decisions/evidence for the supported corpus and client count, reference benchmark hardware, Backlog.md bulk-read availability, GitHub identity/endpoint capability vectors, and authority snapshot/watch consistency. Investigations may narrow supported scope; they must not silently change claims, data authority, or authorization guarantees.
+The upstream Backlog.md bulk-dependency request runs in parallel from S1. When it lands, S3's edge cache becomes a fallback for older versions.
+
+## 17. Open questions
+
+These do not block S1 or S2. Each needs an answer recorded here before the named slice starts.
+
+- Which Bubble Tea and Lip Gloss major versions to pin (S2 spike).
+- Whether namespace watch polling holds at 25 clients or needs server-side coalescing (S3 measurement).
+- The shape of provider-neutral claim paging, if any feature needs to enumerate claims (before S4 if `next` requires it).
+- Whether to map GitHub Projects v2 status fields; this needs the `project` scope and per-project field discovery (before S6).
+- A headless GitHub identity: GitHub App installation versus fine-grained tokens (before any unattended write).
