@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy.",
+  "cases": [
+    {
+      "name": "hard versus hierarchy",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "terminal": false}, {"ref": ["local", "b"], "terminal": false}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "b"], "condition": "terminal", "outcome": "open", "interpretation": "unsatisfied", "fresh": true, "provenance": "provider"}, {"type": "parent-child", "from": ["local", "a"], "to": ["local", "b"], "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "blocked", "eligible": false, "reasons": ["hard-condition-unsatisfied"]}
+    },
+    {
+      "name": "hierarchy alone",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "terminal": false}, {"ref": ["local", "b"], "terminal": false}], "edges": [{"type": "parent-child", "from": ["local", "a"], "to": ["local", "b"], "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
+    },
+    {
+      "name": "cross-source satisfied",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "terminal": false}, {"ref": ["remote", "b"], "terminal": true}], "edges": [{"type": "cross-source-prerequisite", "from": ["local", "a"], "to": ["remote", "b"], "condition": "merged", "outcome": "merged", "interpretation": "satisfied", "fresh": true, "provenance": "explicit caller mapping"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
+    },
+    {
+      "name": "hard cycle",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"]}, {"ref": ["local", "b"]}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "b"], "condition": "terminal", "provenance": "provider"}, {"type": "hard-prerequisite", "from": ["local", "b"], "to": ["local", "a"], "condition": "terminal", "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "unknown", "eligible": false, "reasons": ["hard-cycle"]}
+    },
+    {
+      "name": "partial with known blocker",
+      "graph": {"coverage": "partial", "items": [{"ref": ["local", "a"]}, {"ref": ["local", "b"], "terminal": false}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "b"], "condition": "terminal", "outcome": "open", "interpretation": "unsatisfied", "fresh": true, "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "blocked", "eligible": false, "reasons": ["hard-condition-unsatisfied", "incomplete-closure"]}
+    },
+    {
+      "name": "partial without blocker",
+      "graph": {"coverage": "partial", "items": [{"ref": ["local", "a"]}], "edges": []},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "unknown", "eligible": false, "reasons": ["incomplete-closure"]}
+    },
+    {
+      "name": "unsupported condition",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"]}, {"ref": ["local", "b"], "terminal": true}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "b"], "condition": "approved", "outcome": "not_planned", "interpretation": "unknown", "fresh": true, "support": "unsupported", "provenance": "caller policy"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "unknown", "eligible": false, "reasons": ["unsupported-condition"], "outcome": "capability"}
+    },
+    {
+      "name": "blocked owner maintenance",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "ownerVerified": true}, {"ref": ["local", "b"], "terminal": false}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "b"], "condition": "terminal", "outcome": "open", "interpretation": "unsatisfied", "fresh": true, "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "report-blocked", "expected": {"readiness": "blocked", "eligible": true, "reasons": ["hard-condition-unsatisfied", "owner-maintenance-only"], "requires": ["authorization", "verified-claim", "provider-receipt"]}
+    },
+    {
+      "name": "legacy dependencies",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
+      "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
+    }
+  ]
+}

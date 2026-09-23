@@ -45,12 +45,12 @@ it. Any overlap conflicts, and acquisition is all-or-none.
 1. Resolve sources/selectors in caller order and discover the complete required
    dependency graph.
 2. Return `complete`, `blocked`, or `active-claims` when no item is eligible.
-3. Select terminal-prerequisite, unblocked, claimable work in provider order.
+3. Evaluate each candidate's fresh, complete hard-prerequisite closure with the declared named condition per edge (legacy dependencies default to terminal). Known unsatisfied edges block even with other unknown edges; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence stays unknown/capability. Select only ready, unblocked, claimable start/resume work in provider order. Hierarchy and related work are not hard edges; shared resources are claim contention.
 4. Accept exact caller-supplied resources and acquire a fresh ownership epoch
    before delegation, isolation, or edits.
 5. Retain non-secret claim metadata plus the private session handle. Never
    expose its credential.
-6. Revalidate dependencies, ownership, guarantee scope, and provider state
+6. Revalidate hard edges and completion evidence, ownership, guarantee scope, and provider state
    before every durable write.
 7. Heartbeat before half the TTL and around bounded long-running operations.
 8. Perform only caller-authorized provider writes and retain/re-read their
@@ -58,7 +58,10 @@ it. Any overlap conflicts, and acquisition is all-or-none.
 9. Checkpoint local recovery metadata only after the provider checkpoint is
    verified.
 10. Review/archive only at explicit boundaries, then release the exact current
-    claim with an audit reason.
+    claim with an audit reason. A verified current owner may report Blocked or
+    record progress when prerequisites change, but cannot start/resume without
+    readiness; every maintenance write still requires permission and a provider
+    receipt, and completion requires its declared evidence.
 
 A short CLI loop needs no credential plumbing:
 
