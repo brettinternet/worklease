@@ -282,7 +282,9 @@ type Adapter interface {
 }
 type Registry struct{ adapters map[string]Adapter }
 
-func NewRegistry() *Registry { return &Registry{adapters: map[string]Adapter{}} }
+func NewRegistry() *Registry {
+	return &Registry{adapters: map[string]Adapter{"backlog-md": NewBacklogAdapter()}}
+}
 func (r *Registry) Register(name string, a Adapter) error {
 	if strings.TrimSpace(name) == "" || a == nil {
 		return fmt.Errorf("adapter name and implementation are required")

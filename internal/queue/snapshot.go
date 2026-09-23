@@ -257,7 +257,12 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 			s.Sources[source.ID] = coverage
 		}, out)
-		// Hydrate each item independently. A slow item consumes one bounded slot, not the page or other slots.
+		// Expensive per-item providers hydrate only explicitly requested details.
+		_, onDemand := a.(interface{ OnDemandDetails() })
+		if onDemand {
+			refs = nil
+		}
+		// A slow item consumes one bounded slot, not the page or other slots.
 		for _, ref := range refs {
 			select {
 			case jobs <- hydrationJob{ref: ref, item: items[ref.Key()]}:

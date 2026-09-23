@@ -1,0 +1,1 @@
+{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-2","title":"Second","status":"To Do","priority":"high","ordinal":200,"assignees":["@sam"],"updatedAt":"2026-09-23T12:00:00Z","isReady":false,"parentTaskId":"TASK-1"},{"id":"TASK-1","title":"First","status":"Done","priority":"medium","ordinal":100,"assignees":[],"updatedAt":"2026-09-22T12:00:00Z","isReady":false}]}
