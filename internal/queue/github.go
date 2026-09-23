@@ -149,7 +149,7 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 			Login string `json:"login"`
 		} `json:"viewer"`
 	}
-	if err := a.query(ctx, b, `query { viewer { login } }`, nil, &viewer); err != nil {
+	if err := a.query(ctx, b, githubViewerQuery, nil, &viewer); err != nil {
 		return Source{}, err
 	}
 	if viewer.Viewer.Login != account {
@@ -167,7 +167,16 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 }
 
 // query serializes both HTTP calls and quota waits for a configured account.
+const githubViewerQuery = `query { viewer { login } }`
+
 func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query string, variables any, dest any) error {
+	// Only the four vetted read operations can reach the provider. This also
+	// rejects dynamically assembled GraphQL mutations before any network I/O.
+	switch query {
+	case githubViewerQuery, githubListQuery, githubDetailQuery, githubDependencyQuery:
+	default:
+		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
+	}
 	gate := githubLock(b.host, b.account)
 	gate.mu.Lock()
 	defer gate.mu.Unlock()

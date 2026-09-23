@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
@@ -45,8 +44,14 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 	return out
 }
 
+// ClaimStatusReader is the only authority capability available to the queue core.
+// Mutation methods are deliberately absent from this boundary.
+type ClaimStatusReader interface {
+	Status(context.Context, lease.Selector) (lease.Status, error)
+}
+
 type ClaimAuthority struct {
-	API     authority.Authority
+	API     ClaimStatusReader
 	ID      string
 	Profile string
 	Remote  bool

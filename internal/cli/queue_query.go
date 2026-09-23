@@ -51,6 +51,14 @@ type queueCursor struct {
 }
 
 func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) error {
+	return queueQueryActionWithLoader(s, queue.NewLoader)
+}
+
+func queueQueryActionWithLoader(s *boundary, newLoader func(*queue.Registry) *queue.Loader) func(context.Context, *urfavecli.Command) error {
+	return queueQueryActionWithRegistry(s, queue.NewRegistry, newLoader)
+}
+
+func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
 		if cmd.String("view") == "" {
 			return s.handle(cmd, reason.Invalid("--view is required for queue query"))
@@ -69,7 +77,7 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 		if view == nil {
 			return s.handle(cmd, reason.Invalid("unknown queue view"))
 		}
-		registry := queue.NewRegistry()
+		registry := newRegistry()
 		sources := make([]queue.Source, 0, len(view.Sources))
 		resolveErrors := make(map[string]string)
 		for _, configured := range cfg.Sources {
@@ -96,7 +104,7 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 			source.ID, source.Adapter = configured.ID, configured.Adapter
 			sources = append(sources, source)
 		}
-		loader := queue.NewLoader(registry)
+		loader := newLoader(registry)
 		updates := loader.Refresh(ctx, sources)
 		for range updates {
 		}
@@ -201,6 +209,13 @@ func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) err
 			if coverage.State != queue.CoverageComplete {
 				freshness = "unknown"
 				incomplete = true
+			}
+			for _, item := range cursorItems {
+				if item.Ref.SourceID == id && !item.Fresh {
+					freshness = "stale"
+					incomplete = true
+					break
+				}
 			}
 			diagnostics := queueSourceDiagnostics(registry, sourceForID(sources, id))
 			if failure := resolveErrors[id]; failure != "" {

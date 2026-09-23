@@ -117,24 +117,28 @@ func (m Model) rows() []queue.Item {
 				continue
 			}
 		}
-		switch m.ViewName {
-		case "Ready":
-			if i.Readiness.Status != queue.Ready {
-				continue
-			}
-		case "Mine":
-			found := false
-			for _, name := range i.AssignedTo {
-				if name == m.Me && m.Me != "" {
-					found = true
+		// Built-in shortcuts apply only to the model's default views. A
+		// configured view with the same name obeys its explicit rules.
+		if _, configured := m.ViewRules[m.ViewName]; !configured {
+			switch m.ViewName {
+			case "Ready":
+				if i.Readiness.Status != queue.Ready {
+					continue
 				}
-			}
-			if !found {
-				continue
-			}
-		case "Claimed":
-			if !i.Claim.Active {
-				continue
+			case "Mine":
+				found := false
+				for _, name := range i.AssignedTo {
+					if name == m.Me && m.Me != "" {
+						found = true
+					}
+				}
+				if !found {
+					continue
+				}
+			case "Claimed":
+				if !i.Claim.Active {
+					continue
+				}
 			}
 		}
 		out = append(out, i)
@@ -551,27 +555,29 @@ func (m Model) viewCount(name string) int {
 				continue
 			}
 		}
-		switch name {
-		case "Ready":
-			if i.Readiness.Status != queue.Ready {
-				continue
-			}
-		case "Mine":
-			if m.Me == "" {
-				continue
-			}
-			found := false
-			for _, person := range i.AssignedTo {
-				if person == m.Me {
-					found = true
+		if _, configured := m.ViewRules[name]; !configured {
+			switch name {
+			case "Ready":
+				if i.Readiness.Status != queue.Ready {
+					continue
 				}
-			}
-			if !found {
-				continue
-			}
-		case "Claimed":
-			if !i.Claim.Active {
-				continue
+			case "Mine":
+				if m.Me == "" {
+					continue
+				}
+				found := false
+				for _, person := range i.AssignedTo {
+					if person == m.Me {
+						found = true
+					}
+				}
+				if !found {
+					continue
+				}
+			case "Claimed":
+				if !i.Claim.Active {
+					continue
+				}
 			}
 		}
 		n++

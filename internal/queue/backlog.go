@@ -80,9 +80,29 @@ func (a *BacklogAdapter) timeout() time.Duration {
 	return backlogTimeout
 }
 
+// backlogReadCommand restricts the adapter subprocess boundary, including
+// dynamically assembled commands. No provider mutation can cross this seam.
+func backlogReadCommand(binary string, args []string) bool {
+	if binary == "git" {
+		return len(args) == 2 && args[0] == "rev-parse" && (args[1] == "HEAD" || args[1] == "--is-inside-work-tree") ||
+			len(args) == 3 && args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" ||
+			len(args) == 3 && args[0] == "status" && args[1] == "--porcelain" && args[2] == "--untracked-files=normal"
+	}
+	if filepath.Base(binary) != "backlog" {
+		return false
+	}
+	return len(args) == 1 && args[0] == "--version" ||
+		len(args) == 3 && args[0] == "config" && args[1] == "get" && (args[2] == "remoteOperations" || args[2] == "checkActiveBranches" || args[2] == "autoCommit" || args[2] == "bypassGitHooks") ||
+		len(args) == 3 && args[0] == "task" && args[1] == "list" && args[2] == "--json" ||
+		len(args) == 4 && args[0] == "task" && args[1] == "view" && args[2] != "" && args[3] == "--json"
+}
+
 // run bounds wall time and stdout/stderr, kills the process on cancellation,
 // and never returns raw stderr (which can contain secrets or terminal controls).
 func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...string) ([]byte, error) {
+	if !backlogReadCommand(binary, args) {
+		return nil, BacklogDiagnostic{"read-only", "queue provider command is not a permitted read"}
+	}
 	ctx, cancel := context.WithTimeout(ctx, a.timeout())
 	defer cancel()
 	select {
