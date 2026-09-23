@@ -55,6 +55,7 @@ const (
 	ReasonAgentIDRequired                = "agent-id-required"
 	ReasonUnsupportedCoordinationReplace = "unsupported-coordination-replace"
 	ReasonCursorInvalid                  = "cursor-invalid"
+	ReasonQueueIncomplete                = "incomplete"
 	ReasonSetupConfigMalformed           = "setup-config-malformed"
 	ReasonHomeUnsafe                     = "home-unsafe"
 	ReasonStorageFailure                 = "storage-failure"
@@ -175,7 +176,7 @@ var registry = map[string]int{
 	ReasonUnknownPolicy: ExitInvalid, ReasonInvalidPath: ExitInvalid, ReasonHandleUnsafe: ExitInvalid,
 	ReasonHandleMalformed: ExitInvalid, ReasonCredentialUnsafe: ExitInvalid, ReasonCredentialMalformed: ExitInvalid,
 	ReasonCredentialSourceConflict: ExitInvalid, ReasonAgentIDRequired: ExitInvalid,
-	ReasonUnsupportedCoordinationReplace: ExitInvalid, ReasonCursorInvalid: ExitInvalid,
+	ReasonUnsupportedCoordinationReplace: ExitInvalid, ReasonCursorInvalid: ExitInvalid, ReasonQueueIncomplete: ExitInvalid,
 	ReasonSetupConfigMalformed: ExitInvalid, ReasonHookInputInvalid: ExitInvalid,
 	ReasonProtocolVersionUnsupported: ExitInvalid, ReasonRateLimited: ExitInvalid,
 	ReasonRequestTooLarge: ExitInvalid, ReasonResponseTooLarge: ExitInvalid,

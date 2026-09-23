@@ -1,0 +1,343 @@
+package cli
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/output"
+	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/reason"
+	urfavecli "github.com/urfave/cli/v3"
+)
+
+type queueQueryEnvelope struct {
+	SchemaVersion int                `json:"schemaVersion"`
+	View          string             `json:"view"`
+	Authority     queueAuthorityJSON `json:"authority"`
+	Sources       []queueSourceJSON  `json:"sources"`
+	Items         []queueQueryItem   `json:"items"`
+	NextCursor    string             `json:"nextCursor,omitempty"`
+	Incomplete    bool               `json:"incomplete"`
+}
+type queueAuthorityJSON struct {
+	Profile string `json:"profile"`
+	ID      string `json:"authorityId"`
+	Scope   string `json:"scope"`
+}
+type queueSourceJSON struct {
+	ID          string         `json:"id"`
+	Coverage    queue.Coverage `json:"coverage"`
+	Freshness   string         `json:"freshness"`
+	Diagnostics []string       `json:"diagnostics,omitempty"`
+}
+type queueQueryItem struct {
+	queue.Item
+	DisplayID string                       `json:"displayId"`
+	Resources []output.PublicDigest        `json:"resources"`
+	Actions   map[string]queue.Eligibility `json:"actions"`
+}
+type queueCursor struct {
+	Fingerprint string `json:"fingerprint"`
+	Offset      int    `json:"offset"`
+}
+
+func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) error {
+	return func(ctx context.Context, cmd *urfavecli.Command) error {
+		cfg, err := config.LoadQueue(nil)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		var view *config.QueueView
+		for i := range cfg.Views {
+			if cfg.Views[i].Name == cmd.String("view") {
+				view = &cfg.Views[i]
+				break
+			}
+		}
+		if view == nil {
+			return s.handle(cmd, reason.Invalid("unknown queue view"))
+		}
+		registry := queue.NewRegistry()
+		sources := make([]queue.Source, 0, len(view.Sources))
+		for _, configured := range cfg.Sources {
+			included := false
+			for _, id := range view.Sources {
+				if id == configured.ID {
+					included = true
+					break
+				}
+			}
+			if !included {
+				continue
+			}
+			adapter, ok := registry.Get(configured.Adapter)
+			if !ok {
+				return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "queue adapter unavailable"))
+			}
+			opts := map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)}
+			source, e := adapter.Resolve(ctx, opts)
+			if e != nil {
+				return s.handle(cmd, e)
+			}
+			source.ID, source.Adapter = configured.ID, configured.Adapter
+			sources = append(sources, source)
+		}
+		loader := queue.NewLoader(registry)
+		updates := loader.Refresh(ctx, sources)
+		for range updates {
+		}
+		snapshot := loader.Store.Current()
+		viewFilters := queue.Filters{}
+		switch strings.ToLower(view.Filter.Readiness) {
+		case "ready": /* readiness post-filter */
+		}
+		items := queue.EvaluateView(snapshot.Items, queue.View{SourceOrder: view.Sources, Filters: viewFilters})
+		selected, auth, e := queueAuthorityForView(ctx, cmd, view.Authority)
+		if e != nil {
+			return s.handle(cmd, e)
+		}
+		defer selected.Close()
+		items = queue.OverlayClaims(ctx, items, queue.ClaimSources(cfg, sources), auth, config.UserProfilePaths(nil), nil)
+		cursorItems := append([]queue.Item(nil), items...)
+		readiness := strings.ToLower(view.Filter.Readiness)
+		claim := strings.ToLower(view.Filter.Claim)
+		assigned := map[string]bool{}
+		for _, a := range view.Filter.Assigned {
+			assigned[strings.ToLower(a)] = true
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if readiness == "ready" && item.Readiness.Status != queue.Ready || readiness == "blocked" && item.Readiness.Status != queue.Blocked {
+				continue
+			}
+			if claim == "free" && !(item.Claim.Known && !item.Claim.Active) || claim == "held" && !item.Claim.Active {
+				continue
+			}
+			if len(assigned) > 0 {
+				ok := false
+				for _, owner := range item.AssignedTo {
+					if assigned[strings.ToLower(owner)] || assigned["me"] && isQueueMe(cfg, item, owner) {
+						ok = true
+					}
+				}
+				if assigned["nobody"] && len(item.AssignedTo) == 0 {
+					ok = true
+				}
+				if !ok {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+		actions := []queue.Action{queue.ActionStart, queue.ActionClaim, queue.ActionLaunch, queue.ActionResume, queue.ActionReportBlocked, queue.ActionRecordProgress, queue.ActionComplete}
+		// Bind pagination to the entire snapshot, including items excluded by the view filter.
+		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, snapshot.Sources, cursorItems)
+		cursor := queueCursor{Fingerprint: fingerprint}
+		if encoded := cmd.String("cursor"); encoded != "" {
+			raw, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
+			if decodeErr != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Fingerprint != fingerprint || cursor.Offset < 0 || cursor.Offset > len(items) {
+				return s.handle(cmd, reason.New(reason.ReasonCursorInvalid, "cursor mismatch or stale generation").With("cursor", "invalid"))
+			}
+		}
+		limit := cmd.Int("limit")
+		if !cmd.IsSet("limit") {
+			limit = 50
+		}
+		if limit < 1 || limit > 1000 {
+			return s.handle(cmd, reason.Invalid("limit must be between 1 and 1000"))
+		}
+		end := cursor.Offset + limit
+		if end > len(items) {
+			end = len(items)
+		}
+		page := make([]queueQueryItem, 0, end-cursor.Offset)
+		for _, item := range items[cursor.Offset:end] {
+			available := make(map[string]queue.Eligibility, len(actions))
+			for action, eligibility := range queue.ClaimActions(item) {
+				available[string(action)] = eligibility
+			}
+			resources := make([]output.PublicDigest, len(item.Resources))
+			for i, resource := range item.Resources {
+				resources[i] = output.PublicDigest(resource)
+			}
+			page = append(page, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: resources, Actions: available})
+		}
+		incomplete := false
+		sourceRows := make([]queueSourceJSON, 0, len(view.Sources))
+		for _, id := range view.Sources {
+			coverage, ok := snapshot.Sources[id]
+			if !ok {
+				coverage = queue.Coverage{State: queue.CoverageUnknown, TotalAccuracy: queue.TotalUnknown, Reason: "not-observed"}
+			}
+			freshness := "fresh"
+			if coverage.State != queue.CoverageComplete {
+				freshness = "unknown"
+				incomplete = true
+			}
+			diagnostics := queueSourceDiagnostics(registry, sourceForID(sources, id))
+			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, Diagnostics: diagnostics})
+		}
+		for _, item := range items {
+			if !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
+				incomplete = true
+			}
+		}
+		if incomplete && cmd.Bool("require-complete") {
+			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
+			return s.handle(cmd, reason.New(reason.ReasonQueueIncomplete, "queue query is incomplete").With("result", "incomplete").With("query", normalizedQueueEnvelope(fields)))
+		}
+		envelope := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: incomplete}
+		if end < len(items) {
+			next := queueCursor{Fingerprint: fingerprint, Offset: end}
+			raw, _ := json.Marshal(next)
+			envelope.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+		}
+		if cmd.Bool("json") {
+			return output.WriteSuccess(s.writer, "queue-query", map[string]any{"query": normalizedQueueEnvelope(envelope)})
+		}
+		if _, err := fmt.Fprintln(s.writer, "ID\tSTATE\tREADY\tCLAIM\tTITLE"); err != nil {
+			return err
+		}
+		for _, item := range page {
+			if _, err := fmt.Fprintf(s.writer, "%s\t%s\t%s\t%s\t%s\n", safeQueueCell(item.Ref.String()), safeQueueCell(string(item.State)), safeQueueCell(string(item.Readiness.Status)), safeQueueCell(item.Claim.State), safeQueueCell(item.Title)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {
+	data, _ := json.Marshal(envelope)
+	var projected map[string]any
+	_ = json.Unmarshal(data, &projected)
+	items, _ := projected["items"].([]any)
+	for index, value := range items {
+		item, _ := value.(map[string]any)
+		if item == nil || index >= len(envelope.Items) {
+			continue
+		}
+		resources := make([]any, len(envelope.Items[index].Resources))
+		for i, resource := range envelope.Items[index].Resources {
+			resources[i] = output.PublicDigest(resource)
+		}
+		item["resources"] = resources
+	}
+	return projected
+}
+func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item) string {
+	stableItems := append([]queue.Item(nil), items...)
+	for i := range stableItems {
+		stableItems[i].Observation.ObservedAt = time.Time{}
+		stableItems[i].Claim.ObservedAt = time.Time{}
+	}
+	sort.Slice(stableItems, func(i, j int) bool { return stableItems[i].Ref.Less(stableItems[j].Ref) })
+	fingerprintData, _ := json.Marshal(struct {
+		View      string
+		Filters   config.QueueFilter
+		SourceIDs []string
+		Bindings  []config.QueueSource
+		Authority queueAuthorityJSON
+		Coverage  map[string]queue.Coverage
+		Items     []queue.Item
+	}{view.Name, view.Filter, view.Sources, bindings, authority, coverage, stableItems})
+	digest := sha256.Sum256(fingerprintData)
+	return hex.EncodeToString(digest[:])
+}
+func configuredQueueSources(configured []config.QueueSource, ids []string) []config.QueueSource {
+	byID := make(map[string]config.QueueSource, len(configured))
+	for _, source := range configured {
+		byID[source.ID] = source
+	}
+	result := make([]config.QueueSource, 0, len(ids))
+	for _, id := range ids {
+		if source, ok := byID[id]; ok {
+			result = append(result, source)
+		}
+	}
+	return result
+}
+func safeQueueCell(value string) string {
+	value = output.RedactString(value)
+	var result strings.Builder
+	for _, r := range value {
+		if r >= 0x20 && r != 0x7f && !(r >= 0x80 && r <= 0x9f) {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+func sourceForID(sources []queue.Source, id string) queue.Source {
+	for _, source := range sources {
+		if source.ID == id {
+			return source
+		}
+	}
+	return queue.Source{}
+}
+func queueSourceDiagnostics(registry *queue.Registry, source queue.Source) []string {
+	adapter, ok := registry.Get(source.Adapter)
+	if !ok {
+		return []string{"adapter-unavailable"}
+	}
+	backlog, ok := adapter.(*queue.BacklogAdapter)
+	if !ok {
+		return nil
+	}
+	d := backlog.Diagnostics(source)
+	values := []string{}
+	if d.NetworkEffects {
+		values = append(values, "network-effects")
+	}
+	if d.CommitEffects {
+		values = append(values, "commit-effects")
+	}
+	if d.HookEffects {
+		values = append(values, "hook-effects")
+	}
+	if d.Dirty {
+		values = append(values, "checkout-dirty")
+	}
+	if len(d.DuplicateIDs) > 0 {
+		values = append(values, "duplicate-item-ids")
+	}
+	return values
+}
+func scopeLabel(remote bool) string {
+	if remote {
+		return "remote"
+	}
+	return "local"
+}
+func isQueueMe(cfg config.QueueConfig, item queue.Item, owner string) bool {
+	for _, source := range cfg.Sources {
+		if source.ID != item.Ref.SourceID {
+			continue
+		}
+		if source.Adapter == "github" {
+			var account string
+			if value := cfg.Me[source.Host]; value.Decode(&account) == nil {
+				return strings.EqualFold(account, owner)
+			}
+		}
+		if source.Adapter == "backlog-md" {
+			var names []string
+			if value := cfg.Me["backlog-md"]; value.Decode(&names) == nil {
+				for _, name := range names {
+					if strings.EqualFold(name, owner) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}

@@ -16,6 +16,7 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
+worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--require-complete]
 ```
 
 `[selection]` means the shared claim-selection options listed in that command's
@@ -38,7 +39,7 @@ For contextual handles, an explicit `--session` overrides
 and human output renders it as `"" (unscoped)`. `unscoped` is a display label,
 not a literal selector.
 
-Text output is for humans; `--json` emits one schema-version 2 envelope.
+Text output is for humans; `--json` emits one schema-version 2 envelope. `worklease queue query --view NAME --json` places its queue schema v1 projection in the `query` field; see [queue configuration and query schema](queue.md#read-only-query).
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately

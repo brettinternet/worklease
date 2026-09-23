@@ -65,8 +65,8 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 		item.NativeClaim = "not-exposed"
 		item.Claim = ClaimObservation{AuthorityID: selected.ID, State: "unknown", NativeState: "not-exposed", Stale: true, ObservedAt: time.Now().UTC()}
 		source, ok := sources[item.Ref.SourceID]
-		if !ok || selected.ID == "" || selected.API == nil {
-			item.Claim.Reason = "authority-unavailable"
+		if !ok {
+			item.Claim.Reason = "source-unavailable"
 		} else {
 			policy := source.Policy
 			keySource := source.ClaimSource
@@ -83,6 +83,8 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 				item.Resources = []string{key.Resource}
 				item.KeyInputs = &resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID}
 				switch {
+				case selected.API == nil || selected.Remote && selected.ID == "":
+					item.Claim.Reason = "authority-unavailable"
 				case selected.Remote && selected.AdmittedPrefixes == nil:
 					item.Claim.Reason = "admission-unknown"
 				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):

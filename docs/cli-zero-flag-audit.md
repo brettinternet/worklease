@@ -24,6 +24,7 @@ local default, or reports the missing required input without guessing.
 | `watch` | Report missing wait condition/resource or cursor | Requires explicit wait target |
 | `gc` | Preview retention | Never applies without `--apply` |
 | `doctor` | Run read-only diagnostics | No state mutation |
+| `queue query` | Report missing required view | Requires a configured view; read-only |
 | `policy list` | List built-in policies | Read-only |
 | `policy describe` | Report missing policy name | Read-only |
 | `op inspect` | Inspect contextual operation | Read-only; acquire first for private context |

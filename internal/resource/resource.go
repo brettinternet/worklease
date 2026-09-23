@@ -25,12 +25,12 @@ const (
 // Input is the normalized input to a resource policy. Path is used only by
 // the path policy; WorkingDir resolves relative paths.
 type Input struct {
-	Provider         string
-	Source           string
-	Item             string
-	Path             string
-	CoordinationOnly bool
-	WorkingDir       string
+	Provider         string `json:"provider"`
+	Source           string `json:"source,omitempty"`
+	Item             string `json:"item,omitempty"`
+	Path             string `json:"path,omitempty"`
+	CoordinationOnly bool   `json:"coordinationOnly,omitempty"`
+	WorkingDir       string `json:"workingDir,omitempty"`
 }
 
 // Key is the complete public description of a derived resource.
