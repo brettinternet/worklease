@@ -1,10 +1,11 @@
 ---
 id: TASK-126.1
 title: Correct the Worklease workflow guide's remote-authority statement
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@executor'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 04:45'
 labels:
   - work-queue
 milestone: m-1
@@ -32,15 +33,33 @@ Edit Backlog records only through the Backlog CLI (`backlog doc update`), never 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 doc-1 accurately describes the default local authority and the experimental, explicitly selected remote authority, and links docs/remote-claim-authority.md
-- [ ] #2 `rg -n 'explicitly deferred|only shipped authority|no HTTP backend' docs/backlog/docs` returns nothing
-- [ ] #3 doc-1 still states that an unavailable remote authority never falls back to local
-- [ ] #4 No statement in doc-1 contradicts docs/claim-model.md or skills/worklease-workflow/SKILL.md
-- [ ] #5 The change was made with `backlog doc update`, and `backlog doc view doc-1 --plain` succeeds
+- [x] #1 doc-1 accurately describes the default local authority and the experimental, explicitly selected remote authority, and links docs/remote-claim-authority.md
+- [x] #2 `rg -n 'explicitly deferred|only shipped authority|no HTTP backend' docs/backlog/docs` returns nothing
+- [x] #3 doc-1 still states that an unavailable remote authority never falls back to local
+- [x] #4 No statement in doc-1 contradicts docs/claim-model.md or skills/worklease-workflow/SKILL.md
+- [x] #5 The change was made with `backlog doc update`, and `backlog doc view doc-1 --plain` succeeds
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run doc-test` passes and every changed relative link resolves
-- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+- [x] #1 `mise run doc-test` passes and every changed relative link resolves
+- [x] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Replace the stale authority paragraph in doc-1 using backlog doc update, matching the skill and remote-authority docs. 2. Preserve the no-fallback guarantee and link the remote-authority documentation. 3. Verify consistency, links, and doc-test; record evidence and finalize through Backlog CLI.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Updated doc-1 via backlog doc update. Verified the experimental explicit remote authority and no-fallback wording against SKILL.md, remote authority guide, and D25; rg found no stale phrases; backlog doc view succeeded; mise run doc-test passed and changed links resolve.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Corrected doc-1 to describe local default and explicitly selected experimental remote authority with no automatic fallback. Verified consistency, stale wording scan, CLI view, links, and mise run doc-test.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -60,6 +60,13 @@ it. Any overlap conflicts, and acquisition is all-or-none.
 10. Review/archive only at explicit boundaries, then release the exact current
     claim with an audit reason.
 
+Cancellation is a release with a non-completion reason, allowed only when no
+guarded operation was started and no provider write was dispatched during that
+ownership epoch. It never implies completion or creates a provider or Worklease
+checkpoint, and reports the distinct `cancelled` outcome. Every other release
+still requires a verified provider checkpoint; a started or unresolved/unknown
+operation forbids cancellation.
+
 A short CLI loop needs no credential plumbing:
 
 ```sh

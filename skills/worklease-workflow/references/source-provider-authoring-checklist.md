@@ -28,6 +28,20 @@ Complete this checklist for each source kind. A missing answer is an unsupported
 - What exact local operation, if any, executes within the Worklease guard?
 - Is coordination-only mode required for direct provider mutations?
 
+## Capability, queue reads, and freshness
+
+- Are capabilities reported with support (`supported|unsupported|unknown`), permission (`allowed|denied|unknown`), availability (`available|unavailable|authentication-required`), semantics, limits, and reason?
+- Are capability scopes distinguished at adapter, source, principal, and item/action levels? Does unknown remain non-actionable?
+- Do read-only checks avoid probing support by attempting writes?
+- Does every response carry principal, configuration generation, observation time, coverage, and opaque provider version when one exists?
+- Are claim revision, provider version, provider update timestamp, and sync cursor kept distinct? Is a read ETag/timestamp kept separate from conditional-write support?
+- Does summary listing expose pagination/cursor, coverage, and total accuracy (`exact|estimated|unknown`)?
+- Do batched item reads report a result per reference and bound any per-item fallback instead of hiding unbounded fan-out?
+- Do dependency reads declare completeness and retain typed relationship, direction, source-qualified endpoints, observation/version, completion condition, raw outcome, and configured interpretation?
+- Is an optional change feed explicit about cursor ordering, retention, and gap/reset behavior?
+- Are all capability groups declared: Identity, Discovery, Dependencies, State, Progress, Assignment, Native claims, Mutation, Synchronization, Effects, and Authentication? Do Effects include Git fetch/commit/hooks/notifications and Authentication include principal and credential lifecycle?
+- Are unsupported capability, authentication, authorization, conflict, rate-limit/retry-time, unavailable-source, incomplete-graph, and unknown-outcome diagnostics structured and mapped to `contract.md` outcomes?
+
 ## Provider mutation
 
 - Which caller-authorized operation performs each state/progress/review/archive write?

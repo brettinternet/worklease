@@ -195,6 +195,8 @@ supply normalized fields and operations; they do not reimplement scheduling.
 - If ownership, guarantee scope, or the provider write result is uncertain, stop further work and return an ambiguity/conflict diagnostic. Do not release a successor's claim.
 - Persist and verify a coherent task/progress/review/archive checkpoint through the provider before invoking release. A claim receipt, guarded-operation receipt, command exit status, release reason, or handoff text alone is not durable provider state.
 - Checkpoint-before-release is caller policy; Worklease validates ownership and a non-blank audit reason but does not inspect a provider receipt. A failed or unverified provider checkpoint means the caller must not invoke release.
+- A narrowly scoped cancellation is a release with an explicit non-completion reason, not a checkpoint or completion. It is allowed only when no guarded operation was started and no provider write was dispatched under that ownership epoch. Cancellation creates neither a provider checkpoint nor a Worklease checkpoint. Every other release requires the verified provider checkpoint above.
+- Any started guarded operation, dispatched provider write, or unresolved/unknown operation outcome forbids cancellation. Uncertainty is not evidence of no effect; resolve it through the ordinary recovery/reconciliation path before any eligible release.
 
 ## Authority guarantees
 
@@ -237,6 +239,7 @@ A caller should make these outcomes machine-readable while preserving human-read
 - `capability`: a required caller operation or authority is unavailable;
 - `ineligible`: the target fails a current readiness check;
 - `conflict`: claim, revision, selector, or source version changed;
-- `ambiguous`: the caller cannot establish what durable mutation occurred.
+- `ambiguous`: the caller cannot establish what durable mutation occurred;
+- `cancelled`: the eligible no-effect ownership epoch was released with a non-completion reason. This distinct outcome never implies completion and never substitutes for a checkpoint.
 
 Unknown backend values belong in opaque metadata. They must not alter these coordination invariants.

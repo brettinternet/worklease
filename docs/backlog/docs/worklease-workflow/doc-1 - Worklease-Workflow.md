@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-12 23:46'
+updated_date: '2026-09-23 05:10'
 tags:
   - agent
   - workflow
@@ -17,7 +17,7 @@ Human-facing entry point for the provider-neutral coordination skill at [`skills
 
 Use the skill for dependency-aware selection, bounded ownership, heartbeats,
 durable provider checkpoints, review boundaries, handoff, or archive. Continue
-to use the provider's supported interface, such as the `backlog` CLI, for
+to use the supported provider interface, such as the `backlog` CLI, for
 provider reads and writes. The skill never edits provider files directly or
 chooses a provider.
 
@@ -27,28 +27,31 @@ The caller supplies source resolution/discovery, item reads and durable writes,
 dependency/status mapping, one to 32 exact ordered claim resources, claim
 authority, provider receipts, and optional review/archive operations.
 
-Worklease supplies a local SQLite claim authority and static deterministic key
-policies. It does not discover provider work, authenticate to providers, perform
-provider writes, or prove provider-side fencing. Source locators, IDs, statuses,
-metadata, resources, and receipts stay opaque.
+Worklease uses the local SQLite authority by default. An experimental,
+self-hosted remote authority is available only when explicitly selected. Either
+authority coordinates claims; neither discovers provider work, authenticates to
+providers, performs provider writes, or proves provider-side fencing. Source
+locators, IDs, statuses, metadata, resources, and receipts stay opaque. See
+[the remote claim authority guide](../../../../docs/remote-claim-authority.md)
+for its setup and limits.
 
 ## Operating loop
 
-1. Resolve ordered sources/selectors and discover the complete dependency graph.
-2. Report complete, blocked, or active-claim outcomes when nothing is eligible.
-3. Select terminal-prerequisite, unblocked work in provider order.
+1. Resolve ordered sources/selectors and discover the required hard-prerequisite graph.
+2. Evaluate each candidate’s fresh, complete closure: a known unsatisfied hard condition blocks even when another edge is unknown; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence remains unknown/capability. Legacy dependencies default to terminal; hierarchy and related links do not block unless a separate explicit hard edge exists.
+3. Select only ready, unblocked start/resume work in provider order; source-wide selection requires complete scoped enumeration.
 4. Acquire a fresh claim over the exact caller-supplied resource set before
    delegation, isolation, or edits.
 5. Keep credentials only in an authority-bound private session handle or
    file/descriptor source; output never includes them.
-6. Revalidate dependencies, ownership, guarantee scope, and provider state
+6. Revalidate hard edges and named-condition evidence, ownership, guarantee scope, and provider state
    before every durable write.
 7. Heartbeat before half the TTL and around bounded long operations.
 8. Perform only caller-authorized provider mutations and retain/re-read their
    durable receipts.
 9. Verify the authoritative provider checkpoint, persist bounded local recovery
    metadata, then release with an audit reason.
-10. Review/archive only at an explicit authorized boundary.
+10. Review/archive only at an explicit authorized boundary. A verified current owner may report Blocked or record progress despite changed readiness, with action-specific permission and a provider receipt; completion requires its declared evidence.
 
 Use stable distinct sessions for concurrent loops:
 
@@ -77,10 +80,16 @@ conditional write/fence and returns evidence. Assignment, status, comments,
 branches, worktrees, local locks, and receipts are not substitutes for claims or
 provider checkpoints.
 
-The local authority is the only shipped authority. Handles and event/watch
-cursors bind to its immutable authority ID. The remote-authority design
-document is explicitly deferred. Worklease has no HTTP backend or remote
-fallback.
+Cancellation is a release with a non-completion reason, permitted only when no
+guarded operation was started and no provider write was dispatched during that
+ownership epoch. It never implies completion or creates a provider or Worklease
+checkpoint, and reports the distinct `cancelled` outcome. Every other release
+requires a verified provider checkpoint; a started or unresolved/unknown
+operation forbids cancellation.
+
+The local authority is the default. The experimental remote authority requires
+explicit selection, and a configured remote failure never silently falls back
+to local. Handles and event/watch cursors bind to an immutable authority ID.
 
 ## References
 

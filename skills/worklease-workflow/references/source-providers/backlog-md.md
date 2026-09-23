@@ -12,6 +12,25 @@ Resolve an explicit Backlog.md project path or caller-configured project. Use su
 
 Source-only discovery enumerates the complete project. An explicit task selector does not authorize mutation of its dependency closure.
 
+## Initial capability declaration (Backlog.md 1.52.0)
+
+Capabilities are evaluated per configured project and caller principal; these
+observations do not imply write authorization beyond the named operation.
+
+| Group | Declaration |
+| --- | --- |
+| Identity | Supported: task ID within one explicit checkout; host-local key or explicit D12 portable binding. Duplicate repair can renumber IDs. |
+| Discovery | Supported: complete project list in one call, no cursor, exact observed total. |
+| Dependencies | Supported: intra-project edges from task views; per-item closure; Backlog-reported `isReady` retained as provider evidence, not generic scheduling. |
+| State | Supported when caller maps configured project statuses and blockers to normalized state. |
+| Progress | Supported: append notes or comments; criterion-index mutation exists but is initially disabled by queue policy. |
+| Assignment | Supported: multiple assignees; CLI edit replaces the full list, requiring read-modify-write. |
+| Native claims | Unsupported: not exposed. |
+| Mutation | Supported only as unconditional CLI edits; no provider compare-and-set or conditional write. Permission and availability remain caller/project-specific. |
+| Synchronization | Supported: task-list watch or filesystem invalidation; `updatedAt` has minute resolution and is not a lossless cursor. |
+| Effects | Project configuration may enable Git fetches (`remote_operations`/`check_active_branches`), commits (`auto_commit`), and hooks (unless bypassed). Expose these effects before authorized writes. |
+| Authentication | Supported through local OS access to an explicitly configured checkout and the supported Backlog CLI; no provider login. |
+
 ## Worklease resource policy
 
 Use the static built-in Backlog.md key policy after resolution:

@@ -12,6 +12,27 @@ Resolve an explicit repository locator or one caller-configured repository. The 
 
 Discovery must paginate the complete selected collection. A bare issue number is ambiguous without a resolved repository.
 
+## Initial capability declaration (GitHub Issues on github.com)
+
+Capabilities are scoped to the configured repository, verified account, and
+requested item/action. The following provider evidence does not itself grant
+caller permission; permission and availability must be checked for the principal
+and operation.
+
+| Group | Declaration |
+| --- | --- |
+| Identity | Supported: configured `owner/repo` and issue number; retain node IDs. Detect repository rename/transfer. |
+| Discovery | Supported: GraphQL cursor pages of 100; observed `totalCount` is not a multi-page snapshot. Exclude pull requests. |
+| Dependencies | Supported where provider exposes blocked-by/blocking relationships; paginate per-item relationships and retain cross-repository references. Sub-issues are hierarchy, not prerequisites. |
+| State | Supported: issue open/closed and `stateReason`; Projects status is unsupported/deferred. |
+| Progress | Supported: append issue comments. |
+| Assignment | Supported: add/remove assignees; multiple principals. |
+| Native claims | Unsupported: not exposed. |
+| Mutation | Issue edits are unconditional; unsafe methods do not support conditional requests absent endpoint-specific evidence. |
+| Synchronization | Supported: `since` filtering and conditional-GET polling; no client webhooks. Cursor/filter semantics and page coverage remain explicit. |
+| Effects | Mutations notify watchers; disclose this as a side effect. |
+| Authentication | Use `gh auth token` for the explicitly configured host/account; verify the principal. Credentials, scopes, and quota context are account/host-scoped. |
+
 ## Worklease resource policy
 
 Use the bundled GitHub key policy after repository and issue resolution:
