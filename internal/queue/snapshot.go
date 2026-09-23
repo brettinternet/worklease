@@ -401,6 +401,9 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			return
 		}
 		committedWatermark = checkpoint.CommittedWatermark
+		if github, ok := a.(*GitHubAdapter); ok && !committedWatermark.IsZero() {
+			github.pollNewestHint(ctx, source)
+		}
 		scanWatermark = checkpoint.ScanWatermark
 		if reconcile {
 			cursor = checkpoint.ReconciliationCursor

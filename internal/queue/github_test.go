@@ -244,6 +244,60 @@ func TestGitHubReadItemsBatchesVisibleNodeHydration(t *testing.T) {
 	}
 }
 
+func TestGitHubNewest304DoesNotHideOlderIncrementalChange(t *testing.T) {
+	var hints, scans atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path != "/repos/org/repo/issues" || r.URL.Query().Get("page") != "1" {
+				t.Errorf("hint was not scoped to the newest page: %s", r.URL)
+			}
+			if hints.Add(1) == 1 {
+				if r.Header.Get("If-None-Match") != "" {
+					t.Error("first hint unexpectedly conditional")
+				}
+				w.Header().Set("ETag", `"newest-page"`)
+				fmt.Fprint(w, `[{"number":1}]`)
+				return
+			}
+			if r.Header.Get("If-None-Match") != `"newest-page"` {
+				t.Errorf("hint lost its exact ETag: %q", r.Header.Get("If-None-Match"))
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		query, vars := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		scans.Add(1)
+		if string(vars["after"]) == `"older"` {
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N2","number":2,"title":"older changed","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		} else {
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"title":"newest unchanged","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"older"}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := time.Now().Add(-time.Hour)
+	for range 2 {
+		a.pollNewestHint(context.Background(), source)
+		first, err := a.ListIncremental(context.Background(), source, Query{}, "", committed, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		older, err := a.ListIncremental(context.Background(), source, Query{}, first.NextCursor, committed, time.Now())
+		if err != nil || len(older.Items) != 1 || older.Items[0].Title != "older changed" {
+			t.Fatalf("older update hidden by hint: %+v %v", older, err)
+		}
+	}
+	if hints.Load() != 2 || scans.Load() != 4 {
+		t.Fatalf("304 suppressed incremental scan: hints=%d scans=%d", hints.Load(), scans.Load())
+	}
+}
+
 func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)

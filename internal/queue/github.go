@@ -44,6 +44,7 @@ type githubBinding struct {
 	scans                                      map[string]map[string]bool
 	scanOrder                                  []string
 	nodeIDs                                    map[string]string
+	newestETags                                map[string]string
 }
 
 // GitHubAdapter is a read-only adapter. Client and APIBase are test seams; production
@@ -504,6 +505,57 @@ func (a *GitHubAdapter) Capabilities(_ context.Context, source Source, _ string,
 		deps.Reason = "dependency fields unavailable on this host"
 	}
 	return CapabilitySet{"identity": read(), "discovery": read(), "dependencies": deps, "state": read(), "progress": denied(), "assignment": denied(), "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": denied(), "synchronization": {Support: Unsupported, Permission: Denied, Availability: Available}, "effects": read(), "authentication": read()}, nil
+}
+
+// pollNewestHint is never authoritative: even a valid 304 only describes this
+// exact REST page, not older issues, permissions, or dependency edges.
+func (a *GitHubAdapter) pollNewestHint(ctx context.Context, source Source) {
+	b, err := a.binding(source)
+	if err != nil {
+		return
+	}
+	origin := "https://api.github.com"
+	if !strings.EqualFold(b.host, "github.com") {
+		origin = "https://" + b.host + "/api/v3"
+	}
+	if a.APIBase != "" {
+		origin = strings.TrimRight(a.APIBase, "/")
+	}
+	parts := strings.Split(b.repository, "/")
+	endpoint := origin + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/issues?state=all&sort=updated&direction=desc&per_page=1&page=1"
+	const accept = "application/vnd.github+json"
+	key := endpoint + "\x00" + b.account + "\x00" + accept + "\x00" + b.generation
+	a.mu.Lock()
+	etag := b.newestETags[key]
+	a.mu.Unlock()
+	gate := quotaScheduler("github-rest:"+strings.ToLower(b.host+"\x00"+b.account), 1)
+	_, _ = gate.schedule(ctx, PriorityBackground, key+"\x00"+etag, "", true, func(workCtx context.Context) (any, error) {
+		request, err := http.NewRequestWithContext(workCtx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+b.token)
+		request.Header.Set("Accept", accept)
+		if etag != "" {
+			request.Header.Set("If-None-Match", etag)
+		}
+		client := *a.client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		response.Body.Close() // the representation is only a hint, never ingested
+		if response.StatusCode == http.StatusOK {
+			a.mu.Lock()
+			if b.newestETags == nil {
+				b.newestETags = make(map[string]string)
+			}
+			b.newestETags[key] = response.Header.Get("ETag")
+			a.mu.Unlock()
+		}
+		return nil, nil
+	})
 }
 
 const githubListQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:CREATED_AT,direction:ASC},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
