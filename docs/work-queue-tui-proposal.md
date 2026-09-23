@@ -573,6 +573,21 @@ Measure on the D22 reference machine with fixed fixtures and injected network la
 
 These are prototype exit criteria to validate or revise with recorded measurements before scope expands, never a reason to weaken safety.
 
+#### Remote authority load (TASK-129.7, 2026-09-23)
+
+On D22 (MacBookPro18,2; M1 Max, 32 GiB), a disposable real TLS `worklease serve` ran with 25 separately enrolled clients and 500 active 10-minute claims. Each client kept one namespace watch and refreshed a batch-status projection of its 20 claims; the harness used the default 250 ms server polling interval. Evidence: `scripts/authority-queue-benchmark.py` and the retained private `/private/tmp/worklease-authority-1790206628-45533/report.json`. The run renewed all 500 claims around 65 seconds after acquisition, before half the TTL. It measured the authority separately from provider traffic. Reproduce with `mise run authority-benchmark` (builds the binary; retains an owner-private `/tmp/worklease-authority-*` directory with credentials; inspect and dispose of that directory securely). For a fast correctness smoke use `python3 scripts/authority-queue-benchmark.py --binary ./bin/worklease --output /tmp/worklease-authority-smoke-UNIQUE --clients 2 --claims 4 --warmup-seconds 2`; `--output` must be a nonexistent directory.
+
+| Metric | Observed |
+| --- | --- |
+| Burst acquire, 500 claims (p50/p95/p99) | 433/627/722 ms per operation, 25 concurrent clients |
+| Renewal write latency, 500 claims (p50/p95/p99) | 979/2,022/2,617 ms per operation; p99 **previous lease** remaining TTL at completion 512 s, minimum 512 s (target ≥300 s); 25 watches active at renewal start and end |
+| Watch and overlay traffic | 1,869 namespace-watch responses plus 1,869 batch-status reads for 500 claim projections; 8,604 wall-time-derived store polls (~98/s over 88 s) versus modeled steady polling 25 × 4 = 100/s; the estimate is not a direct SQLite statement counter |
+| Authority CPU and memory | CPU time 1.35 → 14.03 s during the watch/renew window (~12.68 CPU seconds); RSS 37,568 → 48,144 KiB |
+| Authority database and WAL | database 1,089,536 → 1,445,888 bytes; WAL 4,202,432 → 4,350,752 bytes (+148,320 bytes at sampled endpoints; not a long-term growth guarantee) |
+| Shorter TTL saturation | First 500 changes to 30 s succeeded (p50/p95/p99 561/785/895 ms); another 500 renewals five seconds later succeeded (525/735/852 ms), with at least 12.9 s remaining on the preceding 30 s leases. At this two-round burst, shorter TTL did not saturate the authority; this is not a sustained 30 s capacity guarantee. |
+
+At this measured 25-client/500-claim load, watches did not saturate the store: renewal p99 with all 25 watches active and CPU remained within the 10-minute safety margin. Do not infer a capacity guarantee from claim count alone: renewal cadence, bursts, filesystem and network conditions matter. Polling frequency is modeled from the configured interval and wall-time observations, not directly instrumented SQLite statement counts; direct tracing would be needed before increasing client count. The harness raises metadata and enrollment quotas only on its disposable server so subprocess startup cannot mask heartbeat results; it does not change production defaults. No server-side watch-coalescing follow-up is justified by this run. The two 30-second renewal rounds succeeded, but longer saturation runs are needed before promising continuous 30-second renewals.
+
 ## 15. Scaling limits and overlooked failure cases
 
 | Risk | Plan now; escalate only with evidence |
@@ -625,7 +640,7 @@ The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel fr
 
 These do not block S1 or S2. Each needs an answer recorded here before the named slice starts.
 
-- Whether namespace watch polling holds at 25 clients or needs server-side coalescing (S3 measurement).
+- **Answered for 25 clients / 500 claims on D22:** polling did not saturate the authority in TASK-129.7's 10-minute-TTL run (§14); no server-side coalescing is required at this measured scale. The model predicts ~100 store polls/s; direct SQLite poll counts and larger scales remain unproven. Two shorter-TTL renewal rounds succeeded, but sustained shorter-TTL capacity cannot be inferred from the claim count alone.
 - The shape of provider-neutral claim paging, if any feature needs to enumerate claims (before S4 if `next` requires it).
 - Whether to map GitHub Projects v2 status fields; this needs the `project` scope and per-project field discovery (before S6).
 - A headless GitHub identity: GitHub App installation versus fine-grained tokens (before any unattended write).
