@@ -434,7 +434,7 @@ func (m Model) View() string {
 			if identity(i) == m.Selected {
 				marker = ">"
 			}
-			line := fmt.Sprintf("%s %-5s %-12s %-7s %-18s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), displayState(i, m.Me), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
+			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), displayState(i, m.Me), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
 			list.WriteString(clip(line, listWidth))
 			list.WriteByte('\n')
 		}

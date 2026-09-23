@@ -103,6 +103,94 @@ func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 		}
 	}
 }
+func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
+	snap := fixture()
+	i := snap.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	i.Title = "仕事🙂 \x1b[31munsafe\x1b[0m"
+	i.AssignedTo = []string{"@other"}
+	i.Claim.Active = false
+	i.DependenciesKnown = false
+	i.Readiness = queue.Readiness{Status: queue.ReadinessUnknown}
+	snap.Items[i.Ref.Key()] = i
+	other := snap.Items[queue.Ref{SourceID: "a", ItemID: "2"}.Key()]
+	other.Readiness = queue.Readiness{Status: queue.ReadinessUnknown}
+	snap.Items[other.Ref.Key()] = other
+	m := New(snap)
+	m.Sources = []queue.Source{{ID: "a", Name: "Backlog"}}
+	m.Me = "@me"
+	m.Authority = "team abcdef"
+	m.Scope = "remote"
+	m.anchor(m.rows())
+	wide := m.View()
+	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "Views:", "Sources:", "unknown dependencies", "assigned elsewhere", "Worklease", "2 loaded of 2 (exact)", "edges 0/2", "search: loaded rows"} {
+		if !strings.Contains(wide, s) {
+			t.Errorf("wide view missing %q: %s", s, wide)
+		}
+	}
+	if strings.Contains(wide, "\x1b") {
+		t.Fatal("provider title escape survived")
+	}
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
+	m = next.(Model)
+	m.Detail = true
+	narrow := m.View()
+	if strings.Contains(narrow, "ID     Title") {
+		t.Fatal("narrow detail did not switch")
+	}
+	if m.Width != 80 || m.Height != 25 {
+		t.Fatal("resize lost")
+	}
+}
+func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m, _ = press(m, "G")
+	if m.Selected != "stable-2" {
+		t.Fatal("G did not jump to bottom")
+	}
+	m, _ = press(m, "g")
+	m, _ = press(m, "g")
+	if m.Selected != "stable-1" {
+		t.Fatal("gg did not jump to top")
+	}
+	m, _ = press(m, "l")
+	if !m.Detail {
+		t.Fatal("l did not open")
+	}
+	m, _ = press(m, "tab")
+	if m.Tab != 1 {
+		t.Fatal("tab did not advance")
+	}
+	m, _ = press(m, "h")
+	if m.Detail {
+		t.Fatal("h did not close")
+	}
+	refreshed, opened := 0, 0
+	m.Refresh = func() tea.Cmd { refreshed++; return func() tea.Msg { return RefreshedMsg{} } }
+	m.OpenURL = func(queue.Item) tea.Cmd { opened++; return func() tea.Msg { return RefreshedMsg{} } }
+	m, _ = press(m, "r")
+	m, _ = press(m, "o")
+	if refreshed != 1 || opened != 1 {
+		t.Fatal(refreshed, opened)
+	}
+	for _, key := range []string{"c", "R", "a", "s", "p", "x"} {
+		m, _ = press(m, key)
+		if !strings.Contains(m.Notice, "read-only") {
+			t.Fatal(key, m.Notice)
+		}
+	}
+	m, _ = press(m, ":")
+	m, _ = press(m, "s")
+	m, _ = press(m, "enter")
+	if !strings.Contains(m.Notice, "unavailable") {
+		t.Fatal(m.Notice)
+	}
+	m, _ = press(m, "?")
+	if !m.Help {
+		t.Fatal("help missing")
+	}
+}
 func TestCoverageFooterVisibleWithLongClaimHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
