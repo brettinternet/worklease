@@ -41,6 +41,8 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 		switch {
 		case strings.Contains(request.Query, "viewer"):
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(request.Query, "nodes(ids:"):
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}]}}`)
 		case strings.Contains(request.Query, "blockedBy("):
 			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"Owner/Repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
 		case strings.Contains(request.Query, "issue(number:"):

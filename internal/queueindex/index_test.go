@@ -97,6 +97,242 @@ func TestExplicitInaccessibleEvidencePurgesIncompleteProjection(t *testing.T) {
 	}
 }
 
+func TestGitHubSyncPageAndWatermarkAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo-id", Generation: "g1"}
+	watermark := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	first := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "1"}, CanonicalID: "node-1", Title: "one"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{first}, "resume", watermark, false); err != nil {
+		t.Fatal(err)
+	}
+	state, err := idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "resume" || !state.CommittedWatermark.IsZero() || !state.ScanWatermark.Equal(watermark) {
+		t.Fatalf("partial state=%+v err=%v", state, err)
+	}
+	second := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "2"}, CanonicalID: "node-2", Title: "two"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{second}, "", watermark, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err = idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "" || !state.CommittedWatermark.Equal(watermark) {
+		t.Fatalf("complete state=%+v err=%v", state, err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 2 {
+		t.Fatalf("persisted pages=%d err=%v", len(got.Items), err)
+	}
+}
+
+func TestGitHubWithheldItemRetainsUnknownIdentity(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	ref := queue.Ref{SourceID: "github", ItemID: "1"}
+	item := queue.Item{Summary: queue.Summary{Ref: ref, CanonicalID: "node-1", Title: "private"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.WithholdGitHubItems(ctx, p, []queue.Ref{ref}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 0 {
+		t.Fatalf("stale payload visible after access loss: %+v %v", got.Items, err)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[ref] != "unknown" {
+		t.Fatalf("404 was treated as conclusive deletion or lost identity: %+v %v", absences, err)
+	}
+}
+
+func TestGitHubConfirmedAccessLossClassifiesInaccessible(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	ref := queue.Ref{SourceID: "github", ItemID: "1"}
+	item := queue.Item{Summary: queue.Summary{Ref: ref, CanonicalID: "node-1", Title: "private"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.WithholdGitHubItems(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.MarkGitHubInaccessible(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[ref] != "inaccessible" {
+		t.Fatalf("confirmed access loss: %+v %v", absences, err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	absences, err = idx.GitHubAbsences(ctx, p)
+	if err != nil || len(absences) != 0 {
+		t.Fatalf("restored access did not clear classification: %+v %v", absences, err)
+	}
+}
+
+func TestGitHubSyncResumesAfterReopenWithMovedNode(t *testing.T) {
+	ctx := context.Background()
+	indexDir := t.TempDir()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	firstWatermark := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	secondWatermark := firstWatermark.Add(time.Hour)
+	idx, err := Open(ctx, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, nil, "", firstWatermark, true); err != nil {
+		t.Fatal(err)
+	}
+	old := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "1"}, CanonicalID: "node-1", Title: "before move"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{old}, "next", secondWatermark, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx, err = Open(ctx, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	state, err := idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "next" || !state.CommittedWatermark.Equal(firstWatermark) || !state.ScanWatermark.Equal(secondWatermark) {
+		t.Fatalf("recovered page and watermark: %+v %v", state, err)
+	}
+	moved := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "2"}, CanonicalID: "node-1", Title: "after move"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{moved}, "", state.ScanWatermark, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err = idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || state.Cursor != "" || !state.CommittedWatermark.Equal(secondWatermark) {
+		t.Fatalf("completed window: %+v %v", state, err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 1 || got.Items[moved.Ref.Key()].Title != "after move" {
+		t.Fatalf("moved node after recovery: %+v %v", got.Items, err)
+	}
+}
+
+func TestGitHubReconciliationRetiresOnlyAtCompletedGeneration(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	old := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "old"}, CanonicalID: "old-node", Title: "old"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{old}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	state, err := idx.StartGitHubReconciliation(ctx, p, started)
+	if err != nil || state.ReconciliationCursor != "@start" {
+		t.Fatalf("start=%+v err=%v", state, err)
+	}
+	first := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "new-1"}, CanonicalID: "new-node-1"}}
+	retired, err := idx.CommitGitHubReconciliationPage(ctx, p, []queue.Item{first}, "after", state.ReconciliationGeneration, started, false)
+	if err != nil || len(retired) != 0 {
+		t.Fatalf("partial retired=%v err=%v", retired, err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 2 {
+		t.Fatalf("partial scan retired rows: %v %+v", err, got.Items)
+	}
+	second := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "new-2"}, CanonicalID: "new-node-2"}}
+	retired, err = idx.CommitGitHubReconciliationPage(ctx, p, []queue.Item{second}, "", state.ReconciliationGeneration, started, true)
+	if err != nil || len(retired) != 1 || retired[0] != old.Ref {
+		t.Fatalf("complete retired=%v err=%v", retired, err)
+	}
+	got, _, _, err = idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 2 {
+		t.Fatalf("completed projection=%v err=%v", got.Items, err)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[old.Ref] != "unknown" {
+		t.Fatalf("absent node was classified as deletion without proof: %+v %v", absences, err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{old}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	absences, err = idx.GitHubAbsences(ctx, p)
+	if err != nil || len(absences) != 0 {
+		t.Fatalf("reappearing node retained an absence: %+v %v", absences, err)
+	}
+}
+
+func TestGitHubReconciliationNeverMovesIncrementalWatermarkBackwards(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	started := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	state, err := idx.StartGitHubReconciliation(ctx, p, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := started.Add(time.Hour)
+	if err := idx.CommitGitHubSyncPage(ctx, p, nil, "", later, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.CommitGitHubReconciliationPage(ctx, p, nil, "", state.ReconciliationGeneration, started, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || !got.CommittedWatermark.Equal(later) {
+		t.Fatalf("completed older reconciliation lost incremental progress: %+v %v", got, err)
+	}
+}
+
+func TestGitHubSyncDeduplicatesByNodeIDAcrossReferences(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	watermark := time.Now().UTC()
+	first := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "1"}, CanonicalID: "node-1", Title: "old"}}
+	second := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "github", ItemID: "2"}, CanonicalID: "node-1", Title: "moved"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{first}, "next", watermark, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{second}, "", watermark, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 1 {
+		t.Fatalf("node dedup items=%v err=%v", got.Items, err)
+	}
+	if _, ok := got.Items[second.Ref.Key()]; !ok {
+		t.Fatalf("latest node reference missing: %+v", got.Items)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[first.Ref] != "moved" {
+		t.Fatalf("moved node lost its recovery evidence: %+v %v", absences, err)
+	}
+}
+
 func TestBodySearchRequiresOptIn(t *testing.T) {
 	ctx := context.Background()
 	idx, err := Open(ctx, t.TempDir())
@@ -208,18 +444,20 @@ func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "winners")
 	cmds := make([]*exec.Cmd, 8)
+	outputs := make([]strings.Builder, len(cmds))
 	for n := range cmds {
 		cmds[n] = exec.Command(os.Args[0], "-test.run=^TestLockProcessHelper$")
 		cmds[n].Env = append(os.Environ(), "QUEUE_INDEX_LOCK_HELPER=1", "QUEUE_INDEX_DIR="+dir, "QUEUE_INDEX_MARKER="+marker)
+		cmds[n].Stderr = &outputs[n]
 	}
 	for _, cmd := range cmds {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, cmd := range cmds {
+	for index, cmd := range cmds {
 		if err := cmd.Wait(); err != nil {
-			t.Fatal(err)
+			t.Fatalf("helper %d failed: %v: %s", index, err, outputs[index].String())
 		}
 	}
 	data, err := os.ReadFile(marker)

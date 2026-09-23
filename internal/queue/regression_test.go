@@ -17,6 +17,228 @@ func drainRefresh(ch <-chan Snapshot) {
 	}
 }
 
+type syncTestStore struct {
+	state   SyncCheckpoint
+	commits int
+}
+
+func (s *syncTestStore) LockGitHubSync(context.Context, Source) (func(), error) {
+	return func() {}, nil
+}
+func (s *syncTestStore) LoadGitHubSync(context.Context, Source) (SyncCheckpoint, error) {
+	return s.state, nil
+}
+func (s *syncTestStore) StartGitHubReconciliation(_ context.Context, _ Source, now time.Time) (SyncCheckpoint, bool, error) {
+	if s.state.ReconciliationCursor != "" {
+		return s.state, true, nil
+	}
+	if s.state.ReconciliationStarted.IsZero() || now.Sub(s.state.ReconciliationStarted) >= 24*time.Hour {
+		s.state.ReconciliationGeneration++
+		s.state.ReconciliationStarted = now
+		s.state.ReconciliationCursor = "@start"
+		return s.state, true, nil
+	}
+	return s.state, false, nil
+}
+func (s *syncTestStore) CommitGitHubReconciliationPage(_ context.Context, _ Source, _ []Item, cursor string, state SyncCheckpoint, complete bool) ([]Ref, error) {
+	s.commits++
+	s.state.ReconciliationCursor = cursor
+	s.state.ReconciliationGeneration = state.ReconciliationGeneration
+	s.state.ReconciliationStarted = state.ReconciliationStarted
+	if complete {
+		s.state.ReconciliationCursor = ""
+		s.state.CommittedWatermark = state.ReconciliationStarted
+	}
+	return nil, nil
+}
+func (s *syncTestStore) WithholdGitHubItem(context.Context, Source, Ref) error { return nil }
+func (s *syncTestStore) WithholdGitHubSource(context.Context, Source) error    { return nil }
+func (s *syncTestStore) RestartGitHubSync(_ context.Context, _ Source, reconciliation bool) error {
+	if reconciliation {
+		s.state.ReconciliationCursor = "@start"
+		s.state.ReconciliationGeneration++
+	} else {
+		s.state.Cursor = ""
+		s.state.ScanWatermark = time.Now()
+	}
+	return nil
+}
+func (s *syncTestStore) CommitGitHubSyncPage(_ context.Context, _ Source, _ []Item, cursor string, watermark time.Time, complete bool) error {
+	s.commits++
+	s.state.Cursor = cursor
+	s.state.ScanWatermark = watermark
+	if complete {
+		s.state.CommittedWatermark = watermark
+		s.state.Cursor = ""
+	}
+	return nil
+}
+
+type syncTestAdapter struct {
+	*fakeAdapter
+	calls      []string
+	failNext   bool
+	expireNext bool
+}
+
+func (a *syncTestAdapter) ListIncremental(_ context.Context, _ Source, _ Query, cursor string, _, _ time.Time) (SummaryPage, error) {
+	a.calls = append(a.calls, cursor)
+	if a.failNext && cursor == "resume" {
+		a.failNext = false
+		return SummaryPage{}, errors.New("interrupted")
+	}
+	if a.expireNext && cursor == "resume" {
+		a.expireNext = false
+		return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub pagination cursor expired"}
+	}
+	if cursor == "" {
+		return SummaryPage{Items: []Summary{{Ref: Ref{"s", "2"}, Title: "two"}}, NextCursor: "resume", Coverage: Coverage{State: CoveragePartial}, Incremental: true}, nil
+	}
+	return SummaryPage{Items: []Summary{{Ref: Ref{"s", "3"}, Title: "three"}}, Coverage: Coverage{State: CoverageComplete}, Incremental: true}, nil
+}
+func TestLoaderResumesPersistedGitHubIncrementalCursorAfterInterruptedPage(t *testing.T) {
+	base := newFake()
+	base.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "1"}, Title: "one"}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	adapter := &syncTestAdapter{fakeAdapter: base, failNext: true}
+	registry := NewRegistry()
+	registry.adapters["github"] = adapter
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.CommittedWatermark.IsZero() || store.commits != 1 {
+		t.Fatalf("initial full scan checkpoint=%+v commits=%d", store.state, store.commits)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	watermark := store.state.ScanWatermark
+	if store.state.Cursor != "resume" || store.state.CommittedWatermark.IsZero() || store.commits != 2 {
+		t.Fatalf("interrupted checkpoint=%+v commits=%d", store.state, store.commits)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if len(adapter.calls) != 3 || adapter.calls[0] != "" || adapter.calls[1] != "resume" || adapter.calls[2] != "resume" || store.state.Cursor != "" || !store.state.CommittedWatermark.Equal(watermark) {
+		t.Fatalf("calls=%v checkpoint=%+v watermark=%v", adapter.calls, store.state, watermark)
+	}
+}
+
+func TestLoaderRestartsExpiredGitHubCursorWithoutLosingWatermark(t *testing.T) {
+	base := newFake()
+	base.pages["s"] = []SummaryPage{{Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	adapter := &syncTestAdapter{fakeAdapter: base, failNext: true, expireNext: true}
+	registry := NewRegistry()
+	registry.adapters["github"] = adapter
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	committed := store.state.CommittedWatermark
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.Cursor != "resume" {
+		t.Fatalf("missing partial cursor: %+v", store.state)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.Cursor != "" || !store.state.CommittedWatermark.Equal(committed) {
+		t.Fatalf("expired cursor advanced watermark: %+v", store.state)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if len(adapter.calls) != 5 || adapter.calls[3] != "" || store.state.Cursor != "" || !store.state.CommittedWatermark.After(committed) {
+		t.Fatalf("restart did not rescan from first page: calls=%v checkpoint=%+v", adapter.calls, store.state)
+	}
+}
+
+type renumberedGitHubAdapter struct{ *fakeAdapter }
+
+func (*renumberedGitHubAdapter) ListIncremental(_ context.Context, source Source, _ Query, _ string, _, _ time.Time) (SummaryPage, error) {
+	return SummaryPage{Items: []Summary{{Ref: Ref{source.ID, "2"}, CanonicalID: "N1", Title: "new number"}}, Coverage: Coverage{State: CoverageComplete}, Incremental: true}, nil
+}
+
+func TestLoaderIncrementalRenumberingRemovesOldReference(t *testing.T) {
+	fake := newFake()
+	old := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: old, CanonicalID: "N1", Title: "old number"}}, Coverage: Coverage{State: CoverageComplete}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = &renumberedGitHubAdapter{fake}
+	loader := NewLoader(registry)
+	loader.GitHubSync = &syncTestStore{}
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[old.Key()]; !ok {
+		t.Fatal("initial reference missing")
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	items := loader.Store.Current().Items
+	if _, oldVisible := items[old.Key()]; oldVisible || items[Ref{source.ID, "2"}.Key()].Title != "new number" {
+		t.Fatalf("renumbered node must have one current reference: %+v", items)
+	}
+}
+
+type onDemandBatchAdapter struct{ *fakeAdapter }
+
+func (*onDemandBatchAdapter) OnDemandDetails() {}
+func (*onDemandBatchAdapter) BatchHydration()  {}
+
+func TestOnDemandBatchAdapterHydratesVisibleRows(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "summary", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	fake.outcomes[ref.Key()] = []ItemOutcome{itemOutcome(ref)}
+	registry := NewRegistry()
+	registry.adapters["github"] = &onDemandBatchAdapter{fake}
+	loader := NewLoader(registry)
+	drainRefresh(loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "github"}}))
+	item := loader.Store.Current().Items[ref.Key()]
+	if item.ReadOutcome != "found" {
+		t.Fatalf("batch hydration skipped: %+v", item)
+	}
+}
+
+func TestGitHubSSOExpiryWithholdsCachedProjection(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "private title", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = fake
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[ref.Key()]; !ok {
+		t.Fatal("initial source was not visible")
+	}
+	fake.errors["s"] = GitHubDiagnostic{Code: "saml-sso", Detail: "SAML authorization required"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[ref.Key()]; ok {
+		t.Fatal("SSO expiry leaked cached private title")
+	}
+	if store.state.ReconciliationCursor != "@start" {
+		t.Fatalf("SSO expiry did not schedule visibility reconciliation: %+v", store.state)
+	}
+}
+
+func TestGitHubSourceAccessRestorationRestartsReconciliation(t *testing.T) {
+	fake := newFake()
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "1"}, Title: "restored"}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = fake
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	fake.errors["s"] = GitHubDiagnostic{Code: "not-found-or-inaccessible", Detail: "access unavailable"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.ReconciliationCursor != "@start" {
+		t.Fatalf("access loss did not schedule immediate reconciliation: %+v", store.state)
+	}
+	delete(fake.errors, "s")
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[Ref{"s", "1"}.Key()]; !ok {
+		t.Fatal("restored unchanged issue remained withheld")
+	}
+}
+
 func TestExplicitInaccessibleOutcomePurgesProjection(t *testing.T) {
 	fake := newFake()
 	ref := Ref{SourceID: "s", ItemID: "gone"}

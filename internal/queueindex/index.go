@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaGeneration = 2
+const SchemaGeneration = 7
 const Retention = 30 * 24 * time.Hour
 
 type Partition struct{ Source, Principal, Scope, Generation string }
@@ -152,12 +152,57 @@ func (i *Index) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != SchemaGeneration {
+	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if version == 0 {
-		if _, err := conn.ExecContext(ctx, `CREATE TABLE entries (partition TEXT NOT NULL, ref TEXT NOT NULL, payload BLOB NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); CREATE TABLE partitions (partition TEXT PRIMARY KEY, observed INTEGER NOT NULL, complete INTEGER NOT NULL); CREATE VIRTUAL TABLE search USING fts5(partition UNINDEXED,ref UNINDEXED,title,body); PRAGMA user_version=2`); err != nil {
+		for _, statement := range []string{
+			`CREATE TABLE entries (partition TEXT NOT NULL, ref TEXT NOT NULL, payload BLOB NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(partition,ref))`,
+			`CREATE TABLE partitions (partition TEXT PRIMARY KEY, observed INTEGER NOT NULL, complete INTEGER NOT NULL)`,
+			`CREATE VIRTUAL TABLE search USING fts5(partition UNINDEXED,ref UNINDEXED,title,body)`,
+			`PRAGMA user_version=2`,
+		} {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+		version = 2
+	}
+	if version == 2 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE github_sync (partition TEXT PRIMARY KEY, cursor TEXT NOT NULL, committed_watermark INTEGER NOT NULL, scan_watermark INTEGER NOT NULL, reconciliation_cursor TEXT NOT NULL, reconciliation_generation INTEGER NOT NULL, reconciliation_started INTEGER NOT NULL); PRAGMA user_version=3`); err != nil {
 			return err
+		}
+		version = 3
+	}
+	if version == 3 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE github_nodes (partition TEXT NOT NULL, node_id TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(partition,node_id)); PRAGMA user_version=4`); err != nil {
+			return err
+		}
+		version = 4
+	}
+	if version == 4 {
+		if _, err = conn.ExecContext(ctx, `ALTER TABLE github_nodes ADD COLUMN seen_generation INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=5`); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE github_absences (partition TEXT NOT NULL, ref TEXT NOT NULL, node_id TEXT NOT NULL, classification TEXT NOT NULL CHECK (classification IN ('moved','unknown')), observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); PRAGMA user_version=6`); err != nil {
+			return err
+		}
+		version = 6
+	}
+	if version == 6 {
+		for _, statement := range []string{
+			`CREATE TABLE github_absences_v7 (partition TEXT NOT NULL, ref TEXT NOT NULL, node_id TEXT NOT NULL, classification TEXT NOT NULL CHECK (classification IN ('moved','unknown','inaccessible')), observed INTEGER NOT NULL, PRIMARY KEY(partition,ref))`,
+			`INSERT INTO github_absences_v7 SELECT * FROM github_absences`,
+			`DROP TABLE github_absences`,
+			`ALTER TABLE github_absences_v7 RENAME TO github_absences`,
+			`PRAGMA user_version=7`,
+		} {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -304,6 +349,457 @@ func (i *Index) ReplaceWithDeletes(ctx context.Context, p Partition, items []que
 		return err
 	}
 	return tx.Commit()
+}
+
+// GitHubSyncState stores the resumable state of a GitHub synchronization window.
+type GitHubSyncState struct {
+	Cursor                   string
+	CommittedWatermark       time.Time
+	ScanWatermark            time.Time
+	ReconciliationCursor     string
+	ReconciliationGeneration int64
+	ReconciliationStarted    time.Time
+}
+
+// ReadGitHubSyncState reads synchronization metadata only. It never serves cached issue content.
+type githubSyncIdentity interface {
+	GitHubSyncIdentity(queue.Source) (principal, origin, repository, generation string, available bool)
+}
+
+// ForGitHubSync constructs a metadata-only partition. Unlike ForSource, this does not
+// enable generic cached payload reads or offline cache seeding.
+func ForGitHubSync(adapter any, source queue.Source) (Partition, bool) {
+	identity, ok := adapter.(githubSyncIdentity)
+	if !ok {
+		return Partition{}, false
+	}
+	principal, origin, repository, generation, available := identity.GitHubSyncIdentity(source)
+	if !available || principal == "" || origin == "" || repository == "" || generation == "" {
+		return Partition{}, false
+	}
+	return Partition{Source: source.ID, Principal: principal, Scope: origin + "/" + repository, Generation: generation}, true
+}
+
+type GitHubSyncStore struct {
+	Index    *Index
+	Registry *queue.Registry
+}
+
+func (s GitHubSyncStore) LockGitHubSync(ctx context.Context, source queue.Source) (func(), error) {
+	p, ok := s.partition(source)
+	if !ok {
+		return nil, errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.WaitRefreshLock(ctx, p)
+}
+func (s GitHubSyncStore) partition(source queue.Source) (Partition, bool) {
+	adapter, ok := s.Registry.Get(source.Adapter)
+	if !ok {
+		return Partition{}, false
+	}
+	return ForGitHubSync(adapter, source)
+}
+func (s GitHubSyncStore) LoadGitHubSync(ctx context.Context, source queue.Source) (queue.SyncCheckpoint, error) {
+	p, ok := s.partition(source)
+	if !ok {
+		return queue.SyncCheckpoint{}, errors.New("GitHub sync identity unavailable")
+	}
+	state, err := s.Index.ReadGitHubSyncState(ctx, p)
+	return queue.SyncCheckpoint{Cursor: state.Cursor, CommittedWatermark: state.CommittedWatermark, ScanWatermark: state.ScanWatermark, ReconciliationCursor: state.ReconciliationCursor, ReconciliationGeneration: state.ReconciliationGeneration, ReconciliationStarted: state.ReconciliationStarted}, err
+}
+func (s GitHubSyncStore) StartGitHubReconciliation(ctx context.Context, source queue.Source, now time.Time) (queue.SyncCheckpoint, bool, error) {
+	p, ok := s.partition(source)
+	if !ok {
+		return queue.SyncCheckpoint{}, false, errors.New("GitHub sync identity unavailable")
+	}
+	state, err := s.Index.StartGitHubReconciliation(ctx, p, now)
+	return queue.SyncCheckpoint{Cursor: state.Cursor, CommittedWatermark: state.CommittedWatermark, ScanWatermark: state.ScanWatermark, ReconciliationCursor: state.ReconciliationCursor, ReconciliationGeneration: state.ReconciliationGeneration, ReconciliationStarted: state.ReconciliationStarted}, err == nil && state.ReconciliationCursor != "", err
+}
+func (s GitHubSyncStore) CommitGitHubReconciliationPage(ctx context.Context, source queue.Source, items []queue.Item, cursor string, state queue.SyncCheckpoint, complete bool) ([]queue.Ref, error) {
+	p, ok := s.partition(source)
+	if !ok {
+		return nil, errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.CommitGitHubReconciliationPage(ctx, p, items, cursor, state.ReconciliationGeneration, state.ReconciliationStarted, complete)
+}
+func (s GitHubSyncStore) RestartGitHubSync(ctx context.Context, source queue.Source, reconciliation bool) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.RestartGitHubSync(ctx, p, reconciliation, time.Now().UTC())
+}
+func (s GitHubSyncStore) WithholdGitHubItem(ctx context.Context, source queue.Source, ref queue.Ref) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.WithholdGitHubItems(ctx, p, []queue.Ref{ref})
+}
+func (s GitHubSyncStore) MarkGitHubInaccessible(ctx context.Context, source queue.Source) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.MarkGitHubInaccessible(ctx, p)
+}
+func (s GitHubSyncStore) WithholdGitHubSource(ctx context.Context, source queue.Source) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.WithholdGitHubItems(ctx, p, nil)
+}
+
+func (s GitHubSyncStore) CommitGitHubSyncPage(ctx context.Context, source queue.Source, items []queue.Item, cursor string, scanWatermark time.Time, complete bool) error {
+	p, ok := s.partition(source)
+	if !ok {
+		return errors.New("GitHub sync identity unavailable")
+	}
+	return s.Index.CommitGitHubSyncPage(ctx, p, items, cursor, scanWatermark, complete)
+}
+
+func (i *Index) ReadGitHubSyncState(ctx context.Context, p Partition) (GitHubSyncState, error) {
+	key, err := p.key()
+	if err != nil {
+		return GitHubSyncState{}, err
+	}
+	var state GitHubSyncState
+	var committed, scan, started int64
+	err = i.db.QueryRowContext(ctx, `SELECT cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started FROM github_sync WHERE partition=?`, key).Scan(&state.Cursor, &committed, &scan, &state.ReconciliationCursor, &state.ReconciliationGeneration, &started)
+	if err == sql.ErrNoRows {
+		return state, nil
+	}
+	if err != nil {
+		return GitHubSyncState{}, err
+	}
+	if committed != 0 {
+		state.CommittedWatermark = time.Unix(0, committed)
+	}
+	if scan != 0 {
+		state.ScanWatermark = time.Unix(0, scan)
+	}
+	if started != 0 {
+		state.ReconciliationStarted = time.Unix(0, started)
+	}
+	return state, nil
+}
+
+// CommitGitHubSyncPage persists one page and its resume cursor atomically. The
+// committed watermark changes only when complete is true.
+func (i *Index) CommitGitHubSyncPage(ctx context.Context, p Partition, items []queue.Item, cursor string, scanWatermark time.Time, complete bool) error {
+	key, err := p.key()
+	if err != nil {
+		return err
+	}
+	tx, err := i.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range items {
+		payload, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		observed := item.Observation.ObservedAt
+		if observed.IsZero() {
+			observed = time.Now()
+		}
+		if item.CanonicalID != "" {
+			var previousRef string
+			lookupErr := tx.QueryRowContext(ctx, `SELECT ref FROM github_nodes WHERE partition=? AND node_id=?`, key, item.CanonicalID).Scan(&previousRef)
+			if lookupErr != nil && lookupErr != sql.ErrNoRows {
+				return lookupErr
+			}
+			if previousRef != "" && previousRef != item.Ref.Key() {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) VALUES(?,?,?,'moved',?) ON CONFLICT(partition,ref) DO UPDATE SET node_id=excluded.node_id,classification=excluded.classification,observed=excluded.observed`, key, previousRef, item.CanonicalID, time.Now().UnixNano()); err != nil {
+					return err
+				}
+				if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref=?`, key, previousRef); err != nil {
+					return err
+				}
+				if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=? AND ref=?`, key, previousRef); err != nil {
+					return err
+				}
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO github_nodes(partition,node_id,ref) VALUES(?,?,?) ON CONFLICT(partition,node_id) DO UPDATE SET ref=excluded.ref`, key, item.CanonicalID, item.Ref.Key()); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM github_absences WHERE partition=? AND ref=?`, key, item.Ref.Key()); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO entries(partition,ref,payload,observed) VALUES(?,?,?,?) ON CONFLICT(partition,ref) DO UPDATE SET payload=excluded.payload,observed=excluded.observed`, key, item.Ref.Key(), payload, observed.UnixNano()); err != nil {
+			return err
+		}
+	}
+	var previous int64
+	queryErr := tx.QueryRowContext(ctx, `SELECT committed_watermark FROM github_sync WHERE partition=?`, key).Scan(&previous)
+	if queryErr != nil && queryErr != sql.ErrNoRows {
+		return queryErr
+	}
+	committed := previous
+	if complete {
+		committed = scanWatermark.UnixNano()
+		cursor = ""
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO github_sync(partition,cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started) VALUES(?,?,?,?, '',0,0) ON CONFLICT(partition) DO UPDATE SET cursor=excluded.cursor,committed_watermark=excluded.committed_watermark,scan_watermark=excluded.scan_watermark`, key, cursor, committed, scanWatermark.UnixNano())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// StartGitHubReconciliation starts a daily bounded generation, or resumes an incomplete one.
+func (i *Index) StartGitHubReconciliation(ctx context.Context, p Partition, now time.Time) (GitHubSyncState, error) {
+	key, err := p.key()
+	if err != nil {
+		return GitHubSyncState{}, err
+	}
+	state, err := i.ReadGitHubSyncState(ctx, p)
+	if err != nil {
+		return GitHubSyncState{}, err
+	}
+	if state.ReconciliationCursor != "" {
+		return state, nil
+	}
+	if !state.ReconciliationStarted.IsZero() && now.Sub(state.ReconciliationStarted) < 24*time.Hour {
+		return state, nil
+	}
+	tx, err := i.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GitHubSyncState{}, err
+	}
+	defer tx.Rollback()
+	var cursor string
+	var committed, scan int64
+	queryErr := tx.QueryRowContext(ctx, `SELECT cursor,committed_watermark,scan_watermark FROM github_sync WHERE partition=?`, key).Scan(&cursor, &committed, &scan)
+	if queryErr != nil && queryErr != sql.ErrNoRows {
+		return GitHubSyncState{}, queryErr
+	}
+	state.ReconciliationGeneration++
+	state.ReconciliationStarted = now.UTC()
+	state.ReconciliationCursor = "@start"
+	if _, err = tx.ExecContext(ctx, `INSERT INTO github_sync(partition,cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(partition) DO UPDATE SET reconciliation_cursor=excluded.reconciliation_cursor,reconciliation_generation=excluded.reconciliation_generation,reconciliation_started=excluded.reconciliation_started`, key, cursor, committed, scan, state.ReconciliationCursor, state.ReconciliationGeneration, state.ReconciliationStarted.UnixNano()); err != nil {
+		return GitHubSyncState{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return GitHubSyncState{}, err
+	}
+	return state, nil
+}
+
+// GitHubAbsences returns non-sensitive identity recovery evidence. Only an
+// observed ref change proves movement; missing nodes remain unknown rather
+// than being reported as deleted or inaccessible without provider evidence.
+func (i *Index) GitHubAbsences(ctx context.Context, p Partition) (map[queue.Ref]string, error) {
+	key, err := p.key()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := i.db.QueryContext(ctx, `SELECT ref,classification FROM github_absences WHERE partition=?`, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[queue.Ref]string)
+	for rows.Next() {
+		var refKey, classification string
+		if err := rows.Scan(&refKey, &classification); err != nil {
+			return nil, err
+		}
+		parts := strings.SplitN(refKey, "\x00", 2)
+		if len(parts) == 2 {
+			result[queue.Ref{SourceID: parts[0], ItemID: parts[1]}] = classification
+		}
+	}
+	return result, rows.Err()
+}
+
+// MarkGitHubInaccessible records a definitive principal access denial without
+// mistaking an ambiguous 404 or scan absence for deletion.
+func (i *Index) MarkGitHubInaccessible(ctx context.Context, p Partition) error {
+	key, err := p.key()
+	if err != nil {
+		return err
+	}
+	_, err = i.db.ExecContext(ctx, `UPDATE github_absences SET classification='inaccessible',observed=? WHERE partition=? AND classification='unknown'`, time.Now().UnixNano(), key)
+	return err
+}
+
+// WithholdGitHubItems removes stale payloads while retaining node identity/recovery mappings.
+// A nil refs slice withholds every visible payload in the partition.
+func (i *Index) WithholdGitHubItems(ctx context.Context, p Partition, refs []queue.Ref) error {
+	key, err := p.key()
+	if err != nil {
+		return err
+	}
+	tx, err := i.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if len(refs) == 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=?`, key); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=?`, key); err != nil {
+			return err
+		}
+	} else {
+		for _, ref := range refs {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? AND ref=? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key, ref.Key()); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=? AND ref=?`, key, ref.Key()); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref=?`, key, ref.Key()); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// RestartGitHubSync drops an expired resume cursor without advancing the committed watermark.
+func (i *Index) RestartGitHubSync(ctx context.Context, p Partition, reconciliation bool, now time.Time) error {
+	key, err := p.key()
+	if err != nil {
+		return err
+	}
+	tx, err := i.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var cursor string
+	var committed, scan, gen, started int64
+	var reconCursor string
+	queryErr := tx.QueryRowContext(ctx, `SELECT cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started FROM github_sync WHERE partition=?`, key).Scan(&cursor, &committed, &scan, &reconCursor, &gen, &started)
+	if queryErr != nil && queryErr != sql.ErrNoRows {
+		return queryErr
+	}
+	if reconciliation {
+		gen++
+		started = now.UnixNano()
+		reconCursor = "@start"
+	} else {
+		cursor = ""
+		scan = now.UnixNano()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO github_sync(partition,cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(partition) DO UPDATE SET cursor=excluded.cursor,scan_watermark=excluded.scan_watermark,reconciliation_cursor=excluded.reconciliation_cursor,reconciliation_generation=excluded.reconciliation_generation,reconciliation_started=excluded.reconciliation_started`, key, cursor, committed, scan, reconCursor, gen, started)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CommitGitHubReconciliationPage atomically saves a bounded scan page and cursor.
+// It retires absent payload rows only when the generation completes; identity mappings remain.
+func (i *Index) CommitGitHubReconciliationPage(ctx context.Context, p Partition, items []queue.Item, cursor string, generation int64, started time.Time, complete bool) ([]queue.Ref, error) {
+	key, err := p.key()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := i.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for _, item := range items {
+		payload, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		observed := item.Observation.ObservedAt
+		if observed.IsZero() {
+			observed = time.Now()
+		}
+		if item.CanonicalID != "" {
+			var previous string
+			lookupErr := tx.QueryRowContext(ctx, `SELECT ref FROM github_nodes WHERE partition=? AND node_id=?`, key, item.CanonicalID).Scan(&previous)
+			if lookupErr != nil && lookupErr != sql.ErrNoRows {
+				return nil, lookupErr
+			}
+			if previous != "" && previous != item.Ref.Key() {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) VALUES(?,?,?,'moved',?) ON CONFLICT(partition,ref) DO UPDATE SET node_id=excluded.node_id,classification=excluded.classification,observed=excluded.observed`, key, previous, item.CanonicalID, time.Now().UnixNano()); err != nil {
+					return nil, err
+				}
+				if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref=?`, key, previous); err != nil {
+					return nil, err
+				}
+				if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=? AND ref=?`, key, previous); err != nil {
+					return nil, err
+				}
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO github_nodes(partition,node_id,ref,seen_generation) VALUES(?,?,?,?) ON CONFLICT(partition,node_id) DO UPDATE SET ref=excluded.ref,seen_generation=excluded.seen_generation`, key, item.CanonicalID, item.Ref.Key(), generation); err != nil {
+				return nil, err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM github_absences WHERE partition=? AND ref=?`, key, item.Ref.Key()); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO entries(partition,ref,payload,observed) VALUES(?,?,?,?) ON CONFLICT(partition,ref) DO UPDATE SET payload=excluded.payload,observed=excluded.observed`, key, item.Ref.Key(), payload, observed.UnixNano()); err != nil {
+			return nil, err
+		}
+	}
+	var retired []queue.Ref
+	if complete {
+		// A missing node in an accessible scan is not evidence of deletion:
+		// permission changes and transfers have the same observable result.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? AND seen_generation<>? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key, generation); err != nil {
+			return nil, err
+		}
+		rows, queryErr := tx.QueryContext(ctx, `SELECT e.ref FROM entries e LEFT JOIN github_nodes n ON n.partition=e.partition AND n.ref=e.ref WHERE e.partition=? AND (n.node_id IS NULL OR n.seen_generation<>?)`, key, generation)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		for rows.Next() {
+			var refKey string
+			if err = rows.Scan(&refKey); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			parts := strings.SplitN(refKey, "\x00", 2)
+			if len(parts) == 2 {
+				retired = append(retired, queue.Ref{SourceID: parts[0], ItemID: parts[1]})
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+		if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref IN (SELECT e.ref FROM entries e LEFT JOIN github_nodes n ON n.partition=e.partition AND n.ref=e.ref WHERE e.partition=? AND (n.node_id IS NULL OR n.seen_generation<>?))`, key, key, generation); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=? AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.partition=search.partition AND e.ref=search.ref)`, key); err != nil {
+			return nil, err
+		}
+		cursor = ""
+	}
+	var syncCursor string
+	var committed, scan int64
+	queryErr := tx.QueryRowContext(ctx, `SELECT cursor,committed_watermark,scan_watermark FROM github_sync WHERE partition=?`, key).Scan(&syncCursor, &committed, &scan)
+	if queryErr != nil && queryErr != sql.ErrNoRows {
+		return nil, queryErr
+	}
+	if complete && started.UnixNano() > committed {
+		committed = started.UnixNano()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO github_sync(partition,cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(partition) DO UPDATE SET committed_watermark=excluded.committed_watermark,reconciliation_cursor=excluded.reconciliation_cursor,reconciliation_generation=excluded.reconciliation_generation,reconciliation_started=excluded.reconciliation_started`, key, syncCursor, committed, scan, cursor, generation, started.UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return retired, nil
 }
 
 // Revoke atomically purges every cached projection for a partition after access loss.
