@@ -100,27 +100,10 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		return err
 	}
 	defer index.Close()
-	cachePartitions := make(map[string]queueindex.Partition)
-	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
-	for _, source := range sources {
-		adapter, _ := registry.Get(source.Adapter)
-		partition, ok := queueindex.ForSource(adapter, source)
-		if !ok {
-			continue
-		}
-		cachePartitions[source.ID] = partition
-		snapshot, _, _, readErr := index.Read(ctx, partition, -1)
-		if readErr != nil {
-			return readErr
-		}
-		for key, item := range snapshot.Items {
-			cached.Items[key] = item
-		}
-		for id, coverage := range snapshot.Sources {
-			cached.Sources[id] = coverage
-		}
+	cachePartitions, err := seedQueueIndex(ctx, index, registry, sources, loader)
+	if err != nil {
+		return err
 	}
-	loader.Store.SeedSnapshot(cached)
 	model := queueui.New(loader.Store.Current())
 	model.Sources = shownSources
 	model.SourceErrors = sourceErrors
@@ -216,6 +199,32 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	workersMu.Unlock()
 	workers.Wait()
 	return err
+}
+
+// seedQueueIndex publishes the cached first frame before refresh starts.
+func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
+	partitions := make(map[string]queueindex.Partition)
+	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
+	for _, source := range sources {
+		adapter, _ := registry.Get(source.Adapter)
+		partition, ok := queueindex.ForSource(adapter, source)
+		if !ok {
+			continue
+		}
+		partitions[source.ID] = partition
+		snapshot, _, _, err := index.Read(ctx, partition, -1)
+		if err != nil {
+			return nil, err
+		}
+		for key, item := range snapshot.Items {
+			cached.Items[key] = item
+		}
+		for id, coverage := range snapshot.Sources {
+			cached.Sources[id] = coverage
+		}
+	}
+	loader.Store.SeedSnapshot(cached)
+	return partitions, nil
 }
 
 func queueSourceFailure(err error) string {
