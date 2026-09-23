@@ -165,6 +165,32 @@ func TestGitHubReconciliationRetiresOnlyAtCompletedGeneration(t *testing.T) {
 	}
 }
 
+func TestGitHubReconciliationNeverMovesIncrementalWatermarkBackwards(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	started := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	state, err := idx.StartGitHubReconciliation(ctx, p, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := started.Add(time.Hour)
+	if err := idx.CommitGitHubSyncPage(ctx, p, nil, "", later, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.CommitGitHubReconciliationPage(ctx, p, nil, "", state.ReconciliationGeneration, started, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := idx.ReadGitHubSyncState(ctx, p)
+	if err != nil || !got.CommittedWatermark.Equal(later) {
+		t.Fatalf("completed older reconciliation lost incremental progress: %+v %v", got, err)
+	}
+}
+
 func TestGitHubSyncDeduplicatesByNodeIDAcrossReferences(t *testing.T) {
 	ctx := context.Background()
 	idx, err := Open(ctx, t.TempDir())

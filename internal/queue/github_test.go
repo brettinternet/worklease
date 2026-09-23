@@ -244,6 +244,34 @@ func TestGitHubReadItemsBatchesVisibleNodeHydration(t *testing.T) {
 	}
 }
 
+func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, _ := githubRequest(t, r)
+		switch {
+		case strings.Contains(query, "viewer"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "nodes(ids:"):
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"title":"transferred","repository":{"nameWithOwner":"other/repo"}},{"id":"N2","number":2,"title":"still here","repository":{"nameWithOwner":"org/repo"}}]}}`)
+		default:
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := a.ReadItems(context.Background(), source, []Ref{{source.ID, "1"}, {source.ID, "2"}}, nil, 100)
+	if outcomes[0].Kind != "withheld" || outcomes[1].Kind != "found" {
+		t.Fatalf("transfer contaminated sibling hydration: %+v", outcomes)
+	}
+	if _, err := a.Capabilities(context.Background(), source, "", nil); err == nil {
+		t.Fatal("transferred issue left claims available")
+	}
+}
+
 func TestGitHubIncrementalPagesKeepFixedWatermarkAndOverlap(t *testing.T) {
 	var sinceValues []string
 	var page int

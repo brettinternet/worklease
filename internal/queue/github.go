@@ -568,6 +568,7 @@ func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, quer
 			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "issue identity missing"}
 		}
 		if issue.Repository.NameWithOwner != b.repository {
+			a.drift(b)
 			return SummaryPage{}, GitHubDiagnostic{"identity-changed", "issue transferred; claims unavailable until rebind"}
 		}
 		a.rememberNodeID(b, issue)
@@ -731,7 +732,8 @@ const githubNodesQuery = `query($ids:[ID!]!) { rateLimit { remaining resetAt } n
 func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref, _ []string, _ int) []ItemOutcome {
 	outcomes := make([]ItemOutcome, len(refs))
 	b, err := a.binding(source)
-	batchIssues := map[int]githubIssue{}
+	batchIssues := map[string]githubIssue{}
+	requestedIDs := map[string]string{}
 	batchUsed := false
 	var batchErr error
 	if err == nil && len(refs) > 0 && len(refs) <= 100 {
@@ -745,6 +747,7 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 				break
 			}
 			ids = append(ids, id)
+			requestedIDs[ref.ItemID] = id
 		}
 		a.mu.Unlock()
 		if allKnown {
@@ -755,7 +758,7 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 			batchErr = a.query(ctx, b, githubNodesQuery, map[string]any{"ids": ids}, &result)
 			for _, issue := range result.Nodes {
 				if issue != nil {
-					batchIssues[issue.Number] = *issue
+					batchIssues[issue.ID] = *issue
 				}
 			}
 		}
@@ -783,12 +786,12 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 				}
 				continue
 			}
-			issue, exists := batchIssues[number]
+			issue, exists := batchIssues[requestedIDs[ref.ItemID]]
 			if !exists {
 				outcomes[i].Kind = "withheld"
 				continue
 			}
-			if issue.Repository.NameWithOwner != b.repository {
+			if issue.Repository.NameWithOwner != b.repository || issue.Number != number {
 				a.drift(b)
 				outcomes[i].Kind = "withheld"
 				continue

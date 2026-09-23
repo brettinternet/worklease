@@ -76,8 +76,9 @@ func (s *syncTestStore) CommitGitHubSyncPage(_ context.Context, _ Source, _ []It
 
 type syncTestAdapter struct {
 	*fakeAdapter
-	calls    []string
-	failNext bool
+	calls      []string
+	failNext   bool
+	expireNext bool
 }
 
 func (a *syncTestAdapter) ListIncremental(_ context.Context, _ Source, _ Query, cursor string, _, _ time.Time) (SummaryPage, error) {
@@ -85,6 +86,10 @@ func (a *syncTestAdapter) ListIncremental(_ context.Context, _ Source, _ Query, 
 	if a.failNext && cursor == "resume" {
 		a.failNext = false
 		return SummaryPage{}, errors.New("interrupted")
+	}
+	if a.expireNext && cursor == "resume" {
+		a.expireNext = false
+		return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub pagination cursor expired"}
 	}
 	if cursor == "" {
 		return SummaryPage{Items: []Summary{{Ref: Ref{"s", "2"}, Title: "two"}}, NextCursor: "resume", Coverage: Coverage{State: CoveragePartial}, Incremental: true}, nil
@@ -113,6 +118,32 @@ func TestLoaderResumesPersistedGitHubIncrementalCursorAfterInterruptedPage(t *te
 	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
 	if len(adapter.calls) != 3 || adapter.calls[0] != "" || adapter.calls[1] != "resume" || adapter.calls[2] != "resume" || store.state.Cursor != "" || !store.state.CommittedWatermark.Equal(watermark) {
 		t.Fatalf("calls=%v checkpoint=%+v watermark=%v", adapter.calls, store.state, watermark)
+	}
+}
+
+func TestLoaderRestartsExpiredGitHubCursorWithoutLosingWatermark(t *testing.T) {
+	base := newFake()
+	base.pages["s"] = []SummaryPage{{Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	adapter := &syncTestAdapter{fakeAdapter: base, failNext: true, expireNext: true}
+	registry := NewRegistry()
+	registry.adapters["github"] = adapter
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	committed := store.state.CommittedWatermark
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.Cursor != "resume" {
+		t.Fatalf("missing partial cursor: %+v", store.state)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.Cursor != "" || !store.state.CommittedWatermark.Equal(committed) {
+		t.Fatalf("expired cursor advanced watermark: %+v", store.state)
+	}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if len(adapter.calls) != 5 || adapter.calls[3] != "" || store.state.Cursor != "" || !store.state.CommittedWatermark.After(committed) {
+		t.Fatalf("restart did not rescan from first page: calls=%v checkpoint=%+v", adapter.calls, store.state)
 	}
 }
 

@@ -701,7 +701,7 @@ func (i *Index) CommitGitHubReconciliationPage(ctx context.Context, p Partition,
 	if queryErr != nil && queryErr != sql.ErrNoRows {
 		return nil, queryErr
 	}
-	if complete {
+	if complete && started.UnixNano() > committed {
 		committed = started.UnixNano()
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO github_sync(partition,cursor,committed_watermark,scan_watermark,reconciliation_cursor,reconciliation_generation,reconciliation_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(partition) DO UPDATE SET committed_watermark=excluded.committed_watermark,reconciliation_cursor=excluded.reconciliation_cursor,reconciliation_generation=excluded.reconciliation_generation,reconciliation_started=excluded.reconciliation_started`, key, syncCursor, committed, scan, cursor, generation, started.UnixNano())
