@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:10'
+updated_date: '2026-09-23 21:13'
 labels:
   - work-queue
   - backlog-md
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-126.6
@@ -58,6 +59,8 @@ Verification: gh release view v1.52.0, backlog --version and list JSON; writer d
 Worktree commit b91a847 passed lint, format-check, test, typecheck, hooks. Review: one scoped pass of the one-line proposal change and gh issue body; no item-scoped defects. Integration remains pending: primary main has concurrent unrelated uncommitted edits to docs/work-queue-tui-proposal.md and other files, so merging now would disturb another worker. Next: after main is clean, merge task-127-upstream-dependencies, commit the provider task file from primary checkout without staging unrelated files, verify section 14 and issue URL on main, then finalize Done and clean owned worktree.
 
 Integrated b91a847 into main at cb008a9. Proposal section 14 retains the measured 82-minute bound and links the verified open upstream issue #1035. Full lint, format-check, test, typecheck, doc-test and staged hooks passed. AC4 is inapplicable: the fields are absent in Backlog.md 1.52.0.
+
+Post-completion review: issue #1035 still OPEN with no replies; Backlog.md 1.52.0 remains latest. Proposal §14 wording changed from 'measured at least' to 'projected' ~82 min. No follow-up; revisit when upstream responds.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

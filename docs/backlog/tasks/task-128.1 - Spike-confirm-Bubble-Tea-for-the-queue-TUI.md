@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:00'
+updated_date: '2026-09-23 21:14'
 labels:
   - work-queue
   - tui
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -56,6 +57,8 @@ Spike evidence and D9 decision committed on isolated branch e8d2eab. All project
 2026-09-23 05:36 UTC: Rechecked integration after TASK-126.5 merged (main c8da592). Spike branch e8d2eab remains clean and ready, but primary checkout still has an uncommitted overlapping docs/work-queue-tui-proposal.md edit from concurrent tasks; do not merge or alter that work. Next: wait for primary proposal edit to be committed, integrate the spike commit, run doc-test and link checks, finalize and remove the verified owned worktree.
 
 Integrated as main 3d3c463 (rebased e8d2eab) by applying the non-overlapping proposal hunk without touching concurrent uncommitted edits. doc-test, lint, format-check passed on the rebased branch; the diff adds no relative links. Only docs/work-queue-tui-proposal.md changed; no prototype code on main.
+
+Post-completion review (cce444b): go.mod now lists Bubble Tea/Lip Gloss/x/ansi as direct requirements (go mod tidy); D9 records the pins as done. Deferred native-terminal verification had no owner, so created TASK-135; end-to-end input-to-paint latency is owned by TASK-129.6.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
