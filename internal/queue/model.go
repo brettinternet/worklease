@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/resource"
 )
 
 type Ref struct {
@@ -125,6 +127,8 @@ type Item struct {
 	Closure           CoverageState    `json:"closure"`
 	Assignment        Assignment       `json:"assignment"`
 	Claim             ClaimObservation `json:"claim"`
+	Resources         []string         `json:"resources,omitempty"`
+	KeyInputs         *resource.Input  `json:"keyInputs,omitempty"`
 	Readiness         Readiness        `json:"readiness"`
 	Coverage          Coverage         `json:"coverage"`
 	Observation       Observation      `json:"observation"`
@@ -135,11 +139,19 @@ type Assignment struct {
 	Known    bool     `json:"known"`
 }
 type ClaimObservation struct {
-	Available     bool   `json:"available"`
-	Active        bool   `json:"active"`
-	Known         bool   `json:"known"`
-	OwnerVerified bool   `json:"ownerVerified"`
-	NativeState   string `json:"nativeState,omitempty"`
+	Available     bool      `json:"available"`
+	Active        bool      `json:"active"`
+	Known         bool      `json:"known"`
+	OwnerVerified bool      `json:"ownerVerified"`
+	NativeState   string    `json:"nativeState,omitempty"`
+	AuthorityID   string    `json:"authorityId,omitempty"`
+	State         string    `json:"state,omitempty"`
+	AgentID       string    `json:"agentId,omitempty"`
+	SessionID     string    `json:"sessionId,omitempty"`
+	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
+	ObservedAt    time.Time `json:"observedAt,omitempty"`
+	Stale         bool      `json:"stale"`
+	Reason        string    `json:"reason,omitempty"`
 }
 type Freshness string
 
@@ -229,6 +241,8 @@ type Action string
 
 const (
 	ActionStart          Action = "start"
+	ActionClaim          Action = "claim"
+	ActionLaunch         Action = "launch"
 	ActionResume         Action = "resume"
 	ActionReportBlocked  Action = "report-blocked"
 	ActionRecordProgress Action = "record-progress"
@@ -260,6 +274,11 @@ func cloneItem(i Item) Item {
 	}
 	i.Readiness.Reasons = append([]string(nil), i.Readiness.Reasons...)
 	i.Assignment.Owners = append([]string(nil), i.Assignment.Owners...)
+	i.Resources = append([]string(nil), i.Resources...)
+	if i.KeyInputs != nil {
+		key := *i.KeyInputs
+		i.KeyInputs = &key
+	}
 	return i
 }
 func cloneItems(in map[string]Item) map[string]Item {

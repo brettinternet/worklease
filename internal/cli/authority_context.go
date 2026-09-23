@@ -11,6 +11,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
@@ -86,11 +87,48 @@ func profileSelection(cmd *urfave.Command) (config.ProfileSelection, error) {
 }
 
 func authorityFor(ctx context.Context, cmd *urfave.Command, write bool) (*authorityContext, error) {
-	cfg, err := configForCommand(cmd)
+	selected, err := profileSelection(cmd)
 	if err != nil {
 		return nil, err
 	}
-	selected, err := profileSelection(cmd)
+	return authorityForSelection(ctx, cmd, write, selected)
+}
+
+// queueAuthorityForView resolves a view's named authority, independently of
+// the invoking checkout's profile flags. The caller closes the returned context.
+func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
+	paths := config.UserProfilePaths(os.Getenv)
+	profiles, _, err := config.LoadProfiles(paths)
+	if err != nil {
+		return nil, queue.ClaimAuthority{}, err
+	}
+	selected := config.ProfileSelection{Name: name, Source: "queue-view"}
+	if name != config.LocalProfileName {
+		profile, ok := profiles[name]
+		if !ok {
+			return nil, queue.ClaimAuthority{}, reason.New(reason.ReasonConfigInvalid, "queue authority profile is not trusted")
+		}
+		selected.Profile = &profile
+	}
+	backend, err := authorityForSelection(ctx, cmd, false, selected)
+	if err != nil {
+		return nil, queue.ClaimAuthority{}, err
+	}
+	overlay := queue.ClaimAuthority{API: backend.API, ID: backend.AuthorityID(), Profile: backend.ProfileName, Remote: backend.Remote}
+	if backend.HTTP != nil {
+		// An outage or an old server with no admission metadata leaves claims
+		// unknown; it never authorizes a fallback to local.
+		if response, err := backend.HTTP.Metadata(ctx); err == nil && response.Metadata != nil {
+			overlay.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+		}
+	}
+	return backend, overlay, nil
+}
+
+// authorityForSelection constructs the same client used by regular commands,
+// without replacing a view's authority with the invoking checkout's profile.
+func authorityForSelection(ctx context.Context, cmd *urfave.Command, write bool, selected config.ProfileSelection) (*authorityContext, error) {
+	cfg, err := configForCommand(cmd)
 	if err != nil {
 		return nil, err
 	}

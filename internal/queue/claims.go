@@ -1,0 +1,180 @@
+package queue
+
+import (
+	"context"
+	"time"
+
+	"github.com/brettinternet/worklease/internal/authority"
+	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/resource"
+)
+
+// ClaimSource retains the configured identity inputs, rather than deriving keys
+// from a display ID or from the checkout running the queue.
+type ClaimSource struct {
+	Source              Source
+	Policy, ClaimSource string
+}
+
+type ClaimAuthority struct {
+	API     authority.Authority
+	ID      string
+	Profile string
+	Remote  bool
+	// Nil means the remote server did not advertise its admission policy.
+	AdmittedPrefixes *[]string
+}
+
+// OverlayClaims observes one selected authority. A failed read never converts
+// an unknown claim to a free claim; no authority mutation is performed.
+func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSource, selected ClaimAuthority, paths config.ProfilePaths, env func(string) string) []Item {
+	out := make([]Item, len(items))
+	resources := make([]string, 0, len(items))
+	indexes := make(map[string][]int)
+	for i, input := range items {
+		item := cloneItem(input)
+		item.NativeClaim = "not-exposed"
+		item.Claim = ClaimObservation{AuthorityID: selected.ID, State: "unknown", NativeState: "not-exposed", Stale: true, ObservedAt: time.Now().UTC()}
+		source, ok := sources[item.Ref.SourceID]
+		if !ok || selected.ID == "" || selected.API == nil {
+			item.Claim.Reason = "authority-unavailable"
+		} else {
+			policy := source.Policy
+			keySource := source.ClaimSource
+			if policy == "" {
+				policy = source.Source.Adapter
+			}
+			if keySource == "" {
+				keySource = source.Source.Locator
+			}
+			key, err := resource.Resolve(resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID})
+			if err != nil {
+				item.Claim.Reason = "invalid-resource"
+			} else {
+				item.Resources = []string{key.Resource}
+				item.KeyInputs = &resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID}
+				switch {
+				case selected.Remote && selected.AdmittedPrefixes == nil:
+					item.Claim.Reason = "admission-unknown"
+				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):
+					item.Claim.Reason = "resource-not-admitted"
+				case source.Source.Adapter == "backlog-md" && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env):
+					item.Claim.Reason = "authority-mismatch"
+				default:
+					indexes[key.Resource] = append(indexes[key.Resource], i)
+					if len(indexes[key.Resource]) == 1 {
+						resources = append(resources, key.Resource)
+					}
+				}
+			}
+		}
+		out[i] = item
+	}
+	// The request is bounded well below 1 MiB, including protocol framing.
+	// Thirty-two entries also leave room for a 4 MiB response even when each
+	// claim contains the maximum 32 resources near the key size limit.
+	for start := 0; start < len(resources); {
+		end, bytes := start, 256
+		for end < len(resources) && end-start < 32 && bytes+len(resources[end])+128 < 512*1024 {
+			bytes += len(resources[end]) + 128
+			end++
+		}
+		if end == start {
+			end++
+		}
+		overlayBatch(ctx, out, indexes, resources[start:end], selected)
+		start = end
+	}
+	return out
+}
+
+func matchingCheckoutAuthority(checkout string, selected ClaimAuthority, paths config.ProfilePaths, env func(string) string) bool {
+	root, err := handle.ContextRoot(checkout, nil)
+	if err != nil {
+		return false
+	}
+	// The worker's own explicit --profile is not the queue's view flag. The
+	// worker may still select one later; this checks the checkout default.
+	choice, err := config.SelectProfile(nil, env, root, paths)
+	if err != nil {
+		return false
+	}
+	if choice.Profile != nil {
+		return selected.Remote && choice.Profile.AuthorityID == selected.ID
+	}
+	return !selected.Remote && selected.Profile == config.LocalProfileName
+}
+
+func overlayBatch(ctx context.Context, items []Item, indexes map[string][]int, keys []string, selected ClaimAuthority) {
+	if len(keys) == 0 {
+		return
+	}
+	status, err := selected.API.Status(ctx, lease.Selector{AuthorityID: selected.ID, Resources: keys})
+	if err != nil {
+		if classified := reason.As(err); classified != nil && classified.Reason == reason.ReasonResponseTooLarge && len(keys) > 1 {
+			middle := len(keys) / 2
+			overlayBatch(ctx, items, indexes, keys[:middle], selected)
+			overlayBatch(ctx, items, indexes, keys[middle:], selected)
+		}
+		return
+	}
+	observed := time.Now().UTC()
+	byResource := make(map[string]lease.ResourceStatus, len(status.Resources))
+	for _, entry := range status.Resources {
+		byResource[entry.Resource] = entry
+	}
+	for _, key := range keys {
+		entry, ok := byResource[key]
+		if !ok {
+			continue
+		}
+		observation := ClaimObservation{AuthorityID: selected.ID, State: "unknown", NativeState: "not-exposed", Stale: true, ObservedAt: observed}
+		switch entry.State {
+		case "free":
+			if entry.Claim == nil {
+				observation.State, observation.Known, observation.Stale = "free", true, false
+			}
+		case "active", "expired":
+			if entry.Claim != nil && entry.Claim.AuthorityID == selected.ID {
+				observation.Known, observation.Stale = true, false
+				observation.State = "expired"
+				if entry.State == "active" && entry.Claim.Active {
+					observation.State, observation.Active = "held", true
+				}
+				observation.AgentID, observation.SessionID = entry.Claim.AgentID, entry.Claim.SessionID
+				observation.ExpiresAt = entry.Claim.ExpiresAt
+			}
+		}
+		observation.Available = observation.Known && !observation.Active
+		for _, index := range indexes[key] {
+			items[index].Claim = observation
+		}
+	}
+}
+
+// ClaimActions applies authority-specific restrictions after generic readiness.
+func ClaimActions(item Item) map[Action]Eligibility {
+	actions := make(map[Action]Eligibility)
+	for _, action := range []Action{ActionStart, ActionResume, ActionClaim, ActionLaunch, ActionReportBlocked, ActionRecordProgress, ActionComplete} {
+		eligibility := EvaluateAction(item, action)
+		if action == ActionClaim || action == ActionLaunch {
+			eligibility = EvaluateAction(item, ActionStart)
+		}
+		if action == ActionStart || action == ActionResume || action == ActionClaim || action == ActionLaunch {
+			switch {
+			case item.Claim.Reason != "":
+				eligibility = Eligibility{Reasons: []string{item.Claim.Reason}, Outcome: "capability"}
+			case !item.Claim.Known || item.Claim.Stale:
+				eligibility = Eligibility{Reasons: []string{"claim-unknown"}, Outcome: "capability"}
+			}
+		}
+		if (action == ActionClaim || action == ActionLaunch) && eligibility.Eligible {
+			eligibility = Eligibility{Reasons: []string{"read-only-slice"}, Outcome: "capability"}
+		}
+		actions[action] = eligibility
+	}
+	return actions
+}
