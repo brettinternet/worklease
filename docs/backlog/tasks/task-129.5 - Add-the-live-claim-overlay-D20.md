@@ -1,11 +1,11 @@
 ---
 id: TASK-129.5
 title: Add the live claim overlay (D20)
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 22:59'
+updated_date: '2026-09-23 23:00'
 labels:
   - work-queue
   - authority
@@ -76,3 +76,9 @@ User approved staging the active queue-owned handle regression in TASK-130.1 bec
 
 Acceptance evidence: internal/queue/live_claims_test.go cursor/status/watch race matrix (acquire/renew/release/expiry), local authority replay, authority-time expiry without event, gap rebuild, and real hosted HTTP remote restart/restore with pinned profile; internal/queueui/model_test.go rebuilding state, stalled-provider/live-claim independence. After merging current main into task branch, mise run lint, format-check, test, typecheck, hooks all passed. Plan D20 staging clarification committed in a40dfe7; active-handle regression transferred to TASK-130.1 #9.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented live namespace claim overlay with cursor-before-status replay, targeted status, authority-time expiry, visible gap rebuild, and restore/authority identity fail-closed. Tests cover injected races, local replay, real hosted remote restore/restart, and independent claim/provider freshness. All repository gates passed; merged into main at f7d7aba. Active queue-owned handle restore regression is TASK-130.1 #9 by user decision.
+<!-- SECTION:FINAL_SUMMARY:END -->
