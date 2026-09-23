@@ -3,7 +3,13 @@ package queue
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +18,7 @@ import (
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/brettinternet/worklease/internal/watch"
 )
@@ -186,6 +193,107 @@ func TestRunClaimOverlayLocalAuthorityReplaysAcquireBetweenSnapshotAndWatch(t *t
 	})
 	if !errors.Is(err, context.Canceled) || !slices.Equal(seen, []string{"free", "held"}) {
 		t.Fatalf("states=%v err=%v", seen, err)
+	}
+}
+
+// Exercise the pinned HTTP profile across a real hosted-store restore and server
+// restart. Rebuilding a snapshot must not silently accept the new restore ID.
+func TestRunClaimOverlayRemoteRestoreAfterRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	home := t.TempDir()
+	if err := store.MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireHostedLock(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, home, store.Options{HostedWriter: true, HostedLock: lock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite := strings.Repeat("a", 64)
+	bootstrap, err := lease.New(st, nil, nil, lease.Defaults{}).HostedInitialize(ctx, invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteHostedReady(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := server.Config{Home: home, Listen: "127.0.0.1:8443", Prefixes: []string{"coordination:"}, MaxTTL: "1m", MaxHold: "1h", HealthRate: 100, MetadataRate: 100, EnrollmentRate: 100}
+	current, err := server.New(ctx, cfg, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosted atomic.Pointer[server.Server]
+	hosted.Store(current)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosted.Load().Handler().ServeHTTP(w, r)
+	}))
+	defer listener.Close()
+	defer func() { _ = hosted.Load().Close() }()
+
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	paths := config.UserProfilePaths(os.Getenv)
+	profile := config.Profile{Name: "team", Endpoint: listener.URL, AuthorityID: bootstrap.AuthorityID, RestoreID: bootstrap.RestoreID, AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(configRoot, "worklease", "credentials", "team")}}
+	client, err := authority.NewHTTPClient(profile, authority.NewFilePendingStore(filepath.Join(configRoot, "pending")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Enroll(ctx, invite, "overlay-test", paths); err != nil {
+		t.Fatal(err)
+	}
+	remote, err := authority.NewRemoteAuthority(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, sources := claimFixtures(1)
+	prefixes := []string{"coordination:"}
+	selected := ClaimAuthority{API: remote, LiveAPI: remote, ID: bootstrap.AuthorityID, Profile: "team", Remote: true, AdmittedPrefixes: &prefixes}
+	var baseline, stale bool
+	err = RunClaimOverlay(ctx, items, sources, selected, paths, os.Getenv, func(observed []Item, rebuilding bool, callErr error) {
+		if !baseline && callErr == nil && !rebuilding && observed[0].Claim.Known {
+			baseline = true
+			if closeErr := current.Close(); closeErr != nil {
+				t.Errorf("close old server: %v", closeErr)
+				cancel()
+				return
+			}
+			lock, openErr := store.AcquireHostedLock(ctx, home)
+			if openErr != nil {
+				t.Errorf("lock restored store: %v", openErr)
+				cancel()
+				return
+			}
+			restored, openErr := store.Open(ctx, home, store.Options{HostedWriter: true, HostedLock: lock})
+			if openErr == nil {
+				_, openErr = lease.New(restored, nil, nil, lease.Defaults{}).HostedRestore(ctx, lease.HostedRestoreRequest{}, strings.Repeat("b", 64))
+				_ = restored.Close()
+			}
+			if openErr != nil {
+				t.Errorf("restore store: %v", openErr)
+				cancel()
+				return
+			}
+			restarted, restartErr := server.New(ctx, cfg, true, nil)
+			if restartErr != nil {
+				t.Errorf("restart server: %v", restartErr)
+				cancel()
+				return
+			}
+			hosted.Store(restarted)
+		}
+		if baseline && callErr != nil && observed[0].Claim.Stale && !observed[0].Claim.Known {
+			stale = true
+		}
+	})
+	if !baseline || !stale || reason.As(err) == nil || reason.As(err).Reason != reason.ReasonAuthorityRestored {
+		t.Fatalf("baseline=%t stale=%t err=%v", baseline, stale, err)
 	}
 }
 
