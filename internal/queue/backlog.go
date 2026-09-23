@@ -175,6 +175,9 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	ctx, cancel := context.WithTimeout(ctx, a.timeout())
 	defer cancel()
 	priority := PriorityBackground
+	if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok && requested == PriorityAction {
+		priority = PriorityAction
+	}
 	if len(args) >= 2 && args[0] == "task" {
 		priority = PriorityVisible
 		if args[1] == "view" {

@@ -150,6 +150,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var liveDone chan struct{}
 	var liveKeys map[string]string
 	var blockedIdentity atomic.Bool
+	var hydrationCancel context.CancelFunc
 	closing := false
 	restartOverlay := func(base queue.Snapshot) {
 		liveMu.Lock()
@@ -217,6 +218,16 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
 		return func() tea.Msg {
+			workersMu.Lock()
+			if closing {
+				workersMu.Unlock()
+				return nil
+			}
+			if hydrationCancel != nil {
+				hydrationCancel()
+				hydrationCancel = nil
+			}
+			workersMu.Unlock()
 			if sourceByID[item.Ref.SourceID].Adapter != "backlog-md" {
 				return nil
 			}
@@ -235,11 +246,14 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				workersMu.Unlock()
 				return nil
 			}
+			hydrationCtx, cancel := context.WithCancel(ctx)
+			hydrationCancel = cancel
 			workers.Add(1)
 			workersMu.Unlock()
 			go func() {
 				defer workers.Done()
-				for snapshot := range loader.HydrateEdges(ctx, source, []queue.Ref{item.Ref}, nil, false) {
+				defer cancel()
+				for snapshot := range loader.HydrateEdges(hydrationCtx, source, []queue.Ref{item.Ref}, nil, false) {
 					applyStoredClaims(&snapshot, &claimOverlay)
 					program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 				}

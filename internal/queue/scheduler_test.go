@@ -158,6 +158,59 @@ func TestScheduleSupersedesRunningRead(t *testing.T) {
 	}
 }
 
+func TestCanceledLastWaiterDoesNotCoalesceNewRead(t *testing.T) {
+	q := testQueue(1)
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	releaseRunner := make(chan struct{})
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := q.schedule(firstCtx, PriorityVisible, "same", "", true, func(ctx context.Context) (any, error) {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			<-releaseRunner
+			return nil, ctx.Err()
+		})
+		firstDone <- err
+	}()
+	<-started
+	cancelFirst()
+	<-canceled
+	if err := <-firstDone; err == nil {
+		t.Fatal("first waiter was not canceled")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := q.schedule(context.Background(), PriorityVisible, "same", "", true, func(context.Context) (any, error) { return "fresh", nil })
+		secondDone <- err
+	}()
+	deadline := time.After(time.Second)
+	for {
+		q.mu.Lock()
+		freshJob := q.inFlight["same"] != nil && q.inFlight["same"].run != nil && q.inFlight["same"].ctx.Err() == nil
+		q.mu.Unlock()
+		if freshJob {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("fresh request did not replace canceled coalescing entry")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(releaseRunner)
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh request did not run after canceled job released slot")
+	}
+}
+
 func TestScheduleFakeClockRateAndMutationSpacing(t *testing.T) {
 	q := testQueue(1)
 	clock := time.Unix(1000, 0)

@@ -661,7 +661,11 @@ func (m Model) viewCount(name string) int {
 }
 func sourceState(c queue.Coverage) string {
 	if c.Reason != "" {
-		return clean(c.Reason)
+		status := clean(c.Reason)
+		if !c.RetryAt.IsZero() {
+			status += " retry " + c.RetryAt.UTC().Format("Jan 2 15:04:05Z")
+		}
+		return status
 	}
 	if c.State == "" {
 		return "offline/unknown"
