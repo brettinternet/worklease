@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 18:08'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
   - github
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.2
@@ -68,6 +69,8 @@ Evidence: go test -race ./internal/queue -run TestGitHub -count=1 validates cana
 Post-commit validation on 701cb26: mise run lint, format-check, test, typecheck, hooks all passed. Integration deferred because main currently has another worker’s uncommitted edits to internal/queue/model.go (also touched by this branch); preserve unrelated edits. Next: after main is clean, merge task-128-5-github-adapter, rerun relevant gates, record merge commit and complete task; then verify worktree ownership before cleanup.
 
 Fast-forward merged 701cb26 into main; post-integration mise run lint, format-check, test, typecheck, hooks all passed. Prior focused race tests and one general review recorded above. No remaining implementation blocker.
+
+Review: fixed concurrent final-page scan panic, duplicate dependency edges proving completeness, stale binding after failed re-verification, unbounded abandoned scans (7643105, merged 7268f9a).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

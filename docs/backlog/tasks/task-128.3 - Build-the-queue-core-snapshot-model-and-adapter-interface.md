@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 17:02'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-126
@@ -61,6 +62,8 @@ This task owns the internal adapter interface (the plan section 7 operations, us
 Queue core and fixture tests implemented in task-128-3-queue-core; focused race test, repository test and vet passed. One independent review found concrete readiness, snapshot and source refresh defects; correcting and extending regression tests before final gates.
 
 Verification: fixture-driven eligibility cases and regression tests for reopen, changed permissions, stale/incomplete dependencies, owner maintenance, pagination, principal isolation, independent refresh and snapshot immutability pass (`go test -race -count=1 ./internal/queue/...`). On integrated main: mise run lint, format-check, test, typecheck, hooks pass; no TUI imports. One general review found 13 concrete defects, all corrected; independent verifier found missing permission observation, corrected with ReadPermission and regression test. No D1-D27 or plan refinement required. Source commit bf096ac, integrated by merge d67ff61. Next: commit final task receipt, clean owned worktree, release claim.
+
+Review: fixed principal-mismatch hydration, SCC blocker propagation, unknown/repeated dependency pages, stale seed readiness, unvisited rows on partial rescan, and fixture requires check (98da397, 827ce67, merged 7268f9a).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

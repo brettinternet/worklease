@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 17:21'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
   - backlog-md
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.2
@@ -65,6 +66,8 @@ The adapter also reports source freshness (branch, HEAD, dirty state), duplicate
 Implemented read-only adapter with versioned JSON list/view, bounded subprocesses, project effects consent, duplicate detection, dependency mapping and scratch CLI tests. Focused tests pass; running full checks.
 
 Verified: golden JSON unit tests cover schema, effect consent, mapping, duplicate IDs, timeout/cancellation/output cap, sanitized stderr and Git freshness; scratch real-CLI init/list/view integration passes. mise run lint, format-check, test, typecheck, hooks pass. One item-scoped review found and fixed on-demand hydration and hook Git environment leakage. No D1-D27 or plan contradiction. Commits 9259fbc and 744e295 fast-forward merged to main. Recovery: an initial scratch Git test inherited hook Git variables and briefly altered the owned worktree branch; restored its original base and main Git configuration, then reran all checks with sanitized environment.
+
+Review: process-group cancellation, fsmonitor-disabled git status, no stale fallback detail reuse, 4-worker ReadItems pool, absent missingDependencies => partial, real stderr sanitization test; GIT_*-sanitized scratch git in tests (b33180f, merged 7268f9a).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
