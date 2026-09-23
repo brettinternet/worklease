@@ -288,6 +288,49 @@ func TestGitHubIncrementalPagesKeepFixedWatermarkAndOverlap(t *testing.T) {
 	}
 }
 
+func TestGitHubIncrementalRevisitsIssueMovedAheadOfCursor(t *testing.T) {
+	var scan int
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, vars := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		if !strings.Contains(query, "field:UPDATED_AT,direction:DESC") {
+			t.Errorf("updated-order scan must be newest-first: %s", query)
+		}
+		if string(vars["after"]) == `"next"` {
+			// Issue C was edited from an unseen older page and moved before the
+			// cursor. It must be found in the next overlapping window.
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"B","number":2,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+			return
+		}
+		scan++
+		id, number := "A", 1
+		if scan == 2 {
+			id, number = "C", 3
+		}
+		fmt.Fprintf(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":%q,"number":%d,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`, id, number)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	watermark := committed.Add(time.Hour)
+	first, err := a.ListIncremental(context.Background(), source, Query{}, "", committed, watermark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.ListIncremental(context.Background(), source, Query{}, first.NextCursor, committed, watermark); err != nil {
+		t.Fatal(err)
+	}
+	followup, err := a.ListIncremental(context.Background(), source, Query{}, "", watermark, watermark.Add(time.Hour))
+	if err != nil || len(followup.Items) != 1 || followup.Items[0].CanonicalID != "C" {
+		t.Fatalf("moved issue missing from next window: %+v %v", followup, err)
+	}
+}
+
 func TestGitHub404WithholdsExistingIssueInsteadOfDeletingIt(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)

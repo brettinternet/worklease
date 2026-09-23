@@ -116,6 +116,48 @@ func TestLoaderResumesPersistedGitHubIncrementalCursorAfterInterruptedPage(t *te
 	}
 }
 
+type onDemandBatchAdapter struct{ *fakeAdapter }
+
+func (*onDemandBatchAdapter) OnDemandDetails() {}
+func (*onDemandBatchAdapter) BatchHydration()  {}
+
+func TestOnDemandBatchAdapterHydratesVisibleRows(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "1"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "summary", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	fake.outcomes[ref.Key()] = []ItemOutcome{itemOutcome(ref)}
+	registry := NewRegistry()
+	registry.adapters["github"] = &onDemandBatchAdapter{fake}
+	loader := NewLoader(registry)
+	drainRefresh(loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "github"}}))
+	item := loader.Store.Current().Items[ref.Key()]
+	if item.ReadOutcome != "found" {
+		t.Fatalf("batch hydration skipped: %+v", item)
+	}
+}
+
+func TestGitHubSourceAccessRestorationRestartsReconciliation(t *testing.T) {
+	fake := newFake()
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "1"}, Title: "restored"}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}
+	registry := NewRegistry()
+	registry.adapters["github"] = fake
+	loader := NewLoader(registry)
+	store := &syncTestStore{}
+	loader.GitHubSync = store
+	source := Source{ID: "s", Adapter: "github"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	fake.errors["s"] = GitHubDiagnostic{Code: "not-found-or-inaccessible", Detail: "access unavailable"}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if store.state.ReconciliationCursor != "@start" {
+		t.Fatalf("access loss did not schedule immediate reconciliation: %+v", store.state)
+	}
+	delete(fake.errors, "s")
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Current().Items[Ref{"s", "1"}.Key()]; !ok {
+		t.Fatal("restored unchanged issue remained withheld")
+	}
+}
+
 func TestExplicitInaccessibleOutcomePurgesProjection(t *testing.T) {
 	fake := newFake()
 	ref := Ref{SourceID: "s", ItemID: "gone"}

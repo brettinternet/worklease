@@ -68,6 +68,8 @@ func TestReadOnlyFixtureNetworkAndAuthorityBoundary(t *testing.T) {
 		switch {
 		case strings.Contains(query, "viewer"):
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "nodes(ids:"):
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}]}}`)
 		case strings.Contains(query, "blockedBy("):
 			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
 		case strings.Contains(query, "issue(number:"):

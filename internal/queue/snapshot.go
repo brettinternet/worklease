@@ -360,6 +360,8 @@ func (l *Loader) withholdSource(ctx context.Context, source Source, generation u
 	if l.GitHubSync != nil {
 		if err := l.GitHubSync.WithholdGitHubSource(ctx, source); err != nil {
 			reason = "github-access-unverified-payload-purge-failed"
+		} else if err := l.GitHubSync.RestartGitHubSync(ctx, source, true); err != nil {
+			reason = "github-reconciliation-restart-failed"
 		}
 	}
 	l.publish(ctx, source.ID, generation, func(s *Snapshot) {
@@ -570,11 +572,11 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		}, out)
 		// Expensive per-item providers hydrate only explicitly requested details.
 		_, onDemand := a.(interface{ OnDemandDetails() })
-		if onDemand {
+		batchHydration := isBatchHydrator(a)
+		if onDemand && !batchHydration {
 			refs = nil
 		}
 		// A slow item consumes one bounded slot, not the page or other slots.
-		batchHydration := isBatchHydrator(a)
 		for start := 0; start < len(refs); {
 			end := start + 1
 			if batchHydration {

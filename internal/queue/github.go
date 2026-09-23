@@ -197,7 +197,6 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 		}
 		b.repositoryID = repoIdentity.Repository.ID
 	}
-	id := options["id"]
 	if id == "" {
 		id = host + "/" + repository
 	}
@@ -508,7 +507,7 @@ func (a *GitHubAdapter) Capabilities(_ context.Context, source Source, _ string,
 }
 
 const githubListQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:CREATED_AT,direction:ASC},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
-const githubIncrementalQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!,$since:DateTime!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:UPDATED_AT,direction:ASC},filterBy:{since:$since},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
+const githubIncrementalQuery = `query($owner:String!,$repo:String!,$after:String,$count:Int!,$since:DateTime!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issues(first:$count,after:$after,orderBy:{field:UPDATED_AT,direction:DESC},filterBy:{since:$since},states:[OPEN,CLOSED]) { totalCount pageInfo { hasNextPage endCursor } nodes { id number title state stateReason updatedAt repository { nameWithOwner } assignees(first:100) { nodes { login } } } } } }`
 
 func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, query Query, cursor string, committedWatermark, scanWatermark time.Time) (SummaryPage, error) {
 	b, err := a.binding(source)
@@ -618,10 +617,11 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		if b.scans == nil {
 			b.scans = make(map[string]map[string]bool)
 		}
-		if _, exists := b.scans[state.ID]; !exists {
-			b.scans[state.ID] = make(map[string]bool)
-		}
+		_, exists := b.scans[state.ID]
 		a.mu.Unlock()
+		if !exists {
+			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub scan expired"}
+		}
 		scanID, after = state.ID, state.After
 	} else {
 		id := make([]byte, 16)
@@ -908,7 +908,7 @@ func (a *GitHubAdapter) ReadDependencies(ctx context.Context, source Source, ref
 		if to.SourceID != source.ID {
 			kind = CrossSourcePrerequisite
 		}
-		page.Edges = append(page.Edges, Relationship{Type: kind, Direction: DependentToPrerequisite, From: ref, To: to, Provenance: "github.blockedBy", Condition: "terminal", RawOutcome: related.State, Interpretation: "closed issue satisfies terminal", Fresh: true, Support: Supported})
+		page.Edges = append(page.Edges, Relationship{Type: kind, Direction: DependentToPrerequisite, From: ref, To: to, Provenance: "github.blockedBy", Condition: "terminal", RawOutcome: related.State, Interpretation: "closed issue satisfies terminal; dependency removal may not change updatedAt, so this observation requires reconciliation or a fresh closure read", Fresh: true, Support: Supported})
 	}
 	seenIDs := make(map[string]bool, len(state.IDs)+len(issue.BlockedBy.Nodes))
 	for _, id := range state.IDs {
