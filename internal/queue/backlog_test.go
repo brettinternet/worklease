@@ -97,7 +97,7 @@ func TestBacklogGoldenAndDiagnostics(t *testing.T) {
 	if deps.Completeness != CoveragePartial || len(deps.Edges) != 3 || deps.Edges[2].Type != ParentChild || deps.Edges[0].Condition != "terminal" {
 		t.Fatalf("unexpected dependencies: %+v", deps)
 	}
-	if _, err := a.ReadDependencies(ctx, source, Ref{SourceID: source.ID, ItemID: "-secret"}, "", 0); err == nil || strings.Contains(err.Error(), "secret\x1b") {
+	if _, err := a.ReadDependencies(ctx, source, Ref{SourceID: source.ID, ItemID: "TASK-SECRET"}, "", 0); err == nil || strings.Contains(err.Error(), "secret\x1b") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("stderr escaped: %v", err)
 	}
 	caps, _ := a.Capabilities(ctx, source, "", nil)
@@ -208,16 +208,24 @@ func diag(err error, code string) bool {
 	var d BacklogDiagnostic
 	return errors.As(err, &d) && d.Code == code
 }
+
+// scratchGit runs git in a scratch repository without inherited GIT_*
+// variables, which Git hooks set and which would redirect it to this repository.
+func scratchGit(root string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "GIT_") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	return cmd
+}
+
 func TestBacklogGitFreshness(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	for _, args := range [][]string{{"init", "-b", "main"}, {"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "seed"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
-		for _, entry := range os.Environ() {
-			if !strings.HasPrefix(entry, "GIT_") {
-				cmd.Env = append(cmd.Env, entry)
-			}
-		}
+		cmd := scratchGit(root, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %s: %v", args, out, err)
 		}
@@ -240,6 +248,27 @@ func TestBacklogGitFreshness(t *testing.T) {
 	}
 	if !a.Diagnostics(source).Dirty {
 		t.Fatal("list did not refresh dirty state")
+	}
+}
+
+func TestBacklogReadItemsMoreThanSchedulerCapacity(t *testing.T) {
+	root, binary := fakeBacklog(t)
+	a := NewBacklogAdapter()
+	a.Binary = binary
+	source := Source{ID: "fixture", Locator: root}
+	a.consent[source.ID] = true
+	refs := make([]Ref, 140)
+	for i := range refs {
+		refs[i] = Ref{SourceID: source.ID, ItemID: "TASK-2"}
+	}
+	outcomes := a.ReadItems(context.Background(), source, refs, nil, 0)
+	if len(outcomes) != len(refs) {
+		t.Fatalf("got %d outcomes", len(outcomes))
+	}
+	for i, outcome := range outcomes {
+		if outcome.Kind != "found" || outcome.Err != nil {
+			t.Fatalf("outcome %d: %+v", i, outcome)
+		}
 	}
 }
 
