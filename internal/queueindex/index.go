@@ -131,17 +131,39 @@ func (i *Index) migrate(ctx context.Context) error {
 	if mode != "wal" {
 		return fmt.Errorf("queue index requires WAL mode")
 	}
+	// Concurrent processes may open a new index at once. BEGIN IMMEDIATE takes
+	// the write lock (waiting up to busy_timeout) before the version check, so
+	// exactly one process creates the schema and the others observe it.
+	conn, err := i.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
 	var version int
-	if err := i.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
 	if version != 0 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if version == 0 {
-		_, err := i.db.ExecContext(ctx, `CREATE TABLE entries (partition TEXT NOT NULL, ref TEXT NOT NULL, payload BLOB NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); CREATE TABLE partitions (partition TEXT PRIMARY KEY, observed INTEGER NOT NULL, complete INTEGER NOT NULL); CREATE VIRTUAL TABLE search USING fts5(partition UNINDEXED,ref UNINDEXED,title,body); PRAGMA user_version=2`)
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE entries (partition TEXT NOT NULL, ref TEXT NOT NULL, payload BLOB NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); CREATE TABLE partitions (partition TEXT PRIMARY KEY, observed INTEGER NOT NULL, complete INTEGER NOT NULL); CREATE VIRTUAL TABLE search USING fts5(partition UNINDEXED,ref UNINDEXED,title,body); PRAGMA user_version=2`); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}
+	committed = true
 	return nil
 }
 func (i *Index) Close() error { return i.db.Close() }
