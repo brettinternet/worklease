@@ -58,8 +58,18 @@ Probed on 2026-09-22 on the reference machine against this repository's 102 Back
 | `task edit` offers `--status`, `--assignee` (replaces the whole list), `--append-notes`, `--comment`, `--check-ac <index>`, and no expected-version option. | Every write is unconditional and coordination-only. Assign to me is a read-modify-write. Checklist writes address criteria by index. |
 | `updatedAt` has minute resolution. | It is not a lossless change cursor. |
 | `isReady` is computed by Backlog.md with its own completion semantics. | Show it as provider-reported. The generic workflow still builds the graph. |
-| Project configuration has `remote_operations`, `check_active_branches`, `auto_commit`, `bypass_git_hooks`, and `filesystem_only`. | Reads may contact Git remotes. Writes may create commits and run hooks. |
+| Project configuration has `remote_operations`, `check_active_branches`, `auto_commit`, `bypass_git_hooks`, and `filesystem_only`. | In a scratch Git project, `task list --json` and `task view --json` with a nonresolving SSH remote did not invoke Git (no `GIT_TRACE` output) under either remote setting; do not generalize this to other reads. With `auto_commit: true`, `task edit` committed only the task file, left an unrelated staged file staged, and invoked pre-commit once. With `bypass_git_hooks: true`, the task commit still excluded the staged file and did not invoke the hook. |
 | `doctor` reports and repairs duplicate IDs without JSON output. Repeated IDs are visible in list JSON. | Detect duplicates from list output. A repair renumbers a task and therefore changes its claim key. |
+
+**Scale probe (2026-09-23).** Apple M1 Max, 32 GiB; Backlog.md 1.52.0; five samples each on deterministic scratch projects with 102, 1,000, and 10,000 records in ten-task dependency chains. The [fixture generator](../scripts/backlog-queue-fixture.py) captures a CLI-created seed and writes only under an empty `/tmp/worklease-queue-*` directory. The [benchmark runner](../scripts/backlog-queue-benchmark.py) uses `/usr/bin/time -l` for per-process peak RSS and measures change-to-complete-JSON emission from `--watch` after changing one fixture title. `task list --json` returned exactly 102, 1,000, and 10,000 records respectively. Wall time and RSS are p50/p95; watch reports change-to-emit p50/p95 in seconds.
+
+| Tasks | List s / MiB | View s / MiB | Watch change-to-emit s |
+| ---: | ---: | ---: | ---: |
+| 102 | 0.259/0.270 · 88.1/88.8 | 0.258/0.260 · 86.7/87.5 | 0.085/0.088 |
+| 1,000 | 0.439/0.453 · 149.0/149.1 | 0.406/0.408 · 144.8/147.1 | 0.266/0.278 |
+| 10,000 | 2.049/2.123 · 272.8/275.4 | 1.975/2.376 · 301.1/302.9 | 3.021/3.323 |
+
+`task view --json` cost grows with project size (about 7.7× p50 from 102 to 10,000). An uncached 10,000-item edge scan at four concurrent processes has a **best-case lower bound** of 10,000 × 1.975 / 4 = 4,938 s (~82 min), excluding contention, output, and retries. At most four simultaneous 10,000-item views also require roughly 1.2 GiB peak aggregate process RSS. This rules out cold source-wide next-ready at 10,000 until a bulk dependency field is available; an edge cache can serve only explicitly proven complete, fresh coverage. The watch stream emits a complete list (~3 s at 10,000), not incremental edges.
 
 ### GitHub (gh 2.101.0 and docs.github.com)
 
@@ -503,7 +513,7 @@ Push down only filters whose meaning is equivalent; evaluate residual filters ex
 - **Summaries:** one `task list --json` per invalidation gives the complete project in one process. Summaries never need a process per row.
 - **Invalidation:** prefer the long-lived `task list --json --watch` stream. Fall back to a debounced filesystem watch on the backlog directory followed by a re-list, with overflow recovery and periodic reconciliation. Choose by measurement at 10,000 tasks (slice 3).
 - **Edges:** `task view --json` per task, with at most 4 concurrent processes, prioritized as selected-item closure, then visible rows, then background. Partition observations by the explicit checkout and configuration generation. Task ID, `updatedAt`, path, mtime, and size are invalidation hints, not authoritative content versions. Track prerequisite observations separately; an unchanged task file does not mean its dependencies are unchanged. Watch loss, branch/HEAD changes, or uncertain invalidation require provider re-reads, not reusing metadata tuples as proof. Next-ready is available only once the current required graph is complete. Meanwhile show coverage such as "edges 812/10,000", preserve evidenced blockers, and use `unknown` for candidates whose closure is incomplete.
-- **Upstream:** propose adding `dependencies`, plus ideally a per-task content version, to `task list --json`. That turns the full graph into one process and removes the edge cache. Declare the limitation until it lands.
+- **Upstream:** the measured 10,000-item view scan is at least ~82 minutes even at ideal four-process throughput (§3); cold source-wide next-ready therefore waits for a bulk `dependencies` field in `task list --json`. A warm edge cache can support next-ready only after proving the complete relevant graph and freshness; it cannot turn incomplete observations into readiness. Ideally include a per-task content version as well. The list itself costs ~2 s and the watch change-to-emit ~3 s at 10,000 items, so watch and filesystem invalidation must be remeasured with realistic edit cadence before choosing a default.
 
 ### GitHub loading
 
