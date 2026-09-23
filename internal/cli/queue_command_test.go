@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/queue"
@@ -45,6 +46,20 @@ func TestQueueFirstFrameUsesIndexBeforeProviderRefresh(t *testing.T) {
 	model = updated.(queueui.Model)
 	if rendered := model.View(); !strings.Contains(rendered, "Cached firs") {
 		t.Fatalf("cached first frame not rendered before provider refresh: %s", rendered)
+	}
+}
+
+func TestHydratedSnapshotsReuseClaimOverlayWithoutAuthorityReads(t *testing.T) {
+	var stored sync.Map
+	ref := queue.Ref{SourceID: "s", ItemID: "a"}
+	stored.Store(ref.Key(), queue.Item{Summary: queue.Summary{Ref: ref}, Resources: []string{"resource:a"}, Claim: queue.ClaimObservation{Known: true, Active: true, State: "active"}})
+	for range 100 {
+		snapshot := queue.Snapshot{Items: map[string]queue.Item{ref.Key(): {Summary: queue.Summary{Ref: ref, Title: "updated"}}}}
+		applyStoredClaims(&snapshot, &stored)
+		item := snapshot.Items[ref.Key()]
+		if item.Title != "updated" || !item.Claim.Active || len(item.Resources) != 1 || item.Resources[0] != "resource:a" {
+			t.Fatalf("hydration lost claim or new detail: %+v", item)
+		}
 	}
 }
 

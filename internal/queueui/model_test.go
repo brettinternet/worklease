@@ -66,6 +66,28 @@ func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 		t.Fatal("late response stole detail")
 	}
 }
+func TestSelectedEdgeHydrationFollowsSelectionOnly(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	calls := 0
+	m.HydrateSelected = func(item queue.Item) tea.Cmd {
+		calls++
+		if item.Ref.ItemID != "2" {
+			t.Fatalf("unexpected selected item: %s", item.Ref.ItemID)
+		}
+		return func() tea.Msg { return nil }
+	}
+	m, cmd := press(m, "j")
+	if calls != 1 || cmd == nil {
+		t.Fatalf("selection did not schedule hydration: %d", calls)
+	}
+	next, _ := m.Update(SnapshotMsg{fixture()})
+	if calls != 1 || next.(Model).Selected != "stable-2" {
+		t.Fatalf("snapshot repeated hydration: %d", calls)
+	}
+}
+
 func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

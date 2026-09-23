@@ -19,14 +19,23 @@ func TestBacklogCancellationKillsProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := NewBacklogAdapter()
-	a.Timeout = 100 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, _ = a.runCommand(ctx, root, binary, "--version")
-	pidBytes, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
+	done := make(chan struct{})
+	go func() {
+		_, _ = a.runCommand(ctx, root, binary, "--version")
+		close(done)
+	}()
+	var pidBytes []byte
+	for deadline := time.Now().Add(10 * time.Second); len(strings.TrimSpace(string(pidBytes))) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("fake backlog never started its child")
+		}
+		time.Sleep(10 * time.Millisecond)
+		pidBytes, _ = os.ReadFile(pidFile)
 	}
+	cancel()
+	<-done
 	pid := strings.TrimSpace(string(pidBytes))
 	for range 50 {
 		if err := exec.Command("kill", "-0", pid).Run(); err != nil {

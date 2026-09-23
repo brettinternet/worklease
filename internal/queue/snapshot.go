@@ -43,6 +43,12 @@ func NewStore() *Store {
 	return &Store{current: Snapshot{Items: map[string]Item{}, Sources: map[string]Coverage{}, Deleted: map[string]Ref{}}, subs: map[uint64]chan Snapshot{}}
 }
 func (s *Store) Current() Snapshot { s.mu.RLock(); defer s.mu.RUnlock(); return s.current.Clone() }
+func (s *Store) Item(ref Ref) (Item, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	item, ok := s.current.Items[ref.Key()]
+	return cloneItem(item), ok
+}
 
 // SeedSnapshot installs a previously observed cache snapshot before revalidation begins.
 func (s *Store) SeedSnapshot(seed Snapshot) {
@@ -123,6 +129,15 @@ func (s *Store) publishComputed(update func(*Snapshot), recompute bool, valid fu
 		s.mu.RUnlock()
 		update(&base)
 		if recompute {
+			for source, coverage := range base.Sources {
+				coverage.ObservedEdges = 0
+				for _, item := range base.Items {
+					if item.Ref.SourceID == source && item.DependenciesKnown && item.Closure == CoverageComplete && item.Fresh {
+						coverage.ObservedEdges++
+					}
+				}
+				base.Sources[source] = coverage
+			}
 			base.Items = Recompute(base.Items, aggregateCoverage(base.Sources))
 		}
 		s.mu.Lock()
@@ -178,6 +193,109 @@ func (l *Loader) begin(sourceID string) uint64 {
 	l.generation[sourceID]++
 	return l.generation[sourceID]
 }
+
+// HydrateEdges fills a Backlog source after summary publication. The selected
+// closure runs first, followed by visible rows and then remaining summaries.
+// Every provider view is scheduled by quotaScheduler, never by an unbounded
+// subprocess fan-out. The returned stream must be drained until closed.
+func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visible []Ref, background bool) <-chan Snapshot {
+	out := make(chan Snapshot, 8)
+	a, ok := l.Registry.Get(source.Adapter)
+	if !ok {
+		close(out)
+		return out
+	}
+	l.mu.Lock()
+	generation := l.generation[source.ID]
+	l.mu.Unlock()
+	go func() {
+		defer close(out)
+		seen := map[string]bool{}
+		// Selected closure is discovered incrementally: a cold selected view may
+		// reveal edges that were absent from the initial summary snapshot.
+		pending := append([]Ref(nil), selected...)
+		for len(pending) > 0 && ctx.Err() == nil && l.current(source.ID, generation) {
+			ref := pending[0]
+			pending = pending[1:]
+			if ref.SourceID != source.ID || seen[ref.Key()] {
+				continue
+			}
+			seen[ref.Key()] = true
+			item, ok := l.Store.Item(ref)
+			if !ok {
+				continue
+			}
+			if !item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh {
+				l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, PriorityAction), a, source, generation, ref, item, out)
+				item, _ = l.Store.Item(ref)
+			}
+			for _, edge := range item.Relationships {
+				if edge.From == ref && edge.Type == HardPrerequisite {
+					pending = append(pending, edge.To)
+				}
+			}
+		}
+		if ctx.Err() != nil || !l.current(source.ID, generation) {
+			return
+		}
+		type request struct {
+			ref      Ref
+			priority RequestPriority
+		}
+		requests := make([]request, 0)
+		appendRef := func(ref Ref, priority RequestPriority) {
+			if ref.SourceID != source.ID || seen[ref.Key()] {
+				return
+			}
+			seen[ref.Key()] = true
+			if item, ok := l.Store.Item(ref); ok && (!item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh) {
+				requests = append(requests, request{ref, priority})
+			}
+		}
+		for _, ref := range visible {
+			appendRef(ref, PriorityVisible)
+		}
+		if background {
+			for _, item := range l.Store.Current().Items {
+				appendRef(item.Ref, PriorityBackground)
+			}
+		}
+		limit := l.HydrationLimit
+		if limit < 1 {
+			limit = 1
+		}
+		jobs := make(chan request)
+		var workers sync.WaitGroup
+		for range limit {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for job := range jobs {
+					item, ok := l.Store.Item(job.ref)
+					if ok && ctx.Err() == nil && l.current(source.ID, generation) {
+						l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, job.priority), a, source, generation, job.ref, item, out)
+					}
+				}
+			}()
+		}
+		for _, job := range requests {
+			if !l.current(source.ID, generation) {
+				break
+			}
+			select {
+			case jobs <- job:
+			case <-ctx.Done():
+				close(jobs)
+				workers.Wait()
+				return
+			}
+		}
+		close(jobs)
+		workers.Wait()
+	}()
+	return out
+}
+
 func (l *Loader) current(sourceID string, generation uint64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -282,7 +400,22 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			key := summary.Ref.Key()
 			seenRefs[key] = true
 			refs = append(refs, summary.Ref)
-			items[key] = Item{Summary: summary, ReadOutcome: "summary-only", DependenciesKnown: false, Observation: page.Observation, Coverage: coverage}
+			item := Item{Summary: summary, ReadOutcome: "summary-only", DependenciesKnown: false, Observation: page.Observation, Coverage: coverage}
+			if cached, ok := a.(interface {
+				CachedEdges(Source, Ref) (DependencyPage, bool)
+			}); ok {
+				item.TerminalKnown = true // list status is independent of edge hydration
+				item.ReadPermission = Allowed
+				if deps, valid := cached.CachedEdges(source, summary.Ref); valid {
+					item.ReadOutcome = "found"
+					item.ReadPermission = Allowed
+					item.TerminalKnown = true // this status came from the current complete list
+					item.Relationships = deps.Edges
+					item.DependenciesKnown = deps.Completeness == CoverageComplete
+					item.Closure = deps.Completeness
+				}
+			}
+			items[key] = item
 		}
 		// A new principal/config generation invalidates the old source partition before exposing new summaries.
 		reset := false

@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/sys v0.47.0
