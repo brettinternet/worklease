@@ -95,7 +95,7 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 				item.Claim.Reason = "invalid-resource"
 			} else {
 				item.Resources = []string{key.Resource}
-				item.KeyInputs = &resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID}
+				item.KeyInputs = &resource.Input{Provider: key.Provider, Source: key.Source, Item: key.Item}
 				switch {
 				case selected.API == nil || selected.Remote && selected.ID == "":
 					item.Claim.Reason = "authority-unavailable"
