@@ -4,7 +4,7 @@ title: Build the read-only list/detail TUI
 status: To Do
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 16:23'
 labels:
   - work-queue
   - tui
@@ -42,6 +42,7 @@ Provider text is untrusted: titles, bodies, and comments can contain terminal es
 - [ ] #8 Below 100 columns the TUI switches between list and detail instead of squeezing columns. NO_COLOR and high-contrast modes, resize, and Unicode width work, and state is conveyed with text labels, not color alone
 - [ ] #9 Provider text is stripped of control and OSC sequences and rendered as bounded, sanitized text. Opening a URL requires an explicit key and uses safe argument passing. The TUI never opens raw Backlog.md files
 - [ ] #10 Model and update tests drive the TUI with scripted key messages and snapshot inputs, with no real terminal. A render test proves that injected escape sequences are stripped
+- [ ] #11 The Claims tab shows the current holder's full agentId and claim sessionId, and loads the item's retained claim epochs on demand through the existing authority History call (one resource per request, paged). Each epoch lists agentId, sessionId, acquired and ended times, and end reason, so an item's past worker sessions can be looked up
 <!-- AC:END -->
 
 ## Definition of Done
