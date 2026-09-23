@@ -105,7 +105,12 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 			}
 		}
 		visiting[key] = false
-		memo[key] = flags
+		// A cycle can make an in-progress ancestor's result incomplete. Do not
+		// memoize that partial result; a later traversal may discover blockers
+		// reachable from the rest of the strongly connected component.
+		if flags&rCycle == 0 {
+			memo[key] = flags
+		}
 		return flags
 	}
 	for key, item := range out {
