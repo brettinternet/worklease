@@ -19,6 +19,10 @@ import (
 
 const SchemaVersion = 2
 
+// PublicDigest is a locally computed, non-secret digest with an optional public
+// prefix. Never use it for caller-supplied strings, even if they look like hashes.
+type PublicDigest string
+
 type Envelope struct {
 	SchemaVersion int            `json:"schemaVersion"`
 	Operation     string         `json:"operation"`
@@ -227,6 +231,8 @@ func redact(value any, key string, public bool) any {
 		return redactHolder(value)
 	}
 	switch typed := value.(type) {
+	case PublicDigest:
+		return string(typed)
 	case map[string]any:
 		result := make(map[string]any, len(typed))
 		names := make([]string, 0, len(typed))

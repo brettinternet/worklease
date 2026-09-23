@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "keyPolicyVersion": 1,
+  "description": "Exact resource identities for cross-client claim interoperability. ${COMMON_DIR} is replaced by the test with the URL-encoded physical Git common directory; primary and linked checkout paths are created as temporary fixture substitutions so no developer path is embedded.",
+  "vectors": [
+    {
+      "name": "backlog-primary-nested",
+      "provider": "backlog-md",
+      "source": "${PRIMARY}/docs/backlog",
+      "item": "TASK-126",
+      "resource": "backlog-md:${COMMON_DIR}:docs%2Fbacklog:TASK-126"
+    },
+    {
+      "name": "backlog-linked-worktree-nested",
+      "provider": "backlog-md",
+      "source": "${LINKED}/docs/backlog",
+      "item": "TASK-126",
+      "resource": "backlog-md:${COMMON_DIR}:docs%2Fbacklog:TASK-126"
+    },
+    {
+      "name": "backlog-primary-repository-root",
+      "provider": "backlog-md",
+      "source": "${PRIMARY}",
+      "item": "TASK-126",
+      "resource": "backlog-md:${COMMON_DIR}:.:TASK-126"
+    },
+    {
+      "name": "generic-portable-backlog-binding",
+      "provider": "generic",
+      "source": "brettinternet/worklease/backlog",
+      "item": "TASK-126",
+      "resource": "coordination:generic:f6e6df0bd554949ea97c94ccd9de78e2a656432654d7057ec4a56c3bb8062cd1"
+    },
+    {
+      "name": "github-normalized-owner-repo",
+      "provider": "github",
+      "source": "Owner/Repository.GIT",
+      "item": "126",
+      "resource": "github:owner%2Frepository#126"
+    },
+    {
+      "name": "github-canonical-owner-repo",
+      "provider": "github",
+      "source": "owner/repository",
+      "item": "126",
+      "resource": "github:owner%2Frepository#126"
+    },
+    {
+      "name": "github-enterprise-host-owner-repo",
+      "provider": "github",
+      "source": "GHE.Example.COM/Team/Project.GIT",
+      "item": "126",
+      "resource": "github:ghe.example.com%2Fteam%2Fproject#126"
+    },
+    {
+      "name": "markdown-source-wide-readme",
+      "provider": "markdown",
+      "source": "${PRIMARY}/README.md",
+      "item": "ignored-item",
+      "resource": "markdown:${COMMON_DIR}:README.md:__source__"
+    },
+    {
+      "name": "markdown-source-wide-other-item",
+      "provider": "markdown",
+      "source": "${PRIMARY}/README.md",
+      "item": "another-item",
+      "resource": "markdown:${COMMON_DIR}:README.md:__source__"
+    },
+    {
+      "name": "github-url-form-is-distinct",
+      "provider": "github",
+      "source": "https://github.com/Owner/Repository.GIT",
+      "item": "126",
+      "resource": "github:https%3A%2F%2Fgithub.com%2Fowner%2Frepository#126"
+    }
+  ],
+  "invalidVectors": [
+    {
+      "name": "blank-source",
+      "provider": "generic",
+      "source": " ",
+      "item": "TASK-126"
+    },
+    {
+      "name": "blank-item",
+      "provider": "github",
+      "source": "owner/repo",
+      "item": ""
+    },
+    {
+      "name": "unknown-provider",
+      "provider": "invalid",
+      "source": "source",
+      "item": "TASK-126"
+    },
+    {
+      "name": "control-character-item",
+      "provider": "generic",
+      "source": "source",
+      "item": "TASK-126\n"
+    },
+    {
+      "name": "empty-normalized-github-source",
+      "provider": "github",
+      "source": ".git",
+      "item": "126"
+    }
+  ]
+}

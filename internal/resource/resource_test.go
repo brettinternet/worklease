@@ -75,6 +75,72 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func TestVersionedKeyVectors(t *testing.T) {
+	fixtureBytes, err := os.ReadFile("testdata/key-vectors-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type vector struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+		Source   string `json:"source"`
+		Item     string `json:"item"`
+		Resource string `json:"resource"`
+	}
+	var fixture struct {
+		Version          int      `json:"version"`
+		KeyPolicyVersion int      `json:"keyPolicyVersion"`
+		Vectors          []vector `json:"vectors"`
+		InvalidVectors   []vector `json:"invalidVectors"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.Version != 1 || fixture.KeyPolicyVersion != KeyPolicyVersion || KeyPolicyVersion != 1 {
+		t.Fatalf("fixture/policy versions = %d/%d, implementation = %d; want 1", fixture.Version, fixture.KeyPolicyVersion, KeyPolicyVersion)
+	}
+	if len(fixture.Vectors) == 0 || len(fixture.InvalidVectors) == 0 {
+		t.Fatal("fixture must contain positive and negative vectors")
+	}
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "docs", "backlog"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "--quiet")
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture")
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, repo, "worktree", "add", "--quiet", "--detach", linked, "HEAD")
+	common, err := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacer := strings.NewReplacer("${PRIMARY}", repo, "${LINKED}", linked, "${COMMON_DIR}", RFC3986Encode(common))
+	for _, vector := range fixture.Vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			key, err := Resolve(Input{Provider: vector.Provider, Source: replacer.Replace(vector.Source), Item: vector.Item})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := replacer.Replace(vector.Resource)
+			if key.Resource != want {
+				t.Fatalf("resource = %q, want %q", key.Resource, want)
+			}
+		})
+	}
+	for _, vector := range fixture.InvalidVectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			if _, err := Resolve(Input{Provider: vector.Provider, Source: vector.Source, Item: vector.Item}); err == nil {
+				t.Fatal("invalid vector was accepted")
+			}
+		})
+	}
+}
+
 func TestStaticPolicyGoldenDerivations(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.Mkdir(repo, 0755); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,41 @@ import (
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
+
+func TestRemoteAdmissionForSharedKeyVectors(t *testing.T) {
+	fixtureBytes, err := os.ReadFile("../resource/testdata/key-vectors-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Version int `json:"version"`
+		Vectors []struct {
+			Name     string `json:"name"`
+			Provider string `json:"provider"`
+			Resource string `json:"resource"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.Version != 1 || len(fixture.Vectors) == 0 {
+		t.Fatal("expected nonempty version 1 fixture")
+	}
+	for _, vector := range fixture.Vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			// Admission is prefix-only; local path placeholders cannot make a
+			// host-local resource portable, even with its prefix allowlisted.
+			wantDefault := vector.Provider == "generic"
+			if got := ResourceAdmitted([]string{"coordination:"}, vector.Resource); got != wantDefault {
+				t.Fatalf("default admission = %v, want %v", got, wantDefault)
+			}
+			wantExpanded := wantDefault || vector.Provider == "github"
+			if got := ResourceAdmitted([]string{"coordination:", "github:", "backlog-md:", "markdown:"}, vector.Resource); got != wantExpanded {
+				t.Fatalf("expanded admission = %v, want %v", got, wantExpanded)
+			}
+		})
+	}
+}
 
 func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, RemoteActor) {
 	t.Helper()

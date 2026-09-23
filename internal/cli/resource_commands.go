@@ -12,6 +12,11 @@ import (
 
 func keyFields(key resource.Key) map[string]any {
 	fields := map[string]any{"provider": key.Provider, "resource": key.Resource, "capability": key.Capability, "scope": key.Scope, "identityScope": key.IdentityScope, "localReplaceAllowed": key.LocalReplaceAllowed, "providerFencing": false, "genericExecutionGuarantee": "local-coordination"}
+	// These policies produce a digest locally. Direct resources and policies
+	// that embed caller input must retain ordinary credential redaction.
+	if key.Provider == "generic" || key.Provider == "linear" {
+		fields["resource"] = output.PublicDigest(key.Resource)
+	}
 	if key.Source != "" {
 		fields["source"] = key.Source
 	}

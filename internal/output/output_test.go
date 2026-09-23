@@ -200,6 +200,20 @@ func TestSuccessorHandlePreservesContextualPathButNotCredential(t *testing.T) {
 	}
 }
 
+func TestPublicDigestDoesNotRelaxStringOrSecretFieldRedaction(t *testing.T) {
+	digest := "coordination:generic:" + strings.Repeat("a", 64)
+	for _, project := range []func(any) any{Redact, RedactPublic} {
+		got := project(map[string]any{
+			"resource": PublicDigest(digest),
+			"note":     digest,
+			"token":    PublicDigest(digest),
+		}).(map[string]any)
+		if got["resource"] != digest || got["note"] != "coordination:generic:[REDACTED]" || got["token"] != "[REDACTED]" {
+			t.Fatalf("unsafe projection: %#v", got)
+		}
+	}
+}
+
 func TestInvalidUTF8IsRedacted(t *testing.T) {
 	t.Parallel()
 	if got := RedactString(string([]byte{0xff})); got != "[REDACTED]" {

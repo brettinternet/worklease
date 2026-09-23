@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestHandleCLIProcessHelper(t *testing.T) {
@@ -160,6 +162,148 @@ func TestKeyAndPolicyCommandsReportContractMetadata(t *testing.T) {
 		if !strings.Contains(stdout.String(), field) {
 			t.Errorf("full text description missing %s: %q", field, stdout.String())
 		}
+	}
+}
+
+func TestKeyJSONMatchesVersionedResourceVectors(t *testing.T) {
+	fixtureBytes, err := os.ReadFile("../resource/testdata/key-vectors-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type vector struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+		Source   string `json:"source"`
+		Item     string `json:"item"`
+		Resource string `json:"resource"`
+	}
+	var fixture struct {
+		Version        int      `json:"version"`
+		Vectors        []vector `json:"vectors"`
+		InvalidVectors []vector `json:"invalidVectors"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.Version != 1 {
+		t.Fatalf("fixture version = %d, want 1", fixture.Version)
+	}
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "docs", "backlog"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitFixtureCommand(t, repo, "init", "--quiet")
+	gitFixtureCommand(t, repo, "add", ".")
+	gitFixtureCommand(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture")
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitFixtureCommand(t, repo, "worktree", "add", "--quiet", "--detach", linked, "HEAD")
+	common, err := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedCommon := strings.ReplaceAll(url.QueryEscape(common), "+", "%20")
+	replacer := strings.NewReplacer("${PRIMARY}", repo, "${LINKED}", linked, "${COMMON_DIR}", encodedCommon)
+	resources := make(map[string]string, len(fixture.Vectors))
+	for _, vector := range fixture.Vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			args := []string{"worklease", "key", "--json", "--provider", vector.Provider, "--source", replacer.Replace(vector.Source), "--item", vector.Item}
+			var stdout bytes.Buffer
+			if err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{}); err != nil {
+				t.Fatalf("worklease key: %v (%s)", err, stdout.String())
+			}
+			var got struct {
+				Resource string `json:"resource"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("decode key output %q: %v", stdout.String(), err)
+			}
+			want := replacer.Replace(vector.Resource)
+			if got.Resource != want {
+				t.Fatalf("worklease key resource = %q, want %q", got.Resource, want)
+			}
+			resources[vector.Name] = got.Resource
+		})
+	}
+	if resources["backlog-primary-nested"] != resources["backlog-linked-worktree-nested"] {
+		t.Fatal("primary and linked worktree keys differ")
+	}
+	if resources["backlog-primary-repository-root"] == resources["backlog-primary-nested"] {
+		t.Fatal("repository root and nested source keys unexpectedly match")
+	}
+	if resources["generic-portable-backlog-binding"] == resources["backlog-primary-nested"] {
+		t.Fatal("default backlog-md and generic portable keys unexpectedly match")
+	}
+	if resources["github-url-form-is-distinct"] == resources["github-normalized-owner-repo"] {
+		t.Fatal("URL-form GitHub locator matched owner/repo")
+	}
+	if resources["github-normalized-owner-repo"] != resources["github-canonical-owner-repo"] {
+		t.Fatal("GitHub case and .git normalization changed identity")
+	}
+	if resources["markdown-source-wide-readme"] != resources["markdown-source-wide-other-item"] {
+		t.Fatal("Markdown item selectors changed source-wide identity")
+	}
+	for _, vector := range fixture.InvalidVectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			args := []string{"worklease", "key", "--json", "--provider", vector.Provider, "--source", vector.Source, "--item", vector.Item}
+			var stdout bytes.Buffer
+			if err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{}); err == nil {
+				t.Fatal("invalid vector was accepted")
+			}
+			var result struct {
+				OK bool `json:"ok"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.OK {
+				t.Fatalf("expected JSON failure, got %s (%v)", stdout.String(), err)
+			}
+		})
+	}
+}
+
+func TestKeyJSONRedactsCallerInputButPreservesDerivedDigests(t *testing.T) {
+	token := strings.Repeat("a", 64)
+	for _, provider := range []string{"generic", "linear", "github", "resource"} {
+		t.Run(provider, func(t *testing.T) {
+			args := []string{"worklease", "key", "--json"}
+			if provider == "resource" {
+				args = append(args, "--resource", "coordination:generic:"+token)
+			} else {
+				args = append(args, "--provider", provider, "--source", token, "--item", token)
+			}
+			var stdout bytes.Buffer
+			if err := Run(context.Background(), args, "dev", "unknown", "unknown", &stdout, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(stdout.String(), token) {
+				t.Fatalf("caller-supplied token leaked: %s", stdout.String())
+			}
+			var got struct {
+				Resource string `json:"resource"`
+				Source   string `json:"source"`
+				Item     string `json:"item"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			digestPolicy := provider == "generic" || provider == "linear"
+			if got.Resource == "" || strings.Contains(got.Resource, "[REDACTED]") == digestPolicy {
+				t.Fatalf("incorrect resource projection: %+v", got)
+			}
+			if provider != "resource" && (got.Source != "[REDACTED]" || got.Item != "[REDACTED]") {
+				t.Fatalf("source/item redaction changed: %+v", got)
+			}
+		})
+	}
+}
+
+func gitFixtureCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := testkit.GitCommand(append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v (%s)", args, err, out)
 	}
 }
 
