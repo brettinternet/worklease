@@ -205,6 +205,24 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			return queueui.RefreshedMsg{}
 		}
 	}
+	model.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
+		return func() tea.Msg {
+			if sourceByID[item.Ref.SourceID].Adapter != "github" {
+				return queueui.CommentsMsg{Identity: queueIdentity(item), Err: fmt.Errorf("comments not available for this source")}
+			}
+			adapter, ok := registry.Get("github")
+			if !ok {
+				return queueui.CommentsMsg{Identity: queueIdentity(item), Err: fmt.Errorf("GitHub adapter unavailable")}
+			}
+			for _, source := range sources {
+				if source.ID == item.Ref.SourceID {
+					comments, next, err := adapter.(*queue.GitHubAdapter).ReadComments(ctx, source, item.Ref, cursor, 100)
+					return queueui.CommentsMsg{Identity: queueIdentity(item), Comments: comments, Cursor: next, Err: err}
+				}
+			}
+			return queueui.CommentsMsg{Identity: queueIdentity(item), Err: fmt.Errorf("GitHub source unavailable")}
+		}
+	}
 	model.LoadHistory = func(item queue.Item, cursor string) tea.Cmd {
 		return func() tea.Msg {
 			page, err := backend.API.History(ctx, item.Resources[0], cursor, 20, false)

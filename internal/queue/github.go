@@ -668,7 +668,12 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		}
 		a.mu.Lock()
 		if b.scans == nil {
-			b.scans = make(map[string]map[string]string)
+			// The scan cursor is durable but the seen-ID set is process-local.
+			// Restore a valid cursor on a fresh adapter; the index deduplicates
+			// persisted pages by immutable node ID. Still reject cursors evicted
+			// from an already active adapter's bounded scan set.
+			b.scans = map[string]map[string]string{state.ID: {}}
+			b.scanOrder = append(b.scanOrder, state.ID)
 		}
 		_, exists := b.scans[state.ID]
 		a.mu.Unlock()

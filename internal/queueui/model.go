@@ -20,6 +20,12 @@ type HistoryMsg struct {
 	Page     ledger.HistoryPage
 	Err      error
 }
+type CommentsMsg struct {
+	Identity string
+	Comments []queue.GitHubComment
+	Cursor   string
+	Err      error
+}
 type RefreshedMsg struct{ Err error }
 
 type ViewRule struct {
@@ -47,9 +53,15 @@ type Model struct {
 	HistoryLoading                 bool
 	HistoryIdentity                string
 	HistoryCursor                  string
+	Comments                       []queue.GitHubComment
+	CommentsCursor                 string
+	CommentsIdentity               string
+	CommentsLoading                bool
+	CommentsError                  string
 	Refresh                        func() tea.Cmd
 	HydrateSelected                func(queue.Item) tea.Cmd
 	LoadHistory                    func(queue.Item, string) tea.Cmd
+	LoadComments                   func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 }
 
@@ -216,9 +228,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previous := m.Selected
 		m.Snapshot = v.Snapshot.Clone()
 		m.anchor(m.rows())
+		if m.Detail && m.Tab == 2 && m.Selected != previous && m.LoadComments != nil {
+			if item, ok := m.selected(m.rows()); ok {
+				m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
+				m.CommentsIdentity = identity(item)
+				m.CommentsLoading = true
+				return m, m.LoadComments(item, "")
+			}
+		}
 		if m.Selected != previous && m.HydrateSelected != nil {
 			if item, ok := m.selected(m.rows()); ok {
 				return m, m.HydrateSelected(item)
+			}
+		}
+	case CommentsMsg:
+		if v.Identity == m.Selected {
+			m.CommentsLoading = false
+			if v.Err != nil {
+				m.CommentsError = v.Err.Error()
+			} else {
+				m.CommentsError = ""
+				m.Comments = append(m.Comments, v.Comments...)
+				m.CommentsCursor = v.Cursor
+				m.CommentsIdentity = v.Identity
 			}
 		}
 	case HistoryMsg:
@@ -331,6 +363,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Filtering = true
 			m.Input = m.Filter
 		case "n":
+			if m.Detail && m.Tab == 2 && m.CommentsCursor != "" && m.LoadComments != nil {
+				if i, ok := m.selected(rows); ok {
+					m.CommentsLoading = true
+					return m, m.LoadComments(i, m.CommentsCursor)
+				}
+			}
 			if m.Detail && m.Tab == 3 && m.History.NextCursor != "" && m.LoadHistory != nil {
 				if i, ok := m.selected(rows); ok && len(i.Resources) == 1 {
 					m.HistoryLoading = true
@@ -358,6 +396,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Notice = "Provider URL unavailable"
 		case "c", "R", "a", "s", "p", "x":
 			m.Notice = "Unavailable: read-only slice (claim, release, assign, state, progress and launch arrive later)"
+		}
+		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
+			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
+				m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
+				m.CommentsIdentity = identity(i)
+				m.CommentsLoading = true
+				return m, m.LoadComments(i, "")
+			}
 		}
 		if m.Detail && m.Tab == 3 {
 			if i, ok := m.selected(m.rows()); ok && len(i.Resources) == 1 && m.HistoryIdentity != identity(i) && m.LoadHistory != nil {
@@ -683,7 +729,22 @@ func detail(m Model, i queue.Item) string {
 		}
 	case 2:
 		fmt.Fprintf(&b, "Observed %s · provider version %s · read %s · coverage %s\n", i.Observation.ObservedAt.Format(time.RFC3339), clip(i.Observation.ProviderVersion, 32), clip(i.ReadOutcome, 20), i.Coverage.State)
-		b.WriteString("Comments: not yet loaded (provider detail unavailable)\n")
+		if m.LoadComments == nil {
+			b.WriteString("Comments: provider detail unavailable\n")
+		} else {
+			if m.CommentsLoading {
+				b.WriteString("Loading comments…\n")
+			}
+			if m.CommentsError != "" {
+				fmt.Fprintf(&b, "Comments unavailable: %s\n", clip(m.CommentsError, 100))
+			}
+			for _, comment := range m.Comments {
+				fmt.Fprintf(&b, "%s · %s\n%s\n", clip(comment.Author, 32), comment.CreatedAt.Format(time.RFC3339), clip(comment.Body, min(m.Width*4, 800)))
+			}
+			if m.CommentsCursor != "" {
+				b.WriteString("Press n for more comments\n")
+			}
+		}
 	case 3:
 		fmt.Fprintf(&b, "Authority %s (%s)\nResource: %s\n", clean(m.Authority), clean(m.Scope), clean(strings.Join(i.Resources, ",")))
 		fmt.Fprintf(&b, "Current: %s\nagentId:\n%s\nsessionId:\n%s\n", claimState(i), clean(i.Claim.AgentID), clean(i.Claim.SessionID))

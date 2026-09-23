@@ -319,6 +319,8 @@ func TestLoaderNewest304StillRefreshesOlderIssue(t *testing.T) {
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
 		case strings.Contains(query, "nodes(ids:"):
 			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"title":"newest","state":"OPEN","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"older changed","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}]}}`)
+		case strings.Contains(query, "blockedBy(first:"):
+			fmt.Fprintf(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"number":%s,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`, vars["number"])
 		default:
 			if strings.Contains(query, "filterBy:{since:") {
 				scans.Add(1)
@@ -358,6 +360,8 @@ func TestLoaderDefersGitHubDetailsAndBatchesVisibleRows(t *testing.T) {
 		switch {
 		case strings.Contains(query, "viewer"):
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "blockedBy(first:"):
+			fmt.Fprintf(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"number":%s,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`, vars["number"])
 		case strings.Contains(query, "nodes(ids:"):
 			batchCalls.Add(1)
 			if string(vars["ids"]) != `["N1","N2"]` {
@@ -542,6 +546,34 @@ func TestGitHubIncrementalRevisitsIssueMovedAheadOfCursor(t *testing.T) {
 	followup, err := a.ListIncremental(context.Background(), source, Query{}, "", watermark, watermark.Add(time.Hour))
 	if err != nil || len(followup.Items) != 1 || followup.Items[0].CanonicalID != "C" {
 		t.Fatalf("moved issue missing from next window: %+v %v", followup, err)
+	}
+}
+
+func TestGitHubDependencyAccessLossWithholdsHydratedBody(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, _ := githubRequest(t, r)
+		switch {
+		case strings.Contains(query, "viewer"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "nodes(ids:"):
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"body":"private body","repository":{"nameWithOwner":"org/repo"}}]}}`)
+		case strings.Contains(query, "blockedBy(first:"):
+			fmt.Fprint(w, `{"errors":[{"type":"NOT_FOUND","message":"not found"}]}`)
+		default:
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":1,"nodes":[{"id":"N1","number":1,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	registry.adapters["github"] = a
+	loader := NewLoader(registry)
+	loader.GitHubSync = &syncTestStore{}
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if _, ok := loader.Store.Item(Ref{source.ID, "1"}); ok {
+		t.Fatal("private body remained visible after dependency access loss")
 	}
 }
 

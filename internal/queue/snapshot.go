@@ -435,6 +435,28 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			l.failSource(ctx, source.ID, generation, "reconciliation-state-unavailable", out)
 			return
 		}
+		// GitHub payloads are not seeded from the disk index before a live
+		// authorization check. A fresh process cannot build a complete visible
+		// projection from a since-only window; finish a full bounded scan first.
+		if !reconcile && !checkpoint.CommittedWatermark.IsZero() {
+			current := l.Store.Current()
+			hasProjection := current.Sources[source.ID].State == CoverageComplete
+			for _, item := range current.Items {
+				if item.Ref.SourceID == source.ID {
+					hasProjection = true
+					break
+				}
+			}
+			if !hasProjection {
+				if err = l.GitHubSync.RestartGitHubSync(ctx, source, true); err == nil {
+					checkpoint, reconcile, err = l.GitHubSync.StartGitHubReconciliation(ctx, source, time.Now().UTC())
+				}
+				if err != nil {
+					l.failSource(ctx, source.ID, generation, "reconciliation-state-unavailable", out)
+					return
+				}
+			}
+		}
 		committedWatermark = checkpoint.CommittedWatermark
 		if github, ok := a.(*GitHubAdapter); ok && !committedWatermark.IsZero() {
 			github.pollNewestHint(ctx, source)
@@ -756,6 +778,7 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 		item.Coverage = summary.Coverage
 		item.ReadOutcome = "found"
 		complete := true
+		withheld := false
 		cursor := ""
 		for {
 			if ctx.Err() != nil {
@@ -764,6 +787,15 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			}
 			page, err := a.ReadDependencies(ctx, source, job.ref, cursor, l.Budget)
 			if err != nil {
+				if githubAccessLost(err) {
+					if l.GitHubSync != nil {
+						_ = l.GitHubSync.WithholdGitHubItem(ctx, source, job.ref)
+					}
+					l.publish(ctx, source.ID, generation, func(s *Snapshot) { delete(s.Items, job.ref.Key()) }, out)
+					complete = false
+					withheld = true
+					break
+				}
 				complete = false
 				break
 			}
@@ -778,6 +810,9 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			if cursor == "" {
 				break
 			}
+		}
+		if withheld {
+			continue
 		}
 		item.DependenciesKnown = complete
 		item.Closure = CoverageUnknown
@@ -869,6 +904,13 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		}
 		deps, err := a.ReadDependencies(ctx, source, ref, depCursor, l.Budget)
 		if err != nil {
+			if githubAccessLost(err) {
+				if l.GitHubSync != nil {
+					_ = l.GitHubSync.WithholdGitHubItem(ctx, source, ref)
+				}
+				l.publish(ctx, source.ID, generation, func(s *Snapshot) { delete(s.Items, ref.Key()) }, out)
+				return
+			}
 			allComplete = false
 			break
 		}
@@ -916,6 +958,18 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	item.Fresh = item.Fresh && summary.Fresh
 	l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[ref.Key()] = *item }, out)
 }
+func githubAccessLost(err error) bool {
+	diagnostic, ok := err.(GitHubDiagnostic)
+	if !ok {
+		return false
+	}
+	switch diagnostic.Code {
+	case "not-found-or-inaccessible", "permission-denied", "saml-sso", "authentication", "identity-changed":
+		return true
+	}
+	return false
+}
+
 func observationMismatch(a, b Observation) bool {
 	return a.Principal != "" && b.Principal != "" && a.Principal != b.Principal ||
 		a.ConfigurationGeneration != "" && b.ConfigurationGeneration != "" && a.ConfigurationGeneration != b.ConfigurationGeneration
