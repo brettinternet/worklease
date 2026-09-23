@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:18'
+updated_date: '2026-09-23 16:19'
 labels:
   - work-queue
 milestone: m-1
@@ -55,6 +55,8 @@ Correct the stale pre-S1 cancellation wording in proposal section 8 before final
 
 <!-- SECTION:NOTES:BEGIN -->
 Main at 7fbb964: all seven children Done with individual evidence. Dependency eligibility v1 JSON cases cover hard/hierarchy, cross-source, cycle, partial known blocker, and unsupported condition (jq assertions passed). Proposal §3 contains Backlog 10k and GitHub probes with D13/D14 and §14 updates. Cross-checked contract.md, source-provider-contract.md, and doc-1; corrected stale pre-S1 cancellation text in proposal §8. mise run lint, format-check, test, typecheck, doc-test and focused TestVersionedKeyVectors all passed.
+
+Integration commit 871f283 fast-forwarded to main; main reran TestVersionedKeyVectors and doc-test successfully. One general consistency review found and corrected the stale cancellation sentence in proposal §8; no remaining blocker. Next: TASK-128.2 and TASK-128.3 are dependency-ready.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
