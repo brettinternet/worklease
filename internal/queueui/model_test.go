@@ -93,9 +93,9 @@ func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	calls := 0
-	m.LoadHistory = func(i queue.Item, cursor string) tea.Cmd {
+	m.LoadHistory = func(i queue.Item, cursor string, before bool) tea.Cmd {
 		calls++
-		if i.Ref.ItemID != "1" || cursor != "" {
+		if i.Ref.ItemID != "1" || cursor != "" || before {
 			t.Fatal(i.Ref, cursor)
 		}
 		return func() tea.Msg {
@@ -238,13 +238,13 @@ func TestClaimHistoryPagination(t *testing.T) {
 	m.Detail = true
 	m.Tab = 3
 	m.HistoryIdentity = m.Selected
-	m.History = ledger.HistoryPage{NextCursor: "page-2", Epochs: []ledger.Epoch{{AgentID: "first"}}}
-	m.LoadHistory = func(i queue.Item, cursor string) tea.Cmd {
-		if len(i.Resources) != 1 || cursor != "page-2" {
-			t.Fatal(i.Resources, cursor)
+	m.History = ledger.HistoryPage{NextCursor: "newer-page", PreviousCursor: "older-page", Epochs: []ledger.Epoch{{AgentID: "first"}}}
+	m.LoadHistory = func(i queue.Item, cursor string, before bool) tea.Cmd {
+		if len(i.Resources) != 1 || cursor != "older-page" || !before {
+			t.Fatal(i.Resources, cursor, before)
 		}
 		return func() tea.Msg {
-			return HistoryMsg{Identity: "stable-1", Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "second"}}}}
+			return HistoryMsg{Identity: "stable-1", Before: true, Page: ledger.HistoryPage{PreviousCursor: "older-page-2", Epochs: []ledger.Epoch{{AgentID: "second"}}}}
 		}
 	}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
@@ -254,7 +254,7 @@ func TestClaimHistoryPagination(t *testing.T) {
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if len(m.History.Epochs) != 2 || m.History.Epochs[1].AgentID != "second" {
+	if len(m.History.Epochs) != 2 || m.History.Epochs[0].AgentID != "second" || m.History.NextCursor != "newer-page" || m.History.PreviousCursor != "older-page-2" {
 		t.Fatal(m.History)
 	}
 }
@@ -369,15 +369,15 @@ func TestClaimsPaginationDoesNotTakeNavigationKeyAndSuppressesDuplicate(t *testi
 	m.anchor(m.rows())
 	m.Detail, m.Tab = true, 3
 	m.HistoryIdentity = m.Selected
-	m.History = ledger.HistoryPage{NextCursor: "page-2"}
-	m.LoadHistory = func(queue.Item, string) tea.Cmd { return func() tea.Msg { return nil } }
+	m.History = ledger.HistoryPage{PreviousCursor: "page-2"}
+	m.LoadHistory = func(queue.Item, string, bool) tea.Cmd { return func() tea.Msg { return nil } }
 	m, _ = press(m, "n")
 	if m.Selected != "stable-2" {
 		t.Fatalf("n did not navigate to next item: %s", m.Selected)
 	}
 	m.Selected = "stable-1"
 	m.HistoryIdentity = m.Selected
-	m.History.NextCursor = "page-2"
+	m.History.PreviousCursor = "page-2"
 	m, cmd := press(m, "m")
 	if cmd == nil || !m.HistoryLoading {
 		t.Fatal("m did not begin history page load")

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
@@ -165,18 +166,27 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
 	closing := false
-	start := func() {
+	start := func(notifyFailure bool) <-chan error {
+		done := make(chan error, 1)
 		workersMu.Lock()
 		if closing {
 			workersMu.Unlock()
-			return
+			done <- context.Canceled
+			close(done)
+			return done
 		}
 		workers.Add(1)
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay)
+			err := publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay)
+			if notifyFailure && err != nil && ctx.Err() == nil {
+				program.Send(queueui.RefreshedMsg{Err: err})
+			}
+			done <- err
+			close(done)
 		}()
+		return done
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
 		return func() tea.Msg {
@@ -211,15 +221,18 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 	}
 	model.Refresh = func() tea.Cmd {
-		return func() tea.Msg {
-			start()
-			return queueui.RefreshedMsg{}
-		}
+		return refreshCompletionCmd(func() <-chan error { return start(false) })
 	}
-	model.LoadHistory = func(item queue.Item, cursor string) tea.Cmd {
+	model.LoadHistory = func(item queue.Item, cursor string, before bool) tea.Cmd {
 		return func() tea.Msg {
-			page, err := backend.API.History(ctx, item.Resources[0], cursor, 20, false)
-			return queueui.HistoryMsg{Identity: queueIdentity(item), Page: page, Err: err}
+			var page ledger.HistoryPage
+			var err error
+			if before {
+				page, err = backend.API.HistoryBefore(ctx, item.Resources[0], cursor, 20, false)
+			} else {
+				page, err = backend.API.History(ctx, item.Resources[0], cursor, 20, false)
+			}
+			return queueui.HistoryMsg{Identity: queueIdentity(item), Page: page, Before: before, Err: err}
 		}
 	}
 	model.OpenURL = func(item queue.Item) tea.Cmd {
@@ -244,7 +257,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
-	start()
+	start(true)
 	for _, source := range sources {
 		adapter, ok := registry.Get(source.Adapter)
 		watcher, okWatch := adapter.(interface {
@@ -257,7 +270,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		go func(source queue.Source) {
 			defer workers.Done()
 			for ctx.Err() == nil {
-				if watchErr := watcher.WatchChanges(ctx, source, start); watchErr != nil && ctx.Err() == nil {
+				if watchErr := watcher.WatchChanges(ctx, source, func() { start(true) }); watchErr != nil && ctx.Err() == nil {
 					program.Send(queueui.RefreshedMsg{Err: watchErr})
 				}
 				select {
@@ -278,6 +291,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
+func refreshCompletionCmd(start func() <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		return queueui.RefreshedMsg{Err: <-start()}
+	}
+}
+
 func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
 	partitions := make(map[string]queueindex.Partition)
 	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
@@ -345,7 +364,7 @@ func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map) {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -364,8 +383,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			for _, done := range releases {
 				done()
 			}
-			program.Send(queueui.RefreshedMsg{Err: err})
-			return
+			return err
 		}
 		snapshot, observed, _, err := index.Read(ctx, partition, 0)
 		if err != nil {
@@ -373,8 +391,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			for _, done := range releases {
 				done()
 			}
-			program.Send(queueui.RefreshedMsg{Err: err})
-			return
+			return err
 		}
 		if snapshot.Sources[source.ID].State == queue.CoverageComplete && !observed.Before(refreshStarted) {
 			release()
@@ -399,6 +416,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 	}()
 	var latest queue.Snapshot
+	var refreshErr error
 	for snapshot := range loader.Refresh(ctx, refreshSources) {
 		latest = snapshot.Clone()
 		items := make([]queue.Item, 0, len(snapshot.Items))
@@ -430,8 +448,8 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 				deleted = append(deleted, ref)
 			}
 		}
-		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil {
-			program.Send(queueui.RefreshedMsg{Err: err})
+		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil && refreshErr == nil {
+			refreshErr = err
 		}
 	}
 	// First paint and index replacement have already completed. Slow per-task
@@ -450,4 +468,15 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 		}
 	}
+	current := loader.Store.Current()
+	for _, source := range refreshSources {
+		coverage := current.Sources[source.ID]
+		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" && refreshErr == nil {
+			refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+		}
+	}
+	if refreshErr != nil {
+		return refreshErr
+	}
+	return ctx.Err()
 }

@@ -18,6 +18,7 @@ type SnapshotMsg struct{ Snapshot queue.Snapshot }
 type HistoryMsg struct {
 	Identity string
 	Page     ledger.HistoryPage
+	Before   bool
 	Err      error
 }
 type RefreshedMsg struct{ Err error }
@@ -50,7 +51,7 @@ type Model struct {
 	HistoryCursor                  string
 	Refresh                        func() tea.Cmd
 	HydrateSelected                func(queue.Item) tea.Cmd
-	LoadHistory                    func(queue.Item, string) tea.Cmd
+	LoadHistory                    func(queue.Item, string, bool) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 }
 
@@ -236,10 +237,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v.Err != nil {
 				m.HistoryError = v.Err.Error()
 			} else {
-				if m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
+				if v.Before && m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
+					m.History.Epochs = append(append([]ledger.Epoch(nil), v.Page.Epochs...), m.History.Epochs...)
+					m.History.PreviousCursor = v.Page.PreviousCursor
+					m.History.Gap = m.History.Gap || v.Page.Gap
+				} else if m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
 					m.History.Epochs = append(m.History.Epochs, v.Page.Epochs...)
 					m.History.NextCursor = v.Page.NextCursor
-					m.History.Gap = v.Page.Gap
+					m.History.Gap = m.History.Gap || v.Page.Gap
 				} else {
 					m.History = v.Page
 				}
@@ -343,11 +348,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "N":
 			m.move(-1)
 		case "m":
-			if m.Detail && m.Tab == 3 && !m.HistoryLoading && m.History.NextCursor != "" && m.LoadHistory != nil {
+			if m.Detail && m.Tab == 3 && !m.HistoryLoading && m.History.PreviousCursor != "" && m.LoadHistory != nil {
 				if i, ok := m.selected(rows); ok && len(i.Resources) == 1 {
 					m.HistoryLoading = true
-					m.HistoryCursor = m.History.NextCursor
-					return m, m.LoadHistory(i, m.HistoryCursor)
+					m.HistoryCursor = m.History.PreviousCursor
+					return m, m.LoadHistory(i, m.HistoryCursor, true)
 				}
 			}
 		case ":":
@@ -375,9 +380,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.HistoryCursor = ""
 				m.History = ledger.HistoryPage{}
 				if m.Selected != previous && m.HydrateSelected != nil {
-					return m, tea.Batch(m.LoadHistory(i, ""), m.HydrateSelected(i))
+					return m, tea.Batch(m.LoadHistory(i, "", false), m.HydrateSelected(i))
 				}
-				return m, m.LoadHistory(i, "")
+				return m, m.LoadHistory(i, "", false)
 			}
 		}
 		if m.Selected != previous && m.HydrateSelected != nil {
@@ -738,8 +743,8 @@ func detail(m Model, i queue.Item) string {
 				}
 				fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
 			}
-			if m.History.NextCursor != "" {
-				b.WriteString("More retained epochs available (m to load)\n")
+			if m.History.PreviousCursor != "" {
+				b.WriteString("Older retained epochs available (m to load)\n")
 			}
 		}
 	}
