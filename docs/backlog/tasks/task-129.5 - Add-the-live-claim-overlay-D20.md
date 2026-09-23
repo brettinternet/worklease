@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 20:50'
+updated_date: '2026-09-23 21:45'
 labels:
   - work-queue
   - authority
@@ -67,4 +67,6 @@ Filtered watches accept at most 32 resources, so use one namespace watch per aut
 
 <!-- SECTION:NOTES:BEGIN -->
 Partial implementation committed on task-129.5-overlay at 4a2c81e (not merged). Live namespace cursor watch, batched/targeted status, authority-clock expiry, gap rebuild, identity failure, TUI freshness, local race/retry tests implemented. Review found stalled-provider and transient-status/watch races; corrected and retested. mise run lint, format-check, test, typecheck, hooks all passed in worktree. Remaining: real remote authority restart producing restore/gap; active queue-owned handle fail-closed/recovery test (queue-owned handles are not yet implemented until TASK-130.1); TUI stalled-source live test and broader injected expiry interleavings. Keep In Progress. Next: resume existing worktree/branch, add remote and active-handle integration tests, address defects, rerun gates, finalize, merge and clean up. Do not merge this partial branch as complete.
+
+Resumed in existing worktree and merged current main, resolving queue index/TUI integration (6da971a, not merged to main). Fixed history-gap invalidation ordering: preserve observation timestamp so a previously observed active claim becomes unknown during rebuild. Added provider-stall/claim-freshness and gap regression tests; keyed live-watch restarts to resource identity as well as item identity. Focused queue/queueui/cli tests and mise run lint, format-check, test, typecheck, hooks passed. No second general review pass; prior review findings remain addressed. Remaining: actual remote serve restart that produces restore/gap and active queue-owned handle fail-closed/recovery test. The latter needs TASK-130.1, which depends on this S3 parent (dependency cycle); decide to stage this acceptance test with TASK-130.1 or alter dependencies before marking complete. Keep In Progress and do not merge partial branch as complete. Next: implement real remote restart coverage, then resolve handle-test dependency and finalize.
 <!-- SECTION:NOTES:END -->
