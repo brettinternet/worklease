@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:27'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-126
@@ -58,6 +59,8 @@ This task owns the schema, loading, validation, and user documentation for the f
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented private queue.yaml v1 loader, strict source/view validation, trusted profile lookup, and missing-file diagnostic. Focused config tests cover valid multi-source, profile, permissions, symlink, tilde and schema rejections. Reviewed path/security and missing-field handling; corrected absolute checkout validation and added fallback/permission tests. lint, format-check, test, typecheck, and hooks passed. No D1-D27 or plan section contradicted or refined. Code commit 6b06095f43b018e235fd20b25453581c4454017d merged into main at 439dc8f116ce7de8f8c68e40e40490b8b62060f4.
+
+Review: fixed non-bool allowGitNetwork, trailing YAML documents, non-string me entries, and missing required-field tests (1e2beb3, merged 7268f9a).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

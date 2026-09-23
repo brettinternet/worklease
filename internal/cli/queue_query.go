@@ -324,7 +324,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			}
 			diagnostics := queueSourceDiagnostics(registry, sourceForID(sources, id))
 			if failure := resolveErrors[id]; failure != "" {
-				diagnostics = append(diagnostics, failure)
+				diagnostics = []string{failure}
 			}
 			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, ObservedAt: observationTimes[id], ServedFromIndex: servedFromIndex[id], Diagnostics: diagnostics})
 		}
@@ -387,6 +387,18 @@ func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {
 	return projected
 }
 func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, me map[string]yaml.Node, generations map[string]string, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item) string {
+	stableCoverage := make(map[string]queue.Coverage, len(coverage))
+	for id, value := range coverage {
+		if value.Reason == "cached-index" {
+			value.Reason = ""
+		}
+		// The index records coverage state, but not the refresh's auxiliary metadata.
+		value.Scope = ""
+		value.Cursor = ""
+		value.Total = 0
+		value.TotalAccuracy = queue.TotalUnknown
+		stableCoverage[id] = value
+	}
 	stableItems := append([]queue.Item(nil), items...)
 	for i := range stableItems {
 		stableItems[i].Observation.ObservedAt = time.Time{}
@@ -403,7 +415,7 @@ func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource
 		Authority   queueAuthorityJSON
 		Coverage    map[string]queue.Coverage
 		Items       []queue.Item
-	}{view.Name, view.Filter, view.Sources, bindings, me, generations, authority, coverage, stableItems})
+	}{view.Name, view.Filter, view.Sources, bindings, me, generations, authority, stableCoverage, stableItems})
 	digest := sha256.Sum256(fingerprintData)
 	return hex.EncodeToString(digest[:])
 }

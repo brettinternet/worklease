@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 20:36'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
 milestone: m-1
@@ -60,6 +60,8 @@ Reuse the repository's existing SQLite driver and migration style (internal/stor
 Index core under implementation in task-129.1-index worktree; CLI/TUI integration, revocation and concurrency acceptance checks remain. Worklease claim held by current loop.
 
 Implemented owner-private WAL index, scoped cache identity, complete/incomplete reconciliation, explicit revocation, FTS and body opt-in, cross-process lock, CLI max-age and TUI cached first frame. Independent review found four concrete defects (checkout replacement, lock order, stale fallback, empty cache); corrected and retested. Verified mise run lint, format-check, test, typecheck, hooks, focused cache and first-frame tests after rebase; code commits 6a528bc and 3586e31 fast-forwarded into main. GitHub persistence bypassed without provable access scope; unsupported OS bypasses cache.
+
+Found during TASK-128.x review: concurrent Open raced schema creation, misread it as corruption and rebuilt (deleted) a live index. Fixed with BEGIN IMMEDIATE migration (b33180f, merged 7268f9a). Not a full review of this task.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

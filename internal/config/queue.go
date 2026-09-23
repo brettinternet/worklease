@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,8 +85,16 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 }
 
 func parseQueue(data []byte, env func(string) string, profiles map[string]Profile) (QueueConfig, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) != 1 {
+	if err := decoder.Decode(&root); err != nil || len(root.Content) != 1 {
+		return QueueConfig{}, fmt.Errorf("queue.yaml: invalid YAML")
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return QueueConfig{}, fmt.Errorf("queue.yaml: multiple YAML documents")
+		}
 		return QueueConfig{}, fmt.Errorf("queue.yaml: invalid YAML")
 	}
 	schemas := map[string]map[string]bool{
@@ -101,6 +111,13 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	if m, ok := fields["me"]; ok {
 		if err := checkQueueKeys(m, "me", nil); err != nil {
 			return QueueConfig{}, err
+		}
+		if value := nodeFields(m)["backlog-md"]; value != nil && value.Kind == yaml.SequenceNode {
+			for _, item := range value.Content {
+				if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+					return QueueConfig{}, fmt.Errorf("me.backlog-md: expected assignee strings")
+				}
+			}
 		}
 	} else {
 		return QueueConfig{}, fmt.Errorf("me: required")
@@ -130,6 +147,9 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 			if section == "sources" {
+				if allow, ok := nested["allowGitNetwork"]; ok && (allow.Kind != yaml.ScalarNode || allow.Tag != "!!bool") {
+					return QueueConfig{}, fmt.Errorf("%s.allowGitNetwork: expected boolean", label)
+				}
 				adapter := nested["adapter"]
 				if adapter == nil {
 					return QueueConfig{}, fmt.Errorf("%s.adapter: required", label)

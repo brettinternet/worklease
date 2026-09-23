@@ -27,11 +27,20 @@ func TestQueueSchema(t *testing.T) {
 	if err != nil || len(cfg.Sources) != 2 || cfg.Sources[0].AllowGitNetwork {
 		t.Fatalf("valid multi-source: %+v, %v", cfg, err)
 	}
+	withGitNetwork := strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: true", 1)
+	cfg, err = parseQueue([]byte(withGitNetwork), env, nil)
+	if err != nil || !cfg.Sources[0].AllowGitNetwork {
+		t.Fatalf("literal true: %+v, %v", cfg, err)
+	}
 	cases := []struct{ name, content, want string }{
 		{"version", strings.Replace(base, "version: 1", "version: 2", 1), "version"},
+		{"trailing document", base + "---\nversion: 2\n", "multiple YAML documents"},
 		{"top key", base + "launch: []\n", "queue.launch"},
 		{"duplicate me", strings.Replace(base, "  github.com: brett", "  github.com: brett\n  github.com: alice", 1), "me.github.com"},
-		{"wrong git boolean", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: not-a-bool", 1), "cannot unmarshal"},
+		{"wrong git boolean", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: not-a-bool", 1), "allowGitNetwork: expected boolean"},
+		{"quoted git boolean", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: \"yes\"", 1), "allowGitNetwork: expected boolean"},
+		{"me boolean", strings.Replace(base, "backlog-md: ['@brett']", "backlog-md: [true]", 1), "expected assignee strings"},
+		{"me number", strings.Replace(base, "backlog-md: ['@brett']", "backlog-md: [12]", 1), "expected assignee strings"},
 		{"duplicate yaml key", base + "version: 1\n", "queue.version"},
 		{"unknown me", strings.Replace(base, "github.com: brett", "github.com: [brett]", 1), "me.github.com"},
 		{"unknown source key", strings.Replace(base, "    adapter: backlog-md", "    bogus: yes\n    adapter: backlog-md", 1), "sources[0].bogus"},
@@ -39,8 +48,12 @@ func TestQueueSchema(t *testing.T) {
 		{"bad claims", strings.Replace(base, "policy: generic", "policy: backlog-md", 1), "sources[0].claims"},
 		{"unknown adapter", strings.Replace(base, "adapter: github", "adapter: jira", 1), "sources[1].adapter"},
 		{"duplicate id", strings.Replace(base, "id: remote", "id: local", 1), "sources[1].id"},
+		{"missing adapter", strings.Replace(base, "    adapter: backlog-md\n", "", 1), "sources[0].adapter"},
 		{"missing checkout", strings.Replace(base, "checkout: "+home, "checkout: /nonexistent-queue-checkout", 1), "sources[0].checkout"},
 		{"missing host", strings.Replace(base, "    host: github.com\n", "", 1), "sources[1].host"},
+		{"missing repository", strings.Replace(base, "    repository: acme/api\n", "", 1), "sources[1].repository"},
+		{"missing account", strings.Replace(base, "    account: brett\n", "", 1), "sources[1].account"},
+		{"missing filter", strings.Replace(base, "    filter: {readiness: ready, claim: free, assigned: [me, nobody]}\n", "", 1), "views[0].filter"},
 		{"bad repo", strings.Replace(base, "repository: acme/api", "repository: acme", 1), "sources[1]"},
 		{"bad repo path", strings.Replace(base, "repository: acme/api", "repository: ../api", 1), "sources[1]"},
 		{"unknown filter", strings.Replace(base, "claim: free", "unknown: free", 1), "views[0].filter.unknown"},

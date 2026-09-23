@@ -155,7 +155,7 @@ func backlogReadCommand(binary string, args []string) bool {
 	if binary == "git" {
 		return len(args) == 2 && args[0] == "rev-parse" && (args[1] == "HEAD" || args[1] == "--is-inside-work-tree") ||
 			len(args) == 3 && args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" ||
-			len(args) == 3 && args[0] == "status" && args[1] == "--porcelain" && args[2] == "--untracked-files=normal"
+			len(args) == 5 && args[0] == "-c" && args[1] == "core.fsmonitor=false" && args[2] == "status" && args[3] == "--porcelain" && args[4] == "--untracked-files=normal"
 	}
 	if filepath.Base(binary) != "backlog" {
 		return false
@@ -203,7 +203,10 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 }
 
 func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
+	commandCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, binary, args...)
+	prepareBacklogCommand(cmd)
 	cmd.Dir = cwd
 	// Ignore inherited directory overrides: only the configured checkout is a source.
 	for _, entry := range os.Environ() {
@@ -216,7 +219,9 @@ func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, arg
 	cmd.WaitDelay = time.Second
 	var stdout, stderr limitedBuffer
 	stdout.limit = backlogOutputLimit
+	stdout.onLimit = cancel
 	stderr.limit = 4096
+	stderr.onLimit = cancel
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -238,11 +243,15 @@ type limitedBuffer struct {
 	data     bytes.Buffer
 	limit    int
 	exceeded bool
+	onLimit  func()
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	if len(p) > b.limit-b.data.Len() {
 		b.exceeded = true
+		if b.onLimit != nil {
+			b.onLimit()
+		}
 		return 0, errors.New("output limit")
 	}
 	return b.data.Write(p)
@@ -352,7 +361,7 @@ func (a *BacklogAdapter) gitFreshness(ctx context.Context, checkout string, d *B
 	if b, err := a.run(ctx, checkout, "git", "rev-parse", "HEAD"); err == nil {
 		d.Head = strings.TrimSpace(string(b))
 	}
-	if b, err := a.run(ctx, checkout, "git", "status", "--porcelain", "--untracked-files=normal"); err == nil {
+	if b, err := a.run(ctx, checkout, "git", "-c", "core.fsmonitor=false", "status", "--porcelain", "--untracked-files=normal"); err == nil {
 		d.Dirty = len(b) > 0
 	}
 }
@@ -442,7 +451,7 @@ func (a *BacklogAdapter) RefreshActionClosure(ctx context.Context, source Source
 		if current.SourceID != source.ID {
 			return BacklogDiagnostic{"invalid-ref", "prerequisite outside source"}
 		}
-		task, err := a.view(context.WithValue(ctx, backlogPriorityKey{}, PriorityAction), source, current)
+		task, err := a.view(context.WithValue(ctx, backlogPriorityKey{}, PriorityAction), source, current, false)
 		if err != nil {
 			return err
 		}
@@ -468,7 +477,7 @@ func (a *BacklogAdapter) RefreshActionClosure(ctx context.Context, source Source
 
 // RefreshClosure bypasses cached edge observations for one item.
 func (a *BacklogAdapter) RefreshClosure(ctx context.Context, source Source, ref Ref) (DependencyPage, error) {
-	task, err := a.view(ctx, source, ref)
+	task, err := a.view(ctx, source, ref, false)
 	if err != nil {
 		return DependencyPage{}, err
 	}
@@ -476,21 +485,23 @@ func (a *BacklogAdapter) RefreshClosure(ctx context.Context, source Source, ref 
 }
 
 type backlogTask struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Status       string    `json:"status"`
-	Priority     string    `json:"priority"`
-	Ordinal      int       `json:"ordinal"`
-	Assignees    []string  `json:"assignees"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	IsReady      bool      `json:"isReady"`
-	ParentTaskID string    `json:"parentTaskId"`
-	Dependencies []string  `json:"dependencies"`
-	Path         string    `json:"path"`
-	Description  string    `json:"description"`
-	Readiness    struct {
-		MissingDependencies []string `json:"missingDependencies"`
-	} `json:"readiness"`
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Status       string            `json:"status"`
+	Priority     string            `json:"priority"`
+	Ordinal      int               `json:"ordinal"`
+	Assignees    []string          `json:"assignees"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
+	IsReady      bool              `json:"isReady"`
+	ParentTaskID string            `json:"parentTaskId"`
+	Dependencies []string          `json:"dependencies"`
+	Path         string            `json:"path"`
+	Description  string            `json:"description"`
+	Readiness    *backlogReadiness `json:"readiness"`
+}
+
+type backlogReadiness struct {
+	MissingDependencies *[]string `json:"missingDependencies"`
 }
 
 func decodeBacklog(data []byte, kind string, dest any) error {
@@ -578,6 +589,12 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	for _, task := range payload.Tasks {
 		key := (Ref{SourceID: source.ID, ItemID: task.ID}).Key()
 		if task.Dependencies != nil { // A newer Backlog version can supply bulk edges.
+			if task.Readiness == nil {
+				// List output carries each task's complete dependency set but no
+				// readiness evidence; the core detects missing prerequisite endpoints.
+				none := []string{}
+				task.Readiness = &backlogReadiness{MissingDependencies: &none}
+			}
 			a.edges[key] = backlogEdges{task: task, partition: partition, bulk: true}
 		} else if cached, ok := a.edges[key]; ok {
 			// A matching tuple does not establish freshness; only an uninterrupted
@@ -609,7 +626,7 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	a.mu.Unlock()
 	return page, nil
 }
-func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref) (backlogTask, error) {
+func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref, retain bool) (backlogTask, error) {
 	if err := a.authorizeRead(ctx, source); err != nil {
 		return backlogTask{}, err
 	}
@@ -637,7 +654,11 @@ func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref) (back
 		a.mu.Unlock()
 		return backlogTask{}, BacklogDiagnostic{"observation-invalidated", "provider changed during task read"}
 	}
-	a.details[ref.Key()] = *payload.Task
+	// Only ReadItems retains its view for the next ReadDependencies call;
+	// other reads must not leave a detail that a later read would consume.
+	if retain {
+		a.details[ref.Key()] = *payload.Task
+	}
 	if partition := a.partitions[source.ID]; partition != "" {
 		mtime, size, _ := edgeFileStamp(source.Locator, payload.Task.Path)
 		a.edges[ref.Key()] = backlogEdges{task: *payload.Task, partition: partition, mtime: mtime, size: size}
@@ -647,24 +668,32 @@ func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref) (back
 }
 func (a *BacklogAdapter) ReadItems(ctx context.Context, source Source, refs []Ref, _ []string, _ int) []ItemOutcome {
 	outcomes := make([]ItemOutcome, len(refs))
+	workers := min(4, len(refs))
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for i, ref := range refs {
-		i, ref := i, ref
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			outcomes[i].Ref = ref
-			task, err := a.view(ctx, source, ref)
-			if err != nil {
-				outcomes[i].Kind = "failed"
-				outcomes[i].Err = err
-				return
+			for i := range jobs {
+				ref := refs[i]
+				outcomes[i].Ref = ref
+				task, err := a.view(ctx, source, ref, true)
+				if err != nil {
+					outcomes[i].Kind = "failed"
+					outcomes[i].Err = err
+					continue
+				}
+				s := a.summary(source, task)
+				outcomes[i].Kind = "found"
+				outcomes[i].Item = &Item{Summary: s, Body: task.Description, TerminalKnown: true, Assignment: Assignment{Owners: task.Assignees, Known: true, Assigned: len(task.Assignees) > 0}, Observation: Observation{ObservedAt: time.Now(), ConfigurationGeneration: source.Locator}}
 			}
-			s := a.summary(source, task)
-			outcomes[i].Kind = "found"
-			outcomes[i].Item = &Item{Summary: s, Body: task.Description, TerminalKnown: true, Assignment: Assignment{Owners: task.Assignees, Known: true, Assigned: len(task.Assignees) > 0}, Observation: Observation{ObservedAt: time.Now(), ConfigurationGeneration: source.Locator}}
 		}()
 	}
+	for i := range refs {
+		jobs <- i
+	}
+	close(jobs)
 	wg.Wait()
 	return outcomes
 }
@@ -686,7 +715,7 @@ func (a *BacklogAdapter) ReadDependencies(ctx context.Context, source Source, re
 	a.mu.Unlock()
 	if !ok {
 		var err error
-		task, err = a.view(ctx, source, ref)
+		task, err = a.view(ctx, source, ref, false)
 		if err != nil {
 			return DependencyPage{}, err
 		}
@@ -702,9 +731,9 @@ func (a *BacklogAdapter) dependencyPage(source Source, ref Ref, task backlogTask
 	if task.ParentTaskID != "" {
 		edges = append(edges, Relationship{Type: ParentChild, Direction: ParentToChild, From: Ref{SourceID: source.ID, ItemID: task.ParentTaskID}, To: ref, Provenance: "backlog-md.parentTaskId", RawOutcome: "parent", Interpretation: "hierarchy only", Fresh: true, Support: Supported})
 	}
-	completeness := CoverageComplete
-	if len(task.Readiness.MissingDependencies) > 0 {
-		completeness = CoveragePartial
+	completeness := CoveragePartial
+	if task.Readiness != nil && task.Readiness.MissingDependencies != nil && len(*task.Readiness.MissingDependencies) == 0 {
+		completeness = CoverageComplete
 	}
 	return DependencyPage{Edges: edges, Completeness: completeness, Observation: Observation{ObservedAt: time.Now(), ConfigurationGeneration: source.Locator, Coverage: Coverage{State: completeness, Scope: ref.String(), TotalAccuracy: TotalExact}}}
 }

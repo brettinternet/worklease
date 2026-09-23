@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 19:09'
+updated_date: '2026-09-23 21:58'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.2
@@ -64,6 +65,8 @@ The command builds sources from queue.yaml through the TASK-128.3 adapter regist
 Claimed for implementation in isolated worktree.
 
 Implemented on task-128-6-queue-query, integrated to main as 2a007a6 and edfc385. End-to-end queue tests exercise schema, pagination, credential/principal/config fingerprint, filtered completeness, mixed failed/healthy sources, key vector equality, redaction and text output; existing CLI help/man/zero-flag tests pass. Reviewer found six concrete issues; corrected all, preserving concurrent queue TUI. mise run lint, format-check, test, typecheck, hooks passed after corrections. No D1-D27 or plan contradiction introduced; fresh snapshot query explicitly defers index/max-age to S3.
+
+Review: cursor fingerprint ignores cache-only coverage metadata, keyInputs from normalized resource key, no duplicate adapter diagnostic for unresolved sources (c751d91, merged 7268f9a).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

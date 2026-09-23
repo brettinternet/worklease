@@ -41,6 +41,7 @@ type githubBinding struct {
 	dependencies                               bool
 	identityChanged                            bool
 	scans                                      map[string]map[string]bool
+	scanOrder                                  []string
 }
 
 // GitHubAdapter is a read-only adapter. Client and APIBase are test seams; production
@@ -105,6 +106,13 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	if host == "" || strings.ContainsAny(host, "/\\ :@?#\t\r\n") || len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, " :@?#\t\r\n") || account == "" || strings.ContainsAny(account, " \t\r\n") {
 		return Source{}, GitHubDiagnostic{"invalid-source", "host, owner/repository, and account required"}
 	}
+	id := options["id"]
+	if id == "" {
+		id = host + "/" + repository
+	}
+	a.mu.Lock()
+	delete(a.bindings, id)
+	a.mu.Unlock()
 	endpoint := "https://" + host + "/api/graphql"
 	if strings.EqualFold(host, "github.com") {
 		endpoint = "https://api.github.com/graphql"
@@ -152,10 +160,6 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	}
 	if viewer.Viewer.Login != account {
 		return Source{}, GitHubDiagnostic{"authentication", "authenticated principal does not match configured account"}
-	}
-	id := options["id"]
-	if id == "" {
-		id = host + "/" + repository
 	}
 	source := Source{ID: id, Name: repository, Locator: repository, Adapter: "github"}
 	a.mu.Lock()
@@ -475,7 +479,13 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		if b.scans == nil {
 			b.scans = map[string]map[string]bool{}
 		}
+		const maxGitHubScans = 100
+		for len(b.scanOrder) >= maxGitHubScans {
+			delete(b.scans, b.scanOrder[0])
+			b.scanOrder = b.scanOrder[1:]
+		}
 		b.scans[scanID] = map[string]bool{}
+		b.scanOrder = append(b.scanOrder, scanID)
 		a.mu.Unlock()
 	}
 	keepScan := false
@@ -483,6 +493,12 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		if !keepScan {
 			a.mu.Lock()
 			delete(b.scans, scanID)
+			for i, id := range b.scanOrder {
+				if id == scanID {
+					b.scanOrder = append(b.scanOrder[:i], b.scanOrder[i+1:]...)
+					break
+				}
+			}
 			a.mu.Unlock()
 		}
 	}()
@@ -524,8 +540,13 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			return SummaryPage{}, GitHubDiagnostic{"identity-changed", "issue transferred; claims unavailable until rebind"}
 		}
 		a.mu.Lock()
-		duplicate := b.scans[scanID][issue.ID]
-		b.scans[scanID][issue.ID] = true
+		seen, exists := b.scans[scanID]
+		if !exists {
+			a.mu.Unlock()
+			return SummaryPage{}, GitHubDiagnostic{"invalid-cursor", "GitHub scan expired"}
+		}
+		duplicate := seen[issue.ID]
+		seen[issue.ID] = true
 		a.mu.Unlock()
 		if !duplicate {
 			page.Items = append(page.Items, a.summary(source, issue))
@@ -617,9 +638,10 @@ func (a *GitHubAdapter) ReadDependencies(ctx context.Context, source Source, ref
 	parts := strings.Split(b.repository, "/")
 	var after any
 	var state struct {
-		After            string `json:"after"`
-		Count            int    `json:"count"`
-		HierarchyPartial bool   `json:"hierarchyPartial"`
+		After            string   `json:"after"`
+		Count            int      `json:"count"`
+		IDs              []string `json:"ids,omitempty"`
+		HierarchyPartial bool     `json:"hierarchyPartial"`
 	}
 	if cursor != "" {
 		decoded, decodeErr := base64.RawURLEncoding.DecodeString(cursor)
@@ -671,7 +693,17 @@ func (a *GitHubAdapter) ReadDependencies(ctx context.Context, source Source, ref
 		}
 		page.Edges = append(page.Edges, Relationship{Type: kind, Direction: DependentToPrerequisite, From: ref, To: to, Provenance: "github.blockedBy", Condition: "terminal", RawOutcome: related.State, Interpretation: "closed issue satisfies terminal", Fresh: true, Support: Supported})
 	}
-	state.Count += len(issue.BlockedBy.Nodes)
+	seenIDs := make(map[string]bool, len(state.IDs)+len(issue.BlockedBy.Nodes))
+	for _, id := range state.IDs {
+		seenIDs[id] = true
+	}
+	for _, related := range issue.BlockedBy.Nodes {
+		if related.ID != "" && !seenIDs[related.ID] {
+			seenIDs[related.ID] = true
+			state.IDs = append(state.IDs, related.ID)
+		}
+	}
+	state.Count = len(state.IDs)
 	if issue.BlockedBy.TotalCount != state.Count && !issue.BlockedBy.PageInfo.HasNextPage {
 		page.Completeness = CoveragePartial
 	}

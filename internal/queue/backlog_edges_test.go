@@ -166,8 +166,8 @@ func TestBacklogActionClosureRereadsEveryPrerequisite(t *testing.T) {
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	dependent := `{"kind":"task-view","schemaVersion":1,"task":{"id":"TASK-2","status":"To Do","dependencies":["TASK-1"]}}`
-	prerequisite := `{"kind":"task-view","schemaVersion":1,"task":{"id":"TASK-1","status":"Done","dependencies":[]}}`
+	dependent := `{"kind":"task-view","schemaVersion":1,"task":{"id":"TASK-2","status":"To Do","dependencies":["TASK-1"],"readiness":{"missingDependencies":[]}}}`
+	prerequisite := `{"kind":"task-view","schemaVersion":1,"task":{"id":"TASK-1","status":"Done","dependencies":[],"readiness":{"missingDependencies":[]}}}`
 	if err := os.WriteFile(filepath.Join(root, "backlog-view.json"), []byte(dependent), 0600); err != nil {
 		t.Fatal(err)
 	}

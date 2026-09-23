@@ -42,11 +42,11 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 		case strings.Contains(request.Query, "viewer"):
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
 		case strings.Contains(request.Query, "blockedBy("):
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"Owner/Repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
 		case strings.Contains(request.Query, "issue(number:"):
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}}}}`)
 		default:
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":1,"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issues":{"totalCount":1,"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -54,7 +54,7 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 	if err := os.WriteFile(ghBinary, []byte("#!/bin/sh\nprintf 'test-token\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	configuration := strings.Replace(h.queueConfig, "views:", "  - id: github\n    adapter: github\n    host: github.com\n    repository: org/repo\n    account: tester\nviews:", 1)
+	configuration := strings.Replace(h.queueConfig, "views:", "  - id: github\n    adapter: github\n    host: github.com\n    repository: Owner/Repo\n    account: tester\nviews:", 1)
 	configuration = strings.Replace(configuration, "sources: [local]", "sources: [local, github]", 1)
 	h.writeQueueConfig(configuration)
 	newRegistry := func() *queue.Registry {
@@ -90,6 +90,26 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 	if len(output.Query.Sources) != 2 || len(output.Query.Items) != 2 {
 		t.Fatalf("combined fixture lost provider data: %s", stdout.String())
 	}
+	var githubItem *queue.Item
+	for i := range output.Query.Items {
+		if output.Query.Items[i].Ref.SourceID == "github" {
+			githubItem = &output.Query.Items[i].Item
+		}
+	}
+	if githubItem == nil || githubItem.KeyInputs == nil {
+		t.Fatalf("GitHub key inputs missing: %+v", output.Query.Items)
+	}
+	keyData, err := h.run("key", "--provider", "github", "--source", "Owner/Repo", "--item", "1", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keyOutput map[string]any
+	if err := json.Unmarshal(keyData, &keyOutput); err != nil {
+		t.Fatal(err)
+	}
+	if githubItem.KeyInputs.Provider != keyOutput["provider"] || githubItem.KeyInputs.Source != keyOutput["source"] || githubItem.KeyInputs.Item != keyOutput["item"] {
+		t.Fatalf("queue key inputs differ from worklease key: %+v != %s", githubItem.KeyInputs, keyData)
+	}
 	registry := newRegistry()
 	backlog, _ := registry.Get("backlog-md")
 	github, _ := registry.Get("github")
@@ -98,7 +118,7 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remoteSource, err := github.Resolve(context.Background(), map[string]string{"id": "github", "host": "github.com", "repository": "org/repo", "account": "tester"})
+	remoteSource, err := github.Resolve(context.Background(), map[string]string{"id": "github", "host": "github.com", "repository": "Owner/Repo", "account": "tester"})
 	if err != nil {
 		t.Fatal(err)
 	}

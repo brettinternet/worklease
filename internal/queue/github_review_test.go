@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,132 @@ func TestGitHubInterleavedScans(t *testing.T) {
 		t.Fatalf("overlap dropped issue: %+v %+v", oldSecond, newSecond)
 	}
 }
+func TestGitHubConcurrentFinalPageCursor(t *testing.T) {
+	var requests atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		q, vars := githubRequest(t, r)
+		if strings.Contains(q, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		if requests.Add(1) == 1 {
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":1,"nodes":[{"id":"A","number":1,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`)
+			return
+		}
+		if string(vars["after"]) != `"next"` {
+			t.Errorf("unexpected final-page cursor: %s", vars["after"])
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":1,"nodes":[{"id":"A","number":1,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.List(context.Background(), source, Query{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Give both calls a chance to pass cursor validation before either final page is processed.
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			_, _ = a.List(context.Background(), source, Query{}, first.NextCursor)
+		}()
+	}
+	start.Done()
+	done.Wait()
+}
+
+func TestGitHubAbandonedScansAreBounded(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		q, _ := githubRequest(t, r)
+		if strings.Contains(q, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":1,"nodes":[{"id":"A","number":1,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.List(context.Background(), source, Query{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(a.bindings[source.ID].scans) != 100 {
+		t.Fatalf("scan map size = %d, want 100", len(a.bindings[source.ID].scans))
+	}
+	if _, err := a.List(context.Background(), source, Query{}, first.NextCursor); err == nil {
+		t.Fatal("old scan cursor remained valid after eviction")
+	}
+}
+
+func TestGitHubResolveFailureInvalidatesOldBinding(t *testing.T) {
+	var reject atomic.Bool
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		q, _ := githubRequest(t, r)
+		if strings.Contains(q, "viewer") {
+			login := "tester"
+			if reject.Load() {
+				login = "someone-else"
+			}
+			fmt.Fprintf(w, `{"data":{"viewer":{"login":%q}}}`, login)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`)
+	})
+	opts := map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"}
+	source, err := a.Resolve(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reject.Store(true)
+	if _, err := a.Resolve(context.Background(), opts); err == nil {
+		t.Fatal("principal mismatch unexpectedly resolved")
+	}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err == nil {
+		t.Fatal("old binding remained usable after failed re-verification")
+	}
+}
+
+func TestGitHubDependencyCountUsesDistinctIDs(t *testing.T) {
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		q, v := githubRequest(t, r)
+		if strings.Contains(q, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		page := `{"totalCount":2,"nodes":[{"id":"A","number":2,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}`
+		if string(v["after"]) == `"next"` {
+			page = `{"totalCount":2,"nodes":[{"id":"A","number":2,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}`
+		}
+		fmt.Fprintf(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"number":1,"repository":{"nameWithOwner":"org/repo"},"blockedBy":%s,"subIssues":{"nodes":[],"totalCount":0,"pageInfo":{"hasNextPage":false}}}}}}`, page)
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.ReadDependencies(context.Background(), source, Ref{source.ID, "1"}, "", 100)
+	if err != nil || first.NextCursor == "" {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	last, err := a.ReadDependencies(context.Background(), source, Ref{source.ID, "1"}, first.NextCursor, 100)
+	if err != nil || last.Completeness != CoveragePartial {
+		t.Fatalf("duplicate ID incorrectly completed coverage: %+v %v", last, err)
+	}
+}
+
 func TestGitHubRedirectAndTypedErrors(t *testing.T) {
 	for _, mode := range []string{"detail", "dependencies"} {
 		t.Run(mode, func(t *testing.T) {

@@ -242,6 +242,30 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 	}
 }
 
+func TestQueueQueryCacheOnlyCoverageDoesNotInvalidateCursor(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","ordinal":1,"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","ordinal":2,"isReady":true}]`)
+	first, err := h.run("queue", "query", "--view", "Ready", "--max-age", "1h", "--limit", "1", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstResponse struct {
+		Query struct {
+			NextCursor string `json:"nextCursor"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(first, &firstResponse); err != nil {
+		t.Fatal(err)
+	}
+	if firstResponse.Query.NextCursor == "" {
+		t.Fatalf("first page omitted cursor: %s", first)
+	}
+	second, err := h.run("queue", "query", "--view", "Ready", "--max-age", "1h", "--limit", "1", "--cursor", firstResponse.Query.NextCursor, "--json")
+	if err != nil {
+		t.Fatalf("warm cached second page rejected cursor: %v; %s", err, second)
+	}
+}
+
 func TestQueueQueryRetainsStaleIndexOnFailedRefresh(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"Retained","status":"Open","ordinal":1,"isReady":true}]`)
@@ -323,8 +347,13 @@ func TestQueueQueryKeepsHealthySourceWhenAnotherCannotResolve(t *testing.T) {
 		t.Fatalf("healthy items lost or failure concealed: %s", data)
 	}
 	rows := query["sources"].([]any)
-	if rows[1].(map[string]any)["coverage"].(map[string]any)["state"] != "unknown" {
+	missingRow := rows[1].(map[string]any)
+	if missingRow["coverage"].(map[string]any)["state"] != "unknown" {
 		t.Fatalf("missing failure coverage: %s", data)
+	}
+	diagnostics := missingRow["diagnostics"].([]any)
+	if len(diagnostics) != 1 || diagnostics[0] != "source-resolve-failed" {
+		t.Fatalf("unexpected missing-source diagnostics: %#v", diagnostics)
 	}
 	_, err = h.run("queue", "query", "--view", "Ready", "--require-complete", "--json")
 	if err == nil {
