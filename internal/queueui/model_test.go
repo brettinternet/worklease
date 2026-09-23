@@ -34,6 +34,20 @@ func press(m Model, key string) (Model, tea.Cmd) {
 	next, cmd := m.Update(k)
 	return next.(Model), cmd
 }
+func TestClaimStateDisplaysStaleWithoutHidingDenialReason(t *testing.T) {
+	for _, tc := range []struct {
+		claim queue.ClaimObservation
+		want  string
+	}{
+		{claim: queue.ClaimObservation{State: "unknown", Stale: true}, want: "unknown (stale)"},
+		{claim: queue.ClaimObservation{State: "unknown", Reason: "admission-unknown", Stale: true}, want: "admission-unknown (stale)"},
+	} {
+		if got := claimState(queue.Item{Claim: tc.claim}); got != tc.want {
+			t.Errorf("claimState() = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

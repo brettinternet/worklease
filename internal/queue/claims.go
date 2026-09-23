@@ -65,7 +65,8 @@ type ClaimAuthority struct {
 	Profile string
 	Remote  bool
 	// Nil means the remote server did not advertise its admission policy.
-	AdmittedPrefixes *[]string
+	AdmittedPrefixes        *[]string
+	LocalDefaultAuthorityID string
 }
 
 // OverlayClaims observes one selected authority. A failed read never converts
@@ -103,9 +104,10 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 					item.Claim.Reason = "admission-unknown"
 				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):
 					item.Claim.Reason = "resource-not-admitted"
-				case source.Source.Adapter == "backlog-md" && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env):
-					item.Claim.Reason = "authority-mismatch"
 				default:
+					if source.Source.Adapter == "backlog-md" && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env) {
+						item.Claim.Reason = "authority-mismatch"
+					}
 					indexes[key.Resource] = append(indexes[key.Resource], i)
 					if len(indexes[key.Resource]) == 1 {
 						resources = append(resources, key.Resource)
@@ -147,7 +149,7 @@ func matchingCheckoutAuthority(checkout string, selected ClaimAuthority, paths c
 	if choice.Profile != nil {
 		return selected.Remote && choice.Profile.AuthorityID == selected.ID
 	}
-	return !selected.Remote && selected.Profile == config.LocalProfileName
+	return !selected.Remote && selected.Profile == config.LocalProfileName && selected.LocalDefaultAuthorityID != "" && selected.ID == selected.LocalDefaultAuthorityID
 }
 
 func overlayBatch(ctx context.Context, items []Item, indexes map[string][]int, keys []string, selected ClaimAuthority) {
@@ -192,7 +194,9 @@ func overlayBatch(ctx context.Context, items []Item, indexes map[string][]int, k
 		}
 		observation.Available = observation.Known && !observation.Active
 		for _, index := range indexes[key] {
+			reason := items[index].Claim.Reason
 			items[index].Claim = observation
+			items[index].Claim.Reason = reason
 		}
 	}
 }

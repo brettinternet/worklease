@@ -325,6 +325,17 @@ func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
 	}
 }
 
+func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, stored *sync.Map) {
+	items := make([]queue.Item, 0, len(cached.Items))
+	for _, item := range cached.Items {
+		items = append(items, item)
+	}
+	for _, item := range queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv) {
+		cached.Items[item.Ref.Key()] = item
+		stored.Store(item.Ref.Key(), item)
+	}
+}
+
 func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map) {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
@@ -370,6 +381,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		refreshSources = append(refreshSources, source)
 	}
 	if len(cached.Items) > 0 {
+		overlayCachedClaims(ctx, &cached, claims, selected, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		program.Send(queueui.SnapshotMsg{Snapshot: loader.Store.Current()})
 	}

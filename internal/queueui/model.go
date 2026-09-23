@@ -650,16 +650,18 @@ func displayState(i queue.Item, me string) string {
 	return readiness(i)
 }
 func claimState(i queue.Item) string {
+	state := i.Claim.State
 	if i.Claim.Reason != "" {
-		return clean(i.Claim.Reason)
+		state = i.Claim.Reason
+	} else if i.Claim.Active {
+		state = "occupied"
+	} else if !i.Claim.Known {
+		state = "unknown"
 	}
-	if i.Claim.Active {
-		return "occupied"
+	if i.Claim.Stale {
+		state += " (stale)"
 	}
-	if !i.Claim.Known {
-		return "unknown"
-	}
-	return clean(i.Claim.State)
+	return clean(state)
 }
 func detail(m Model, i queue.Item) string {
 	var b strings.Builder
