@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 05:22'
+updated_date: '2026-09-23 21:13'
 labels:
   - work-queue
   - backlog-md
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -58,6 +59,8 @@ Build fixtures only in scratch projects under the OS temporary directory, and ne
 Scale probe on Apple M1 Max/32 GiB, Backlog.md 1.52.0, five samples. 102/1,000/10,000 tasks: list p50/p95 s 0.259/0.270, 0.439/0.453, 2.049/2.123; peak RSS p50/p95 MiB 88.1/88.8, 149.0/149.1, 272.8/275.4. View p50/p95 s 0.258/0.260, 0.406/0.408, 1.975/2.376; RSS 86.7/87.5, 144.8/147.1, 301.1/302.9. Watch title-change to full JSON p50/p95 s 0.085/0.088, 0.266/0.278, 3.021/3.323. List returned all generated records. View grows ~7.7x; ideal four-process scan >=82 min at 10k. Scratch Git: auto-commit excluded unrelated staged file, ran pre-commit; bypass disabled hook. In tested list/view reads, neither remoteOperations nor checkActiveBranches caused Git trace output with nonresolving SSH remote; scope of inference limited to these commands.
 
 Validation: generator list JSON cardinalities 102/1,000/10,000; five-sample benchmark results above; scratch Git trace/commit/hook probes; mise run lint, format-check, test, typecheck, doc-test, hooks and Python py_compile passed in isolated worktree. Review: one general pass; fixed watch pipe buffering and title mutation handling during focused checks; no remaining item-scoped defects. Worktree commit f85cc77.
+
+Post-completion review (cce444b): benchmark runner now rejects projects outside /tmp/worklease-queue-* before rewriting a fixture, and watch latency waits for the emission carrying the changed title. Proposal §3/§14 relabel ~82 min as an illustrative projection (not a lower bound) and point the stale 'unmeasured' row to the scale probe. No further follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

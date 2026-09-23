@@ -26,10 +26,10 @@ func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T
 			current := strings.TrimSpace(path + " " + command.Name)
 			if current == "queue query" {
 				queryPath = true
-				if !strings.Contains(command.UsageText, "--require-complete") || !strings.Contains(command.UsageText, "--cursor") {
+				if !strings.Contains(command.UsageText, "--require-complete") || !strings.Contains(command.UsageText, "--cursor") || !strings.Contains(command.UsageText, "--max-age") {
 					t.Fatalf("usage misses query flags: %s", command.UsageText)
 				}
-				for _, name := range []string{"limit", "cursor", "require-complete"} {
+				for _, name := range []string{"limit", "cursor", "max-age", "require-complete"} {
 					found := false
 					for _, flag := range command.Flags {
 						for _, alias := range flag.Names() {
@@ -131,6 +131,23 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 	if item["actions"] == nil {
 		t.Fatal("missing per-action eligibility")
 	}
+	// Explicit max-age should reuse the local-source index and report provenance.
+	cached, cacheErr := h.run("queue", "query", "--view", "Ready", "--max-age", "1h", "--json")
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
+	var cachedResponse map[string]any
+	if err := json.Unmarshal(cached, &cachedResponse); err != nil {
+		t.Fatal(err)
+	}
+	cachedQuery := cachedResponse["query"].(map[string]any)
+	cachedSource := cachedQuery["sources"].([]any)[0].(map[string]any)
+	if cachedSource["servedFromIndex"] != true || cachedSource["observedAt"] == nil {
+		t.Fatalf("cache provenance absent: %#v", cachedSource)
+	}
+	if len(cachedQuery["items"].([]any)) != 2 {
+		t.Fatalf("cached query items: %s", cached)
+	}
 	if strings.Contains(string(data), strings.Repeat("a", 64)) {
 		t.Fatal("JSON output bypassed redaction")
 	}
@@ -225,6 +242,63 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 	}
 }
 
+func TestQueueQueryRetainsStaleIndexOnFailedRefresh(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[{"id":"TASK-1","title":"Retained","status":"Open","ordinal":1,"isReady":true}]`)
+	if _, err := h.run("queue", "query", "--view", "Ready", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("QUEUE_LIST_JSON", "invalid-list")
+	data, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Query struct {
+			Items []struct {
+				Title string `json:"title"`
+			} `json:"items"`
+			Sources []struct {
+				Coverage queue.Coverage `json:"coverage"`
+			} `json:"sources"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Query.Items) != 1 || envelope.Query.Items[0].Title != "Retained" || envelope.Query.Sources[0].Coverage.State != queue.CoverageUnknown {
+		t.Fatalf("failed refresh lost stale item or claimed completeness: %s", data)
+	}
+}
+
+func TestQueueQueryReusesCompleteEmptyIndex(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[]`)
+	if _, err := h.run("queue", "query", "--view", "Ready", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("QUEUE_LIST_JSON", "invalid-list")
+	data, err := h.run("queue", "query", "--view", "Ready", "--max-age", "1h", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Query struct {
+			Items   []json.RawMessage `json:"items"`
+			Sources []struct {
+				Coverage        queue.Coverage `json:"coverage"`
+				ServedFromIndex bool           `json:"servedFromIndex"`
+			} `json:"sources"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Query.Items) != 0 || !envelope.Query.Sources[0].ServedFromIndex || envelope.Query.Sources[0].Coverage.State != queue.CoverageComplete {
+		t.Fatalf("complete empty cache not reused: %s", data)
+	}
+}
+
 func TestQueueQueryKeepsHealthySourceWhenAnotherCannotResolve(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-126","title":"Healthy","status":"Open","ordinal":1,"isReady":true}]`)
@@ -315,6 +389,9 @@ func newQueueQueryHarness(t *testing.T) *queueQueryHarness {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0700); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
 		t.Fatal(err)

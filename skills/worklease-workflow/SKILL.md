@@ -44,7 +44,8 @@ it. Any overlap conflicts, and acquisition is all-or-none.
 
 1. Resolve sources/selectors in caller order and discover the complete required
    dependency graph.
-2. Return `complete`, `blocked`, or `active-claims` when no item is eligible.
+2. Return `complete`, `blocked`, `active-claims`, or `capability`/unknown
+   evidence when no item is eligible.
 3. Evaluate each candidate's fresh, complete hard-prerequisite closure with the declared named condition per edge (legacy dependencies default to terminal). Known unsatisfied edges block even with other unknown edges; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence stays unknown/capability. Select only ready, unblocked, claimable start/resume work in provider order. Hierarchy and related work are not hard edges; shared resources are claim contention.
 4. Accept exact caller-supplied resources and acquire a fresh ownership epoch
    immediately after selection, before reading full intent, planning,

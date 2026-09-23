@@ -121,6 +121,39 @@ func TestConfiguredSourcesPreserveKeyInputsAndNativeClaim(t *testing.T) {
 	}
 }
 
+func TestDefaultBacklogKeySourceIsBacklogDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, folder, want string
+		ok                         bool
+	}{
+		{"configured", "backlog_directory: docs/backlog\n", "", "docs/backlog", true},
+		{"root default", "project_name: x\n", "", "backlog", true},
+		{"escaping value ignored", "backlog_directory: ../elsewhere\n", ".backlog", ".backlog", true},
+		{"folder config", "", "backlog", "backlog", true},
+		{"no project", "", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkout := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.folder != "" {
+				if err := os.Mkdir(filepath.Join(checkout, tc.folder), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "b", Adapter: "backlog-md", Checkout: checkout}}}
+			sources := ClaimSources(cfg, []Source{{ID: "b", Adapter: "backlog-md", Locator: checkout}})
+			source, ok := sources["b"]
+			if ok != tc.ok || ok && source.ClaimSource != filepath.Join(checkout, tc.want) {
+				t.Fatalf("key source: %+v ok=%v", source, ok)
+			}
+		})
+	}
+}
+
 func TestLargeResourceStatusSplitsOnResponseLimit(t *testing.T) {
 	items := make([]Item, 32)
 	indexes := make(map[string][]int)

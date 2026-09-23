@@ -79,11 +79,13 @@ type Coverage struct {
 	Scope         string        `json:"scope,omitempty"`
 	Cursor        string        `json:"cursor,omitempty"`
 	Total         int           `json:"total,omitempty"`
+	ObservedEdges int           `json:"observedEdges,omitempty"`
 	TotalAccuracy TotalAccuracy `json:"totalAccuracy"`
 	Reason        string        `json:"reason,omitempty"`
 }
 type Observation struct {
 	Principal               string    `json:"principal,omitempty"`
+	AccessScope             string    `json:"-"`
 	ConfigurationGeneration string    `json:"configurationGeneration,omitempty"`
 	ObservedAt              time.Time `json:"observedAt,omitempty"`
 	ProviderVersion         string    `json:"providerVersion,omitempty"`

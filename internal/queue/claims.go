@@ -18,7 +18,9 @@ type ClaimSource struct {
 	Policy, ClaimSource string
 }
 
-// ClaimSources carries queue.yaml's exact key inputs into the overlay.
+// ClaimSources carries queue.yaml's exact key inputs into the overlay. Without
+// an explicit binding, keys use the same default sources CLI callers document.
+// A Backlog.md source whose directory cannot be resolved is omitted.
 func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSource {
 	byID := make(map[string]Source, len(resolved))
 	for _, source := range resolved {
@@ -38,6 +40,13 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 			if configured.Host != "github.com" {
 				input.ClaimSource = configured.Host + "/" + configured.Repository
 			}
+		} else if configured.Adapter == "backlog-md" {
+			dir, err := BacklogDirectory(source.Locator)
+			if err != nil {
+				// An unresolvable key source must not fall back to the checkout root.
+				continue
+			}
+			input.ClaimSource = dir
 		}
 		out[configured.ID] = input
 	}

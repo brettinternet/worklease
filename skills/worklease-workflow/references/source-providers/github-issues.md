@@ -21,7 +21,7 @@ and operation.
 
 | Group | Declaration |
 | --- | --- |
-| Identity | Supported: configured `owner/repo` and issue number; retain node IDs. Detect repository rename/transfer. |
+| Identity | Supported: configured `owner/repo` (github.com) or `host/owner/repo` (Enterprise) and issue number; retain node IDs. Detect repository rename/transfer. |
 | Discovery | Supported: GraphQL cursor pages of 100; observed `totalCount` is not a multi-page snapshot. Exclude pull requests. |
 | Dependencies | Supported where provider exposes blocked-by/blocking relationships; paginate per-item relationships and retain cross-repository references. Sub-issues are hierarchy, not prerequisites. |
 | State | Supported: issue open/closed and `stateReason`; Projects status is unsupported/deferred. |
@@ -35,7 +35,9 @@ and operation.
 
 ## Worklease resource policy
 
-Use the bundled GitHub key policy after repository and issue resolution:
+Use the bundled GitHub key policy after repository and issue resolution.
+`$repository` is `owner/repo` on github.com and the exact configured
+`host/owner/repo` on an Enterprise host; a URL form derives a different key.
 
 ```sh
 worklease key --provider github --source "$repository" --item "$issue_number"

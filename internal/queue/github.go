@@ -81,6 +81,11 @@ func (a *GitHubAdapter) binding(source Source) (*githubBinding, error) {
 }
 
 // ConfigurationGeneration binds read-only cursor state to the resolved account credential.
+// QueueCacheIdentity deliberately disables persistent caching: this adapter has no provider-issued permission-scope fingerprint.
+func (a *GitHubAdapter) QueueCacheIdentity(Source) (string, string, string, bool) {
+	return "", "", "", false
+}
+
 func (a *GitHubAdapter) ConfigurationGeneration(source Source) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

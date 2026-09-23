@@ -16,7 +16,7 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
-worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--require-complete]
+worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
 ```
 
 `[selection]` means the shared claim-selection options listed in that command's

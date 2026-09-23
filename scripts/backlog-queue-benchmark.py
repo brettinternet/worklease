@@ -2,6 +2,7 @@
 """Measure Backlog.md fixture list, view, and watch (JSON output)."""
 
 import argparse
+import codecs
 import json
 import os
 from pathlib import Path
@@ -33,30 +34,43 @@ def watch_latency(root):
     env = {**os.environ, "BACKLOG_CWD": str(root)}
     watcher = subprocess.Popen(["backlog", "task", "list", "--json", "--watch"], env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    utf8 = codecs.getincrementaldecoder("utf-8")()
+    decoder = json.JSONDecoder()
+    pending = ""
     try:
         # Read raw bytes: TextIO.readline can buffer the entire JSON response and
         # leave select() waiting on an empty pipe despite buffered lines.
+        # Emissions may arrive concatenated, so decode one value at a time.
         def receive(deadline):
-            chunks = []
-            while time.monotonic() < deadline:
-                if not select.select([watcher.stdout], [], [], max(0, deadline - time.monotonic()))[0]:
-                    break
+            nonlocal pending
+            while True:
+                pending = pending.lstrip()
+                if pending:
+                    try:
+                        value, end = decoder.raw_decode(pending)
+                        pending = pending[end:]
+                        return value
+                    except json.JSONDecodeError:
+                        pass
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([watcher.stdout], [], [], remaining)[0]:
+                    raise TimeoutError("watcher did not emit complete JSON")
                 chunk = os.read(watcher.stdout.fileno(), 65536)
                 if not chunk:
                     raise RuntimeError(f"watcher exited: {watcher.poll()}")
-                chunks.append(chunk)
-                try:
-                    return json.loads(b"".join(chunks))
-                except json.JSONDecodeError:
-                    pass
-            raise TimeoutError("watcher did not emit complete JSON")
+                pending += utf8.decode(chunk)
 
         receive(time.monotonic() + 20)
         fixture = root / "backlog" / "tasks" / "task-1 - Fixture-00001.md"
-        start = time.monotonic()
         current = fixture.read_text()
-        fixture.write_text(current.replace("title: Fixture 00001 changed", "title: Fixture 00001") if "changed" in current else current.replace("title: Fixture 00001", "title: Fixture 00001 changed"))
-        receive(time.monotonic() + 30)
+        changed = "title: Fixture 00001 changed" in current
+        title = "Fixture 00001" if changed else "Fixture 00001 changed"
+        start = time.monotonic()
+        fixture.write_text(current.replace("title: Fixture 00001 changed", "title: Fixture 00001") if changed else current.replace("title: Fixture 00001", "title: Fixture 00001 changed"))
+        deadline = time.monotonic() + 30
+        # Only an emission containing the new title measures this change.
+        while not any(task.get("id") == "TASK-1" and task.get("title") == title for task in receive(deadline).get("tasks", [])):
+            pass
         return round(time.monotonic() - start, 3)
     finally:
         watcher.kill()
@@ -70,7 +84,14 @@ def main():
     parser.add_argument("projects", type=Path, nargs="+")
     parser.add_argument("--samples", type=int, default=5)
     args = parser.parse_args()
-    for root in args.projects:
+    temporary = Path("/tmp").resolve()
+    for project in args.projects:
+        root = project.resolve()
+        # Watch measurement rewrites a fixture file; never touch a real project.
+        if not root.is_relative_to(temporary) or not root.name.startswith("worklease-queue-"):
+            parser.error("projects must be generated fixtures beneath the OS temp directory with a worklease-queue- prefix")
+    for project in args.projects:
+        root = project.resolve()
         count = int(root.name.rsplit("-", 1)[-1])
         output = {"count": count, "samples": args.samples, "commands": {}}
         for label, command in (("list", ["task", "list", "--json"]),

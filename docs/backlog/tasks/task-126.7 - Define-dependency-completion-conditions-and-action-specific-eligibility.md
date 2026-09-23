@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:10'
+updated_date: '2026-09-23 21:13'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -68,6 +69,8 @@ AC7 remains open until the branch is integrated with the separately completed do
 2026-09-23 11:27 UTC: Resumed integration check. Prior claim history shows released ownership and branch 0f23c42 clean, but primary main still has uncommitted overlapping edits to doc-1, contract, skill, and proposal, plus unrelated task and script changes. Merge cannot safely update main without disturbing those changes. No branch changes made. Next: once primary checkout overlapping files are committed/cleared by their owners, integrate branch, rerun checks, finalize AC7 and release.
 
 Integrated a6f1dc6 and 0f23c42 into main at c16c0e0; CLI view of doc-1 and cross-check of skill, source-workflow and examples confirm consistent hard-edge and action-eligibility rules. Full lint, format-check, test, typecheck, doc-test and staged hooks passed on integrated main.
+
+Post-completion review (cce444b): queue core now reports conflicting dependencies/relationships projections as unknown (ambiguous-dependency-projection) per contract; resume requires source-reported in-progress state. Fixture v1 gains optional item state plus resume-ineligible and conflicting-projection cases; SKILL.md no-work step includes capability/unknown. No further follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

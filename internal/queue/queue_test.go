@@ -19,6 +19,7 @@ type fixture struct {
 				Ref           []string   `json:"ref"`
 				Terminal      *bool      `json:"terminal"`
 				OwnerVerified bool       `json:"ownerVerified"`
+				State         string     `json:"state"`
 				Dependencies  [][]string `json:"dependencies"`
 			} `json:"items"`
 			Edges []struct {
@@ -61,6 +62,10 @@ func TestDependencyEligibilityFixture(t *testing.T) {
 				item := Item{Summary: Summary{Ref: ref, Fresh: true}, TerminalKnown: entry.Terminal != nil, DependenciesKnown: true, Closure: CoverageState(tc.Graph.Coverage)}
 				if entry.Terminal != nil {
 					item.Terminal = *entry.Terminal
+				}
+				item.State = StateOpen
+				if entry.State != "" {
+					item.State = StateCategory(entry.State)
 				}
 				for _, d := range entry.Dependencies {
 					item.Dependencies = append(item.Dependencies, Ref{SourceID: d[0], ItemID: d[1]})

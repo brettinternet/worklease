@@ -13,6 +13,7 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		rUnknownCondition
 		rProviderBlocker
 		rReadFailure
+		rAmbiguousProjection
 	)
 	out := cloneItems(items)
 	memo := make(map[string]uint16, len(out))
@@ -47,8 +48,7 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		if !item.DependenciesKnown || item.Closure != "" && item.Closure != CoverageComplete {
 			flags |= rIncomplete
 		}
-		legacy := item.Relationships == nil || len(item.Relationships) == 0 && len(item.Dependencies) > 0
-		if legacy {
+		if item.Relationships == nil {
 			for _, prereq := range item.Dependencies {
 				p, found := out[prereq.Key()]
 				if !found {
@@ -63,6 +63,9 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 				flags |= evaluate(prereq)
 			}
 		} else {
+			if len(item.Dependencies) > 0 && !projectsHardEdges(key, item.Dependencies, item.Relationships) {
+				flags |= rAmbiguousProjection
+			}
 			for _, edge := range item.Relationships {
 				if edge.From.Key() != key || (edge.Type != HardPrerequisite && edge.Type != CrossSourcePrerequisite) {
 					continue
@@ -117,7 +120,7 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 			status = ReadinessUnknown
 		}
 		reasons := make([]string, 0, 8)
-		for bit, name := range map[uint16]string{rIncomplete: "incomplete-closure", rStale: "stale-evidence", rMissing: "missing-prerequisite", rCycle: "hard-cycle", rUnsatisfied: "hard-condition-unsatisfied", rUnsupported: "unsupported-condition", rUnknownCondition: "unknown-condition", rProviderBlocker: "provider-blocker", rReadFailure: "item-read-failed"} {
+		for bit, name := range map[uint16]string{rIncomplete: "incomplete-closure", rStale: "stale-evidence", rMissing: "missing-prerequisite", rCycle: "hard-cycle", rUnsatisfied: "hard-condition-unsatisfied", rUnsupported: "unsupported-condition", rUnknownCondition: "unknown-condition", rProviderBlocker: "provider-blocker", rReadFailure: "item-read-failed", rAmbiguousProjection: "ambiguous-dependency-projection"} {
 			if flags&bit != 0 {
 				reasons = append(reasons, name)
 			}
@@ -142,6 +145,25 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 	return out
 }
 
+// projectsHardEdges reports whether legacy dependencies are exactly the item's
+// hard-edge prerequisites, as the contract requires when both fields are supplied.
+func projectsHardEdges(key string, dependencies []Ref, relationships []Relationship) bool {
+	hard := make(map[string]bool)
+	for _, edge := range relationships {
+		if edge.From.Key() == key && (edge.Type == HardPrerequisite || edge.Type == CrossSourcePrerequisite) {
+			hard[edge.To.Key()] = true
+		}
+	}
+	legacy := make(map[string]bool, len(dependencies))
+	for _, dependency := range dependencies {
+		if !hard[dependency.Key()] {
+			return false
+		}
+		legacy[dependency.Key()] = true
+	}
+	return len(legacy) == len(hard)
+}
+
 func EvaluateAction(item Item, action Action) Eligibility {
 	if action == ActionReportBlocked || action == ActionRecordProgress {
 		if item.Claim.Known && item.Claim.Active && item.Claim.OwnerVerified {
@@ -164,6 +186,10 @@ func EvaluateAction(item Item, action Action) Eligibility {
 		}
 		if item.Claim.Active {
 			return Eligibility{Eligible: false, Reasons: []string{"active-claim"}, Outcome: "active-claims"}
+		}
+		// The queue's resume policy: only unclaimed work the source reports in progress.
+		if action == ActionResume && item.State != StateInProgress {
+			return Eligibility{Eligible: false, Reasons: []string{"not-in-progress"}, Outcome: "ineligible"}
 		}
 		return Eligibility{Eligible: true}
 	}

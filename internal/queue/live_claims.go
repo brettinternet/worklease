@@ -212,7 +212,8 @@ func nearestClaimExpiry(items []Item) (time.Time, bool) {
 
 func unknownClaims(items []Item, authorityID, reason string) []Item {
 	for i := range items {
-		items[i].Claim = ClaimObservation{AuthorityID: authorityID, State: "unknown", NativeState: "not-exposed", Stale: true, Reason: reason}
+		observedAt := items[i].Claim.ObservedAt
+		items[i].Claim = ClaimObservation{AuthorityID: authorityID, State: "unknown", NativeState: "not-exposed", Stale: true, Reason: reason, ObservedAt: observedAt}
 	}
 	return items
 }

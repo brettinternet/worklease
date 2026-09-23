@@ -257,6 +257,16 @@ func TestRunClaimOverlayExpiresWithoutEventAtAuthorityTime(t *testing.T) {
 	}
 }
 
+func TestHistoryGapInvalidatesObservedClaim(t *testing.T) {
+	items, _ := claimFixtures(1)
+	prior := time.Unix(100, 0)
+	items[0].Claim = ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: prior}
+	observed := unknownClaims(items, "authority", "history-gap")
+	if observed[0].Claim.Known || observed[0].Claim.Active || !observed[0].Claim.Stale || !observed[0].Claim.ObservedAt.Equal(prior) {
+		t.Fatalf("gap must invalidate prior observation without ordering it behind the claim: %+v", observed[0].Claim)
+	}
+}
+
 func TestRunClaimOverlayGapAndRestoreFailClosed(t *testing.T) {
 	for _, restored := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gap", true: "restore"}[restored], func(t *testing.T) {

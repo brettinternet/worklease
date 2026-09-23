@@ -17,6 +17,26 @@ func drainRefresh(ch <-chan Snapshot) {
 	}
 }
 
+func TestExplicitInaccessibleOutcomePurgesProjection(t *testing.T) {
+	fake := newFake()
+	ref := Ref{SourceID: "s", ItemID: "gone"}
+	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: ref, Title: "secret cached title", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}, Observation: Observation{Principal: "alice", ConfigurationGeneration: "g"}}}
+	fake.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Kind: "inaccessible"}}
+	registry := NewRegistry()
+	if err := registry.Register("fake", fake); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	drainRefresh(loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "fake"}}))
+	snapshot := loader.Store.Current()
+	if _, ok := snapshot.Items[ref.Key()]; ok {
+		t.Fatal("inaccessible item remained in source projection")
+	}
+	if snapshot.Deleted[ref.Key()] != ref {
+		t.Fatalf("explicit deletion evidence missing: %+v", snapshot.Deleted)
+	}
+}
+
 func TestProviderReadyPointerIsClonedAcrossSnapshots(t *testing.T) {
 	store := NewStore()
 	ready := true
@@ -40,11 +60,15 @@ func TestMaintenanceRequiresVerifiedOwner(t *testing.T) {
 		t.Fatalf("verified owner denied maintenance: %+v", got)
 	}
 }
-func TestEmptyTypedDependencyPagePreservesLegacyDependencies(t *testing.T) {
+
+// An explicit empty relationship list means no observed edges, so legacy
+// dependencies conflict with it and must not be silently used or dropped.
+func TestEmptyTypedRelationshipsConflictWithLegacyDependencies(t *testing.T) {
 	a, b := Ref{"s", "a"}, Ref{"s", "b"}
 	items := map[string]Item{a.Key(): {Summary: Summary{Ref: a, Fresh: true}, Dependencies: []Ref{b}, Relationships: []Relationship{}, DependenciesKnown: true, Closure: CoverageComplete}, b.Key(): {Summary: Summary{Ref: b, Fresh: true, Terminal: true}, TerminalKnown: true, DependenciesKnown: true, Closure: CoverageComplete}}
-	if got := Recompute(items, CoverageComplete)[a.Key()].Readiness.Status; got != Ready {
-		t.Fatalf("legacy dependency lost after empty typed page: %s", got)
+	got := Recompute(items, CoverageComplete)[a.Key()].Readiness
+	if got.Status != ReadinessUnknown || !containsString(got.Reasons, "ambiguous-dependency-projection") {
+		t.Fatalf("conflicting projection readiness: %+v", got)
 	}
 }
 func TestPrerequisitePermissionChangeRecomputesDependents(t *testing.T) {
@@ -309,5 +333,14 @@ func TestRecomputeMemoizedLargeClosure(t *testing.T) {
 	}
 	if got := Recompute(items, CoverageComplete)[(Ref{"s", "0"}).Key()].Readiness.Status; got != Ready {
 		t.Fatalf("large closure readiness=%s", got)
+	}
+}
+
+func TestMatchingDependencyProjectionIsNotAmbiguous(t *testing.T) {
+	a, b := Ref{"s", "a"}, Ref{"s", "b"}
+	edge := Relationship{Type: HardPrerequisite, From: a, To: b, Condition: "terminal", Fresh: true, Support: Supported}
+	items := map[string]Item{a.Key(): {Summary: Summary{Ref: a, Fresh: true}, Dependencies: []Ref{b}, Relationships: []Relationship{edge}, DependenciesKnown: true, Closure: CoverageComplete}, b.Key(): {Summary: Summary{Ref: b, Fresh: true, Terminal: true}, TerminalKnown: true, DependenciesKnown: true, Closure: CoverageComplete}}
+	if got := Recompute(items, CoverageComplete)[a.Key()].Readiness; got.Status != Ready {
+		t.Fatalf("matching projection readiness: %+v", got)
 	}
 }

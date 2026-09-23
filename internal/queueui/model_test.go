@@ -67,6 +67,41 @@ func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
 	}
 }
 
+func TestClaimUpdatesWhileProviderSnapshotIsStalled(t *testing.T) {
+	m := New(fixture())
+	stalled := m.Snapshot.Clone()
+	stalled.Sources["a"] = queue.Coverage{State: queue.CoveragePartial, Total: 2, TotalAccuracy: queue.TotalExact}
+	next, _ := m.Update(SnapshotMsg{stalled})
+	m = next.(Model)
+	claims := stalled.Clone()
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	item := claims.Items[key]
+	item.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Now()}
+	claims.Items[key] = item
+	next, _ = m.Update(ClaimOverlayMsg{Snapshot: claims})
+	m = next.(Model)
+	if m.Snapshot.Items[key].Claim.State != "free" || m.ClaimFreshness != "fresh" || !strings.Contains(m.View(), "provider stale") {
+		t.Fatalf("stalled provider suppressed live claim: %+v", m.Snapshot.Items[key].Claim)
+	}
+}
+
+func TestHistoryGapOverridesPreviouslyObservedClaim(t *testing.T) {
+	m := New(fixture())
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	item := m.Snapshot.Items[key]
+	item.Claim.ObservedAt = time.Unix(100, 0)
+	m.Snapshot.Items[key] = item
+	gap := m.Snapshot.Clone()
+	item = gap.Items[key]
+	item.Claim = queue.ClaimObservation{State: "unknown", Stale: true, Reason: "history-gap", ObservedAt: time.Unix(100, 0)}
+	gap.Items[key] = item
+	next, _ := m.Update(ClaimOverlayMsg{Snapshot: gap, Rebuilding: true})
+	m = next.(Model)
+	if m.Snapshot.Items[key].Claim.Known || !m.Snapshot.Items[key].Claim.Stale || !strings.Contains(m.View(), "claims rebuilding") {
+		t.Fatalf("history gap left stale active claim visible: %+v", m.Snapshot.Items[key].Claim)
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
@@ -99,6 +134,28 @@ func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 		t.Fatal("late response stole detail")
 	}
 }
+func TestSelectedEdgeHydrationFollowsSelectionOnly(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	calls := 0
+	m.HydrateSelected = func(item queue.Item) tea.Cmd {
+		calls++
+		if item.Ref.ItemID != "2" {
+			t.Fatalf("unexpected selected item: %s", item.Ref.ItemID)
+		}
+		return func() tea.Msg { return nil }
+	}
+	m, cmd := press(m, "j")
+	if calls != 1 || cmd == nil {
+		t.Fatalf("selection did not schedule hydration: %d", calls)
+	}
+	next, _ := m.Update(SnapshotMsg{fixture()})
+	if calls != 1 || next.(Model).Selected != "stable-2" {
+		t.Fatalf("snapshot repeated hydration: %d", calls)
+	}
+}
+
 func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

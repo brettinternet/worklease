@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy.",
+  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy. Optional item state (default open) is the source-reported category; resume requires in-progress.",
   "cases": [
     {
       "name": "hard versus hierarchy",
@@ -44,8 +44,18 @@
     },
     {
       "name": "legacy dependencies",
-      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "state": "in-progress", "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
       "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
+    },
+    {
+      "name": "resume requires in-progress",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "state": "open", "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
+      "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": false, "reasons": ["not-in-progress"], "outcome": "ineligible"}
+    },
+    {
+      "name": "conflicting dependency projection",
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": false}, {"ref": ["local", "c"], "terminal": true}], "edges": [{"type": "hard-prerequisite", "from": ["local", "a"], "to": ["local", "c"], "condition": "terminal", "outcome": "closed", "interpretation": "satisfied", "fresh": true, "provenance": "provider"}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "unknown", "eligible": false, "reasons": ["ambiguous-dependency-projection"]}
     }
   ]
 }

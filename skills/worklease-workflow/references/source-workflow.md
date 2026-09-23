@@ -85,7 +85,11 @@ durable mutation. Preserve unrelated provider fields.
 Retain both the Worklease operation receipt and provider receipt, but treat only
 verified provider state as the checkpoint. Stop without release or further
 mutation on ambiguity, ownership loss, version conflict, unsupported capability,
-or a missing receipt.
+or a missing receipt. The one exception is the generic contract's no-effect
+cancellation: a verified current owner may cancel when no guarded operation
+started, no provider write was dispatched, and every outcome is known, such as
+a write rejected as unsupported before dispatch. A dispatched write without a
+receipt still forbids release.
 
 Never expose the claim token in provider comments, status, checkpoints, logs,
 diagnostics, examples, or handoffs. Pass it only to claim mutations and

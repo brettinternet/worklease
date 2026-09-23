@@ -55,6 +55,7 @@ type Model struct {
 	ClaimFreshness                 string
 	RebuildingClaims               bool
 	Refresh                        func() tea.Cmd
+	HydrateSelected                func(queue.Item) tea.Cmd
 	LoadHistory                    func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 }
@@ -219,6 +220,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = v.Width, v.Height
 	case SnapshotMsg:
+		previous := m.Selected
 		if v.Snapshot.Revision < m.Snapshot.Revision {
 			break
 		}
@@ -233,6 +235,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.Snapshot = updated
 		m.anchor(m.rows())
+		if m.Selected != previous && m.HydrateSelected != nil {
+			if item, ok := m.selected(m.rows()); ok {
+				return m, m.HydrateSelected(item)
+			}
+		}
 	case ClaimOverlayMsg:
 		for key, item := range v.Snapshot.Items {
 			if current, ok := m.Snapshot.Items[key]; ok && !item.Claim.ObservedAt.Before(current.Claim.ObservedAt) {
@@ -306,6 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		rows := m.rows()
+		previous := m.Selected
 		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -394,7 +402,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.HistoryIdentity = identity(i)
 				m.HistoryCursor = ""
 				m.History = ledger.HistoryPage{}
+				if m.Selected != previous && m.HydrateSelected != nil {
+					return m, tea.Batch(m.LoadHistory(i, ""), m.HydrateSelected(i))
+				}
 				return m, m.LoadHistory(i, "")
+			}
+		}
+		if m.Selected != previous && m.HydrateSelected != nil {
+			if item, ok := m.selected(m.rows()); ok {
+				return m, m.HydrateSelected(item)
 			}
 		}
 	}
@@ -509,12 +525,12 @@ func (m Model) View() string {
 		}
 	}
 	for _, i := range m.Snapshot.Items {
-		if i.DependenciesKnown {
+		if i.DependenciesKnown && i.Closure == queue.CoverageComplete && i.Fresh {
 			edges++
 		}
 	}
 	var footer strings.Builder
-	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · provider %s · claims %s · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, len(m.Snapshot.Items), sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness), clip(m.Notice, 60))
+	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · provider %s · claims %s · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness), clip(m.Notice, 60))
 	if m.Filtering {
 		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
 	}
