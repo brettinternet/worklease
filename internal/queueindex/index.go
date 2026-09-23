@@ -18,6 +18,8 @@ import (
 
 	"github.com/brettinternet/worklease/internal/queue"
 	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const SchemaGeneration = 2
@@ -99,8 +101,8 @@ func open(ctx context.Context, dir string, allowRebuild bool) (*Index, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if !allowRebuild {
-			return nil, fmt.Errorf("open rebuilt queue index: %w", err)
+		if !allowRebuild || !rebuildableIndexError(err) {
+			return nil, err
 		}
 		if err := rebuild(path); err != nil {
 			return nil, fmt.Errorf("rebuild corrupt queue index: %w", err)
@@ -115,6 +117,18 @@ func open(ctx context.Context, dir string, allowRebuild bool) (*Index, error) {
 	}
 	return idx, nil
 }
+func rebuildableIndexError(err error) bool {
+	if strings.Contains(err.Error(), "unknown queue index schema generation") || strings.Contains(err.Error(), "invalid queue index schema") {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == sqlite3.SQLITE_CORRUPT || code == sqlite3.SQLITE_NOTADB
+}
+
 func rebuild(path string) error {
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
@@ -154,6 +168,43 @@ func (i *Index) migrate(ctx context.Context) error {
 	}
 	if version != 0 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS body_partitions (partition TEXT PRIMARY KEY)`); err != nil {
+		return err
+	}
+	if version == SchemaGeneration {
+		for table, requiredColumns := range map[string][]string{
+			"entries":         {"partition", "ref", "payload", "observed"},
+			"partitions":      {"partition", "observed", "complete"},
+			"search":          {"partition", "ref", "title", "body"},
+			"body_partitions": {"partition"},
+		} {
+			rows, err := conn.QueryContext(ctx, "PRAGMA table_info("+table+")")
+			if err != nil {
+				return err
+			}
+			columns := map[string]bool{}
+			for rows.Next() {
+				var cid, notnull, pk int
+				var name, kind string
+				var defaultValue any
+				if err := rows.Scan(&cid, &name, &kind, &notnull, &defaultValue, &pk); err != nil {
+					rows.Close()
+					return err
+				}
+				columns[name] = true
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+			for _, column := range requiredColumns {
+				if !columns[column] {
+					return fmt.Errorf("invalid queue index schema: required column %s.%s is missing", table, column)
+				}
+			}
+		}
 	}
 	if version == 0 {
 		if _, err := conn.ExecContext(ctx, `CREATE TABLE entries (partition TEXT NOT NULL, ref TEXT NOT NULL, payload BLOB NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); CREATE TABLE partitions (partition TEXT PRIMARY KEY, observed INTEGER NOT NULL, complete INTEGER NOT NULL); CREATE VIRTUAL TABLE search USING fts5(partition UNINDEXED,ref UNINDEXED,title,body); PRAGMA user_version=2`); err != nil {
@@ -288,12 +339,25 @@ func (i *Index) ReplaceWithDeletes(ctx context.Context, p Partition, items []que
 		if _, err = tx.ExecContext(ctx, "INSERT INTO partitions(partition,observed,complete) VALUES(?,?,1) ON CONFLICT(partition) DO UPDATE SET observed=excluded.observed,complete=1", key, time.Now().UnixNano()); err != nil {
 			return err
 		}
+		if i.indexBodies {
+			if _, err = tx.ExecContext(ctx, "INSERT OR REPLACE INTO body_partitions(partition) VALUES(?)", key); err != nil {
+				return err
+			}
+		} else if _, err = tx.ExecContext(ctx, "DELETE FROM body_partitions WHERE partition=?", key); err != nil {
+			return err
+		}
 	} else {
 		if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO partitions(partition,observed,complete) VALUES(?,0,0)", key); err != nil {
 			return err
 		}
+		if _, err = tx.ExecContext(ctx, "DELETE FROM body_partitions WHERE partition=?", key); err != nil {
+			return err
+		}
 	}
 	cutoff := time.Now().Add(-Retention).UnixNano()
+	if _, err = tx.ExecContext(ctx, "UPDATE partitions SET complete=0 WHERE partition IN (SELECT partition FROM entries WHERE observed < ?)", cutoff); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE EXISTS (SELECT 1 FROM entries e WHERE e.partition=search.partition AND e.ref=search.ref AND e.observed < ?)`, cutoff); err != nil {
 		return err
 	}
@@ -317,7 +381,7 @@ func (i *Index) Revoke(ctx context.Context, p Partition) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"search", "entries", "partitions"} {
+	for _, table := range []string{"search", "entries", "partitions", "body_partitions"} {
 		if _, err = tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE partition=?", key); err != nil {
 			return err
 		}
@@ -331,6 +395,9 @@ func (i *Index) purgeExpired(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	cutoff := time.Now().Add(-Retention).UnixNano()
+	if _, err = tx.ExecContext(ctx, "UPDATE partitions SET complete=0 WHERE partition IN (SELECT partition FROM entries WHERE observed < ?)", cutoff); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE EXISTS (SELECT 1 FROM entries e WHERE e.partition=search.partition AND e.ref=search.ref AND e.observed < ?)`, cutoff); err != nil {
 		return err
 	}
@@ -354,8 +421,15 @@ func (i *Index) Search(ctx context.Context, p Partition, text string) ([]string,
 	column := "title"
 	coverage := "indexed-summaries"
 	if i.indexBodies {
-		column = "search"
-		coverage = "indexed-bodies"
+		var indexed int
+		err = i.db.QueryRowContext(ctx, "SELECT 1 FROM body_partitions WHERE partition=?", key).Scan(&indexed)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, "", err
+		}
+		if err == nil {
+			column = "search"
+			coverage = "indexed-bodies"
+		}
 	}
 	rows, err := i.db.QueryContext(ctx, "SELECT ref FROM search WHERE partition=? AND "+column+" MATCH ?", key, text)
 	if err != nil {

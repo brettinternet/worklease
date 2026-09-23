@@ -2,6 +2,7 @@ package queueindex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,64 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
+
+type inaccessibleAdapter struct{ ref queue.Ref }
+
+func (a inaccessibleAdapter) Resolve(context.Context, map[string]string) (queue.Source, error) {
+	return queue.Source{ID: a.ref.SourceID, Adapter: "inaccessible"}, nil
+}
+func (inaccessibleAdapter) Capabilities(context.Context, queue.Source, string, *queue.Ref) (queue.CapabilitySet, error) {
+	return queue.CapabilitySet{}, nil
+}
+func (a inaccessibleAdapter) List(context.Context, queue.Source, queue.Query, string) (queue.SummaryPage, error) {
+	return queue.SummaryPage{Items: []queue.Summary{{Ref: a.ref, Title: "revoked"}}, Coverage: queue.Coverage{State: queue.CoverageComplete, TotalAccuracy: queue.TotalExact}}, nil
+}
+func (a inaccessibleAdapter) ReadItems(context.Context, queue.Source, []queue.Ref, []string, int) []queue.ItemOutcome {
+	return []queue.ItemOutcome{{Ref: a.ref, Kind: "inaccessible"}}
+}
+func (inaccessibleAdapter) ReadDependencies(context.Context, queue.Source, queue.Ref, string, int) (queue.DependencyPage, error) {
+	return queue.DependencyPage{Completeness: queue.CoverageComplete}, nil
+}
+
+func TestAdapterInaccessibilityPurgesIndexProjection(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ref := queue.Ref{SourceID: "s", ItemID: "secret"}
+	p := Partition{Source: "s", Principal: "u", Scope: "r", Generation: "g"}
+	cached := queue.Item{Summary: queue.Summary{Ref: ref, Title: "secretcached"}}
+	if err := idx.Replace(ctx, p, []queue.Item{cached}, true); err != nil {
+		t.Fatal(err)
+	}
+	registry := queue.NewRegistry()
+	adapter := inaccessibleAdapter{ref: ref}
+	if err := registry.Register("inaccessible", adapter); err != nil {
+		t.Fatal(err)
+	}
+	loader := queue.NewLoader(registry)
+	for range loader.Refresh(ctx, []queue.Source{{ID: "s", Adapter: "inaccessible"}}) {
+	}
+	snapshot := loader.Store.Current()
+	if snapshot.Deleted[ref.Key()] != ref {
+		t.Fatalf("adapter evidence did not mark the removed ref: %+v", snapshot.Deleted)
+	}
+	if err := idx.ReplaceWithDeletes(ctx, p, nil, []queue.Ref{snapshot.Deleted[ref.Key()]}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 0 {
+		t.Fatalf("inaccessible row remained cached: %+v %v", got, err)
+	}
+	refs, _, err := idx.Search(ctx, p, "secretcached")
+	if err != nil || len(refs) != 0 {
+		t.Fatalf("inaccessible search row remained cached: %v %v", refs, err)
+	}
+}
 
 func TestIndexPartitionsRetentionAndIncompleteScan(t *testing.T) {
 	ctx := context.Background()
@@ -123,6 +181,91 @@ func TestBodySearchRequiresOptIn(t *testing.T) {
 	}
 }
 
+func TestBacklogBranchSwitchDoesNotReuseFreshCachePartition(t *testing.T) {
+	ctx := context.Background()
+	checkout := t.TempDir()
+	if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry := queue.NewRegistry()
+	adapter, _ := registry.Get("backlog-md")
+	source := queue.Source{ID: "backlog", Adapter: "backlog-md", Locator: checkout}
+	mainPartition, ok := ForSource(adapter, source)
+	if !ok {
+		t.Fatal("initial branch did not provide a cache identity")
+	}
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: source.ID, ItemID: "main-task"}, Title: "main task"}}
+	if err := idx.Replace(ctx, mainPartition, []queue.Item{item}, true); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := testkit.GitCommand("-C", checkout, "checkout", "-b", "other").CombinedOutput(); err != nil {
+		t.Fatalf("git branch switch: %v: %s", err, output)
+	}
+	otherPartition, ok := ForSource(adapter, source)
+	if !ok || otherPartition == mainPartition {
+		t.Fatal("branch switch reused the previous cache partition")
+	}
+	got, _, fresh, err := idx.Read(ctx, otherPartition, time.Hour)
+	if err != nil || len(got.Items) != 0 || fresh {
+		t.Fatalf("branch switch reused fresh rows from the previous branch: %+v fresh=%v err=%v", got, fresh, err)
+	}
+}
+
+func TestRetentionInvalidatesPartitionFreshness(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "s", Principal: "u", Scope: "scope", Generation: "g"}
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "old"}, Title: "expired"}, Observation: queue.Observation{ObservedAt: time.Now()}}
+	if err := idx.Replace(ctx, p, []queue.Item{item}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.db.Exec("UPDATE entries SET observed=?", time.Now().Add(-Retention-time.Hour).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	got, _, fresh, err := idx.Read(ctx, p, 60*24*time.Hour)
+	if err != nil || len(got.Items) != 0 || fresh || got.Sources[p.Source].State != queue.CoveragePartial {
+		t.Fatalf("expired cache remained fresh: %+v fresh=%v err=%v", got, fresh, err)
+	}
+}
+
+func TestBodyOptInNeedsCompleteReindex(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "s", Principal: "u", Scope: "scope", Generation: "g"}
+	old := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "old"}, Title: "oldsummary"}, Body: "oldbody"}
+	if err := idx.Replace(ctx, p, []queue.Item{old}, true); err != nil {
+		t.Fatal(err)
+	}
+	idx.EnableBodyIndex()
+	newItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "new"}, Title: "newsummary"}, Body: "newbody"}
+	if err := idx.Replace(ctx, p, []queue.Item{newItem}, false); err != nil {
+		t.Fatal(err)
+	}
+	refs, coverage, err := idx.Search(ctx, p, "oldbody")
+	if err != nil || len(refs) != 0 || coverage != "indexed-summaries" {
+		t.Fatalf("incomplete body coverage reported: %v %s %v", refs, coverage, err)
+	}
+}
+
 func TestRetentionPurgesSummaryAndFTS(t *testing.T) {
 	ctx := context.Background()
 	idx, err := Open(ctx, t.TempDir())
@@ -228,6 +371,99 @@ func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 	}
 	if got := strings.Count(string(data), "winner"); got != 1 {
 		t.Fatalf("cross-process lock winners=%d output=%q", got, data)
+	}
+}
+
+func TestBusyOpenDoesNotRebuildLiveIndex(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	first, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Partition{Source: "s", Principal: "u", Scope: "r", Generation: "g"}
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "before"}, Title: "before"}}
+	if err := first.Replace(ctx, p, []queue.Item{item}, true); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := first.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	secondOpen := make(chan struct {
+		index *Index
+		err   error
+	}, 1)
+	go func() {
+		index, openErr := Open(ctx, dir)
+		secondOpen <- struct {
+			index *Index
+			err   error
+		}{index, openErr}
+	}()
+	select {
+	case result := <-secondOpen:
+		if result.index != nil {
+			_ = result.index.Close()
+		}
+		if result.err == nil {
+			t.Error("second Open unexpectedly succeeded under write lock")
+		}
+	case <-time.After(11 * time.Second):
+		t.Fatal("second Open did not respect SQLite busy timeout")
+	}
+	committed := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "committed"}, Title: "committed"}}
+	payload, err := json.Marshal(committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := p.key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO entries(partition,ref,payload,observed) VALUES(?,?,?,?)", key, committed.Ref.Key(), payload, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	check, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	got, _, _, err := check.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 2 || got.Items[committed.Ref.Key()].Title != "committed" {
+		t.Fatalf("writer commit disappeared after busy Open: %+v %v", got, err)
+	}
+}
+
+func TestDamagedGenerationTwoSchemaIsRebuilt(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = idx.db.Exec("DROP TABLE entries"); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	idx, err = Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if _, _, _, err := idx.Read(context.Background(), Partition{Source: "s", Principal: "u", Scope: "r", Generation: "g"}, time.Hour); err != nil {
+		t.Fatalf("damaged schema was not rebuilt: %v", err)
 	}
 }
 

@@ -57,7 +57,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	backend, authorityView, err := queueAuthorityForView(ctx, cmd, selected.Authority)
+	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, cmd, selected.Authority, false)
 	if err != nil {
 		return err
 	}
@@ -163,6 +163,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	paths := config.UserProfilePaths(os.Getenv)
 	claims := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
+	var authorityMu sync.Mutex
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -179,9 +180,17 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		if blockedIdentity.Load() {
 			return
 		}
-		keys := make(map[string]string, len(base.Items))
+		authorityMu.Lock()
+		view := authorityView
+		authorityMu.Unlock()
+		keys := make(map[string]string, len(base.Items)+1)
 		for key, item := range base.Items {
 			keys[key] = strings.Join(item.Resources, "\x00")
+		}
+		// Late admission metadata changes action eligibility, so it restarts the overlay.
+		keys["\x00admitted"] = "unknown"
+		if view.AdmittedPrefixes != nil {
+			keys["\x00admitted"] = "known\x00" + strings.Join(*view.AdmittedPrefixes, "\x00")
 		}
 		if len(keys) == len(liveKeys) && liveKeys != nil {
 			same := true
@@ -212,7 +221,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			for _, item := range base.Items {
 				items = append(items, item)
 			}
-			_ = queue.RunClaimOverlay(liveCtx, items, claims, authorityView, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
+			_ = queue.RunClaimOverlay(liveCtx, items, claims, view, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
 				updated := base.Clone()
 				for _, item := range observed {
 					updated.Items[item.Ref.Key()] = item
@@ -235,9 +244,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 		workers.Add(1)
 		workersMu.Unlock()
+		authorityMu.Lock()
+		selectedAuthority := authorityView
+		authorityMu.Unlock()
 		go func() {
 			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			err := publishQueue(ctx, loader, sources, claims, selectedAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
 			if notifyFailure && err != nil && ctx.Err() == nil {
 				program.Send(queueui.RefreshedMsg{Err: err})
 			}
@@ -329,6 +341,20 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
 	start(true)
+	if backend.HTTP != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			response, metadataErr := backend.HTTP.Metadata(ctx)
+			if metadataErr != nil || response.Metadata == nil || ctx.Err() != nil {
+				return
+			}
+			authorityMu.Lock()
+			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			authorityMu.Unlock()
+			start(true)
+		}()
+	}
 	for _, source := range sources {
 		adapter, ok := registry.Get(source.Adapter)
 		watcher, okWatch := adapter.(interface {
@@ -372,6 +398,22 @@ func refreshCompletionCmd(start func() <-chan error) tea.Cmd {
 	return func() tea.Msg {
 		return queueui.RefreshedMsg{Err: <-start()}
 	}
+}
+
+func replaceQueueIndexSnapshot(ctx context.Context, index *queueindex.Index, partition queueindex.Partition, sourceID string, snapshot queue.Snapshot) error {
+	items := make([]queue.Item, 0)
+	for _, item := range snapshot.Items {
+		if item.Ref.SourceID == sourceID {
+			items = append(items, item)
+		}
+	}
+	deleted := make([]queue.Ref, 0)
+	for _, ref := range snapshot.Deleted {
+		if ref.SourceID == sourceID {
+			deleted = append(deleted, ref)
+		}
+	}
+	return index.ReplaceWithDeletes(ctx, partition, items, deleted, snapshot.Sources[sourceID].State == queue.CoverageComplete)
 }
 
 func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
@@ -523,24 +565,11 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		onSnapshot(snapshot)
 	}
 	for _, source := range refreshSources {
-		sourceID := source.ID
-		partition, ok := partitions[sourceID]
+		partition, ok := partitions[source.ID]
 		if !ok {
 			continue
 		}
-		items := make([]queue.Item, 0)
-		for _, item := range latest.Items {
-			if item.Ref.SourceID == sourceID {
-				items = append(items, item)
-			}
-		}
-		deleted := make([]queue.Ref, 0)
-		for _, ref := range latest.Deleted {
-			if ref.SourceID == sourceID {
-				deleted = append(deleted, ref)
-			}
-		}
-		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil && refreshErr == nil {
+		if err := replaceQueueIndexSnapshot(ctx, index, partition, source.ID, latest); err != nil && refreshErr == nil {
 			refreshErr = err
 		}
 	}

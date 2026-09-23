@@ -85,7 +85,7 @@ func TestHomeAndEnvironmentArePrivateAndProcessIsolated(t *testing.T) {
 
 func TestIsolateProcessEnvironmentRemovesHostileConfiguration(t *testing.T) {
 	root := t.TempDir()
-	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER"} {
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
 		t.Setenv(key, filepath.Join(root, key))
 	}
 	restore, err := IsolateProcessEnvironment()
@@ -103,7 +103,7 @@ func TestIsolateProcessEnvironmentRemovesHostileConfiguration(t *testing.T) {
 			t.Fatalf("%s=%q is not a private temporary directory: %v", key, value, statErr)
 		}
 	}
-	for _, key := range []string{"WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER"} {
+	for _, key := range []string{"WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
 		if value, ok := os.LookupEnv(key); ok {
 			t.Fatalf("hostile %s survived isolation: %q", key, value)
 		}
