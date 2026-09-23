@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-12 23:46'
+updated_date: '2026-09-23 05:10'
 tags:
   - agent
   - workflow
@@ -34,21 +34,21 @@ metadata, resources, and receipts stay opaque.
 
 ## Operating loop
 
-1. Resolve ordered sources/selectors and discover the complete dependency graph.
-2. Report complete, blocked, or active-claim outcomes when nothing is eligible.
-3. Select terminal-prerequisite, unblocked work in provider order.
+1. Resolve ordered sources/selectors and discover the required hard-prerequisite graph.
+2. Evaluate each candidate’s fresh, complete closure: a known unsatisfied hard condition blocks even when another edge is unknown; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence remains unknown/capability. Legacy dependencies default to terminal; hierarchy and related links do not block unless a separate explicit hard edge exists.
+3. Select only ready, unblocked start/resume work in provider order; source-wide selection requires complete scoped enumeration.
 4. Acquire a fresh claim over the exact caller-supplied resource set before
    delegation, isolation, or edits.
 5. Keep credentials only in an authority-bound private session handle or
    file/descriptor source; output never includes them.
-6. Revalidate dependencies, ownership, guarantee scope, and provider state
+6. Revalidate hard edges and named-condition evidence, ownership, guarantee scope, and provider state
    before every durable write.
 7. Heartbeat before half the TTL and around bounded long operations.
 8. Perform only caller-authorized provider mutations and retain/re-read their
    durable receipts.
 9. Verify the authoritative provider checkpoint, persist bounded local recovery
    metadata, then release with an audit reason.
-10. Review/archive only at an explicit authorized boundary.
+10. Review/archive only at an explicit authorized boundary. A verified current owner may report Blocked or record progress despite changed readiness, with action-specific permission and a provider receipt; completion requires its declared evidence.
 
 Use stable distinct sessions for concurrent loops:
 
