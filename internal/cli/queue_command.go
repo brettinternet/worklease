@@ -166,6 +166,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	claims := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
 	var authorityMu sync.Mutex
+	var authorityVersion uint64 // bumped when late admission metadata replaces authorityView
+	currentAuthority := func() (queue.ClaimAuthority, uint64) {
+		authorityMu.Lock()
+		defer authorityMu.Unlock()
+		return authorityView, authorityVersion
+	}
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -246,12 +252,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 		workers.Add(1)
 		workersMu.Unlock()
-		authorityMu.Lock()
-		selectedAuthority := authorityView
-		authorityMu.Unlock()
 		go func() {
 			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, claims, selectedAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			err := publishQueue(ctx, loader, sources, claims, currentAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
 			if notifyFailure && err != nil && ctx.Err() == nil {
 				program.Send(queueui.RefreshedMsg{Err: err})
 			}
@@ -261,19 +264,24 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		return done
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
-		return func() tea.Msg {
-			workersMu.Lock()
-			if closing {
-				workersMu.Unlock()
-				return nil
-			}
-			if hydrationCancel != nil {
-				hydrationCancel()
-				hydrationCancel = nil
-			}
+		// Supersede on selection (Update runs synchronously), not when the command
+		// executes: Bubble Tea may run an older selection's command after a newer one.
+		workersMu.Lock()
+		if hydrationCancel != nil {
+			hydrationCancel()
+			hydrationCancel = nil
+		}
+		if closing {
 			workersMu.Unlock()
+			return nil
+		}
+		hydrationCtx, cancel := context.WithCancel(ctx)
+		hydrationCancel = cancel
+		workersMu.Unlock()
+		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
 			if adapter != "backlog-md" && adapter != "github" {
+				cancel()
 				return nil
 			}
 			var source queue.Source
@@ -284,15 +292,15 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				}
 			}
 			if source.ID == "" {
+				cancel()
 				return nil
 			}
 			workersMu.Lock()
-			if closing {
+			if closing || hydrationCtx.Err() != nil {
 				workersMu.Unlock()
+				cancel()
 				return nil
 			}
-			hydrationCtx, cancel := context.WithCancel(ctx)
-			hydrationCancel = cancel
 			workers.Add(1)
 			workersMu.Unlock()
 			go func() {
@@ -378,6 +386,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			}
 			authorityMu.Lock()
 			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			authorityVersion++
 			authorityMu.Unlock()
 			start(true)
 		}()
@@ -510,18 +519,30 @@ func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
 	}
 }
 
-func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, stored *sync.Map) {
+// overlayCurrentClaims recomputes the overlay if admission metadata changed
+// while it ran, so a frame never publishes claims from a superseded authority view.
+func overlayCurrentClaims(ctx context.Context, items []queue.Item, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths) []queue.Item {
+	for {
+		selected, version := authority()
+		observed := queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv)
+		if _, current := authority(); current == version || ctx.Err() != nil {
+			return observed
+		}
+	}
+}
+
+func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, stored *sync.Map) {
 	items := make([]queue.Item, 0, len(cached.Items))
 	for _, item := range cached.Items {
 		items = append(items, item)
 	}
-	for _, item := range queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv) {
+	for _, item := range overlayCurrentClaims(ctx, items, claims, authority, paths) {
 		cached.Items[item.Ref.Key()] = item
 		stored.Store(item.Ref.Key(), item)
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) error {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -564,7 +585,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		refreshSources = append(refreshSources, source)
 	}
 	if len(cached.Items) > 0 {
-		overlayCachedClaims(ctx, &cached, claims, selected, paths, stored)
+		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
 		program.Send(queueui.SnapshotMsg{Snapshot: seeded})
@@ -583,7 +604,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range snapshot.Items {
 			items = append(items, item)
 		}
-		observed := queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv)
+		observed := overlayCurrentClaims(ctx, items, claims, authority, paths)
 		for _, item := range observed {
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)

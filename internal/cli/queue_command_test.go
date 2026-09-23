@@ -34,13 +34,35 @@ func TestCachedSnapshotOverlaysHeldClaimWithoutRefresh(t *testing.T) {
 	cached := queue.Snapshot{Items: map[string]queue.Item{ref.Key(): {Summary: queue.Summary{Ref: ref}}}}
 	sources := map[string]queue.ClaimSource{"s": {Source: queue.Source{ID: "s", Adapter: "generic", Locator: "project"}}}
 	var stored sync.Map
-	overlayCachedClaims(context.Background(), &cached, sources, queue.ClaimAuthority{API: cachedClaimStatus{}, ID: "authority"}, config.ProfilePaths{}, &stored)
+	authority := func() (queue.ClaimAuthority, uint64) {
+		return queue.ClaimAuthority{API: cachedClaimStatus{}, ID: "authority"}, 0
+	}
+	overlayCachedClaims(context.Background(), &cached, sources, authority, config.ProfilePaths{}, &stored)
 	item := cached.Items[ref.Key()]
 	if !item.Claim.Active || item.Claim.AgentID != "worker" {
 		t.Fatalf("cached claim was not observed: %+v", item.Claim)
 	}
 	if applied, ok := stored.Load(ref.Key()); !ok || !applied.(queue.Item).Claim.Active {
 		t.Fatalf("cached claim was not retained for hydration: %v %v", applied, ok)
+	}
+}
+
+func TestOverlayRecomputesWhenAdmissionChangesMidOverlay(t *testing.T) {
+	ref := queue.Ref{SourceID: "s", ItemID: "1"}
+	items := []queue.Item{{Summary: queue.Summary{Ref: ref}}}
+	sources := map[string]queue.ClaimSource{"s": {Source: queue.Source{ID: "s", Adapter: "generic", Locator: "project"}}}
+	calls := 0
+	authority := func() (queue.ClaimAuthority, uint64) {
+		calls++
+		// Metadata lands after the first overlay starts: version 0, then 1.
+		if calls == 1 {
+			return queue.ClaimAuthority{API: cachedClaimStatus{}, ID: "authority"}, 0
+		}
+		return queue.ClaimAuthority{API: cachedClaimStatus{}, ID: "authority"}, 1
+	}
+	observed := overlayCurrentClaims(context.Background(), items, sources, authority, config.ProfilePaths{})
+	if calls != 4 || len(observed) != 1 || !observed[0].Claim.Active {
+		t.Fatalf("overlay was not recomputed under the current authority: calls=%d %+v", calls, observed)
 	}
 }
 
