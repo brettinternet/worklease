@@ -581,6 +581,8 @@ Also test concurrent human edits, required transition fields, workflow schema ch
 
 Each slice becomes one parent backlog task with subtasks. Exit criteria become acceptance criteria.
 
+Backlog milestone `m-1` tracks the slices: S1 `TASK-126`, S2 `TASK-128`, S3 `TASK-129`, S4 `TASK-130`, S5 `TASK-131`, S6 `TASK-132`, S7 `TASK-133`, and S8 `TASK-134`. Subtask numbers follow slice numbering; for example, S2.3 is `TASK-128.3`. Each parent depends on its subtasks, and each slice's first subtasks depend on the previous parent. The S2 Bubble Tea spike is the exception and can start at any time.
+
 Preserve existing claim and authorization guarantees. Planned generic workflow extensions must be explicit, documented, and tested with existing callers; they cannot silently weaken safety. Investigations may narrow supported scope.
 
 | Slice | Depends on | Scope | Exit criteria |
@@ -594,7 +596,7 @@ Preserve existing claim and authorization guarantees. Planned generic workflow e
 | S7 External adapter protocol | S6 | A JSON-RPC 2.0 stdio protocol derived from both built-ins, plus a manifest, authoring guide, sample adapter, compatibility policy, and shared conformance suite. | The built-ins pass the suite. Tests cover crashes, malformed output, cancellation, and secret redaction. Installation requires explicit approval. |
 | S8 Evidence-driven additions | S7 or measured need | Beads, Linear, Jira, or GitLab by demand. A native-authority study per §9. A source service once duplicated traffic, latency, and authorization needs are measured. | Each is its own decision, with evidence recorded here first. |
 
-The upstream Backlog.md bulk-dependency request runs in parallel from S1. When it lands, S3's edge cache becomes a fallback for older versions.
+The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel from S1. When it lands, S3's edge cache becomes a fallback for older versions.
 
 ## 17. Open questions
 

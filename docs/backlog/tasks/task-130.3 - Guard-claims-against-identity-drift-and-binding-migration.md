@@ -1,0 +1,49 @@
+---
+id: TASK-130.3
+title: Guard claims against identity drift and binding migration
+status: To Do
+assignee: []
+created_date: '2026-09-23 04:29'
+updated_date: '2026-09-23 04:30'
+labels:
+  - work-queue
+  - authority
+milestone: m-1
+dependencies:
+  - TASK-129
+references:
+  - internal/resource/resource.go
+documentation:
+  - docs/work-queue-tui-proposal.md
+parent_task_id: TASK-130
+priority: high
+type: feature
+ordinal: 31000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Claims exclude each other only while every contender derives the same resource for the same item (plan section 6). Three events silently split that: a Backlog.md duplicate ID repair renumbers a task (and clones can allocate the same ID independently), a GitHub repository is renamed, or an issue is transferred. D12 requires the portable Backlog.md binding to reject duplicate IDs before enabling claims and again before each acquisition. D24 requires any detected rename, transfer, or ID repair to disable claims until the user explicitly rebinds.
+
+D12 also makes adopting a portable binding an exclusion-domain migration. A worker still using the default `backlog-md` policy does not contend with the portable key, even on the same authority, so old workers must stop, old claims and operations must be resolved, and CLI, skill, and launch callers must switch together. The queue can check its own authority for old-key claims but cannot discover other claim domains, and it must say so.
+
+Rebinding means editing the source in queue.yaml. No alias may create a second, simultaneously writable claim domain. This task delivers the gate as action availability plus a pre-acquisition check; TASK-130.1 calls it.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 For a backlog-md source with a generic binding, claims are disabled with reason `duplicate-item-id` while list output contains repeated IDs. The pre-acquisition check re-reads the list and fails on duplicates
+- [ ] #2 When queue.yaml enables or changes a generic binding, claims for that source stay disabled with reason `binding-migration-required` until the user confirms a migration checklist (stop old workers, resolve old claims and operations, update CLI, skill, and launch callers). Confirmation is refused while the view's authority holds active claims on the source's items under the previous keys, and the checklist states that claims in other authorities cannot be detected
+- [ ] #3 A detected GitHub rename or transfer (from TASK-128.5) disables claims for the affected source or item with reason `identity-changed`, and shows the old and new locators plus the rebind steps
+- [ ] #4 A Backlog.md task whose ID disappears while an active claim exists on its key in the view's authority is reported as an identity migration and is never silently re-keyed
+- [ ] #5 The same migration gate applies to any other change of a source's claim inputs, such as a GitHub repository rebind
+- [ ] #6 The queue never derives a key from a resolved immutable ID in place of the configured locator (D24), as tested against the TASK-126.4 vectors
+- [ ] #7 Tests cover duplicate detection in availability and in the pre-acquisition check, migration refusal with old-key claims present, rename, transfer, renumber, and blocked rebind
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
+- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+<!-- DOD:END -->
