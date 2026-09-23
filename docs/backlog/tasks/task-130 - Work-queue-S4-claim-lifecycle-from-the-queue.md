@@ -4,7 +4,7 @@ title: 'Work queue S4: claim lifecycle from the queue'
 status: To Do
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 16:44'
 labels:
   - work-queue
 milestone: m-1
@@ -13,6 +13,8 @@ dependencies:
   - TASK-130.2
   - TASK-130.3
   - TASK-130.4
+  - TASK-130.5
+  - TASK-130.6
 documentation:
   - docs/work-queue-tui-proposal.md
 priority: high
@@ -36,4 +38,5 @@ This parent is an integration checklist, not an implementation lane. It depends 
 - [ ] #4 The renewal margin holds under the S3 load scenarios
 - [ ] #5 Native occupancy is never rendered as global exclusion
 - [ ] #6 `queue next` explains the dependency reasons behind every candidate and every no-work result
+- [ ] #7 Concurrent agent loops using `queue next --claim` through the CLI or MCP claim distinct items with no wasted selection, as shown by the TASK-130.5 and TASK-130.6 concurrency tests on main
 <!-- AC:END -->

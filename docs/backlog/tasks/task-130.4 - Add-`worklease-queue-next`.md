@@ -4,7 +4,7 @@ title: Add `worklease queue next`
 status: To Do
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 16:44'
 labels:
   - work-queue
 milestone: m-1
@@ -37,9 +37,9 @@ D27 also asks the queue to explain parallel-ready groups. The contract's `select
 - [ ] #3 No-work results distinguish complete-and-empty, all blocked, all claimed, all assigned elsewhere (the default excludes items assigned to others), and incomplete
 - [ ] #4 Order follows contract.md exactly: explicit selector and source order within the ready wave, then only the documented priority, order, and stable WorkRef tie-breakers. Eligible unclaimed in-progress items are resumable when the caller marks them eligible, and no other class ordering is invented
 - [ ] #5 A group option implements `selectWave` and returns a bounded set of ready items with no exact-resource overlap, explaining each exclusion (prerequisite or resource conflict). It reserves nothing and launches nothing, as tested with two ready items sharing a resource versus two independent ones
-- [ ] #6 The command never acquires. Its output says so, and docs/queue.md shows the query, claim, re-query loop an agent should follow
-- [ ] #7 The plan section 17 claim-paging question is answered in the plan before this task completes
-- [ ] #8 Tests cover each no-work reason, incomplete edges, tie-breaking, and cross-source ordering
+- [ ] #6 The plan section 17 claim-paging question is answered in the plan before this task completes
+- [ ] #7 Tests cover each no-work reason, incomplete edges, tie-breaking, and cross-source ordering
+- [ ] #8 Plain `queue next` never acquires; its output says so and points to `--claim` (TASK-130.5, D28) for agent loops. docs/queue.md shows both the `--claim` loop and the manual query, claim, re-query loop
 <!-- AC:END -->
 
 ## Definition of Done

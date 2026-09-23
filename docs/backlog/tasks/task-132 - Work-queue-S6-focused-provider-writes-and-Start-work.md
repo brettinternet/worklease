@@ -4,7 +4,7 @@ title: 'Work queue S6: focused provider writes and Start work'
 status: To Do
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 16:44'
 labels:
   - work-queue
 milestone: m-1
@@ -14,6 +14,7 @@ dependencies:
   - TASK-132.3
   - TASK-132.4
   - TASK-132.5
+  - TASK-132.6
 documentation:
   - docs/work-queue-tui-proposal.md
 priority: high

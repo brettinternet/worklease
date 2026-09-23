@@ -21,6 +21,8 @@ func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testin
 		"before any filesystem edit, mutating command, provider write, commit, merge, or cleanup",
 		"Claim expiry does not prove the prior worker stopped",
 		"require explicit handoff or authoritative abandonment evidence",
+		"Acquire immediately after choosing a candidate, before reading its full intent",
+		"on conflict do not wait: select the next ready candidate",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing loop ownership guardrail %q", want)

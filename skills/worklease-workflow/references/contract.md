@@ -197,6 +197,7 @@ supply normalized fields and operations; they do not reimplement scheduling.
 - An unclaimed in-progress item may be resumed only when the caller says it is eligible *and* its current prerequisites are ready. Selection for start/resume differs from maintenance by the current owner.
 - If no work is selectable, report why: `complete`, `blocked`, `active-claims`, `capability`/unknown evidence, or a structured combination. Never select a later dependent merely to avoid an empty result.
 - Within the ready wave, preserve explicit selector/source order, then apply only the caller's documented priority/order/stable-`WorkRef` tie-breakers.
+- Acquire the selected candidate immediately, before reading its full intent, planning, delegation, or provider writes; provider status such as In Progress is never the lock. A contended acquire is an `active-claims` observation for that candidate: select the next ready candidate from the same snapshot without waiting, and re-enumerate only after the snapshot is exhausted. Hold at most one start/resume claim while selecting, and stop selection on an uncertain acquire.
 
 ### Action-specific eligibility
 
