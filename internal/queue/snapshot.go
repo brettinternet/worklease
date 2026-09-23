@@ -189,8 +189,10 @@ type Loader struct {
 	Fields         []string
 	Budget         int
 	HydrationLimit int
-	mu             sync.Mutex
-	generation     map[string]uint64
+	// DeferDetails lets interactive views hydrate only their visible rows.
+	DeferDetails bool
+	mu           sync.Mutex
+	generation   map[string]uint64
 }
 
 func NewLoader(registry *Registry) *Loader {
@@ -201,6 +203,39 @@ func (l *Loader) begin(sourceID string) uint64 {
 	defer l.mu.Unlock()
 	l.generation[sourceID]++
 	return l.generation[sourceID]
+}
+
+// HydrateVisible batches the explicitly visible GitHub rows by node ID.
+// Off-screen summaries remain unhydrated until the view requests them.
+func (l *Loader) HydrateVisible(ctx context.Context, source Source, refs []Ref) <-chan Snapshot {
+	out := make(chan Snapshot, 8)
+	a, ok := l.Registry.Get(source.Adapter)
+	if !ok || !isBatchHydrator(a) {
+		close(out)
+		return out
+	}
+	l.mu.Lock()
+	generation := l.generation[source.ID]
+	l.mu.Unlock()
+	go func() {
+		defer close(out)
+		for start := 0; start < len(refs) && ctx.Err() == nil; start += 100 {
+			end := min(start+100, len(refs))
+			jobs := make([]hydrationJob, 0, end-start)
+			for _, ref := range refs[start:end] {
+				if ref.SourceID != source.ID {
+					continue
+				}
+				if item, found := l.Store.Item(ref); found && (item.ReadOutcome == "summary-only" || !item.Fresh) {
+					jobs = append(jobs, hydrationJob{ref: ref, item: item})
+				}
+			}
+			if len(jobs) > 0 && l.current(source.ID, generation) {
+				l.hydrateBatch(ctx, a, source, generation, jobs, out)
+			}
+		}
+	}()
+	return out
 }
 
 // HydrateEdges fills a Backlog source after summary publication. The selected
@@ -593,7 +628,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		// Expensive per-item providers hydrate only explicitly requested details.
 		_, onDemand := a.(interface{ OnDemandDetails() })
 		batchHydration := isBatchHydrator(a)
-		if onDemand && !batchHydration {
+		if onDemand && (!batchHydration || l.DeferDetails) {
 			refs = nil
 		}
 		// A slow item consumes one bounded slot, not the page or other slots.

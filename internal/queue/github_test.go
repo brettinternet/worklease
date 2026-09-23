@@ -351,6 +351,50 @@ func TestLoaderNewest304StillRefreshesOlderIssue(t *testing.T) {
 	}
 }
 
+func TestLoaderDefersGitHubDetailsAndBatchesVisibleRows(t *testing.T) {
+	var batchCalls atomic.Int32
+	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, vars := githubRequest(t, r)
+		switch {
+		case strings.Contains(query, "viewer"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(query, "nodes(ids:"):
+			batchCalls.Add(1)
+			if string(vars["ids"]) != `["N1","N2"]` {
+				t.Errorf("unexpected visible batch: %s", vars["ids"])
+			}
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"title":"one","body":"body one","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"two","body":"body two","repository":{"nameWithOwner":"org/repo"}}]}}`)
+		default:
+			if strings.Contains(query, "comments(") {
+				t.Error("comments were loaded before requested")
+			}
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":3,"nodes":[{"id":"N1","number":1,"title":"one","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"title":"two","repository":{"nameWithOwner":"org/repo"}},{"id":"N3","number":3,"title":"offscreen","repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		}
+	})
+	source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	registry.adapters["github"] = a
+	loader := NewLoader(registry)
+	loader.DeferDetails = true
+	drainRefresh(loader.Refresh(context.Background(), []Source{source}))
+	if batchCalls.Load() != 0 {
+		t.Fatal("offscreen details loaded during summary refresh")
+	}
+	refs := []Ref{{source.ID, "1"}, {source.ID, "2"}}
+	for range loader.HydrateVisible(context.Background(), source, refs) {
+	}
+	if batchCalls.Load() != 1 {
+		t.Fatalf("visible rows were not batched: %d calls", batchCalls.Load())
+	}
+	items := loader.Store.Current().Items
+	if items[refs[0].Key()].Body != "body one" || items[refs[1].Key()].Body != "body two" || items[Ref{source.ID, "3"}.Key()].Body != "" {
+		t.Fatalf("visible-only hydration: %+v", items)
+	}
+}
+
 func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)

@@ -91,6 +91,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		shownSources = append(shownSources, resolved)
 	}
 	loader := queue.NewLoader(registry)
+	loader.DeferDetails = true
 	cacheDir, err := queueindex.CacheDir(os.Getenv, "")
 	if err != nil {
 		return err
@@ -161,7 +162,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
 		return func() tea.Msg {
-			if sourceByID[item.Ref.SourceID].Adapter != "backlog-md" {
+			adapter := sourceByID[item.Ref.SourceID].Adapter
+			if adapter != "backlog-md" && adapter != "github" {
 				return nil
 			}
 			var source queue.Source
@@ -183,7 +185,13 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			workersMu.Unlock()
 			go func() {
 				defer workers.Done()
-				for snapshot := range loader.HydrateEdges(ctx, source, []queue.Ref{item.Ref}, nil, false) {
+				var updates <-chan queue.Snapshot
+				if adapter == "github" {
+					updates = loader.HydrateVisible(ctx, source, []queue.Ref{item.Ref})
+				} else {
+					updates = loader.HydrateEdges(ctx, source, []queue.Ref{item.Ref}, nil, false)
+				}
+				for snapshot := range updates {
 					applyStoredClaims(&snapshot, &claimOverlay)
 					program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 				}
@@ -415,10 +423,11 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			program.Send(queueui.RefreshedMsg{Err: err})
 		}
 	}
-	// First paint and index replacement have already completed. Slow per-task
-	// Backlog views now hydrate visible rows, then the rest, without blocking UI.
+	// First paint and index replacement have already completed. Hydrate only
+	// visible GitHub rows in batches; Backlog views run visible-first, then
+	// background, without blocking the initial UI.
 	for _, source := range refreshSources {
-		if source.Adapter != "backlog-md" || ctx.Err() != nil {
+		if ctx.Err() != nil {
 			continue
 		}
 		ordered := queue.EvaluateView(loader.Store.Current().Items, queue.View{SourceOrder: []string{source.ID}})
@@ -426,7 +435,16 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range ordered[:min(35, len(ordered))] {
 			visible = append(visible, item.Ref)
 		}
-		for snapshot := range loader.HydrateEdges(ctx, source, nil, visible, true) {
+		var updates <-chan queue.Snapshot
+		switch source.Adapter {
+		case "github":
+			updates = loader.HydrateVisible(ctx, source, visible)
+		case "backlog-md":
+			updates = loader.HydrateEdges(ctx, source, nil, visible, true)
+		default:
+			continue
+		}
+		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
 			program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
 		}
