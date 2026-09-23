@@ -4,7 +4,7 @@ title: Claim for me from the queue with a private session
 status: To Do
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 22:57'
 labels:
   - work-queue
   - authority
@@ -45,6 +45,7 @@ Remote authority metadata exposes admitted prefixes but not maxTTL or maxHold (i
 - [ ] #6 Contention (already claimed, lost race) shows the holder and expiry and never retries in a tight loop. An uncertain acquire is surfaced as uncertain and recovered through the existing pending-request rules
 - [ ] #7 Claim never changes provider assignment or state, as tested against both adapters
 - [ ] #8 An end-to-end test acquires from the queue and then fails `worklease acquire` for the same item, and the reverse, using resources from the TASK-126.4 vectors, for both the local and remote authorities
+- [ ] #9 With an active queue-owned handle, a remote authority restore-ID or authority-ID change stops claim-dependent actions; the queue follows profile identity and recovery procedures before resubscribing, never silently repins IDs, and never treats snapshot rebuilding as handle recovery (D20, staged from TASK-129.5)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -52,3 +53,9 @@ Remote authority metadata exposes admitted prefixes but not maxTTL or maxHold (i
 - [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
 - [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User approved staging TASK-129.5 active queue-owned handle restore regression here, where the queue-owned handle is first implemented. Test the fail-closed gate and recovery with the handle still active; no S3/S4 dependency cycle.
+<!-- SECTION:NOTES:END -->
