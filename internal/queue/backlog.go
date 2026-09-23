@@ -96,7 +96,7 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	// Ignore inherited directory overrides: only the configured checkout is a source.
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if key != "BACKLOG_CWD" && key != "GIT_DIR" && key != "GIT_WORK_TREE" && key != "GIT_COMMON_DIR" {
+		if key != "BACKLOG_CWD" && !strings.HasPrefix(key, "GIT_") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}

@@ -177,6 +177,41 @@ func diag(err error, code string) bool {
 	var d BacklogDiagnostic
 	return errors.As(err, &d) && d.Code == code
 }
+func TestBacklogGitFreshness(t *testing.T) {
+	root, binary := fakeBacklog(t)
+	for _, args := range [][]string{{"init", "-b", "main"}, {"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "seed"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "GIT_") {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	a := NewBacklogAdapter("Done")
+	a.Binary = binary
+	source, err := a.Resolve(context.Background(), map[string]string{"checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := a.Diagnostics(source)
+	if initial.Branch != "main" || len(initial.Head) != 40 || initial.Dirty {
+		t.Fatalf("initial git freshness: %+v", initial)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new-file"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Diagnostics(source).Dirty {
+		t.Fatal("list did not refresh dirty state")
+	}
+}
+
 func TestBacklogReadConcurrency(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	a := NewBacklogAdapter()
