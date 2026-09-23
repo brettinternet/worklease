@@ -67,8 +67,24 @@ func (s *Store) SeedSnapshot(seed Snapshot) {
 	for key, ref := range seed.Deleted {
 		s.current.Deleted[key] = ref
 	}
+	s.current.Items = Recompute(s.current.Items, aggregateCoverage(s.current.Sources))
 	s.next++
 	s.current.Revision = s.next
+	for _, ch := range s.subs {
+		snap := s.current.Clone()
+		select {
+		case ch <- snap:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- snap:
+			default:
+			}
+		}
+	}
 }
 func (s *Store) Subscribe(buffer int) (<-chan Snapshot, func()) {
 	if buffer < 1 {
@@ -277,6 +293,15 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 		}
 		l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			if cursor == "" {
+				for key, item := range s.Items {
+					if item.Ref.SourceID == source.ID {
+						item.Fresh = false
+						item.ReadOutcome = "stale"
+						s.Items[key] = item
+					}
+				}
+			}
 			for key, ref := range s.Deleted {
 				if ref.SourceID == source.ID {
 					delete(s.Deleted, key)
@@ -401,6 +426,7 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	item.Coverage = summary.Coverage
 	item.ReadOutcome = "found"
 	depCursor := ""
+	seenDependencyCursors := map[string]bool{}
 	allComplete := true
 	for {
 		if ctx.Err() != nil {
@@ -412,8 +438,19 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			allComplete = false
 			break
 		}
-		if deps.Completeness != CoverageComplete && deps.NextCursor == "" {
+		if deps.Completeness != CoverageComplete {
 			allComplete = false
+		}
+		if observationMismatch(item.Observation, deps.Observation) {
+			l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+				for key, existing := range s.Items {
+					if existing.Ref.SourceID == source.ID {
+						delete(s.Items, key)
+					}
+				}
+				s.Sources[source.ID] = Coverage{State: CoverageUnknown, Reason: "principal-changed-during-hydration", TotalAccuracy: TotalUnknown}
+			}, out)
+			return
 		}
 		if len(deps.Edges) > 0 || item.Relationships != nil {
 			if item.Relationships == nil {
@@ -428,6 +465,11 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		if depCursor == "" {
 			break
 		}
+		if seenDependencyCursors[depCursor] {
+			allComplete = false
+			break
+		}
+		seenDependencyCursors[depCursor] = true
 	}
 	item.DependenciesKnown = allComplete
 	item.Closure = CoverageUnknown
@@ -437,6 +479,11 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	item.Fresh = item.Fresh && summary.Fresh
 	l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[ref.Key()] = *item }, out)
 }
+func observationMismatch(a, b Observation) bool {
+	return a.Principal != "" && b.Principal != "" && a.Principal != b.Principal ||
+		a.ConfigurationGeneration != "" && b.ConfigurationGeneration != "" && a.ConfigurationGeneration != b.ConfigurationGeneration
+}
+
 func aggregateCoverage(sources map[string]Coverage) CoverageState {
 	if len(sources) == 0 {
 		return CoverageUnknown

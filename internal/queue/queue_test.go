@@ -41,6 +41,7 @@ type fixture struct {
 			Eligible  bool     `json:"eligible"`
 			Reasons   []string `json:"reasons"`
 			Outcome   string   `json:"outcome"`
+			Requires  []string `json:"requires"`
 		} `json:"expected"`
 	} `json:"cases"`
 }
@@ -97,6 +98,9 @@ func TestDependencyEligibilityFixture(t *testing.T) {
 			}
 			if tc.Expected.Outcome != "" && elig.Outcome != tc.Expected.Outcome {
 				t.Errorf("outcome = %q, want %q", elig.Outcome, tc.Expected.Outcome)
+			}
+			if !reflect.DeepEqual(elig.Requires, tc.Expected.Requires) {
+				t.Errorf("requires = %v, want %v", elig.Requires, tc.Expected.Requires)
 			}
 			for _, r := range tc.Expected.Reasons {
 				if !containsString(item.Readiness.Reasons, r) && !containsString(elig.Reasons, r) {
