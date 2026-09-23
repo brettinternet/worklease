@@ -13,6 +13,7 @@ func testQueue(limit int) *quotaQueue {
 }
 func TestSchedulePriorityCancellationAndOverload(t *testing.T) {
 	q := testQueue(1)
+	q.maxPending = 1
 	hold := make(chan struct{})
 	started := make(chan struct{})
 	go func() {
@@ -45,7 +46,7 @@ func TestSchedulePriorityCancellationAndOverload(t *testing.T) {
 		q.mu.Lock()
 		n := len(q.pending)
 		q.mu.Unlock()
-		if n == 2 {
+		if n == 1 {
 			break
 		}
 		time.Sleep(time.Millisecond)
@@ -54,8 +55,10 @@ func TestSchedulePriorityCancellationAndOverload(t *testing.T) {
 	if d, ok := err.(ScheduleDiagnostic); !ok || d.Code != "overloaded" {
 		t.Fatalf("overload: %v", err)
 	}
+	if d, ok := (<-bgDone).(ScheduleDiagnostic); !ok || d.Code != "superseded" {
+		t.Fatalf("action did not evict background read: %v", d)
+	}
 	cancel()
-	<-bgDone
 	close(hold)
 	<-actionDone
 	if got := <-order; got != "action" {
