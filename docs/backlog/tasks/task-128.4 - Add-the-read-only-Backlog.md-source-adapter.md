@@ -1,10 +1,11 @@
 ---
 id: TASK-128.4
 title: Add the read-only Backlog.md source adapter
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-23 17:21'
 labels:
   - work-queue
   - backlog-md
@@ -33,19 +34,41 @@ The adapter also reports source freshness (branch, HEAD, dirty state), duplicate
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The adapter resolves the configured checkout and fails with structured diagnostics when the directory is not a Backlog.md project, the `backlog` CLI is missing, or its version is outside the recorded supported range (tested against 1.52.0)
-- [ ] #2 Summaries come from a single `task list --json` call, and an unexpected `kind` or `schemaVersion` is rejected with a diagnostic. The adapter never parses plain-text output, MCP responses, or task Markdown files
-- [ ] #3 Details and dependencies come from `task view --json` only for requested items, with at most 4 concurrent processes, a per-call timeout, cancellation, and a bounded output size. A dependency closure counts as complete only when the provider reports no missing dependencies
-- [ ] #4 Capabilities match the Backlog.md column of the plan section 7 table. Effects are read with `backlog config get`: remote_operations and check_active_branches mean network effects, and auto_commit means commit effects
-- [ ] #5 When remote_operations or check_active_branches is enabled and the source lacks `allowGitNetwork: true`, the adapter performs no reads and reports why
-- [ ] #6 Backlog.md `dependencies` map to hard prerequisites with the caller-declared terminal condition, `parentTaskId` maps to hierarchy only, and `isReady` is exposed only as provider-reported readiness
-- [ ] #7 Source diagnostics include branch, HEAD, dirty state, and any task ID that appears more than once in list output
-- [ ] #8 Every subprocess runs with an explicit cwd and argv and no shell, and provider stderr is sanitized before display
-- [ ] #9 Unit tests use golden JSON fixtures. An integration test creates a scratch project in a temporary directory with the real CLI, or skips with a clear message when the CLI is absent
+- [x] #1 The adapter resolves the configured checkout and fails with structured diagnostics when the directory is not a Backlog.md project, the `backlog` CLI is missing, or its version is outside the recorded supported range (tested against 1.52.0)
+- [x] #2 Summaries come from a single `task list --json` call, and an unexpected `kind` or `schemaVersion` is rejected with a diagnostic. The adapter never parses plain-text output, MCP responses, or task Markdown files
+- [x] #3 Details and dependencies come from `task view --json` only for requested items, with at most 4 concurrent processes, a per-call timeout, cancellation, and a bounded output size. A dependency closure counts as complete only when the provider reports no missing dependencies
+- [x] #4 Capabilities match the Backlog.md column of the plan section 7 table. Effects are read with `backlog config get`: remote_operations and check_active_branches mean network effects, and auto_commit means commit effects
+- [x] #5 When remote_operations or check_active_branches is enabled and the source lacks `allowGitNetwork: true`, the adapter performs no reads and reports why
+- [x] #6 Backlog.md `dependencies` map to hard prerequisites with the caller-declared terminal condition, `parentTaskId` maps to hierarchy only, and `isReady` is exposed only as provider-reported readiness
+- [x] #7 Source diagnostics include branch, HEAD, dirty state, and any task ID that appears more than once in list output
+- [x] #8 Every subprocess runs with an explicit cwd and argv and no shell, and provider stderr is sanitized before display
+- [x] #9 Unit tests use golden JSON fixtures. An integration test creates a scratch project in a temporary directory with the real CLI, or skips with a clear message when the CLI is absent
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
-- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+- [x] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
+- [x] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a read-only Backlog.md adapter with bounded CLI execution, configuration/effect gates, structured diagnostics, and source freshness.
+2. Map versioned list/view JSON into queue summaries and requested dependency details; register the adapter.
+3. Add golden-fixture and scratch-CLI tests; run focused and repository gates, review, commit and integrate.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented read-only adapter with versioned JSON list/view, bounded subprocesses, project effects consent, duplicate detection, dependency mapping and scratch CLI tests. Focused tests pass; running full checks.
+
+Verified: golden JSON unit tests cover schema, effect consent, mapping, duplicate IDs, timeout/cancellation/output cap, sanitized stderr and Git freshness; scratch real-CLI init/list/view integration passes. mise run lint, format-check, test, typecheck, hooks pass. One item-scoped review found and fixed on-demand hydration and hook Git environment leakage. No D1-D27 or plan contradiction. Commits 9259fbc and 744e295 fast-forward merged to main. Recovery: an initial scratch Git test inherited hook Git variables and briefly altered the owned worktree branch; restored its original base and main Git configuration, then reran all checks with sanitized environment.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added read-only Backlog.md queue adapter with bounded JSON reads, effect consent and dependency diagnostics; verified by golden and scratch CLI tests plus all repository gates. Merged 9259fbc and 744e295 to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
