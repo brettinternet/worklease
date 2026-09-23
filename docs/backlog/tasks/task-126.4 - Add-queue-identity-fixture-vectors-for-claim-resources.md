@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 11:20'
+updated_date: '2026-09-23 20:59'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -63,6 +64,8 @@ This task adds fixtures and tests only. It must not change KeyPolicyVersion, the
 Scope narrowed by user to TASK-126.4 only. Prior stage exposed generic key JSON digest redaction and root locator "."; retain current key semantics, correct fixtures, document both observations, and include the specifically approved output fix. Commit only TASK-126.4 deliverables; preserve unrelated task and proposal changes.
 
 Verified 10 positive and 5 invalid shared vectors: resource policy and CLI JSON parity; linked-worktree equality, root/nested distinction, generic/default separation, GitHub normalization/URL distinction, Markdown source-wide identity, and default/expanded remote admission. Existing static-policy golden tests pass; internal/resource/resource.go is unchanged and KeyPolicyVersion remains 1. Redaction regressions verify locally computed generic/linear hashes survive while caller resource/source/item strings and secret fields remain redacted. Focused tests passed, followed by mise run lint, format-check, test, typecheck, hooks-install, and staged hooks. One scoped inspection found no remaining defects; no optional polish or additional review pass. Plan section 6 records the root locator and approved output-only fix. Only this task, its fixture/tests/output fix, and its section 6 paragraph are included in the delivery commit; unrelated work remains uncommitted.
+
+Review: queue default backlog-md keys used the checkout root, diverging from the CLI's backlog-directory source; ClaimSources now resolves the backlog directory (tested).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

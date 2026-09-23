@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brettinternet'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 05:13'
+updated_date: '2026-09-23 20:59'
 labels:
   - work-queue
   - github
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -77,6 +78,8 @@ Live probe evidence (2026-09-23; gh version 2.101.0; github.com repository brett
 Cleanup evidence: all three synthetic issues are closed with no remaining label or dependency edge; synthetic label lookup returned 404 after deletion. Existing issues were read only for repository-level metadata/list metadata; no existing issue content was inspected. Initial dependency add using an issue number instead of the documented database ID returned 404 and had no effect; retry with database ID succeeded. No repository rename, transfer, access change, push, or PR occurred.
 
 Validation: `mise run doc-test` passed (`worklease documentation examples passed`). `git diff --check -- docs/work-queue-tui-proposal.md` passed. No relative links were added or changed.
+
+Review: proposal §3 no longer claims ETags miss dependency removals; that behavior is recorded as unmeasured.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

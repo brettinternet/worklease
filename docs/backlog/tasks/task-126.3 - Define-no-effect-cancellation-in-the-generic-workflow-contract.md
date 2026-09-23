@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@executor'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:49'
+updated_date: '2026-09-23 20:59'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -55,6 +56,8 @@ Cancellation must not weaken checkpoint-before-release for real work, and it mus
 
 <!-- SECTION:NOTES:BEGIN -->
 Added no-effect cancellation as an explicit non-completion release in contract.md, with a distinct cancelled outcome and strict prohibition when any guarded operation/provider write started or outcome is unknown. Aligned SKILL.md and doc-1 using backlog doc update; claim-model.md is unchanged. §8 already states the same cancellation direction, so no proposal edit was required. `mise run doc-test`, `backlog doc view doc-1 --plain`, and `git diff --check` passed.
+
+Review: source-workflow.md now permits the contract's no-effect cancellation instead of forbidding all release on unsupported pre-dispatch writes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

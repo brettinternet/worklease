@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@executor'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:47'
+updated_date: '2026-09-23 20:59'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -61,6 +62,8 @@ Keep the contract provider-neutral. Provider-specific facts belong in the provid
 
 <!-- SECTION:NOTES:BEGIN -->
 Extended only the existing source-provider contract, authoring checklist, and two built-in provider references. Added capability scopes, common response/freshness context, bounded reads/pagination/coverage, typed dependency evidence, operation groups, structured diagnostics, and initial provider declarations. `mise run doc-test` and `git diff --check` passed; reviewed that generic contract.md remains unchanged and skill links pass doc-test.
+
+Review: fixed provider key recipes (Backlog.md backlog-directory source and D12 generic binding; GitHub Enterprise host/owner/repo).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
