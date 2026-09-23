@@ -442,7 +442,8 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			allComplete = false
 		}
 		if observationMismatch(item.Observation, deps.Observation) {
-			l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			mismatchGeneration := l.begin(source.ID)
+			l.publish(ctx, source.ID, mismatchGeneration, func(s *Snapshot) {
 				for key, existing := range s.Items {
 					if existing.Ref.SourceID == source.ID {
 						delete(s.Items, key)
@@ -450,6 +451,8 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 				}
 				s.Sources[source.ID] = Coverage{State: CoverageUnknown, Reason: "principal-changed-during-hydration", TotalAccuracy: TotalUnknown}
 			}, out)
+			// Stop later pages and sibling hydration workers from republishing
+			// observations from the invalidated principal generation.
 			return
 		}
 		if len(deps.Edges) > 0 || item.Relationships != nil {

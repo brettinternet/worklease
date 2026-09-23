@@ -50,6 +50,20 @@ func (a *reviewAdapter) ReadDependencies(_ context.Context, _ Source, _ Ref, cur
 	return a.deps[index], nil
 }
 
+type stalledReviewAdapter struct {
+	*reviewAdapter
+	secondPageStarted chan struct{}
+}
+
+func (a *stalledReviewAdapter) List(ctx context.Context, source Source, query Query, cursor string) (SummaryPage, error) {
+	if cursor != "" {
+		close(a.secondPageStarted)
+		<-ctx.Done()
+		return SummaryPage{}, ctx.Err()
+	}
+	return a.reviewAdapter.List(ctx, source, query, cursor)
+}
+
 func runReviewAdapter(t *testing.T, adapter Adapter, hydrationLimit int) Snapshot {
 	t.Helper()
 	registry := NewRegistry()
@@ -141,9 +155,14 @@ func TestIncompletePaginatedRefreshStalesUnvisitedRows(t *testing.T) {
 	source := Source{ID: "s", Adapter: "fake"}
 	for range loader.Refresh(context.Background(), []Source{source}) {
 	}
-	fake.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: a, Fresh: true}}, Coverage: Coverage{State: CoveragePartial}}}
-	fake.outcomes[a.Key()] = []ItemOutcome{itemOutcome(a)}
-	for range loader.Refresh(context.Background(), []Source{source}) {
+
+	stalled := &stalledReviewAdapter{reviewAdapter: &reviewAdapter{pages: []SummaryPage{{Items: []Summary{{Ref: a, Fresh: true}}, NextCursor: "next", Coverage: Coverage{State: CoveragePartial}}}}, secondPageStarted: make(chan struct{})}
+	_ = registry.Register("review", stalled)
+	ctx, cancel := context.WithCancel(context.Background())
+	updates := loader.Refresh(ctx, []Source{{ID: "s", Adapter: "review"}})
+	<-stalled.secondPageStarted
+	cancel()
+	for range updates {
 	}
 	retained, ok := loader.Store.Current().Items[b.Key()]
 	if !ok || retained.Fresh || retained.Readiness.Freshness != Stale {
