@@ -114,7 +114,12 @@ func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string
 	if err != nil {
 		return nil, queue.ClaimAuthority{}, err
 	}
-	overlay := queue.ClaimAuthority{API: backend.API, ID: backend.AuthorityID(), Profile: backend.ProfileName, Remote: backend.Remote}
+	overlay := queue.ClaimAuthority{API: backend.API, LiveAPI: backend.API, ID: backend.AuthorityID(), Profile: backend.ProfileName, Remote: backend.Remote}
+	if backend.HTTP != nil {
+		overlay.Now = backend.HTTP.Clock().UpperBound
+	} else if backend.Local != nil {
+		overlay.Now = func() (time.Time, error) { return backend.Local.AuthorityNow(), nil }
+	}
 	if backend.HTTP != nil {
 		// An outage or an old server with no admission metadata leaves claims
 		// unknown; it never authorizes a fallback to local.

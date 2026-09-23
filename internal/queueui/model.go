@@ -15,6 +15,11 @@ import (
 
 // SnapshotMsg publishes immutable source state without changing the focused pane.
 type SnapshotMsg struct{ Snapshot queue.Snapshot }
+type ClaimOverlayMsg struct {
+	Snapshot   queue.Snapshot
+	Rebuilding bool
+	Err        error
+}
 type HistoryMsg struct {
 	Identity string
 	Page     ledger.HistoryPage
@@ -58,6 +63,8 @@ type Model struct {
 	CommentsIdentity               string
 	CommentsLoading                bool
 	CommentsError                  string
+	ClaimFreshness                 string
+	RebuildingClaims               bool
 	Refresh                        func() tea.Cmd
 	HydrateSelected                func(queue.Item) tea.Cmd
 	LoadHistory                    func(queue.Item, string) tea.Cmd
@@ -226,7 +233,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width, m.Height = v.Width, v.Height
 	case SnapshotMsg:
 		previous := m.Selected
-		m.Snapshot = v.Snapshot.Clone()
+		if v.Snapshot.Revision < m.Snapshot.Revision {
+			break
+		}
+		updated := v.Snapshot.Clone()
+		for key, item := range updated.Items {
+			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
+				if !prior.Claim.ObservedAt.Before(item.Claim.ObservedAt) {
+					item.Claim, item.Resources, item.KeyInputs = prior.Claim, prior.Resources, prior.KeyInputs
+				}
+				updated.Items[key] = item
+			}
+		}
+		m.Snapshot = updated
 		m.anchor(m.rows())
 		if m.Detail && m.Tab == 2 && m.Selected != previous && m.LoadComments != nil {
 			if item, ok := m.selected(m.rows()); ok {
@@ -253,6 +272,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.CommentsIdentity = v.Identity
 			}
 		}
+	case ClaimOverlayMsg:
+		for key, item := range v.Snapshot.Items {
+			if current, ok := m.Snapshot.Items[key]; ok && !item.Claim.ObservedAt.Before(current.Claim.ObservedAt) {
+				current.Claim, current.Resources, current.KeyInputs = item.Claim, item.Resources, item.KeyInputs
+				m.Snapshot.Items[key] = current
+			}
+		}
+		m.RebuildingClaims = v.Rebuilding
+		switch {
+		case v.Rebuilding:
+			m.ClaimFreshness = "rebuilding"
+		case v.Err != nil:
+			m.ClaimFreshness = "stale"
+			m.Notice = "Claim overlay unavailable: " + v.Err.Error()
+		default:
+			m.ClaimFreshness = "fresh"
+		}
+		m.anchor(m.rows())
 	case HistoryMsg:
 		if v.Identity == m.Selected {
 			m.HistoryLoading = false
@@ -539,7 +576,7 @@ func (m Model) View() string {
 		}
 	}
 	var footer strings.Builder
-	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, clip(m.Notice, 60))
+	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · provider %s · claims %s · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness), clip(m.Notice, 60))
 	if m.Filtering {
 		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
 	}
@@ -568,6 +605,23 @@ func clipLines(s string, width int) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+func freshnessLabel(value string) string {
+	if value == "" {
+		return "loading"
+	}
+	return value
+}
+func sourceFreshness(snapshot queue.Snapshot) string {
+	if len(snapshot.Sources) == 0 {
+		return "unknown"
+	}
+	for _, coverage := range snapshot.Sources {
+		if coverage.State != queue.CoverageComplete {
+			return "stale"
+		}
+	}
+	return "fresh"
 }
 func healthy(s map[string]queue.Coverage) int {
 	n := 0

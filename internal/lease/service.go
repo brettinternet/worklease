@@ -61,6 +61,9 @@ type Service struct {
 	remote   *RemotePolicy
 }
 
+// AuthorityNow reads the same clock used by local claim status and expiry.
+func (s *Service) AuthorityNow() time.Time { return s.clock.Now().UTC() }
+
 func New(st *store.Store, clock Clock, ids IDGenerator, defaults Defaults) *Service {
 	if clock == nil {
 		clock = realClock{started: time.Now()}

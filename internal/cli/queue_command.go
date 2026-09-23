@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -146,7 +147,63 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
+	var liveMu sync.Mutex
+	var liveCancel context.CancelFunc
+	var liveDone chan struct{}
+	var liveKeys map[string]string
+	var blockedIdentity atomic.Bool
 	closing := false
+	restartOverlay := func(base queue.Snapshot) {
+		liveMu.Lock()
+		defer liveMu.Unlock()
+		if blockedIdentity.Load() {
+			return
+		}
+		keys := make(map[string]string, len(base.Items))
+		for key, item := range base.Items {
+			keys[key] = strings.Join(item.Resources, "\x00")
+		}
+		if len(keys) == len(liveKeys) && liveKeys != nil {
+			same := true
+			for key, resources := range keys {
+				if liveKeys[key] != resources {
+					same = false
+					break
+				}
+			}
+			if same {
+				return
+			}
+		}
+		liveKeys = keys
+		if liveCancel != nil {
+			liveCancel()
+			<-liveDone
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		liveCtx, stop := context.WithCancel(ctx)
+		liveCancel = stop
+		liveDone = make(chan struct{})
+		go func(done chan struct{}) {
+			defer close(done)
+			items := make([]queue.Item, 0, len(base.Items))
+			for _, item := range base.Items {
+				items = append(items, item)
+			}
+			_ = queue.RunClaimOverlay(liveCtx, items, claims, authorityView, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
+				updated := base.Clone()
+				for _, item := range observed {
+					updated.Items[item.Ref.Key()] = item
+					if err != nil && item.Claim.Reason == "authority-mismatch" {
+						blockedIdentity.Store(true)
+					}
+				}
+				program.Send(queueui.ClaimOverlayMsg{Snapshot: updated, Rebuilding: rebuilding, Err: err})
+			})
+		}(liveDone)
+	}
 	start := func() {
 		workersMu.Lock()
 		if closing {
@@ -157,7 +214,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay)
+			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
 		}()
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
@@ -281,6 +338,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	cancel()
 	workersMu.Unlock()
 	workers.Wait()
+	liveMu.Lock()
+	if liveCancel != nil {
+		liveCancel()
+		<-liveDone
+	}
+	liveMu.Unlock()
 	return err
 }
 
@@ -352,7 +415,7 @@ func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map) {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -398,7 +461,9 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 	}
 	if len(cached.Items) > 0 {
 		loader.Store.SeedSnapshot(cached)
-		program.Send(queueui.SnapshotMsg{Snapshot: loader.Store.Current()})
+		seeded := loader.Store.Current()
+		program.Send(queueui.SnapshotMsg{Snapshot: seeded})
+		onSnapshot(seeded)
 	}
 	defer func() {
 		for _, release := range releases {
@@ -418,6 +483,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			stored.Store(item.Ref.Key(), item)
 		}
 		program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
+		onSnapshot(snapshot)
 	}
 	for _, source := range refreshSources {
 		sourceID := source.ID
@@ -465,6 +531,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
 			program.Send(queueui.SnapshotMsg{Snapshot: snapshot})
+			onSnapshot(snapshot)
 		}
 	}
 }

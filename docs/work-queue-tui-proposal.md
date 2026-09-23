@@ -554,7 +554,7 @@ Treat webhooks, when a later service owns them, as invalidation hints unless the
 5. Schedule a re-status at each displayed claim's authority-time `expiresAt`, because expiry appends no event.
 6. On a history gap, discard the projection and restart from step 1. On restore or authority change, also stop claim-dependent actions and follow the existing profile identity and recovery procedures before resubscribing. Never silently repin an authority/restore ID or treat snapshot rebuilding as recovery for active handles.
 
-Never use `List` or filtered watches for overlays, and never widen the 32-resource filter limit to attach a whole queue. Provider sync and claim freshness stay independent. Always re-verify before acting; a local countdown is display only.
+Never use `List` or filtered watches for overlays, and never widen the 32-resource filter limit to attach a whole queue. Provider sync and claim freshness stay independent. Always re-verify before acting; a local countdown is display only. The overlay's restore fail-closed behavior is verified in S3; the active queue-owned handle regression is verified in S4 when Claim for me introduces that handle (TASK-130.1).
 
 ### Acceptance budgets
 
