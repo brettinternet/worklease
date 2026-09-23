@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaGeneration = 5
+const SchemaGeneration = 6
 const Retention = 30 * 24 * time.Hour
 
 type Partition struct{ Source, Principal, Scope, Generation string }
@@ -152,7 +152,7 @@ func (i *Index) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 2 && version != 3 && version != 4 && version != SchemaGeneration {
+	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if version == 0 {
@@ -182,6 +182,12 @@ func (i *Index) migrate(ctx context.Context) error {
 	}
 	if version == 4 {
 		if _, err = conn.ExecContext(ctx, `ALTER TABLE github_nodes ADD COLUMN seen_generation INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=5`); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE github_absences (partition TEXT NOT NULL, ref TEXT NOT NULL, node_id TEXT NOT NULL, classification TEXT NOT NULL CHECK (classification IN ('moved','unknown')), observed INTEGER NOT NULL, PRIMARY KEY(partition,ref)); PRAGMA user_version=6`); err != nil {
 			return err
 		}
 	}
@@ -486,6 +492,9 @@ func (i *Index) CommitGitHubSyncPage(ctx context.Context, p Partition, items []q
 				return lookupErr
 			}
 			if previousRef != "" && previousRef != item.Ref.Key() {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) VALUES(?,?,?,'moved',?) ON CONFLICT(partition,ref) DO UPDATE SET node_id=excluded.node_id,classification=excluded.classification,observed=excluded.observed`, key, previousRef, item.CanonicalID, time.Now().UnixNano()); err != nil {
+					return err
+				}
 				if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref=?`, key, previousRef); err != nil {
 					return err
 				}
@@ -496,6 +505,9 @@ func (i *Index) CommitGitHubSyncPage(ctx context.Context, p Partition, items []q
 			if _, err = tx.ExecContext(ctx, `INSERT INTO github_nodes(partition,node_id,ref) VALUES(?,?,?) ON CONFLICT(partition,node_id) DO UPDATE SET ref=excluded.ref`, key, item.CanonicalID, item.Ref.Key()); err != nil {
 				return err
 			}
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM github_absences WHERE partition=? AND ref=?`, key, item.Ref.Key()); err != nil {
+			return err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO entries(partition,ref,payload,observed) VALUES(?,?,?,?) ON CONFLICT(partition,ref) DO UPDATE SET payload=excluded.payload,observed=excluded.observed`, key, item.Ref.Key(), payload, observed.UnixNano()); err != nil {
 			return err
@@ -557,6 +569,33 @@ func (i *Index) StartGitHubReconciliation(ctx context.Context, p Partition, now 
 	return state, nil
 }
 
+// GitHubAbsences returns non-sensitive identity recovery evidence. Only an
+// observed ref change proves movement; missing nodes remain unknown rather
+// than being reported as deleted or inaccessible without provider evidence.
+func (i *Index) GitHubAbsences(ctx context.Context, p Partition) (map[queue.Ref]string, error) {
+	key, err := p.key()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := i.db.QueryContext(ctx, `SELECT ref,classification FROM github_absences WHERE partition=?`, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[queue.Ref]string)
+	for rows.Next() {
+		var refKey, classification string
+		if err := rows.Scan(&refKey, &classification); err != nil {
+			return nil, err
+		}
+		parts := strings.SplitN(refKey, "\x00", 2)
+		if len(parts) == 2 {
+			result[queue.Ref{SourceID: parts[0], ItemID: parts[1]}] = classification
+		}
+	}
+	return result, rows.Err()
+}
+
 // WithholdGitHubItems removes stale payloads while retaining node identity/recovery mappings.
 // A nil refs slice withholds every visible payload in the partition.
 func (i *Index) WithholdGitHubItems(ctx context.Context, p Partition, refs []queue.Ref) error {
@@ -570,6 +609,9 @@ func (i *Index) WithholdGitHubItems(ctx context.Context, p Partition, refs []que
 	}
 	defer tx.Rollback()
 	if len(refs) == 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=?`, key); err != nil {
 			return err
 		}
@@ -578,6 +620,9 @@ func (i *Index) WithholdGitHubItems(ctx context.Context, p Partition, refs []que
 		}
 	} else {
 		for _, ref := range refs {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? AND ref=? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key, ref.Key()); err != nil {
+				return err
+			}
 			if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE partition=? AND ref=?`, key, ref.Key()); err != nil {
 				return err
 			}
@@ -650,6 +695,9 @@ func (i *Index) CommitGitHubReconciliationPage(ctx context.Context, p Partition,
 				return nil, lookupErr
 			}
 			if previous != "" && previous != item.Ref.Key() {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) VALUES(?,?,?,'moved',?) ON CONFLICT(partition,ref) DO UPDATE SET node_id=excluded.node_id,classification=excluded.classification,observed=excluded.observed`, key, previous, item.CanonicalID, time.Now().UnixNano()); err != nil {
+					return nil, err
+				}
 				if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE partition=? AND ref=?`, key, previous); err != nil {
 					return nil, err
 				}
@@ -661,12 +709,20 @@ func (i *Index) CommitGitHubReconciliationPage(ctx context.Context, p Partition,
 				return nil, err
 			}
 		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM github_absences WHERE partition=? AND ref=?`, key, item.Ref.Key()); err != nil {
+			return nil, err
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO entries(partition,ref,payload,observed) VALUES(?,?,?,?) ON CONFLICT(partition,ref) DO UPDATE SET payload=excluded.payload,observed=excluded.observed`, key, item.Ref.Key(), payload, observed.UnixNano()); err != nil {
 			return nil, err
 		}
 	}
 	var retired []queue.Ref
 	if complete {
+		// A missing node in an accessible scan is not evidence of deletion:
+		// permission changes and transfers have the same observable result.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO github_absences(partition,ref,node_id,classification,observed) SELECT partition,ref,node_id,'unknown',? FROM github_nodes WHERE partition=? AND seen_generation<>? ON CONFLICT(partition,ref) DO UPDATE SET classification=CASE WHEN github_absences.classification='moved' THEN 'moved' ELSE 'unknown' END,observed=excluded.observed`, time.Now().UnixNano(), key, generation); err != nil {
+			return nil, err
+		}
 		rows, queryErr := tx.QueryContext(ctx, `SELECT e.ref FROM entries e LEFT JOIN github_nodes n ON n.partition=e.partition AND n.ref=e.ref WHERE e.partition=? AND (n.node_id IS NULL OR n.seen_generation<>?)`, key, generation)
 		if queryErr != nil {
 			return nil, queryErr

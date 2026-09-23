@@ -128,6 +128,32 @@ func TestGitHubSyncPageAndWatermarkAreAtomic(t *testing.T) {
 	}
 }
 
+func TestGitHubWithheldItemRetainsUnknownIdentity(t *testing.T) {
+	ctx := context.Background()
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	p := Partition{Source: "github", Principal: "alice", Scope: "origin/repo", Generation: "g1"}
+	ref := queue.Ref{SourceID: "github", ItemID: "1"}
+	item := queue.Item{Summary: queue.Summary{Ref: ref, CanonicalID: "node-1", Title: "private"}}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{item}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.WithholdGitHubItems(ctx, p, []queue.Ref{ref}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err := idx.Read(ctx, p, time.Hour)
+	if err != nil || len(got.Items) != 0 {
+		t.Fatalf("stale payload visible after access loss: %+v %v", got.Items, err)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[ref] != "unknown" {
+		t.Fatalf("404 was treated as conclusive deletion or lost identity: %+v %v", absences, err)
+	}
+}
+
 func TestGitHubSyncResumesAfterReopenWithMovedNode(t *testing.T) {
 	ctx := context.Background()
 	indexDir := t.TempDir()
@@ -206,6 +232,17 @@ func TestGitHubReconciliationRetiresOnlyAtCompletedGeneration(t *testing.T) {
 	if err != nil || len(got.Items) != 2 {
 		t.Fatalf("completed projection=%v err=%v", got.Items, err)
 	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[old.Ref] != "unknown" {
+		t.Fatalf("absent node was classified as deletion without proof: %+v %v", absences, err)
+	}
+	if err := idx.CommitGitHubSyncPage(ctx, p, []queue.Item{old}, "", time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	absences, err = idx.GitHubAbsences(ctx, p)
+	if err != nil || len(absences) != 0 {
+		t.Fatalf("reappearing node retained an absence: %+v %v", absences, err)
+	}
 }
 
 func TestGitHubReconciliationNeverMovesIncrementalWatermarkBackwards(t *testing.T) {
@@ -257,6 +294,10 @@ func TestGitHubSyncDeduplicatesByNodeIDAcrossReferences(t *testing.T) {
 	}
 	if _, ok := got.Items[second.Ref.Key()]; !ok {
 		t.Fatalf("latest node reference missing: %+v", got.Items)
+	}
+	absences, err := idx.GitHubAbsences(ctx, p)
+	if err != nil || absences[first.Ref] != "moved" {
+		t.Fatalf("moved node lost its recovery evidence: %+v %v", absences, err)
 	}
 }
 
