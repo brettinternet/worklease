@@ -110,6 +110,10 @@ type CancelClaimMsg struct {
 	Path string
 	Err  error
 }
+type LaunchResultMsg struct {
+	Name string
+	Err  error
+}
 
 type ViewRule struct {
 	Readiness, Claim string
@@ -146,6 +150,11 @@ type Model struct {
 	RebuildingClaims                   bool
 	ClaimLoading, Claiming, Cancelling bool
 	ClaimPreview                       *ClaimPreview
+	LaunchOptions                      []queue.LaunchOption
+	LaunchIdentity                     string
+	LaunchRef                          queue.Ref
+	LaunchIndex                        int
+	Launching                          bool
 	OwnedClaims                        map[string]OwnedClaimMsg
 	Quitting                           bool
 	CancelPreview                      string
@@ -157,6 +166,8 @@ type Model struct {
 	LoadHistory                        func(queue.Item, string, bool) tea.Cmd
 	LoadComments                       func(queue.Item, string) tea.Cmd
 	OpenURL                            func(queue.Item) tea.Cmd
+	PreviewLaunch                      func(queue.Item) []queue.LaunchOption
+	Launch                             func(queue.Item, string) tea.Cmd
 	rowCache                           *rowCache
 	orderedKeys                        []string
 }
@@ -563,6 +574,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.OwnedClaims[v.Path] = v
 		}
+	case LaunchResultMsg:
+		m.Launching = false
+		if v.Err != nil {
+			m.Notice = "Launch failed: " + v.Err.Error()
+		} else {
+			m.Notice = "Launched " + clean(v.Name) + "; awaiting worker claim in overlay"
+		}
 	case CancelClaimMsg:
 		m.Cancelling = false
 		if v.Err != nil {
@@ -656,6 +674,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.rows()
 		previous := m.Selected
+		if m.LaunchOptions != nil {
+			switch key {
+			case "j", "down":
+				m.LaunchIndex = min(m.LaunchIndex+1, len(m.LaunchOptions)-1)
+			case "k", "up":
+				m.LaunchIndex = max(0, m.LaunchIndex-1)
+			case "enter", "y":
+				option := m.LaunchOptions[m.LaunchIndex]
+				if !option.Eligibility.Eligible {
+					m.Notice = "Launch unavailable: " + strings.Join(option.Eligibility.Reasons, "; ")
+				} else if item, ok := m.selected(rows); ok && identity(item) == m.LaunchIdentity && item.Ref == m.LaunchRef && m.Launch != nil {
+					m.LaunchOptions = nil
+					m.Launching = true
+					m.Notice = "Revalidating launch…"
+					return m, m.Launch(item, option.Name)
+				} else {
+					m.LaunchOptions = nil
+					m.Notice = "Launch preview expired because the selected item changed"
+				}
+			case "esc", "n":
+				m.LaunchOptions = nil
+				m.Notice = "Launch dismissed"
+			}
+			return m, nil
+		}
 		if m.ClaimPreview != nil {
 			switch key {
 			case "enter", "y":
@@ -684,8 +727,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "q", "ctrl+c":
-			if m.Claiming || m.ClaimLoading || m.Cancelling {
-				m.Notice = "Wait for claim request outcome before exiting"
+			if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching {
+				m.Notice = "Wait for claim or launch request outcome before exiting"
 				return m, nil
 			}
 			if len(m.OwnedClaims) > 0 {
@@ -802,8 +845,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.Notice = "Release unavailable: no verified queue-owned claim; provider checkpoint required for effected claims"
-		case "a", "s", "p", "x":
-			m.Notice = "Unavailable: provider writes and launch arrive later"
+		case "x":
+			if m.Launching {
+				m.Notice = "Launch in progress"
+			} else if item, ok := m.selected(rows); ok && m.PreviewLaunch != nil {
+				m.LaunchOptions = m.PreviewLaunch(item)
+				m.LaunchIdentity = identity(item)
+				m.LaunchRef = item.Ref
+				m.LaunchIndex = 0
+				if len(m.LaunchOptions) == 0 {
+					m.LaunchOptions = nil
+					m.Notice = "No launch actions configured"
+				}
+			} else {
+				m.Notice = "Launch unavailable: no item selected"
+			}
+		case "a", "s", "p":
+			m.Notice = "Unavailable: provider writes arrive later"
 		}
 		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
 			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
@@ -854,6 +912,9 @@ func clip(s string, n int) string {
 func (m Model) View() string {
 	if m.Width < 30 {
 		return "Resize terminal to at least 30 columns\n"
+	}
+	if m.LaunchOptions != nil {
+		return m.launchPickerView()
 	}
 	if m.ClaimPreview != nil {
 		return m.claimPreviewView(*m.ClaimPreview)
@@ -994,6 +1055,25 @@ func (m Model) exitView() string {
 		fmt.Fprintf(&b, "  %s expires %s · %s · private handle %s\n", clean(claim), expiry, clean(owned.LastResult), clean(owned.Path))
 	}
 	b.WriteString("Press Enter/y to leave leases and recovery state intact, Esc/n to continue (R cancels a verified no-effect claim).\n")
+	return clipLines(b.String(), m.Width)
+}
+func (m Model) launchPickerView() string {
+	var b strings.Builder
+	b.WriteString("Launch worker (process start is not a claim)\n")
+	for i, option := range m.LaunchOptions {
+		marker := " "
+		if i == m.LaunchIndex {
+			marker = ">"
+		}
+		status := "available"
+		if !option.Eligibility.Eligible {
+			status = strings.Join(option.Eligibility.Reasons, "; ")
+		}
+		fmt.Fprintf(&b, "%s %s: %s\n", marker, clean(option.Name), clean(status))
+	}
+	option := m.LaunchOptions[m.LaunchIndex]
+	fmt.Fprintf(&b, "  Authority %s\n  Cwd %s\n  Argv %q\n  Environment names %s\n", clean(option.Authority), clean(option.Cwd), option.Argv, strings.Join(option.EnvNames, ", "))
+	b.WriteString("Enter/y launch selected action · j/k select · Esc/n dismiss\n")
 	return clipLines(b.String(), m.Width)
 }
 func (m Model) claimPreviewView(preview ClaimPreview) string {

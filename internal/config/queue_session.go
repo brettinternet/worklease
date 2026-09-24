@@ -12,6 +12,24 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 )
 
+// ExistingQueueSessionID reads the interactive queue's session without creating it.
+// A query must not acquire ownership or mutate owner-private state.
+func ExistingQueueSessionID(env func(string) string) (string, error) {
+	path := filepath.Join(filepath.Dir(QueuePath(env)), "queue-session-id")
+	data, err := handle.ReadOwnerPrivate(path, 128)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(data))
+	if !validQueueSessionID(id) {
+		return "", fmt.Errorf("queue session ID is malformed")
+	}
+	return id, nil
+}
+
 // QueueSessionID returns the persisted owner-only session used only by the
 // interactive queue. It is intentionally independent of WORKLEASE_SESSION_ID,
 // which belongs to worker commands.

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/resource"
 )
 
@@ -22,11 +23,80 @@ type LaunchHandoff struct {
 	Env  []string
 }
 
+// LaunchOption contains only the public preview; environment values stay in the handoff.
+type LaunchOption struct {
+	Name        string      `json:"name"`
+	Eligibility Eligibility `json:"eligibility"`
+	Argv        []string    `json:"argv,omitempty"`
+	Cwd         string      `json:"cwd,omitempty"`
+	EnvNames    []string    `json:"envNames,omitempty"`
+	Authority   string      `json:"authority"`
+}
+
+// LaunchResources extends the observed current key with the retired domains
+// that a migrated worker must still claim atomically. Query and picker derive
+// identical previews; confirmation repeats the fresh PreAcquireIdentity gate.
+func LaunchResources(item Item, previous config.QueueIdentity, authority ClaimAuthority) ([]string, error) {
+	if len(item.Resources) != 1 || item.KeyInputs == nil {
+		return nil, fmt.Errorf("invalid-resource")
+	}
+	keys := append([]string(nil), item.Resources...)
+	seen := map[string]bool{keys[0]: true}
+	for _, domain := range previous.Retired {
+		key, err := resource.Resolve(resource.Input{Provider: domain.Policy, Source: domain.Source, Item: item.Ref.ItemID})
+		if err != nil {
+			return nil, err
+		}
+		if authority.Remote && (authority.AdmittedPrefixes == nil || !lease.ResourceAdmitted(*authority.AdmittedPrefixes, key.Resource)) {
+			continue // explicitly retired host-local domains cannot be claimed remotely
+		}
+		if !seen[key.Resource] {
+			keys = append(keys, key.Resource)
+			seen[key.Resource] = true
+		}
+	}
+	if len(keys) > 32 {
+		return nil, fmt.Errorf("claim domain migration exceeds atomic claim limit")
+	}
+	return keys, nil
+}
+
+// CheckLaunch applies the same gates to query and the interactive picker.
+// The queue's own claim must be released before launching a separate worker;
+// that two-step handoff has a race with other claimants.
+func CheckLaunch(action config.QueueLaunch, item Item, source config.QueueSource, authority ClaimAuthority, queueSession string, parent []string) (LaunchOption, LaunchHandoff) {
+	option := LaunchOption{Name: action.Name, Authority: authority.ID}
+	switch {
+	case item.Claim.Reason == "authority-mismatch" || item.Claim.AuthorityID != authority.ID:
+		option.Eligibility = Eligibility{Reasons: []string{"authority-mismatch"}, Outcome: "capability"}
+	case item.Claim.Active && queueSession != "" && item.Claim.SessionID == queueSession:
+		option.Eligibility = Eligibility{Reasons: []string{"queue-holds-claim", "release or cancel, then launch; another worker may acquire in between"}, Outcome: "active-claims"}
+	default:
+		option.Eligibility = ClaimActions(item)[ActionLaunch]
+	}
+	handoff, disabled := PrepareLaunch(action, item, source, authority, parent)
+	if disabled != "" && option.Eligibility.Eligible {
+		option.Eligibility = Eligibility{Reasons: []string{disabled}, Outcome: "capability"}
+	}
+	if disabled != "" {
+		return option, LaunchHandoff{}
+	}
+	option.Argv, option.Cwd = handoff.Argv, handoff.Dir
+	for _, entry := range handoff.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		option.EnvNames = append(option.EnvNames, name)
+	}
+	if !option.Eligibility.Eligible {
+		return option, LaunchHandoff{}
+	}
+	return option, handoff
+}
+
 // PrepareLaunch uses only a validated item reference and the exact observed
 // claim resources. It never copies provider content or a worker session ID.
 // A non-empty reason disables the action without starting a process.
 func PrepareLaunch(action config.QueueLaunch, item Item, source config.QueueSource, authority ClaimAuthority, parent []string) (LaunchHandoff, string) {
-	if source.ID != item.Ref.SourceID || item.KeyInputs == nil || len(item.Resources) == 0 || item.Claim.AuthorityID != authority.ID || authority.ID == "" || authority.Profile == "" {
+	if source.ID != item.Ref.SourceID || item.KeyInputs == nil || len(item.Resources) == 0 || authority.ID == "" || authority.Profile == "" {
 		return LaunchHandoff{}, "invalid-resource"
 	}
 	if _, err := resource.ValidateIdentity("sourceId", item.Ref.SourceID); err != nil {
@@ -113,11 +183,12 @@ func launchBaseEnv(name string) bool {
 }
 
 // StartLaunch uses exec semantics: no shell or argument re-parsing is involved.
-func StartLaunch(ctx context.Context, handoff LaunchHandoff) (*exec.Cmd, error) {
+// The child is independent of the queue's context and owns its own lifecycle.
+func StartLaunch(_ context.Context, handoff LaunchHandoff) (*exec.Cmd, error) {
 	if len(handoff.Argv) == 0 || handoff.Dir == "" {
 		return nil, fmt.Errorf("launch handoff is incomplete")
 	}
-	cmd := exec.CommandContext(ctx, handoff.Argv[0], handoff.Argv[1:]...)
+	cmd := exec.Command(handoff.Argv[0], handoff.Argv[1:]...)
 	cmd.Dir, cmd.Env = handoff.Dir, handoff.Env
 	if err := cmd.Start(); err != nil {
 		return nil, err

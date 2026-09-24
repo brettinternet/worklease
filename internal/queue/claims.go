@@ -221,9 +221,6 @@ func ClaimActions(item Item) map[Action]Eligibility {
 				eligibility = Eligibility{Reasons: []string{"claim-unknown"}, Outcome: "capability"}
 			}
 		}
-		if action == ActionLaunch && eligibility.Eligible {
-			eligibility = Eligibility{Reasons: []string{"read-only-slice"}, Outcome: "capability"}
-		}
 		actions[action] = eligibility
 	}
 	return actions

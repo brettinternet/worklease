@@ -529,6 +529,35 @@ func TestQueueQueryRequiresCompletenessForFilteredOutItems(t *testing.T) {
 	}
 }
 
+func TestQueueQueryReportsEachLaunchActionAndItsGate(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks(`[{"id":"TASK-126","title":"Launch test","status":"Open","ordinal":1,"isReady":true}]`)
+	cfg := h.queueConfig + "launch:\n  - name: first\n    argv: [echo, '--', '{itemId}']\n    cwd: '{checkout}'\n  - name: second\n    argv: [echo, '{ref}']\n    cwd: '{checkout}'\n"
+	h.writeQueueConfig(cfg)
+	data, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Query struct {
+			Items []struct {
+				Launches []queue.LaunchOption         `json:"launches"`
+				Actions  map[string]queue.Eligibility `json:"actions"`
+			} `json:"items"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil || len(response.Query.Items) != 1 {
+		t.Fatalf("query: %s %v", data, err)
+	}
+	item := response.Query.Items[0]
+	if len(item.Launches) != 2 || item.Launches[0].Name != "first" || item.Launches[1].Name != "second" || item.Launches[0].Eligibility.Eligible != item.Actions["launch"].Eligible {
+		t.Fatalf("launch availability differs from action: %+v", item)
+	}
+	if item.Launches[0].Eligibility.Eligible && (len(item.Launches[0].Argv) != 3 || item.Launches[0].Cwd == "" || len(item.Launches[0].EnvNames) == 0) {
+		t.Fatalf("launch preview missing: %+v", item.Launches[0])
+	}
+}
+
 func TestQueueQueryRedactsNonDigestResources(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	secretLikeID := strings.Repeat("a", 64)

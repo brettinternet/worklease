@@ -17,6 +17,7 @@ worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
+worklease queue authority-id --json
 worklease queue --view NAME identity confirm --source SOURCE --acknowledge
 ```
 
@@ -96,16 +97,20 @@ mkdir -p ~/.config/fish/completions
 worklease completion fish > ~/.config/fish/completions/worklease.fish
 ```
 
-## Read-only queue
+## Work queue
 
 `worklease queue [--view NAME]` opens the configured view from the owner's private
 `queue.yaml` in a Bubble Tea terminal. It shows source coverage, readiness,
 assignment, native occupancy, authority-scoped Worklease claims, and lazy claim
 history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
-loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, and `?`
-shows keys. Claim, release, assignment, progress, state and launch keys explain
-that they are unavailable in this read-only slice. No claim or provider write is
-performed. Source setup and configured views are described in `docs/queue.md`.
+loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, `c` previews
+Claim for me, and `x` previews configured launch actions. Launch shows argv, cwd,
+environment variable names, and authority; Enter starts the selected process,
+not a coordinated worker. The worker acquires its own claim; the queue observes
+it only after it appears in the claim overlay. Assignment, progress, and state
+writes remain unavailable. `worklease queue authority-id --json` exposes the
+invoking worker's selected authority ID for launchers to compare before acquire.
+Source setup and configured views are described in `docs/queue.md`.
 
 ## Common lifecycle
 

@@ -205,6 +205,86 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		resolvedByID[source.ID] = source
 	}
 	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, blocked: func() bool { return blockedIdentity.Load() }, profile: backend.Profile, profileName: selected.Authority, home: backend.Config.Home}
+	model.PreviewLaunch = func(item queue.Item) []queue.LaunchOption {
+		selected, _ := currentAuthority()
+		identities, identityErr := config.LoadQueueIdentities(os.Getenv)
+		options := make([]queue.LaunchOption, 0, len(cfg.Launch))
+		for _, action := range cfg.Launch {
+			if identityErr != nil {
+				options = append(options, queue.LaunchOption{Name: action.Name, Authority: selected.ID, Eligibility: queue.Eligibility{Reasons: []string{"identity-unknown"}, Outcome: "capability"}})
+				continue
+			}
+			option, _ := queueLaunchOption(action, item, sourceByID[item.Ref.SourceID], selected, queueSession, identities.Sources[item.Ref.SourceID], os.Environ())
+			options = append(options, option)
+		}
+		return options
+	}
+	model.Launch = func(item queue.Item, name string) tea.Cmd {
+		return func() tea.Msg {
+			result := queueui.LaunchResultMsg{Name: name}
+			if err := claimController.profileIdentityCurrent(); err != nil {
+				result.Err = err
+				return result
+			}
+			selected, _ := currentAuthority()
+			// Re-read the current claim immediately before starting the child. A
+			// release-then-launch sequence does not reserve the resource.
+			fresh, err := refreshQueueActionClosure(ctx, registry, resolvedByID, item)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			observed := queue.OverlayClaims(ctx, []queue.Item{fresh}, guardClaims(loader.Store.Current()), selected, paths, os.Getenv)
+			if len(observed) != 1 {
+				result.Err = fmt.Errorf("claim observation unavailable")
+				return result
+			}
+			identities, err := config.LoadQueueIdentities(os.Getenv)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			for _, action := range cfg.Launch {
+				if action.Name != name {
+					continue
+				}
+				previous := identities.Sources[item.Ref.SourceID]
+				option, handoff := queueLaunchOption(action, observed[0], sourceByID[item.Ref.SourceID], selected, queueSession, previous, os.Environ())
+				if !option.Eligibility.Eligible {
+					result.Err = fmt.Errorf("%s", strings.Join(option.Eligibility.Reasons, "; "))
+					return result
+				}
+				claimSource, ok := claimInputs[item.Ref.SourceID]
+				if !ok {
+					result.Err = fmt.Errorf("claim source unavailable")
+					return result
+				}
+				adapter, ok := registry.Get(claimSource.Source.Adapter)
+				if !ok {
+					result.Err = fmt.Errorf("claim source adapter unavailable")
+					return result
+				}
+				keys, err := queue.PreAcquireIdentity(ctx, claimSource, adapter, selected, previous, observed[0])
+				if err != nil {
+					result.Err = err
+					return result
+				}
+				previewKeys, err := queue.LaunchResources(observed[0], previous, selected)
+				if err != nil || !sameResourceSelection(keys, previewKeys) {
+					result.Err = fmt.Errorf("launch resources changed; reopen the picker")
+					return result
+				}
+				child, err := queue.StartLaunch(ctx, handoff)
+				if err == nil {
+					detachLaunch(child) // the queue neither waits for nor owns the worker
+				}
+				result.Err = err
+				return result
+			}
+			result.Err = fmt.Errorf("launch action no longer configured")
+			return result
+		}
+	}
 	model.PreviewClaim = func(item queue.Item) tea.Cmd { return claimController.Preview(ctx, item) }
 	model.AcquireClaim = func(item queue.Item, preview queueui.ClaimPreview) tea.Cmd {
 		return claimController.AcquireClaim(ctx, item, preview)

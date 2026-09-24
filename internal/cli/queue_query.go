@@ -48,6 +48,7 @@ type queueQueryItem struct {
 	DisplayID string                       `json:"displayId"`
 	Resources []string                     `json:"resources"`
 	Actions   map[string]queue.Eligibility `json:"actions"`
+	Launches  []queue.LaunchOption         `json:"launches"`
 }
 type queueCursor struct {
 	Fingerprint string `json:"fingerprint"`
@@ -311,13 +312,32 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		if end > len(items) {
 			end = len(items)
 		}
+		queueSession := ""
+		if len(cfg.Launch) > 0 {
+			var sessionErr error
+			queueSession, sessionErr = config.ExistingQueueSessionID(os.Getenv)
+			if sessionErr != nil {
+				return s.handle(cmd, sessionErr)
+			}
+		}
 		page := make([]queueQueryItem, 0, end-cursor.Offset)
 		for _, item := range items[cursor.Offset:end] {
 			available := make(map[string]queue.Eligibility, len(actions))
 			for action, eligibility := range queue.ClaimActions(item) {
 				available[string(action)] = eligibility
 			}
-			page = append(page, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: item.Resources, Actions: available})
+			launches := make([]queue.LaunchOption, 0, len(cfg.Launch))
+			for _, action := range cfg.Launch {
+				option, _ := queueLaunchOption(action, item, queueSourceByID(cfg.Sources, item.Ref.SourceID), auth, queueSession, identities.Sources[item.Ref.SourceID], os.Environ())
+				launches = append(launches, option)
+				if option.Eligibility.Eligible || len(launches) == 1 {
+					available[string(queue.ActionLaunch)] = option.Eligibility
+				}
+			}
+			if len(launches) == 0 {
+				available[string(queue.ActionLaunch)] = queue.Eligibility{Reasons: []string{"no-launch-actions"}, Outcome: "capability"}
+			}
+			page = append(page, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: item.Resources, Actions: available, Launches: launches})
 		}
 		incomplete := false
 		sourceRows := make([]queueSourceJSON, 0, len(view.Sources))
@@ -465,6 +485,14 @@ func safeQueueCell(value string) string {
 		}
 	}
 	return result.String()
+}
+func queueSourceByID(sources []config.QueueSource, id string) config.QueueSource {
+	for _, source := range sources {
+		if source.ID == id {
+			return source
+		}
+	}
+	return config.QueueSource{}
 }
 func sourceForID(sources []queue.Source, id string) queue.Source {
 	for _, source := range sources {

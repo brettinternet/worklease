@@ -1,6 +1,7 @@
 package queueui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -798,6 +799,65 @@ func TestQueueOwnedClaimExitAndCancel(t *testing.T) {
 	m = next.(Model)
 	if len(m.OwnedClaims) != 0 {
 		t.Fatal("cancelled claim still tracked")
+	}
+}
+
+func TestLaunchPickerPreviewsAndDoesNotInventWorkerClaim(t *testing.T) {
+	m := New(fixture())
+	m.anchor(m.rows())
+	m.PreviewLaunch = func(item queue.Item) []queue.LaunchOption {
+		return []queue.LaunchOption{
+			{Name: "blocked", Authority: "authority", Eligibility: queue.Eligibility{Reasons: []string{"queue-holds-claim", "release or cancel, then launch; another worker may acquire in between"}}, Argv: []string{"worker", "--", "1"}, Cwd: "/checkout", EnvNames: []string{"PATH", "WORKLEASE_PROFILE"}},
+			{Name: "ready", Authority: "authority", Eligibility: queue.Eligibility{Eligible: true}, Argv: []string{"worker", "--", "1"}, Cwd: "/checkout", EnvNames: []string{"PATH"}},
+		}
+	}
+	calls := 0
+	m.Launch = func(item queue.Item, name string) tea.Cmd {
+		calls++
+		return func() tea.Msg { return LaunchResultMsg{Name: name} }
+	}
+	m, cmd := press(m, "x")
+	if cmd != nil || !strings.Contains(m.View(), "queue-holds-claim") || !strings.Contains(m.View(), "another worker may acquire") || !strings.Contains(m.View(), "/checkout") || !strings.Contains(m.View(), "WORKLEASE_PROFILE") {
+		t.Fatalf("launch picker: %s", m.View())
+	}
+	m, cmd = press(m, "enter")
+	if cmd != nil || calls != 0 {
+		t.Fatal("blocked action launched")
+	}
+	m, _ = press(m, "j")
+	m, cmd = press(m, "enter")
+	if cmd == nil || calls != 1 || !m.Launching {
+		t.Fatal("available action not launched")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if m.Launching || !strings.Contains(m.Notice, "awaiting worker claim") || m.Snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()].Claim.SessionID != "full-session-identity" {
+		t.Fatalf("process start was mistaken for a worker claim: %s", m.Notice)
+	}
+	failed, _ := m.Update(LaunchResultMsg{Name: "missing", Err: fmt.Errorf("executable missing")})
+	m = failed.(Model)
+	if !strings.Contains(m.Notice, "Launch failed: executable missing") || m.Snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()].Claim.SessionID != "full-session-identity" {
+		t.Fatalf("failed process start changed claim: %s", m.Notice)
+	}
+}
+
+func TestLaunchConfirmationRejectsDifferentRefWithSameCanonicalIdentity(t *testing.T) {
+	original := fixture().Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	m := New(queue.Snapshot{Items: map[string]queue.Item{original.Ref.Key(): original}, Sources: map[string]queue.Coverage{"a": {State: queue.CoverageComplete}}})
+	m.anchor(m.rows())
+	m.PreviewLaunch = func(queue.Item) []queue.LaunchOption {
+		return []queue.LaunchOption{{Name: "worker", Eligibility: queue.Eligibility{Eligible: true}}}
+	}
+	called := false
+	m.Launch = func(queue.Item, string) tea.Cmd { called = true; return nil }
+	m, _ = press(m, "x")
+	replacement := original
+	replacement.Ref = queue.Ref{SourceID: "b", ItemID: "2"}
+	next, _ := m.Update(SnapshotMsg{Snapshot: queue.Snapshot{Items: map[string]queue.Item{replacement.Ref.Key(): replacement}, Sources: map[string]queue.Coverage{"b": {State: queue.CoverageComplete}}}})
+	m = next.(Model)
+	m, cmd := press(m, "enter")
+	if cmd != nil || called || !strings.Contains(m.Notice, "selected item changed") {
+		t.Fatalf("preview accepted a different ref: %s", m.Notice)
 	}
 }
 
