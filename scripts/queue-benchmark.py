@@ -42,6 +42,34 @@ def percentile(values, percentage):
     return ordered[max(0, (len(ordered) * percentage + 99) // 100 - 1)]
 
 
+def standalone_memory():
+    # wait4 reports the benchmark process alone, not go test, the compiler,
+    # fixture generation, or other subprocesses in the runner.
+    with tempfile.TemporaryDirectory(prefix="worklease-queue-memory-") as build_dir:
+        binary = str(Path(build_dir) / "queue-benchmark-memory")
+        subprocess.run(["go", "build", "-o", binary, "./cmd/queue-benchmark-memory"], cwd=ROOT, check=True)
+        report = {}
+        for count in (50000, 100000):
+            observations = []
+            for _ in range(SAMPLES):
+                process = subprocess.Popen([binary, str(count)], cwd=ROOT,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                output = process.stdout.read()
+                _, status, usage = os.wait4(process.pid, 0)
+                process.returncode = os.waitstatus_to_exitcode(status)
+                if process.returncode != 0:
+                    raise RuntimeError(f"standalone benchmark failed ({process.returncode}): {output.decode()}")
+                measurement = json.loads(output)
+                measurement["peak_rss_bytes"] = usage.ru_maxrss if platform.system() == "Darwin" else usage.ru_maxrss * 1024
+                observations.append(measurement)
+            report[str(count)] = {"samples": SAMPLES}
+            for metric in ("first_view_ms", "refresh_ms", "peak_rss_bytes"):
+                for percentile_rank in (50, 95, 99):
+                    report[str(count)][f"{metric}_p{percentile_rank}"] = percentile(
+                        [o[metric] for o in observations], percentile_rank)
+        return report
+
+
 def main():
     results = {}
     for package, pattern in BENCHMARKS:
@@ -77,7 +105,12 @@ def main():
                                   fixture_path, "--samples", str(SAMPLES)],
                                  cwd=ROOT, check=True, text=True, capture_output=True)
     report["backlog"] = json.loads(backlog_run.stdout)
-    report["peak_child_rss_bytes"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # ru_maxrss is bytes on macOS but KiB on Linux. Keep the report's
+    # cross-platform field in bytes; this remains a child-process peak,
+    # not the standalone queue TUI's resident size.
+    child_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    report["peak_child_rss_bytes"] = child_rss if platform.system() == "Darwin" else child_rss * 1024
+    report["standalone_memory"] = standalone_memory()
     for name, observations in sorted(results.items()):
         if name == "_rss":
             continue

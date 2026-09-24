@@ -25,3 +25,11 @@ for name, data in sorted(current.items()):
     if old <= 0:
         continue
     print(f"{name}: p95 {old:.2f} -> {new:.2f} ms ({(new / old - 1) * 100:+.1f}%)")
+for size, data in sorted(current_report.get("standalone_memory", {}).items()):
+    previous = baseline_report.get("standalone_memory", {}).get(size)
+    if previous is None:
+        continue
+    for metric in ("first_view_ms_p95", "refresh_ms_p95", "peak_rss_bytes_p95"):
+        old, new = previous[metric], data[metric]
+        if old > 0:
+            print(f"standalone {size} {metric}: {old:.2f} -> {new:.2f} ({(new / old - 1) * 100:+.1f}%)")
