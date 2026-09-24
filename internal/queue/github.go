@@ -126,12 +126,16 @@ func (a *GitHubAdapter) driftTo(b *githubBinding, newLocator string) {
 	a.mu.Unlock()
 }
 
-// IdentityChange reports only public repository locators, never provider payloads.
+// IdentityChange reports latched drift using only public repository locators,
+// never provider payloads. It is empty while the identity is unchanged.
 func (a *GitHubAdapter) IdentityChange(source Source) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if b := a.bindings[source.ID]; b != nil {
-		return b.identityDetail
+	if b := a.bindings[source.ID]; b != nil && b.identityChanged {
+		if b.identityDetail != "" {
+			return b.identityDetail
+		}
+		return b.host + "/" + b.repository
 	}
 	return ""
 }

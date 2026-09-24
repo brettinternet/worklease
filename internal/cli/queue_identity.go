@@ -108,10 +108,15 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 		}
 		cursor = page.NextCursor
 	}
-	identities, err := config.LoadQueueIdentities(os.Getenv)
-	if err != nil {
-		return err
-	}
+	return config.UpdateQueueIdentities(ctx, os.Getenv, func(identities *config.QueueIdentities) error {
+		return confirmQueueSourceIdentity(ctx, identities, sourceID, configured, resolved, source, authority, ids)
+	})
+}
+
+// confirmQueueSourceIdentity checks old keys in the view authority and records
+// the new claim domain. Claims in a former, different authority cannot be seen
+// here; the operator's acknowledgement covers them.
+func confirmQueueSourceIdentity(ctx context.Context, identities *config.QueueIdentities, sourceID string, configured *config.QueueSource, resolved queue.Source, source queue.ClaimSource, authority queue.ClaimAuthority, ids []string) error {
 	previous := identities.Sources[sourceID]
 	if previous.Policy == "" {
 		previous = queue.IdentityInputs(source, authority.ID)
@@ -124,9 +129,6 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 		}
 	}
 	oldIDs := append(append([]string(nil), previous.ItemIDs...), ids...)
-	if previous.AuthorityID != "" && previous.AuthorityID != authority.ID {
-		return reason.Invalid("prior authority differs; confirm old claims and operations in that authority first")
-	}
 	if err := queue.PreviousKeys(ctx, authority, previous, oldIDs); err != nil {
 		return fmt.Errorf("binding-migration-required: %w", err)
 	}
@@ -151,5 +153,26 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 		return reason.Invalid("too many former claim domains for one atomic claim")
 	}
 	identities.Sources[sourceID] = current
-	return config.SaveQueueIdentities(os.Getenv, identities)
+	return nil
+}
+
+// preAcquireQueueIdentity runs the final identity gate and, for sources whose
+// item IDs are tracked, records the item before acquisition so a later
+// renumber is still checked against its old key.
+func preAcquireQueueIdentity(ctx context.Context, source queue.ClaimSource, adapter queue.Adapter, authority queue.ClaimAuthority, item queue.Item) ([]string, error) {
+	identities, err := config.LoadQueueIdentities(os.Getenv)
+	if err != nil {
+		return nil, reason.New("identity-unknown", "private queue identity record unavailable")
+	}
+	previous := identities.Sources[source.Source.ID]
+	keys, err := queue.PreAcquireIdentity(ctx, source, adapter, authority, previous, item)
+	if err != nil {
+		return nil, err
+	}
+	if queue.TracksItemIDs(source, authority.ID) {
+		if err := config.RecordQueueClaimItem(ctx, os.Getenv, source.Source.ID, previous, item.Ref.ItemID); err != nil {
+			return nil, reason.New("identity-unknown", "claim item could not be recorded in the confirmed claim domain: "+err.Error())
+		}
+	}
+	return keys, nil
 }

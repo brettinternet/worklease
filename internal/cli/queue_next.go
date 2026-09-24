@@ -71,10 +71,6 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				return s.handle(cmd, reason.Invalid("--claim requires --session or WORKLEASE_SESSION_ID"))
 			}
 			claimSources := queue.ClaimSources(cfg, sources)
-			identities, err := config.LoadQueueIdentities(os.Getenv)
-			if err != nil {
-				return s.handle(cmd, err)
-			}
 			selected = nil
 			eligibilityChanged := false
 			for _, candidate := range result.Candidates {
@@ -108,7 +104,7 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				if err != nil || !containsResource(candidate.Resources, key.Resource) {
 					return s.handle(cmd, reason.New("identity-changed", "candidate claim resource changed; query again"))
 				}
-				keys, err := queue.PreAcquireIdentity(ctx, source, adapter, auth, identities.Sources[source.Source.ID], fresh)
+				keys, err := preAcquireQueueIdentity(ctx, source, adapter, auth, fresh)
 				if err != nil {
 					return s.handle(cmd, err)
 				}

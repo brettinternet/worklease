@@ -63,3 +63,38 @@ func TestQueueIdentityConfirmationRejectsDuplicateIDs(t *testing.T) {
 		t.Fatalf("duplicate created receipt: %+v %v", identities, err)
 	}
 }
+
+func TestQueueIdentityConfirmsAuthorityChange(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.setTasks(`[{"id":"TASK-1","title":"Work","status":"Open","ordinal":1,"isReady":true}]`)
+	if output, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirmation: %s %v", output, err)
+	}
+	identities, err := config.LoadQueueIdentities(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := identities.Sources["local"]
+	if current.AuthorityID == "" {
+		t.Fatalf("initial receipt lacks authority: %+v", current)
+	}
+	former := current
+	former.AuthorityID = "former-authority"
+	identities.Sources["local"] = former
+	if err := config.SaveQueueIdentities(nil, identities); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("authority change could not be confirmed: %s %v", output, err)
+	}
+	if identities, err = config.LoadQueueIdentities(nil); err != nil || identities.Sources["local"].AuthorityID != current.AuthorityID {
+		t.Fatalf("receipt not moved to the view authority: %+v %v", identities, err)
+	}
+}

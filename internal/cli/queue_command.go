@@ -302,7 +302,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 					result.Err = fmt.Errorf("claim source adapter unavailable")
 					return result
 				}
-				keys, err := queue.PreAcquireIdentity(ctx, claimSource, adapter, selected, previous, observed[0])
+				keys, err := preAcquireQueueIdentity(ctx, claimSource, adapter, selected, observed[0])
 				if err != nil {
 					result.Err = err
 					return result

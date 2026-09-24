@@ -134,6 +134,38 @@ func TestIdentityRenameTransferRenumberAndRebind(t *testing.T) {
 	}
 }
 
+func TestIdentityPartialObservationIsNotRenumber(t *testing.T) {
+	t.Parallel()
+	source := ClaimSource{Source: Source{ID: "g", Adapter: "github", Locator: "o/r"}, Policy: "github", ClaimSource: "github.com/o/r"}
+	receipt := IdentityInputs(source, "authority")
+	receipt.ItemIDs = []string{"1", "2"}
+	key, err := resource.Resolve(resource.Input{Provider: receipt.Policy, Source: receipt.Source, Item: "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := ClaimAuthority{API: identityStatus{held: map[string]bool{key.Resource: true}}, ID: "authority"}
+	if _, err := PreAcquireIdentity(context.Background(), source, newFake(), authority, receipt, Item{Summary: Summary{Ref: Ref{"g", "1"}}}); err != nil {
+		t.Fatalf("another held item blocked the claim: %v", err)
+	}
+	if code, _ := IdentityGate(context.Background(), source, newFake(), authority, receipt, nil, []Ref{{"g", "2"}}); code != "identity-changed" {
+		t.Fatalf("held deleted item: %s", code)
+	}
+}
+
+func TestPreAcquireIdentityRejectsDriftLatchedAfterItemRead(t *testing.T) {
+	t.Parallel()
+	adapter := NewGitHubAdapter()
+	adapter.bindings["g"] = &githubBinding{host: "github.com", repository: "o/r"}
+	source := ClaimSource{Source: Source{ID: "g", Adapter: "github", Locator: "o/r"}, Policy: "github", ClaimSource: "github.com/o/r"}
+	authority := ClaimAuthority{API: identityStatus{}, ID: "authority"}
+	receipt := IdentityInputs(source, authority.ID)
+	item := Item{Summary: Summary{Ref: Ref{"g", "1"}}, ReadOutcome: "found"}
+	adapter.drift(adapter.bindings["g"])
+	if _, err := PreAcquireIdentity(context.Background(), source, adapter, authority, receipt, item); err == nil || !strings.Contains(err.Error(), "identity-changed") {
+		t.Fatalf("latched drift passed the final gate: %v", err)
+	}
+}
+
 func TestGitHubIdentityChangeIncludesOldAndNewLocators(t *testing.T) {
 	adapter := NewGitHubAdapter()
 	adapter.bindings["g"] = &githubBinding{host: "github.com", repository: "old/repo"}

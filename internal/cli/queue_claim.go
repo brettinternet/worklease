@@ -374,11 +374,7 @@ func (c *queueClaimController) preAcquireCheck(ctx context.Context, selected que
 	if eligibility := queue.EvaluateAction(fresh, queue.ActionStart); !eligibility.Eligible {
 		return nil, reason.New(reason.ReasonInvalidArgument, "claim unavailable: "+strings.Join(eligibility.Reasons, ", "))
 	}
-	identities, err := config.LoadQueueIdentities(os.Getenv)
-	if err != nil {
-		return nil, reason.New("identity-unknown", "private queue identity record unavailable")
-	}
-	return queue.PreAcquireIdentity(ctx, plan.source, plan.adapter, selected, identities.Sources[plan.source.Source.ID], plan.item)
+	return preAcquireQueueIdentity(ctx, plan.source, plan.adapter, selected, plan.item)
 }
 
 func sameQueueClaimPreview(a, b queueui.ClaimPreview) bool {

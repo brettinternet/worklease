@@ -23,6 +23,12 @@ func IdentityInputs(source ClaimSource, authorityID string) config.QueueIdentity
 	return config.QueueIdentity{Adapter: source.Source.Adapter, Locator: source.Source.Locator, Policy: policy, Source: keySource, AuthorityID: authorityID}
 }
 
+// TracksItemIDs reports whether a source's confirmed item IDs are compared
+// with a complete fresh list to detect renumbered items (D12).
+func TracksItemIDs(source ClaimSource, authorityID string) bool {
+	return source.Source.Adapter == "backlog-md" && IdentityInputs(source, authorityID).Policy == "generic"
+}
+
 func SameIdentity(a, b config.QueueIdentity) bool {
 	return a.Adapter == b.Adapter && a.Locator == b.Locator && a.Policy == b.Policy && a.Source == b.Source && a.AuthorityID == b.AuthorityID
 }
@@ -37,8 +43,12 @@ func IdentityGate(ctx context.Context, source ClaimSource, adapter Adapter, auth
 	if adapter == nil {
 		return "identity-unknown", "source adapter unavailable"
 	}
+	if reporter, ok := adapter.(interface{ IdentityChange(Source) string }); ok && reporter.IdentityChange(source.Source) != "" {
+		// A concurrent read may have latched drift after this item's own read.
+		return "identity-changed", identityDetail(adapter, source.Source)
+	}
 	freshIDs := map[string]bool(nil)
-	if source.Source.Adapter == "backlog-md" && current.Policy == "generic" {
+	if TracksItemIDs(source, authority.ID) {
 		page, err := adapter.List(ctx, source.Source, Query{}, "")
 		if err != nil {
 			return "identity-unknown", "fresh Backlog.md list unavailable"
@@ -65,19 +75,20 @@ func IdentityGate(ctx context.Context, source ClaimSource, adapter Adapter, auth
 		return "binding-migration-required", fmt.Sprintf("claim inputs changed: %s/%s -> %s/%s. %s", previous.Policy, previous.Source, current.Policy, current.Source, MigrationChecklist)
 	}
 	// The completed refresh may have removed an old ref; ask the same authority
-	// whether it still owns the old key before offering any new key.
+	// whether it still owns the old key before offering any new key. Absence
+	// from a partial observation is not evidence, so recorded IDs are compared
+	// only with a complete fresh list; explicit deletions always are.
 	ids := freshIDs
-	if ids == nil {
+	var old []string
+	if ids != nil {
+		old = append(old, previous.ItemIDs...)
+	} else {
 		ids = make(map[string]bool)
 		for _, item := range observed {
 			if item.Ref.SourceID == source.Source.ID {
 				ids[item.Ref.ItemID] = true
 			}
 		}
-	}
-	old := append([]string(nil), previous.ItemIDs...)
-	if previous.Policy == "" {
-		previous = current
 	}
 	for _, ref := range deleted {
 		if ref.SourceID == source.Source.ID {
@@ -147,7 +158,7 @@ func PreAcquireIdentity(ctx context.Context, source ClaimSource, adapter Adapter
 	if code, detail := IdentityGate(ctx, source, adapter, authority, previous, []Item{item}, nil); code != "" {
 		return nil, fmt.Errorf("%s: %s", code, detail)
 	}
-	if source.Source.Adapter == "backlog-md" && IdentityInputs(source, authority.ID).Policy == "generic" {
+	if TracksItemIDs(source, authority.ID) {
 		page, err := adapter.List(ctx, source.Source, Query{}, "")
 		if err != nil || page.Coverage.State != CoverageComplete {
 			return nil, fmt.Errorf("fresh source enumeration required before acquisition")
