@@ -314,7 +314,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				}
 				for snapshot := range updates {
 					applyStoredClaims(&snapshot, &claimOverlay)
-					program.Send(queueui.PrepareSnapshot(snapshot))
+					program.Send(queueui.PrepareSnapshot(snapshot, shownSources...))
 				}
 			}()
 			return nil
@@ -588,7 +588,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
-		program.Send(queueui.PrepareSnapshot(seeded))
+		program.Send(queueui.PrepareSnapshot(seeded, sources...))
 		onSnapshot(seeded)
 	}
 	defer func() {
@@ -609,7 +609,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}
-		program.Send(queueui.PrepareSnapshot(snapshot))
+		program.Send(queueui.PrepareSnapshot(snapshot, sources...))
 		onSnapshot(snapshot)
 	}
 	for _, source := range refreshSources {
@@ -644,7 +644,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
-			program.Send(queueui.PrepareSnapshot(snapshot))
+			program.Send(queueui.PrepareSnapshot(snapshot, sources...))
 			onSnapshot(snapshot)
 		}
 	}

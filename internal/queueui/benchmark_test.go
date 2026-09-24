@@ -116,7 +116,7 @@ func BenchmarkQueuePreparedRefreshToRender(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
 				snapshot.Revision++
-				message := PrepareSnapshot(snapshot)
+				message := PrepareSnapshot(snapshot, m.Sources...)
 				b.StartTimer()
 				next, _ := m.Update(message)
 				m = next.(Model)

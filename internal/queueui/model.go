@@ -17,14 +17,24 @@ import (
 
 // SnapshotMsg publishes immutable source state without changing the focused pane.
 type SnapshotMsg struct {
-	Snapshot queue.Snapshot
-	prepared bool
+	Snapshot    queue.Snapshot
+	orderedKeys []string
+	prepared    bool
 }
 
 // PrepareSnapshot copies producer-owned state before handing it to Bubble Tea.
 // The producer must not mutate the returned message after sending it.
-func PrepareSnapshot(snapshot queue.Snapshot) SnapshotMsg {
-	return SnapshotMsg{Snapshot: snapshot.Clone(), prepared: true}
+func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotMsg {
+	prepared := snapshot.Clone()
+	message := SnapshotMsg{Snapshot: prepared, prepared: true}
+	if len(sources) > 0 {
+		order := make([]string, 0, len(sources))
+		for _, source := range sources {
+			order = append(order, source.ID)
+		}
+		message.orderedKeys = queue.OrderedKeys(prepared.Items, order)
+	}
+	return message
 }
 
 type ClaimOverlayMsg struct {
@@ -85,6 +95,7 @@ type Model struct {
 	LoadComments                   func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 	rowCache                       *rowCache
+	orderedKeys                    []string
 }
 
 type rowCache struct {
@@ -135,7 +146,27 @@ func (m Model) rows() []queue.Item {
 	}
 	filters := m.ViewFilters[m.ViewName]
 	filters.Text = m.Filter
-	rows := queue.EvaluateView(m.Snapshot.Items, queue.View{SourceOrder: order, Filters: filters})
+	var rows []queue.Item
+	if m.orderedKeys != nil {
+		// Prepared keys were sorted on the producer worker. Claims may have
+		// changed since preparation, so always read the current snapshot item.
+		seen := make(map[string]bool, len(m.orderedKeys))
+		rows = make([]queue.Item, 0, len(m.orderedKeys))
+		for _, key := range m.orderedKeys {
+			item, ok := m.Snapshot.Items[key]
+			if !ok || !queue.MatchesFilters(item, filters) {
+				continue
+			}
+			if id := identity(item); seen[id] {
+				continue
+			} else {
+				seen[id] = true
+			}
+			rows = append(rows, item)
+		}
+	} else {
+		rows = queue.EvaluateView(m.Snapshot.Items, queue.View{SourceOrder: order, Filters: filters})
+	}
 	out := rows[:0]
 	rule := m.ViewRules[m.ViewName]
 	for _, i := range rows {
@@ -304,6 +335,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.Snapshot = updated
+		m.orderedKeys = v.orderedKeys
 		m.anchor(m.rows())
 		if m.Selected != previous {
 			m.clearHistory()

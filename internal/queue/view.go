@@ -2,6 +2,44 @@ package queue
 
 import "sort"
 
+// OrderedKeys sorts source-visible item keys without copying item bodies. Keep
+// duplicates: filtering precedes canonical deduplication in EvaluateView.
+func OrderedKeys(items map[string]Item, sourceOrder []string) []string {
+	order := make(map[string]int, len(sourceOrder))
+	for i, id := range sourceOrder {
+		if _, ok := order[id]; !ok {
+			order[id] = i
+		}
+	}
+	keys := make([]string, 0, len(items))
+	for key, item := range items {
+		if _, ok := order[item.Ref.SourceID]; ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := items[keys[i]], items[keys[j]]
+		ai, bi := order[a.Ref.SourceID], order[b.Ref.SourceID]
+		if ai != bi {
+			return ai < bi
+		}
+		if a.Order != b.Order {
+			if a.Order == "" {
+				return false
+			}
+			if b.Order == "" {
+				return true
+			}
+			return a.Order < b.Order
+		}
+		return a.Ref.Less(b.Ref)
+	})
+	return keys
+}
+
+// MatchesFilters applies the same item predicate used by EvaluateView.
+func MatchesFilters(item Item, filters Filters) bool { return matches(item, filters) }
+
 func EvaluateView(items map[string]Item, view View) []Item {
 	order := map[string]int{}
 	for i, id := range view.SourceOrder {

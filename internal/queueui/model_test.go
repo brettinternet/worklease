@@ -89,6 +89,43 @@ func TestPreparedSnapshotIsIndependentOfProducerAndPreservesFreshClaim(t *testin
 	}
 }
 
+func TestPreparedProjectionPreservesFilteringDeduplicationAndLiveClaims(t *testing.T) {
+	snapshot := fixture()
+	first := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	first.Order = "01"
+	snapshot.Items[first.Ref.Key()] = first
+	duplicate := first
+	duplicate.Ref.ItemID = "3"
+	duplicate.Title = "matching duplicate"
+	duplicate.Order = "02"
+	snapshot.Items[duplicate.Ref.Key()] = duplicate
+	other := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "2"}.Key()]
+	other.Order = "03"
+	snapshot.Items[other.Ref.Key()] = other
+	source := queue.Source{ID: "a"}
+	m := New(fixture())
+	m.Sources = []queue.Source{source}
+	next, _ := m.Update(PrepareSnapshot(snapshot, source))
+	m = next.(Model)
+	if len(m.orderedKeys) != 3 || len(m.rows()) != 2 {
+		t.Fatalf("prepared order/dedup: keys=%d rows=%d", len(m.orderedKeys), len(m.rows()))
+	}
+	m.Filter = "matching"
+	if got := m.rows(); len(got) != 1 || got[0].Ref.ItemID != "3" {
+		t.Fatalf("filter must precede canonical deduplication: %+v", got)
+	}
+	m.Filter = ""
+	claims := snapshot.Clone()
+	item := claims.Items[first.Ref.Key()]
+	item.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Now()}
+	claims.Items[first.Ref.Key()] = item
+	next, _ = m.Update(ClaimOverlayMsg{Snapshot: claims})
+	m = next.(Model)
+	if len(m.orderedKeys) != 3 || len(m.rows()) != 2 || m.rows()[0].Claim.State != "free" {
+		t.Fatalf("overlay invalidated order or retained stale claim: %+v", m.rows())
+	}
+}
+
 func TestClaimUpdatesWhileProviderSnapshotIsStalled(t *testing.T) {
 	m := New(fixture())
 	stalled := m.Snapshot.Clone()
