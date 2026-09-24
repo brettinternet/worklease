@@ -27,12 +27,15 @@ type writeFixture struct {
 	readErr          error
 	checkpointErr    error
 	verifyErr        error
+	transitionErr    error
 }
 
 func (f *writeFixture) Inspect(context.Context, WriteIntent) (WritePreflight, error) {
 	return f.pre, nil
 }
-func (f *writeFixture) ValidateTransition(context.Context, Source, Action, string) error { return nil }
+func (f *writeFixture) ValidateTransition(context.Context, Source, Action, string) error {
+	return f.transitionErr
+}
 func (f *writeFixture) Write(_ context.Context, intent WriteIntent) (ProviderReceipt, error) {
 	f.calls++
 	return ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID, ID: "receipt-1", Actor: intent.Principal}, f.writeErr
@@ -89,6 +92,9 @@ func TestWritePipelinePreflightNeverDispatches(t *testing.T) {
 		{"closure", func(_ *WritePipeline, f *writeFixture, _ *WriteIntent) { f.pre.Fresh = false }},
 		{"readiness", func(_ *WritePipeline, f *writeFixture, _ *WriteIntent) { f.pre.Ready = false }},
 		{"mapping", func(p *WritePipeline, _ *writeFixture, _ *WriteIntent) { p.Workflow = nil }},
+		{"unsupported-provider-transition", func(_ *WritePipeline, f *writeFixture, _ *WriteIntent) {
+			f.transitionErr = errors.New("unsupported transition")
+		}},
 		{"precondition", func(_ *WritePipeline, f *writeFixture, _ *WriteIntent) { f.pre.Precondition = "version-2" }},
 		{"journal", func(p *WritePipeline, _ *writeFixture, _ *WriteIntent) { p.Journal.Dir = "relative" }},
 	} {
