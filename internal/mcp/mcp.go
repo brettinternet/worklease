@@ -31,7 +31,7 @@ type Options struct {
 	ProfileName              string
 	// QueueNext is supplied by the CLI entry point to reuse its queue selection core.
 	// It is invoked only when the queue_next tool is called.
-	QueueNext func(context.Context, string, bool, string, float64, string, string, *config.Profile, func(context.Context, []string) (map[string]any, error)) (map[string]any, error)
+	QueueNext func(context.Context, string, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, []string) (map[string]any, error), func(string) string) (map[string]any, error)
 }
 type runtimeLease struct {
 	ref, path string
@@ -220,7 +220,7 @@ func (s *Server) tools() []map[string]any {
 	defs := map[string]map[string]any{
 		"key":          schema(nil, map[string]any{"provider": str(), "source": str(), "item": str(), "path": str(), "coordinationOnly": map[string]any{"type": "boolean"}}),
 		"acquire":      schema(nil, map[string]any{"lease": str(), "resources": resources, "provider": str(), "source": str(), "item": str(), "path": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}, "wait": map[string]any{"type": "number", "minimum": 0, "maximum": 60}, "workKey": str(), "agentId": str(), "sessionId": str(), "coordinationOnly": map[string]any{"type": "boolean"}, "autoHeartbeat": map[string]any{"type": "boolean", "default": true}, "maxHold": map[string]any{"type": "number", "minimum": 60}}),
-		"queue_next":   schema([]string{"view"}, map[string]any{"view": str(), "claim": map[string]any{"type": "boolean"}, "sessionId": str(), "agentId": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}, "maxHold": map[string]any{"type": "number", "minimum": 60}, "autoHeartbeat": map[string]any{"type": "boolean", "default": true}}),
+		"queue_next":   schema([]string{"view"}, map[string]any{"view": str(), "claim": map[string]any{"type": "boolean"}, "start": map[string]any{"type": "boolean"}, "sessionId": str(), "agentId": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}, "maxHold": map[string]any{"type": "number", "minimum": 60}, "autoHeartbeat": map[string]any{"type": "boolean", "default": true}}),
 		"status":       schema(nil, map[string]any{"lease": str(), "resources": resources}),
 		"list":         schema(nil, map[string]any{"resource": str()}),
 		"heartbeat":    schema([]string{"lease"}, map[string]any{"lease": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}}),
@@ -385,7 +385,7 @@ func validateArgs(name string, a map[string]any) error {
 	allowed := map[string]map[string]bool{
 		"key":        {"provider": true, "source": true, "item": true, "path": true, "coordinationOnly": true},
 		"acquire":    {"lease": true, "resources": true, "provider": true, "source": true, "item": true, "path": true, "ttl": true, "wait": true, "workKey": true, "agentId": true, "sessionId": true, "coordinationOnly": true, "autoHeartbeat": true, "maxHold": true},
-		"queue_next": {"view": true, "claim": true, "sessionId": true, "agentId": true, "ttl": true, "maxHold": true, "autoHeartbeat": true},
+		"queue_next": {"view": true, "claim": true, "start": true, "sessionId": true, "agentId": true, "ttl": true, "maxHold": true, "autoHeartbeat": true},
 		"status":     {"lease": true, "resources": true}, "list": {"resource": true},
 		"heartbeat": {"lease": true, "ttl": true}, "checkpoint": {"lease": true, "data": true, "ttl": true}, "verify": {"lease": true, "resources": true},
 		"watch": {"cursor": true, "resources": true, "until": true, "timeout": true}, "events": {"cursor": true, "limit": true}, "release": {"lease": true, "reason": true}, "instructions": {"topic": true},
@@ -406,7 +406,7 @@ func validateArgs(name string, a map[string]any) error {
 			}
 		}
 	}
-	for _, k := range []string{"coordinationOnly", "autoHeartbeat", "claim"} {
+	for _, k := range []string{"coordinationOnly", "autoHeartbeat", "claim", "start"} {
 		if _, ok := a[k]; ok {
 			if _, ok := a[k].(bool); !ok {
 				return reason.Invalid(k + " must be a boolean")

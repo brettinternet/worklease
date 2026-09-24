@@ -20,6 +20,13 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	start, err := argBool(a, "start", false)
+	if err != nil {
+		return nil, err
+	}
+	if start && !claim {
+		return nil, reason.Invalid("start requires claim")
+	}
 	session := valueString(a, "sessionId")
 	if session == "" {
 		session = s.options.SessionID
@@ -44,7 +51,7 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 			profile = config.LocalProfileName
 		}
 	}
-	result, err := s.options.QueueNext(ctx, valueString(a, "view"), claim, session, ttl, authorityID, profile, s.profile, func(ctx context.Context, resources []string) (map[string]any, error) {
+	result, err := s.options.QueueNext(ctx, valueString(a, "view"), claim, start, session, ttl, authorityID, profile, s.profile, func(ctx context.Context, resources []string) (map[string]any, error) {
 		if s.profile != nil {
 			profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
 			if err != nil {
@@ -70,7 +77,7 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 			return nil, reason.New(reason.ReasonUnknownOutcome, "acquire receipt is invalid")
 		}
 		return grant, nil
-	})
+	}, s.handlePath)
 	if err != nil {
 		return nil, err
 	}

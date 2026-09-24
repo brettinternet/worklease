@@ -233,7 +233,7 @@ func TestQueueNextRejectsChangedRemoteProfileBeforeAcquire(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected, _ := controller.current()
-	_, err = acquireQueueWorker(context.Background(), &urfave.Command{}, backend, selected, []string{key.Resource})
+	_, err = acquireQueueWorker(context.Background(), &urfave.Command{}, backend, selected, []string{key.Resource}, "")
 	if err == nil || !strings.Contains(err.Error(), "queue authority identity changed") {
 		t.Fatalf("profile drift not rejected: %v", err)
 	}

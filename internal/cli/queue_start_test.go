@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
@@ -47,7 +46,7 @@ func queueStartFixture(t *testing.T) (queueStartController, queue.Item, string) 
 		t.Fatalf("backlog fixture: %v %s", err, data)
 	}
 	item := queueClaimItem("tasks", "TASK-1")
-	claim, backend, _ := newLocalQueueClaimController(t, 30*time.Second, item)
+	claim, backend, _ := newLocalQueueClaimController(t, config.DefaultTTL, item)
 	registry := queue.NewRegistry()
 	read, ok := registry.Get("backlog-md")
 	if !ok {

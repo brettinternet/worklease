@@ -18,6 +18,9 @@ import (
 
 func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) error {
 	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, registry *queue.Registry, sources []queue.Source, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
+		if cmd.Bool("start") && !cmd.Bool("claim") {
+			return s.handle(cmd, reason.Invalid("--start requires --claim"))
+		}
 		limit := cmd.Int("group")
 		if limit < 1 || limit > 32 || cmd.Bool("claim") && (cmd.IsSet("group") || cmd.IsSet("max-age") || cmd.IsSet("cursor")) {
 			return s.handle(cmd, reason.Invalid("--claim requires an unpaginated fresh snapshot and cannot be combined with --group, --max-age, or --cursor"))
@@ -66,6 +69,7 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			}
 		}
 		var grant map[string]any
+		var startHandle string
 		if cmd.Bool("claim") && result.Result == "ready" {
 			if backend.Config.SessionID == "" {
 				return s.handle(cmd, reason.Invalid("--claim requires --session or WORKLEASE_SESSION_ID"))
@@ -116,7 +120,16 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				if !observed.Claim.Known || observed.Claim.Stale || !observed.Claim.Available || observed.Claim.Reason != "" || observed.Claim.AuthorityID != auth.ID {
 					return s.handle(cmd, reason.New("claim-unknown", "claim authority observation is unavailable"))
 				}
-				grant, err = acquireQueueWorker(ctx, cmd, backend, auth, keys)
+				workerHandle := ""
+				if cmd.Bool("start") {
+					if _, mcp := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); !mcp {
+						workerHandle, err = acquireHandlePath(ctx, cmd, backend.Config, auth.ID, true)
+						if err != nil {
+							return s.handle(cmd, err)
+						}
+					}
+				}
+				grant, err = acquireQueueWorker(ctx, cmd, backend, auth, keys, workerHandle)
 				if err != nil {
 					if failure := reason.As(err); failure != nil && failure.Reason == reason.ReasonAlreadyClaimed {
 						row := map[string]any{"ref": candidate.Ref}
@@ -133,6 +146,10 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 					}
 					return s.handle(cmd, err)
 				}
+				startHandle = workerHandle
+				if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok && cmd.Bool("start") {
+					startHandle = bridge.handlePath(grant)
+				}
 				fresh.Resources = keys
 				fresh.KeyInputs = candidate.KeyInputs
 				fresh.Claim = observed.Claim
@@ -144,6 +161,13 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				if eligibilityChanged {
 					result.Result = "ineligible"
 				}
+			}
+		}
+		var transition map[string]any
+		if cmd.Bool("start") {
+			transition = map[string]any{"outcome": "not attempted", "reason": "no claim acquired"}
+			if grant != nil {
+				transition = queueNextStart(ctx, cfg, selected[0], registry, sources, backend, auth, backend.Config.SessionID, startHandle)
 			}
 		}
 		candidates := make([]queueQueryItem, 0, len(selected))
@@ -162,6 +186,13 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			"skipped":       skipped,
 			"acquired":      grant != nil,
 		}
+		if cmd.Bool("start") {
+			payload["claimOutcome"] = "not attempted"
+			if grant != nil {
+				payload["claimOutcome"] = "applied"
+			}
+			payload["transition"] = transition
+		}
 		if grant != nil {
 			payload["claim"] = grant
 		} else if !cmd.Bool("claim") {
@@ -173,9 +204,27 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		label := "no claim acquired; use --claim for agent loops"
 		if grant != nil {
 			label = "claim acquired; worker must heartbeat and release"
+			if transition != nil && transition["outcome"] == "rejected" {
+				label = "Claim acquired; status unchanged"
+			} else if transition != nil && transition["outcome"] == "unknown" {
+				label = "Claim acquired; provider outcome requires recovery"
+			}
 		}
 		if _, err := fmt.Fprintf(s.writer, "%s (%s)\n", result.Result, label); err != nil {
 			return err
+		}
+		if transition != nil {
+			if _, err := fmt.Fprintf(s.writer, "claim: %s; transition: %s", payload["claimOutcome"], transition["outcome"]); err != nil {
+				return err
+			}
+			if detail, ok := transition["reason"].(string); ok && detail != "" {
+				if _, err := fmt.Fprintf(s.writer, " (%s)", safeQueueCell(detail)); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintln(s.writer); err != nil {
+				return err
+			}
 		}
 		for _, item := range candidates {
 			if _, err := fmt.Fprintf(s.writer, "%s\t%s\t%s\n", safeQueueCell(item.Ref.String()), safeQueueCell(item.Title), safeQueueCell(strings.Join(item.Resources, ","))); err != nil {
@@ -222,6 +271,7 @@ type queueMCPAcquire struct {
 	authorityID, profile string
 	pinnedProfile        *config.Profile
 	acquire              func(context.Context, []string) (map[string]any, error)
+	handlePath           func(map[string]any) string
 }
 
 type queueAcquirePinKey struct{}
@@ -232,7 +282,7 @@ type queueAcquirePin struct {
 
 // Invoke the ordinary acquire command rather than maintaining a second handle,
 // replay, admission, and remote pending-request implementation in the queue.
-func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *authorityContext, auth queue.ClaimAuthority, keys []string) (map[string]any, error) {
+func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *authorityContext, auth queue.ClaimAuthority, keys []string, workerHandle string) (map[string]any, error) {
 	if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok {
 		return bridge.acquire(ctx, keys)
 	}
@@ -249,8 +299,11 @@ func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *au
 	if cmd.IsSet("ttl") {
 		args[len(args)-2] = cmd.Duration("ttl").String()
 	}
-	if path := strings.TrimSpace(cmd.String("handle")); path != "" {
-		args = append(args, "--handle", path)
+	if workerHandle == "" {
+		workerHandle = strings.TrimSpace(cmd.String("handle"))
+	}
+	if workerHandle != "" {
+		args = append(args, "--handle", workerHandle)
 	}
 	for _, key := range keys {
 		args = append(args, "--resource", key)

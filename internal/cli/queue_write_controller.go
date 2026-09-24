@@ -26,6 +26,9 @@ type queueWriteController struct {
 	configured       map[string]config.QueueSource
 	me               map[string][]string
 	session, profile string
+	// handlePath is the worker's acquired CLI or MCP handle for queue next --start.
+	// Interactive queue writes continue to use their item-scoped handle.
+	handlePath string
 }
 
 func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, error) {
@@ -58,13 +61,24 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		return queueui.WritePreview{}, "", err
 	}
 	configured := c.configured[source.ID]
+	if action == queue.ActionStart && source.Adapter == "backlog-md" {
+		var liveActor []string
+		if entry, ok := cfg.Me["backlog-md"]; ok {
+			if err := entry.Decode(&liveActor); err != nil {
+				return queueui.WritePreview{}, "", err
+			}
+		}
+		if !slices.Equal(liveActor, c.me[source.ID]) {
+			return queueui.WritePreview{}, "", fmt.Errorf("provider actor changed; reopen Start work before writing")
+		}
+	}
 	found := false
 	for _, current := range cfg.Sources {
 		if current.ID != source.ID {
 			continue
 		}
 		found = true
-		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account {
+		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
 		}
 	}
@@ -91,9 +105,12 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	if err != nil {
 		return queueui.WritePreview{}, "", err
 	}
-	path, err := queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, source, item.Ref)
-	if err != nil {
-		return queueui.WritePreview{}, "", err
+	path := c.handlePath
+	if path == "" {
+		path, err = queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, source, item.Ref)
+		if err != nil {
+			return queueui.WritePreview{}, "", err
+		}
 	}
 	h, err := handle.Read(path)
 	if err != nil {

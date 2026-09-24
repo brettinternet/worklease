@@ -541,10 +541,12 @@ func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadlin
 	if deadline.IsZero() {
 		return reason.New(reason.ReasonReplayExpired, "request-not-after is required")
 	}
-	// Starting a fresh explicit CLI mutation takes the handle outside any MCP
-	// automatic hold budget. Clear the old ceiling before the pending write so
-	// interrupted CLI dispatch recovers the same unbounded intent.
-	h.HoldUntil = time.Time{}
+	// An explicit CLI mutation normally takes the handle outside an MCP hold.
+	// The queue's MCP Start work checkpoint instead retains the exact admitted
+	// ceiling in its pending request so interrupted dispatch replays boundedly.
+	if inputInt64(inputs, "holdUntil") == 0 {
+		h.HoldUntil = time.Time{}
+	}
 	h.State = "pending"
 	h.PendingRequest = &handle.PendingRequest{OperationID: op, Kind: kind, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: requestHashCLI(inputs), RequestNotAfter: deadline, Inputs: inputs}
 	if len(locks) > 0 && locks[0] != nil {
@@ -948,6 +950,11 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 			return s.handle(cmd, err)
 		}
 		inputs := map[string]any{"kind": "checkpoint", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(data), "requestNotAfter": deadline.UTC().UnixMicro()}
+		hold := time.Time{}
+		if ctx.Value(queuePreserveHold{}) == true && h != nil && !h.HoldUntil.IsZero() {
+			hold = h.HoldUntil
+			inputs["holdUntil"] = hold.UTC().UnixMicro()
+		}
 		bindPendingHold(inputs, pending)
 		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs), lk); recovering {
 			if e != nil {
@@ -961,7 +968,7 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		if err := beginHandleMutation(hp, h, "checkpoint", op, deadline, inputs, lk); err != nil {
 			return s.handle(cmd, err)
 		}
-		r, err := svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: op, TTL: ttl, Data: data, RequestNotAfter: deadline})
+		r, err := svc.Checkpoint(ctx, c, lease.CheckpointRequest{OperationID: op, TTL: ttl, Data: data, RequestNotAfter: deadline, HoldUntil: hold})
 		if err != nil {
 			if isDefinitiveNoCommit(err) {
 				clearPending(hp, h, lk)
