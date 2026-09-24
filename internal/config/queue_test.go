@@ -27,6 +27,10 @@ func TestQueueSchema(t *testing.T) {
 	if err != nil || len(cfg.Sources) != 2 || cfg.Sources[0].AllowGitNetwork {
 		t.Fatalf("valid multi-source: %+v, %v", cfg, err)
 	}
+	launchConfig, err := parseQueue([]byte(base+"launch:\n  - name: agent\n    argv: [echo, '--', '{ref}']\n    cwd: '{checkout}'\n    passEnv: [GH_TOKEN, AWS_SESSION_TOKEN]\n"), env, nil)
+	if err != nil || len(launchConfig.Launch) != 1 || launchConfig.Launch[0].Argv[2] != "{ref}" {
+		t.Fatalf("valid launch: %+v, %v", launchConfig.Launch, err)
+	}
 	withGitNetwork := strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: true", 1)
 	cfg, err = parseQueue([]byte(withGitNetwork), env, nil)
 	if err != nil || !cfg.Sources[0].AllowGitNetwork {
@@ -35,7 +39,15 @@ func TestQueueSchema(t *testing.T) {
 	cases := []struct{ name, content, want string }{
 		{"version", strings.Replace(base, "version: 1", "version: 2", 1), "version"},
 		{"trailing document", base + "---\nversion: 2\n", "multiple YAML documents"},
-		{"top key", base + "launch: []\n", "queue.launch"},
+		{"top key", base + "unknown: []\n", "queue.unknown"},
+		{"bad launch key", base + "launch: [{name: agent, argv: [echo], shell: true}]\n", "launch[0].shell"},
+		{"bad launch placeholder", base + "launch: [{name: agent, argv: [echo, '{title}']}]\n", "launch[0].argv[1]"},
+		{"bad cwd placeholder", base + "launch: [{name: agent, argv: [echo], cwd: '{body}'}]\n", "launch[0].cwd"},
+		{"bad argv", base + "launch: [{name: agent, argv: []}]\n", "launch[0].argv"},
+		{"duplicate launch", base + "launch: [{name: agent, argv: [echo]}, {name: agent, argv: [echo]}]\n", "launch[1].name"},
+		{"bad env name", base + "launch: [{name: agent, argv: [echo], passEnv: ['GH-TOKEN']}]\n", "launch[0].passEnv[0]"},
+		{"reserved env name", base + "launch: [{name: agent, argv: [echo], passEnv: [WORKLEASE_QUEUE_REF]}]\n", "launch[0].passEnv[0]"},
+		{"reserved session ID", base + "launch: [{name: agent, argv: [echo], passEnv: [WORKLEASE_SESSION_ID]}]\n", "launch[0].passEnv[0]"},
 		{"duplicate me", strings.Replace(base, "  github.com: brett", "  github.com: brett\n  github.com: alice", 1), "me.github.com"},
 		{"wrong git boolean", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: not-a-bool", 1), "allowGitNetwork: expected boolean"},
 		{"quoted git boolean", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: \"yes\"", 1), "allowGitNetwork: expected boolean"},
