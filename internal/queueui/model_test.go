@@ -1277,3 +1277,71 @@ func TestDisabledActionsAndFilter(t *testing.T) {
 		t.Fatal(m.Filter, m.Selected)
 	}
 }
+
+func TestStartWorkPreviewAndSeparateOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []struct {
+		name, step string
+		write      *WriteResultMsg
+		want       string
+	}{
+		{"verified", "applied", &WriteResultMsg{Result: queue.WriteResult{Outcome: queue.WriteVerified, ClaimHeld: true}}, "transition applied"},
+		{"rejected", "rejected", &WriteResultMsg{Result: queue.WriteResult{Outcome: queue.WriteConflict, SourceUnchanged: true, ClaimHeld: true}}, "Claim acquired; status unchanged"},
+		{"unknown", "unknown", &WriteResultMsg{Result: queue.WriteResult{Outcome: queue.WriteUnknown, ClaimHeld: true}}, "recovery required"},
+	} {
+		t.Run(outcome.name, func(t *testing.T) {
+			m := New(fixture())
+			m.anchor(m.rows())
+			m.StartTransitions = map[string]string{"a": "Doing"}
+			m.PreviewStart = func(item queue.Item) tea.Cmd {
+				return func() tea.Msg {
+					return StartPreviewMsg{Identity: identity(item), Item: item, Preview: &StartPreview{Claim: ClaimPreview{Identity: identity(item), Title: item.Title, AuthorityID: "authority", Resources: []string{"resource:1"}}, Source: "a", Actor: "@worker", Transition: "Doing", RequiredFields: "status=Doing", SideEffects: []string{"Git commit", "Git hooks"}}}
+				}
+			}
+			called := 0
+			m.StartWork = func(item queue.Item, preview StartPreview) tea.Cmd {
+				called++
+				return func() tea.Msg {
+					return StartResultMsg{Claim: ClaimResultMsg{Identity: identity(item), Item: item, HandlePath: "/private/handle", ClaimID: "claim", Resources: []string{"resource:1"}, Claim: queue.ClaimObservation{Known: true, Active: true, ExpiresAt: time.Now().Add(time.Minute)}}, ClaimStep: "applied", TransitionStep: outcome.step, Write: outcome.write}
+				}
+			}
+			m, _ = press(m, ":")
+			for _, ch := range "start work" {
+				m, _ = press(m, string(ch))
+			}
+			m, cmd := press(m, "enter")
+			if cmd == nil || called != 0 {
+				t.Fatalf("palette skipped preview: %s", m.Notice)
+			}
+			next, _ := m.Update(cmd())
+			m = next.(Model)
+			if view := m.View(); !strings.Contains(view, "Provider actor @worker") || !strings.Contains(view, "status=Doing") || !strings.Contains(view, "resource:1") || !strings.Contains(view, "Git commit; Git hooks") || !strings.Contains(view, "no assignment") || strings.Contains(view, "Provider unchanged") || strings.Contains(view, "Provider   unchanged") {
+				t.Fatalf("incomplete Start work preview: %s", view)
+			}
+			m, cmd = press(m, "enter")
+			if cmd == nil || called != 1 {
+				t.Fatalf("confirmation did not start: %s", m.Notice)
+			}
+			next, _ = m.Update(cmd())
+			m = next.(Model)
+			if !strings.Contains(m.Notice, outcome.want) || len(m.OwnedClaims) != 1 || m.UncertainWrite != (outcome.step == "unknown") {
+				t.Fatalf("lost separate outcomes or claim: %s %+v", m.Notice, m.OwnedClaims)
+			}
+		})
+	}
+}
+
+func TestStartWorkMissingMappingLeavesClaimOnly(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.anchor(m.rows())
+	m.StartTransitions = map[string]string{"a": ""}
+	m, _ = press(m, ":")
+	for _, ch := range "start work" {
+		m, _ = press(m, string(ch))
+	}
+	m, cmd := press(m, "enter")
+	if cmd != nil || !strings.Contains(m.Notice, "Claim only") || m.StartPreview != nil {
+		t.Fatalf("unsupported mapping offered Start work: %s", m.Notice)
+	}
+}

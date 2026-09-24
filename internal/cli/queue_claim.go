@@ -72,8 +72,12 @@ func (c *queueClaimController) AcquireClaim(ctx context.Context, item queue.Item
 		if err != nil {
 			return queueui.ClaimResultMsg{Identity: queueIdentity(item), Item: plan.item, Err: err}
 		}
-		return queueui.ClaimResultMsg{Identity: queueIdentity(item), Item: plan.item, HandlePath: plan.handle, Resources: plan.keys, ClaimID: grant.ClaimID, NextRenewal: nextRenewal(grant.AcquiredAt, grant.ExpiresAt, grant.ClaimID), Claim: queue.ClaimObservation{Known: true, Available: false, Active: true, OwnerVerified: true, AuthorityID: grant.AuthorityID, State: "held", AgentID: grant.AgentID, SessionID: grant.SessionID, AcquiredAt: grant.AcquiredAt, ExpiresAt: grant.ExpiresAt, ObservedAt: time.Now().UTC()}, GrantedTTL: grant.ExpiresAt.Sub(grant.AcquiredAt)}
+		return queueClaimResult(plan, grant)
 	}
+}
+
+func queueClaimResult(plan queueClaimPlan, grant lease.Grant) queueui.ClaimResultMsg {
+	return queueui.ClaimResultMsg{Identity: queueIdentity(plan.item), Item: plan.item, HandlePath: plan.handle, Resources: plan.keys, ClaimID: grant.ClaimID, NextRenewal: nextRenewal(grant.AcquiredAt, grant.ExpiresAt, grant.ClaimID), Claim: queue.ClaimObservation{Known: true, Available: false, Active: true, OwnerVerified: true, AuthorityID: grant.AuthorityID, State: "held", AgentID: grant.AgentID, SessionID: grant.SessionID, AcquiredAt: grant.AcquiredAt, ExpiresAt: grant.ExpiresAt, ObservedAt: time.Now().UTC()}, GrantedTTL: grant.ExpiresAt.Sub(grant.AcquiredAt)}
 }
 
 func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (queueClaimPlan, error) {

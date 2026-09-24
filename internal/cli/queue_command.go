@@ -218,7 +218,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, blocked: func() bool { return blockedIdentity.Load() }, profile: backend.Profile, profileName: selected.Authority, home: backend.Config.Home}
 	writeController := queueWriteController{backend: backend, registry: registry, current: currentAuthority, journal: journal, sources: resolvedByID, configured: sourceByID, me: model.MeBySource, session: queueSession, profile: selected.Authority}
 	model.StateChoices = make(map[string][]queueui.StateChoice)
+	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
+		if source.Adapter == "backlog-md" {
+			model.StartTransitions[id] = source.Workflow["start"]
+		}
 		for _, step := range []struct {
 			name   string
 			action queue.Action
@@ -318,6 +322,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			result.Err = fmt.Errorf("launch action no longer configured")
 			return result
 		}
+	}
+	startController := queueStartController{claim: claimController, write: writeController}
+	model.PreviewStart = func(item queue.Item) tea.Cmd { return startController.Preview(ctx, item) }
+	model.StartWork = func(item queue.Item, preview queueui.StartPreview) tea.Cmd {
+		return startController.Start(ctx, item, preview)
 	}
 	model.PreviewClaim = func(item queue.Item) tea.Cmd { return claimController.Preview(ctx, item) }
 	model.AcquireClaim = func(item queue.Item, preview queueui.ClaimPreview) tea.Cmd {

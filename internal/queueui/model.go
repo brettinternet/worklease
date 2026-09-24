@@ -202,6 +202,24 @@ type ReconcileResultMsg struct {
 	Err         error
 }
 
+type StartPreview struct {
+	Claim                                             ClaimPreview
+	Source, Actor, Transition, RequiredFields, Effect string
+	SideEffects                                       []string
+}
+type StartPreviewMsg struct {
+	Identity string
+	Item     queue.Item
+	Preview  *StartPreview
+	Err      error
+}
+type StartResultMsg struct {
+	Claim                     ClaimResultMsg
+	Write                     *WriteResultMsg
+	ClaimStep, TransitionStep string
+	Err                       error
+}
+
 type ClaimPreview struct {
 	Identity, Title               string
 	AuthorityProfile, AuthorityID string
@@ -277,6 +295,8 @@ type Model struct {
 	RebuildingClaims                      bool
 	ClaimLoading, Claiming, Cancelling    bool
 	ClaimPreview                          *ClaimPreview
+	StartPreview                          *StartPreview
+	StartTransitions                      map[string]string
 	LaunchOptions                         []queue.LaunchOption
 	LaunchIdentity                        string
 	LaunchRef                             queue.Ref
@@ -303,6 +323,8 @@ type Model struct {
 	CancelPreview                         string
 	PreviewClaim                          func(queue.Item) tea.Cmd
 	AcquireClaim                          func(queue.Item, ClaimPreview) tea.Cmd
+	PreviewStart                          func(queue.Item) tea.Cmd
+	StartWork                             func(queue.Item, StartPreview) tea.Cmd
 	CancelClaim                           func(string) tea.Cmd
 	Refresh                               func() tea.Cmd
 	HydrateSelected                       func(queue.Item) tea.Cmd
@@ -773,6 +795,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.Notice = "Refreshed"
 		}
+	case StartPreviewMsg:
+		m.ClaimLoading = false
+		if v.Identity == m.Selected {
+			if v.Err != nil || v.Preview == nil || v.Preview.Claim.Identity != v.Identity {
+				m.StartPreview = nil
+				m.Notice = "Start work unavailable; Claim only: " + fmt.Sprint(v.Err)
+			} else {
+				m.StartPreview = v.Preview
+				m.Notice = "Review Start work preview; press Enter to confirm"
+			}
+		}
+	case StartResultMsg:
+		m.Claiming = false
+		m.StartPreview = nil
+		updated, _ := m.Update(v.Claim)
+		m = updated.(Model)
+		if v.Write != nil && v.TransitionStep == "unknown" {
+			m.UncertainWrite = true
+		}
+		if v.ClaimStep == "applied" {
+			m.Notice = "Start work: claim applied; transition " + v.TransitionStep
+			if v.TransitionStep == "rejected" {
+				m.Notice += " · Claim acquired; status unchanged; correct mapping or cancel if eligible"
+			}
+			if v.TransitionStep == "unknown" {
+				m.UncertainWrite = true
+				m.Notice += " · recovery required; do not retry or roll back"
+			}
+			if v.Err != nil {
+				m.Notice += ": " + v.Err.Error()
+			} else if v.Write != nil && v.Write.Err != nil {
+				m.Notice += ": " + v.Write.Err.Error()
+			}
+		} else {
+			m.Notice = "Start work: claim " + v.ClaimStep + "; transition not attempted · " + claimFailureNotice(v.Claim.Err)
+		}
+		if v.Write != nil && m.LoadRecovery != nil {
+			return m, m.LoadRecovery()
+		}
 	case ClaimPreviewMsg:
 		m.ClaimLoading = false
 		if v.Identity == m.Selected {
@@ -856,6 +917,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := v.String()
+		if m.StartPreview != nil {
+			switch key {
+			case "enter", "y":
+				preview := *m.StartPreview
+				m.StartPreview = nil
+				if item, ok := m.selected(m.rows()); ok && identity(item) == preview.Claim.Identity && m.StartWork != nil {
+					m.Claiming = true
+					m.Notice = "Revalidating and starting work…"
+					return m, m.StartWork(item, preview)
+				}
+				m.Notice = "Start work preview expired because selection changed"
+			case "esc", "n":
+				m.StartPreview = nil
+				m.Notice = "Start work cancelled before claiming"
+			}
+			return m, nil
+		}
 		if m.WritePreview != nil {
 			switch key {
 			case "enter", "y":
@@ -976,8 +1054,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.Filtering {
 					m.Filter = m.Input
 					m.anchor(m.rows())
+				} else if strings.EqualFold(strings.TrimSpace(m.Input), "start work") {
+					m.Palette = false
+					m.Input = ""
+					return m.startWorkPreview()
 				} else {
-					m.Notice = "Command unavailable in read-only slice: " + m.Input
+					m.Notice = "Command unavailable: " + m.Input
 				}
 				m.Filtering = false
 				m.Palette = false
@@ -1186,6 +1268,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.OpenURL(i)
 			}
 			m.Notice = "Provider URL unavailable"
+		case "S":
+			if m.Detail {
+				return m.startWorkPreview()
+			}
 		case "c":
 			if m.ClaimLoading || m.Claiming {
 				m.Notice = "Claim request in progress"
@@ -1284,6 +1370,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+func (m Model) startWorkPreview() (tea.Model, tea.Cmd) {
+	if m.ClaimLoading || m.Claiming || m.Writing || m.WriteLoading {
+		m.Notice = "Start work request in progress"
+		return m, nil
+	}
+	if item, ok := m.selected(m.rows()); ok && m.StartTransitions[item.Ref.SourceID] != "" && m.PreviewStart != nil {
+		m.ClaimLoading = true
+		m.Notice = "Checking Start work eligibility…"
+		return m, m.PreviewStart(item)
+	}
+	m.Notice = "Start work unavailable: no supported provider mapping; Claim only"
+	return m, nil
+}
+
 func clean(s string) string {
 	s = ansi.Strip(s)
 	var b strings.Builder
@@ -1344,6 +1444,18 @@ func (m Model) View() string {
 	}
 	if m.ClaimPreview != nil {
 		return m.claimPreviewView(*m.ClaimPreview)
+	}
+	if m.StartPreview != nil {
+		p := m.StartPreview
+		var b strings.Builder
+		fmt.Fprintf(&b, "Start work on %s (%s)\nProvider actor %s · transition %s · required %s\nEffect %s\nSide effects %s\n", clean(p.Source), clean(p.Claim.Title), clean(p.Actor), clean(p.Transition), clean(p.RequiredFields), clean(p.Effect), clean(strings.Join(p.SideEffects, "; ")))
+		fmt.Fprintf(&b, "Authority %s %s (%s)\n", clean(p.Claim.AuthorityProfile), clean(p.Claim.AuthorityID), clean(p.Claim.Scope))
+		for _, resource := range p.Claim.Resources {
+			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
+		}
+		fmt.Fprintf(&b, "Session %s · TTL %s · hold %s\nLimits %s\n", clean(p.Claim.SessionID), p.Claim.TTL, p.Claim.Hold, clean(p.Claim.CoordinationLimits))
+		b.WriteString("Claim and provider transition are separate outcomes; no assignment or cross-system atomicity.\nEnter/y confirm · Esc/n cancel\n")
+		return clipLines(b.String(), m.Width)
 	}
 	if m.Quitting {
 		return m.exitView()
@@ -1799,6 +1911,11 @@ func detail(m Model, i queue.Item) string {
 	case 0:
 		fmt.Fprintf(&b, "State %s · Ready %s · Assigned %s · Native %s\n", clean(i.RawStatus), readiness(i), clip(strings.Join(i.AssignedTo, ","), 40), clip(i.NativeClaim, 30))
 		b.WriteString(clip(i.Body, min(m.Width*6, 1200)) + "\n")
+		if m.StartTransitions[i.Ref.SourceID] != "" {
+			b.WriteString("Actions: S Start work (claim + provider transition); c Claim only · : start work\n")
+		} else {
+			b.WriteString("Actions: c Claim only (no supported Start work mapping)\n")
+		}
 	case 1:
 		fmt.Fprintf(&b, "Readiness %s: %s\nClosure coverage %s · freshness %s\n", i.Readiness.Status, clean(strings.Join(i.Readiness.Reasons, "; ")), i.Closure, i.Readiness.Freshness)
 		for _, r := range i.Relationships {
