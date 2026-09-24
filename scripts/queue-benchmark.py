@@ -122,7 +122,7 @@ def main():
                  "p50_ms": percentile([o["ms"] for o in observations], 50),
                  "p95_ms": percentile([o["ms"] for o in observations], 95),
                  "p99_ms": percentile([o["ms"] for o in observations], 99)}
-        for key in ("B/op", "allocs/op", "requests/op", "bytes/op", "index-bytes"):
+        for key in ("B/op", "allocs/op", "requests/op", "bytes/op", "fixture-quota-points/op", "index-bytes"):
             if key in observations[0]:
                 entry[key] = percentile([o[key] for o in observations], 95)
         entry["processes"] = 1

@@ -18,7 +18,7 @@ import (
 func BenchmarkGitHubEnumeration(b *testing.B) {
 	const total = 10000
 	const latency = 5 * time.Millisecond
-	var requests, bytesSent atomic.Int64
+	var requests, bytesSent, quotaPoints atomic.Int64
 	a, _ := fakeGitHub(b, func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Query     string                     `json:"query"`
@@ -33,6 +33,9 @@ func BenchmarkGitHubEnumeration(b *testing.B) {
 			return
 		}
 		requests.Add(1)
+		// The fake charges one point per page. This is an injected fixture
+		// cost, not a measurement of GitHub's production GraphQL formula.
+		quotaPoints.Add(1)
 		time.Sleep(latency)
 		start := 0
 		if value := req.Variables["after"]; len(value) > 0 && string(value) != "null" {
@@ -48,7 +51,7 @@ func BenchmarkGitHubEnumeration(b *testing.B) {
 			return
 		}
 		var result strings.Builder
-		result.WriteString(`{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":10000,"nodes":[`)
+		result.WriteString(`{"data":{"rateLimit":{"cost":1,"remaining":5000},"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":10000,"nodes":[`)
 		for i := start; i < start+100; i++ {
 			if i > start {
 				result.WriteByte(',')
@@ -91,4 +94,5 @@ func BenchmarkGitHubEnumeration(b *testing.B) {
 	b.StopTimer()
 	b.ReportMetric(float64(requests.Load())/float64(b.N), "requests/op")
 	b.ReportMetric(float64(bytesSent.Load())/float64(b.N), "bytes/op")
+	b.ReportMetric(float64(quotaPoints.Load())/float64(b.N), "fixture-quota-points/op")
 }
