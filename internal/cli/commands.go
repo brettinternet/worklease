@@ -327,7 +327,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		if err != nil {
 			return err
 		}
-		server, err := mcpserver.NewServer(mcpserver.Options{Home: cfg.Home, AgentID: cfg.AgentID, SessionID: cfg.SessionID, TTL: cfg.TTL, PollInterval: cfg.PollInterval, Profile: selected.Profile, ProfileName: selected.Name})
+		server, err := mcpserver.NewServer(mcpserver.Options{Home: cfg.Home, AgentID: cfg.AgentID, SessionID: cfg.SessionID, TTL: cfg.TTL, PollInterval: cfg.PollInterval, Profile: selected.Profile, ProfileName: selected.Name, QueueNext: mcpQueueNext(cfg.Home, selected.Name)})
 		if err != nil {
 			return err
 		}

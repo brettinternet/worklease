@@ -46,6 +46,9 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			return isQueueMe(cfg, item, owner)
 		})
 		selected := result.Candidates
+		if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok && cmd.Bool("claim") && (auth.ID != bridge.authorityID || auth.Profile != bridge.profile || (backend.Profile == nil) != (bridge.pinnedProfile == nil) || backend.Profile != nil && *backend.Profile != *bridge.pinnedProfile) {
+			return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "queue view authority differs from the MCP lease authority"))
+		}
 		skipped := make([]map[string]any, 0)
 		if cmd.Bool("claim") && result.Result != "incomplete" {
 			visibleRefs := make(map[string]bool, len(visible))
@@ -218,6 +221,13 @@ func queueNextAssignmentEligible(cfg config.QueueConfig, view *config.QueueView,
 	return false
 }
 
+type queueMCPAcquireKey struct{}
+type queueMCPAcquire struct {
+	authorityID, profile string
+	pinnedProfile        *config.Profile
+	acquire              func(context.Context, []string) (map[string]any, error)
+}
+
 type queueAcquirePinKey struct{}
 type queueAcquirePin struct {
 	authorityID string
@@ -227,6 +237,9 @@ type queueAcquirePin struct {
 // Invoke the ordinary acquire command rather than maintaining a second handle,
 // replay, admission, and remote pending-request implementation in the queue.
 func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *authorityContext, auth queue.ClaimAuthority, keys []string) (map[string]any, error) {
+	if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok {
+		return bridge.acquire(ctx, keys)
+	}
 	args := []string{"worklease", "--json", "--home", backend.Config.Home}
 	if auth.Remote {
 		args = append(args, "--profile", auth.Profile)
