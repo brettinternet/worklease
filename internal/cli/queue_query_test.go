@@ -574,7 +574,7 @@ func newQueueQueryHarness(t *testing.T) *queueQueryHarness {
 	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf '1.52.0\\n' ;;\n  'config get autoCommit') printf 'true\\n' ;;\n  'config get '*) printf 'false\\n' ;;\n  'task list --json') printf '%s\\n' \"$QUEUE_LIST_JSON\" ;;\n  *) exit 2 ;;\nesac\n"
+	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf '1.52.0\\n' ;;\n  'config get autoCommit') printf 'true\\n' ;;\n  'config get '*) printf 'false\\n' ;;\n  'task list --json') printf '%s\\n' \"$QUEUE_LIST_JSON\" ;;\n  task\\ view\\ TASK-*\\ --json) python3 -c 'import json,os,sys; tasks=json.loads(os.environ.get(\"QUEUE_VIEW_LIST_JSON\") or os.environ[\"QUEUE_LIST_JSON\"])[\"tasks\"]; selected=next(task for task in tasks if task[\"id\"]==sys.argv[1]); print(json.dumps({\"kind\":\"task-view\",\"schemaVersion\":1,\"task\":selected}))' \"$3\" ;;\n  *) exit 2 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "backlog"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

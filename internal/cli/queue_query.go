@@ -72,7 +72,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 
 // The selector runs over the same unpaginated, overlaid snapshot as query.
 // It runs before any query cursor or page limit can hide part of the scope.
-type queueSnapshotSelector func(*urfavecli.Command, config.QueueConfig, *config.QueueView, []queue.Item, []queue.Item, []queueSourceJSON, queueAuthorityJSON, bool) error
+type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, *queue.Registry, []queue.Source, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
 
 func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader, selector queueSnapshotSelector) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -184,7 +184,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 					}
 					observationTimes[source.ID] = observed
 					completedWhileWaiting := completedRefreshObserved(initialObservation, observed, candidate.Sources[source.ID], fresh)
-					wantCache = cmd.IsSet("max-age") && fresh || completedWhileWaiting
+					wantCache = (cmd.IsSet("max-age") && fresh || completedWhileWaiting) && !(selector != nil && cmd.Bool("claim"))
 				}
 				if wantCache {
 					release()
@@ -222,7 +222,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		case "ready": /* readiness post-filter */
 		}
 		items := queue.EvaluateView(snapshot.Items, queue.View{SourceOrder: view.Sources, Filters: viewFilters})
-		selected, auth, e := queueAuthorityForView(ctx, cmd, view.Authority)
+		selected, auth, e := queueAuthorityForViewMode(ctx, cmd, view.Authority, true, selector != nil && cmd.Bool("claim"))
 		if e != nil {
 			return s.handle(cmd, e)
 		}
@@ -354,9 +354,8 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				incomplete = true
 			}
 		}
-		authorityRow := queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}
 		if selector != nil {
-			return selector(cmd, cfg, view, cursorItems, items, sourceRows, authorityRow, incomplete)
+			return selector(ctx, cmd, cfg, view, registry, sources, selected, auth, cursorItems, items, sourceRows, incomplete)
 		}
 		if incomplete && cmd.Bool("require-complete") {
 			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}

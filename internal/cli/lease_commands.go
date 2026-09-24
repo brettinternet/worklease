@@ -153,6 +153,11 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			return s.handle(cmd, err)
 		}
 		defer backend.Close()
+		if pin, ok := ctx.Value(queueAcquirePinKey{}).(queueAcquirePin); ok {
+			if backend.AuthorityID() != pin.authorityID || (backend.Profile == nil) != (pin.profile == nil) || backend.Profile != nil && *backend.Profile != *pin.profile {
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "queue authority identity changed before acquisition"))
+			}
+		}
 		svc, st, cfg := backend.Local, backend.Store, backend.Config
 		resources := make([]string, 0, len(in.Keys))
 		for _, key := range in.Keys {

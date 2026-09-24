@@ -59,7 +59,7 @@ worklease heartbeat --session 'WORKER_SESSION'
 worklease release --session 'WORKER_SESSION' --reason 'provider checkpoint verified'
 ```
 
-For agent loops, use the forthcoming TASK-130.5 `worklease queue next --view Ready --claim --session 'WORKER_SESSION' --json` instead of the manual race-prone pair. It will select and acquire in one invocation, skip contended candidates, and return one worker-owned claim. **`--claim` is not available until TASK-130.5 lands.** The worker owns its heartbeat and release; the queue does not renew it.
+For agent loops, use `worklease queue next --view Ready --claim --session 'WORKER_SESSION' --json` instead of the manual race-prone pair. It revalidates each candidate against fresh provider evidence and the identity gate, skips contended candidates without waiting, and returns the first worker-owned claim with its receipt and skipped candidates. When none remain it reports `active-claims`; on uncertain acquisition it stops and reports the pending handle for recovery. `--claim` requires a session, cannot be combined with `--group` or cached/paginated selection, and does not change provider status. Use the normal `worklease verify`, `heartbeat`, and `release` with that session. The worker owns renewal and release; the queue never renews it.
 
 ## Read-only query
 
