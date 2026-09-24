@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 04:14'
+updated_date: '2026-09-24 22:23'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129.1
@@ -51,6 +52,8 @@ This parent is an integration checklist, not an implementation lane. It depends 
 
 <!-- SECTION:NOTES:BEGIN -->
 Final integration on main at fafc904: TASK-129.1–129.7 all Done (Backlog list reread). Section 14 workload accounting and explicit met/revised budgets in docs/work-queue-tui-proposal.md and docs/queue-benchmark-results.md; 100k refresh failure boundary and measured scope stated. Targeted tests passed for interrupted/resumed GitHub incremental and reconciliation pages, moving cursor order, newest-page 304 with older change, permission loss/restoration, incomplete scan/no premature watermark or retirement, and local/remote claim overlay snapshot-watch injected races and restore/gap fail-closed. Section 14 records D22 25-client/500-claim authority benchmark: p99 renewal 2617 ms, minimum previous lease margin 512s; section 17 answers watch polling did not saturate at measured load. Full lint, format-check, test, typecheck, doc-test passed on parent worktree; task checklist has no new source implementation. No further general review required for provider-only closeout.
+
+Review 2026-09-24: parent criteria re-checked on main (children Done; pagination/304/permission/watermark and overlay race tests present). AC5 evidence updated by the TASK-129.7 rerun, which now requires every overlay to drain to head. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

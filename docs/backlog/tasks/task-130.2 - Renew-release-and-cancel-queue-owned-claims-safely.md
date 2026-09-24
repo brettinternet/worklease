@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 12:34'
+updated_date: '2026-09-24 22:23'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130.1
@@ -61,6 +62,8 @@ Release (`R`) needs a verified checkpoint per contract.md. The exception is the 
 Integrated ee38b83 into main. Dedicated per-handle control workers renew at 35–40% TTL with authority-time clock bounds, margin checks and persisted local hold; private handle/live verify gate reattach, R previews no-effect cancellation, exit preserves uncertain recovery. Reviewer identified remote deletion race, skew, serial verification, local hold and directory-error warning; corrected with tests. Full lint/format/test/typecheck/hooks pass. Opt-in combined control fixture (50k graph + 10k SQLite rows) renewed with 18.264819s remaining on prior 30s lease (target >=7.5s); TASK-129.6 PTY/rate-limit/stalled-HTTP fixture 1-sample measured local renewal 1.253458ms and margin 9m59.194983s at 10m TTL. Outstanding AC5 interpretation: S4 refuses release after an effect because S6 provider write/read-back pipeline does not yet exist; only no-effect cancellation is actionable.
 
 User approved finalizing S4 with no-effect cancellation only; verified-provider-checkpoint release is deferred to S6 TASK-132.1, matching plan section 9. Reacquired same loop claim after a long user decision pause: prior epoch expired, reviewer and commands stopped, no active contender, provider task still eligible; recovery receipt retained.
+
+Review 2026-09-24: fixed in fddd2cb. The renewal margin no longer exceeds short TTLs (1s TTL now renews). verify-failed/claim-expired now shows the claim as lost. Owned handles and the recovery journal load before the first keypress, so an immediate quit still shows consequences, and an unreadable journal warns on exit. The Recovery view no longer quits during pending cancellation (unified requestQuit). Heartbeat staging honors context cancellation while another process holds the handle lock. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

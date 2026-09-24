@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 05:58'
+updated_date: '2026-09-24 22:23'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130.3
@@ -67,6 +68,8 @@ Remote authority metadata exposes admitted prefixes but not maxTTL or maxHold (i
 User approved staging TASK-129.5 active queue-owned handle restore regression here, where the queue-owned handle is first implemented. Test the fail-closed gate and recovery with the handle still active; no S3/S4 dependency cycle.
 
 Implemented on task-130-1-queue-claim (47f1061), fast-forward merged to main. TUI preview/confirmation and private queue session with owner-only handle; provider closure, identity and authority rechecked before acquisition. Local/remote contention, lower remote TTL rejection/grant, reopened prerequisite, authority identity drift, migration and delayed UI response exercised in tests. Existing provider read-only boundary tests and queue AST mutation guard cover both adapters. Reviewer found four concrete defects (navigation result loss, stale overlay, binding migration, truncated preview); all fixed and regression-tested. mise run lint, format-check, test, typecheck and hooks pass; no plan/decision changed.
+
+Review 2026-09-24: fixed in 88a5680. The final pre-acquire gate now re-reads the prerequisite closure and eligibility (a reopen after confirmation's own preparation is regression-tested). Contention holder and expiry now show for preview-time contention, and notices get a full-width footer line instead of a 60-char clip. Rejected finding: a queue.yaml rebind while the TUI runs does not split domains, because the gate compares against the private receipt, and confirming a new binding is refused while old-key claims are held. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

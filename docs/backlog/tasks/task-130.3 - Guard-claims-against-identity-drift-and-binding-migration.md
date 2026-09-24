@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 04:55'
+updated_date: '2026-09-24 22:23'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129
@@ -63,6 +64,8 @@ Rebinding means editing the source in queue.yaml. No alias may create a second, 
 Implemented owner-private identity receipts, confirmation with old-key checks, fresh duplicate/renumber gates, GitHub drift locator diagnostics, and exported pre-acquisition multi-key verification. Focused tests pass; verifier found stale-list and pre-acquisition gaps, now fixed and regression-tested. Running final gates and integration.
 
 Verification: go test ./... including TestQueueIdentityConfirmationAndRebind (held old-key refusal, explicit confirmation, changed binding), TestQueueIdentityConfirmationRejectsDuplicateIDs, TestIdentityDuplicateGuardRechecksFreshList, TestPreAcquireIdentityUsesFreshListAndBothClaimDomains, TestIdentityRenameTransferRenumberAndRebind, and GitHub rename/transfer tests. mise run lint, format-check, test, typecheck, hooks all passed. One independent verifier pass found two concrete defects (stale list false presence; missing pre-acquisition recheck); fixed both and reran checks. Code commit 55b4de41bd1f92a171343a3c8dd86a06395512d9 fast-forward merged to main. TASK-130.1 must call PreAcquireIdentity immediately before its atomic acquisition.
+
+Review 2026-09-24: fixed in bc19a2c and the follow-up commit. Recorded IDs are no longer compared with partial observations (this falsely blocked GitHub/default claims whenever another confirmed item was held). All Backlog.md sources now compare recorded IDs with a fresh complete list before every acquisition, and the claimed item ID is recorded under a lock before acquiring, so a later renumber is still checked. Adapter-latched GitHub drift is now checked in the gate. Confirmation now permits an authority change covered by the operator acknowledgement (docs/queue.md) and runs under the identity-record lock. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
