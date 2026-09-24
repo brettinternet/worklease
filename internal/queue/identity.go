@@ -24,8 +24,16 @@ func IdentityInputs(source ClaimSource, authorityID string) config.QueueIdentity
 }
 
 // TracksItemIDs reports whether a source's confirmed item IDs are compared
-// with a complete fresh list to detect renumbered items (D12).
+// with a complete fresh list. Backlog.md can renumber a task (duplicate ID
+// repair), which changes its key under either key policy (D12, D24).
 func TracksItemIDs(source ClaimSource, authorityID string) bool {
+	return source.Source.Adapter == "backlog-md"
+}
+
+// portableBacklogBinding is a D12 generic Backlog.md binding. It rejects
+// duplicate IDs from a fresh list before enabling claims and before each
+// acquisition; other Backlog.md sources compare fresh lists only at acquisition.
+func portableBacklogBinding(source ClaimSource, authorityID string) bool {
 	return source.Source.Adapter == "backlog-md" && IdentityInputs(source, authorityID).Policy == "generic"
 }
 
@@ -48,7 +56,7 @@ func IdentityGate(ctx context.Context, source ClaimSource, adapter Adapter, auth
 		return "identity-changed", identityDetail(adapter, source.Source)
 	}
 	freshIDs := map[string]bool(nil)
-	if TracksItemIDs(source, authority.ID) {
+	if portableBacklogBinding(source, authority.ID) {
 		page, err := adapter.List(ctx, source.Source, Query{}, "")
 		if err != nil {
 			return "identity-unknown", "fresh Backlog.md list unavailable"
@@ -95,6 +103,12 @@ func IdentityGate(ctx context.Context, source ClaimSource, adapter Adapter, auth
 			old = append(old, ref.ItemID)
 		}
 	}
+	return missingIDsGate(ctx, authority, previous, old, ids)
+}
+
+// missingIDsGate refuses when an ID absent from ids still has an active claim
+// on its old key: the item may have been renumbered while held.
+func missingIDsGate(ctx context.Context, authority ClaimAuthority, previous config.QueueIdentity, old []string, ids map[string]bool) (string, string) {
 	missing := map[string]bool{}
 	for _, id := range old {
 		if !ids[id] {
@@ -163,10 +177,11 @@ func PreAcquireIdentity(ctx context.Context, source ClaimSource, adapter Adapter
 		if err != nil || page.Coverage.State != CoverageComplete {
 			return nil, fmt.Errorf("fresh source enumeration required before acquisition")
 		}
+		portable := portableBacklogBinding(source, authority.ID)
 		found := false
 		seen := make(map[string]bool, len(page.Items))
 		for _, summary := range page.Items {
-			if seen[summary.Ref.ItemID] {
+			if portable && seen[summary.Ref.ItemID] {
 				return nil, fmt.Errorf("duplicate-item-id: fresh list contains repeated IDs")
 			}
 			seen[summary.Ref.ItemID] = true
@@ -174,6 +189,12 @@ func PreAcquireIdentity(ctx context.Context, source ClaimSource, adapter Adapter
 		}
 		if !found {
 			return nil, fmt.Errorf("identity-changed: item is absent from fresh list")
+		}
+		// IdentityGate already compared a portable binding's recorded IDs.
+		if !portable {
+			if code, detail := missingIDsGate(ctx, authority, previous, previous.ItemIDs, seen); code != "" {
+				return nil, fmt.Errorf("%s: %s", code, detail)
+			}
 		}
 	}
 	current := IdentityInputs(source, authority.ID)

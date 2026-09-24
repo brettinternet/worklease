@@ -152,6 +152,28 @@ func TestIdentityPartialObservationIsNotRenumber(t *testing.T) {
 	}
 }
 
+func TestPreAcquireIdentityRejectsHeldRenumberUnderDefaultBacklogPolicy(t *testing.T) {
+	t.Parallel()
+	source := ClaimSource{Source: Source{ID: "s", Adapter: "backlog-md", Locator: "/checkout"}, ClaimSource: "/checkout/.git"}
+	receipt := IdentityInputs(source, "authority")
+	receipt.ItemIDs = []string{"A"}
+	key, err := resource.Resolve(resource.Input{Provider: receipt.Policy, Source: receipt.Source, Item: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := ClaimAuthority{API: identityStatus{held: map[string]bool{key.Resource: true}}, ID: "authority"}
+	adapter := newFake()
+	adapter.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "B"}}}, Coverage: Coverage{State: CoverageComplete}}}
+	b := Item{Summary: Summary{Ref: Ref{"s", "B"}}}
+	if _, err := PreAcquireIdentity(context.Background(), source, adapter, authority, receipt, b); err == nil || !strings.Contains(err.Error(), "identity-changed") {
+		t.Fatalf("held renumbered task passed the final gate: %v", err)
+	}
+	adapter.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "A"}}, {Ref: Ref{"s", "B"}}}, Coverage: Coverage{State: CoverageComplete}}}
+	if _, err := PreAcquireIdentity(context.Background(), source, adapter, authority, receipt, b); err != nil {
+		t.Fatalf("held task still present blocked another claim: %v", err)
+	}
+}
+
 func TestPreAcquireIdentityRejectsDriftLatchedAfterItemRead(t *testing.T) {
 	t.Parallel()
 	adapter := NewGitHubAdapter()
