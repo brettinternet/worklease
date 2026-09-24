@@ -92,6 +92,7 @@ var testHelperInvocations = map[string][]string{
 	"TestStoreEventProcessHelper":                 {"WORKLEASE_STORE_EVENT_HOME", "WORKLEASE_STORE_EVENT_RESULT"},
 	"TestWatchSubprocessEventWakesFilteredWaiter": {"WORKLEASE_WATCH_HELPER", "WORKLEASE_WATCH_HOME", "WORKLEASE_WATCH_CURSOR"},
 	"TestQueueQueryConcurrentProcessHelper":       {"QUEUE_QUERY_CONCURRENT_ROOT"},
+	"TestLaunchChildHelper":                       {"WORKLEASE_PROFILE", "WORKLEASE_QUEUE_AUTHORITY_ID", "WORKLEASE_QUEUE_REF", "WORKLEASE_QUEUE_RESOURCES"},
 }
 
 func helperEnvironmentForInvocation(environment, arguments []string) map[string]string {

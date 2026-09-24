@@ -30,7 +30,23 @@ views:
       assigned: [me, nobody]
 ```
 
-`checkout` must exist and `~` expands from HOME. Omit `claims` for host-local Backlog.md keys; a portable `generic` source must be agreed by all claimants before use. `allowGitNetwork` defaults to false. GitHub repositories use `owner/repo` and require an explicit host and account. View authorities must be `local` or a name in the trusted `profiles.yaml`; source IDs must be defined above. Filter keys are limited to `readiness`, `claim`, and `assigned`. The `launch` section is not supported in this slice. Missing configuration is reported as `no-sources-configured` with this setup guidance.
+`checkout` must exist and `~` expands from HOME. Omit `claims` for host-local Backlog.md keys; a portable `generic` source must be agreed by all claimants before use. `allowGitNetwork` defaults to false. GitHub repositories use `owner/repo` and require an explicit host and account. View authorities must be `local` or a name in the trusted `profiles.yaml`; source IDs must be defined above. Filter keys are limited to `readiness`, `claim`, and `assigned`. Missing configuration is reported as `no-sources-configured` with this setup guidance.
+
+## Launch handoffs
+
+Owner-private `queue.yaml` can define named launch actions (unique names, non-empty argv, optional cwd and passEnv):
+
+```yaml
+launch:
+  - name: worker
+    argv: [/usr/local/bin/start-worker, --ref, "{ref}"]
+    cwd: "{checkout}"
+    passEnv: [GH_TOKEN] # only when the worker actually needs it
+```
+
+Only `{ref}`, `{sourceId}`, `{itemId}`, and `{checkout}` substitute, within individual argv elements or cwd. Unknown placeholders and keys are errors. `{checkout}` is available for configured local checkouts; API-only sources need an explicit absolute cwd, and an unavailable placeholder disables the action with `unresolved-placeholder`. Execution starts the configured binary directly, without a shell. **Argv substitution prevents shell expansion, not the target program's option parsing**: use explicit value arguments (`--ref={ref}` when supported) or terminate options (`-- "{itemId}"`, according to that program's syntax). An item ID beginning with `-` stays one argument; the launcher must handle it safely.
+
+The child receives only existing `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TMPDIR`, and `XDG_*_HOME`, explicitly named `passEnv` variables, plus `WORKLEASE_PROFILE`, `WORKLEASE_QUEUE_AUTHORITY_ID`, `WORKLEASE_QUEUE_REF`, and `WORKLEASE_QUEUE_RESOURCES` (JSON array of exact claim resources). `GH_TOKEN` and other secrets are excluded unless explicitly passed. Titles, bodies, and session IDs are not supplied; the launched worker creates its own session, checks the authority ID, and acquires the exact resource set. This is a **trusted executable** with the user's privileges, not a sandbox. A successful process start is not a claim or proof of coordination. The queue cannot ensure an arbitrary launcher consumes this handoff. Launch gating and worker-claim display are separate from configuring/executing the handoff.
 
 ## Claim identity and migration
 

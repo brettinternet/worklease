@@ -20,6 +20,36 @@ type QueueConfig struct {
 	Me      map[string]yaml.Node `yaml:"me"`
 	Sources []QueueSource        `yaml:"sources"`
 	Views   []QueueView          `yaml:"views"`
+	Launch  []QueueLaunch        `yaml:"launch"`
+}
+
+// QueueLaunch is a trusted, owner-configured process handoff, not a shell command.
+type QueueLaunch struct {
+	Name    string   `yaml:"name"`
+	Argv    []string `yaml:"argv"`
+	Cwd     string   `yaml:"cwd"`
+	PassEnv []string `yaml:"passEnv"`
+}
+
+var launchPlaceholders = map[string]bool{"ref": true, "sourceId": true, "itemId": true, "checkout": true}
+
+// ValidateLaunchTemplate rejects unrecognized or unbalanced placeholders.
+func ValidateLaunchTemplate(value string) error {
+	for i := 0; i < len(value); {
+		switch value[i] {
+		case '{':
+			end := strings.IndexByte(value[i+1:], '}')
+			if end < 0 || !launchPlaceholders[value[i+1:i+1+end]] {
+				return fmt.Errorf("unknown or unclosed placeholder")
+			}
+			i += end + 2
+		case '}':
+			return fmt.Errorf("unmatched closing brace")
+		default:
+			i++
+		}
+	}
+	return nil
 }
 
 type QueueSource struct {
@@ -98,7 +128,8 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		return QueueConfig{}, fmt.Errorf("queue.yaml: invalid YAML")
 	}
 	schemas := map[string]map[string]bool{
-		"queue":  {"version": true, "me": true, "sources": true, "views": true},
+		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
+		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
 		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true},
 		"claims": {"policy": true, "source": true},
 		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
@@ -166,6 +197,16 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			} else if nested["filter"] == nil {
 				return QueueConfig{}, fmt.Errorf("%s.filter: required", label)
+			}
+		}
+	}
+	if launch := fields["launch"]; launch != nil {
+		if launch.Kind != yaml.SequenceNode {
+			return QueueConfig{}, fmt.Errorf("launch: expected a list")
+		}
+		for i, item := range launch.Content {
+			if err := checkQueueKeys(item, fmt.Sprintf("launch[%d]", i), schemas["launch"]); err != nil {
+				return QueueConfig{}, err
 			}
 		}
 	}
@@ -259,7 +300,44 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			}
 		}
 	}
+	launchNames := map[string]bool{}
+	for i, action := range cfg.Launch {
+		label := fmt.Sprintf("launch[%d]", i)
+		if strings.TrimSpace(action.Name) == "" || launchNames[action.Name] {
+			return QueueConfig{}, fmt.Errorf("%s.name: empty or duplicate name", label)
+		}
+		launchNames[action.Name] = true
+		if len(action.Argv) == 0 || action.Argv[0] == "" {
+			return QueueConfig{}, fmt.Errorf("%s.argv: non-empty executable and argv required", label)
+		}
+		for j, arg := range action.Argv {
+			if err := ValidateLaunchTemplate(arg); err != nil {
+				return QueueConfig{}, fmt.Errorf("%s.argv[%d]: %w", label, j, err)
+			}
+		}
+		if err := ValidateLaunchTemplate(action.Cwd); err != nil {
+			return QueueConfig{}, fmt.Errorf("%s.cwd: %w", label, err)
+		}
+		for j, name := range action.PassEnv {
+			if !validLaunchEnvName(name) || strings.HasPrefix(name, "WORKLEASE_QUEUE_") || name == "WORKLEASE_PROFILE" || name == "WORKLEASE_SESSION_ID" || name == "PI_SESSION_ID" || name == "PI_LOOP_RUN_ID" {
+				return QueueConfig{}, fmt.Errorf("%s.passEnv[%d]: invalid or reserved variable", label, j)
+			}
+		}
+	}
 	return cfg, nil
+}
+
+func validLaunchEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, c := range name {
+		if c == '_' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validRepoPart(s string) bool {
