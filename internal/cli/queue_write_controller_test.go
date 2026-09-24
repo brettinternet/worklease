@@ -75,9 +75,19 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handle.Write(path, original); err != nil {
+	if err := os.Rename(originalPath, path); err != nil {
 		t.Fatal(err)
 	}
+	// The queue renews a held claim while the user interacts with a slow
+	// provider. Move the fixture handle rather than duplicating it so only one
+	// renewal loop advances this claim's revision.
+	lifecycleCtx, stopLifecycle := context.WithCancel(context.Background())
+	lifecycleDone := make(chan struct{})
+	go func() {
+		defer close(lifecycleDone)
+		(queueLifecycle{controller: claimController, now: time.Now}).run(lifecycleCtx, func(queueui.OwnedClaimMsg) {})
+	}()
+	t.Cleanup(func() { stopLifecycle(); <-lifecycleDone })
 	queueConfig := fmt.Sprintf("version: 1\nme:\n  backlog-md: ['@bob']\nsources:\n  - id: tasks\n    adapter: backlog-md\n    checkout: %q\n    claims:\n      policy: generic\n      source: portable\n    workflow:\n      start: In Progress\nviews:\n  - name: Ready\n    authority: local\n    sources: [tasks]\n    filter:\n      readiness: ready\n", root)
 	if err := handle.WriteOwnerPrivate(config.QueuePath(os.Getenv), []byte(queueConfig), 1<<20); err != nil {
 		t.Fatal(err)
