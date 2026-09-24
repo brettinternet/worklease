@@ -30,6 +30,7 @@ BENCHMARKS = (
     ("./internal/queueui", "BenchmarkQueueFullRefreshToRender/items-100000$"),
     ("./internal/queueui", "BenchmarkQueueWarmFirstView$"),
     ("./internal/queue", "BenchmarkGitHubEnumeration"),
+    ("./internal/queueui", "BenchmarkGitHubFirstPageToRender$"),
     ("./internal/queueindex", "BenchmarkIndexedSearch10000"),
 )
 LINE = re.compile(r"^(Benchmark\S+?)-\d+\s+1\s+([\d.]+) ns/op(.*)$")
