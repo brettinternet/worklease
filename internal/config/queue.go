@@ -53,14 +53,15 @@ func ValidateLaunchTemplate(value string) error {
 }
 
 type QueueSource struct {
-	ID              string       `yaml:"id"`
-	Adapter         string       `yaml:"adapter"`
-	Checkout        string       `yaml:"checkout"`
-	Claims          *QueueClaims `yaml:"claims"`
-	AllowGitNetwork bool         `yaml:"allowGitNetwork"`
-	Host            string       `yaml:"host"`
-	Repository      string       `yaml:"repository"`
-	Account         string       `yaml:"account"`
+	ID              string            `yaml:"id"`
+	Adapter         string            `yaml:"adapter"`
+	Checkout        string            `yaml:"checkout"`
+	Claims          *QueueClaims      `yaml:"claims"`
+	Workflow        map[string]string `yaml:"workflow"`
+	AllowGitNetwork bool              `yaml:"allowGitNetwork"`
+	Host            string            `yaml:"host"`
+	Repository      string            `yaml:"repository"`
+	Account         string            `yaml:"account"`
 }
 
 type QueueClaims struct {
@@ -91,6 +92,19 @@ func QueuePath(env func(string) string) string {
 		root = filepath.Join(env("HOME"), ".config")
 	}
 	return filepath.Join(root, "worklease", "queue.yaml")
+}
+
+// QueueRecoveryDir is durable owner-private state, independent of the disposable index.
+// Every queue writer and cancellation path must use this same directory.
+func QueueRecoveryDir(env func(string) string) string {
+	if env == nil {
+		env = os.Getenv
+	}
+	root := strings.TrimSpace(env("XDG_STATE_HOME"))
+	if root == "" {
+		root = filepath.Join(env("HOME"), ".local", "state")
+	}
+	return filepath.Join(root, "worklease", "queue-recovery")
 }
 
 // LoadQueue reads queue.yaml with the same owner/private and no-symlink rules as profiles.yaml.
@@ -130,7 +144,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true},
+		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true},
 		"claims": {"policy": true, "source": true},
 		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
 		"filter": {"readiness": true, "claim": true, "assigned": true},
@@ -178,6 +192,16 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 			if section == "sources" {
+				if workflow := nested["workflow"]; workflow != nil {
+					if err := checkQueueKeys(workflow, label+".workflow", map[string]bool{"start": true, "blocked": true, "review": true, "complete": true, "reopen": true}); err != nil {
+						return QueueConfig{}, err
+					}
+					for intent, transition := range nodeFields(workflow) {
+						if transition.Kind != yaml.ScalarNode || transition.Tag != "!!str" || strings.TrimSpace(transition.Value) == "" {
+							return QueueConfig{}, fmt.Errorf("%s.workflow.%s: expected non-empty provider transition", label, intent)
+						}
+					}
+				}
 				if allow, ok := nested["allowGitNetwork"]; ok && (allow.Kind != yaml.ScalarNode || allow.Tag != "!!bool") {
 					return QueueConfig{}, fmt.Errorf("%s.allowGitNetwork: expected boolean", label)
 				}

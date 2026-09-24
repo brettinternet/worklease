@@ -12,6 +12,10 @@ sources:
     adapter: backlog-md
     checkout: ~/dev/me/worklease
     allowGitNetwork: false
+    workflow:
+      start: In Progress
+      complete: Done
+      reopen: To Do
     claims:
       policy: generic
       source: brettinternet/worklease/backlog
@@ -31,6 +35,8 @@ views:
 ```
 
 `checkout` must exist and `~` expands from HOME. Omit `claims` for host-local Backlog.md keys; a portable `generic` source must be agreed by all claimants before use. `allowGitNetwork` defaults to false. GitHub repositories use `owner/repo` and require an explicit host and account. View authorities must be `local` or a name in the trusted `profiles.yaml`; source IDs must be defined above. Filter keys are limited to `readiness`, `claim`, and `assigned`. Missing configuration is reported as `no-sources-configured` with this setup guidance.
+
+`workflow` is an optional per-source map from `start`, `blocked`, `review`, `complete`, and `reopen` to real provider transitions. Configure only transitions that the provider supports; the write adapter validates each mapping before a write. An absent mapping reports `no-workflow-mapping` rather than inventing a provider status. The queue currently remains read-only; provider write adapters and the UI are separate follow-up tasks. Pending write intents are stored under `$XDG_STATE_HOME/worklease/queue-recovery/` (default `~/.local/state/worklease/queue-recovery/`), apart from the disposable index. Do not delete unresolved records when clearing the cache or logging out.
 
 ## Launch handoffs
 

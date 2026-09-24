@@ -10,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/reason"
 )
@@ -236,7 +238,7 @@ func nextRenewal(last, expiry time.Time, id string) time.Time {
 }
 
 // Cancel permits only a demonstrably no-effect epoch. Checkpoints alone are
-// not provider receipts; the S6 provider-write pipeline will add that route.
+// not provider receipts; journaled provider intents disallow cancellation.
 func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	selected, err := l.controller.selectedAuthority()
 	if err == nil {
@@ -245,6 +247,24 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	// Peek only to choose the lock. Re-read under both locks before any effect.
+	peek, err := handle.Read(path)
+	if err != nil {
+		return err
+	}
+	cacheDir, err := queueindex.CacheDir(os.Getenv, os.Getenv("HOME"))
+	if err != nil {
+		return reason.New(reason.ReasonRecoveryRequired, "queue cache location unavailable; cancellation refused")
+	}
+	journal, err := queue.NewWriteJournal(config.QueueRecoveryDir(os.Getenv), cacheDir)
+	if err != nil {
+		return reason.New(reason.ReasonRecoveryRequired, "queue recovery location unsafe; cancellation refused")
+	}
+	claimLock, err := journal.ClaimLock(ctx, peek.AuthorityID, peek.ClaimID)
+	if err != nil {
+		return err
+	}
+	defer claimLock.Close()
 	var lock *handle.Lock
 	if !selected.Remote {
 		lock, err = handle.AcquireLock(ctx, path+".lock")
@@ -262,7 +282,7 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if h.AuthorityID != selected.ID || h.SessionID != l.controller.queueSession || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil {
+	if h.ClaimID != peek.ClaimID || h.AuthorityID != peek.AuthorityID || h.AuthorityID != selected.ID || h.SessionID != l.controller.queueSession || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil {
 		return reason.New(reason.ReasonRecoveryRequired, "queue claim identity or pending request requires recovery")
 	}
 	verified, err := l.controller.backend.API.Verify(ctx, l.credentials(path, h), h.Resources)
@@ -271,6 +291,13 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	}
 	if !verified.Claim.Active || verified.Claim.ClaimID != h.ClaimID || verified.Claim.Revision != h.Revision || len(verified.UnknownOperations) > 0 || len(verified.Claim.UnknownOperations) > 0 {
 		return reason.New(reason.ReasonRecoveryRequired, "claim is lost or an operation is unresolved")
+	}
+	canCancel, err := journal.CanCancel(h.ClaimID)
+	if err != nil {
+		return reason.New(reason.ReasonRecoveryRequired, "provider write history unavailable; cancellation refused")
+	}
+	if !canCancel {
+		return reason.New(reason.ReasonRecoveryRequired, "provider write intent journaled; cancellation refused")
 	}
 	// An incomplete/pruned history cannot establish the no-effect exception.
 	for _, resource := range h.Resources {

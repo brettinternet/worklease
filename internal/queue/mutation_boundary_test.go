@@ -12,8 +12,9 @@ import (
 )
 
 // This source-level guard complements the provider read-only tests. Queue
-// claim lifecycle methods are confined to the dedicated owner controller;
-// provider writes and guarded operations remain unavailable.
+// claim lifecycle methods stay in the owner controller; the provider-neutral
+// write pipeline may checkpoint only after verified read-back. Concrete
+// provider writes and guarded operations remain unavailable in this slice.
 func TestQueueHasNoMutationCallPath(t *testing.T) {
 	forbidden := map[string]bool{
 		"Acquire": true, "Heartbeat": true, "Checkpoint": true,
@@ -71,6 +72,14 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 
 func queueClaimAuthorityMutation(path string, call *ast.SelectorExpr) bool {
 	name := filepath.Base(path)
+	if name == "write.go" && call.Sel.Name == "Checkpoint" {
+		claim, ok := call.X.(*ast.SelectorExpr)
+		if !ok || claim.Sel.Name != "Claim" {
+			return false
+		}
+		owner, ok := claim.X.(*ast.Ident)
+		return ok && owner.Name == "p"
+	}
 	if name == "queue_claim.go" && call.Sel.Name == "Acquire" {
 		api, ok := call.X.(*ast.SelectorExpr)
 		if !ok || api.Sel.Name != "API" {

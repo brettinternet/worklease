@@ -31,6 +31,11 @@ func TestQueueSchema(t *testing.T) {
 	if err != nil || len(launchConfig.Launch) != 1 || launchConfig.Launch[0].Argv[2] != "{ref}" {
 		t.Fatalf("valid launch: %+v, %v", launchConfig.Launch, err)
 	}
+	withWorkflow := strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    workflow: {start: 'In Progress', complete: Done}", 1)
+	cfg, err = parseQueue([]byte(withWorkflow), env, nil)
+	if err != nil || cfg.Sources[0].Workflow["start"] != "In Progress" {
+		t.Fatalf("workflow mapping: %+v, %v", cfg.Sources[0].Workflow, err)
+	}
 	withGitNetwork := strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    allowGitNetwork: true", 1)
 	cfg, err = parseQueue([]byte(withGitNetwork), env, nil)
 	if err != nil || !cfg.Sources[0].AllowGitNetwork {
@@ -56,6 +61,9 @@ func TestQueueSchema(t *testing.T) {
 		{"duplicate yaml key", base + "version: 1\n", "queue.version"},
 		{"unknown me", strings.Replace(base, "github.com: brett", "github.com: [brett]", 1), "me.github.com"},
 		{"unknown source key", strings.Replace(base, "    adapter: backlog-md", "    bogus: yes\n    adapter: backlog-md", 1), "sources[0].bogus"},
+		{"unknown workflow intent", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    workflow: {assign: Active}", 1), "sources[0].workflow.assign"},
+		{"empty workflow transition", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    workflow: {start: ''}", 1), "sources[0].workflow.start"},
+		{"non-string workflow transition", strings.Replace(base, "    adapter: backlog-md", "    adapter: backlog-md\n    workflow: {start: true}", 1), "sources[0].workflow.start"},
 		{"unknown claims key", strings.Replace(base, "policy: generic", "policy: generic, extra: 1", 1), "sources[0].claims.extra"},
 		{"bad claims", strings.Replace(base, "policy: generic", "policy: backlog-md", 1), "sources[0].claims"},
 		{"unknown adapter", strings.Replace(base, "adapter: github", "adapter: jira", 1), "sources[1].adapter"},
@@ -81,6 +89,27 @@ func TestQueueSchema(t *testing.T) {
 				t.Fatalf("expected %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestQueueRecoveryDir(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if got := QueueRecoveryDir(func(key string) string {
+		if key == "HOME" {
+			return home
+		}
+		return ""
+	}); got != filepath.Join(home, ".local", "state", "worklease", "queue-recovery") {
+		t.Fatalf("default recovery location: %s", got)
+	}
+	if got := QueueRecoveryDir(func(key string) string {
+		if key == "XDG_STATE_HOME" {
+			return home
+		}
+		return ""
+	}); got != filepath.Join(home, "worklease", "queue-recovery") {
+		t.Fatalf("XDG recovery location: %s", got)
 	}
 }
 

@@ -274,7 +274,9 @@ const (
 	ActionResume         Action = "resume"
 	ActionReportBlocked  Action = "report-blocked"
 	ActionRecordProgress Action = "record-progress"
+	ActionRequestReview  Action = "review"
 	ActionComplete       Action = "complete"
+	ActionReopen         Action = "reopen"
 )
 
 type Eligibility struct {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
@@ -101,6 +103,29 @@ func TestQueueLifecycleCancelOnlyNoEffect(t *testing.T) {
 			t.Fatal("second cancellation succeeded")
 		}
 	})
+	t.Run("journaled provider intent", func(t *testing.T) {
+		t.Setenv("XDG_STATE_HOME", t.TempDir())
+		lifecycle, path, _ := claimedLifecycle(t)
+		h, err := handle.Read(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal := queue.WriteJournal{Dir: config.QueueRecoveryDir(os.Getenv)}
+		if err := handle.EnsureOwnerPrivateDir(journal.Dir); err != nil {
+			t.Fatal(err)
+		}
+		id := randomHex(16)
+		record, err := json.Marshal(queue.WriteRecord{Intent: queue.WriteIntent{OperationID: id, ClaimID: h.ClaimID}, Status: "pending", CreatedAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := handle.WriteOwnerPrivateNoReplace(filepath.Join(journal.Dir, id+".json"), record, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Cancel(context.Background(), path); err == nil || !strings.Contains(err.Error(), "provider write intent") {
+			t.Fatalf("journaled write allowed cancellation: %v", err)
+		}
+	})
 	t.Run("guarded operation", func(t *testing.T) {
 		lifecycle, path, backend := claimedLifecycle(t)
 		h, err := handle.Read(path)
@@ -138,6 +163,111 @@ func TestQueueLifecycleCancelOnlyNoEffect(t *testing.T) {
 			t.Fatalf("pending request was cancelled: %v", err)
 		}
 	})
+}
+
+type pausedHistoryAuthority struct {
+	commandAuthority
+	entered         chan struct{}
+	continueHistory chan struct{}
+}
+
+func (a *pausedHistoryAuthority) History(ctx context.Context, resource, cursor string, limit int, full bool) (ledger.HistoryPage, error) {
+	close(a.entered)
+	select {
+	case <-a.continueHistory:
+	case <-ctx.Done():
+		return ledger.HistoryPage{}, ctx.Err()
+	}
+	return a.commandAuthority.History(ctx, resource, cursor, limit, full)
+}
+
+type cancellationWriteAdapter struct{ writes int }
+
+func (*cancellationWriteAdapter) Inspect(context.Context, queue.WriteIntent) (queue.WritePreflight, error) {
+	return queue.WritePreflight{Capability: true, Authorized: true, InScope: true, Fresh: true, NativeAvailable: true, Ready: true, Precondition: "original"}, nil
+}
+func (*cancellationWriteAdapter) ValidateTransition(context.Context, queue.Source, queue.Action, string) error {
+	return nil
+}
+func (a *cancellationWriteAdapter) Write(_ context.Context, intent queue.WriteIntent) (queue.ProviderReceipt, error) {
+	a.writes++
+	return queue.ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID}, nil
+}
+func (*cancellationWriteAdapter) ReadReceipt(context.Context, queue.WriteIntent, *queue.ProviderReceipt) (queue.ReceiptObservation, error) {
+	return queue.ReceiptObservation{Outcome: queue.WriteUnknown}, nil
+}
+
+type cancellationWriteClaim struct {
+	backend     *authorityContext
+	credentials lease.Credentials
+	resources   []string
+}
+
+func (c cancellationWriteClaim) Verify(ctx context.Context, intent queue.WriteIntent) error {
+	v, err := c.backend.API.Verify(ctx, c.credentials, c.resources)
+	if err != nil {
+		return err
+	}
+	if !v.Claim.Active || v.Claim.ClaimID != intent.ClaimID {
+		return fmt.Errorf("claim released")
+	}
+	return nil
+}
+func (c cancellationWriteClaim) Checkpoint(context.Context, queue.WriteIntent, queue.ProviderReceipt) error {
+	return fmt.Errorf("unexpected checkpoint")
+}
+func (c cancellationWriteClaim) CheckpointStatus(context.Context, queue.WriteIntent, queue.ProviderReceipt) (queue.WriteVerification, error) {
+	return queue.WriteUnknown, nil
+}
+
+func TestQueueLifecycleCancelSerializesJournalAdmission(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	lifecycle, path, backend := claimedLifecycle(t)
+	h, err := handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir, err := queueindex.CacheDir(os.Getenv, os.Getenv("HOME"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := queue.NewWriteJournal(config.QueueRecoveryDir(os.Getenv), cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pause := &pausedHistoryAuthority{commandAuthority: backend.API, entered: make(chan struct{}), continueHistory: make(chan struct{})}
+	backend.API = pause
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- lifecycle.Cancel(ctx, path) }()
+	select {
+	case <-pause.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	adapter := &cancellationWriteAdapter{}
+	intent := queue.WriteIntent{OperationID: randomHex(16), Source: queue.Source{ID: "tasks"}, Ref: queue.Ref{SourceID: "tasks", ItemID: "1"}, Principal: "alice", Patch: map[string]string{"status": "Doing"}, Precondition: "original", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: h.Resources, CheckpointTTL: time.Minute, Action: queue.ActionStart, Transition: "Doing"}
+	pipeline := queue.WritePipeline{Adapter: adapter, Claim: cancellationWriteClaim{backend: backend, credentials: lifecycle.credentials(path, h), resources: h.Resources}, Journal: journal, Workflow: map[string]string{"start": "Doing"}}
+	writeDone := make(chan error, 1)
+	go func() { _, writeErr := pipeline.Start(ctx, intent); writeDone <- writeErr }()
+	close(pause.continueHistory)
+	select {
+	case err := <-cancelDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-writeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if adapter.writes != 0 {
+		t.Fatalf("write dispatched during cancellation: %d", adapter.writes)
+	}
 }
 
 func TestQueueLifecycleRemoteRenewAndCancel(t *testing.T) {
