@@ -2,11 +2,16 @@ package queueui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,9 +23,9 @@ import (
 )
 
 // This opt-in fixture measures renderer output and real local claim renewal
-// while a source is rate-limited, an adapter read is hung, and a graph is
-// recomputed alongside a full snapshot publication. It cannot measure physical
-// terminal display paint or remote authority latency.
+// while the GitHub adapter observes a rate limit, another adapter read is
+// stalled, and a graph is recomputed alongside a full snapshot publication.
+// It cannot measure physical terminal display paint or remote authority latency.
 func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 	count, err := strconv.Atoi(os.Getenv("QUEUE_COMBINED_SAMPLES"))
 	if err != nil || count < 1 {
@@ -94,18 +99,87 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 	}()
 	awaitTerminalRow(t, chunks, "ROWZERO")
 
-	// The stalled read deliberately remains unresolved while other work runs.
-	hung := make(chan struct{})
-	hungDone := make(chan struct{})
-	go func() { <-hung; close(hungDone) }()
-	defer func() { close(hung); <-hungDone }()
+	// Exercise the actual HTTP/adapter diagnostic and quota gate while the
+	// renderer is live. A separate request stays blocked at the transport until
+	// cancellation, rather than merely parking a synthetic goroutine.
+	var rateRequests, stalledRequests atomic.Int64
+	stalled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(request.Query, "viewer") {
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		if request.Variables["owner"] == "stalled" {
+			stalledRequests.Add(1)
+			close(stalled)
+			<-r.Context().Done()
+			return
+		}
+		rateRequests.Add(1)
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	binary := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'fixture-token\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	limited := queue.NewGitHubAdapter()
+	limited.Binary, limited.APIBase = binary, server.URL
+	rateSource, err := limited.Resolve(ctx, map[string]string{"host": "github.com", "repository": "org/rate", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := limited.List(ctx, rateSource, queue.Query{}, ""); err == nil {
+		t.Fatal("expected a real adapter rate-limit diagnostic")
+	}
+	stalledAdapter := queue.NewGitHubAdapter()
+	stalledAdapter.Binary, stalledAdapter.APIBase = binary, server.URL
+	stalledSource, err := stalledAdapter.Resolve(ctx, map[string]string{"host": "github.example.com", "repository": "stalled/repo", "account": "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancelRead := context.WithCancel(ctx)
+	readDone := make(chan error, 1)
+	go func() { _, err := stalledAdapter.List(readCtx, stalledSource, queue.Query{}, ""); readDone <- err }()
+	select {
+	case <-stalled:
+	case <-time.After(5 * time.Second):
+		cancelRead()
+		t.Fatal("adapter read did not reach transport")
+	}
+	defer func() {
+		cancelRead()
+		select {
+		case err := <-readDone:
+			if err == nil {
+				t.Error("stalled read unexpectedly succeeded")
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("adapter read did not stop on cancellation")
+		}
+	}()
 
 	inputTimes := make([]time.Duration, 0, count)
 	renewTimes := make([]time.Duration, 0, count)
 	minimumMargin := ttl
 	for i := 0; i < count; i++ {
-		// Simulate a provider retry deadline without scheduling another read.
-		snapshot.Sources["source-1"] = queue.Coverage{State: queue.CoveragePartial, Reason: "rate-limited", RetryAt: time.Now().Add(time.Minute)}
+		// The second read is refused by the real adapter's quota gate without
+		// another HTTP request; render the observed retry state.
+		_, rateErr := limited.List(ctx, rateSource, queue.Query{}, "")
+		diagnostic, ok := rateErr.(queue.GitHubRateDiagnostic)
+		if !ok || diagnostic.RetryAt.Before(time.Now()) {
+			t.Fatalf("quota gate: %v", rateErr)
+		}
+		snapshot.Sources["source-1"] = queue.Coverage{State: queue.CoveragePartial, Reason: diagnostic.Code, RetryAt: diagnostic.RetryAt}
 		// A chain crossing the entire 50k-item snapshot exercises a large
 		// prerequisite traversal off the renderer's input path.
 		graph := make(map[string]queue.Item, 50000)
@@ -177,7 +251,10 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 		return values[(percent*len(values)+99)/100-1]
 	}
-	t.Logf("combined PTY publication+input-to-output n=%d p50=%s p95=%s p99=%s; local renewal p50=%s p95=%s p99=%s, minimum previous-lease margin=%s (no physical paint or remote authority)", count,
+	if rateRequests.Load() != 1 || stalledRequests.Load() != 1 {
+		t.Fatalf("expected one rate-limited HTTP request and one stalled transport, got %d and %d", rateRequests.Load(), stalledRequests.Load())
+	}
+	t.Logf("combined PTY publication+input-to-output n=%d p50=%s p95=%s p99=%s; local renewal p50=%s p95=%s p99=%s, minimum previous-lease margin=%s; GitHub rate HTTP requests=%d, stalled HTTP requests=%d (no physical paint or remote authority)", count,
 		quantile(inputTimes, 50), quantile(inputTimes, 95), quantile(inputTimes, 99),
-		quantile(renewTimes, 50), quantile(renewTimes, 95), quantile(renewTimes, 99), minimumMargin)
+		quantile(renewTimes, 50), quantile(renewTimes, 95), quantile(renewTimes, 99), minimumMargin, rateRequests.Load(), stalledRequests.Load())
 }
