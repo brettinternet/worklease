@@ -44,6 +44,23 @@ worklease queue --view Ready identity confirm --source worklease --acknowledge
 
 The confirmation re-reads the entire source, rejects duplicate task IDs and partial lists, checks old-key claims, and stores the configured claim inputs, observed IDs, and retired claim domains. The pre-acquisition gate must re-read identity and atomically acquire the configured key with all retired item keys admitted by the same authority. A retired host-local key cannot be admitted by a remote authority: only the operator's explicit acknowledgement that legacy workers and operations stopped permits that transition; the queue cannot fence or discover claims in separate authorities. Callers must fail closed if the current key is not admitted. A portable Backlog.md source re-reads its list again for availability and immediately before each future acquisition (the acquisition implementation is TASK-130.1); duplicates disable claim actions with `duplicate-item-id`. A vanished ID with a held old key, a GitHub rename/transfer, or a rebind reports `identity-changed` or `binding-migration-required` with the old/new locator where observed. On GitHub, edit `queue.yaml` to the actual new repository before confirming; an unresolved redirect cannot be confirmed. Resolved immutable repository IDs are for observation only, never substituted into claim keys.
 
+## Select next work
+
+`worklease queue next --view Ready --json` examines the entire configured source scope and dependency graph before selecting one item. `--group N` (1–32) returns a bounded wave without overlapping exact claim resources, including exclusions and their reasons. Repeat `--item SOURCE:ITEM` to limit selection to exact refs in that order; this deliberate choice may override advisory assignment (including an assignment view filter), but never readiness or claim checks. Otherwise configured source order, provider priority/order, and stable ref break ties. This is a **read-only observation**, not a reservation: `acquired` is always false. Results distinguish `ready`, `complete-and-empty`, `blocked`, `active-claims`, `assigned-elsewhere`, `ineligible`, and `incomplete`; the latter includes source coverage and item exclusion reasons. Assignment to another person is excluded by default, even when a view does not filter assignments. An unclaimed in-progress item can be resumed. Neither command launches a worker.
+
+For a manual claim, take the candidate's exact resource from `next`, acquire it through the same authority, and re-query on contention (another worker may win the race):
+
+```sh
+worklease queue next --view Ready --json
+worklease acquire --resource 'RESOURCE_FROM_NEXT' --session 'WORKER_SESSION'
+# On contention: worklease queue next --view Ready --json again.
+worklease heartbeat --session 'WORKER_SESSION'
+# Persist and verify provider progress before release.
+worklease release --session 'WORKER_SESSION' --reason 'provider checkpoint verified'
+```
+
+For agent loops, use the forthcoming TASK-130.5 `worklease queue next --view Ready --claim --session 'WORKER_SESSION' --json` instead of the manual race-prone pair. It will select and acquire in one invocation, skip contended candidates, and return one worker-owned claim. **`--claim` is not available until TASK-130.5 lands.** The worker owns its heartbeat and release; the queue does not renew it.
+
 ## Read-only query
 
 `worklease queue query --view Ready --json` emits the queue query schema v1 inside the normal CLI schema-version 2 envelope. The `query` object contains the view name, authority profile/id/scope, per-source coverage and freshness, an `incomplete` flag, items, and an optional opaque `nextCursor`. Items carry `ref`, display/provider IDs, title, raw/normalized state, readiness and reasons, provider readiness, assignment, claim observation/native state, exact `resources` and `keyInputs` from the claim identity rules, and an `actions` map whose start/claim/launch/resume/report-blocked/record-progress/complete entries include `eligible`, `reasons`, `requires`, and `outcome`. Unknown action capabilities remain unavailable with reasons. The source rows contain coverage and freshness; provider-specific diagnostics are included when available. Schema v1 is the `query.schemaVersion` contract and is independent of the outer Worklease envelope version.

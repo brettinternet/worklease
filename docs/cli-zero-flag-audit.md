@@ -24,6 +24,7 @@ local default, or reports the missing required input without guessing.
 | `gc` | Preview retention | Never applies without `--apply` |
 | `doctor` | Run read-only diagnostics | No state mutation |
 | `queue query` | Report missing required view | Requires a configured view; read-only |
+| `queue next` | Report missing required view | Requires a configured view and complete scope; selects without acquiring |
 | `queue identity confirm` | Reject missing view, source, or acknowledgement | Confirm only after stopping old workers and resolving old claims and operations |
 | `policy list` | List built-in policies | Read-only |
 | `policy describe` | Report missing policy name | Read-only |

@@ -647,6 +647,6 @@ The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel fr
 These do not block S1 or S2. Each needs an answer recorded here before the named slice starts.
 
 - **Answered for 25 clients / 500 claims on D22:** polling did not saturate the authority in TASK-129.7's 10-minute-TTL run (§14); no server-side coalescing is required at this measured scale. The model predicts ~100 store polls/s; direct SQLite poll counts and larger scales remain unproven. Two shorter-TTL renewal rounds succeeded, but sustained shorter-TTL capacity cannot be inferred from the claim count alone.
-- The shape of provider-neutral claim paging, if any feature needs to enumerate claims (before S4 if `next` requires it).
+- **Answered for S4 (`queue next`):** no provider-neutral claim paging is needed. Next enumerates the complete configured source scope and dependency edges, then observes exact resource claims through the existing bounded batch-status overlay (up to 32 keys per request, split on oversized responses). It never enumerates every claim in the authority. Unknown status fails selection closed; a wave is an observation, not a reservation. Revisit paging only if a future feature must enumerate claims outside the source-scoped resource set.
 - Whether to map GitHub Projects v2 status fields; this needs the `project` scope and per-project field discovery (before S6).
 - A headless GitHub identity: GitHub App installation versus fine-grained tokens (before any unattended write).
