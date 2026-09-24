@@ -1,10 +1,11 @@
 ---
 id: TASK-132.3
 title: Add GitHub Issues write operations
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-24 17:20'
 labels:
   - work-queue
   - github
@@ -31,19 +32,37 @@ Plan section 10 requires verifying `viewer.login` against the configured account
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Close and reopen send a state reason and are verified by read-back of state and stateReason. A `not_planned` close is never presented as successful completion
-- [ ] #2 Start, blocked, and review intents are unavailable with reason `no-workflow-mapping` unless a supported mapping exists per the plan section 17 decision
-- [ ] #3 Record progress posts a comment containing the HTML-comment marker and is verified with the TASK-132.1 rules
-- [ ] #4 Assign to me uses the add-assignees endpoint, never removes other assignees, and is verified by read-back
-- [ ] #5 Body and checklist edits are unavailable with reason `no-conditional-body-write`
-- [ ] #6 The principal is verified before every write and after credential changes. On a mismatch, writes are refused and no request is sent
-- [ ] #7 Mutations are spaced at least 1 s apart per account, and rate-limit headers are honored. A write whose outcome is uncertain is never retried
-- [ ] #8 Both plan section 17 GitHub questions are answered in the plan before completion, and unattended writes stay disabled until the headless-identity decision is recorded
-- [ ] #9 Tests against the fake GitHub cover each operation, principal mismatch, lost responses with lagging read-back, and rate limiting
+- [x] #1 Close and reopen send a state reason and are verified by read-back of state and stateReason. A `not_planned` close is never presented as successful completion
+- [x] #2 Start, blocked, and review intents are unavailable with reason `no-workflow-mapping` unless a supported mapping exists per the plan section 17 decision
+- [x] #3 Record progress posts a comment containing the HTML-comment marker and is verified with the TASK-132.1 rules
+- [x] #4 Assign to me uses the add-assignees endpoint, never removes other assignees, and is verified by read-back
+- [x] #5 Body and checklist edits are unavailable with reason `no-conditional-body-write`
+- [x] #6 The principal is verified before every write and after credential changes. On a mismatch, writes are refused and no request is sent
+- [x] #7 Mutations are spaced at least 1 s apart per account, and rate-limit headers are honored. A write whose outcome is uncertain is never retried
+- [x] #8 Both plan section 17 GitHub questions are answered in the plan before completion, and unattended writes stay disabled until the headless-identity decision is recorded
+- [x] #9 Tests against the fake GitHub cover each operation, principal mismatch, lost responses with lagging read-back, and rate limiting
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
-- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+- [x] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
+- [x] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Defer Projects v2 status mapping; use explicit GitHub App installation identity for future unattended writes, leaving unattended writes disabled until configured and verified. 2. Implement interactive GitHub issue state, comment, and add-assignees writes through the recoverable pipeline with fresh principal checks and shared account rate scheduling. 3. Exercise operations, lost responses, and rate limits against the fake API; run repository gates, review, commit, integrate, and finalize.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+d1d1201 fast-forward merged to main. Fake GitHub tests verify close/reopen reasons and NOT_PLANNED refusal; unmapped intents/body edits; comment marker/author and lagging lost-response recovery without redispatch; add-assignees preserves others; credential rotation/principal mismatch refuses mutation; rate-limited write honors Retry-After and is not retried. Scheduler fake-clock test verifies >=1 s account mutation slots. Focused race test: go test -race -count=3 -run TestGitHub(Write|NotPlanned|Lost|Writes) ./internal/queue passed. mise run lint, format-check, test, typecheck, hooks and commit hook passed. One general review surfaced mutation spacing, lagging state/assignment read-back, and read-only recovery gaps; all corrected and rerun, final reviewer PASS. Initial suite attempt hit known queueindex TestLockIsSingleFlightAcrossProcesses flake (TASK-136.1); subsequent full suite and hooks passed. Decision: defer Projects v2; choose future explicit GitHub App installation identity; unattended writes remain disabled. Worktree task-132-3-github-writes removed with branch after merge; no remaining blocker.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added interactive GitHub issue state, progress-comment, and add-assignee writes with principal verification, rate scheduling, and recoverable read-back; tested fake provider and race paths, all required gates passed. Merged d1d1201 to main and removed worktree.
+<!-- SECTION:FINAL_SUMMARY:END -->
