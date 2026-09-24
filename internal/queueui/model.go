@@ -19,17 +19,39 @@ import (
 
 // SnapshotMsg publishes immutable source state without changing the focused pane.
 type SnapshotMsg struct {
-	Snapshot    queue.Snapshot
-	orderedKeys []string
-	sourceIDs   []string
-	allRows     []queue.Item
-	rowIndexes  map[string]int
-	prepared    bool
+	Snapshot           queue.Snapshot
+	orderedKeys        []string
+	sourceIDs          []string
+	allRows            []queue.Item
+	rowIndexes         map[string]int
+	preparedRows       []queue.Item
+	preparedRowIndexes map[string]int
+	preparedCounts     map[string]int
+	preparedObserved   time.Time
+	preparedEdges      int
+	projection         snapshotProjection
+	hasProjection      bool
+	prepared           bool
+}
+
+type snapshotProjection struct {
+	ViewName    string
+	Filter      string
+	Me          string
+	Sources     []queue.Source
+	Views       []string
+	ViewFilters map[string]queue.Filters
+	ViewRules   map[string]ViewRule
+	MeBySource  map[string][]string
 }
 
 // PrepareSnapshot copies producer-owned state before handing it to Bubble Tea.
 // The producer must not mutate the returned message after sending it.
 func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotMsg {
+	return prepareSnapshot(snapshot, true, sources...)
+}
+
+func prepareSnapshot(snapshot queue.Snapshot, prepareAllRows bool, sources ...queue.Source) SnapshotMsg {
 	prepared := snapshot.Clone()
 	message := SnapshotMsg{Snapshot: prepared, prepared: true}
 	if len(sources) > 0 {
@@ -39,21 +61,97 @@ func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotM
 		}
 		message.sourceIDs = order
 		message.orderedKeys = queue.OrderedKeys(prepared.Items, order)
-		message.allRows = make([]queue.Item, 0, len(message.orderedKeys))
-		message.rowIndexes = make(map[string]int, len(message.orderedKeys))
-		seen := make(map[string]bool, len(message.orderedKeys))
-		for _, key := range message.orderedKeys {
-			item := prepared.Items[key]
-			if id := identity(item); seen[id] {
-				continue
-			} else {
-				seen[id] = true
+		if prepareAllRows {
+			message.allRows = make([]queue.Item, 0, len(message.orderedKeys))
+			message.rowIndexes = make(map[string]int, len(message.orderedKeys))
+			seen := make(map[string]bool, len(message.orderedKeys))
+			for _, key := range message.orderedKeys {
+				item := prepared.Items[key]
+				if id := identity(item); seen[id] {
+					continue
+				} else {
+					seen[id] = true
+				}
+				message.rowIndexes[key] = len(message.allRows)
+				message.allRows = append(message.allRows, item)
 			}
-			message.rowIndexes[key] = len(message.allRows)
-			message.allRows = append(message.allRows, item)
 		}
 	}
 	return message
+}
+
+// PrepareSnapshotForModel computes the selected configured-view projection and
+// view counts on the producer worker. The event loop still reconciles newer
+// claim observations before adopting the prepared projection.
+func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
+	message := prepareSnapshot(snapshot, false, model.Sources...)
+	message.projection = projectionForModel(model)
+	message.hasProjection = true
+
+	preparedModel := model
+	preparedModel.Snapshot = message.Snapshot
+	preparedModel.orderedKeys = message.orderedKeys
+	preparedModel.rowCache = nil
+	message.preparedRows = preparedModel.rows()
+	message.preparedRowIndexes = make(map[string]int, len(message.preparedRows))
+	for index, item := range message.preparedRows {
+		message.preparedRowIndexes[item.Ref.Key()] = index
+	}
+	message.preparedCounts = make(map[string]int, len(preparedModel.Views))
+	for _, name := range preparedModel.Views {
+		message.preparedCounts[name] = preparedModel.viewCount(name)
+	}
+	if _, ok := message.preparedCounts[preparedModel.ViewName]; !ok {
+		message.preparedCounts[preparedModel.ViewName] = preparedModel.viewCount(preparedModel.ViewName)
+	}
+	message.preparedObserved, message.preparedEdges = snapshotRowMetrics(message.Snapshot)
+	return message
+}
+
+func projectionForModel(model Model) snapshotProjection {
+	projection := snapshotProjection{
+		ViewName: model.ViewName,
+		Filter:   model.Filter,
+		Me:       model.Me,
+		Sources:  append([]queue.Source(nil), model.Sources...),
+		Views:    append([]string(nil), model.Views...),
+	}
+	if model.ViewFilters != nil {
+		projection.ViewFilters = make(map[string]queue.Filters, len(model.ViewFilters))
+		for name, filters := range model.ViewFilters {
+			filters.SourceIDs = append([]string(nil), filters.SourceIDs...)
+			filters.States = append([]queue.StateCategory(nil), filters.States...)
+			projection.ViewFilters[name] = filters
+		}
+	}
+	if model.ViewRules != nil {
+		projection.ViewRules = make(map[string]ViewRule, len(model.ViewRules))
+		for name, rule := range model.ViewRules {
+			rule.Assigned = append([]string(nil), rule.Assigned...)
+			projection.ViewRules[name] = rule
+		}
+	}
+	if model.MeBySource != nil {
+		projection.MeBySource = make(map[string][]string, len(model.MeBySource))
+		for source, names := range model.MeBySource {
+			projection.MeBySource[source] = append([]string(nil), names...)
+		}
+	}
+	return projection
+}
+
+func snapshotRowMetrics(snapshot queue.Snapshot) (time.Time, int) {
+	var observed time.Time
+	edges := 0
+	for _, item := range snapshot.Items {
+		if item.Observation.ObservedAt.After(observed) {
+			observed = item.Observation.ObservedAt
+		}
+		if item.DependenciesKnown && item.Closure == queue.CoverageComplete && item.Fresh {
+			edges++
+		}
+	}
+	return observed, edges
 }
 
 type ClaimOverlayMsg struct {
@@ -425,6 +523,16 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		}
 	}
 }
+
+func (m Model) cachePreparedRows(key string, rows []queue.Item, counts map[string]int, observed time.Time, edges int) {
+	if m.rowCache != nil {
+		m.rowCache.key = key
+		m.rowCache.rows = rows
+		m.rowCache.counts = counts
+		m.rowCache.observed = observed
+		m.rowCache.edges = edges
+	}
+}
 func (m Model) selected(rows []queue.Item) (queue.Item, bool) {
 	for _, i := range rows {
 		if identity(i) == m.Selected {
@@ -504,15 +612,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !v.prepared {
 			updated = v.Snapshot.Clone()
 		}
+		projectionUsable := v.hasProjection && reflect.DeepEqual(v.projection, projectionForModel(m)) && sameSourceOrder(m.Sources, v.sourceIDs)
+		preparedRowsUsable := projectionUsable
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
+				beforeItem := item
+				beforeClaim := item.Claim
 				gapInvalidated := m.RebuildingClaims && prior.Claim.Stale && prior.Claim.Reason == "history-gap"
 				if gapInvalidated || !prior.Claim.ObservedAt.Before(item.Claim.ObservedAt) {
 					item.Claim, item.Resources, item.KeyInputs = prior.Claim, prior.Resources, prior.KeyInputs
 				}
+				if projectionUsable && beforeClaim != item.Claim {
+					for name := range v.preparedCounts {
+						beforeMatches := m.viewCountMatches(beforeItem, name)
+						afterMatches := m.viewCountMatches(item, name)
+						if beforeMatches != afterMatches {
+							if afterMatches {
+								v.preparedCounts[name]++
+							} else {
+								v.preparedCounts[name]--
+							}
+							if name == m.ViewName {
+								preparedRowsUsable = false
+							}
+						}
+					}
+				}
 				updated.Items[key] = item
 				if index, ok := v.rowIndexes[key]; ok {
 					v.allRows[index] = item
+				}
+				if index, ok := v.preparedRowIndexes[key]; ok {
+					v.preparedRows[index] = item
 				}
 			}
 		}
@@ -521,9 +652,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !sameSourceOrder(m.Sources, v.sourceIDs) {
 			m.orderedKeys = nil
 		}
-		// The producer prepared the unfiltered All projection. Other views
-		// still filter the current snapshot on the input loop.
-		if v.allRows != nil && m.ViewName == "All" && m.Filter == "" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0 && sameSourceOrder(m.Sources, v.sourceIDs) {
+		if preparedRowsUsable {
+			m.cachePreparedRows(m.rowKey(), v.preparedRows, v.preparedCounts, v.preparedObserved, v.preparedEdges)
+		}
+		if !preparedRowsUsable && v.allRows != nil && m.ViewName == "All" && m.Filter == "" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0 && sameSourceOrder(m.Sources, v.sourceIDs) {
 			m.cacheRows(m.rowKey(), v.allRows)
 		}
 		m.anchor(m.rows())
@@ -652,6 +784,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Claim unavailable: preview identity changed"
 			} else {
 				if current, ok := m.Snapshot.Items[v.Item.Ref.Key()]; ok {
+					if current.Ref != v.Item.Ref || current.Order != v.Item.Order {
+						m.orderedKeys = nil
+					}
 					v.Item.Claim, v.Item.Resources, v.Item.KeyInputs = current.Claim, current.Resources, current.KeyInputs
 				}
 				m.Snapshot.Items[v.Item.Ref.Key()] = v.Item
@@ -1485,71 +1620,77 @@ func (m Model) viewCount(name string) int {
 		return len(m.Recovery)
 	}
 	n := 0
-	rule := m.ViewRules[name]
-	filters := m.ViewFilters[name]
-	for _, i := range m.Snapshot.Items {
-		if len(filters.SourceIDs) > 0 {
-			found := false
-			for _, id := range filters.SourceIDs {
-				if id == i.Ref.SourceID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
+	for _, item := range m.Snapshot.Items {
+		if m.viewCountMatches(item, name) {
+			n++
 		}
-		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
-			continue
-		}
-		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
-			continue
-		}
-		if len(rule.Assigned) > 0 {
-			found := false
-			for _, kind := range rule.Assigned {
-				if kind == "nobody" && len(i.AssignedTo) == 0 {
-					found = true
-				}
-				for _, person := range i.AssignedTo {
-					if (kind == "me" && m.isMe(i, person)) || kind == person {
-						found = true
-					}
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		if _, configured := m.ViewRules[name]; !configured {
-			switch name {
-			case "Ready":
-				if i.Readiness.Status != queue.Ready {
-					continue
-				}
-			case "Mine":
-				if m.Me == "" {
-					continue
-				}
-				found := false
-				for _, person := range i.AssignedTo {
-					if m.isMe(i, person) {
-						found = true
-					}
-				}
-				if !found {
-					continue
-				}
-			case "Claimed":
-				if !i.Claim.Active {
-					continue
-				}
-			}
-		}
-		n++
 	}
 	return n
+}
+
+func (m Model) viewCountMatches(item queue.Item, name string) bool {
+	rule := m.ViewRules[name]
+	filters := m.ViewFilters[name]
+	if len(filters.SourceIDs) > 0 {
+		found := false
+		for _, id := range filters.SourceIDs {
+			if id == item.Ref.SourceID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness {
+		return false
+	}
+	if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(item, rule.Claim) {
+		return false
+	}
+	if len(rule.Assigned) > 0 {
+		found := false
+		for _, kind := range rule.Assigned {
+			if kind == "nobody" && len(item.AssignedTo) == 0 {
+				found = true
+			}
+			for _, person := range item.AssignedTo {
+				if (kind == "me" && m.isMe(item, person)) || kind == person {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if _, configured := m.ViewRules[name]; !configured {
+		switch name {
+		case "Ready":
+			if item.Readiness.Status != queue.Ready {
+				return false
+			}
+		case "Mine":
+			if m.Me == "" {
+				return false
+			}
+			found := false
+			for _, person := range item.AssignedTo {
+				if m.isMe(item, person) {
+					found = true
+				}
+			}
+			if !found {
+				return false
+			}
+		case "Claimed":
+			if !item.Claim.Active {
+				return false
+			}
+		}
+	}
+	return true
 }
 func (m Model) isMe(item queue.Item, owner string) bool {
 	for _, name := range m.MeBySource[item.Ref.SourceID] {

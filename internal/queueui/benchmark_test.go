@@ -27,6 +27,31 @@ func benchSnapshot(n int) queue.Snapshot {
 	return queue.Snapshot{Items: items, Sources: coverage}
 }
 
+func configuredBenchModel(snapshot queue.Snapshot) Model {
+	m := New(snapshot)
+	m.Sources = []queue.Source{{ID: "source-0"}, {ID: "source-1"}, {ID: "source-2"}, {ID: "source-3"}, {ID: "source-4"}}
+	m.Views = []string{"Work", "Ready", "Claimed"}
+	m.ViewName = "Work"
+	m.ViewFilters = make(map[string]queue.Filters, len(m.Views))
+	m.ViewRules = map[string]ViewRule{
+		"Work":    {Readiness: string(queue.Ready), Claim: "all"},
+		"Ready":   {Readiness: string(queue.Ready), Claim: "all"},
+		"Claimed": {Readiness: "all", Claim: "held"},
+	}
+	sourceIDs := make([]string, 0, len(m.Sources))
+	for _, source := range m.Sources {
+		sourceIDs = append(sourceIDs, source.ID)
+	}
+	for _, name := range m.Views {
+		m.ViewFilters[name] = queue.Filters{SourceIDs: append([]string(nil), sourceIDs...)}
+	}
+	for key, item := range m.Snapshot.Items {
+		item.Readiness.Status = queue.Ready
+		m.Snapshot.Items[key] = item
+	}
+	return m
+}
+
 func BenchmarkQueueInputToRender(b *testing.B) {
 	for _, size := range []int{10000, 50000, 100000} {
 		b.Run(fmt.Sprintf("items-%d", size), func(b *testing.B) {
@@ -123,6 +148,33 @@ func BenchmarkQueuePreparedRefreshToRender(b *testing.B) {
 				_ = m.View()
 				if m.rowCache.rows == nil {
 					b.Fatal("missing refreshed rows")
+				}
+			}
+		})
+	}
+}
+
+// Benchmark the configured production view maps populated by runQueue. The
+// producer prepares the selected view and all view counts; only Update+View are timed.
+func BenchmarkQueuePreparedConfiguredRefreshToRender(b *testing.B) {
+	for _, size := range []int{10000, 50000, 100000} {
+		b.Run(fmt.Sprintf("items-%d", size), func(b *testing.B) {
+			snapshot := benchSnapshot(size)
+			m := configuredBenchModel(snapshot)
+			snapshot = m.Snapshot
+			_ = m.View()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				snapshot.Revision++
+				message := PrepareSnapshotForModel(snapshot, m)
+				b.StartTimer()
+				next, _ := m.Update(message)
+				m = next.(Model)
+				_ = m.View()
+				if len(m.rowCache.rows) != size {
+					b.Fatalf("configured view has %d rows, want %d", len(m.rowCache.rows), size)
 				}
 			}
 		})
