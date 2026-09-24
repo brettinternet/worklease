@@ -493,6 +493,24 @@ func receiptFromOperation(op operationRow, idempotent bool, out *Receipt) (Recei
 	}
 	return r, nil
 }
+
+// CheckpointRequestHash derives the exact authority hash for a normalized
+// checkpoint request. Recovery compares it with a private completed-operation
+// record even after its replay deadline has expired.
+func CheckpointRequestHash(authorityID, claimID string, data []byte, ttl time.Duration, deadline, holdUntil time.Time, actor *RemoteActor) (string, error) {
+	canonical, err := strictCheckpoint(data)
+	if err != nil {
+		return "", err
+	}
+	intent := map[string]any{"kind": "checkpoint", "authorityId": authorityID, "claimId": claimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if actor != nil {
+		intent["expectedRestoreId"], intent["installationId"] = actor.ExpectedRestoreID, actor.InstallationID
+		intent["protocolVersion"] = "worklease-http/1"
+		holdUntil = time.Time{}
+	}
+	return lifecycleRequestHash(intent, holdUntil), nil
+}
+
 func lifecycleRequestHash(v map[string]any, holdUntil time.Time) string {
 	if _, remote := v["expectedRestoreId"]; remote {
 		v["protocolVersion"] = "worklease-http/1"

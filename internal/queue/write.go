@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,12 +114,52 @@ type WriteResult struct {
 
 // WriteRecord lives in owner-private state, not the disposable queue index.
 type WriteRecord struct {
-	Intent         WriteIntent      `json:"intent"`
-	Receipt        *ProviderReceipt `json:"receipt,omitempty"`
-	Status         string           `json:"status"`
-	CreatedAt      time.Time        `json:"createdAt"`
-	ResolvedAt     time.Time        `json:"resolvedAt,omitempty"`
-	Reconciliation string           `json:"reconciliation,omitempty"`
+	Intent                 WriteIntent      `json:"intent"`
+	Receipt                *ProviderReceipt `json:"receipt,omitempty"`
+	Status                 string           `json:"status"`
+	CreatedAt              time.Time        `json:"createdAt"`
+	DispatchedAt           time.Time        `json:"dispatchedAt,omitempty"`
+	LastReadback           string           `json:"lastReadback,omitempty"`
+	ResolvedAt             time.Time        `json:"resolvedAt,omitempty"`
+	Reconciliation         string           `json:"reconciliation,omitempty"`
+	ReconciliationOperator string           `json:"reconciliationOperator,omitempty"`
+}
+
+// RecoveryEntry is the shared, non-secret queue recovery projection for the
+// CLI and TUI. The full private intent stays in the owner-only journal.
+type RecoveryEntry struct {
+	OperationID string     `json:"operationId"`
+	Ref         Ref        `json:"ref"`
+	Action      Action     `json:"action"`
+	Effect      string     `json:"effect"`
+	Principal   string     `json:"principal"`
+	Marker      string     `json:"marker"`
+	Effects     []string   `json:"requiredEffects"`
+	Status      string     `json:"status"`
+	ClaimID     string     `json:"claimId"`
+	Resources   []string   `json:"resources"`
+	Dispatched  *time.Time `json:"dispatchedAt"`
+	Readback    string     `json:"lastReadback"`
+	Next        []string   `json:"allowedNextSteps"`
+}
+
+func (r WriteRecord) RecoveryEntry() RecoveryEntry {
+	effect := r.Intent.Transition
+	if r.Intent.Append != "" {
+		effect = "append " + r.Intent.Patch["append"] + ": " + r.Intent.Append
+	} else if r.Intent.Action == ActionAssignToMe {
+		effect = "assign " + r.Intent.Principal
+	}
+	next := []string{"retry read-back"}
+	if r.Status == "unknown" && r.Receipt == nil && r.LastReadback != string(WriteVerified) {
+		next = append(next, "operator reconciliation after proving no commit and executor cessation")
+	}
+	var dispatched *time.Time
+	if !r.DispatchedAt.IsZero() {
+		at := r.DispatchedAt
+		dispatched = &at
+	}
+	return RecoveryEntry{OperationID: r.Intent.OperationID, Ref: r.Intent.Ref, Action: r.Intent.Action, Effect: effect, Principal: r.Intent.Principal, Marker: r.Intent.Marker, Effects: append([]string(nil), r.Intent.Effects...), Status: r.Status, ClaimID: r.Intent.ClaimID, Resources: append([]string(nil), r.Intent.Resources...), Dispatched: dispatched, Readback: r.LastReadback, Next: next}
 }
 
 const maxWriteRecord = 1 << 20
@@ -222,6 +263,20 @@ func (j WriteJournal) save(record WriteRecord, create bool) error {
 	return handle.WriteOwnerPrivate(path, data, maxWriteRecord)
 }
 
+func (j WriteJournal) Recovery() ([]RecoveryEntry, error) {
+	records, err := j.Records()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]RecoveryEntry, 0, len(records))
+	for _, record := range records {
+		if record.Status != "resolved" && record.Status != "reconciled" {
+			entries = append(entries, record.RecoveryEntry())
+		}
+	}
+	return entries, nil
+}
+
 func (j WriteJournal) Records() ([]WriteRecord, error) {
 	if err := handle.EnsureOwnerPrivateDir(j.Dir); err != nil {
 		return nil, err
@@ -242,6 +297,12 @@ func (j WriteJournal) Records() ([]WriteRecord, error) {
 		}
 		records = append(records, record)
 	}
+	sort.Slice(records, func(a, b int) bool {
+		if records[a].CreatedAt.Equal(records[b].CreatedAt) {
+			return records[a].Intent.OperationID < records[b].Intent.OperationID
+		}
+		return records[a].CreatedAt.Before(records[b].CreatedAt)
+	})
 	return records, nil
 }
 
@@ -386,8 +447,16 @@ func (p WritePipeline) Start(ctx context.Context, intent WriteIntent) (WriteResu
 	}
 	// The fsynced intent is the point of no cancellation. Even a failed
 	// dispatch is unknown unless the source proves it made no effect.
+	record.Status, record.DispatchedAt = "dispatching", p.now()
+	if err := p.Journal.save(record, false); err != nil {
+		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "dispatch boundary uncertain; recover before release"}, err
+	}
 	receipt, writeErr := p.Adapter.Write(ctx, intent)
 	if writeErr != nil {
+		record.Status = "unknown"
+		if err := p.Journal.save(record, false); err != nil {
+			return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "write and journal outcomes unknown; recovery required"}, err
+		}
 		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "provider outcome unknown; recovery required"}, writeErr
 	}
 	if receipt.SourceID != intent.Ref.SourceID || receipt.ItemID != intent.Ref.ItemID {
@@ -446,9 +515,9 @@ func (p WritePipeline) Recover(ctx context.Context, id string) (WriteResult, err
 // Reconcile closes unknown provider intent only on an explicit operator
 // attestation that the previous executor ceased and the provider outcome was
 // investigated. It never manufactures a provider checkpoint or verification.
-func (p WritePipeline) Reconcile(ctx context.Context, id, evidence string, executorCeased bool) error {
-	if strings.TrimSpace(evidence) == "" || !executorCeased {
-		return fmt.Errorf("reconciliation requires evidence and executor cessation")
+func (p WritePipeline) Reconcile(ctx context.Context, id, operator, evidence string, noCommit, executorCeased bool) error {
+	if strings.TrimSpace(operator) == "" || strings.TrimSpace(evidence) == "" || !noCommit || !executorCeased {
+		return fmt.Errorf("reconciliation requires operator identity, evidence of no commit, and executor cessation")
 	}
 	record, err := p.Journal.Read(id)
 	if err != nil {
@@ -463,11 +532,12 @@ func (p WritePipeline) Reconcile(ctx context.Context, id, evidence string, execu
 	if err != nil {
 		return err
 	}
-	if record.Status == "resolved" || record.Status == "reconciled" {
-		return fmt.Errorf("provider write already closed")
+	if record.Status != "unknown" || record.Receipt != nil || record.LastReadback == string(WriteVerified) {
+		return fmt.Errorf("provider write already observed; reconciliation cannot assert no commit")
 	}
 	record.Status = "reconciled"
 	record.Reconciliation = evidence
+	record.ReconciliationOperator = operator
 	record.ResolvedAt = p.now()
 	return p.Journal.save(record, false)
 }
@@ -476,9 +546,23 @@ func (p WritePipeline) verify(ctx context.Context, record WriteRecord) (WriteRes
 	intent := record.Intent
 	observation, err := p.Adapter.ReadReceipt(ctx, intent, record.Receipt)
 	if err != nil {
+		if record.Receipt == nil {
+			record.Status = "unknown"
+		}
+		record.LastReadback = "unavailable: " + err.Error()
+		if saveErr := p.Journal.save(record, false); saveErr != nil {
+			return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "read-back and journal unavailable"}, saveErr
+		}
 		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "read-back unavailable"}, err
 	}
 	result := checkWriteEvidence(intent, record.Receipt, observation)
+	if result != WriteVerified && record.Receipt == nil {
+		record.Status = "unknown"
+	}
+	record.LastReadback = string(result)
+	if err := p.Journal.save(record, false); err != nil {
+		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "read-back journal unavailable"}, err
+	}
 	if result != WriteVerified {
 		return WriteResult{Outcome: result, ClaimHeld: true, Detail: "read-back not verified; recovery required"}, nil
 	}

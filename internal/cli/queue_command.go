@@ -128,6 +128,17 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.ViewFilters[v.Name] = filters
 		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
 	}
+	model.Views = append(model.Views, queueui.RecoveryViewID)
+	journal, err := queueRecoveryJournal()
+	if err != nil {
+		return err
+	}
+	model.LoadRecovery = func() tea.Cmd {
+		return func() tea.Msg {
+			entries, err := journal.Recovery()
+			return queueui.RecoveryMsg{Entries: entries, Err: err}
+		}
+	}
 	model.MeBySource = make(map[string][]string)
 	for _, src := range selected.Sources {
 		configured := sourceByID[src]
@@ -205,6 +216,29 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		resolvedByID[source.ID] = source
 	}
 	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, blocked: func() bool { return blockedIdentity.Load() }, profile: backend.Profile, profileName: selected.Authority, home: backend.Config.Home}
+	writeController := queueWriteController{backend: backend, registry: registry, current: currentAuthority, journal: journal, sources: resolvedByID, configured: sourceByID, me: model.MeBySource, session: queueSession, profile: selected.Authority}
+	model.StateChoices = make(map[string][]queueui.StateChoice)
+	for id, source := range sourceByID {
+		for _, step := range []struct {
+			name   string
+			action queue.Action
+		}{{"start", queue.ActionStart}, {"blocked", queue.ActionReportBlocked}, {"review", queue.ActionRequestReview}, {"complete", queue.ActionComplete}, {"reopen", queue.ActionReopen}} {
+			if transition := source.Workflow[step.name]; transition != "" {
+				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen {
+					continue
+				}
+				model.StateChoices[id] = append(model.StateChoices[id], queueui.StateChoice{Action: step.action, Label: step.name, Transition: transition})
+			}
+		}
+	}
+	model.PreviewWrite = func(item queue.Item, action queue.Action, transition, text string) tea.Cmd {
+		return writeController.Preview(ctx, item, action, transition, text)
+	}
+	model.ConfirmWrite = func(preview queueui.WritePreview) tea.Cmd { return writeController.Confirm(ctx, preview) }
+	model.RetryRecovery = func(entry queue.RecoveryEntry) tea.Cmd { return writeController.Recover(ctx, entry) }
+	model.ReconcileRecovery = func(entry queue.RecoveryEntry, evidence string) tea.Cmd {
+		return writeController.Reconcile(ctx, entry, evidence)
+	}
 	model.PreviewLaunch = func(item queue.Item) []queue.LaunchOption {
 		selected, _ := currentAuthority()
 		identities, identityErr := config.LoadQueueIdentities(os.Getenv)
@@ -502,6 +536,14 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		entries, err := journal.Recovery()
+		if ctx.Err() == nil {
+			program.Send(queueui.RecoveryMsg{Entries: entries, Err: err})
+		}
+	}()
 	workers.Add(1)
 	go func() {
 		defer workers.Done()

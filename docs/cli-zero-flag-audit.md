@@ -25,6 +25,8 @@ local default, or reports the missing required input without guessing.
 | `doctor` | Run read-only diagnostics | No state mutation |
 | `queue query` | Report missing required view | Requires a configured view; read-only |
 | `queue next` | Report missing required view | Requires a configured view and complete scope; selects without acquiring |
+| `queue recovery retry` | Reject missing operation ID or original handle | Reads the provider result without dispatching another write |
+| `queue recovery reconcile` | Reject missing operation ID, evidence, or attestations | Requires proof the provider write did not commit and the executor ceased; claim remains held |
 | `queue authority-id` | Show the invoking worker's selected authority ID | Read-only; launchers compare it to the queue handoff before acquiring |
 | `queue identity confirm` | Reject missing view, source, or acknowledgement | Confirm only after stopping old workers and resolving old claims and operations |
 | `policy list` | List built-in policies | Read-only |
