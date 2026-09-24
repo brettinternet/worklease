@@ -20,7 +20,7 @@ func launchFixture(t *testing.T, id string) (Item, config.QueueSource, ClaimAuth
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Item{Summary: Summary{Ref: Ref{SourceID: "source", ItemID: id}, Title: "hostile title; do not pass", CanonicalID: "not-a-launch-identifier"}, Body: "hostile body", Resources: []string{key.Resource}, KeyInputs: &inputs, Claim: ClaimObservation{AuthorityID: "authority", SessionID: "session-secret"}}, config.QueueSource{ID: "source", Adapter: "github"}, ClaimAuthority{ID: "authority", Profile: "team"}
+	return Item{Summary: Summary{Ref: Ref{SourceID: "source", ItemID: id}, Title: "hostile title '-option' $(echo injected)\nsecond line", CanonicalID: "not-a-launch-identifier"}, Body: "hostile body with quotes and $(echo injected)\n", Resources: []string{key.Resource}, KeyInputs: &inputs, Claim: ClaimObservation{AuthorityID: "authority", SessionID: "session-secret"}}, config.QueueSource{ID: "source", Adapter: "github"}, ClaimAuthority{ID: "authority", Profile: "team"}
 }
 
 func TestLaunchCarriesExactGitHubIdentityVector(t *testing.T) {
