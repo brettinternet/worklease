@@ -66,9 +66,16 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 	}
 	// Prepare reads the current provider task and checks the mapped status and
 	// permissions without needing an acquired claim or dispatching a write.
-	_, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
+	intent, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
 	if err != nil {
 		return queueui.StartPreview{}, queueClaimPlan{}, err
+	}
+	preflight, err := backlog.Inspect(ctx, intent)
+	if err != nil {
+		return queueui.StartPreview{}, queueClaimPlan{}, err
+	}
+	if !preflight.Capability || !preflight.Authorized || !preflight.InScope || !preflight.Fresh || !preflight.NativeAvailable || !preflight.Ready || preflight.Precondition != intent.Precondition {
+		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work provider permission or readiness unavailable")
 	}
 	effects := []string{"provider status change", "local Backlog.md watchers may refresh"}
 	if detail.CreatesCommit {
