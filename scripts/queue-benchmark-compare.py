@@ -20,6 +20,8 @@ if "backlog" in baseline_report and "backlog" in current_report:
         current[name] = current_report["backlog"][name]
 for name, data in sorted(current.items()):
     if name not in baseline:
+        if name.startswith("BenchmarkQueuePreparedConfiguredRefreshToRender/"):
+            print(f"{name}: head p95 {data['p95_ms']:.2f} ms (no base configured-view sample)")
         continue
     old, new = baseline[name]["p95_ms"], data["p95_ms"]
     if old <= 0:

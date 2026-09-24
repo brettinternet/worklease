@@ -128,6 +128,140 @@ func TestPreparedProjectionPreservesFilteringDeduplicationAndLiveClaims(t *testi
 	}
 }
 
+func TestPreparedConfiguredViewRowsAndCounts(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	ready := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	ready.Readiness.Status = queue.Ready
+	snapshot.Items[ready.Ref.Key()] = ready
+	other := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "2"}.Key()]
+	other.Readiness.Status = queue.ReadinessUnknown
+	snapshot.Items[other.Ref.Key()] = other
+
+	m := New(snapshot)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "ReadyForReview"
+	m.Views = []string{"ReadyForReview"}
+	m.ViewFilters = map[string]queue.Filters{"ReadyForReview": {SourceIDs: []string{"a"}}}
+	m.ViewRules = map[string]ViewRule{"ReadyForReview": {Readiness: string(queue.Ready)}}
+	prepared := PrepareSnapshotForModel(snapshot, m)
+	if len(prepared.preparedRows) != 1 || prepared.preparedRows[0].Ref.ItemID != "1" {
+		t.Fatalf("configured-view worker rows = %+v, want only ready row", prepared.preparedRows)
+	}
+	newer := m.Snapshot.Items[ready.Ref.Key()]
+	newer.Claim = queue.ClaimObservation{Known: true, Available: true, State: "free", ObservedAt: time.Unix(200, 0)}
+	m.Snapshot.Items[ready.Ref.Key()] = newer
+	if got := prepared.preparedCounts["ReadyForReview"]; got != 1 {
+		t.Fatalf("configured-view worker count = %d, want 1", got)
+	}
+	next, _ := m.Update(prepared)
+	m = next.(Model)
+	if got := m.rowCache.counts["ReadyForReview"]; got != 1 {
+		t.Fatalf("configured-view prepared count = %d, want 1", got)
+	}
+	if len(m.rowCache.rows) != 1 || &m.rowCache.rows[0] != &prepared.preparedRows[0] {
+		t.Fatal("configured-view prepared rows were rebuilt on the event loop")
+	}
+	if got := m.rowCache.rows[0].Claim; got.State != "free" || !got.ObservedAt.Equal(time.Unix(200, 0)) {
+		t.Fatalf("prepared row lost newer claim overlay: %+v", got)
+	}
+}
+
+func TestPreparedProjectionFallsBackWhenViewChanges(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	ready := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	ready.Readiness.Status = queue.Ready
+	snapshot.Items[ready.Ref.Key()] = ready
+	m := New(snapshot)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "ReadyForReview"
+	m.Views = []string{"ReadyForReview"}
+	m.ViewFilters = map[string]queue.Filters{"ReadyForReview": {SourceIDs: []string{"a"}}}
+	m.ViewRules = map[string]ViewRule{"ReadyForReview": {Readiness: string(queue.Ready)}}
+	prepared := PrepareSnapshotForModel(snapshot, m)
+	m.ViewName = "All"
+
+	next, _ := m.Update(prepared)
+	m = next.(Model)
+	if got := m.rows(); len(got) != 2 {
+		t.Fatalf("changed view adopted stale prepared projection: got %d rows, want 2", len(got))
+	}
+	if &m.rowCache.rows[0] == &prepared.preparedRows[0] {
+		t.Fatal("changed view reused rows prepared for the previous view")
+	}
+}
+
+func TestPreparedConfiguredViewAppliesNewerClaimOverlay(t *testing.T) {
+	t.Parallel()
+	base := fixture()
+	aKey := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	a := base.Items[aKey]
+	a.Readiness.Status = queue.Ready
+	base.Items[aKey] = a
+	incoming := base.Clone()
+	incoming.Revision = 2
+	a = incoming.Items[aKey]
+	a.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(100, 0)}
+	incoming.Items[aKey] = a
+
+	m := New(base)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "ReadyForReview"
+	m.Views = []string{"ReadyForReview"}
+	m.ViewFilters = map[string]queue.Filters{"ReadyForReview": {SourceIDs: []string{"a"}}}
+	m.ViewRules = map[string]ViewRule{"ReadyForReview": {Readiness: string(queue.Ready), Claim: "held"}}
+	a = m.Snapshot.Items[aKey]
+	a.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(200, 0)}
+	m.Snapshot.Items[aKey] = a
+
+	prepared := PrepareSnapshotForModel(incoming, m)
+	if len(prepared.preparedRows) != 0 {
+		t.Fatalf("worker projection unexpectedly included stale free claim: %v", prepared.preparedRows)
+	}
+	next, _ := m.Update(prepared)
+	m = next.(Model)
+	rows := m.rows()
+	if len(rows) != 1 || rows[0].Ref.ItemID != "1" || rows[0].Claim.State != "held" {
+		t.Fatalf("newer claim overlay missing from configured view: %+v", rows)
+	}
+	if got := m.rowCache.counts["ReadyForReview"]; got != 1 {
+		t.Fatalf("configured-view count after newer claim overlay = %d, want 1", got)
+	}
+}
+
+func TestPreparedClaimedViewUsesNewerClaimOverlay(t *testing.T) {
+	t.Parallel()
+	base := fixture()
+	aKey := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	incoming := base.Clone()
+	incoming.Revision = 2
+	a := incoming.Items[aKey]
+	a.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(100, 0)}
+	incoming.Items[aKey] = a
+
+	m := New(base)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Claimed"
+	a = m.Snapshot.Items[aKey]
+	a.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(200, 0)}
+	m.Snapshot.Items[aKey] = a
+
+	prepared := PrepareSnapshotForModel(incoming, m)
+	if len(prepared.preparedRows) != 0 {
+		t.Fatal("worker should not include the stale free claim in Claimed")
+	}
+	next, _ := m.Update(prepared)
+	m = next.(Model)
+	rows := m.rows()
+	if len(rows) != 1 || rows[0].Ref.ItemID != "1" || !rows[0].Claim.Active {
+		t.Fatalf("newer claim overlay missing from Claimed view: %+v", rows)
+	}
+	if got := m.rowCache.counts["Claimed"]; got != 1 {
+		t.Fatalf("Claimed count after newer overlay = %d, want 1", got)
+	}
+}
+
 func TestPreparedAllRowsKeepNewerOverlayAndSourceOrder(t *testing.T) {
 	producer := fixture()
 	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
@@ -673,6 +807,40 @@ func TestClaimFailuresExposeContentionUncertaintyAndDefinitiveRejection(t *testi
 				}
 			}
 		})
+	}
+}
+
+func TestClaimPreviewResortsPreparedRowsWhenOrderChanges(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	aKey := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	bKey := queue.Ref{SourceID: "a", ItemID: "2"}.Key()
+	a := snapshot.Items[aKey]
+	a.Order = "1"
+	snapshot.Items[aKey] = a
+	b := snapshot.Items[bKey]
+	b.Order = "2"
+	snapshot.Items[bKey] = b
+
+	m := New(snapshot)
+	m.Sources = []queue.Source{{ID: "a"}}
+	next, _ := m.Update(PrepareSnapshot(snapshot, m.Sources...))
+	m = next.(Model)
+	m.anchor(m.rows())
+	a.Order = "3"
+	preview := ClaimPreview{Identity: identity(a), Title: a.Title}
+	next, _ = m.Update(ClaimPreviewMsg{Identity: identity(a), Item: a, Preview: &preview})
+	m = next.(Model)
+
+	want := queue.EvaluateView(m.Snapshot.Items, queue.View{SourceOrder: []string{"a"}})
+	got := m.rows()
+	if len(got) != len(want) {
+		t.Fatalf("prepared rows count = %d, want %d", len(got), len(want))
+	}
+	for index := range want {
+		if got[index].Ref != want[index].Ref {
+			t.Fatalf("row %d = %s, want queue.EvaluateView row %s", index, got[index].Ref, want[index].Ref)
+		}
 	}
 }
 

@@ -381,7 +381,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			err := publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
 			if notifyFailure && err != nil && ctx.Err() == nil {
 				program.Send(queueui.RefreshedMsg{Err: err})
 			}
@@ -441,7 +441,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				}
 				for snapshot := range updates {
 					applyStoredClaims(&snapshot, &claimOverlay)
-					program.Send(queueui.PrepareSnapshot(snapshot, shownSources...))
+					program.Send(queueui.PrepareSnapshotForModel(snapshot, model))
 				}
 			}()
 			return nil
@@ -674,7 +674,7 @@ func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -721,7 +721,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
-		program.Send(queueui.PrepareSnapshot(seeded, sources...))
+		program.Send(queueui.PrepareSnapshotForModel(seeded, model))
 		onSnapshot(seeded, claims)
 	}
 	defer func() {
@@ -742,7 +742,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}
-		program.Send(queueui.PrepareSnapshot(snapshot, sources...))
+		program.Send(queueui.PrepareSnapshotForModel(snapshot, model))
 		onSnapshot(snapshot, claims)
 	}
 	claims = guard(latest)
@@ -755,7 +755,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			latest.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}
-		program.Send(queueui.PrepareSnapshot(latest, sources...))
+		program.Send(queueui.PrepareSnapshotForModel(latest, model))
 		onSnapshot(latest, claims)
 	}
 	for _, source := range refreshSources {
@@ -790,7 +790,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
-			program.Send(queueui.PrepareSnapshot(snapshot, sources...))
+			program.Send(queueui.PrepareSnapshotForModel(snapshot, model))
 			onSnapshot(snapshot, claims)
 		}
 	}

@@ -38,11 +38,21 @@ func main() {
 	snapshot := queue.Snapshot{Items: items, Sources: coverage}
 	model := queueui.New(snapshot)
 	model.Sources = sources
+	model.ViewFilters = make(map[string]queue.Filters, len(model.Views))
+	model.ViewRules = make(map[string]queueui.ViewRule, len(model.Views))
+	sourceIDs := make([]string, 0, len(sources))
+	for _, source := range sources {
+		sourceIDs = append(sourceIDs, source.ID)
+	}
+	for _, name := range model.Views {
+		model.ViewFilters[name] = queue.Filters{SourceIDs: append([]string(nil), sourceIDs...)}
+		model.ViewRules[name] = queueui.ViewRule{}
+	}
 	start := time.Now()
 	_ = model.View()
 	first := time.Since(start)
 	snapshot.Revision++
-	prepared := queueui.PrepareSnapshot(snapshot, sources...)
+	prepared := queueui.PrepareSnapshotForModel(snapshot, model)
 	start = time.Now()
 	updated, _ := model.Update(prepared)
 	model = updated.(queueui.Model)
