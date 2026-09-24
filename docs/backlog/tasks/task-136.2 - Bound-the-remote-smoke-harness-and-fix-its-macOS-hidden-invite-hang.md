@@ -1,9 +1,11 @@
 ---
 id: TASK-136.2
 title: Bound the remote smoke harness and fix its macOS hidden-invite hang
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-24 15:05'
+updated_date: '2026-09-24 19:47'
 labels: []
 dependencies: []
 parent_task_id: TASK-136
@@ -29,8 +31,24 @@ Direction: give every child process the harness starts a timeout that kills it. 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The remote smoke passes locally on macOS arm64 and still passes in CI on linux-x64
-- [ ] #2 When the hidden-invite child never prompts or never exits, `cliHiddenInvite` kills it and returns an error within a bounded time, covered by a unit test in `cmd/worklease-remote-smoke/main_test.go` that uses a fake child
-- [ ] #3 No fixed sleep remains in the hidden-invite handoff
-- [ ] #4 The harness writes per-group progress lines to stderr and, when its overall deadline fires, exits nonzero naming the step that was running
-- [ ] #5 After a failed or timed-out run, no `worklease serve` process started by the harness is still running (checked with `pgrep -fl "worklease serve"`)
+- [x] #2 When the hidden-invite child never prompts or never exits, `cliHiddenInvite` kills it and returns an error within a bounded time, covered by a unit test in `cmd/worklease-remote-smoke/main_test.go` that uses a fake child
+- [x] #3 No fixed sleep remains in the hidden-invite handoff
+- [x] #4 The harness writes per-group progress lines to stderr and, when its overall deadline fires, exits nonzero naming the step that was running
+- [x] #5 After a failed or timed-out run, no `worklease serve` process started by the harness is still running (checked with `pgrep -fl "worklease serve"`)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reproduce hidden-invite stall and inspect process/PTY lifecycle. 2. Bound child processes and harness deadline with cleanup and progress diagnostics. 3. Replace prompt timing guess with observable terminal state; test no-prompt/no-exit failures. 4. Run focused race tests, local macOS e2e, project gates, then review and integrate.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reproduced macOS hang: PTY emitted terminal color/cursor probes (OSC 11 and CSI 6n) that the harness cannot answer, so the invite prompt never appeared. TERM=dumb/NO_COLOR suppress probes while retaining interactive stdin. Hidden invite and harness deadlines, process cleanup, and progress were implemented; macOS local smoke passed all five groups once, pgrep showed no serve child.
+
+Review found three concrete timeout risks: descendant-held output pipes, remote server surviving failed replacement SSH cleanup, and independent child contexts. Fixed with process-group cancellation/WaitDelay, remote serve stdin-EOF lifecycle plus bounded reaping, and inherited deadline; focused race tests (3 runs), full macOS arm64 e2e, lint, format-check, test, typecheck, and Linux/amd64 test-binary compile pass. Native linux-x64 CI remains unverified without an authorized pushed commit/runner.
+
+Merged fe51ed9217a277494f4a02cc719589a89ffb451e into local main by fast-forward; removed owned worktree/branch through Worktrunk. AC #2: fake PTY children without prompt or exit are killed and reaped in race-count=3. AC #3: hidden prompt now waits for terminal ECHO-off (no fixed sleep); full macOS smoke exercised it. AC #4: deadline fake child reports the active step; group and step progress appeared in e2e stderr. AC #5: pgrep -fl "worklease serve" returned no processes after both a failed and a passing real smoke; timed-out fake server cleanup and remote-helper SSH-EOF are covered by focused tests.
+<!-- SECTION:NOTES:END -->
