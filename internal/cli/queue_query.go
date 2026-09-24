@@ -67,6 +67,14 @@ func queueQueryActionWithLoader(s *boundary, newLoader func(*queue.Registry) *qu
 }
 
 func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader) func(context.Context, *urfavecli.Command) error {
+	return queueQueryActionWithSelection(s, newRegistry, newLoader, nil)
+}
+
+// The selector runs over the same unpaginated, overlaid snapshot as query.
+// It runs before any query cursor or page limit can hide part of the scope.
+type queueSnapshotSelector func(*urfavecli.Command, config.QueueConfig, *config.QueueView, []queue.Item, []queue.Item, []queueSourceJSON, queueAuthorityJSON, bool) error
+
+func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader, selector queueSnapshotSelector) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
 		if cmd.String("view") == "" {
 			return s.handle(cmd, reason.Invalid("--view is required for queue query"))
@@ -251,7 +259,17 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 					ok = true
 				}
 				if !ok {
-					continue
+					// A deliberate source-qualified next selector overrides only
+					// advisory assignment, not readiness or claim checks.
+					selected := false
+					if selector != nil {
+						for _, ref := range cmd.StringSlice("item") {
+							selected = selected || ref == item.Ref.String()
+						}
+					}
+					if !selected {
+						continue
+					}
 				}
 			}
 			filtered = append(filtered, item)
@@ -335,6 +353,10 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			if !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
 				incomplete = true
 			}
+		}
+		authorityRow := queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}
+		if selector != nil {
+			return selector(cmd, cfg, view, cursorItems, items, sourceRows, authorityRow, incomplete)
 		}
 		if incomplete && cmd.Bool("require-complete") {
 			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
