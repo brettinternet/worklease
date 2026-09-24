@@ -57,8 +57,8 @@ func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, 
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	actor := RemoteActor{InstallationID: strings.Repeat("9", 32), AuthorityID: st.AuthorityID(), ExpectedRestoreID: st.RestoreID(), Credential: strings.Repeat("9", 64)}
-	insertInstallation(t, st, actor.InstallationID, "admin", st.RestoreID())
-	clock := testkit.NewClock(time.Now().UTC().Truncate(time.Microsecond))
+	clock := testkit.NewClock(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
+	insertInstallation(t, st, clock, actor.InstallationID, "admin", st.RestoreID())
 	svc, err := NewRemote(st, clock, &testIDs{}, Defaults{TTL: 5 * time.Second}, RemotePolicy{Prefixes: []string{"github:", "coordination:generic:"}, MaxTTL: 10 * time.Second, MaxHold: time.Minute})
 	if err != nil {
 		t.Fatal(err)
@@ -66,10 +66,10 @@ func openRemoteLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock, 
 	return svc, st, clock, actor
 }
 
-func insertInstallation(t *testing.T, st *store.Store, id, role, restore string) {
+func insertInstallation(t *testing.T, st *store.Store, clock *testkit.Clock, id, role, restore string) {
 	t.Helper()
-	err := st.Write(context.Background(), func(tx *store.Tx) error {
-		_, err := tx.ExecContext(context.Background(), `INSERT INTO installations(installation_id,credential_hash,role,label,enrolled_at,restore_id,enrolled_by_invite_id,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?)`, id, hashToken(strings.Repeat(id[:1], 64)), role, "test", time.Now().UnixMicro(), restore, "invite-"+id, "request-"+id, "hash-"+id)
+	err := st.WriteAt(context.Background(), clock.Now(), func(tx *store.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `INSERT INTO installations(installation_id,credential_hash,role,label,enrolled_at,restore_id,enrolled_by_invite_id,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?)`, id, hashToken(strings.Repeat(id[:1], 64)), role, "test", clock.Now().UnixMicro(), restore, "invite-"+id, "request-"+id, "hash-"+id)
 		return err
 	})
 	if err != nil {

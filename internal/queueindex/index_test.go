@@ -585,12 +585,22 @@ func TestLockProcessHelper(t *testing.T) {
 
 func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 	dir := t.TempDir()
+	// Initialize the index before racing the lock: concurrent schema setup
+	// exercises a different boundary and can fail with SQLITE_BUSY.
+	idx, err := Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
 	marker := filepath.Join(dir, "winners")
 	cmds := make([]*exec.Cmd, 8)
 	outputs := make([]strings.Builder, len(cmds))
 	for n := range cmds {
 		cmds[n] = exec.Command(os.Args[0], "-test.run=^TestLockProcessHelper$")
 		cmds[n].Env = append(os.Environ(), "QUEUE_INDEX_LOCK_HELPER=1", "QUEUE_INDEX_DIR="+dir, "QUEUE_INDEX_MARKER="+marker)
+		cmds[n].Stdout = &outputs[n]
 		cmds[n].Stderr = &outputs[n]
 	}
 	for _, cmd := range cmds {

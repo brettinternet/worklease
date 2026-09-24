@@ -31,6 +31,10 @@ type Check struct {
 // Diagnose performs only metadata and read-only authority observations. It
 // never reads a handle or database payload and never creates filesystem state.
 func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
+	return diagnoseAt(ctx, cfg, cwd, time.Now().UTC())
+}
+
+func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Time) []Check {
 	checks := make([]Check, 0, 16)
 	add := func(id, status, detail, hint string) {
 		checks = append(checks, Check{ID: id, Status: status, Detail: output.RedactString(detail), Hint: output.RedactString(hint)})
@@ -165,7 +169,7 @@ func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
 		add("clock.authority", "unknown", "authority clock watermark is unavailable", "")
 	} else if watermark, err := st.LastObservedAt(ctx); err != nil {
 		add("clock.authority", "unknown", "authority clock watermark could not be read", "")
-	} else if watermark.After(time.Now().UTC().Add(time.Second)) {
+	} else if watermark.After(now.Add(time.Second)) {
 		add("clock.authority", "fail", "local clock is more than one second behind the authority watermark", "correct the host clock before mutating claims")
 	} else {
 		add("clock.authority", "ok", "local clock is not behind the authority watermark", "")

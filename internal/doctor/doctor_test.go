@@ -162,7 +162,9 @@ func TestDiagnoseReportsPythonEraStateAndAuthorityIdentity(t *testing.T) {
 }
 
 func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
+	now := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := os.Chmod(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	future := time.Now().UTC().Add(900 * time.Millisecond).UnixMicro()
+	future := now.Add(900 * time.Millisecond).UnixMicro()
 	if err := st.Write(context.Background(), func(tx *store.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `UPDATE meta SET value=? WHERE key='last_observed_at'`, future)
 		return err
@@ -180,7 +182,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkByID(Diagnose(context.Background(), testConfig(home), home), "clock.authority"); got.Status != "ok" || got.Detail != "local clock is not behind the authority watermark" || got.Hint != "" {
+	if got := checkByID(diagnoseAt(context.Background(), testConfig(home), home, now), "clock.authority"); got.Status != "ok" || got.Detail != "local clock is not behind the authority watermark" || got.Hint != "" {
 		t.Fatalf("under-one-second skew=%+v", got)
 	}
 
@@ -188,7 +190,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	future = time.Now().UTC().Add(2 * time.Second).UnixMicro()
+	future = now.Add(2 * time.Second).UnixMicro()
 	if err := st.Write(context.Background(), func(tx *store.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `UPDATE meta SET value=? WHERE key='last_observed_at'`, future)
 		return err
@@ -198,7 +200,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkByID(Diagnose(context.Background(), testConfig(home), home), "clock.authority"); got.Status != "fail" || !strings.Contains(got.Detail, "more than one second") || !strings.Contains(got.Hint, "correct the host clock") {
+	if got := checkByID(diagnoseAt(context.Background(), testConfig(home), home, now), "clock.authority"); got.Status != "fail" || !strings.Contains(got.Detail, "more than one second") || !strings.Contains(got.Hint, "correct the host clock") {
 		t.Fatalf("over-one-second skew=%+v", got)
 	}
 }

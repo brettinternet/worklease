@@ -303,8 +303,15 @@ func TestBacklogReadConcurrency(t *testing.T) {
 	}
 }
 func TestBacklogScratchCLI(t *testing.T) {
-	if _, err := exec.LookPath("backlog"); err != nil {
-		t.Skip("backlog CLI not installed")
+	t.Parallel()
+	binary, err := exec.LookPath("backlog")
+	if err != nil {
+		t.Skipf("backlog CLI not installed: %v", err)
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(probeCtx, binary, "--version").CombinedOutput(); err != nil {
+		t.Skipf("backlog --version probe failed: %v: %s", err, out)
 	}
 	root := t.TempDir()
 	cmd := exec.Command("backlog", "init", "Scratch", "--defaults", "--no-git", "--config-location", "root", "--integration-mode", "none")
