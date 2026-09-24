@@ -1,9 +1,11 @@
 ---
 id: TASK-136.1
 title: Fix the known nondeterministic and environment-dependent test failures
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-24 15:05'
+updated_date: '2026-09-24 18:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-136
@@ -26,9 +28,36 @@ Direction: make time an input the test controls. Do not widen tolerances or add 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test -count=20 -run TestDiagnoseClockAuthorityAllowsOneSecondSkew ./internal/doctor` passes, and still passes with a temporary 3 s sleep between the fixture write and `Diagnose` (remove the sleep before committing)
-- [ ] #2 `go test -race -count=20 -run TestRemoteBlankActorInstallationCanonicalizesMutationHashes ./internal/lease` passes
-- [ ] #3 TestBacklogScratchCLI skips with a message naming the failed probe when `backlog` is a mise shim under the isolated HOME
-- [ ] #4 TestBacklogScratchCLI still runs to completion when a real Backlog.md binary is first on PATH (for example, prepend the bin directory reported by `mise where npm:backlog.md`)
-- [ ] #5 No tolerance was widened and no retry loop was added to make any of the three tests pass
+- [x] #1 `go test -count=20 -run TestDiagnoseClockAuthorityAllowsOneSecondSkew ./internal/doctor` passes, and still passes with a temporary 3 s sleep between the fixture write and `Diagnose` (remove the sleep before committing)
+- [x] #2 `go test -race -count=20 -run TestRemoteBlankActorInstallationCanonicalizesMutationHashes ./internal/lease` passes
+- [x] #3 TestBacklogScratchCLI skips with a message naming the failed probe when `backlog` is a mise shim under the isolated HOME
+- [x] #4 TestBacklogScratchCLI still runs to completion when a real Backlog.md binary is first on PATH (for example, prepend the bin directory reported by `mise where npm:backlog.md`)
+- [x] #5 No tolerance was widened and no retry loop was added to make any of the three tests pass
+- [x] #6 The queueindex cross-process lock test passes repeated runs after its observed failure cause is fixed, without retrying or weakening assertions.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Inject a fixed observation time into doctor diagnostics while keeping the public entry point unchanged; test both skew boundaries and delayed diagnosis. 2. Initialize remote lease fixture clock at a fixed future instant and use WriteAt for fixture installation so wall-clock store writes cannot outrun the test clock. 3. Probe backlog --version before scratch CLI test; run focused repeated/race and both PATH variants, then repository gates and review.
+
+4. Investigate the newly reproduced queueindex cross-process lock test flake (user-authorized scope expansion), fix its cause rather than retrying or widening tolerances, and rerun focused plus full gates.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Focused doctor count=20 and lease race count=20 pass. Doctor also passes after a temporary 3s delay (removed). Backlog scratch skips with failed probe output under a simulated broken mise shim and passes with the real installed CLI and node on PATH.
+
+Commit hook uncovered a separate queueindex cross-process lock flake (2 failures in 20 focused runs); user authorized adding it to this task. Staged code remains uncommitted until fixed and verified.
+
+Diagnosed queueindex flake: 8 helpers concurrently initialize the brand-new SQLite index, and some fail Open with SQLITE_BUSY before testing the lock (captured child stdout). Initialize the disposable index once in the lock test fixture, then exercise the same 8-process lock contention; count=20 and race count=3 pass. Simultaneous first-time index Open remains a separate product concern; no production behavior changed.
+
+Review: one diff review, no remaining item-scoped defect. Validation after queueindex fixture correction: mise run lint, format-check, test, typecheck, hooks passed; doctor count=20 and delayed diagnosis, remote lease race count=20, scratch CLI simulated broken shim SKIP and real binary PASS, queueindex count=20 and race count=3. Code commit fc0072e fast-forward merged to main; worktree and branch removed, associated Herdr workspace closed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Stabilized doctor and remote-lease clocks, skipped unusable Backlog CLI shims, and isolated the queueindex lock test from concurrent SQLite schema initialization. Verified focused repeated/race tests and all repository gates; merged fc0072e to main and cleaned the worktree.
+<!-- SECTION:FINAL_SUMMARY:END -->
