@@ -37,7 +37,12 @@ func backlogWriteProject(t *testing.T, autoCommit, bypass bool) (*BacklogWriteAd
 	if err := os.WriteFile(filepath.Join(root, "backlog.config.yml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"init", "-b", "main"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"}} {
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.name", "Test"},
+		{"config", "user.email", "test@example.invalid"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
 		cmd := testkit.GitCommand(args...)
 		cmd.Dir = root
 		if data, err := cmd.CombinedOutput(); err != nil {
