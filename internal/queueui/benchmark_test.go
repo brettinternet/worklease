@@ -129,6 +129,48 @@ func BenchmarkQueuePreparedRefreshToRender(b *testing.B) {
 	}
 }
 
+// Isolate the remaining synchronous cost after worker preparation. Update
+// merges claim observations and builds the row projection; View paints from
+// the cached projection. Preparation is excluded from both timings.
+func BenchmarkQueuePreparedRefreshEventLoop(b *testing.B) {
+	for _, size := range []int{10000, 50000, 100000} {
+		b.Run(fmt.Sprintf("items-%d", size), func(b *testing.B) {
+			snapshot := benchSnapshot(size)
+			newModel := func() Model {
+				m := New(snapshot)
+				m.Sources = []queue.Source{{ID: "source-0"}, {ID: "source-1"}, {ID: "source-2"}, {ID: "source-3"}, {ID: "source-4"}}
+				return m
+			}
+			b.Run("update", func(b *testing.B) {
+				m := newModel()
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					snapshot.Revision++
+					message := PrepareSnapshot(snapshot, m.Sources...)
+					b.StartTimer()
+					next, _ := m.Update(message)
+					m = next.(Model)
+					if len(m.rows()) != size {
+						b.Fatal("incomplete prepared update")
+					}
+				}
+			})
+			b.Run("view", func(b *testing.B) {
+				m := newModel()
+				_ = m.View()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if m.View() == "" {
+						b.Fatal("empty view")
+					}
+				}
+			})
+		})
+	}
+}
+
 func BenchmarkQueueWarmFirstView(b *testing.B) {
 	snapshot := benchSnapshot(10000)
 	b.ReportAllocs()
