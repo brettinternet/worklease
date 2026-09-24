@@ -126,6 +126,34 @@ func TestPreparedProjectionPreservesFilteringDeduplicationAndLiveClaims(t *testi
 	}
 }
 
+func TestPreparedAllRowsKeepNewerOverlayAndSourceOrder(t *testing.T) {
+	producer := fixture()
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	m := New(producer)
+	m.Sources = []queue.Source{{ID: "a"}}
+	current := m.Snapshot.Items[key]
+	current.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(200, 0)}
+	m.Snapshot.Items[key] = current
+	producer.Revision++
+	next, _ := m.Update(PrepareSnapshot(producer, m.Sources...))
+	m = next.(Model)
+	if got := m.rows()[0].Claim.State; got != "free" {
+		t.Fatalf("prepared All row lost newer claim: %s", got)
+	}
+	if got := m.rowCache.rows[0].Claim.State; got != "free" {
+		t.Fatalf("cached All row lost newer claim: %s", got)
+	}
+
+	// A preparation for a different source order cannot seed the All cache.
+	m.Sources = []queue.Source{{ID: "other"}}
+	producer.Revision++
+	next, _ = m.Update(PrepareSnapshot(producer, queue.Source{ID: "a"}))
+	m = next.(Model)
+	if len(m.rows()) != 0 {
+		t.Fatal("prepared rows bypassed current source selection")
+	}
+}
+
 func TestStandardViewCountsMatchConfiguredScan(t *testing.T) {
 	snapshot := fixture()
 	firstKey := queue.Ref{SourceID: "a", ItemID: "1"}.Key()

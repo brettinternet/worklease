@@ -19,6 +19,9 @@ import (
 type SnapshotMsg struct {
 	Snapshot    queue.Snapshot
 	orderedKeys []string
+	sourceIDs   []string
+	allRows     []queue.Item
+	rowIndexes  map[string]int
 	prepared    bool
 }
 
@@ -32,7 +35,21 @@ func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotM
 		for _, source := range sources {
 			order = append(order, source.ID)
 		}
+		message.sourceIDs = order
 		message.orderedKeys = queue.OrderedKeys(prepared.Items, order)
+		message.allRows = make([]queue.Item, 0, len(message.orderedKeys))
+		message.rowIndexes = make(map[string]int, len(message.orderedKeys))
+		seen := make(map[string]bool, len(message.orderedKeys))
+		for _, key := range message.orderedKeys {
+			item := prepared.Items[key]
+			if id := identity(item); seen[id] {
+				continue
+			} else {
+				seen[id] = true
+			}
+			message.rowIndexes[key] = len(message.allRows)
+			message.allRows = append(message.allRows, item)
+		}
 	}
 	return message
 }
@@ -119,10 +136,26 @@ func identity(i queue.Item) string {
 	}
 	return i.Ref.Key()
 }
+func sameSourceOrder(sources []queue.Source, ids []string) bool {
+	if len(sources) != len(ids) {
+		return false
+	}
+	for i, source := range sources {
+		if source.ID != ids[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m Model) rowKey() string {
+	return fmt.Sprintf("%x:%d:%s:%s:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+}
+
 func (m Model) rows() []queue.Item {
 	// The TUI event loop owns the model. Cache the sorted projection across
 	// navigation/paint; provider, claim, filter and view changes invalidate it.
-	key := fmt.Sprintf("%x:%d:%s:%s:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+	key := m.rowKey()
 	if m.rowCache != nil {
 		m.rowCache.mu.Lock()
 		defer m.rowCache.mu.Unlock()
@@ -228,6 +261,11 @@ func (m Model) rows() []queue.Item {
 		}
 		out = append(out, i)
 	}
+	m.cacheRows(key, out)
+	return out
+}
+
+func (m Model) cacheRows(key string, out []queue.Item) {
 	if m.rowCache != nil {
 		m.rowCache.key, m.rowCache.rows = key, out
 		m.rowCache.counts = make(map[string]int, len(m.Views))
@@ -267,7 +305,6 @@ func (m Model) rows() []queue.Item {
 			}
 		}
 	}
-	return out
 }
 func (m Model) selected(rows []queue.Item) (queue.Item, bool) {
 	for _, i := range rows {
@@ -354,10 +391,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					item.Claim, item.Resources, item.KeyInputs = prior.Claim, prior.Resources, prior.KeyInputs
 				}
 				updated.Items[key] = item
+				if index, ok := v.rowIndexes[key]; ok {
+					v.allRows[index] = item
+				}
 			}
 		}
 		m.Snapshot = updated
 		m.orderedKeys = v.orderedKeys
+		if !sameSourceOrder(m.Sources, v.sourceIDs) {
+			m.orderedKeys = nil
+		}
+		// The producer prepared the unfiltered All projection. Other views
+		// still filter the current snapshot on the input loop.
+		if v.allRows != nil && m.ViewName == "All" && m.Filter == "" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0 && sameSourceOrder(m.Sources, v.sourceIDs) {
+			m.cacheRows(m.rowKey(), v.allRows)
+		}
 		m.anchor(m.rows())
 		if m.Selected != previous {
 			m.clearHistory()

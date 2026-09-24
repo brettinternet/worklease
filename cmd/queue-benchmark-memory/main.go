@@ -42,8 +42,9 @@ func main() {
 	_ = model.View()
 	first := time.Since(start)
 	snapshot.Revision++
+	prepared := queueui.PrepareSnapshot(snapshot, sources...)
 	start = time.Now()
-	updated, _ := model.Update(queueui.SnapshotMsg{Snapshot: snapshot})
+	updated, _ := model.Update(prepared)
 	model = updated.(queueui.Model)
 	_ = model.View()
 	refresh := time.Since(start)
