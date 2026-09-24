@@ -17,6 +17,7 @@ worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
+worklease queue --view NAME identity confirm --source SOURCE --acknowledge
 ```
 
 `[selection]` means the shared claim-selection options listed in that command's

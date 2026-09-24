@@ -163,7 +163,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 	}
 	paths := config.UserProfilePaths(os.Getenv)
-	claims := queue.ClaimSources(cfg, sources)
+	claimInputs := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
 	var authorityMu sync.Mutex
 	var authorityVersion uint64 // bumped when late admission metadata replaces authorityView
@@ -171,6 +171,19 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		authorityMu.Lock()
 		defer authorityMu.Unlock()
 		return authorityView, authorityVersion
+	}
+	guardClaims := func(snapshot queue.Snapshot) map[string]queue.ClaimSource {
+		state, err := config.LoadQueueIdentities(os.Getenv)
+		if err != nil {
+			blocked := make(map[string]queue.ClaimSource, len(claimInputs))
+			for id, source := range claimInputs {
+				source.BlockReason, source.BlockDetail = "identity-unknown", "private identity record unavailable"
+				blocked[id] = source
+			}
+			return blocked
+		}
+		selected, _ := currentAuthority()
+		return queue.GuardClaimSources(ctx, claimInputs, registry, selected, state, snapshot)
 	}
 	var program *tea.Program
 	var workers sync.WaitGroup
@@ -182,7 +195,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var blockedIdentity atomic.Bool
 	var hydrationCancel context.CancelFunc
 	closing := false
-	restartOverlay := func(base queue.Snapshot) {
+	restartOverlay := func(base queue.Snapshot, claims map[string]queue.ClaimSource) {
 		liveMu.Lock()
 		defer liveMu.Unlock()
 		if blockedIdentity.Load() {
@@ -193,7 +206,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		authorityMu.Unlock()
 		keys := make(map[string]string, len(base.Items)+1)
 		for key, item := range base.Items {
-			keys[key] = strings.Join(item.Resources, "\x00")
+			keys[key] = strings.Join(item.Resources, "\x00") + "\x00" + item.Claim.Reason + "\x00" + item.Claim.Detail
 		}
 		// Late admission metadata changes action eligibility, so it restarts the overlay.
 		keys["\x00admitted"] = "unknown"
@@ -254,7 +267,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, claims, currentAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			err := publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
 			if notifyFailure && err != nil && ctx.Err() == nil {
 				program.Send(queueui.RefreshedMsg{Err: err})
 			}
@@ -542,7 +555,7 @@ func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) error {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -584,12 +597,13 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		releases = append(releases, release)
 		refreshSources = append(refreshSources, source)
 	}
+	claims := guard(cached)
 	if len(cached.Items) > 0 {
 		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
 		program.Send(queueui.PrepareSnapshot(seeded, sources...))
-		onSnapshot(seeded)
+		onSnapshot(seeded, claims)
 	}
 	defer func() {
 		for _, release := range releases {
@@ -610,7 +624,20 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			stored.Store(item.Ref.Key(), item)
 		}
 		program.Send(queueui.PrepareSnapshot(snapshot, sources...))
-		onSnapshot(snapshot)
+		onSnapshot(snapshot, claims)
+	}
+	claims = guard(latest)
+	if len(latest.Items) > 0 {
+		items := make([]queue.Item, 0, len(latest.Items))
+		for _, item := range latest.Items {
+			items = append(items, item)
+		}
+		for _, item := range overlayCurrentClaims(ctx, items, claims, authority, paths) {
+			latest.Items[item.Ref.Key()] = item
+			stored.Store(item.Ref.Key(), item)
+		}
+		program.Send(queueui.PrepareSnapshot(latest, sources...))
+		onSnapshot(latest, claims)
 	}
 	for _, source := range refreshSources {
 		partition, ok := partitions[source.ID]
@@ -645,7 +672,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
 			program.Send(queueui.PrepareSnapshot(snapshot, sources...))
-			onSnapshot(snapshot)
+			onSnapshot(snapshot, claims)
 		}
 	}
 	current := loader.Store.Current()

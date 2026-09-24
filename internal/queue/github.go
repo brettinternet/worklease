@@ -41,6 +41,7 @@ type githubBinding struct {
 	generation                                 string
 	dependencies                               bool
 	identityChanged                            bool
+	identityDetail                             string
 	scans                                      map[string]map[string]string
 	scanOrder                                  []string
 	nodeIDs                                    map[string]string
@@ -116,6 +117,23 @@ func (a *GitHubAdapter) drift(b *githubBinding) {
 	a.mu.Lock()
 	b.identityChanged = true
 	a.mu.Unlock()
+}
+
+func (a *GitHubAdapter) driftTo(b *githubBinding, newLocator string) {
+	a.mu.Lock()
+	b.identityChanged = true
+	b.identityDetail = b.host + "/" + b.repository + " -> " + b.host + "/" + newLocator
+	a.mu.Unlock()
+}
+
+// IdentityChange reports only public repository locators, never provider payloads.
+func (a *GitHubAdapter) IdentityChange(source Source) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if b := a.bindings[source.ID]; b != nil {
+		return b.identityDetail
+	}
+	return ""
 }
 func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) (Source, error) {
 	host, repository, account := options["host"], options["repository"], options["account"]
@@ -609,8 +627,12 @@ func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, quer
 		}
 		return SummaryPage{}, err
 	}
-	if result.Repository == nil || result.Repository.NameWithOwner != b.repository {
+	if result.Repository == nil {
 		return SummaryPage{}, GitHubDiagnostic{"not-found-or-inaccessible", "repository not found or access unavailable"}
+	}
+	if result.Repository.NameWithOwner != b.repository {
+		a.driftTo(b, result.Repository.NameWithOwner)
+		return SummaryPage{}, GitHubDiagnostic{"identity-changed", "configured repository identity changed; claims unavailable until rebind"}
 	}
 	coverage := Coverage{State: CoverageComplete, Scope: source.ID, Total: result.Repository.Issues.TotalCount, TotalAccuracy: TotalExact}
 	page := SummaryPage{Coverage: coverage, Observation: Observation{Principal: b.account, ObservedAt: time.Now(), Coverage: coverage, ConfigurationGeneration: b.generation}, Incremental: true}
@@ -620,7 +642,7 @@ func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, quer
 			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "issue identity missing"}
 		}
 		if issue.Repository.NameWithOwner != b.repository {
-			a.drift(b)
+			a.driftTo(b, issue.Repository.NameWithOwner)
 			return SummaryPage{}, GitHubDiagnostic{"identity-changed", "issue transferred; claims unavailable until rebind"}
 		}
 		a.rememberNodeID(b, issue)
@@ -739,7 +761,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		return SummaryPage{}, GitHubDiagnostic{"not-found-or-inaccessible", "repository not found or access unavailable"}
 	}
 	if result.Repository.NameWithOwner != b.repository {
-		a.drift(b)
+		a.driftTo(b, result.Repository.NameWithOwner)
 		return SummaryPage{}, GitHubDiagnostic{"identity-changed", "configured repository identity changed; claims unavailable until rebind"}
 	}
 	coverage := Coverage{State: CoverageComplete, Scope: source.ID, Total: result.Repository.Issues.TotalCount, TotalAccuracy: TotalExact}
@@ -749,7 +771,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			return SummaryPage{}, GitHubDiagnostic{"invalid-response", "issue identity missing"}
 		}
 		if issue.Repository.NameWithOwner != b.repository {
-			a.drift(b)
+			a.driftTo(b, issue.Repository.NameWithOwner)
 			return SummaryPage{}, GitHubDiagnostic{"identity-changed", "issue transferred; claims unavailable until rebind"}
 		}
 		a.mu.Lock()
@@ -926,7 +948,7 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 				continue
 			}
 			if issue.Repository.NameWithOwner != b.repository || issue.Number != number {
-				a.drift(b)
+				a.driftTo(b, issue.Repository.NameWithOwner)
 				outcomes[i].Kind = "withheld"
 				continue
 			}
@@ -963,7 +985,7 @@ func (a *GitHubAdapter) ReadItems(ctx context.Context, source Source, refs []Ref
 		}
 		issue := *result.Repository.Issue
 		if result.Repository.NameWithOwner != b.repository || issue.Repository.NameWithOwner != b.repository || issue.Number != number {
-			a.drift(b)
+			a.driftTo(b, issue.Repository.NameWithOwner)
 			outcomes[i].Kind = "withheld"
 			continue
 		}
@@ -1028,7 +1050,7 @@ func (a *GitHubAdapter) ReadDependencies(ctx context.Context, source Source, ref
 	}
 	issue := result.Repository.Issue
 	if result.Repository.NameWithOwner != b.repository || issue.Repository.NameWithOwner != b.repository || issue.Number != n {
-		a.drift(b)
+		a.driftTo(b, issue.Repository.NameWithOwner)
 		return DependencyPage{}, GitHubDiagnostic{"identity-changed", "issue identity changed; claims unavailable"}
 	}
 	page := DependencyPage{Completeness: CoverageComplete}

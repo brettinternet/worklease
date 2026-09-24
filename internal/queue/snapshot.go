@@ -719,6 +719,10 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 					for key, item := range s.Items {
 						if item.Ref.SourceID == source.ID && !seenRefs[key] {
 							delete(s.Items, key)
+							if s.Deleted == nil {
+								s.Deleted = make(map[string]Ref)
+							}
+							s.Deleted[key] = item.Ref
 						}
 					}
 				}

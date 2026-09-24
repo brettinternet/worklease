@@ -369,7 +369,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(queueQuery, "worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]")
 	detail(queueQuery, "Read one configured queue view. Query is read-only; source coverage and dependency completeness are reported explicitly.")
 	queueBrowse := queueCommand(s)
-	queueBrowse.Commands = []*urfavecli.Command{queueQuery}
+	queueBrowse.Commands = []*urfavecli.Command{queueQuery, queueIdentityCommand(s)}
 	all := append(commands, queueBrowse, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)

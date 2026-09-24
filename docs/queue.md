@@ -1,6 +1,6 @@
 # Work queue configuration
 
-The read-only queue uses one owner-private file, `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. No repository configuration is read. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.
+The read-only queue uses owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. No repository configuration is read. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.
 
 ```yaml
 version: 1
@@ -31,6 +31,18 @@ views:
 ```
 
 `checkout` must exist and `~` expands from HOME. Omit `claims` for host-local Backlog.md keys; a portable `generic` source must be agreed by all claimants before use. `allowGitNetwork` defaults to false. GitHub repositories use `owner/repo` and require an explicit host and account. View authorities must be `local` or a name in the trusted `profiles.yaml`; source IDs must be defined above. Filter keys are limited to `readiness`, `claim`, and `assigned`. The `launch` section is not supported in this slice. Missing configuration is reported as `no-sources-configured` with this setup guidance.
+
+## Claim identity and migration
+
+The first use of a source, and every subsequent change to its configured claim inputs (including a portable Backlog.md binding, repository locator, or view authority), requires explicit confirmation before claim actions become available. Queue reads remain read-only: confirmation alone writes the owner-private `queue-identities.json` beside `queue.yaml`, not the backing provider. A missing, unsafe, or mismatched identity record fails closed. This record is **not** part of the disposable queue index; keep it when clearing the cache. No alias is introduced for the old key.
+
+Before confirming: stop workers using the old domain; resolve old claims and pending operations; update CLI, skill, and launch callers to derive exactly the configured policy/source/item; update `queue.yaml` to the new locator. Verify the view authority is shared by all claimants. The queue checks old keys in that authority and refuses confirmation while any is active or unknown, but **cannot detect claims in other authorities or prove that old workers and operations have stopped**. The acknowledgement is an operator assertion of those external checks:
+
+```sh
+worklease queue --view Ready identity confirm --source worklease --acknowledge
+```
+
+The confirmation re-reads the entire source, rejects duplicate task IDs and partial lists, checks old-key claims, and stores the configured claim inputs, observed IDs, and retired claim domains. The pre-acquisition gate must re-read identity and atomically acquire the configured key with all retired item keys admitted by the same authority. A retired host-local key cannot be admitted by a remote authority: only the operator's explicit acknowledgement that legacy workers and operations stopped permits that transition; the queue cannot fence or discover claims in separate authorities. Callers must fail closed if the current key is not admitted. A portable Backlog.md source re-reads its list again for availability and immediately before each future acquisition (the acquisition implementation is TASK-130.1); duplicates disable claim actions with `duplicate-item-id`. A vanished ID with a held old key, a GitHub rename/transfer, or a rebind reports `identity-changed` or `binding-migration-required` with the old/new locator where observed. On GitHub, edit `queue.yaml` to the actual new repository before confirming; an unresolved redirect cannot be confirmed. Resolved immutable repository IDs are for observation only, never substituted into claim keys.
 
 ## Read-only query
 

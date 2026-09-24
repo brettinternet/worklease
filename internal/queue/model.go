@@ -155,6 +155,7 @@ type ClaimObservation struct {
 	ObservedAt    time.Time `json:"observedAt,omitempty"`
 	Stale         bool      `json:"stale"`
 	Reason        string    `json:"reason,omitempty"`
+	Detail        string    `json:"detail,omitempty"`
 }
 type Freshness string
 

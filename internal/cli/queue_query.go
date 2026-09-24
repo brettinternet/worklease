@@ -219,7 +219,12 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			return s.handle(cmd, e)
 		}
 		defer selected.Close()
-		items = queue.OverlayClaims(ctx, items, queue.ClaimSources(cfg, sources), auth, config.UserProfilePaths(nil), nil)
+		identities, e := config.LoadQueueIdentities(nil)
+		if e != nil {
+			return s.handle(cmd, e)
+		}
+		claimSources := queue.GuardClaimSources(ctx, queue.ClaimSources(cfg, sources), registry, auth, identities, snapshot)
+		items = queue.OverlayClaims(ctx, items, claimSources, auth, config.UserProfilePaths(nil), nil)
 		cursorItems := append([]queue.Item(nil), items...)
 		readiness := strings.ToLower(view.Filter.Readiness)
 		claim := strings.ToLower(view.Filter.Claim)
@@ -320,6 +325,9 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			diagnostics := queueSourceDiagnostics(registry, sourceForID(sources, id))
 			if failure := resolveErrors[id]; failure != "" {
 				diagnostics = []string{failure}
+			}
+			if source := claimSources[id]; source.BlockReason != "" {
+				diagnostics = append(diagnostics, source.BlockReason+": "+source.BlockDetail)
 			}
 			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, ObservedAt: observationTimes[id], ServedFromIndex: servedFromIndex[id], Diagnostics: diagnostics})
 		}

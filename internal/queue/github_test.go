@@ -460,6 +460,9 @@ func TestGitHubTransferredNodeWithholdsItemAndDisablesClaims(t *testing.T) {
 	if _, err := a.Capabilities(context.Background(), source, "", nil); err == nil {
 		t.Fatal("transferred issue left claims available")
 	}
+	if detail := a.IdentityChange(source); !strings.Contains(detail, "org/repo") || !strings.Contains(detail, "other/repo") {
+		t.Fatalf("transfer locators missing: %q", detail)
+	}
 }
 
 func TestGitHubIncrementalPagesKeepFixedWatermarkAndOverlap(t *testing.T) {
@@ -645,6 +648,9 @@ func TestGitHubDiagnosticsAndIdentity(t *testing.T) {
 	_, err = a.Capabilities(context.Background(), source, "", nil)
 	if d, ok := err.(GitHubDiagnostic); !ok || d.Code != "identity-changed" {
 		t.Fatalf("claim availability: %v", err)
+	}
+	if detail := a.IdentityChange(source); !strings.Contains(detail, "org/repo") || !strings.Contains(detail, "new/repo") {
+		t.Fatalf("rename locators missing: %q", detail)
 	}
 }
 func TestGitHubUnsupportedDependencyFields(t *testing.T) {

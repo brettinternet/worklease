@@ -14,8 +14,9 @@ import (
 // ClaimSource retains the configured identity inputs, rather than deriving keys
 // from a display ID or from the checkout running the queue.
 type ClaimSource struct {
-	Source              Source
-	Policy, ClaimSource string
+	Source                   Source
+	Policy, ClaimSource      string
+	BlockReason, BlockDetail string
 }
 
 // ClaimSources carries queue.yaml's exact key inputs into the overlay. Without
@@ -85,6 +86,7 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 		if !ok {
 			item.Claim.Reason = "source-unavailable"
 		} else {
+			item.Claim.Reason, item.Claim.Detail = source.BlockReason, source.BlockDetail
 			policy := source.Policy
 			keySource := source.ClaimSource
 			if policy == "" {
@@ -196,9 +198,9 @@ func overlayBatch(ctx context.Context, items []Item, indexes map[string][]int, k
 		}
 		observation.Available = observation.Known && !observation.Active
 		for _, index := range indexes[key] {
-			reason := items[index].Claim.Reason
+			reason, detail := items[index].Claim.Reason, items[index].Claim.Detail
 			items[index].Claim = observation
-			items[index].Claim.Reason = reason
+			items[index].Claim.Reason, items[index].Claim.Detail = reason, detail
 		}
 	}
 }
