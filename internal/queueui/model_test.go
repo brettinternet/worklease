@@ -451,7 +451,7 @@ func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
 			if !strings.Contains(m.Notice, "Claim unavailable") {
 				t.Fatal(key, m.Notice)
 			}
-		} else if !strings.Contains(m.Notice, "read-only") {
+		} else if !strings.Contains(m.Notice, "unavailable") && !strings.Contains(m.Notice, "Unavailable") {
 			t.Fatal(key, m.Notice)
 		}
 	}
@@ -724,6 +724,80 @@ func TestClaimPreviewRequiresExplicitConfirmationAndShowsGrant(t *testing.T) {
 		if !strings.Contains(view, text) {
 			t.Errorf("grant detail missing %q: %s", text, view)
 		}
+	}
+}
+
+func TestUncertainAcquireCannotQuitSilently(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	pending := reason.New(reason.ReasonUnknownOutcome, "lost response").With("commitState", "unknown").With("pendingPath", "/private/queue/pending.json")
+	next, _ := m.Update(ClaimResultMsg{Identity: m.Selected, Err: pending})
+	m = next.(Model)
+	m, cmd := press(m, "q")
+	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "/private/queue/pending.json") {
+		t.Fatalf("uncertain claim lost on exit: %s", m.View())
+	}
+}
+
+func TestQueueOwnedClaimExitAndCancel(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	item := m.rows()[0]
+	item.Resources = []string{"resource:one"}
+	m.Snapshot.Items[item.Ref.Key()] = item
+	path := "/private/queue/claim.json"
+	next, _ := m.Update(ClaimResultMsg{Identity: identity(item), Item: item, HandlePath: path, ClaimID: "claim", Resources: item.Resources, NextRenewal: time.Now().Add(time.Minute), Claim: queue.ClaimObservation{Known: true, Active: true, ExpiresAt: time.Now().Add(5 * time.Minute)}})
+	m = next.(Model)
+	if len(m.OwnedClaims) != 1 {
+		t.Fatal("new grant not tracked for exit")
+	}
+	m, cmd := press(m, "q")
+	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "No claim is released automatically") || !strings.Contains(m.View(), path) {
+		t.Fatalf("exit consequence missing: %s", m.View())
+	}
+	m, _ = press(m, "esc")
+	if m.Quitting {
+		t.Fatal("exit cannot be cancelled")
+	}
+	failed, _ := m.Update(OwnedClaimMsg{Path: path, LastResult: "handle directory unavailable"})
+	m = failed.(Model)
+	if m.OwnedClaims[path].Verified || m.OwnedClaims[path].ClaimID != "claim" {
+		t.Fatal("scan failure erased or authorized the claim")
+	}
+	m, cmd = press(m, "q")
+	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "handle directory unavailable") {
+		t.Fatal("unverified claim did not warn on exit")
+	}
+	m, cmd = press(m, "enter")
+	if cmd == nil {
+		t.Fatal("confirmed exit did not quit")
+	}
+	m.Quitting = false
+	owned := m.OwnedClaims[path]
+	owned.Verified = true
+	m.OwnedClaims[path] = owned
+	called := false
+	m.CancelClaim = func(got string) tea.Cmd {
+		called = true
+		if got != path {
+			t.Fatalf("wrong handle %s", got)
+		}
+		return func() tea.Msg { return CancelClaimMsg{Path: path} }
+	}
+	m, cmd = press(m, "R")
+	if cmd != nil || called || !strings.Contains(m.View(), "Only an authority-verified no-effect") {
+		t.Fatal("cancellation preview missing")
+	}
+	m, cmd = press(m, "enter")
+	if cmd == nil || !called {
+		t.Fatal("verified no-effect cancellation not offered")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if len(m.OwnedClaims) != 0 {
+		t.Fatal("cancelled claim still tracked")
 	}
 }
 

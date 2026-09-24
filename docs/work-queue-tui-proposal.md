@@ -362,7 +362,7 @@ Browsing never renews anyone's claim. A worker using the CLI or MCP owns its han
 
 For an explicit human Claim for me, the queue owns a distinct persisted full-UUID session and renews while that queue process runs: before half the TTL, with jitter and a safe deadline margin, on a control path that source refresh cannot delay. The requested TTL and hold respect the authority's admitted `maxTTL` and `maxHold`. The detail view shows next renewal and last result. After suspend or resume, loss of ownership requires authoritative verification before further work. Network uncertainty disables writes even while a local countdown looks positive.
 
-On exit with owned claims, show the exact consequence. Offer verified release when safe, or stop renewing and leave the remaining lease and recovery state visible. Never release an unresolved operation as completed, create a renewal daemon, or promise ownership after closing. Reopening requires the private handle and live verification, not a matching username. Cross-host transfer remains unimplemented.
+On exit with owned claims, show the exact consequence. Offer verified release when safe, or stop renewing and leave the remaining lease and recovery state visible. In S4, `R` offers no-effect cancellation only after live ownership verification and complete current-epoch operation history; a Worklease checkpoint is not itself a provider receipt. Release after an effect remains unavailable until S6 can verify the provider checkpoint. Never release an unresolved operation as completed, create a renewal daemon, or promise ownership after closing. Reopening requires the private handle and live verification, not a matching username. Cross-host transfer remains unimplemented.
 
 ## 10. Authentication and trust
 

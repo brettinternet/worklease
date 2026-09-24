@@ -72,7 +72,7 @@ func (c *queueClaimController) AcquireClaim(ctx context.Context, item queue.Item
 		if err != nil {
 			return queueui.ClaimResultMsg{Identity: queueIdentity(item), Item: plan.item, Err: err}
 		}
-		return queueui.ClaimResultMsg{Identity: queueIdentity(item), Item: plan.item, Claim: queue.ClaimObservation{Known: true, Available: false, Active: true, OwnerVerified: true, AuthorityID: grant.AuthorityID, State: "held", AgentID: grant.AgentID, SessionID: grant.SessionID, AcquiredAt: grant.AcquiredAt, ExpiresAt: grant.ExpiresAt, ObservedAt: time.Now().UTC()}, GrantedTTL: grant.ExpiresAt.Sub(grant.AcquiredAt)}
+		return queueui.ClaimResultMsg{Identity: queueIdentity(item), Item: plan.item, HandlePath: plan.handle, Resources: plan.keys, ClaimID: grant.ClaimID, NextRenewal: nextRenewal(grant.AcquiredAt, grant.ExpiresAt, grant.ClaimID), Claim: queue.ClaimObservation{Known: true, Available: false, Active: true, OwnerVerified: true, AuthorityID: grant.AuthorityID, State: "held", AgentID: grant.AgentID, SessionID: grant.SessionID, AcquiredAt: grant.AcquiredAt, ExpiresAt: grant.ExpiresAt, ObservedAt: time.Now().UTC()}, GrantedTTL: grant.ExpiresAt.Sub(grant.AcquiredAt)}
 	}
 }
 
@@ -319,7 +319,7 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 	inputs := acquireInputs(request.AuthorityID, request.ClaimID, request.Resources, request.AgentID, request.SessionID, request.WorkKey, request.TTL, 0, 0, true, false, request.RequestNotAfter)
 	inputs["holdUntil"] = request.HoldUntil.UTC().UnixMicro()
 	deadline := request.RequestNotAfter
-	pending := handle.Handle{SchemaVersion: handle.SchemaVersion, AuthorityID: request.AuthorityID, ClaimID: request.ClaimID, Token: request.Token, Resources: append([]string(nil), request.Resources...), AgentID: request.AgentID, SessionID: request.SessionID, LocalReplaceAllowed: false, State: "pending", PendingRequest: &handle.PendingRequest{OperationID: request.ClaimID, Kind: "acquire", AuthorityID: request.AuthorityID, ClaimID: request.ClaimID, RequestHash: acquireRequestHash(inputs), RequestNotAfter: deadline, Inputs: inputs}}
+	pending := handle.Handle{SchemaVersion: handle.SchemaVersion, AuthorityID: request.AuthorityID, ClaimID: request.ClaimID, Token: request.Token, Resources: append([]string(nil), request.Resources...), AgentID: request.AgentID, SessionID: request.SessionID, LocalReplaceAllowed: false, State: "pending", HoldUntil: request.HoldUntil, PendingRequest: &handle.PendingRequest{OperationID: request.ClaimID, Kind: "acquire", AuthorityID: request.AuthorityID, ClaimID: request.ClaimID, RequestHash: acquireRequestHash(inputs), RequestNotAfter: deadline, Inputs: inputs}}
 	if current != nil {
 		if err := lock.ReplaceReady(plan.handle, *current, pending); err != nil {
 			return lease.Grant{}, err

@@ -90,11 +90,25 @@ type ClaimPreviewMsg struct {
 	Err      error
 }
 type ClaimResultMsg struct {
-	Identity   string
-	Item       queue.Item
-	Claim      queue.ClaimObservation
-	GrantedTTL time.Duration
-	Err        error
+	Identity            string
+	Item                queue.Item
+	Claim               queue.ClaimObservation
+	GrantedTTL          time.Duration
+	HandlePath, ClaimID string
+	Resources           []string
+	NextRenewal         time.Time
+	Err                 error
+}
+type OwnedClaimMsg struct {
+	Path, ClaimID, LastResult string
+	Gone                      bool
+	Resources                 []string
+	ExpiresAt, NextRenewal    time.Time
+	Verified, Lost            bool
+}
+type CancelClaimMsg struct {
+	Path string
+	Err  error
 }
 
 type ViewRule struct {
@@ -102,45 +116,49 @@ type ViewRule struct {
 	Assigned         []string
 }
 type Model struct {
-	Snapshot                       queue.Snapshot
-	Views                          []string
-	ViewFilters                    map[string]queue.Filters
-	ViewRules                      map[string]ViewRule
-	ViewName, Authority, Scope, Me string
-	MeBySource                     map[string][]string
-	Sources                        []queue.Source
-	SourceErrors                   map[string]string
-	Width, Height                  int
-	Selected                       string
-	Index, Offset                  int
-	DetailOffset                   int
-	Detail                         bool
-	Tab                            int
-	Filter, Input, Notice          string
-	Filtering, Palette, Help       bool
-	History                        ledger.HistoryPage
-	HistoryError                   string
-	HistoryLoading                 bool
-	HistoryIdentity                string
-	HistoryCursor                  string
-	Comments                       []queue.GitHubComment
-	CommentsCursor                 string
-	CommentsIdentity               string
-	CommentsLoading                bool
-	CommentsError                  string
-	ClaimFreshness                 string
-	RebuildingClaims               bool
-	ClaimLoading, Claiming         bool
-	ClaimPreview                   *ClaimPreview
-	PreviewClaim                   func(queue.Item) tea.Cmd
-	AcquireClaim                   func(queue.Item, ClaimPreview) tea.Cmd
-	Refresh                        func() tea.Cmd
-	HydrateSelected                func(queue.Item) tea.Cmd
-	LoadHistory                    func(queue.Item, string, bool) tea.Cmd
-	LoadComments                   func(queue.Item, string) tea.Cmd
-	OpenURL                        func(queue.Item) tea.Cmd
-	rowCache                       *rowCache
-	orderedKeys                    []string
+	Snapshot                           queue.Snapshot
+	Views                              []string
+	ViewFilters                        map[string]queue.Filters
+	ViewRules                          map[string]ViewRule
+	ViewName, Authority, Scope, Me     string
+	MeBySource                         map[string][]string
+	Sources                            []queue.Source
+	SourceErrors                       map[string]string
+	Width, Height                      int
+	Selected                           string
+	Index, Offset                      int
+	DetailOffset                       int
+	Detail                             bool
+	Tab                                int
+	Filter, Input, Notice              string
+	Filtering, Palette, Help           bool
+	History                            ledger.HistoryPage
+	HistoryError                       string
+	HistoryLoading                     bool
+	HistoryIdentity                    string
+	HistoryCursor                      string
+	Comments                           []queue.GitHubComment
+	CommentsCursor                     string
+	CommentsIdentity                   string
+	CommentsLoading                    bool
+	CommentsError                      string
+	ClaimFreshness                     string
+	RebuildingClaims                   bool
+	ClaimLoading, Claiming, Cancelling bool
+	ClaimPreview                       *ClaimPreview
+	OwnedClaims                        map[string]OwnedClaimMsg
+	Quitting                           bool
+	CancelPreview                      string
+	PreviewClaim                       func(queue.Item) tea.Cmd
+	AcquireClaim                       func(queue.Item, ClaimPreview) tea.Cmd
+	CancelClaim                        func(string) tea.Cmd
+	Refresh                            func() tea.Cmd
+	HydrateSelected                    func(queue.Item) tea.Cmd
+	LoadHistory                        func(queue.Item, string, bool) tea.Cmd
+	LoadComments                       func(queue.Item, string) tea.Cmd
+	OpenURL                            func(queue.Item) tea.Cmd
+	rowCache                           *rowCache
+	orderedKeys                        []string
 }
 
 type rowCache struct {
@@ -155,7 +173,7 @@ type rowCache struct {
 var tabs = []string{"Summary", "Dependencies", "Activity", "Claims"}
 
 func New(snapshot queue.Snapshot) Model {
-	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed"}, ViewName: "All", rowCache: &rowCache{}}
+	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed"}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
 }
 func (m Model) Init() tea.Cmd { return nil }
 func identity(i queue.Item) string {
@@ -529,12 +547,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Review claim preview; press Enter to confirm"
 			}
 		}
+	case OwnedClaimMsg:
+		if v.Path != "" {
+			if v.Gone {
+				delete(m.OwnedClaims, v.Path)
+				break
+			}
+			if m.OwnedClaims == nil {
+				m.OwnedClaims = map[string]OwnedClaimMsg{}
+			}
+			if previous, ok := m.OwnedClaims[v.Path]; ok && v.ClaimID == "" {
+				previous.Verified = false
+				previous.LastResult = v.LastResult
+				v = previous
+			}
+			m.OwnedClaims[v.Path] = v
+		}
+	case CancelClaimMsg:
+		m.Cancelling = false
+		if v.Err != nil {
+			m.Notice = "Cancellation refused: " + v.Err.Error()
+		} else {
+			delete(m.OwnedClaims, v.Path)
+			m.Notice = "No-effect claim cancelled"
+		}
 	case ClaimResultMsg:
 		m.Claiming = false
 		m.ClaimPreview = nil
 		if v.Err != nil {
+			if classified := reason.As(v.Err); classified != nil {
+				pendingPath, _ := classified.Details["pendingPath"].(string)
+				if pendingPath != "" && (classified.Reason == reason.ReasonUnknownOutcome || classified.Details["commitState"] == "unknown" || classified.Details["commitState"] == "committed") {
+					if m.OwnedClaims == nil {
+						m.OwnedClaims = map[string]OwnedClaimMsg{}
+					}
+					m.OwnedClaims[pendingPath] = OwnedClaimMsg{Path: pendingPath, LastResult: "claim outcome uncertain; retain private recovery handle"}
+				}
+			}
 			m.Notice = fmt.Sprintf("Claim %s: %s", clean(v.Identity), claimFailureNotice(v.Err))
 		} else {
+			if v.HandlePath != "" {
+				if m.OwnedClaims == nil {
+					m.OwnedClaims = map[string]OwnedClaimMsg{}
+				}
+				m.OwnedClaims[v.HandlePath] = OwnedClaimMsg{Path: v.HandlePath, ClaimID: v.ClaimID, Resources: v.Resources, ExpiresAt: v.Claim.ExpiresAt, NextRenewal: v.NextRenewal, Verified: true, LastResult: "acquired"}
+			}
 			if current, ok := m.Snapshot.Items[v.Item.Ref.Key()]; ok && !current.Claim.Stale && current.Claim.Reason != "authority-mismatch" {
 				current.Claim = v.Claim
 				m.Snapshot.Items[v.Item.Ref.Key()] = current
@@ -544,6 +601,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := v.String()
+		if m.CancelPreview != "" {
+			path := m.CancelPreview
+			switch key {
+			case "enter", "y":
+				m.CancelPreview = ""
+				if m.CancelClaim != nil {
+					m.Cancelling = true
+					return m, m.CancelClaim(path)
+				}
+			case "esc", "n":
+				m.CancelPreview = ""
+				m.Notice = "Cancellation dismissed"
+			}
+			return m, nil
+		}
+		if m.Quitting {
+			switch key {
+			case "enter", "y", "q":
+				return m, tea.Quit
+			case "esc", "n":
+				m.Quitting = false
+				m.Notice = "Exit cancelled"
+			}
+			return m, nil
+		}
 		if m.Filtering || m.Palette {
 			switch key {
 			case "esc":
@@ -602,6 +684,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "q", "ctrl+c":
+			if m.Claiming || m.ClaimLoading || m.Cancelling {
+				m.Notice = "Wait for claim request outcome before exiting"
+				return m, nil
+			}
+			if len(m.OwnedClaims) > 0 {
+				m.Quitting = true
+				return m, nil
+			}
 			return m, tea.Quit
 		case "j", "down":
 			m.move(1)
@@ -699,8 +789,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.Notice = "No item selected"
 			}
-		case "R", "a", "s", "p", "x":
-			m.Notice = "Unavailable: read-only slice (release, assign, state, progress and launch arrive later)"
+		case "R":
+			if item, ok := m.selected(rows); ok {
+				for path, owned := range m.OwnedClaims {
+					if !owned.Verified || owned.Lost || !sameResources(item.Resources, owned.Resources) {
+						continue
+					}
+					if m.CancelClaim != nil {
+						m.CancelPreview = path
+						return m, nil
+					}
+				}
+			}
+			m.Notice = "Release unavailable: no verified queue-owned claim; provider checkpoint required for effected claims"
+		case "a", "s", "p", "x":
+			m.Notice = "Unavailable: provider writes and launch arrive later"
 		}
 		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
 			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
@@ -754,6 +857,13 @@ func (m Model) View() string {
 	}
 	if m.ClaimPreview != nil {
 		return m.claimPreviewView(*m.ClaimPreview)
+	}
+	if m.Quitting {
+		return m.exitView()
+	}
+	if m.CancelPreview != "" {
+		owned := m.OwnedClaims[m.CancelPreview]
+		return clipLines(fmt.Sprintf("Cancel queue-owned claim %s?\nOnly an authority-verified no-effect epoch may be released. An unverified provider checkpoint or started operation prevents cancellation.\nHandle: %s\nEnter/y confirms · Esc/n dismisses\n", clean(owned.ClaimID), clean(m.CancelPreview)), m.Width)
 	}
 	rows := m.rows()
 	m.anchor(rows)
@@ -858,6 +968,33 @@ func (m Model) View() string {
 		return footerText
 	}
 	return body + "\n" + footerText
+}
+func sameResources(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+func (m Model) exitView() string {
+	var b strings.Builder
+	b.WriteString("Quit queue? Renewal stops when this process exits. No claim is released automatically.\n")
+	for _, owned := range m.OwnedClaims {
+		claim, expiry := owned.ClaimID, "unknown"
+		if claim == "" {
+			claim = "outcome unknown"
+		}
+		if !owned.ExpiresAt.IsZero() {
+			expiry = owned.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(&b, "  %s expires %s · %s · private handle %s\n", clean(claim), expiry, clean(owned.LastResult), clean(owned.Path))
+	}
+	b.WriteString("Press Enter/y to leave leases and recovery state intact, Esc/n to continue (R cancels a verified no-effect claim).\n")
+	return clipLines(b.String(), m.Width)
 }
 func (m Model) claimPreviewView(preview ClaimPreview) string {
 	var b strings.Builder
@@ -1155,6 +1292,19 @@ func detail(m Model, i queue.Item) string {
 				fmt.Fprintf(&b, "Granted TTL: %s\n", i.Claim.ExpiresAt.Sub(i.Claim.AcquiredAt).Round(time.Second))
 			}
 			fmt.Fprintf(&b, "Expires: %s\n", i.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+		}
+		for _, owned := range m.OwnedClaims {
+			if !sameResources(i.Resources, owned.Resources) {
+				continue
+			}
+			fmt.Fprintf(&b, "Queue-owned: %s · next renewal %s · last result %s\n", clean(owned.ClaimID), owned.NextRenewal.UTC().Format(time.RFC3339), clip(owned.LastResult, 100))
+			if owned.Lost {
+				b.WriteString("Claim lost; actions disabled\n")
+			} else if !owned.Verified {
+				b.WriteString("Ownership unverified; actions disabled\n")
+			} else {
+				b.WriteString("R: cancel if no operation or provider write started\n")
+			}
 		}
 		if m.HistoryLoading {
 			b.WriteString("Loading claim epochs…\n")

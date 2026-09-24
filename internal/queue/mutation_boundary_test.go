@@ -11,10 +11,9 @@ import (
 	"testing"
 )
 
-// This source-level guard complements the status-only authority fake and
-// provider read-only tests: Claim for me may acquire through the selected
-// Worklease authority, but cannot invoke other lifecycle/guard methods or
-// provider write commands unnoticed.
+// This source-level guard complements the provider read-only tests. Queue
+// claim lifecycle methods are confined to the dedicated owner controller;
+// provider writes and guarded operations remain unavailable.
 func TestQueueHasNoMutationCallPath(t *testing.T) {
 	forbidden := map[string]bool{
 		"Acquire": true, "Heartbeat": true, "Checkpoint": true,
@@ -40,7 +39,7 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 					return true
 				}
 				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && forbidden[selector.Sel.Name] {
-					if selector.Sel.Name != "Acquire" || !queueClaimAuthorityAcquire(path, selector) {
+					if !queueClaimAuthorityMutation(path, selector) {
 						t.Errorf("%s calls forbidden mutation %s", path, selector.Sel.Name)
 					}
 				}
@@ -70,8 +69,21 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 	}
 }
 
-func queueClaimAuthorityAcquire(path string, call *ast.SelectorExpr) bool {
-	if filepath.Base(path) != "queue_claim.go" || call.Sel.Name != "Acquire" {
+func queueClaimAuthorityMutation(path string, call *ast.SelectorExpr) bool {
+	name := filepath.Base(path)
+	if name == "queue_claim.go" && call.Sel.Name == "Acquire" {
+		api, ok := call.X.(*ast.SelectorExpr)
+		if !ok || api.Sel.Name != "API" {
+			return false
+		}
+		backend, ok := api.X.(*ast.SelectorExpr)
+		if !ok || backend.Sel.Name != "backend" {
+			return false
+		}
+		controller, ok := backend.X.(*ast.Ident)
+		return ok && controller.Name == "c"
+	}
+	if name != "queue_lifecycle.go" || call.Sel.Name != "Heartbeat" && call.Sel.Name != "Release" {
 		return false
 	}
 	api, ok := call.X.(*ast.SelectorExpr)
@@ -82,6 +94,10 @@ func queueClaimAuthorityAcquire(path string, call *ast.SelectorExpr) bool {
 	if !ok || backend.Sel.Name != "backend" {
 		return false
 	}
-	controller, ok := backend.X.(*ast.Ident)
-	return ok && controller.Name == "c"
+	controller, ok := backend.X.(*ast.SelectorExpr)
+	if !ok || controller.Sel.Name != "controller" {
+		return false
+	}
+	owner, ok := controller.X.(*ast.Ident)
+	return ok && owner.Name == "l"
 }

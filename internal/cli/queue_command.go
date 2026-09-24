@@ -209,6 +209,14 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.AcquireClaim = func(item queue.Item, preview queueui.ClaimPreview) tea.Cmd {
 		return claimController.AcquireClaim(ctx, item, preview)
 	}
+	lifecycle := queueLifecycle{controller: claimController, now: time.Now}
+	model.CancelClaim = func(path string) tea.Cmd {
+		return func() tea.Msg {
+			cancelCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+			defer stop()
+			return queueui.CancelClaimMsg{Path: path, Err: lifecycle.Cancel(cancelCtx, path)}
+		}
+	}
 	restartOverlay := func(base queue.Snapshot, claims map[string]queue.ClaimSource) {
 		liveMu.Lock()
 		defer liveMu.Unlock()
@@ -414,6 +422,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		lifecycle.run(ctx, func(msg queueui.OwnedClaimMsg) { program.Send(msg) })
+	}()
 	start(true)
 	if backend.HTTP != nil {
 		workers.Add(1)
