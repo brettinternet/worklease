@@ -231,12 +231,34 @@ func (m Model) rows() []queue.Item {
 	if m.rowCache != nil {
 		m.rowCache.key, m.rowCache.rows = key, out
 		m.rowCache.counts = make(map[string]int, len(m.Views))
-		for _, name := range m.Views {
-			m.rowCache.counts[name] = m.viewCount(name)
+		// The standard views share one scan with freshness and edge counts.
+		// Configured views retain their full filtering semantics below.
+		standard := len(m.Views) == 4 && m.Views[0] == "All" && m.Views[1] == "Ready" && m.Views[2] == "Mine" && m.Views[3] == "Claimed" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0
+		if !standard {
+			for _, name := range m.Views {
+				m.rowCache.counts[name] = m.viewCount(name)
+			}
 		}
 		m.rowCache.observed = time.Time{}
 		m.rowCache.edges = 0
 		for _, item := range m.Snapshot.Items {
+			if standard {
+				m.rowCache.counts["All"]++
+				if item.Readiness.Status == queue.Ready {
+					m.rowCache.counts["Ready"]++
+				}
+				if item.Claim.Active {
+					m.rowCache.counts["Claimed"]++
+				}
+				if m.Me != "" {
+					for _, owner := range item.AssignedTo {
+						if m.isMe(item, owner) {
+							m.rowCache.counts["Mine"]++
+							break
+						}
+					}
+				}
+			}
 			if item.Observation.ObservedAt.After(m.rowCache.observed) {
 				m.rowCache.observed = item.Observation.ObservedAt
 			}

@@ -126,6 +126,29 @@ func TestPreparedProjectionPreservesFilteringDeduplicationAndLiveClaims(t *testi
 	}
 }
 
+func TestStandardViewCountsMatchConfiguredScan(t *testing.T) {
+	snapshot := fixture()
+	firstKey := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	first := snapshot.Items[firstKey]
+	first.AssignedTo = []string{"other", "brett", "brett"}
+	first.Readiness.Status = queue.Ready
+	snapshot.Items[firstKey] = first
+	m := New(snapshot)
+	m.Me = "brett"
+	m.MeBySource = map[string][]string{"a": {"brett"}}
+	m.rows()
+	for _, name := range m.Views {
+		if got, want := m.rowCache.counts[name], m.viewCount(name); got != want {
+			t.Errorf("%s count = %d, want %d", name, got, want)
+		}
+	}
+	m.ViewFilters = map[string]queue.Filters{"Ready": {SourceIDs: []string{"different"}}}
+	m.rows()
+	if got, want := m.rowCache.counts["Ready"], m.viewCount("Ready"); got != want {
+		t.Errorf("configured count = %d, want %d", got, want)
+	}
+}
+
 func TestClaimUpdatesWhileProviderSnapshotIsStalled(t *testing.T) {
 	m := New(fixture())
 	stalled := m.Snapshot.Clone()
