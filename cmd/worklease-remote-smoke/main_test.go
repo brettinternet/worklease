@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/x509"
 	"database/sql"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,7 +19,112 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/ledger"
+	"golang.org/x/term"
 )
+
+// TestHiddenInviteChild is re-executed as a fake PTY child; it must not run in
+// the ordinary test process.
+func TestHiddenInviteChild(t *testing.T) {
+	mode := os.Getenv("QUEUE_TEST_HIDDEN_INVITE")
+	if mode == "" {
+		return
+	}
+	if mode == "no-exit" {
+		_, _ = fmt.Fprint(os.Stderr, "Invite: ")
+		_, _ = term.ReadPassword(int(os.Stdin.Fd()))
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+func TestHiddenInviteChildBounded(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"no-prompt", "no-exit"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHiddenInviteChild$")
+			cmd.Env = append(os.Environ(), "QUEUE_TEST_HIDDEN_INVITE="+mode)
+			err := runHiddenInvite(cmd, []byte("private-invite"), 150*time.Millisecond)
+			if err == nil {
+				t.Fatal("stuck child unexpectedly succeeded")
+			}
+			if cmd.ProcessState == nil || cmd.ProcessState.Success() {
+				t.Fatalf("child was not reaped: %v", err)
+			}
+		})
+	}
+}
+
+func TestServeHelperStopsOnSessionEOF(t *testing.T) {
+	input, hold, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	serve := boundedCommandContext(context.Background(), "/bin/sh", "-c", "exec sleep 60")
+	if err := serve.Start(); err != nil {
+		_ = hold.Close()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- waitServeChild(serve, input) }()
+	_ = hold.Close() // The original SSH channel went away; no replacement exists.
+	select {
+	case err := <-done:
+		if err == nil || serve.ProcessState == nil {
+			t.Fatalf("helper did not stop and reap child: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		_ = serve.Process.Kill()
+		t.Fatal("remote child survived SSH session EOF")
+	}
+}
+
+func TestServerCleanupAfterDeadline(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	server := boundedCommandContext(ctx, "/bin/sh", "-c", "exec sleep 60")
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	<-ctx.Done()
+	h := &harness{server: server}
+	h.stopServer()
+	if server.ProcessState == nil || server.ProcessState.Success() {
+		t.Fatal("timed-out server was not reaped")
+	}
+}
+
+func TestBoundedCommandKillsDescendants(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	cmd := boundedCommandContext(ctx, "/bin/sh", "-c", "sleep 60 & wait")
+	if _, err := cmd.CombinedOutput(); err == nil {
+		t.Fatal("stuck child unexpectedly succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("descendant held the output pipe open after deadline: %v", elapsed)
+	}
+}
+
+func TestHarnessDeadlineNamesRunningStep(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "stuck-worklease")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	err := runWithDeadline(binary, filepath.Join(t.TempDir(), "evidence"), false, 200*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "deadline during authority guided setup") {
+		t.Fatalf("missing active step on timeout: %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("deadline failed to bound stuck child: %v", err)
+	}
+}
 
 func TestNormalizeGoTarget(t *testing.T) {
 	for _, test := range []struct{ osName, archName, goos, goarch string }{

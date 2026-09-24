@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/authority"
@@ -112,7 +113,9 @@ type harness struct {
 	remotePort                                                         int
 	remoteBinary, remoteHelper, remoteConfig, remoteCert, remoteKey    string
 	commandLog                                                         string
+	step                                                               string
 	server                                                             *exec.Cmd
+	serverInput                                                        *os.File
 	faultProxy                                                         *exec.Cmd
 	faultEndpoint, faultControl, faultLog                              string
 	clients                                                            [2]client
@@ -541,7 +544,7 @@ func main() {
 		if len(os.Args) != 5 && len(os.Args) != 6 {
 			fatal(errors.New("serve requires binary, config, pid file, and optional acceptance SQLite page limit"))
 		}
-		serve := exec.Command(os.Args[2], "serve", "--server-config", os.Args[3])
+		serve := boundedCommand(os.Args[2], "serve", "--server-config", os.Args[3])
 		serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
 		if len(os.Args) == 6 {
 			serve.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT="+os.Args[5])
@@ -551,16 +554,10 @@ func main() {
 		}
 		if err := os.WriteFile(os.Args[4], []byte(fmt.Sprintf("%d\n", serve.Process.Pid)), 0o600); err != nil {
 			_ = serve.Process.Kill()
+			_ = serve.Wait()
 			fatal(err)
 		}
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		go func() {
-			<-signals
-			_ = serve.Process.Signal(os.Interrupt)
-		}()
-		err := serve.Wait()
-		signal.Stop(signals)
+		err := waitServeChild(serve, os.Stdin)
 		_ = os.Remove(os.Args[4])
 		if err != nil {
 			fatal(err)
@@ -603,6 +600,36 @@ func main() {
 	}
 }
 
+// The remote helper's stdin is an SSH channel held open by the orchestrator.
+// EOF or a session hangup must stop the child even if a second SSH connection
+// cannot be established during cleanup.
+func waitServeChild(serve *exec.Cmd, input io.Reader) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	closed := make(chan struct{}, 1)
+	go func() {
+		_, _ = io.Copy(io.Discard, input)
+		closed <- struct{}{}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- serve.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-closed:
+	case <-signals:
+	}
+	_ = serve.Process.Signal(os.Interrupt)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		_ = serve.Process.Kill()
+		return <-done
+	}
+}
+
 func installSSHWrappers(root, configPath string) error {
 	configPath, err := filepath.Abs(configPath)
 	if err != nil {
@@ -636,7 +663,49 @@ func installSSHWrappers(root, configPath string) error {
 	return os.Setenv("PATH", wrapperRoot+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// All subprocesses in a smoke run inherit the same hard deadline. In
+// particular, a stalled CombinedOutput or Wait must never hold up cleanup.
+var smokeContext = context.Background()
+
+func boundedCommand(name string, args ...string) *exec.Cmd {
+	return boundedCommandContext(smokeContext, name, args...)
+}
+
+func boundedCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		} else {
+			return err
+		}
+	}
+	return cmd
+}
+
 func run(binary, evidence string, keep bool, remoteHosts ...string) error {
+	timeout := 12 * time.Minute
+	if len(remoteHosts) > 0 && remoteHosts[0] != "" {
+		timeout = 30 * time.Minute
+	}
+	return runWithDeadline(binary, evidence, keep, timeout, remoteHosts...)
+}
+
+func runWithDeadline(binary, evidence string, keep bool, timeout time.Duration, remoteHosts ...string) (runErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	smokeContext = ctx
+	defer func() {
+		if ctx.Err() != nil {
+			runErr = fmt.Errorf("remote smoke deadline during %s: %w", smokeStep(), ctx.Err())
+		}
+		cancel()
+		smokeContext = context.Background()
+	}()
 	remoteHost, sshConfig := "", ""
 	if len(remoteHosts) > 0 {
 		remoteHost = remoteHosts[0]
@@ -703,6 +772,7 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	}
 	defer h.stopFaultProxy()
 	defer h.stopServer()
+	h.progress("provision")
 	if err := h.provision(evidence); err != nil {
 		return err
 	}
@@ -717,6 +787,7 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 	}
 	started := time.Now()
 	for group := 1; group <= 5; group++ {
+		h.progress(fmt.Sprintf("group %d", group))
 		groupStart := time.Now()
 		var groupErr error
 		switch group {
@@ -732,8 +803,9 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 			groupErr = h.group5(evidence)
 		}
 		if groupErr != nil {
-			return fmt.Errorf("group %d: %w", group, groupErr)
+			return fmt.Errorf("group %d (%s): %w", group, smokeStep(), groupErr)
 		}
+		fmt.Fprintf(os.Stderr, "remote smoke: group %d passed\n", group)
 		h.report.Groups[len(h.report.Groups)-1].Evidence = append(h.report.Groups[len(h.report.Groups)-1].Evidence, h.commandLog, "duration="+time.Since(groupStart).String())
 	}
 	throughputKind := "development"
@@ -792,7 +864,7 @@ func (h *harness) provision(evidence string) error {
 	bootstrap := filepath.Join(secretDir, "bootstrap.invite")
 	initArgs := []string{"--json", "server", "init", "--guided", "--server-config", h.configPath, "--bootstrap-invite-file", bootstrap, "--listen", address, "--endpoint", h.endpoint, "--transport", "tls", "--admitted-prefix", "coordination:"}
 	h.logCommand("authority guided setup", append([]string{"worklease"}, initArgs...))
-	serverEnv := append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(h.root, "server-config"), "XDG_STATE_HOME="+filepath.Join(h.root, "server-state"))
+	serverEnv := h.authorityEnv()
 	initResult, err := runJSON(serverEnv, "", h.binary, initArgs...)
 	if err != nil {
 		return err
@@ -809,7 +881,7 @@ func (h *harness) provision(evidence string) error {
 		return errors.New("guided setup did not report generated TLS paths")
 	}
 	h.logCommand("authority", []string{"worklease", "serve", "--server-config", h.configPath})
-	h.server = exec.Command(h.binary, "serve", "--server-config", h.configPath)
+	h.server = boundedCommand(h.binary, "serve", "--server-config", h.configPath)
 	serverLog, err := os.OpenFile(filepath.Join(evidence, "authority.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -828,7 +900,7 @@ func (h *harness) provision(evidence string) error {
 		if err := os.MkdirAll(c.checkout, 0o700); err != nil {
 			return err
 		}
-		if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
+		if output, err := boundedCommand("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
 			return fmt.Errorf("git init %s: %w: %s", name, err, output)
 		}
 		c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+name, "WORKLEASE_SESSION_ID="+name+"-session")
@@ -881,7 +953,7 @@ func (h *harness) buildRemoteTarget(goos, goarch string) (string, string, error)
 	workleasePath := filepath.Join(buildRoot, "worklease")
 	helperPath := filepath.Join(buildRoot, "harness-helper")
 	for output, packagePath := range map[string]string{workleasePath: "./cmd/worklease", helperPath: "./cmd/worklease-remote-smoke"} {
-		cmd := exec.Command("go", "build", "-trimpath", "-o", output, packagePath)
+		cmd := boundedCommand("go", "build", "-trimpath", "-o", output, packagePath)
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 		combined, err := cmd.CombinedOutput()
 		if err != nil {
@@ -991,7 +1063,7 @@ func (h *harness) provisionRemote(evidence string) error {
 	if err := os.MkdirAll(a.checkout, 0o700); err != nil {
 		return err
 	}
-	if output, err := exec.Command("git", "init", "--quiet", a.checkout).CombinedOutput(); err != nil {
+	if output, err := boundedCommand("git", "init", "--quiet", a.checkout).CombinedOutput(); err != nil {
 		return fmt.Errorf("git init client-a: %w: %s", err, output)
 	}
 	a.env = append(os.Environ(), "WORKLEASE_HOME="+a.home, "XDG_CONFIG_HOME="+a.config, "SSL_CERT_FILE="+cert, "WORKLEASE_AGENT_ID=client-a", "WORKLEASE_SESSION_ID=client-a-session")
@@ -1040,16 +1112,26 @@ func (h *harness) startServer(evidence string) error {
 		serverArgs = append(serverArgs, strconv.FormatInt(h.fullVolumeMaxPageCount, 10))
 	}
 	h.logCommand("authority@"+h.remoteHost, serverArgs)
-	h.server = exec.Command("ssh", serverArgs[1:]...)
+	h.server = boundedCommand("ssh", serverArgs[1:]...)
 	serverLog, err := os.OpenFile(filepath.Join(evidence, "authority.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	h.server.Stdout, h.server.Stderr = serverLog, serverLog
-	if err := h.server.Start(); err != nil {
+	input, hold, err := os.Pipe()
+	if err != nil {
 		_ = serverLog.Close()
 		return err
 	}
+	h.server.Stdin = input
+	if err := h.server.Start(); err != nil {
+		_ = input.Close()
+		_ = hold.Close()
+		_ = serverLog.Close()
+		return err
+	}
+	_ = input.Close()
+	h.serverInput = hold
 	_ = serverLog.Close()
 	return waitHealthy(h.endpoint, h.cert)
 }
@@ -1303,10 +1385,10 @@ func (h *harness) startFaultProxy(evidence string) error {
 		h.faultControl, h.faultLog = filepath.Join(h.remoteRoot, "fault-control"), filepath.Join(h.remoteRoot, "fault-proxy.log")
 		pidPath = filepath.Join(h.remoteRoot, "fault-proxy.pid")
 		h.faultEndpoint = fmt.Sprintf("https://%s:%d", h.remoteAddress, port)
-		h.faultProxy = exec.Command("ssh", h.remoteHost, helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
+		h.faultProxy = boundedCommand("ssh", h.remoteHost, helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
 	} else {
 		h.faultEndpoint = "https://" + listen
-		h.faultProxy = exec.Command(helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
+		h.faultProxy = boundedCommand(helper, "fault-proxy", listen, h.endpoint, cert, key, h.faultControl, h.faultLog, pidPath)
 	}
 	if err := h.faultProxy.Start(); err != nil {
 		return err
@@ -1319,11 +1401,11 @@ func (h *harness) stopFaultProxy() {
 		return
 	}
 	if h.realHost {
-		_, _ = runSSH(h.remoteHost, h.remoteHelper, "stop-server", filepath.Join(h.remoteRoot, "fault-proxy.pid"))
+		h.stopRemoteProcess("fault-proxy.pid")
 	} else {
 		_ = h.faultProxy.Process.Signal(os.Interrupt)
 	}
-	_, _ = h.faultProxy.Process.Wait()
+	waitProcess(h.faultProxy, 5*time.Second)
 	h.faultProxy = nil
 }
 
@@ -1734,7 +1816,7 @@ func (h *harness) provisionRaceClient(label string) (client, string, error) {
 		if err := os.MkdirAll(c.checkout, 0o700); err != nil {
 			return client{}, "", err
 		}
-		if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
+		if output, err := boundedCommand("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
 			return client{}, "", fmt.Errorf("git init %s: %w: %s", label, err, output)
 		}
 		c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+label, "WORKLEASE_SESSION_ID="+label+"-session")
@@ -1800,14 +1882,20 @@ func (h *harness) writeServerConfig(prefixes []string, maxTTL, maxHold string) e
 	return runSCP(h.remoteHost, local, h.configPath)
 }
 
+func (h *harness) authorityEnv() []string {
+	return append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(h.root, "server-config"), "XDG_STATE_HOME="+filepath.Join(h.root, "server-state"))
+}
+
 func (h *harness) requireAuthorityFailure(args []string, expected ...string) error {
 	h.logCommand("authority@"+h.remoteHost+" expected-failure", append([]string{"worklease"}, args...))
 	var output []byte
 	var err error
 	if h.realHost {
-		output, err = exec.Command("ssh", append([]string{h.remoteHost, h.remoteBinary}, args...)...).CombinedOutput()
+		output, err = boundedCommand("ssh", append([]string{h.remoteHost, h.remoteBinary}, args...)...).CombinedOutput()
 	} else {
-		output, err = exec.Command(h.binary, args...).CombinedOutput()
+		cmd := boundedCommand(h.binary, args...)
+		cmd.Env = h.authorityEnv()
+		output, err = cmd.CombinedOutput()
 	}
 	if err == nil {
 		return fmt.Errorf("authority command unexpectedly succeeded: %s", strings.Join(args, " "))
@@ -1985,7 +2073,7 @@ func (h *harness) group2(evidence string) error {
 	if explicitPending.ClaimCredentialRef != canonicalExplicitToken || !filepath.IsAbs(explicitPending.ClaimCredentialRef) {
 		return fmt.Errorf("explicit retained request did not persist the absolute claim token path: got=%q want=%q", explicitPending.ClaimCredentialRef, canonicalExplicitToken)
 	}
-	replayCommand := exec.Command(h.self, "replay-pending", a.config, a.home, "team", explicitOperation)
+	replayCommand := boundedCommand(h.self, "replay-pending", a.config, a.home, "team", explicitOperation)
 	replayCommand.Env, replayCommand.Dir = a.env, a.checkout
 	replayOutput, replayErr := replayCommand.CombinedOutput()
 	if replayErr == nil || !bytes.Contains(replayOutput, []byte("unknown-outcome")) {
@@ -1997,7 +2085,7 @@ func (h *harness) group2(evidence string) error {
 	h.report.EffectDispatchCounts[filepath.Base(explicitEffect)] = 0
 	fdArgs := []string{"--json", "--profile", "team", "exec", "--claim-id", explicitGrant.ClaimID, "--token-fd", "0", "--revision", strconv.FormatInt(explicitGrant.Revision, 10), "--operation-id", strings.Repeat("9", 32), "--request-not-after", explicitDeadline, "--ttl", "5s", "--", h.self, "effect", explicitEffect}
 	h.logCommand(a.name+" expected-failure", append([]string{"worklease"}, fdArgs...))
-	fdCommand := exec.Command(h.binary, fdArgs...)
+	fdCommand := boundedCommand(h.binary, fdArgs...)
 	fdCommand.Env, fdCommand.Dir, fdCommand.Stdin = a.env, a.checkout, strings.NewReader(explicitGrant.Token+"\n")
 	fdOutput, fdErr := fdCommand.CombinedOutput()
 	if fdErr == nil {
@@ -2151,7 +2239,7 @@ func (h *harness) group2(evidence string) error {
 	providerRelease := filepath.Join(evidence, "provider-release.txt")
 	providerCompleted := filepath.Join(evidence, "provider-completed.log")
 	providerEffectID := strings.Repeat("7", 32)
-	providerWorker := exec.Command(h.self, "provider-effect-worker", providerSubmitted, providerRelease, providerCompleted, providerEffectID)
+	providerWorker := boundedCommand(h.self, "provider-effect-worker", providerSubmitted, providerRelease, providerCompleted, providerEffectID)
 	var providerWorkerError bytes.Buffer
 	providerWorker.Stderr = &providerWorkerError
 	if err := providerWorker.Start(); err != nil {
@@ -2360,7 +2448,7 @@ func (h *harness) newLocalEnrollmentClient(label, endpoint string) (client, erro
 	if err := os.MkdirAll(c.checkout, 0o700); err != nil {
 		return client{}, err
 	}
-	if output, err := exec.Command("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
+	if output, err := boundedCommand("git", "init", "--quiet", c.checkout).CombinedOutput(); err != nil {
 		return client{}, fmt.Errorf("git init %s: %w: %s", label, err, output)
 	}
 	c.env = append(os.Environ(), "WORKLEASE_HOME="+c.home, "XDG_CONFIG_HOME="+c.config, "SSL_CERT_FILE="+h.cert, "WORKLEASE_AGENT_ID="+label, "WORKLEASE_SESSION_ID="+label+"-session")
@@ -2379,8 +2467,18 @@ func (h *harness) cliHiddenInvite(c client, invitePath string, args ...string) e
 		return err
 	}
 	h.logCommand(c.name, append([]string{"worklease", "--json"}, args...))
-	cmd := exec.Command(h.binary, append([]string{"--json"}, args...)...)
-	cmd.Env, cmd.Dir = c.env, c.checkout
+	ctx, cancel := context.WithTimeout(smokeContext, 12*time.Second)
+	defer cancel()
+	// pty.Start supplies its own session attributes, incompatible with Setpgid.
+	cmd := exec.CommandContext(ctx, h.binary, append([]string{"--json"}, args...)...)
+	cmd.WaitDelay = 2 * time.Second
+	// This PTY has no terminal emulator to answer color/cursor probes. TERM=dumb
+	// disables those probes without changing the interactive stdin requirement.
+	cmd.Env, cmd.Dir = append(append([]string(nil), c.env...), "TERM=dumb", "NO_COLOR=1"), c.checkout
+	return runHiddenInvite(cmd, invite, 5*time.Second)
+}
+
+func runHiddenInvite(cmd *exec.Cmd, invite []byte, promptTimeout time.Duration) error {
 	terminal, err := pty.Start(cmd)
 	if err != nil {
 		return err
@@ -2391,14 +2489,36 @@ func (h *harness) cliHiddenInvite(c client, invitePath string, args ...string) e
 		_, _ = io.Copy(capture, terminal)
 		close(copied)
 	}()
+	promptDeadline := time.NewTimer(promptTimeout)
+	defer promptDeadline.Stop()
 	select {
 	case <-capture.prompt:
-		// ReadPassword disables echo immediately after printing the prompt. Give
-		// the child time to apply that terminal setting before sending the invite.
-		time.Sleep(50 * time.Millisecond)
-		_, err = fmt.Fprintln(terminal, strings.TrimSpace(string(invite)))
-	case <-time.After(5 * time.Second):
-		err = errors.New("hidden invite prompt timed out")
+		// The prompt is printed before ReadPassword disables terminal echo.
+		// Wait for the actual terminal transition, not a timing guess.
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for err == nil {
+			var enabled bool
+			enabled, err = terminalEchoEnabled(int(terminal.Fd()))
+			if err == nil && !enabled {
+				_, err = fmt.Fprintln(terminal, strings.TrimSpace(string(invite)))
+				break
+			}
+			select {
+			case <-ticker.C:
+			case <-promptDeadline.C:
+				err = errors.New("hidden invite echo transition timed out")
+			case <-copied:
+				err = errors.New("hidden invite child exited before disabling echo")
+			}
+		}
+	case <-promptDeadline.C:
+		err = fmt.Errorf("hidden invite prompt timed out (child output: %q)", capture.Bytes())
+	case <-copied:
+		err = fmt.Errorf("hidden invite child exited before prompting (child output: %q)", capture.Bytes())
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
 	}
 	waitErr := cmd.Wait()
 	_ = terminal.Close()
@@ -2426,7 +2546,7 @@ func (h *harness) cliFailureWithInviteFD(c client, invitePath string, args ...st
 	}
 	defer invite.Close()
 	h.logCommand(c.name+" expected-failure", append([]string{"worklease", "--json"}, args...))
-	cmd := exec.Command(h.binary, append([]string{"--json"}, args...)...)
+	cmd := boundedCommand(h.binary, append([]string{"--json"}, args...)...)
 	cmd.Env, cmd.Dir, cmd.ExtraFiles = c.env, c.checkout, []*os.File{invite}
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -2446,7 +2566,7 @@ func (h *harness) replayPending(c client, requestID string, inviteFile ...string
 	args := []string{"replay-pending", c.config, c.home, "team", requestID}
 	args = append(args, inviteFile...)
 	h.logCommand(c.name, append([]string{"harness-helper"}, args...))
-	cmd := exec.Command(h.self, args...)
+	cmd := boundedCommand(h.self, args...)
 	cmd.Env = c.env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2461,7 +2581,7 @@ func (h *harness) replayPendingFailure(c client, requestID string, inviteFile st
 	}
 	args := []string{"replay-pending", c.config, c.home, "team", requestID, inviteFile}
 	h.logCommand(c.name+" expected-failure", append([]string{"harness-helper"}, args...))
-	cmd := exec.Command(h.self, args...)
+	cmd := boundedCommand(h.self, args...)
 	cmd.Env = c.env
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -2662,12 +2782,12 @@ func (h *harness) group3BootstrapCrash(evidence string) error {
 	}
 	args := []string{"--json", "server", "init", "--server-config", config, "--bootstrap-invite-file", invite}
 	h.logCommand("bootstrap-crash-boundary", append([]string{"env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", "worklease"}, args...))
-	crashCtx, cancelCrash := context.WithTimeout(context.Background(), 30*time.Second)
+	crashCtx, cancelCrash := context.WithTimeout(smokeContext, 30*time.Second)
 	var crashCommand *exec.Cmd
 	if h.realHost {
-		crashCommand = exec.CommandContext(crashCtx, "ssh", append([]string{h.remoteHost, "env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", binary}, args...)...)
+		crashCommand = boundedCommandContext(crashCtx, "ssh", append([]string{h.remoteHost, "env", "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1", binary}, args...)...)
 	} else {
-		crashCommand = exec.CommandContext(crashCtx, binary, args...)
+		crashCommand = boundedCommandContext(crashCtx, binary, args...)
 		crashCommand.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_CRASH_BEFORE_HOSTED_READY=1")
 	}
 	crashOutput, crashErr := crashCommand.CombinedOutput()
@@ -2720,12 +2840,12 @@ func (h *harness) group3BootstrapCrash(evidence string) error {
 		return err
 	}
 	h.logCommand("bootstrap-recovery", append([]string{"worklease"}, args...))
-	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 30*time.Second)
+	recoveryCtx, cancelRecovery := context.WithTimeout(smokeContext, 30*time.Second)
 	var recoveryCommand *exec.Cmd
 	if h.realHost {
-		recoveryCommand = exec.CommandContext(recoveryCtx, "ssh", append([]string{h.remoteHost, binary}, args...)...)
+		recoveryCommand = boundedCommandContext(recoveryCtx, "ssh", append([]string{h.remoteHost, binary}, args...)...)
 	} else {
-		recoveryCommand = exec.CommandContext(recoveryCtx, binary, args...)
+		recoveryCommand = boundedCommandContext(recoveryCtx, binary, args...)
 	}
 	recoveryOutput, err := recoveryCommand.CombinedOutput()
 	cancelRecovery()
@@ -2762,13 +2882,13 @@ func (h *harness) group3BootstrapCrash(evidence string) error {
 }
 
 func (h *harness) bootstrapState(helper, home, invite string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(smokeContext, 30*time.Second)
 	defer cancel()
 	var command *exec.Cmd
 	if h.realHost {
-		command = exec.CommandContext(ctx, "ssh", h.remoteHost, helper, "bootstrap-state", home, invite)
+		command = boundedCommandContext(ctx, "ssh", h.remoteHost, helper, "bootstrap-state", home, invite)
 	} else {
-		command = exec.CommandContext(ctx, helper, "bootstrap-state", home, invite)
+		command = boundedCommandContext(ctx, helper, "bootstrap-state", home, invite)
 	}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -4048,13 +4168,13 @@ func (h *harness) captureAsynchronousBackup(evidence, authorityDB, name string, 
 	}
 	args := []string{"backup", authorityDB, backupPath, controlPath, readyPath, resultPath}
 	h.logCommand("async-backup@"+h.remoteHost, append([]string{"worklease-remote-smoke"}, args...))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(smokeContext, 30*time.Second)
 	defer cancel()
 	var command *exec.Cmd
 	if h.realHost {
-		command = exec.CommandContext(ctx, "ssh", append([]string{h.remoteHost, h.remoteHelper}, args...)...)
+		command = boundedCommandContext(ctx, "ssh", append([]string{h.remoteHost, h.remoteHelper}, args...)...)
 	} else {
-		command = exec.CommandContext(ctx, h.self, args...)
+		command = boundedCommandContext(ctx, h.self, args...)
 	}
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -4148,7 +4268,7 @@ func (h *harness) exerciseSchemaProtocolUpgrade(evidence string) (string, error)
 			output, err := runSSH(h.remoteHost, append([]string{helper}, args...)...)
 			return []byte(output), err
 		}
-		return exec.Command(helper, args...).CombinedOutput()
+		return boundedCommand(helper, args...).CombinedOutput()
 	}
 	if output, err := runHelper("schema-v1-fixture", fixtureHome); err != nil {
 		return "", fmt.Errorf("create schema-v1 fixture: %w: %s", err, output)
@@ -4775,7 +4895,7 @@ func (h *harness) group5(evidence string) error {
 		if _, err := h.remoteJSON(h.remoteBinary, reissueArgs...); err != nil {
 			return err
 		}
-	} else if _, err := runJSON(nil, "", h.binary, reissueArgs...); err != nil {
+	} else if _, err := runJSON(h.authorityEnv(), "", h.binary, reissueArgs...); err != nil {
 		return err
 	}
 	if err := h.restartServer(evidence); err != nil {
@@ -5239,7 +5359,7 @@ func (h *harness) refreshClientRestoreID(c client, restoreID string) error {
 func runSupportingTests(evidence string) []supportingTestEvidence {
 	command := []string{"go", "test", "./internal/authority", "./internal/cli", "./internal/gc", "./internal/handle", "./internal/lease", "./internal/mcp", "./internal/server", "./internal/store", "-count=1"}
 	logPath := filepath.Join(evidence, "supporting-tests-local.log")
-	output, err := exec.Command(command[0], command[1:]...).CombinedOutput()
+	output, err := boundedCommand(command[0], command[1:]...).CombinedOutput()
 	_ = os.WriteFile(logPath, output, 0o600)
 	status := "supporting-test-pass"
 	if err != nil {
@@ -5271,7 +5391,7 @@ func (h *harness) runRemoteSupportingTests(evidence string) []supportingTestEvid
 		packagePath := packageInfo.path
 		localBinary := filepath.Join(h.root, name)
 		command := []string{"go", "test", "-c", "-o", localBinary, packagePath}
-		buildCommand := exec.Command(command[0], command[1:]...)
+		buildCommand := boundedCommand(command[0], command[1:]...)
 		buildCommand.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+h.remoteGOOS, "GOARCH="+h.remoteGOARCH)
 		buildOutput, buildErr := buildCommand.CombinedOutput()
 		logPath := filepath.Join(evidence, name+"-build.log")
@@ -5419,14 +5539,14 @@ func (h *harness) remoteClientOutput(c client, args ...string) ([]byte, error) {
 	sshArgs = append(sshArgs, h.remoteBinary, "--json")
 	sshArgs = append(sshArgs, args...)
 	h.logCommand(c.name+" ssh", append([]string{"ssh"}, sshArgs...))
-	cmd := exec.Command("ssh", sshArgs...)
+	cmd := boundedCommand("ssh", sshArgs...)
 	return cmd.Output()
 }
 
 func (h *harness) remoteJSON(binary string, args ...string) (map[string]any, error) {
 	cmdArgs := append([]string{h.remoteHost, binary}, args...)
 	h.logCommand("ssh@"+h.remoteHost, append([]string{"ssh"}, cmdArgs...))
-	cmd := exec.Command("ssh", cmdArgs...)
+	cmd := boundedCommand("ssh", cmdArgs...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("remote command %s: %w: %s", strings.Join(args, " "), err, output)
@@ -5455,9 +5575,9 @@ func (h *harness) startCLI(c client, args ...string) (*exec.Cmd, *bytes.Buffer, 
 		sshArgs = append(sshArgs, remoteEnv...)
 		sshArgs = append(sshArgs, h.remoteBinary, "--json")
 		sshArgs = append(sshArgs, args...)
-		cmd = exec.Command("ssh", sshArgs...)
+		cmd = boundedCommand("ssh", sshArgs...)
 	} else {
-		cmd = exec.Command(h.binary, append([]string{"--json"}, args...)...)
+		cmd = boundedCommand(h.binary, append([]string{"--json"}, args...)...)
 		cmd.Env, cmd.Dir = c.env, c.checkout
 	}
 	output := &bytes.Buffer{}
@@ -5498,7 +5618,7 @@ func waitCLISuccess(cmd *exec.Cmd, output *bytes.Buffer, timeout time.Duration) 
 
 func (h *harness) cliFailureTimeout(c client, timeout time.Duration, args ...string) (map[string]any, error) {
 	h.logCommand(c.name+hostSuffix(c)+" expected-failure", append([]string{"worklease", "--json"}, args...))
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(smokeContext, timeout)
 	defer cancel()
 	var cmd *exec.Cmd
 	if c.remote {
@@ -5507,9 +5627,9 @@ func (h *harness) cliFailureTimeout(c client, timeout time.Duration, args ...str
 		sshArgs = append(sshArgs, remoteEnv...)
 		sshArgs = append(sshArgs, h.remoteBinary, "--json")
 		sshArgs = append(sshArgs, args...)
-		cmd = exec.CommandContext(ctx, "ssh", sshArgs...)
+		cmd = boundedCommandContext(ctx, "ssh", sshArgs...)
 	} else {
-		cmd = exec.CommandContext(ctx, h.binary, append([]string{"--json"}, args...)...)
+		cmd = boundedCommandContext(ctx, h.binary, append([]string{"--json"}, args...)...)
 		cmd.Env, cmd.Dir = c.env, c.checkout
 	}
 	output, err := cmd.CombinedOutput()
@@ -5533,7 +5653,7 @@ func (h *harness) cliFailure(c client, args ...string) (map[string]any, error) {
 	if c.remote {
 		output, err = h.remoteClientOutput(c, args...)
 	} else {
-		cmd := exec.Command(h.binary, append([]string{"--json"}, args...)...)
+		cmd := boundedCommand(h.binary, append([]string{"--json"}, args...)...)
 		cmd.Env, cmd.Dir = c.env, c.checkout
 		output, err = cmd.CombinedOutput()
 	}
@@ -5601,7 +5721,7 @@ func requireReason(result map[string]any, expected ...string) error {
 
 func (h *harness) mcpToolCall(c client, name string, arguments map[string]any) (map[string]any, error) {
 	h.logCommand(c.name+hostSuffix(c), []string{"worklease", "mcp", "--profile", "team", "tools/call", name})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(smokeContext, 30*time.Second)
 	defer cancel()
 	var cmd *exec.Cmd
 	if c.remote {
@@ -5609,9 +5729,9 @@ func (h *harness) mcpToolCall(c client, name string, arguments map[string]any) (
 		sshArgs := []string{h.remoteHost, "env"}
 		sshArgs = append(sshArgs, remoteEnv...)
 		sshArgs = append(sshArgs, h.remoteBinary, "mcp", "--profile", "team")
-		cmd = exec.CommandContext(ctx, "ssh", sshArgs...)
+		cmd = boundedCommandContext(ctx, "ssh", sshArgs...)
 	} else {
-		cmd = exec.CommandContext(ctx, h.binary, "mcp", "--profile", "team")
+		cmd = boundedCommandContext(ctx, h.binary, "mcp", "--profile", "team")
 		cmd.Env, cmd.Dir = c.env, c.checkout
 	}
 	stdin, err := cmd.StdinPipe()
@@ -5695,9 +5815,9 @@ func (h *harness) mcpRoundTrip(c client) error {
 		sshArgs = append(sshArgs, remoteEnv...)
 		sshArgs = append(sshArgs, h.remoteBinary, "mcp", "--profile", "team")
 		h.logCommand(c.name+" ssh", append([]string{"ssh"}, sshArgs...))
-		cmd = exec.Command("ssh", sshArgs...)
+		cmd = boundedCommand("ssh", sshArgs...)
 	} else {
-		cmd = exec.Command(h.binary, "mcp", "--profile", "team")
+		cmd = boundedCommand(h.binary, "mcp", "--profile", "team")
 		cmd.Env, cmd.Dir = c.env, c.checkout
 	}
 	stdin, err := cmd.StdinPipe()
@@ -5759,7 +5879,33 @@ func (h *harness) mcpRoundTrip(c client) error {
 	return err
 }
 
+var currentSmokeStep = "startup"
+
+func smokeStep() string { return currentSmokeStep }
+
+func (h *harness) progress(step string) {
+	h.step = step
+	currentSmokeStep = step
+	fmt.Fprintf(os.Stderr, "remote smoke: %s\n", step)
+}
+
 func (h *harness) logCommand(role string, args []string) {
+	if len(args) > 0 {
+		step := args[0]
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--profile", "--home", "--config", "--server-config", "--session", "--handle":
+				i++ // Skip the value, which may be a private path.
+			case "--json", "--local":
+			default:
+				if !strings.HasPrefix(args[i], "-") {
+					step += " " + args[i]
+					i = len(args)
+				}
+			}
+		}
+		h.progress(role + " " + step)
+	}
 	line := time.Now().UTC().Format(time.RFC3339Nano) + " " + role + ": " + strings.Join(args, " ") + "\n"
 	file, err := os.OpenFile(h.commandLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -5769,25 +5915,37 @@ func (h *harness) logCommand(role string, args []string) {
 	_ = file.Close()
 }
 
+func waitProcess(cmd *exec.Cmd, timeout time.Duration) {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+}
+
+func (h *harness) stopRemoteProcess(pidFile string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = boundedCommandContext(ctx, "ssh", h.remoteHost, h.remoteHelper, "stop-server", filepath.Join(h.remoteRoot, pidFile)).CombinedOutput()
+}
+
 func (h *harness) stopServer() {
+	if h.serverInput != nil {
+		_ = h.serverInput.Close()
+		h.serverInput = nil
+	}
 	if h.server == nil || h.server.Process == nil {
 		return
 	}
-	_ = h.server.Process.Signal(os.Interrupt)
-	done := make(chan error, 1)
-	go func() { done <- h.server.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = h.server.Process.Kill()
-		<-done
-	}
 	if h.realHost {
-		_, _ = runSSH(h.remoteHost, h.remoteHelper, "stop-server", filepath.Join(h.remoteRoot, "server.pid"))
-		// The helper forwards an interrupt to the authority. Give its lock
-		// release a bounded grace period before the next hosted operation.
-		time.Sleep(150 * time.Millisecond)
+		h.stopRemoteProcess("server.pid")
+	} else {
+		_ = h.server.Process.Signal(os.Interrupt)
 	}
+	waitProcess(h.server, 5*time.Second)
 	h.server = nil
 }
 
@@ -5797,7 +5955,7 @@ func (h *harness) restartServer(evidence string) error {
 	}
 	configPath := filepath.Join(h.root, "secrets", "server.yaml")
 	h.logCommand("authority", []string{"worklease", "serve", "--server-config", configPath})
-	h.server = exec.Command(h.binary, "serve", "--server-config", configPath)
+	h.server = boundedCommand(h.binary, "serve", "--server-config", configPath)
 	if h.fullVolumeMaxPageCount > 0 {
 		h.server.Env = append(os.Environ(), "WORKLEASE_ACCEPTANCE_SQLITE_MAX_PAGE_COUNT="+strconv.FormatInt(h.fullVolumeMaxPageCount, 10))
 	}
@@ -5815,7 +5973,7 @@ func (h *harness) restartServer(evidence string) error {
 }
 
 func runJSON(env []string, dir, binary string, args ...string) (map[string]any, error) {
-	cmd := exec.Command(binary, args...)
+	cmd := boundedCommand(binary, args...)
 	if env != nil {
 		cmd.Env = env
 	}
@@ -6012,7 +6170,7 @@ func validateSSHHost(host string) error {
 }
 
 func resolveSSHAddress(host string) (string, error) {
-	if output, err := exec.Command("ssh", "-G", host).Output(); err == nil {
+	if output, err := boundedCommand("ssh", "-G", host).Output(); err == nil {
 		for _, line := range strings.Split(string(output), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) == 2 && fields[0] == "hostname" {
@@ -6236,7 +6394,7 @@ func runSSH(host string, args ...string) (string, error) {
 	for i, arg := range args {
 		quoted[i] = quoteRemoteArg(arg)
 	}
-	output, err := exec.Command("ssh", host, strings.Join(quoted, " ")).CombinedOutput()
+	output, err := boundedCommand("ssh", host, strings.Join(quoted, " ")).CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("ssh %s: %w: %s", host, err, output)
 	}
@@ -6253,7 +6411,7 @@ func runSCP(host, source, destination string) error {
 	} else {
 		args = []string{"--", source, host + ":" + destination}
 	}
-	output, err := exec.Command("scp", args...).CombinedOutput()
+	output, err := boundedCommand("scp", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("scp: %w: %s", err, output)
 	}
@@ -6265,7 +6423,7 @@ func (h *harness) remotePathExists(path string) (bool, error) {
 		_, err := os.Stat(path)
 		return err == nil, err
 	}
-	cmd := exec.Command("ssh", h.remoteHost, "test", "-e", path)
+	cmd := boundedCommand("ssh", h.remoteHost, "test", "-e", path)
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
