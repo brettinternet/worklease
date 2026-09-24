@@ -4,6 +4,7 @@ title: Document the testing policy and test tiers for agents
 status: To Do
 assignee: []
 created_date: '2026-09-24 15:05'
+updated_date: '2026-09-24 15:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-136
@@ -40,7 +41,13 @@ The policy should cover these points in about 40 lines or fewer:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AGENTS.md has a Testing section that covers the policy points above in about 40 lines or fewer, plus a table of the test tiers showing where each runs
-- [ ] #2 The Backlog.md managed block in AGENTS.md is intact (refresh it with `backlog agents --update-instructions` if needed)
+- [x] #1 AGENTS.md has a Testing section that covers the policy points above in about 40 lines or fewer, plus a table of the test tiers showing where each runs
+- [x] #2 The Backlog.md managed block in AGENTS.md is intact (refresh it with `backlog agents --update-instructions` if needed)
 - [ ] #3 `scripts/test-e2e.sh` no longer reruns named Go tests, and `mise run e2e` passes on linux-x64
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Testing policy and tier table added to AGENTS.md (Testing section, outside the Backlog.md managed block, which is unchanged). Remaining: delete the named-test rerun from scripts/test-e2e.sh and confirm `mise run e2e` passes on linux-x64 (CI); the remote smoke currently hangs on macOS (TASK-136.2), so run it locally only after that is fixed.
+<!-- SECTION:NOTES:END -->

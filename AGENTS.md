@@ -54,6 +54,30 @@ Before handing off or committing changes:
 - Stage the intended files and run `mise run hooks`; fix formatting and test failures before committing.
 - Install the Git hook once with `mise run hooks-install`, and do not disable Lefthook or skip failing jobs to force a commit.
 
+## Testing
+
+Write a test only when it would catch a real regression, and cover each behavior once. These rules apply to new and edited tests. Older tests were written before them; do not mass-rename or rewrite unrelated tests, because TASK-136 tracks that cleanup.
+
+- Put each test in the `_test.go` file for the behavior it covers. Do not name files after where a finding came from (`review_*_test.go`, `*_regression_test.go`).
+- Add one regression test per fixed bug, at the lowest layer that reproduces it. Do not repeat the same assertion at the CLI, MCP, and smoke layers.
+- Control time with `testkit.Clock` or an injected clock. Never `time.Sleep` to wait out a TTL, timeout, or poll interval; wait for something observable, with a bounded deadline.
+- Prefer in-process calls: the CLI through `Run` or `testkit.RunCLI`, and MCP through `mcp.Server`. Do not run `go build` in tests. When you need a separate process, re-execute the test binary with `testkit.RunTestProcess`, which bounds the process group and cleans it up.
+- Isolate state with a per-test `testkit.Home(t)` and create Git fixtures with `testkit.GitCommand`. Every package that has tests keeps the `isolation_test.go` `TestMain` that calls `testkit.IsolateProcessEnvironment`.
+- Call `t.Parallel()` unless the test changes process-global state (`t.Setenv`, `os.Setenv`, `os.Chdir`, or package-level variables).
+- Treat a flaky test as a bug: fix the cause instead of retrying, widening tolerances, or skipping. Skip only when a required external tool is missing, and only after checking that the tool actually runs.
+- Write benchmarks as `Benchmark*` functions or gate them behind an environment variable such as `QUEUE_*_SAMPLES`. Never assert absolute latency in the default run.
+- Use `cmd/worklease-smoke` and `cmd/worklease-remote-smoke` only for shipped-binary, multi-process behavior that in-process tests cannot reach. Their `_test.go` files test only the harness's own verification logic.
+- Before handing off, run new or changed tests with `go test -race -count=3 -run '<TestName>' ./<package>`.
+
+| Tier | Command | Runs in |
+|---|---|---|
+| Package tests | `mise run test` | pre-commit hook; CI on linux-x64, linux-arm64, macos-x64, and macos-arm64 |
+| Race | `mise run race` | CI linux-x64 |
+| End-to-end | `mise run e2e` (built-binary smoke, remote smoke, doc test) | CI linux-x64 |
+| Relative queue benchmarks | `mise run queue-benchmark` | CI pull requests (base vs. head, report only) |
+| Opt-in probes | `QUEUE_TERMINAL_SAMPLES`, `QUEUE_COLD_PAGE_SAMPLES`, or `QUEUE_COMBINED_SAMPLES` with `go test ./internal/queueui`; `mise run authority-benchmark` | manual |
+| VM remote smoke | `mise run remote-smoke-vm` | manual |
+
 ## Worklease workflow
 
 For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
