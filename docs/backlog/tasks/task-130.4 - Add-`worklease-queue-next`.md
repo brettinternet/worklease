@@ -1,10 +1,11 @@
 ---
 id: TASK-130.4
 title: Add `worklease queue next`
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 16:44'
+updated_date: '2026-09-24 12:52'
 labels:
   - work-queue
 milestone: m-1
@@ -47,3 +48,19 @@ D27 also asks the queue to explain parallel-ready groups. The contract's `select
 - [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
 - [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reuse the queue snapshot and completeness machinery for complete-scope next and wave selection; distinguish every no-work reason and preserve configured ordering.
+2. Add JSON/plain CLI output and tests for coverage, eligibility, ordering, resource conflicts, and non-acquisition.
+3. Resolve claim-paging question, document manual and --claim loops, run project gates, review, commit, merge, and finalize.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented complete-snapshot next/wave selection, explicit item ordering, no-work classification, CLI output, focused tests and documentation. Section 17 claim paging answered: bounded status batches cover scoped resources; no authority-wide enumeration needed. Focused queue/CLI tests pass; running full gates and review next.
+
+Commit 5be7027 contains implementation. Reviewer found exact generic resource redaction, explicit-assignment override, and terminal-only classification defects; all fixed with regression tests. Final full gates and staged hooks passed. Integrating into main next.
+<!-- SECTION:NOTES:END -->
