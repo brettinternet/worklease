@@ -36,6 +36,162 @@ func press(m Model, key string) (Model, tea.Cmd) {
 	next, cmd := m.Update(k)
 	return next.(Model), cmd
 }
+func TestProviderActionsRequirePreviewConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key              string
+		action           queue.Action
+		transition, text string
+	}{
+		{"s", queue.ActionStart, "Doing", ""},
+		{"p", queue.ActionRecordProgress, "", "note"},
+		{"a", queue.ActionAssignToMe, "", ""},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			m := New(fixture())
+			m.anchor(m.rows())
+			m.StateChoices = map[string][]StateChoice{"a": {{Action: queue.ActionStart, Label: "start", Transition: "Doing"}}}
+			previews, commits := 0, 0
+			m.PreviewWrite = func(item queue.Item, action queue.Action, transition, text string) tea.Cmd {
+				previews++
+				if action != tc.action || transition != tc.transition || text != tc.text {
+					t.Errorf("wrong action: %s %q %q", action, transition, text)
+				}
+				return func() tea.Msg {
+					return WritePreviewMsg{Preview: &WritePreview{Identity: identity(item), Intent: queue.WriteIntent{OperationID: "one", Action: action}}}
+				}
+			}
+			m.ConfirmWrite = func(p WritePreview) tea.Cmd {
+				commits++
+				return func() tea.Msg {
+					return WriteResultMsg{Result: queue.WriteResult{Outcome: queue.WriteUnknown, ClaimHeld: true}, OperationID: p.Intent.OperationID}
+				}
+			}
+			var cmd tea.Cmd
+			m, cmd = press(m, tc.key)
+			if tc.key == "s" {
+				m, cmd = press(m, "enter")
+			}
+			if tc.key == "p" {
+				for _, char := range tc.text {
+					m, _ = press(m, string(char))
+				}
+				m, cmd = press(m, "enter")
+			}
+			if cmd == nil || commits != 0 || previews != 1 {
+				t.Fatalf("preview request missing or dispatched early: previews=%d commits=%d", previews, commits)
+			}
+			msg := cmd().(WritePreviewMsg)
+			next, _ := m.Update(msg)
+			m = next.(Model)
+			if !strings.Contains(m.View(), "Confirm") || commits != 0 {
+				t.Fatalf("preview hidden or dispatched early: %s", m.View())
+			}
+			m, cmd = press(m, "enter")
+			if commits != 1 || cmd == nil {
+				t.Fatal("confirmation did not dispatch")
+			}
+			next, _ = m.Update(cmd())
+			m = next.(Model)
+			if strings.Contains(m.Notice, "verified") || !strings.Contains(m.Notice, "claim held true") {
+				t.Fatalf("uncertain write reported success or hid claim: %s", m.Notice)
+			}
+			next, _ = m.Update(RefreshedMsg{})
+			m = next.(Model)
+			if !strings.Contains(m.View(), "claims held") {
+				t.Fatal("refresh hid an uncertain held claim")
+			}
+		})
+	}
+}
+
+func TestRecoveryReconciliationRequiresTypedEvidenceAndNoActiveDispatch(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.ViewName = RecoveryViewID
+	entry := queue.RecoveryEntry{OperationID: "operation-1", Ref: queue.Ref{SourceID: "a", ItemID: "1"}, Status: "dispatching", Next: []string{"retry read-back"}}
+	next, _ := m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{entry}})
+	m = next.(Model)
+	called := 0
+	m.ReconcileRecovery = func(queue.RecoveryEntry, string) tea.Cmd {
+		called++
+		return func() tea.Msg { return ReconcileResultMsg{} }
+	}
+	m, _ = press(m, "e")
+	if m.RecoveryEvidence || called != 0 {
+		t.Fatal("reconciliation offered while dispatching")
+	}
+	entry.Status, entry.Next = "unknown", []string{"retry read-back", "operator reconciliation after cessation"}
+	next, _ = m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{entry}})
+	m = next.(Model)
+	m, _ = press(m, "e")
+	if !m.RecoveryEvidence {
+		t.Fatal("unknown operation cannot accept evidence")
+	}
+	for _, char := range "provider audit inspected" {
+		m, _ = press(m, string(char))
+	}
+	m, _ = press(m, "enter")
+	if called != 0 {
+		t.Fatal("unattested evidence dispatched")
+	}
+	m, _ = press(m, "e")
+	for _, char := range "NO COMMIT; EXECUTOR STOPPED: provider audit confirms no effect" {
+		m, _ = press(m, string(char))
+	}
+	m, cmd := press(m, "enter")
+	if cmd == nil || called != 1 {
+		t.Fatal("typed attestation did not dispatch")
+	}
+}
+
+func TestProviderWritePreviewDisplaysConsentBoundary(t *testing.T) {
+	t.Parallel()
+	for _, action := range []queue.Action{queue.ActionStart, queue.ActionRecordProgress, queue.ActionAssignToMe} {
+		m := New(fixture())
+		m.Width = 240
+		m.WritePreview = &WritePreview{AuthorityProfile: "local", Scope: "portable", Intent: queue.WriteIntent{Action: action, Ref: queue.Ref{SourceID: "a", ItemID: "1"}, AuthorityID: "authority-1", ClaimID: "claim-1", Resources: []string{"resource-1"}, Marker: "worklease-op:example"}, Effect: "provider mutation", SideEffects: []string{"watcher notification"}, Races: []string{"external writers"}}
+		view := m.View()
+		for _, expected := range []string{"authority-1", "claim claim-1", "Resource resource-1", "Provider effect provider mutation", "Side effects watcher notification", "Declared races external writers", "Marker worklease-op:example", "lost response requires read-back", "claim remains held"} {
+			if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
+				t.Fatalf("%s preview missing %q: %s", action, expected, view)
+			}
+		}
+	}
+}
+
+func TestConfiguredRecoveryViewIsNotShadowed(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.Views = []string{"Recovery", RecoveryViewID}
+	m.ViewFilters = map[string]queue.Filters{"Recovery": {SourceIDs: []string{"a"}}}
+	m.ViewName = "Recovery"
+	if view := m.View(); !strings.Contains(view, "first") || strings.Contains(view, "unresolved writes") {
+		t.Fatalf("configured view was shadowed: %s", view)
+	}
+	m.ViewName = RecoveryViewID
+	if view := m.View(); !strings.Contains(view, "Recovery 0 unresolved writes") {
+		t.Fatalf("built-in recovery view missing: %s", view)
+	}
+}
+
+func TestRecoveryViewAndItemTabShowSameUnresolvedWrite(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	entry := queue.RecoveryEntry{OperationID: "operation-1", Ref: ref, Action: queue.ActionRecordProgress, Status: "dispatching", ClaimID: "claim-1", Effect: "append progress", Readback: "unknown", Next: []string{"retry read-back"}}
+	next, _ := m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{entry}})
+	m = next.(Model)
+	m.ViewName = RecoveryViewID
+	if view := m.View(); !strings.Contains(view, "operation-1") || !strings.Contains(view, "claim held claim-1") || !strings.Contains(view, "retry read-back") {
+		t.Fatalf("recovery view missing operation: %s", view)
+	}
+	m.ViewName, m.Detail, m.Tab = "All", true, 4
+	if view := m.View(); !strings.Contains(view, "operation-1") || !strings.Contains(view, "Next: retry read-back") {
+		t.Fatalf("item Recovery tab missing operation: %s", view)
+	}
+}
+
 func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
 	m := New(fixture())
 	ref := queue.Ref{SourceID: "a", ItemID: "1"}

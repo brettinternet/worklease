@@ -28,6 +28,8 @@ type writeFixture struct {
 	checkpointErr    error
 	verifyErr        error
 	transitionErr    error
+	writeStarted     chan struct{}
+	writeResume      chan struct{}
 }
 
 func (f *writeFixture) Inspect(context.Context, WriteIntent) (WritePreflight, error) {
@@ -38,6 +40,10 @@ func (f *writeFixture) ValidateTransition(context.Context, Source, Action, strin
 }
 func (f *writeFixture) Write(_ context.Context, intent WriteIntent) (ProviderReceipt, error) {
 	f.calls++
+	if f.writeStarted != nil {
+		close(f.writeStarted)
+		<-f.writeResume
+	}
 	return ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID, ID: "receipt-1", Actor: intent.Principal}, f.writeErr
 }
 func (f *writeFixture) ReadReceipt(context.Context, WriteIntent, *ProviderReceipt) (ReceiptObservation, error) {
@@ -231,15 +237,15 @@ func TestWritePipelineCrashAfterJournalOrReceipt(t *testing.T) {
 func TestWritePipelineReconciliationRequiresExplicitEvidence(t *testing.T) {
 	t.Parallel()
 	p, f, intent := writeSetup(t)
-	f.observation.Outcome = WriteUnknown
+	f.writeErr = errors.New("provider response lost")
 	_, _ = p.Start(context.Background(), intent)
-	if err := p.Reconcile(context.Background(), intent.OperationID, "", true); err == nil {
+	if err := p.Reconcile(context.Background(), intent.OperationID, "brett", "", true, true); err == nil {
 		t.Fatal("empty evidence accepted")
 	}
-	if err := p.Reconcile(context.Background(), intent.OperationID, "provider inspected", false); err == nil {
+	if err := p.Reconcile(context.Background(), intent.OperationID, "brett", "provider inspected", true, false); err == nil {
 		t.Fatal("live executor accepted")
 	}
-	if err := p.Reconcile(context.Background(), intent.OperationID, "operator checked provider and stopped executor", true); err != nil {
+	if err := p.Reconcile(context.Background(), intent.OperationID, "brett", "operator checked provider and stopped executor", true, true); err != nil {
 		t.Fatal(err)
 	}
 	result, err := p.Recover(context.Background(), intent.OperationID)
@@ -248,6 +254,67 @@ func TestWritePipelineReconciliationRequiresExplicitEvidence(t *testing.T) {
 	}
 	if yes, err := p.Journal.CanCancel(intent.ClaimID); err != nil || yes {
 		t.Fatalf("cancel allowed after reconciliation: %v %v", yes, err)
+	}
+}
+
+func TestWriteJournalDoesNotOfferReconciliationDuringDispatch(t *testing.T) {
+	t.Parallel()
+	p, f, intent := writeSetup(t)
+	f.writeStarted, f.writeResume = make(chan struct{}), make(chan struct{})
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = p.Start(context.Background(), intent) }()
+	select {
+	case <-f.writeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write never started")
+	}
+	entries, err := p.Journal.Recovery()
+	if err != nil || len(entries) != 1 || entries[0].Status != "dispatching" || len(entries[0].Next) != 1 {
+		t.Fatalf("reconciliation offered during dispatch: %+v %v", entries, err)
+	}
+	close(f.writeResume)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write did not finish")
+	}
+}
+
+func TestWriteJournalRecoveryProjection(t *testing.T) {
+	t.Parallel()
+	p, f, intent := writeSetup(t)
+	f.writeErr = errors.New("lost response")
+	if result, err := p.Start(context.Background(), intent); err == nil || result.Outcome != WriteUnknown {
+		t.Fatalf("expected uncertain write: %+v %v", result, err)
+	}
+	entries, err := p.Journal.Recovery()
+	if err != nil || len(entries) != 1 || entries[0].Dispatched == nil || entries[0].ClaimID != intent.ClaimID || len(entries[0].Next) != 2 {
+		t.Fatalf("recovery entry: %+v %v", entries, err)
+	}
+	f.observation.Outcome = WriteUnknown
+	if _, err := p.Recover(context.Background(), intent.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = p.Journal.Recovery()
+	if err != nil || len(entries) != 1 || entries[0].Readback != string(WriteUnknown) || f.calls != 1 {
+		t.Fatalf("read-back did not persist without redispatch: %+v %v", entries, err)
+	}
+	if err := p.Reconcile(context.Background(), intent.OperationID, "", "checked", true, true); err == nil {
+		t.Fatal("reconciliation without operator accepted")
+	}
+	if err := p.Reconcile(context.Background(), intent.OperationID, "brett", "checked", false, true); err == nil {
+		t.Fatal("reconciliation without no-commit attestation accepted")
+	}
+	if err := p.Reconcile(context.Background(), intent.OperationID, "brett", "provider audit shows no commit and worker stopped", true, true); err != nil {
+		t.Fatal(err)
+	}
+	record, err := p.Journal.Read(intent.OperationID)
+	if err != nil || record.ReconciliationOperator != "brett" || record.Reconciliation == "" {
+		t.Fatalf("operator evidence missing: %+v %v", record, err)
+	}
+	entries, err = p.Journal.Recovery()
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("reconciled entry remains open: %+v %v", entries, err)
 	}
 }
 

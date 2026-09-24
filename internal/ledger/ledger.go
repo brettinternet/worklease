@@ -410,6 +410,8 @@ type Operation struct {
 	RequestSHA256    string         `json:"requestSha256,omitempty"`
 	ExpectedRevision int64          `json:"expectedRevision,omitempty"`
 	RequestNotAfter  *time.Time     `json:"requestNotAfter,omitempty"`
+	InstallationID   string         `json:"installationId,omitempty"`
+	RestoreID        string         `json:"restoreId,omitempty"`
 	StartedAt        time.Time      `json:"startedAt"`
 	CompletedAt      *time.Time     `json:"completedAt,omitempty"`
 	Receipt          map[string]any `json:"receipt,omitempty"`
@@ -469,9 +471,9 @@ func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, e
 			}
 			claim = claims[0]
 		}
-		var requestHash, state, receipt, tokenHash, evidence, outcome string
+		var requestHash, state, receipt, tokenHash, evidence, outcome, installationID, restoreID string
 		var deadline, expected, started, completed int64
-		e := tx.QueryRowContext(ctx, `SELECT o.request_hash,o.state,coalesce(o.receipt,''),e.token_hash,o.kind,o.request_not_after,o.expected_revision,o.started_at,coalesce(o.completed_at,0),coalesce(r.evidence,''),coalesce(r.outcome,'') FROM operations o JOIN epochs e ON e.claim_id=o.claim_id LEFT JOIN reconciliations r ON r.claim_id=o.claim_id AND r.operation_id=o.operation_id WHERE o.claim_id=? AND o.operation_id=?`, claim, req.OperationID).Scan(&requestHash, &state, &receipt, &tokenHash, &result.Kind, &deadline, &expected, &started, &completed, &evidence, &outcome)
+		e := tx.QueryRowContext(ctx, `SELECT o.request_hash,o.state,coalesce(o.receipt,''),e.token_hash,o.kind,o.request_not_after,o.expected_revision,o.started_at,coalesce(o.completed_at,0),coalesce(r.evidence,''),coalesce(r.outcome,''),coalesce(o.installation_id,''),coalesce(o.restore_id,'') FROM operations o JOIN epochs e ON e.claim_id=o.claim_id LEFT JOIN reconciliations r ON r.claim_id=o.claim_id AND r.operation_id=o.operation_id WHERE o.claim_id=? AND o.operation_id=?`, claim, req.OperationID).Scan(&requestHash, &state, &receipt, &tokenHash, &result.Kind, &deadline, &expected, &started, &completed, &evidence, &outcome, &installationID, &restoreID)
 		if errors.Is(e, sql.ErrNoRows) {
 			return reason.New(reason.ReasonOperationNotFound, "operation was not found")
 		}
@@ -490,6 +492,7 @@ func (s *Service) Inspect(ctx context.Context, req InspectRequest) (Operation, e
 			}
 			requestNotAfter := time.UnixMicro(deadline).UTC()
 			result.ExpectedRevision, result.RequestNotAfter = expected, &requestNotAfter
+			result.InstallationID, result.RestoreID = installationID, restoreID
 			if receipt != "" && json.Unmarshal([]byte(receipt), &result.Receipt) != nil {
 				return storage(errors.New("invalid operation receipt"))
 			}
