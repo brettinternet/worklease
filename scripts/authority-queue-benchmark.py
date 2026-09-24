@@ -82,6 +82,8 @@ def main():
     parser.add_argument("--claims", type=int, default=500)
     parser.add_argument("--warmup-seconds", type=int, default=75)
     parser.add_argument("--short-ttl", default="30s")
+    parser.add_argument("--catch-up-limit-seconds", type=int, default=600,
+                        help="fail when any overlay has not drained the renewal events to head by then")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     output = args.output.resolve()
@@ -163,6 +165,8 @@ def main():
         # overlay projection with one batch status read after every watch result.
         # Cursor is obtained from events.
         stop = threading.Event()
+        renewal_done = threading.Event()
+        renewal_done_at = [0.0]
         ready = threading.Barrier(args.clients + 1, timeout=30)
         active_lock = threading.Lock()
         active = [0]
@@ -172,18 +176,26 @@ def main():
             position = cursor["nextCursor"]
             polls = status_reads = 0
             estimated_store_polls = 0
+            renewed_events = gaps = 0
+            catch_up_seconds = None
             resources = [f"coordination:benchmark:{i}" for i in range(index, args.claims, args.clients)]
             with active_lock:
                 active[0] += 1
             try:
                 ready.wait()
                 while not stop.is_set():
+                    # Checked before the watch: a timeout observed after the
+                    # renewal burst ended proves this client drained to head.
+                    drained_after_renewal = renewal_done.is_set()
                     watched, wait_seconds = command(binary, ["--profile", "bench", "watch", "--cursor", position, "--timeout", "1s"], env, timeout=5)
+                    if (watched.get("event") or {}).get("kind") == "renewed":
+                        renewed_events += 1
                     # Derived from elapsed wall time and the server's 250 ms poll
                     # interval, not a direct SQLite statement counter.
                     estimated_store_polls += 1 + int(wait_seconds / 0.25)
                     position = watched["nextCursor"]
                     if watched.get("gap"):
+                        gaps += 1
                         cursor, _ = command(binary, ["--profile", "bench", "events", "--limit", "1"], env)
                         position = cursor["nextCursor"]
                     status_args = ["--profile", "bench", "status"]
@@ -192,10 +204,13 @@ def main():
                     command(binary, status_args, env)
                     polls += 1
                     status_reads += 1
+                    if drained_after_renewal and watched.get("timedOut"):
+                        catch_up_seconds = time.monotonic() - renewal_done_at[0]
+                        break
             finally:
                 with active_lock:
                     active[0] -= 1
-            return polls, status_reads, estimated_store_polls
+            return polls, status_reads, estimated_store_polls, renewed_events, catch_up_seconds, gaps
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.clients) as watch_pool:
             watches = [watch_pool.submit(watch_client, i) for i in range(args.clients)]
             try:
@@ -214,16 +229,34 @@ def main():
                     report["watchersAtRenewalEnd"] = active[0]
                 if report["watchersAtRenewalEnd"] != args.clients or any(watch.done() for watch in watches):
                     raise RuntimeError("namespace watch ended during renewal")
+                # Every client's overlay must consume the renewal events and
+                # reach head (an empty watch) before the run is accepted.
+                renewal_done_at[0] = time.monotonic()
+                renewal_done.set()
+                _, pending = concurrent.futures.wait(watches, timeout=args.catch_up_limit_seconds)
+                if pending:
+                    raise RuntimeError(f"{len(pending)} watch clients did not drain to head within {args.catch_up_limit_seconds}s")
             finally:
                 stop.set()
             report["watchDurationSeconds"] = round(time.monotonic() - watch_start, 3)
             report["watches"] = [watch.result() for watch in watches]
+        catch_up = [row[4] for row in report["watches"]]
+        report["overlayCatchUp"] = {"clients": len(catch_up), "maxSeconds": round(max(catch_up), 3),
+                                    "p50Seconds": percentile(catch_up, 0.5),
+                                    "renewedEventsPerClientMin": min(row[3] for row in report["watches"]),
+                                    "renewedEventsPerClientMax": max(row[3] for row in report["watches"]),
+                                    "gaps": sum(row[5] for row in report["watches"]),
+                                    "limitSeconds": args.catch_up_limit_seconds}
+        if report["overlayCatchUp"]["renewedEventsPerClientMin"] < args.claims:
+            raise RuntimeError(f"a watch client drained without observing every renewal event: {report['overlayCatchUp']}")
         report["renewal"] = stats([elapsed for _, elapsed, _ in renewal])
         margins = [margin for _, _, margin in renewal]
         report["minimumPreviousTTLAtCompletionSeconds"] = round(min(margins), 3)
         report["p99RenewalPreviousTTLMarginSeconds"] = round(percentile(margins, 0.01), 3)
         report["budgetMet"] = report["p99RenewalPreviousTTLMarginSeconds"] >= 300
         report["observedWatchResponses"] = sum(row[0] for row in report["watches"])
+        # Modeled from elapsed wall time and the 250 ms poll interval; the
+        # authority exposes no store-read counter, so this is not a measurement.
         report["estimatedStorePolls"] = sum(row[2] for row in report["watches"])
         report["estimatedStorePollsPerSecond"] = round(report["estimatedStorePolls"] / report["watchDurationSeconds"], 2)
         report["modeledSteadyStorePollsPerSecond"] = args.clients * 1000 // report["watchPollDefaultMs"]
