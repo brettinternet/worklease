@@ -125,6 +125,8 @@ type BacklogAdapter struct {
 	Binary            string
 	Timeout           time.Duration
 	reconcileInterval time.Duration // test-only override; production reconciles every minute
+	watcherFactory    func() (backlogWatcher, error)
+	tickerFactory     func(time.Duration) backlogWatchTicker
 	mu                sync.Mutex
 	diagnostics       map[string]BacklogSourceDiagnostics
 	consent           map[string]bool
@@ -141,7 +143,7 @@ func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
 	for _, s := range terminalStatuses {
 		statuses[s] = true
 	}
-	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}}
+	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}, watcherFactory: newNativeBacklogWatcher, tickerFactory: newNativeBacklogWatchTicker}
 }
 
 // OnDemandDetails prevents the loader from scanning every task with a view subprocess.
@@ -207,6 +209,9 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	}
 	gate := quotaScheduler("backlog:"+cwd, 4)
 	key := binary + "\x00" + strings.Join(args, "\x00")
+	if revision, ok := ctx.Value(backlogListRevisionKey{}).(backlogListRevision); ok {
+		key += "\x00list-revision\x00" + revision.sourceID + "\x00" + strconv.FormatUint(revision.revision, 10)
+	}
 	coalesce := priority != PriorityAction
 	result, err := gate.schedule(ctx, priority, key, "", coalesce, func(workCtx context.Context) (any, error) {
 		return a.runCommand(workCtx, cwd, binary, args...)
@@ -259,6 +264,12 @@ func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, arg
 }
 
 type backlogPriorityKey struct{}
+type backlogListRevisionKey struct{}
+
+type backlogListRevision struct {
+	sourceID string
+	revision uint64
+}
 
 type limitedBuffer struct {
 	data     bytes.Buffer
@@ -555,7 +566,11 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	if cursor != "" {
 		return SummaryPage{}, BacklogDiagnostic{"invalid-cursor", "Backlog.md list has no cursor"}
 	}
-	data, err := a.run(ctx, source.Locator, a.binary(), "task", "list", "--json")
+	a.mu.Lock()
+	revision := a.revisions[source.ID]
+	a.mu.Unlock()
+	listCtx := context.WithValue(ctx, backlogListRevisionKey{}, backlogListRevision{sourceID: source.ID, revision: revision})
+	data, err := a.run(listCtx, source.Locator, a.binary(), "task", "list", "--json")
 	if err != nil {
 		return SummaryPage{}, err
 	}
@@ -593,6 +608,10 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 		partition = checkout + "\x00" + config + "\x00" + d.Branch + "\x00" + d.Head
 	}
 	a.mu.Lock()
+	if revision != a.revisions[source.ID] {
+		a.mu.Unlock()
+		return SummaryPage{}, BacklogDiagnostic{"observation-invalidated", "provider changed during task list"}
+	}
 	a.revisions[source.ID]++ // list may race a view even when its metadata tuple is unchanged
 	if partition == "" || a.partitions[source.ID] != partition {
 		for key := range a.edges {

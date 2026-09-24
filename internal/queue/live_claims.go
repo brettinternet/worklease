@@ -57,6 +57,7 @@ func RunClaimOverlay(ctx context.Context, items []Item, sources map[string]Claim
 			}
 			continue
 		}
+		pendingExpiry := make(map[string]bool)
 		for {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -75,7 +76,11 @@ func RunClaimOverlay(ctx context.Context, items []Item, sources map[string]Claim
 				if delay := expiry.Sub(now); delay > 0 && delay < wait {
 					wait = delay
 				} else if delay <= 0 {
-					current = statusResources(ctx, current, expiredClaimResources(current, now), sources, selected, paths, env)
+					for resource := range expiredClaimResources(current, now) {
+						pendingExpiry[resource] = true
+					}
+					current = statusResources(ctx, current, pendingExpiry, sources, selected, paths, env)
+					pendingExpiry = unresolvedClaimResources(current, pendingExpiry)
 					publish(current, false, nil)
 					wait = 50 * time.Millisecond
 				}
@@ -128,8 +133,12 @@ func RunClaimOverlay(ctx context.Context, items []Item, sources map[string]Claim
 					publish(current, false, clockErr)
 					return clockErr
 				}
-				if expired := expiredClaimResources(current, now); len(expired) > 0 {
-					current = statusResources(ctx, current, expired, sources, selected, paths, env)
+				for resource := range expiredClaimResources(current, now) {
+					pendingExpiry[resource] = true
+				}
+				if len(pendingExpiry) > 0 {
+					current = statusResources(ctx, current, pendingExpiry, sources, selected, paths, env)
+					pendingExpiry = unresolvedClaimResources(current, pendingExpiry)
 					publish(current, false, nil)
 				}
 			}
@@ -181,6 +190,21 @@ func expiredClaimResources(items []Item, now time.Time) map[string]bool {
 		}
 	}
 	return resources
+}
+
+func unresolvedClaimResources(items []Item, resources map[string]bool) map[string]bool {
+	unresolved := make(map[string]bool)
+	for _, item := range items {
+		if item.Claim.Known || item.Claim.Reason != "" {
+			continue
+		}
+		for _, resource := range item.Resources {
+			if resources[resource] {
+				unresolved[resource] = true
+			}
+		}
+	}
+	return unresolved
 }
 
 func claimFailureReason(err error) string {

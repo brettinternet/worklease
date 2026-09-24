@@ -69,6 +69,43 @@ func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
 	}
 }
 
+func TestHistoryGapClaimSurvivesProviderSnapshotUntilRebaseline(t *testing.T) {
+	t.Parallel()
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	m := New(fixture())
+	initial := m.Snapshot.Items[key]
+	initial.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(100, 0)}
+	m.Snapshot.Items[key] = initial
+
+	gap := m.Snapshot.Clone()
+	invalidated := gap.Items[key]
+	invalidated.Claim = queue.ClaimObservation{Stale: true, State: "unknown", Reason: "history-gap", ObservedAt: time.Unix(100, 0)}
+	gap.Items[key] = invalidated
+	next, _ := m.Update(ClaimOverlayMsg{Snapshot: gap, Rebuilding: true})
+	m = next.(Model)
+
+	provider := m.Snapshot.Clone()
+	provider.Revision++
+	providerItem := provider.Items[key]
+	providerItem.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(200, 0)}
+	provider.Items[key] = providerItem
+	next, _ = m.Update(SnapshotMsg{Snapshot: provider})
+	m = next.(Model)
+	if claim := m.Snapshot.Items[key].Claim; claim.Known || !claim.Stale || claim.Reason != "history-gap" {
+		t.Fatalf("provider snapshot undid gap invalidation: %+v", claim)
+	}
+
+	rebaseline := provider.Clone()
+	observed := rebaseline.Items[key]
+	observed.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(300, 0)}
+	rebaseline.Items[key] = observed
+	next, _ = m.Update(ClaimOverlayMsg{Snapshot: rebaseline})
+	m = next.(Model)
+	if claim := m.Snapshot.Items[key].Claim; !claim.Known || claim.Stale || claim.State != "held" {
+		t.Fatalf("successful live rebaseline not applied: %+v", claim)
+	}
+}
+
 func TestPreparedSnapshotIsIndependentOfProducerAndPreservesFreshClaim(t *testing.T) {
 	producer := fixture()
 	message := PrepareSnapshot(producer)

@@ -444,7 +444,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
-				if !prior.Claim.ObservedAt.Before(item.Claim.ObservedAt) {
+				gapInvalidated := m.RebuildingClaims && prior.Claim.Stale && prior.Claim.Reason == "history-gap"
+				if gapInvalidated || !prior.Claim.ObservedAt.Before(item.Claim.ObservedAt) {
 					item.Claim, item.Resources, item.KeyInputs = prior.Claim, prior.Resources, prior.KeyInputs
 				}
 				updated.Items[key] = item
