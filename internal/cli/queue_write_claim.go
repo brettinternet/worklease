@@ -89,7 +89,7 @@ func (c queueWriteClaim) CheckpointStatus(ctx context.Context, intent queue.Writ
 	if operation.State != "completed" {
 		return queue.WriteUnknown, nil
 	}
-	if operation.RequestNotAfter == nil || !operation.RequestNotAfter.Equal(intent.CheckpointNotAfter) {
+	if operation.RequestNotAfter == nil || operation.RequestNotAfter.UnixMicro() != intent.CheckpointNotAfter.UnixMicro() {
 		return queue.WriteConflict, nil
 	}
 	data, err := queueCheckpointData(intent, receipt)

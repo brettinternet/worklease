@@ -18,7 +18,7 @@ func TestQueueWriteClaimReplaysExactCheckpointOnOriginalHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent := queue.WriteIntent{OperationID: randomHex(16), OperationRef: randomHex(16), Source: queue.Source{ID: "tasks"}, Ref: queue.Ref{SourceID: "tasks", ItemID: "1"}, Principal: "alice", Patch: map[string]string{"status": "Doing"}, Precondition: "version-1", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: h.Resources, CheckpointTTL: 30 * time.Second, CheckpointNotAfter: time.Now().Add(10 * time.Minute)}
+	intent := queue.WriteIntent{OperationID: randomHex(16), OperationRef: randomHex(16), Source: queue.Source{ID: "tasks"}, Ref: queue.Ref{SourceID: "tasks", ItemID: "1"}, Principal: "alice", Patch: map[string]string{"status": "Doing"}, Precondition: "version-1", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: h.Resources, CheckpointTTL: 30 * time.Second, CheckpointNotAfter: time.Now().Add(10 * time.Minute).Truncate(time.Microsecond).Add(123 * time.Nanosecond)}
 	receipt := queue.ProviderReceipt{SourceID: "tasks", ItemID: "1", ID: "provider-receipt", Actor: "alice"}
 	claim := queueWriteClaim{backend: backend, path: path, session: h.SessionID}
 	wrongSession := claim
