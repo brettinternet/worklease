@@ -841,6 +841,41 @@ func TestLaunchPickerPreviewsAndDoesNotInventWorkerClaim(t *testing.T) {
 	}
 }
 
+func TestSuccessfulLaunchDoesNotClaimUntilWorkerAppearsInOverlay(t *testing.T) {
+	snapshot := fixture()
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	item := snapshot.Items[key]
+	item.Claim = queue.ClaimObservation{AuthorityID: "authority", Known: true, State: "free"}
+	snapshot.Items = map[string]queue.Item{key: item}
+	m := New(snapshot)
+	m.anchor(m.rows())
+	m.PreviewLaunch = func(queue.Item) []queue.LaunchOption {
+		return []queue.LaunchOption{{Name: "exits-without-claim", Eligibility: queue.Eligibility{Eligible: true}}}
+	}
+	m.Launch = func(queue.Item, string) tea.Cmd {
+		return func() tea.Msg { return LaunchResultMsg{Name: "exits-without-claim"} }
+	}
+	m, _ = press(m, "x")
+	m, launch := press(m, "enter")
+	if launch == nil {
+		t.Fatal("launch did not start")
+	}
+	next, _ := m.Update(launch())
+	m = next.(Model)
+	if m.Snapshot.Items[key].Claim.Active || !strings.Contains(m.Notice, "awaiting worker claim") || len(m.OwnedClaims) != 0 {
+		t.Fatalf("process start invented a claim: %+v %s", m.Snapshot.Items[key].Claim, m.Notice)
+	}
+	observed := snapshot.Clone()
+	worker := observed.Items[key]
+	worker.Claim = queue.ClaimObservation{AuthorityID: "authority", Known: true, Active: true, State: "held", SessionID: "independent-worker-session", ObservedAt: time.Now()}
+	observed.Items[key] = worker
+	next, _ = m.Update(ClaimOverlayMsg{Snapshot: observed})
+	m = next.(Model)
+	if !m.Snapshot.Items[key].Claim.Active || m.Snapshot.Items[key].Claim.SessionID != "independent-worker-session" || len(m.OwnedClaims) != 0 {
+		t.Fatalf("worker overlay was not observed independently: %+v", m.Snapshot.Items[key].Claim)
+	}
+}
+
 func TestLaunchConfirmationRejectsDifferentRefWithSameCanonicalIdentity(t *testing.T) {
 	original := fixture().Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
 	m := New(queue.Snapshot{Items: map[string]queue.Item{original.Ref.Key(): original}, Sources: map[string]queue.Coverage{"a": {State: queue.CoverageComplete}}})

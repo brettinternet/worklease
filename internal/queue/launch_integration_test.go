@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -110,6 +111,33 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 			cleanup.Dir, cleanup.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
 			if data, err := cleanup.CombinedOutput(); err != nil {
 				t.Fatalf("release: %s %v", data, err)
+			}
+			// Starting a process that exits without acquiring does not create a
+			// worker claim; only the authority's later observation can do that.
+			noClaim, disabled := PrepareLaunch(config.QueueLaunch{Name: "no-claim", Argv: []string{"python3", "-c", "pass"}, Cwd: workDir}, item, source, ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
+			if disabled != "" {
+				t.Fatal(disabled)
+			}
+			child, err := StartLaunch(context.Background(), noClaim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := child.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			free := exec.Command(binary, "status", "--json", "--resource", key.Resource)
+			free.Dir, free.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
+			freeData, err := free.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var availability struct {
+				Resources []struct {
+					State string `json:"state"`
+				} `json:"resources"`
+			}
+			if err := json.Unmarshal(freeData, &availability); err != nil || len(availability.Resources) != 1 || availability.Resources[0].State != "free" {
+				t.Fatalf("unclaimed launcher created worker claim: %s %v", freeData, err)
 			}
 			// A mismatched handoff cannot acquire; no process owns the resource.
 			wrong := append([]string(nil), handoff.Env...)
