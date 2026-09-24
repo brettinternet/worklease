@@ -47,11 +47,11 @@ func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
 	item.Title = "new provider state"
 	item.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held", ObservedAt: time.Unix(101, 0)}
 	newer.Items[key] = item
-	next, _ := m.Update(SnapshotMsg{newer})
+	next, _ := m.Update(SnapshotMsg{Snapshot: newer})
 	m = next.(Model)
 	older := fixture()
 	older.Revision = 1
-	next, _ = m.Update(SnapshotMsg{older})
+	next, _ = m.Update(SnapshotMsg{Snapshot: older})
 	m = next.(Model)
 	if m.Snapshot.Items[key].Title != item.Title || m.Snapshot.Items[key].Claim.State != "held" {
 		t.Fatalf("regressed snapshot: %+v", m.Snapshot.Items[key])
@@ -67,11 +67,33 @@ func TestSnapshotRevisionAndIndependentClaimFreshness(t *testing.T) {
 	}
 }
 
+func TestPreparedSnapshotIsIndependentOfProducerAndPreservesFreshClaim(t *testing.T) {
+	producer := fixture()
+	message := PrepareSnapshot(producer)
+	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
+	item := producer.Items[key]
+	item.Title = "changed after preparation"
+	producer.Items[key] = item
+	m := New(fixture())
+	current := m.Snapshot.Items[key]
+	current.Claim = queue.ClaimObservation{Known: true, State: "free", ObservedAt: time.Unix(200, 0)}
+	m.Snapshot.Items[key] = current
+	message.Snapshot.Revision = 2
+	next, _ := m.Update(message)
+	m = next.(Model)
+	if got := m.Snapshot.Items[key]; got.Title != "first" || got.Claim.State != "free" {
+		t.Fatalf("prepared snapshot lost ownership or newer claim: %+v", got)
+	}
+	if producer.Items[key].Claim.State == "free" {
+		t.Fatal("model mutated producer snapshot")
+	}
+}
+
 func TestClaimUpdatesWhileProviderSnapshotIsStalled(t *testing.T) {
 	m := New(fixture())
 	stalled := m.Snapshot.Clone()
 	stalled.Sources["a"] = queue.Coverage{State: queue.CoveragePartial, Total: 2, TotalAccuracy: queue.TotalExact}
-	next, _ := m.Update(SnapshotMsg{stalled})
+	next, _ := m.Update(SnapshotMsg{Snapshot: stalled})
 	m = next.(Model)
 	claims := stalled.Clone()
 	key := queue.Ref{SourceID: "a", ItemID: "1"}.Key()
@@ -141,7 +163,7 @@ func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	}
 	updated := fixture()
 	delete(updated.Items, queue.Ref{SourceID: "a", ItemID: "1"}.Key())
-	next, _ := m.Update(SnapshotMsg{updated})
+	next, _ := m.Update(SnapshotMsg{Snapshot: updated})
 	m = next.(Model)
 	if m.Selected != "stable-2" {
 		t.Fatal("selection changed across refresh", m.Selected)
@@ -220,7 +242,7 @@ func TestSelectedEdgeHydrationFollowsSelectionOnly(t *testing.T) {
 	if calls != 1 || cmd == nil {
 		t.Fatalf("selection did not schedule hydration: %d", calls)
 	}
-	next, _ := m.Update(SnapshotMsg{fixture()})
+	next, _ := m.Update(SnapshotMsg{Snapshot: fixture()})
 	if calls != 1 || next.(Model).Selected != "stable-2" {
 		t.Fatalf("snapshot repeated hydration: %d", calls)
 	}
@@ -532,7 +554,7 @@ func TestFilterAfterScrolledListDoesNotPanic(t *testing.T) {
 	m.anchor(m.rows())
 	m, _ = press(m, "G")
 	m.Filter = "first"
-	next, _ := m.Update(SnapshotMsg{m.Snapshot})
+	next, _ := m.Update(SnapshotMsg{Snapshot: m.Snapshot})
 	m = next.(Model)
 	if !strings.Contains(m.View(), "first") {
 		t.Fatal("selected row disappeared")

@@ -16,7 +16,17 @@ import (
 )
 
 // SnapshotMsg publishes immutable source state without changing the focused pane.
-type SnapshotMsg struct{ Snapshot queue.Snapshot }
+type SnapshotMsg struct {
+	Snapshot queue.Snapshot
+	prepared bool
+}
+
+// PrepareSnapshot copies producer-owned state before handing it to Bubble Tea.
+// The producer must not mutate the returned message after sending it.
+func PrepareSnapshot(snapshot queue.Snapshot) SnapshotMsg {
+	return SnapshotMsg{Snapshot: snapshot.Clone(), prepared: true}
+}
+
 type ClaimOverlayMsg struct {
 	Snapshot   queue.Snapshot
 	Rebuilding bool
@@ -281,7 +291,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.Snapshot.Revision < m.Snapshot.Revision {
 			break
 		}
-		updated := v.Snapshot.Clone()
+		updated := v.Snapshot
+		if !v.prepared {
+			updated = v.Snapshot.Clone()
+		}
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
 				if !prior.Claim.ObservedAt.Before(item.Claim.ObservedAt) {

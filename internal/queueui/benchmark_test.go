@@ -103,6 +103,32 @@ func BenchmarkQueueRefreshPhases(b *testing.B) {
 	}
 }
 
+// The producer prepares each snapshot outside the measured input-loop path.
+func BenchmarkQueuePreparedRefreshToRender(b *testing.B) {
+	for _, size := range []int{10000, 50000, 100000} {
+		b.Run(fmt.Sprintf("items-%d", size), func(b *testing.B) {
+			snapshot := benchSnapshot(size)
+			m := New(snapshot)
+			m.Sources = []queue.Source{{ID: "source-0"}, {ID: "source-1"}, {ID: "source-2"}, {ID: "source-3"}, {ID: "source-4"}}
+			_ = m.View()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				snapshot.Revision++
+				message := PrepareSnapshot(snapshot)
+				b.StartTimer()
+				next, _ := m.Update(message)
+				m = next.(Model)
+				_ = m.View()
+				if m.rowCache.rows == nil {
+					b.Fatal("missing refreshed rows")
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkQueueWarmFirstView(b *testing.B) {
 	snapshot := benchSnapshot(10000)
 	b.ReportAllocs()
