@@ -13,6 +13,8 @@ import platform
 import re
 import resource
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,9 +62,19 @@ def main():
         "host": {"machine": platform.machine(), "processor": platform.processor(),
                  "system": platform.system()},
         "samples": SAMPLES,
-        "peak_child_rss_bytes": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
         "benchmarks": {},
     }
+    fixture_path = os.environ.get("QUEUE_BENCH_FIXTURE")
+    if fixture_path is None:
+        fixture_path = tempfile.mkdtemp(prefix="worklease-queue-bench-", dir="/tmp")
+        subprocess.run([sys.executable, str(ROOT / "scripts/backlog-queue-fixture.py"), fixture_path, "10000"],
+                       cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    print(f"Backlog fixture retained at {fixture_path}", file=sys.stderr)
+    backlog_run = subprocess.run([sys.executable, str(ROOT / "scripts/queue-backlog-benchmark.py"),
+                                  fixture_path, "--samples", str(SAMPLES)],
+                                 cwd=ROOT, check=True, text=True, capture_output=True)
+    report["backlog"] = json.loads(backlog_run.stdout)
+    report["peak_child_rss_bytes"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     for name, observations in sorted(results.items()):
         if name == "_rss":
             continue

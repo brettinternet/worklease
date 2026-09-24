@@ -9,9 +9,15 @@ import sys
 if len(sys.argv) != 3:
     raise SystemExit("usage: queue-benchmark-compare.py BASE.json HEAD.json")
 with open(sys.argv[1], encoding="utf-8") as stream:
-    baseline = json.load(stream)["benchmarks"]
+    baseline_report = json.load(stream)
 with open(sys.argv[2], encoding="utf-8") as stream:
-    current = json.load(stream)["benchmarks"]
+    current_report = json.load(stream)
+baseline = baseline_report["benchmarks"]
+current = current_report["benchmarks"]
+if "backlog" in baseline_report and "backlog" in current_report:
+    for name in ("summary_list", "selected_edge_view"):
+        baseline[name] = baseline_report["backlog"][name]
+        current[name] = current_report["backlog"][name]
 for name, data in sorted(current.items()):
     if name not in baseline:
         continue
