@@ -1,10 +1,11 @@
 ---
 id: TASK-136.6
 title: Document the testing policy and test tiers for agents
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-24 15:10'
+updated_date: '2026-09-24 15:32'
 labels: []
 dependencies: []
 parent_task_id: TASK-136
@@ -46,8 +47,14 @@ The policy should cover these points in about 40 lines or fewer:
 - [ ] #3 `scripts/test-e2e.sh` no longer reruns named Go tests, and `mise run e2e` passes on linux-x64
 <!-- AC:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Remove redundant named-test rerun and commit from isolated worktree (done, 12bc608 merged to main). 2. Run native linux-x64 mise run e2e when an authorized runner is available (pending). 3. Check remaining criterion and finalize only after pass.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Testing policy and tier table added to AGENTS.md (Testing section, outside the Backlog.md managed block, which is unchanged). Remaining: delete the named-test rerun from scripts/test-e2e.sh and confirm `mise run e2e` passes on linux-x64 (CI); the remote smoke currently hangs on macOS (TASK-136.2), so run it locally only after that is fixed.
+AGENTS.md testing policy and tier table remain committed in 6194a1b; managed Backlog.md block unchanged. Removed the redundant named Go test rerun from scripts/test-e2e.sh in 12bc608 (fast-forward merged to main); direct review found no item-scoped defects. Validation: mise run lint, format-check, test, typecheck and staged mise run hooks passed on macOS arm64; Linux arm64 container built the binary and passed built-binary smoke, but remote smoke stalled and the bounded 15-minute run was stopped. Two Linux amd64 Docker/QEMU attempts crashed the Go runtime during compilation (pointer-to-free-object and SIGSEGV), so neither proves Linux x64 e2e. AC #3 remains unchecked. Next: run mise run e2e on native linux-x64 against 12bc608 or later (CI after authorized push), verify success, check AC #3, then finalize task. Do not repeat emulated Docker/QEMU or unbounded remote smoke; TASK-136.2 tracks its hang.
 <!-- SECTION:NOTES:END -->
