@@ -220,6 +220,7 @@ type RecoveryRequest struct {
 type Handle struct {
 	SchemaVersion       int              `json:"schemaVersion"`
 	AuthorityID         string           `json:"authorityId"`
+	RestoreID           string           `json:"restoreId,omitempty"`
 	ClaimID             string           `json:"claimId"`
 	Token               string           `json:"token"`
 	Revision            int64            `json:"revision,omitempty"`
@@ -257,7 +258,7 @@ func validResource(v string) bool {
 	return utf8.ValidString(v) && len(v) > 0 && len([]byte(v)) <= 1024 && !strings.ContainsAny(v, "\x00\r\n") && strings.TrimSpace(v) == v
 }
 func validateHandle(h Handle) error {
-	if (h.SchemaVersion != SchemaVersion && h.SchemaVersion != RemoteSchemaVersion) || (h.State != "pending" && h.State != "ready") || !validID(h.AuthorityID) || !validID(h.ClaimID) {
+	if (h.SchemaVersion != SchemaVersion && h.SchemaVersion != RemoteSchemaVersion) || (h.State != "pending" && h.State != "ready") || !validID(h.AuthorityID) || (h.RestoreID != "" && (h.SchemaVersion != RemoteSchemaVersion || !validID(h.RestoreID))) || !validID(h.ClaimID) {
 		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if err := validateToken(h.Token); err != nil {

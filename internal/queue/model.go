@@ -151,6 +151,7 @@ type ClaimObservation struct {
 	State         string    `json:"state,omitempty"`
 	AgentID       string    `json:"agentId,omitempty"`
 	SessionID     string    `json:"sessionId,omitempty"`
+	AcquiredAt    time.Time `json:"acquiredAt,omitempty"`
 	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 	ObservedAt    time.Time `json:"observedAt,omitempty"`
 	Stale         bool      `json:"stale"`

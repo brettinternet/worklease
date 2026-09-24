@@ -273,6 +273,17 @@ func TestLocalCheckoutAuthorityMustMatchWorkerDefaultAuthority(t *testing.T) {
 	}
 }
 
+func TestClaimActionRequiresFreshVerifiedFreeObservation(t *testing.T) {
+	item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "1"}, Fresh: true}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{Known: true, Available: true, State: "free"}}
+	if got := ClaimActions(item)[ActionClaim]; !got.Eligible {
+		t.Fatalf("verified free item cannot be claimed: %+v", got)
+	}
+	item.Claim.Stale = true
+	if got := ClaimActions(item)[ActionClaim]; got.Eligible {
+		t.Fatalf("stale claim observation allowed acquisition: %+v", got)
+	}
+}
+
 func TestClaimOverlayAdmissionAndCheckoutAuthority(t *testing.T) {
 	items, sources := claimFixtures(1)
 	prefixes := []string{"github:"}

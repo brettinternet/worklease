@@ -193,7 +193,7 @@ func overlayBatch(ctx context.Context, items []Item, indexes map[string][]int, k
 					observation.State, observation.Active = "held", true
 				}
 				observation.AgentID, observation.SessionID = entry.Claim.AgentID, entry.Claim.SessionID
-				observation.ExpiresAt = entry.Claim.ExpiresAt
+				observation.AcquiredAt, observation.ExpiresAt = entry.Claim.AcquiredAt, entry.Claim.ExpiresAt
 			}
 		}
 		observation.Available = observation.Known && !observation.Active
@@ -221,7 +221,7 @@ func ClaimActions(item Item) map[Action]Eligibility {
 				eligibility = Eligibility{Reasons: []string{"claim-unknown"}, Outcome: "capability"}
 			}
 		}
-		if (action == ActionClaim || action == ActionLaunch) && eligibility.Eligible {
+		if action == ActionLaunch && eligibility.Eligible {
 			eligibility = Eligibility{Reasons: []string{"read-only-slice"}, Outcome: "capability"}
 		}
 		actions[action] = eligibility

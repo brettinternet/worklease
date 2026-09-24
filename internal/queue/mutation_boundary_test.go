@@ -12,8 +12,9 @@ import (
 )
 
 // This source-level guard complements the status-only authority fake and
-// read-only provider subprocess: newly added queue paths cannot invoke a
-// claim lifecycle/guard method or introduce provider write commands unnoticed.
+// provider read-only tests: Claim for me may acquire through the selected
+// Worklease authority, but cannot invoke other lifecycle/guard methods or
+// provider write commands unnoticed.
 func TestQueueHasNoMutationCallPath(t *testing.T) {
 	forbidden := map[string]bool{
 		"Acquire": true, "Heartbeat": true, "Checkpoint": true,
@@ -39,7 +40,9 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 					return true
 				}
 				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && forbidden[selector.Sel.Name] {
-					t.Errorf("%s calls forbidden mutation %s", path, selector.Sel.Name)
+					if selector.Sel.Name != "Acquire" || !queueClaimAuthorityAcquire(path, selector) {
+						t.Errorf("%s calls forbidden mutation %s", path, selector.Sel.Name)
+					}
 				}
 				// Backlog.md's CLI is a read-only source in this slice.
 				if strings.HasSuffix(path, "backlog.go") {
@@ -65,4 +68,20 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func queueClaimAuthorityAcquire(path string, call *ast.SelectorExpr) bool {
+	if filepath.Base(path) != "queue_claim.go" || call.Sel.Name != "Acquire" {
+		return false
+	}
+	api, ok := call.X.(*ast.SelectorExpr)
+	if !ok || api.Sel.Name != "API" {
+		return false
+	}
+	backend, ok := api.X.(*ast.SelectorExpr)
+	if !ok || backend.Sel.Name != "backend" {
+		return false
+	}
+	controller, ok := backend.X.(*ast.Ident)
+	return ok && controller.Name == "c"
 }

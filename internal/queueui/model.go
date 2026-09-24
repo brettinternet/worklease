@@ -1,6 +1,7 @@
 package queueui
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -73,6 +75,28 @@ type CommentsMsg struct {
 }
 type RefreshedMsg struct{ Err error }
 
+type ClaimPreview struct {
+	Identity, Title               string
+	AuthorityProfile, AuthorityID string
+	Scope, SessionID              string
+	Resources                     []string
+	TTL, Hold                     time.Duration
+	CoordinationLimits            string
+}
+type ClaimPreviewMsg struct {
+	Identity string
+	Item     queue.Item
+	Preview  *ClaimPreview
+	Err      error
+}
+type ClaimResultMsg struct {
+	Identity   string
+	Item       queue.Item
+	Claim      queue.ClaimObservation
+	GrantedTTL time.Duration
+	Err        error
+}
+
 type ViewRule struct {
 	Readiness, Claim string
 	Assigned         []string
@@ -106,6 +130,10 @@ type Model struct {
 	CommentsError                  string
 	ClaimFreshness                 string
 	RebuildingClaims               bool
+	ClaimLoading, Claiming         bool
+	ClaimPreview                   *ClaimPreview
+	PreviewClaim                   func(queue.Item) tea.Cmd
+	AcquireClaim                   func(queue.Item, ClaimPreview) tea.Cmd
 	Refresh                        func() tea.Cmd
 	HydrateSelected                func(queue.Item) tea.Cmd
 	LoadHistory                    func(queue.Item, string, bool) tea.Cmd
@@ -438,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ClaimOverlayMsg:
 		m.rowCache = &rowCache{}
 		for key, item := range v.Snapshot.Items {
-			if current, ok := m.Snapshot.Items[key]; ok && !item.Claim.ObservedAt.Before(current.Claim.ObservedAt) {
+			if current, ok := m.Snapshot.Items[key]; ok && (item.Claim.Stale || item.Claim.Reason == "authority-mismatch" || !item.Claim.ObservedAt.Before(current.Claim.ObservedAt)) {
 				current.Claim, current.Resources, current.KeyInputs = item.Claim, item.Resources, item.KeyInputs
 				m.Snapshot.Items[key] = current
 			}
@@ -482,6 +510,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.Notice = "Refreshed"
 		}
+	case ClaimPreviewMsg:
+		m.ClaimLoading = false
+		if v.Identity == m.Selected {
+			if v.Err != nil {
+				m.ClaimPreview = nil
+				m.Notice = "Claim unavailable: " + v.Err.Error()
+			} else if v.Preview == nil || v.Preview.Identity != v.Identity {
+				m.ClaimPreview = nil
+				m.Notice = "Claim unavailable: preview identity changed"
+			} else {
+				if current, ok := m.Snapshot.Items[v.Item.Ref.Key()]; ok {
+					v.Item.Claim, v.Item.Resources, v.Item.KeyInputs = current.Claim, current.Resources, current.KeyInputs
+				}
+				m.Snapshot.Items[v.Item.Ref.Key()] = v.Item
+				m.rowCache = &rowCache{}
+				m.ClaimPreview = v.Preview
+				m.Notice = "Review claim preview; press Enter to confirm"
+			}
+		}
+	case ClaimResultMsg:
+		m.Claiming = false
+		m.ClaimPreview = nil
+		if v.Err != nil {
+			m.Notice = fmt.Sprintf("Claim %s: %s", clean(v.Identity), claimFailureNotice(v.Err))
+		} else {
+			if current, ok := m.Snapshot.Items[v.Item.Ref.Key()]; ok && !current.Claim.Stale && current.Claim.Reason != "authority-mismatch" {
+				current.Claim = v.Claim
+				m.Snapshot.Items[v.Item.Ref.Key()] = current
+				m.rowCache = &rowCache{}
+			}
+			m.Notice = fmt.Sprintf("Claim %s acquired · TTL %s · expires %s", clean(v.Identity), v.GrantedTTL, v.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+		}
 	case tea.KeyMsg:
 		key := v.String()
 		if m.Filtering || m.Palette {
@@ -514,6 +574,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.rows()
 		previous := m.Selected
+		if m.ClaimPreview != nil {
+			switch key {
+			case "enter", "y":
+				if m.AcquireClaim == nil {
+					m.Notice = "Claim unavailable"
+					m.ClaimPreview = nil
+					return m, nil
+				}
+				if item, ok := m.selected(rows); ok && identity(item) == m.ClaimPreview.Identity {
+					preview := *m.ClaimPreview
+					m.ClaimPreview = nil
+					m.Claiming = true
+					m.Notice = "Revalidating and acquiring claim…"
+					return m, m.AcquireClaim(item, preview)
+				}
+				m.ClaimPreview = nil
+				m.Notice = "Claim preview expired because selection changed"
+				return m, nil
+			case "esc", "n":
+				m.ClaimPreview = nil
+				m.Notice = "Claim cancelled; no claim was sent"
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
 		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -601,8 +687,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.OpenURL(i)
 			}
 			m.Notice = "Provider URL unavailable"
-		case "c", "R", "a", "s", "p", "x":
-			m.Notice = "Unavailable: read-only slice (claim, release, assign, state, progress and launch arrive later)"
+		case "c":
+			if m.ClaimLoading || m.Claiming {
+				m.Notice = "Claim request in progress"
+			} else if m.PreviewClaim == nil {
+				m.Notice = "Claim unavailable"
+			} else if item, ok := m.selected(rows); ok {
+				m.ClaimLoading = true
+				m.Notice = "Checking claim eligibility…"
+				return m, m.PreviewClaim(item)
+			} else {
+				m.Notice = "No item selected"
+			}
+		case "R", "a", "s", "p", "x":
+			m.Notice = "Unavailable: read-only slice (release, assign, state, progress and launch arrive later)"
 		}
 		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
 			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
@@ -653,6 +751,9 @@ func clip(s string, n int) string {
 func (m Model) View() string {
 	if m.Width < 30 {
 		return "Resize terminal to at least 30 columns\n"
+	}
+	if m.ClaimPreview != nil {
+		return m.claimPreviewView(*m.ClaimPreview)
 	}
 	rows := m.rows()
 	m.anchor(rows)
@@ -758,6 +859,55 @@ func (m Model) View() string {
 	}
 	return body + "\n" + footerText
 }
+func (m Model) claimPreviewView(preview ClaimPreview) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Claim %s for me\n", clip(preview.Title, m.Width-10))
+	fmt.Fprintf(&b, "  Authority  %s %s (%s)\n", clip(preview.AuthorityProfile, 24), clip(preview.AuthorityID, 40), clean(preview.Scope))
+	for _, key := range preview.Resources {
+		fmt.Fprintf(&b, "  Resource   %s\n", clean(key))
+	}
+	fmt.Fprintf(&b, "  Session    %s, TTL %s, hold %s\n", clean(preview.SessionID), preview.TTL, preview.Hold)
+	b.WriteString("  Provider   unchanged (no assignment or state change)\n")
+	fmt.Fprintf(&b, "  Limits     %s\n", clean(preview.CoordinationLimits))
+	b.WriteString("\nEnter/y confirm · Esc/n cancel · no request is sent until confirmation\n")
+	return clipLines(b.String(), m.Width)
+}
+
+func claimFailureNotice(err error) string {
+	if err == nil {
+		return "Claim failed"
+	}
+	classified := reason.As(err)
+	if classified == nil {
+		return "Claim failed: " + err.Error()
+	}
+	if holder, ok := classified.Details["holder"]; ok {
+		data, _ := json.Marshal(holder)
+		var view map[string]any
+		_ = json.Unmarshal(data, &view)
+		agent, _ := view["agentId"].(string)
+		expires, _ := view["expiresAt"].(string)
+		if agent == "" {
+			agent = "another holder"
+		}
+		if expires == "" {
+			expires = "expiry unavailable"
+		}
+		return "Claim contended · " + agent + " · expires " + expires + " · not retried"
+	}
+	if classified.Reason == reason.ReasonInvalidArgument && classified.Details["commitState"] == "not-committed" {
+		return "Authority rejected the claim request (invalid-argument); no claim was acquired"
+	}
+	if classified.Reason == reason.ReasonUnknownOutcome || classified.Details["commitState"] == "unknown" {
+		path, _ := classified.Details["pendingPath"].(string)
+		if path != "" {
+			return "Claim outcome uncertain; pending request retained at " + path + " · recover before retrying"
+		}
+		return "Claim outcome uncertain; recover the pending request before retrying"
+	}
+	return "Claim failed: " + err.Error()
+}
+
 func scrollDetail(s string, offset int) string {
 	lines := strings.Split(s, "\n")
 	if offset >= len(lines) {
@@ -1000,6 +1150,12 @@ func detail(m Model, i queue.Item) string {
 	case 3:
 		fmt.Fprintf(&b, "Authority %s (%s)\nResource: %s\n", clean(m.Authority), clean(m.Scope), clean(strings.Join(i.Resources, ",")))
 		fmt.Fprintf(&b, "Current: %s\nagentId:\n%s\nsessionId:\n%s\n", claimState(i), clean(i.Claim.AgentID), clean(i.Claim.SessionID))
+		if !i.Claim.ExpiresAt.IsZero() {
+			if !i.Claim.AcquiredAt.IsZero() && i.Claim.ExpiresAt.After(i.Claim.AcquiredAt) {
+				fmt.Fprintf(&b, "Granted TTL: %s\n", i.Claim.ExpiresAt.Sub(i.Claim.AcquiredAt).Round(time.Second))
+			}
+			fmt.Fprintf(&b, "Expires: %s\n", i.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+		}
 		if m.HistoryLoading {
 			b.WriteString("Loading claim epochs…\n")
 		}

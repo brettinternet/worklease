@@ -24,7 +24,7 @@ import (
 )
 
 func queueCommand(s *boundary) *urfave.Command {
-	c := &urfave.Command{Name: "queue", Usage: "browse configured work in a read-only terminal", UsageText: "worklease queue [--view NAME]", Description: "Browse configured source snapshots without provider writes or claims.\n\nExamples:\n  worklease queue\n  worklease queue --view Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Usage: "configured queue view `NAME`"}}}
+	c := &urfave.Command{Name: "queue", Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease queue --view Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Usage: "configured queue view `NAME`"}}}
 	c.Action = func(ctx context.Context, cmd *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return s.handle(cmd, reason.Invalid("queue TUI is text-only; use queue query --json when available"))
@@ -57,7 +57,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, cmd, selected.Authority, false)
+	queueSession, err := config.QueueSessionID(os.Getenv)
+	if err != nil {
+		return err
+	}
+	backend, authorityView, err := queueAuthorityForClaim(ctx, cmd, selected.Authority)
 	if err != nil {
 		return err
 	}
@@ -186,6 +190,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		return queue.GuardClaimSources(ctx, claimInputs, registry, selected, state, snapshot)
 	}
 	var program *tea.Program
+	var claimController *queueClaimController
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
 	var liveMu sync.Mutex
@@ -195,11 +200,32 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var blockedIdentity atomic.Bool
 	var hydrationCancel context.CancelFunc
 	closing := false
+	resolvedByID := make(map[string]queue.Source, len(sources))
+	for _, source := range sources {
+		resolvedByID[source.ID] = source
+	}
+	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, blocked: func() bool { return blockedIdentity.Load() }, profile: backend.Profile, profileName: selected.Authority, home: backend.Config.Home}
+	model.PreviewClaim = func(item queue.Item) tea.Cmd { return claimController.Preview(ctx, item) }
+	model.AcquireClaim = func(item queue.Item, preview queueui.ClaimPreview) tea.Cmd {
+		return claimController.AcquireClaim(ctx, item, preview)
+	}
 	restartOverlay := func(base queue.Snapshot, claims map[string]queue.ClaimSource) {
 		liveMu.Lock()
 		defer liveMu.Unlock()
 		if blockedIdentity.Load() {
 			return
+		}
+		if claimController != nil {
+			if identityErr := claimController.profileIdentityCurrent(); identityErr != nil {
+				blockedIdentity.Store(true)
+				stopped := base.Clone()
+				for key, item := range stopped.Items {
+					item.Claim = queue.ClaimObservation{AuthorityID: authorityView.ID, State: "unknown", NativeState: "not-exposed", Stale: true, Reason: "authority-mismatch", Detail: identityErr.Error(), ObservedAt: time.Now().UTC()}
+					stopped.Items[key] = item
+				}
+				program.Send(queueui.ClaimOverlayMsg{Snapshot: stopped, Err: identityErr})
+				return
+			}
 		}
 		authorityMu.Lock()
 		view := authorityView

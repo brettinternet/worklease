@@ -62,14 +62,14 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 		if p.Kind != "acquire" || metadataErr != nil || present {
 			return err
 		}
-		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
 	} else if h.ClaimID != claimID {
 		if p.Kind != "acquire" || replacement.ClaimID == "" || h.AuthorityID != p.AuthorityID || h.SchemaVersion != handle.RemoteSchemaVersion || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil || h.ClaimID != replacement.ClaimID || h.Token != replacement.Token || h.Revision != replacement.Revision || !h.ExpiresAt.Equal(replacement.ExpiresAt) {
 			return fmt.Errorf("handle claim does not match request")
 		}
 		old := h
 		replaced = &old
-		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
 	}
 	if h.PendingRequest != nil {
 		existing := h.PendingRequest
@@ -79,6 +79,7 @@ func persistHandleRequest(path, claimID string, p PendingRequest, newToken strin
 		return nil
 	}
 	h.SchemaVersion = handle.RemoteSchemaVersion
+	h.RestoreID = p.ExpectedRestoreID
 	h.State = "pending"
 	kind := p.Kind
 	if kind == "operations/begin" {
@@ -173,7 +174,14 @@ func activateGrantHandle(path string, grant lease.Grant) error {
 		return fmt.Errorf("remote grant does not match pending acquire")
 	}
 	h.Revision, h.ExpiresAt, h.State, h.PendingRequest = grant.Revision, grant.ExpiresAt, "ready", nil
-	h.AuthorityID, h.Resources, h.AgentID, h.SessionID, h.LocalReplaceAllowed = grant.AuthorityID, append([]string(nil), grant.Resources...), grant.AgentID, grant.SessionID, grant.LocalReplaceAllowed
+	restoreID := grant.RestoreID
+	if restoreID == "" {
+		restoreID = h.RestoreID
+	}
+	if restoreID == "" && h.PendingRequest != nil {
+		restoreID = h.PendingRequest.ExpectedRestoreID
+	}
+	h.AuthorityID, h.RestoreID, h.Resources, h.AgentID, h.SessionID, h.LocalReplaceAllowed = grant.AuthorityID, restoreID, append([]string(nil), grant.Resources...), grant.AgentID, grant.SessionID, grant.LocalReplaceAllowed
 	return lock.Write(path, h)
 }
 

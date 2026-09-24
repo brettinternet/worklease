@@ -100,7 +100,15 @@ func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string
 	return queueAuthorityForViewWithMetadata(ctx, cmd, name, true)
 }
 
+func queueAuthorityForClaim(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
+	return queueAuthorityForViewMode(ctx, cmd, name, true, true)
+}
+
 func queueAuthorityForViewWithMetadata(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata bool) (*authorityContext, queue.ClaimAuthority, error) {
+	return queueAuthorityForViewMode(ctx, cmd, name, fetchMetadata, false)
+}
+
+func queueAuthorityForViewMode(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata, write bool) (*authorityContext, queue.ClaimAuthority, error) {
 	paths := config.UserProfilePaths(os.Getenv)
 	profiles, _, err := config.LoadProfiles(paths)
 	if err != nil {
@@ -114,7 +122,7 @@ func queueAuthorityForViewWithMetadata(ctx context.Context, cmd *urfave.Command,
 		}
 		selected.Profile = &profile
 	}
-	backend, err := authorityForSelection(ctx, cmd, false, selected)
+	backend, err := authorityForSelection(ctx, cmd, write, selected)
 	if err != nil {
 		return nil, queue.ClaimAuthority{}, err
 	}

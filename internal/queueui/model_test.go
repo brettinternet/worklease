@@ -7,6 +7,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -446,7 +447,11 @@ func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
 	}
 	for _, key := range []string{"c", "R", "a", "s", "p", "x"} {
 		m, _ = press(m, key)
-		if !strings.Contains(m.Notice, "read-only") {
+		if key == "c" {
+			if !strings.Contains(m.Notice, "Claim unavailable") {
+				t.Fatal(key, m.Notice)
+			}
+		} else if !strings.Contains(m.Notice, "read-only") {
 			t.Fatal(key, m.Notice)
 		}
 	}
@@ -648,12 +653,86 @@ func TestFilterAfterScrolledListDoesNotPanic(t *testing.T) {
 		t.Fatal("selected row disappeared")
 	}
 }
+func TestClaimFailuresExposeContentionUncertaintyAndDefinitiveRejection(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{name: "contention", err: reason.New(reason.ReasonAlreadyClaimed, "busy").With("holder", map[string]any{"agentId": "other", "expiresAt": "2026-09-24T06:00:00Z"}), want: []string{"other", "2026-09-24T06:00:00Z", "not retried"}},
+		{name: "uncertain", err: reason.New(reason.ReasonUnknownOutcome, "remote request failed").With("commitState", "unknown").With("pendingPath", "/private/queue-handle.json"), want: []string{"uncertain", "/private/queue-handle.json", "recover"}},
+		{name: "rejected", err: reason.New(reason.ReasonInvalidArgument, "remote request failed").With("commitState", "not-committed"), want: []string{"rejected", "no claim was acquired"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := claimFailureNotice(test.err)
+			for _, want := range test.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("notice %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestClaimPreviewRequiresExplicitConfirmationAndShowsGrant(t *testing.T) {
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	preview := ClaimPreview{Identity: m.Selected, Title: "first", AuthorityProfile: "team", AuthorityID: "authority-id", Scope: "remote", SessionID: "0123456789abcdef0123456789abcdef", Resources: []string{"coordination:test"}, TTL: 5 * time.Minute, Hold: time.Hour, CoordinationLimits: "server maximum unknown"}
+	acquireCalls := 0
+	m.PreviewClaim = func(item queue.Item) tea.Cmd {
+		return func() tea.Msg { return ClaimPreviewMsg{Identity: identity(item), Item: item, Preview: &preview} }
+	}
+	m.AcquireClaim = func(item queue.Item, got ClaimPreview) tea.Cmd {
+		acquireCalls++
+		if identity(item) != preview.Identity || got.SessionID != preview.SessionID {
+			t.Fatalf("confirmation changed its preview: item=%s preview=%+v", identity(item), got)
+		}
+		claim := queue.ClaimObservation{Known: true, Active: true, State: "held", AgentID: "brett", SessionID: preview.SessionID, AcquiredAt: time.Now(), ExpiresAt: time.Now().Add(4 * time.Minute)}
+		return func() tea.Msg {
+			return ClaimResultMsg{Identity: preview.Identity, Item: item, Claim: claim, GrantedTTL: 4 * time.Minute}
+		}
+	}
+	var cmd tea.Cmd
+	m, cmd = press(m, "c")
+	if cmd == nil || acquireCalls != 0 {
+		t.Fatal("c sent an acquisition before opening a preview")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	for _, text := range []string{"team", "authority-id", "remote", "coordination:test", preview.SessionID, "5m0s", "1h0m0s", "Provider   unchanged", "server maximum unknown"} {
+		if !strings.Contains(m.View(), text) {
+			t.Errorf("preview missing %q: %s", text, m.View())
+		}
+	}
+	m, cmd = press(m, "enter")
+	if cmd == nil || acquireCalls != 1 || m.ClaimPreview != nil || !m.Claiming {
+		t.Fatal("confirmation did not send exactly one acquisition")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if got := m.Snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()].Claim; !got.Active || got.SessionID != preview.SessionID {
+		t.Fatalf("grant observation not shown: %+v", got)
+	}
+	m, _ = press(m, "enter")
+	for range 3 {
+		m, _ = press(m, "tab")
+	}
+	view := m.View()
+	for _, text := range []string{"Granted TTL: 4m0s", "Expires:"} {
+		if !strings.Contains(view, text) {
+			t.Errorf("grant detail missing %q: %s", text, view)
+		}
+	}
+}
+
 func TestDisabledActionsAndFilter(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	m, _ = press(m, "c")
-	if !strings.Contains(m.Notice, "read-only") {
+	if !strings.Contains(m.Notice, "Claim unavailable") {
 		t.Fatal(m.Notice)
 	}
 	m, _ = press(m, "/")
