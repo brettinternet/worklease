@@ -1,10 +1,11 @@
 ---
 id: TASK-132.4
 title: Add mutation previews and the recovery view
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-24 18:14'
 labels:
   - work-queue
   - tui
@@ -42,3 +43,9 @@ Apart from verification, operator reconciliation is the only way out of `unknown
 - [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
 - [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Wire journal-backed provider write previews to the queue TUI, preserving claim ownership and requiring confirmation. 2. Expose unresolved records in TUI Recovery view/detail and JSON CLI; add bounded read-back and evidenced operator reconciliation with identity and execution-safety checks. 3. Exercise preview/recovery failure transitions, update docs, run required gates, commit and integrate.
+<!-- SECTION:PLAN:END -->
