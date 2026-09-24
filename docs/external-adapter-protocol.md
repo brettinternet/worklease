@@ -1,0 +1,72 @@
+# External source adapter protocol (v1)
+
+This is the **source-provider** boundary for a supervised, long-lived external
+process, not a claim authority, resource-policy plugin, scheduler, or MCP tool.
+The host owns source selection, Worklease claim lifecycle, dependency scheduling,
+write recovery, and provider checkpoints. The adapter owns provider reads, scoped
+provider writes, and read-back evidence. The normative [source provider contract](../skills/worklease-workflow/references/source-provider-contract.md), [workflow contract](../skills/worklease-workflow/references/contract.md), and [queue proposal](work-queue-tui-proposal.md) define their semantics; this document defines the wire format for TASK-133.2/133.3. The [v1 message schema](external-adapter-protocol.schema.json) is normative for message shapes. JSON examples below omit only optional fields.
+
+## Process, framing, and negotiation
+
+The owner explicitly approves an executable and version in owner-private configuration; the host never downloads or executes a repository-suggested adapter. One process serves multiple bounded requests for **one configured source**; do not start one process per item. Standard output contains only UTF-8 JSON-RPC 2.0 objects, one compact JSON object followed by LF per line (no arrays/batches, blank lines, BOM, or embedded literal newlines). The host writes requests to stdin; the process writes responses to stdout. Either side must reject malformed JSON, duplicate object keys, missing/unknown methods, oversized frames, and a response with a missing, duplicate, or unexpected ID. Protocol failures stop this source; after a dispatched mutation its outcome is **unknown**, not retried automatically. EOF/crash isolates the source, never other sources.
+
+`initialize` is the first request. Its result is an adapter manifest and the selected `protocolVersion`. The host proposes supported major versions; the adapter chooses one supported major (highest common major) or returns `capability`. Both reject an unknown selected major; no silent downgrade after initialization. The manifest identifies adapter `id` and semver `version`, supported protocol major range, JSON Schema configuration, authentication methods, an existing static resource policy (`backlog-md`, `markdown`, `github`, `linear`, `generic`, or `path`), and declared capability groups. Identity and resource policy are checked against the user-approved binding before reads or claims. The manifest's `requiredFeatures` are protocol feature names that the host **must** recognize; otherwise fail negotiation. Unknown optional manifest/response fields and capability-group names can be ignored, but an unknown required feature, unknown capability semantic used for a decision, or unknown mutation field cannot be ignored. New compatible fields must not change the meaning of old fields. The host checks every configured source's schema and URL/checkout/credential scopes before calling `resolve`.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolMajors":[1],"hostFeatures":[]}}
+{"jsonrpc":"2.0","id":"1","result":{"protocolVersion":1,"manifest":{"id":"example.adapter","version":"1.0.0","protocol":{"minMajor":1,"maxMajor":1},"configSchema":{"type":"object"},"authentication":["source-credential-ref"],"resourcePolicy":"generic","capabilities":["identity","discovery","dependencies","state","progress","assignment","native-claims","mutation","synchronization","effects","authentication"],"requiredFeatures":[]}}}
+```
+
+## Operations
+
+All requests after initialization include a `sourceId` or source-qualified `ref`, a finite `deadline` (RFC 3339 UTC), and a bounded `budget` (`maxItems`, `maxBytes`). The host provides an opaque approved source configuration only to `resolve`; the adapter returns one source with the exact configured ID. Subsequent requests use that ID, not a free-form provider endpoint. A response includes `context` even on partial per-item success: `principal` (nullable), `configurationGeneration`, `observedAt`, `coverage` (`complete`, `partial`, `unknown`, plus scope/cursor), and nullable `providerVersion`. Provider versions, update timestamps, sync cursors, and Worklease claim revisions are distinct.
+
+| Method | Params beyond source/deadline/budget | Result beyond `context` | Contract operation |
+| --- | --- | --- | --- |
+| `resolve` | `config`, `credentialRef` (optional) | `source` | Explicit single-source resolution; no implicit discovery |
+| `capabilities` | `principal`, optional `ref`, optional `action` | `capabilities` keyed by group/operation, each with support, permission, availability, semantics, limits, reason | Adapter/source/principal/item/action-scoped capability; unknown never grants permission |
+| `list` | `query`, `cursor`, `fields` | `items`, `nextCursor`, `total` (`value`, `accuracy`) | Summary page, not a complete snapshot merely because pagination ends |
+| `readItems` | `refs`, `fields` | `outcomes` (one per requested ref) | Each result is found, missing/inaccessible, or failed; no hidden unbounded fan-out |
+| `readDependencies` | `ref`, `cursor` | `edges`, `nextCursor`, `completeness` | Typed direction, source-qualified endpoints, condition, raw outcome and interpretation; hierarchy is not implicitly blocking |
+| `changes` | `cursor` | `changes`, `nextCursor` | Optional delta; declare ordering, retention, and reset/gap behavior in capabilities |
+| `readItem` | `ref` | `outcome` | Authoritative refresh including provider version before writes |
+| `resourcePolicy` | `ref`, `workKey` | `policy`, `source`, `item`, `scope` | **Inputs** to host's static Worklease key policy; adapter cannot return arbitrary claim keys |
+| `writeState`, `recordProgress`, `assign` | `ref`, `operationId`, `patch`, optional `expectedVersion`, `authority` | `receipt` | Explicitly authorized provider mutation; `assign` may be unsupported |
+| `readReceipt` | `sourceId`, `operation`, `operationId`, `target`, journaled `intent`, nullable `receipt` | `verification` (`verified`, `conflict`, `unknown`), `evidence` | Provider read-back even when a dispatched write lost its response; not a Worklease receipt |
+| `resolveReviewBoundary` | `selector`, `authority` | `boundary` | Only explicit caller-authorized larger review boundaries |
+| `archive` | `target`, `operationId`, optional `expectedVersion`, `authority` | `receipt` | Optional explicit provider operation; deletion is not inferred |
+
+A `ref` is `{sourceId,itemId}`. A provider receipt includes `sourceId`, nullable `ref`, `operation`, nullable post-write `providerVersion`, `durableLocation`, `observedState`, `conditionalWrite`, and nullable `fencingEvidence`. The host journals the exact operation ID, target, payload (the mutation patch or archive options), expected version, and dispatch state before a mutation. If a response is lost, `readReceipt` accepts `receipt: null` and the journaled intent; `target` is a `ref` or `{sourceId}` for source-wide archive. The adapter verifies using authoritative provider state and operation provenance, never assumes an absent receipt means no effect. If it cannot distinguish an applied write from another actor's change, return `unknown` and keep the claim for explicit recovery; never replay a non-idempotent append. The host re-reads authoritative state before checkpoint/release; neither successful JSON-RPC delivery nor a Worklease operation receipt proves a provider write. `conditionalWrite` is false unless the provider actually enforces the expected version, and `fencingEvidence` may only prove that same durable mutation. `authority` contains a caller authorization reference and scope, **never** a Worklease bearer token, claim credential, or private handle. An adapter cannot derive authorization from a read capability or source ID alone. The host must verify claim ownership and readiness before dispatch and after return; local coordination does not fence provider writes.
+
+Each response body matches the method's result schema and the outstanding request method; the host checks source IDs and exact requested refs in every result, including the `item.ref` of a `found` outcome. Non-found outcomes contain no item. Unknown response fields are never treated as authority. `null` cursors mean no next page, but coverage must still say whether the requested scope is complete. Preserve per-item outcomes, raw provider facts, and unresolved/inaccessible edges rather than silently dropping them. All cursor strings are opaque, source/principal/config-generation scoped. A cursor expiry, permission change, or gap returns `incomplete-graph` or `conflict` with reset evidence; it cannot produce a false complete graph. The host never promotes a partial scan to a committed watermark or infers deletion from absence.
+
+## Bounds, cancellation, and diagnostics
+
+IDs are unique, nonempty strings within one process lifetime; an ID remains reserved until its response or termination. At most 16 requests may be in flight per process; each side reads/writes incrementally without buffering an unbounded stream. Maximum line including LF is 1 MiB in either direction. Requests cap `maxItems` at 100 and `maxBytes` at 786432; responses cap all collections at 100 entries and 786432 bytes of serialized result. Reject a requested budget over these ceilings; return a partial page with a cursor when a provider result exceeds them. A single oversize item is a per-item `failed` outcome (`capability` if inherently too large), not silent truncation. Limit cursor, reference IDs, titles, and diagnostic strings to 4096 UTF-8 bytes each. Do not emit huge provider payloads as errors. The host applies a bounded deadline to every request; the adapter must stop provider work by the deadline, even for cancellation. The host's overall request timeout may be shorter.
+
+`$/cancelRequest` is a JSON-RPC notification with `params.id` matching an outstanding request; no response to the notification. An adapter should abort work promptly; a late response is discarded after the host's deadline. Cancellation **before dispatch** has no effect. Cancellation or timeout **after a write was dispatched** yields `unknown-outcome`, even if the process exits or sends an error: resolve with `readReceipt` and provider evidence before retrying or releasing the claim. Concurrent responses may arrive out of order, matched only by ID. Host backpressure stops sending at the in-flight cap or when stdout/stderr cannot be drained; an adapter should pause provider page fetching instead of queueing unlimited pages. No unsolicited notifications other than cancellation are defined in v1.
+
+Errors use JSON-RPC's `error` envelope with a stable `data.diagnostic`, optional safe `data.retryAt` and opaque provider code; omit raw response bodies, credentials, URLs with secrets, and file contents. Standard JSON-RPC parse/invalid-request/method-not-found/invalid-params/internal errors use -32700/-32600/-32601/-32602/-32603. Provider diagnostics map as follows:
+
+| Diagnostic | Code | Workflow outcome |
+| --- | ---: | --- |
+| `unsupported-capability` | -32001 | `capability` |
+| `authentication-required`, `authentication-failed` | -32002, -32003 | `capability` |
+| `authorization-denied` | -32004 | `capability` |
+| `conflict` | -32005 | `conflict` |
+| `rate-limited` | -32006 | `capability` (retry only after `retryAt` when provided) |
+| `unavailable-source` | -32007 | `capability` |
+| `incomplete-graph` | -32008 | `blocked` if a known unsatisfied hard edge exists, otherwise `capability`/unknown readiness |
+| `unknown-outcome` | -32009 | `ambiguous` |
+
+`complete`, `active-claims`, and `ineligible` remain **host workflow** outcomes, not adapter error codes. Error responses carry no `context` when no observation was possible; per-item failures remain in the result with context when other items succeeded. The adapter writes only diagnostic text to stderr, no protocol data. The host drains at most 64 KiB of stderr per process (discarding the rest), renders at most 4 KiB of redacted text per failure, and never treats stderr as evidence of provider state. Both ends redact secrets before storage, logs, and error presentation.
+
+## Credentials and trust
+
+The host passes a source-scoped opaque `credentialRef` to `resolve`, bound to origin/host, tenant/project, and principal. The adapter resolves it through an explicitly approved narrow helper or protected credential store; it must reject mismatched scope and never log the reference or credential. No raw provider token, Worklease bearer credential, private handle, session ID, or claim revision is sent in protocol messages. A headless adapter may use a protected descriptor provided by an approved helper; no secrets on argv, in source config, resource keys, receipts, stdout, or stderr. The process environment is constructed from scratch: only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, and needed `XDG_*_HOME` plus explicit non-secret adapter settings. Ambient `GH_TOKEN`, `GITHUB_TOKEN`, and other provider tokens are removed. An adapter requiring a different credential channel declares it as a required feature and cannot run until approved.
+
+Process isolation is **not a sandbox**: an installed adapter executes with the user's privileges and can read accessible files or make network requests. Approval and provenance of the executable, minimal environment, endpoint validation, and source-scoped references reduce accidental disclosure but do not isolate a malicious adapter. Untrusted provider titles and bodies are data, never executable instructions.
+
+## Compatibility
+
+Protocol major 1 fixes framing, methods, required meanings, diagnostics, and limits. A minor-compatible adapter may add optional fields or capabilities without changing existing interpretations. Hosts ignore unknown optional fields but must reject required features they do not implement; adapters reject unknown requested operations, required config semantics, or mutation fields rather than guessing. Removing/renaming a field, changing an error's meaning, or relaxing an authorization rule requires a new major version. Support overlapping majors during a migration; publish a deprecation notice and conformance fixtures before removing an old major. A manifest version change alone never silently migrates configured identity, credential scope, or resource policy; explicit user reapproval and rebind are required. Host and adapter retain the negotiated major for the process lifetime.
