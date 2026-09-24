@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 19:22'
+updated_date: '2026-09-24 20:28'
 labels:
   - work-queue
   - tui
@@ -58,6 +58,8 @@ Implementation and focused/race checks are passing. Review findings led to canon
 Verified: three-action Backlog preview and gated dispatch in TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation; consent content in TestProviderWritePreviewDisplaysConsentBoundary; Recovery view/item parity and configured-name collision in queueui tests; JSON recovery and held-claim failures in queue_command tests; all journal transition/reconciliation/crash/read-back cases in queue/write_test.go; local/remote checkpoint identity, expired-replay recovery, and handle repair in queue_write_claim_test.go. go test -race -count=3 passed for changed CLI, queue, and queueui tests. mise run lint, format-check, test, typecheck, hooks all passed; docs/queue.md and docs/work-queue-tui-proposal.md updated.
 
 Implementation commit: 309dcd8 (local task-132-4-recovery branch; not pushed). Review outcome: one general pass identified and resolved exact-checkpoint identity, failed read-back held-claim reporting, and Recovery view name collision; focused checks repeated after fixes. No remaining blocker.
+
+Integrated the completed task branch into main at 7f863c3 after preserving the earlier primary-checkout plan at 23baa11. Focused race tests (count=3) and lint, format-check, test, typecheck, and staged hooks passed against the merged tree. No push requested.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
