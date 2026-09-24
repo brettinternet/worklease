@@ -369,10 +369,10 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(queueQuery, "worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]")
 	detail(queueQuery, "Read one configured queue view. Query is read-only; source coverage and dependency completeness are reported explicitly.")
 	queueBrowse := queueCommand(s)
-	queueNext := jsonless("next", "select ready work without acquiring a claim", "worklease queue next --view Ready --json", &urfavecli.IntFlag{Name: "group", Value: 1, Usage: "return up to `N` independent ready items (1-32)"}, &urfavecli.StringSliceFlag{Name: "item", Usage: "select exact `SOURCE:ITEM` in explicit order (repeatable)"})
+	queueNext := jsonless("next", "select ready work or claim it for an agent loop", "worklease queue next --view Ready --claim --session WORKER --json", &urfavecli.IntFlag{Name: "group", Value: 1, Usage: "return up to `N` independent ready items (1-32); read-only only"}, &urfavecli.StringSliceFlag{Name: "item", Usage: "select exact `SOURCE:ITEM` in explicit order (repeatable)"}, &urfavecli.BoolFlag{Name: "claim", Usage: "acquire the first available candidate for this worker without waiting"}, flag("session", "s"), flag("handle"), ttlFlag(), flag("agent", "a"))
 	queueNext.Action = queueNextAction(s)
-	usageText(queueNext, "worklease queue next --view NAME [--json] [--group N] [--item SOURCE:ITEM ...]")
-	detail(queueNext, "Select from a complete view and dependency graph. This command never acquires; use --claim for agent loops (TASK-130.5).")
+	usageText(queueNext, "worklease queue next --view NAME [--claim --session SESSION] [--json] [--group N] [--item SOURCE:ITEM ...]")
+	detail(queueNext, "Select from a complete view and dependency graph. Plain next never acquires; --claim acquires one worker-owned claim with the regular contextual handle and no wait.")
 	queueBrowse.Commands = []*urfavecli.Command{queueQuery, queueNext, queueIdentityCommand(s)}
 	all := append(commands, queueBrowse, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)

@@ -3,10 +3,20 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
+	urfave "github.com/urfave/cli/v3"
 )
 
 func nextResult(t *testing.T, h *queueQueryHarness, args ...string) map[string]any {
@@ -86,6 +96,231 @@ func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
 	}
 }
 
+func TestQueueNextClaimWorkerLifecycleAndContention(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm: %v: %s", err, data)
+	}
+	first := nextResult(t, h, "--claim", "--session", "worker-one")
+	if first["result"] != "ready" || first["acquired"] != true || first["claim"] == nil {
+		t.Fatalf("first claim: %#v", first)
+	}
+	if data, err := h.run("verify", "--session", "worker-one"); err != nil {
+		t.Fatalf("verify: %v: %s", err, data)
+	}
+	second := nextResult(t, h, "--claim", "--session", "worker-two")
+	if second["result"] != "ready" || second["candidates"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"] != "TASK-2" {
+		t.Fatalf("second claim: %#v", second)
+	}
+	third := nextResult(t, h, "--claim", "--session", "worker-three")
+	if third["result"] != "active-claims" || third["acquired"] != false || len(third["skipped"].([]any)) != 2 {
+		t.Fatalf("contention: %#v", third)
+	}
+	for _, raw := range third["skipped"].([]any) {
+		row := raw.(map[string]any)
+		if row["holder"] == nil || row["expiresAt"] == nil {
+			t.Fatalf("missing holder or expiry: %#v", row)
+		}
+	}
+	selected := nextResult(t, h, "--claim", "--session", "worker-four", "--item", "local:TASK-1")
+	if len(selected["skipped"].([]any)) != 1 || selected["skipped"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"] != "TASK-1" {
+		t.Fatalf("unselected item reported skipped: %#v", selected)
+	}
+	if data, err := h.run("heartbeat", "--session", "worker-one"); err != nil {
+		t.Fatalf("heartbeat: %v: %s", err, data)
+	}
+	if data, err := h.run("release", "--session", "worker-one", "--reason", "test complete"); err != nil {
+		t.Fatalf("release: %v: %s", err, data)
+	}
+}
+
+func TestQueueNextRechecksAssignmentBeforeClaim(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm: %v: %s", err, data)
+	}
+	t.Setenv("QUEUE_VIEW_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-1","title":"First","status":"Open","priority":"high","assignees":["@other"],"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]}`)
+	result := nextResult(t, h, "--claim", "--session", "assignment-worker")
+	if result["result"] != "ready" || result["candidates"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"] != "TASK-2" || len(result["skipped"].([]any)) != 1 {
+		t.Fatalf("fresh assignment not enforced: %#v", result)
+	}
+}
+
+func TestQueueNextLocalProfileEnvironment(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	t.Setenv("WORKLEASE_PROFILE", "local")
+	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm: %v: %s", err, data)
+	}
+	if result := nextResult(t, h, "--claim", "--session", "local-profile-worker"); result["acquired"] != true {
+		t.Fatalf("local profile claim failed: %#v", result)
+	}
+}
+
+func TestQueueNextUncertainAcquireStopsWithPendingHandle(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm: %v: %s", err, data)
+	}
+	writeHandleFile = func(path string, value handle.Handle) error {
+		if value.State == "ready" {
+			return errors.New("injected handle write failure")
+		}
+		return handle.Write(path, value)
+	}
+	defer func() { writeHandleFile = nil }()
+	data, err := h.run("queue", "next", "--view", "Ready", "--claim", "--session", "uncertain-worker", "--json")
+	if err == nil || !strings.Contains(string(data), "pendingPath") || !strings.Contains(string(data), "committed") {
+		t.Fatalf("missing uncertain acquire recovery: %v: %s", err, data)
+	}
+	writeHandleFile = nil
+	claims, err := h.run("list", "--json")
+	if err != nil || !strings.Contains(string(claims), "TASK-1") || strings.Contains(string(claims), "TASK-2") {
+		t.Fatalf("uncertain acquire tried another candidate: %v: %s", err, claims)
+	}
+}
+
+func TestQueueNextRejectsChangedRemoteProfileBeforeAcquire(t *testing.T) {
+	controller, backend, _ := newRemoteQueueClaimController(t, 30*time.Second, queueClaimItem("tasks", "1"))
+	backend.Config.SessionID = "profile-worker"
+	profiles, defaultName, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := profiles[controller.profileName]
+	changed.AuthorityID = strings.Repeat("f", 32)
+	if err := config.SaveProfiles(config.UserProfilePaths(os.Getenv), []config.Profile{changed}, defaultName); err != nil {
+		t.Fatal(err)
+	}
+	key, err := resource.Resolve(resource.Input{Provider: "generic", Source: "portable", Item: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, _ := controller.current()
+	_, err = acquireQueueWorker(context.Background(), &urfave.Command{}, backend, selected, []string{key.Resource})
+	if err == nil || !strings.Contains(err.Error(), "queue authority identity changed") {
+		t.Fatalf("profile drift not rejected: %v", err)
+	}
+	status, err := backend.API.Status(context.Background(), lease.Selector{AuthorityID: backend.AuthorityID(), Resources: []string{key.Resource}})
+	if err != nil || status.Claim != nil {
+		t.Fatalf("claim dispatched despite profile change: %+v %v", status, err)
+	}
+}
+
+func TestQueueNextEightConcurrentLocalWorkers(t *testing.T)  { testQueueNextConcurrentWorkers(t, false) }
+func TestQueueNextEightConcurrentRemoteWorkers(t *testing.T) { testQueueNextConcurrentWorkers(t, true) }
+
+func testQueueNextConcurrentWorkers(t *testing.T, remote bool) {
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	if remote {
+		profile, _, _ := remoteCLIFixture(t)
+		configText := strings.Replace(h.queueConfig, "authority: local", "authority: "+profile, 1)
+		if err := os.WriteFile(config.QueuePath(os.Getenv), []byte(configText), 0600); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Setenv("WORKLEASE_PROFILE", "")
+	}
+	var tasks strings.Builder
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			tasks.WriteByte(',')
+		}
+		fmt.Fprintf(&tasks, `{"id":"TASK-%d","title":"Item","status":"Open","ordinal":%d,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}`, i, i)
+	}
+	h.setTasks("[" + tasks.String() + "]")
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm: %v: %s", err, data)
+	}
+	if next := nextResult(t, h); next["result"] != "ready" {
+		t.Fatalf("prewarm: %#v", next)
+	}
+	var wg sync.WaitGroup
+	results := make(chan string, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			data, err := h.run("queue", "next", "--view", "Ready", "--json", "--claim", "--ttl", "30s", "--session", fmt.Sprintf("worker-%d", i))
+			if err != nil {
+				results <- fmt.Sprintf("error: %v: %s", err, data)
+				return
+			}
+			var response struct {
+				Next struct {
+					Result     string `json:"result"`
+					Candidates []struct {
+						Ref struct {
+							ItemID string `json:"itemId"`
+						} `json:"ref"`
+					} `json:"candidates"`
+				} `json:"next"`
+			}
+			if err := json.Unmarshal(data, &response); err != nil || response.Next.Result != "ready" || len(response.Next.Candidates) != 1 {
+				results <- fmt.Sprintf("bad: %v: %s", err, data)
+				return
+			}
+			results <- response.Next.Candidates[0].Ref.ItemID
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	seen := make(map[string]bool)
+	for result := range results {
+		if seen[result] || !strings.HasPrefix(result, "TASK-") {
+			t.Fatalf("duplicate or failure: %s; seen=%v", result, seen)
+		}
+		seen[result] = true
+	}
+	if len(seen) != 8 {
+		t.Fatalf("claimed %d distinct items, want 8", len(seen))
+	}
+}
+
 func TestQueueNextIncompleteScopeDoesNotSelectReadyItem(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","ordinal":1,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","ordinal":2,"dependencies":["TASK-404"],"readiness":{"missingDependencies":[]},"isReady":false}]`)
@@ -95,5 +330,9 @@ func TestQueueNextIncompleteScopeDoesNotSelectReadyItem(t *testing.T) {
 	}
 	if len(next["sources"].([]any)) == 0 {
 		t.Fatalf("missing source coverage: %#v", next)
+	}
+	claim := nextResult(t, h, "--claim", "--session", "incomplete-worker")
+	if claim["result"] != "incomplete" || claim["acquired"] != false {
+		t.Fatalf("partial graph acquired: %#v", claim)
 	}
 }

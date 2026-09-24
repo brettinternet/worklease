@@ -1,22 +1,26 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/resource"
 	urfavecli "github.com/urfave/cli/v3"
 )
 
 func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) error {
-	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, scoped, visible []queue.Item, sources []queueSourceJSON, authority queueAuthorityJSON, incomplete bool) error {
+	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, registry *queue.Registry, sources []queue.Source, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
 		limit := cmd.Int("group")
-		if limit < 1 || limit > 32 {
-			return s.handle(cmd, reason.Invalid("--group must be between 1 and 32"))
+		if limit < 1 || limit > 32 || cmd.Bool("claim") && (cmd.IsSet("group") || cmd.IsSet("max-age") || cmd.IsSet("cursor")) {
+			return s.handle(cmd, reason.Invalid("--claim requires an unpaginated fresh snapshot and cannot be combined with --group, --max-age, or --cursor"))
 		}
 		selectors := make([]queue.Ref, 0, len(cmd.StringSlice("item")))
 		known := make(map[string]bool, len(scoped))
@@ -31,31 +35,147 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			}
 			selectors = append(selectors, ref)
 		}
-		result := queue.SelectWave(scoped, visible, view.Sources, selectors, !incomplete, limit, func(item queue.Item, owner string) bool {
+		selectionLimit := limit
+		if cmd.Bool("claim") {
+			selectionLimit = len(scoped)
+			if selectionLimit == 0 {
+				selectionLimit = 1
+			}
+		}
+		result := queue.SelectWave(scoped, visible, view.Sources, selectors, !incomplete, selectionLimit, func(item queue.Item, owner string) bool {
 			return isQueueMe(cfg, item, owner)
 		})
-		candidates := make([]queueQueryItem, 0, len(result.Candidates))
-		for _, item := range result.Candidates {
+		selected := result.Candidates
+		skipped := make([]map[string]any, 0)
+		if cmd.Bool("claim") && result.Result != "incomplete" {
+			visibleRefs := make(map[string]bool, len(visible))
+			for _, item := range visible {
+				visibleRefs[item.Ref.Key()] = true
+			}
+			for _, item := range scoped {
+				selectedRef := len(selectors) == 0
+				for _, ref := range selectors {
+					selectedRef = selectedRef || ref == item.Ref
+				}
+				if selectedRef && visibleRefs[item.Ref.Key()] && item.Readiness.Status == queue.Ready && item.Claim.Active && item.Claim.Known {
+					skipped = append(skipped, map[string]any{"ref": item.Ref, "holder": item.Claim.AgentID, "expiresAt": item.Claim.ExpiresAt})
+				}
+			}
+		}
+		var grant map[string]any
+		if cmd.Bool("claim") && result.Result == "ready" {
+			if backend.Config.SessionID == "" {
+				return s.handle(cmd, reason.Invalid("--claim requires --session or WORKLEASE_SESSION_ID"))
+			}
+			claimSources := queue.ClaimSources(cfg, sources)
+			identities, err := config.LoadQueueIdentities(os.Getenv)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			selected = nil
+			eligibilityChanged := false
+			for _, candidate := range result.Candidates {
+				source, ok := claimSources[candidate.Ref.SourceID]
+				if !ok || source.BlockReason != "" {
+					return s.handle(cmd, reason.New("identity-unknown", "claim source is unavailable"))
+				}
+				adapter, ok := registry.Get(source.Source.Adapter)
+				if !ok {
+					return s.handle(cmd, reason.New("identity-unknown", "claim adapter is unavailable"))
+				}
+				sourceMap := make(map[string]queue.Source, len(sources))
+				for _, src := range sources {
+					sourceMap[src.ID] = src
+				}
+				fresh, err := refreshQueueActionClosure(ctx, registry, sourceMap, candidate)
+				if err != nil {
+					return s.handle(cmd, err)
+				}
+				fresh.Claim = queue.ClaimObservation{}
+				if eligibility := queue.EvaluateAction(fresh, queue.ActionStart); !eligibility.Eligible || !queueNextAssignmentEligible(cfg, view, fresh, selectors) {
+					if fresh.Readiness.Status == queue.ReadinessUnknown {
+						return s.handle(cmd, reason.New(reason.ReasonQueueIncomplete, "candidate prerequisite evidence is unknown; query again").With("ref", candidate.Ref.String()))
+					}
+					eligibilityChanged = true
+					skipped = append(skipped, map[string]any{"ref": candidate.Ref, "reason": "eligibility-changed"})
+					continue
+				}
+				inputs := queue.IdentityInputs(source, auth.ID)
+				key, err := resource.Resolve(resource.Input{Provider: inputs.Policy, Source: inputs.Source, Item: fresh.Ref.ItemID})
+				if err != nil || !containsResource(candidate.Resources, key.Resource) {
+					return s.handle(cmd, reason.New("identity-changed", "candidate claim resource changed; query again"))
+				}
+				keys, err := queue.PreAcquireIdentity(ctx, source, adapter, auth, identities.Sources[source.Source.ID], fresh)
+				if err != nil {
+					return s.handle(cmd, err)
+				}
+				observed := queue.OverlayClaims(ctx, []queue.Item{fresh}, map[string]queue.ClaimSource{source.Source.ID: source}, auth, config.UserProfilePaths(os.Getenv), os.Getenv)[0]
+				if observed.Claim.Active && observed.Claim.Known && observed.Claim.AuthorityID == auth.ID {
+					skipped = append(skipped, map[string]any{"ref": candidate.Ref, "holder": observed.Claim.AgentID, "expiresAt": observed.Claim.ExpiresAt})
+					continue
+				}
+				if !observed.Claim.Known || observed.Claim.Stale || !observed.Claim.Available || observed.Claim.Reason != "" || observed.Claim.AuthorityID != auth.ID {
+					return s.handle(cmd, reason.New("claim-unknown", "claim authority observation is unavailable"))
+				}
+				grant, err = acquireQueueWorker(ctx, cmd, backend, auth, keys)
+				if err != nil {
+					if failure := reason.As(err); failure != nil && failure.Reason == reason.ReasonAlreadyClaimed {
+						row := map[string]any{"ref": candidate.Ref}
+						if holder, ok := failure.Details["holder"].(map[string]any); ok {
+							row["holder"], row["expiresAt"] = holder["agentId"], holder["expiresAt"]
+						} else {
+							row["holder"] = failure.Details["holder"]
+						}
+						skipped = append(skipped, row)
+						continue
+					}
+					if JSONErrorHandled(err) {
+						return s.handle(cmd, reason.As(err))
+					}
+					return s.handle(cmd, err)
+				}
+				fresh.Resources = keys
+				fresh.KeyInputs = candidate.KeyInputs
+				fresh.Claim = observed.Claim
+				selected = []queue.Item{fresh}
+				break
+			}
+			if grant == nil {
+				result.Result = "active-claims"
+				if eligibilityChanged {
+					result.Result = "ineligible"
+				}
+			}
+		}
+		candidates := make([]queueQueryItem, 0, len(selected))
+		for _, item := range selected {
 			candidates = append(candidates, queueQueryItem{Item: item, DisplayID: item.Ref.ItemID, Resources: item.Resources, Actions: map[string]queue.Eligibility{string(queue.ActionClaim): queue.ClaimActions(item)[queue.ActionClaim]}})
 		}
-		// Reuse query's public-digest projection so generic resource keys stay
-		// exact without allowing arbitrary caller-supplied strings through redaction.
 		projected := normalizedQueueEnvelope(queueQueryEnvelope{Items: candidates})
 		payload := map[string]any{
 			"schemaVersion": 1,
 			"view":          view.Name,
 			"result":        result.Result,
-			"authority":     authority,
-			"sources":       sources,
+			"authority":     queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)},
+			"sources":       sourceRows,
 			"candidates":    projected["items"],
 			"excluded":      result.Excluded,
-			"acquired":      false,
-			"hint":          "Selection does not acquire. For agent loops use queue next --claim (TASK-130.5); manually claim the exact resources and re-query on contention.",
+			"skipped":       skipped,
+			"acquired":      grant != nil,
+		}
+		if grant != nil {
+			payload["claim"] = grant
+		} else if !cmd.Bool("claim") {
+			payload["hint"] = "Selection does not acquire. For agent loops use queue next --claim; manually claim the exact resources and re-query on contention."
 		}
 		if cmd.Bool("json") {
 			return output.WriteSuccess(s.writer, "queue-next", map[string]any{"next": payload})
 		}
-		if _, err := fmt.Fprintf(s.writer, "%s (observation only; no claim acquired; use --claim for agent loops)\n", result.Result); err != nil {
+		label := "no claim acquired; use --claim for agent loops"
+		if grant != nil {
+			label = "claim acquired; worker must heartbeat and release"
+		}
+		if _, err := fmt.Fprintf(s.writer, "%s (%s)\n", result.Result, label); err != nil {
 			return err
 		}
 		for _, item := range candidates {
@@ -65,4 +185,76 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		}
 		return nil
 	})
+}
+
+func queueNextAssignmentEligible(cfg config.QueueConfig, view *config.QueueView, item queue.Item, selectors []queue.Ref) bool {
+	for _, ref := range selectors {
+		if ref == item.Ref {
+			return true // An explicit selection overrides advisory assignment and its view filter.
+		}
+	}
+	if len(item.AssignedTo) > 0 {
+		mine := false
+		for _, owner := range item.AssignedTo {
+			mine = mine || isQueueMe(cfg, item, owner)
+		}
+		if !mine {
+			return false
+		}
+	}
+	if len(view.Filter.Assigned) == 0 {
+		return true
+	}
+	for _, filter := range view.Filter.Assigned {
+		if strings.EqualFold(filter, "nobody") && len(item.AssignedTo) == 0 {
+			return true
+		}
+		for _, owner := range item.AssignedTo {
+			if strings.EqualFold(filter, owner) || strings.EqualFold(filter, "me") && isQueueMe(cfg, item, owner) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type queueAcquirePinKey struct{}
+type queueAcquirePin struct {
+	authorityID string
+	profile     *config.Profile
+}
+
+// Invoke the ordinary acquire command rather than maintaining a second handle,
+// replay, admission, and remote pending-request implementation in the queue.
+func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *authorityContext, auth queue.ClaimAuthority, keys []string) (map[string]any, error) {
+	args := []string{"worklease", "--json", "--home", backend.Config.Home}
+	if auth.Remote {
+		args = append(args, "--profile", auth.Profile)
+	} else {
+		args = append(args, "--profile", config.LocalProfileName)
+	}
+	if cmd.IsSet("config") {
+		args = append(args, "--config", cmd.String("config"))
+	}
+	args = append(args, "acquire", "--session", backend.Config.SessionID, "--agent", backend.Config.AgentID, "--ttl", backend.Config.TTL.String(), "--coordination-only")
+	if cmd.IsSet("ttl") {
+		args[len(args)-2] = cmd.Duration("ttl").String()
+	}
+	if path := strings.TrimSpace(cmd.String("handle")); path != "" {
+		args = append(args, "--handle", path)
+	}
+	for _, key := range keys {
+		args = append(args, "--resource", key)
+	}
+	var result bytes.Buffer
+	ctx = context.WithValue(ctx, queueAcquirePinKey{}, queueAcquirePin{authorityID: auth.ID, profile: backend.Profile})
+	err := Run(ctx, args, "", "", "", &result, &result)
+	if err != nil {
+		return nil, err
+	}
+	var grant map[string]any
+	if err := json.Unmarshal(result.Bytes(), &grant); err != nil || grant["claimId"] == nil {
+		return nil, reason.New(reason.ReasonUnknownOutcome, "acquire receipt could not be decoded; inspect the contextual handle before retrying").With("commitState", "unknown")
+	}
+	return grant, nil
 }
