@@ -754,13 +754,12 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 		return Receipt{}, err
 	}
 	deadline := req.RequestNotAfter
-	intent := map[string]any{"kind": "checkpoint", "authorityId": s.st.AuthorityID(), "claimId": creds.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(canonical), "requestNotAfter": deadline.UTC().UnixMicro()}
-	if creds.Actor != nil {
-		intent["expectedRestoreId"], intent["installationId"] = creds.Actor.ExpectedRestoreID, creds.Actor.InstallationID
-	}
 	var hash string
 	if creds.Actor == nil {
-		hash = lifecycleRequestHash(intent, req.HoldUntil)
+		hash, err = CheckpointRequestHash(s.st.AuthorityID(), creds.ClaimID, canonical, ttl, deadline, req.HoldUntil, nil)
+		if err != nil {
+			return Receipt{}, err
+		}
 	}
 	var receipt Receipt
 	err = s.st.WriteAt(ctx, now, func(tx *store.Tx) error {
@@ -773,9 +772,10 @@ func (s *Service) Checkpoint(ctx context.Context, creds Credentials, req Checkpo
 			if !req.HoldUntil.IsZero() || req.LegacyRequestHash != "" {
 				return reason.Invalid("remote checkpoint contains local-only fields")
 			}
-			intent["installationId"] = creds.Actor.InstallationID
-			intent["protocolVersion"] = "worklease-http/1"
-			hash = lifecycleRequestHash(intent, time.Time{})
+			hash, e = CheckpointRequestHash(s.st.AuthorityID(), creds.ClaimID, canonical, ttl, deadline, time.Time{}, creds.Actor)
+			if e != nil {
+				return e
+			}
 			legacyHash = ""
 		}
 		receipt, e = s.mutateCurrent(tx, creds, req.OperationID, "checkpoint", hash, legacyHash, deadline, effective, func(row claimRow, rev int64) (map[string]any, error) {

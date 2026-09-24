@@ -11,11 +11,11 @@ import (
 	"testing"
 )
 
-// This source-level guard complements the provider read-only tests. Queue
-// claim lifecycle methods stay in the owner controller; the provider-neutral
-// write pipeline may checkpoint only after verified read-back. Concrete
-// provider writes and guarded operations remain unavailable in this slice.
-func TestQueueHasNoMutationCallPath(t *testing.T) {
+// This source-level guard keeps authority mutations in the claim owner and
+// provider writes in the recoverable pipeline. Reconciliation only records
+// operator evidence in the queue journal; it must not reconcile an authority
+// operation from the browsing path.
+func TestQueueMutationPathsAreScoped(t *testing.T) {
 	forbidden := map[string]bool{
 		"Acquire": true, "Heartbeat": true, "Checkpoint": true,
 		"Transfer": true, "Release": true, "BeginOperation": true,
@@ -44,7 +44,7 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 						t.Errorf("%s calls forbidden mutation %s", path, selector.Sel.Name)
 					}
 				}
-				// Backlog.md's CLI is a read-only source in this slice.
+				// Read adapters must not turn into provider write paths.
 				if strings.HasSuffix(path, "backlog.go") {
 					var args []string
 					for _, arg := range call.Args {
@@ -72,6 +72,21 @@ func TestQueueHasNoMutationCallPath(t *testing.T) {
 
 func queueClaimAuthorityMutation(path string, call *ast.SelectorExpr) bool {
 	name := filepath.Base(path)
+	if call.Sel.Name == "Reconcile" {
+		if receiver, ok := call.X.(*ast.Ident); ok {
+			return name == "queue_command.go" && receiver.Name == "writeController" || name == "queue_recovery.go" && receiver.Name == "pipeline"
+		}
+		if name == "queue_write_controller.go" {
+			if wrapped, ok := call.X.(*ast.ParenExpr); ok {
+				if literal, ok := wrapped.X.(*ast.CompositeLit); ok {
+					if qualified, ok := literal.Type.(*ast.SelectorExpr); ok {
+						return qualified.Sel.Name == "WritePipeline"
+					}
+				}
+			}
+		}
+		return false
+	}
 	if name == "write.go" && call.Sel.Name == "Checkpoint" {
 		claim, ok := call.X.(*ast.SelectorExpr)
 		if !ok || claim.Sel.Name != "Claim" {

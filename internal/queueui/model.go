@@ -74,6 +74,35 @@ type CommentsMsg struct {
 	Err      error
 }
 type RefreshedMsg struct{ Err error }
+type RecoveryMsg struct {
+	Entries []queue.RecoveryEntry
+	Err     error
+}
+type StateChoice struct {
+	Action            queue.Action
+	Label, Transition string
+}
+type WritePreview struct {
+	Identity                string
+	AuthorityProfile, Scope string
+	Intent                  queue.WriteIntent
+	Effect                  string
+	SideEffects             []string
+	Races                   []string
+}
+type WritePreviewMsg struct {
+	Preview *WritePreview
+	Err     error
+}
+type WriteResultMsg struct {
+	Result      queue.WriteResult
+	Err         error
+	OperationID string
+}
+type ReconcileResultMsg struct {
+	OperationID string
+	Err         error
+}
 
 type ClaimPreview struct {
 	Identity, Title               string
@@ -120,56 +149,72 @@ type ViewRule struct {
 	Assigned         []string
 }
 type Model struct {
-	Snapshot                           queue.Snapshot
-	Views                              []string
-	ViewFilters                        map[string]queue.Filters
-	ViewRules                          map[string]ViewRule
-	ViewName, Authority, Scope, Me     string
-	MeBySource                         map[string][]string
-	Sources                            []queue.Source
-	SourceErrors                       map[string]string
-	Width, Height                      int
-	Selected                           string
-	Index, Offset                      int
-	DetailOffset                       int
-	Detail                             bool
-	Tab                                int
-	Filter, Input, Notice              string
-	Filtering, Palette, Help           bool
-	History                            ledger.HistoryPage
-	HistoryError                       string
-	HistoryLoading                     bool
-	HistoryIdentity                    string
-	HistoryCursor                      string
-	Comments                           []queue.GitHubComment
-	CommentsCursor                     string
-	CommentsIdentity                   string
-	CommentsLoading                    bool
-	CommentsError                      string
-	ClaimFreshness                     string
-	RebuildingClaims                   bool
-	ClaimLoading, Claiming, Cancelling bool
-	ClaimPreview                       *ClaimPreview
-	LaunchOptions                      []queue.LaunchOption
-	LaunchIdentity                     string
-	LaunchRef                          queue.Ref
-	LaunchIndex                        int
-	Launching                          bool
-	OwnedClaims                        map[string]OwnedClaimMsg
-	Quitting                           bool
-	CancelPreview                      string
-	PreviewClaim                       func(queue.Item) tea.Cmd
-	AcquireClaim                       func(queue.Item, ClaimPreview) tea.Cmd
-	CancelClaim                        func(string) tea.Cmd
-	Refresh                            func() tea.Cmd
-	HydrateSelected                    func(queue.Item) tea.Cmd
-	LoadHistory                        func(queue.Item, string, bool) tea.Cmd
-	LoadComments                       func(queue.Item, string) tea.Cmd
-	OpenURL                            func(queue.Item) tea.Cmd
-	PreviewLaunch                      func(queue.Item) []queue.LaunchOption
-	Launch                             func(queue.Item, string) tea.Cmd
-	rowCache                           *rowCache
-	orderedKeys                        []string
+	Snapshot                              queue.Snapshot
+	Views                                 []string
+	ViewFilters                           map[string]queue.Filters
+	ViewRules                             map[string]ViewRule
+	ViewName, Authority, Scope, Me        string
+	MeBySource                            map[string][]string
+	Sources                               []queue.Source
+	SourceErrors                          map[string]string
+	Width, Height                         int
+	Selected                              string
+	Index, Offset                         int
+	DetailOffset                          int
+	Detail                                bool
+	Tab                                   int
+	Filter, Input, Notice                 string
+	Filtering, Palette, Help              bool
+	History                               ledger.HistoryPage
+	HistoryError                          string
+	HistoryLoading                        bool
+	HistoryIdentity                       string
+	HistoryCursor                         string
+	Comments                              []queue.GitHubComment
+	CommentsCursor                        string
+	CommentsIdentity                      string
+	CommentsLoading                       bool
+	CommentsError                         string
+	ClaimFreshness                        string
+	RebuildingClaims                      bool
+	ClaimLoading, Claiming, Cancelling    bool
+	ClaimPreview                          *ClaimPreview
+	LaunchOptions                         []queue.LaunchOption
+	LaunchIdentity                        string
+	LaunchRef                             queue.Ref
+	LaunchIndex                           int
+	Launching                             bool
+	OwnedClaims                           map[string]OwnedClaimMsg
+	Recovery                              []queue.RecoveryEntry
+	RecoveryIndex                         int
+	RecoveryEvidence                      bool
+	RecoveryError                         string
+	LoadRecovery                          func() tea.Cmd
+	RetryRecovery                         func(queue.RecoveryEntry) tea.Cmd
+	ReconcileRecovery                     func(queue.RecoveryEntry, string) tea.Cmd
+	StateChoices                          map[string][]StateChoice
+	WriteChoices                          []StateChoice
+	WriteChoiceIndex                      int
+	WriteInput                            bool
+	WriteInputIdentity                    string
+	WritePreview                          *WritePreview
+	Writing, WriteLoading, UncertainWrite bool
+	PreviewWrite                          func(queue.Item, queue.Action, string, string) tea.Cmd
+	ConfirmWrite                          func(WritePreview) tea.Cmd
+	Quitting                              bool
+	CancelPreview                         string
+	PreviewClaim                          func(queue.Item) tea.Cmd
+	AcquireClaim                          func(queue.Item, ClaimPreview) tea.Cmd
+	CancelClaim                           func(string) tea.Cmd
+	Refresh                               func() tea.Cmd
+	HydrateSelected                       func(queue.Item) tea.Cmd
+	LoadHistory                           func(queue.Item, string, bool) tea.Cmd
+	LoadComments                          func(queue.Item, string) tea.Cmd
+	OpenURL                               func(queue.Item) tea.Cmd
+	PreviewLaunch                         func(queue.Item) []queue.LaunchOption
+	Launch                                func(queue.Item, string) tea.Cmd
+	rowCache                              *rowCache
+	orderedKeys                           []string
 }
 
 type rowCache struct {
@@ -181,10 +226,27 @@ type rowCache struct {
 	edges    int
 }
 
-var tabs = []string{"Summary", "Dependencies", "Activity", "Claims"}
+// RecoveryViewID cannot collide with a caller-configured view named Recovery.
+const RecoveryViewID = "\x00recovery"
+
+func recoveryTime(at *time.Time) string {
+	if at == nil {
+		return "not dispatched"
+	}
+	return at.UTC().Format(time.RFC3339)
+}
+
+func viewLabel(name string) string {
+	if name == RecoveryViewID {
+		return "Recovery"
+	}
+	return name
+}
+
+var tabs = []string{"Summary", "Dependencies", "Activity", "Claims", "Recovery"}
 
 func New(snapshot queue.Snapshot) Model {
-	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed"}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
+	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed", RecoveryViewID}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
 }
 func (m Model) Init() tea.Cmd { return nil }
 func identity(i queue.Item) string {
@@ -328,7 +390,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		m.rowCache.counts = make(map[string]int, len(m.Views))
 		// The standard views share one scan with freshness and edge counts.
 		// Configured views retain their full filtering semantics below.
-		standard := len(m.Views) == 4 && m.Views[0] == "All" && m.Views[1] == "Ready" && m.Views[2] == "Mine" && m.Views[3] == "Claimed" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0
+		standard := len(m.Views) == 5 && m.Views[0] == "All" && m.Views[1] == "Ready" && m.Views[2] == "Mine" && m.Views[3] == "Claimed" && m.Views[4] == RecoveryViewID && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0
 		if !standard {
 			for _, name := range m.Views {
 				m.rowCache.counts[name] = m.viewCount(name)
@@ -534,6 +596,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.HistoryIdentity = v.Identity
 			}
 		}
+	case WritePreviewMsg:
+		m.WriteLoading = false
+		if v.Err != nil {
+			m.Notice = "Write unavailable: " + v.Err.Error()
+			m.WritePreview = nil
+		} else if v.Preview != nil && v.Preview.Identity == m.Selected {
+			m.WritePreview = v.Preview
+			m.Notice = "Review provider write; press Enter to confirm"
+		}
+	case ReconcileResultMsg:
+		m.Writing = false
+		if v.Err != nil {
+			m.Notice = "Reconciliation refused; claim held: " + v.Err.Error()
+		} else {
+			m.Notice = "Reconciliation recorded; claim remains held · " + v.OperationID
+		}
+		if m.LoadRecovery != nil {
+			return m, m.LoadRecovery()
+		}
+	case WriteResultMsg:
+		m.Writing = false
+		m.WritePreview = nil
+		if v.Result.Outcome == queue.WriteVerified && v.Err == nil {
+			m.Notice = "Provider write verified; claim remains held · " + v.OperationID
+		} else {
+			m.UncertainWrite = m.UncertainWrite || v.Result.ClaimHeld
+			m.Notice = fmt.Sprintf("Provider write %s; claim held %t · recovery %s: %v", v.Result.Outcome, v.Result.ClaimHeld, v.OperationID, v.Err)
+		}
+		if m.LoadRecovery != nil {
+			return m, m.LoadRecovery()
+		}
+	case RecoveryMsg:
+		if v.Err != nil {
+			m.RecoveryError = v.Err.Error()
+		} else {
+			m.RecoveryError = ""
+			m.Recovery = v.Entries
+			m.RecoveryIndex = max(0, min(m.RecoveryIndex, len(m.Recovery)-1))
+		}
 	case RefreshedMsg:
 		if v.Err != nil {
 			m.Notice = "Refresh failed: " + v.Err.Error()
@@ -620,6 +721,91 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := v.String()
+		if m.WritePreview != nil {
+			switch key {
+			case "enter", "y":
+				preview := *m.WritePreview
+				m.WritePreview = nil
+				if m.Selected == preview.Identity && m.ConfirmWrite != nil {
+					m.Writing = true
+					m.Notice = "Revalidating provider write…"
+					return m, m.ConfirmWrite(preview)
+				}
+				m.Notice = "Write preview expired or unavailable"
+			case "esc", "n":
+				m.WritePreview = nil
+				m.Notice = "Provider write cancelled before dispatch"
+			}
+			return m, nil
+		}
+		if m.WriteChoices != nil {
+			switch key {
+			case "j", "down":
+				m.WriteChoiceIndex = min(m.WriteChoiceIndex+1, len(m.WriteChoices)-1)
+			case "k", "up":
+				m.WriteChoiceIndex = max(0, m.WriteChoiceIndex-1)
+			case "enter":
+				choice := m.WriteChoices[m.WriteChoiceIndex]
+				m.WriteChoices = nil
+				if item, ok := m.selected(m.rows()); ok && m.PreviewWrite != nil {
+					m.WriteLoading = true
+					return m, m.PreviewWrite(item, choice.Action, choice.Transition, "")
+				}
+			case "esc":
+				m.WriteChoices = nil
+			}
+			return m, nil
+		}
+		if m.RecoveryEvidence {
+			switch key {
+			case "esc":
+				m.RecoveryEvidence = false
+				m.Input = ""
+			case "enter":
+				evidence := strings.TrimSpace(m.Input)
+				m.Input, m.RecoveryEvidence = "", false
+				if strings.HasPrefix(evidence, "NO COMMIT; EXECUTOR STOPPED: ") && len(evidence) > len("NO COMMIT; EXECUTOR STOPPED: ")+10 && m.RecoveryIndex < len(m.Recovery) && m.ReconcileRecovery != nil {
+					m.Writing = true
+					return m, m.ReconcileRecovery(m.Recovery[m.RecoveryIndex], evidence)
+				}
+				m.Notice = "Type both attestations and provider audit evidence to reconcile"
+			case "backspace":
+				r := []rune(m.Input)
+				if len(r) > 0 {
+					m.Input = string(r[:len(r)-1])
+				}
+			default:
+				if len(key) == 1 && key != "\x1b" {
+					m.Input += key
+				}
+			}
+			return m, nil
+		}
+		if m.WriteInput {
+			switch key {
+			case "esc":
+				m.WriteInput = false
+				m.Input = ""
+			case "enter":
+				text := strings.TrimSpace(m.Input)
+				m.Input, m.WriteInput = "", false
+				if item, ok := m.selected(m.rows()); ok && identity(item) == m.WriteInputIdentity && text != "" && m.PreviewWrite != nil {
+					m.WriteLoading = true
+					return m, m.PreviewWrite(item, queue.ActionRecordProgress, "", text)
+				}
+				m.Notice = "Progress empty or selection changed"
+			case "backspace":
+				r := []rune(m.Input)
+				if len(r) > 0 {
+					m.Input = string(r[:len(r)-1])
+				}
+			default:
+				if len(key) == 1 && key != "\x1b" {
+					m.Input += key
+				}
+			}
+			return m, nil
+		}
 		if m.CancelPreview != "" {
 			path := m.CancelPreview
 			switch key {
@@ -669,6 +855,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				if len(key) == 1 && key != "\x1b" {
 					m.Input += key
+				}
+			}
+			return m, nil
+		}
+		if m.ViewName == RecoveryViewID {
+			switch key {
+			case "j", "down":
+				m.RecoveryIndex = min(len(m.Recovery)-1, m.RecoveryIndex+1)
+			case "k", "up":
+				m.RecoveryIndex = max(0, m.RecoveryIndex-1)
+			case "r":
+				if !m.Writing && m.RetryRecovery != nil && len(m.Recovery) > 0 {
+					m.Writing = true
+					return m, m.RetryRecovery(m.Recovery[m.RecoveryIndex])
+				}
+			case "e":
+				if len(m.Recovery) > 0 && len(m.Recovery[m.RecoveryIndex].Next) > 1 && !m.Writing {
+					m.RecoveryEvidence = true
+					m.Input = ""
+				} else {
+					m.Notice = "Reconciliation unavailable while dispatch or verification remains possible"
+				}
+			case "u":
+				if m.LoadRecovery != nil {
+					return m, m.LoadRecovery()
+				}
+			case "q", "ctrl+c":
+				if m.Writing {
+					m.Notice = "Wait for recovery outcome before exiting"
+				} else if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 {
+					m.Quitting = true
+				} else {
+					return m, tea.Quit
+				}
+			case "v":
+				if len(m.Views) > 0 {
+					m.ViewName = m.Views[0]
+					m.anchor(m.rows())
 				}
 			}
 			return m, nil
@@ -728,11 +952,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "q", "ctrl+c":
-			if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching {
+			if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching || m.Writing || m.WriteLoading {
 				m.Notice = "Wait for claim or launch request outcome before exiting"
 				return m, nil
 			}
-			if len(m.OwnedClaims) > 0 {
+			if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 {
 				m.Quitting = true
 				return m, nil
 			}
@@ -759,6 +983,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if name == m.ViewName {
 					m.ViewName = m.Views[(n+1)%len(m.Views)]
 					m.anchor(m.rows())
+					if m.ViewName == RecoveryViewID && m.LoadRecovery != nil {
+						return m, m.LoadRecovery()
+					}
 					break
 				}
 			}
@@ -812,6 +1039,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.Help = !m.Help
 		case "r":
+			if m.ViewName == RecoveryViewID && m.LoadRecovery != nil {
+				return m, m.LoadRecovery()
+			}
 			if m.Refresh != nil {
 				return m, m.Refresh()
 			}
@@ -861,8 +1091,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.Notice = "Launch unavailable: no item selected"
 			}
-		case "a", "s", "p":
-			m.Notice = "Unavailable: provider writes arrive later"
+		case "s":
+			if item, ok := m.selected(rows); ok && !m.Writing && !m.WriteLoading {
+				choices := m.StateChoices[item.Ref.SourceID]
+				if len(choices) == 0 {
+					m.Notice = "State change unavailable: no configured provider transitions"
+				} else {
+					m.WriteChoices = choices
+					m.WriteChoiceIndex = 0
+				}
+			}
+		case "p":
+			if m.PreviewWrite == nil {
+				m.Notice = "Progress unavailable"
+				break
+			}
+			if item, ok := m.selected(rows); ok && !m.Writing && !m.WriteLoading {
+				m.WriteInput = true
+				m.WriteInputIdentity = identity(item)
+				m.Input = ""
+			}
+		case "a":
+			if m.PreviewWrite == nil {
+				m.Notice = "Assignment unavailable"
+				break
+			}
+			if item, ok := m.selected(rows); ok && !m.Writing && !m.WriteLoading {
+				m.WriteLoading = true
+				return m, m.PreviewWrite(item, queue.ActionAssignToMe, "", "")
+			}
 		}
 		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
 			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
@@ -914,6 +1171,39 @@ func (m Model) View() string {
 	if m.Width < 30 {
 		return "Resize terminal to at least 30 columns\n"
 	}
+	if m.WritePreview != nil {
+		p := m.WritePreview
+		var b strings.Builder
+		fmt.Fprintf(&b, "Confirm %s on %s\nAuthority %s %s (%s) · claim %s (remains held)\n", clean(string(p.Intent.Action)), clean(p.Intent.Ref.String()), clean(p.AuthorityProfile), clean(p.Intent.AuthorityID), clean(p.Scope), clean(p.Intent.ClaimID))
+		for _, resource := range p.Intent.Resources {
+			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
+		}
+		marker := p.Intent.Marker
+		if marker == "" {
+			marker = "none (non-append write)"
+		}
+		fmt.Fprintf(&b, "Provider effect %s\nSide effects %s\nDeclared races %s\nMarker %s\nLimits: no provider idempotency; lost response requires read-back, never redispatch. Claim remains held.\nEnter/y confirm · Esc/n cancel\n", clean(p.Effect), clean(strings.Join(p.SideEffects, "; ")), clean(strings.Join(p.Races, "; ")), clean(marker))
+		return clipLines(b.String(), m.Width)
+	}
+	if m.WriteChoices != nil {
+		var b strings.Builder
+		b.WriteString("Select configured provider transition\n")
+		for index, choice := range m.WriteChoices {
+			marker := " "
+			if index == m.WriteChoiceIndex {
+				marker = ">"
+			}
+			fmt.Fprintf(&b, "%s %s → %s\n", marker, clean(choice.Label), clean(choice.Transition))
+		}
+		b.WriteString("j/k select · Enter preview · Esc dismiss\n")
+		return clipLines(b.String(), m.Width)
+	}
+	if m.WriteInput {
+		return clipLines("Progress note (provider append; Enter previews, Esc cancels):\n"+m.Input, m.Width)
+	}
+	if m.RecoveryEvidence {
+		return clipLines("Type NO COMMIT; EXECUTOR STOPPED: followed by provider audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
+	}
 	if m.LaunchOptions != nil {
 		return m.launchPickerView()
 	}
@@ -927,6 +1217,22 @@ func (m Model) View() string {
 		owned := m.OwnedClaims[m.CancelPreview]
 		return clipLines(fmt.Sprintf("Cancel queue-owned claim %s?\nOnly an authority-verified no-effect epoch may be released. An unverified provider checkpoint or started operation prevents cancellation.\nHandle: %s\nEnter/y confirms · Esc/n dismisses\n", clean(owned.ClaimID), clean(m.CancelPreview)), m.Width)
 	}
+	if m.ViewName == RecoveryViewID {
+		var b strings.Builder
+		fmt.Fprintf(&b, "worklease queue · Recovery %d unresolved writes · %s\n", len(m.Recovery), clean(m.RecoveryError))
+		if m.UncertainWrite {
+			b.WriteString("RECOVERY REQUIRED: last write unverified; claim remains held even if journal cannot be read\n")
+		}
+		for index, entry := range m.Recovery {
+			marker := " "
+			if index == m.RecoveryIndex {
+				marker = ">"
+			}
+			fmt.Fprintf(&b, "%s %s %s %s · %s · claim held %s\n  resources %s · actor %s · effect %s\n  marker %s · required effects %s\n  dispatched %s · read-back %s\n  next %s\n", marker, clean(entry.OperationID), clean(entry.Ref.String()), clean(entry.Status), clean(string(entry.Action)), clean(entry.ClaimID), clean(strings.Join(entry.Resources, ", ")), clean(entry.Principal), clean(entry.Effect), clean(entry.Marker), clean(strings.Join(entry.Effects, ", ")), recoveryTime(entry.Dispatched), clean(entry.Readback), clean(strings.Join(entry.Next, "; ")))
+		}
+		b.WriteString("j/k select · r retry read-back · e reconcile with evidence when offered · u reload · v switch view · q quit\n")
+		return clipLines(b.String(), m.Width)
+	}
 	rows := m.rows()
 	m.anchor(rows)
 	var b, list strings.Builder
@@ -934,7 +1240,10 @@ func (m Model) View() string {
 	if m.rowCache != nil && !m.rowCache.observed.IsZero() {
 		age = time.Since(m.rowCache.observed).Round(time.Second).String()
 	}
-	fmt.Fprintf(&b, "worklease queue  view: %s  authority: %s (%s)  me: %s  sources %d/%d  sync %s ago\n", clip(m.ViewName, 24), clip(m.Authority, 48), clip(m.Scope, 12), clip(m.Me, 24), healthy(m.Snapshot.Sources), len(m.Sources), age)
+	fmt.Fprintf(&b, "worklease queue  view: %s  authority: %s (%s)  me: %s  sources %d/%d  sync %s ago\n", clip(viewLabel(m.ViewName), 24), clip(m.Authority, 48), clip(m.Scope, 12), clip(m.Me, 24), healthy(m.Snapshot.Sources), len(m.Sources), age)
+	if m.UncertainWrite || len(m.Recovery) > 0 {
+		fmt.Fprintf(&b, "RECOVERY REQUIRED: %d unresolved writes; claims held (do not release until verified)\n", len(m.Recovery))
+	}
 	if m.Help {
 		b.WriteString("j/k/arrows move · gg/G top/bottom · h/l/Tab/Enter/Esc panes · / filter · n/N matches · PgUp/PgDn detail · r refresh · : palette · o open URL · q quit\n")
 	}
@@ -945,7 +1254,11 @@ func (m Model) View() string {
 	if !m.Detail || m.Width >= 100 {
 		fmt.Fprintf(&list, "Views: ")
 		for _, v := range m.Views {
-			fmt.Fprintf(&list, "%s %d  ", clip(v, 16), m.rowCache.counts[v])
+			count := m.rowCache.counts[v]
+			if v == RecoveryViewID {
+				count = len(m.Recovery)
+			}
+			fmt.Fprintf(&list, "%s %d  ", clip(viewLabel(v), 16), count)
 		}
 		list.WriteByte('\n')
 		list.WriteString("Sources: ")
@@ -1168,6 +1481,9 @@ func healthy(s map[string]queue.Coverage) int {
 	return n
 }
 func (m Model) viewCount(name string) int {
+	if name == RecoveryViewID {
+		return len(m.Recovery)
+	}
 	n := 0
 	rule := m.ViewRules[name]
 	filters := m.ViewFilters[name]
@@ -1407,6 +1723,16 @@ func detail(m Model, i queue.Item) string {
 			if m.History.PreviousCursor != "" {
 				b.WriteString("Older retained epochs available (m to load)\n")
 			}
+		}
+	case 4:
+		if m.RecoveryError != "" {
+			fmt.Fprintf(&b, "Recovery unavailable: %s\n", clip(m.RecoveryError, 100))
+		}
+		for _, entry := range m.Recovery {
+			if entry.Ref != i.Ref {
+				continue
+			}
+			fmt.Fprintf(&b, "%s · %s · %s · claim held %s\nResources %s · actor %s · effect %s\nMarker %s · required effects %s\nDispatched %s · read-back %s\nNext: %s\n", clean(entry.OperationID), clean(string(entry.Action)), clean(entry.Status), clean(entry.ClaimID), clean(strings.Join(entry.Resources, ", ")), clean(entry.Principal), clean(entry.Effect), clean(entry.Marker), clean(strings.Join(entry.Effects, ", ")), recoveryTime(entry.Dispatched), clean(entry.Readback), clean(strings.Join(entry.Next, "; ")))
 		}
 	}
 	return b.String()

@@ -1,11 +1,11 @@
 ---
 id: TASK-136.2
 title: Bound the remote smoke harness and fix its macOS hidden-invite hang
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-24 19:47'
+updated_date: '2026-09-24 20:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-136
@@ -30,7 +30,7 @@ Direction: give every child process the harness starts a timeout that kills it. 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The remote smoke passes locally on macOS arm64 and still passes in CI on linux-x64
+- [x] #1 The remote smoke passes locally on macOS arm64 and still passes in CI on linux-x64
 - [x] #2 When the hidden-invite child never prompts or never exits, `cliHiddenInvite` kills it and returns an error within a bounded time, covered by a unit test in `cmd/worklease-remote-smoke/main_test.go` that uses a fake child
 - [x] #3 No fixed sleep remains in the hidden-invite handoff
 - [x] #4 The harness writes per-group progress lines to stderr and, when its overall deadline fires, exits nonzero naming the step that was running
@@ -41,6 +41,8 @@ Direction: give every child process the harness starts a timeout that kills it. 
 
 <!-- SECTION:PLAN:BEGIN -->
 1. Reproduce hidden-invite stall and inspect process/PTY lifecycle. 2. Bound child processes and harness deadline with cleanup and progress diagnostics. 3. Replace prompt timing guess with observable terminal state; test no-prompt/no-exit failures. 4. Run focused race tests, local macOS e2e, project gates, then review and integrate.
+
+5. With explicit user approval, fix CI-only scratch Backlog fixture Git identity so linux-x64 reaches e2e; rerun gates and push, then verify CI.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -51,4 +53,18 @@ Reproduced macOS hang: PTY emitted terminal color/cursor probes (OSC 11 and CSI 
 Review found three concrete timeout risks: descendant-held output pipes, remote server surviving failed replacement SSH cleanup, and independent child contexts. Fixed with process-group cancellation/WaitDelay, remote serve stdin-EOF lifecycle plus bounded reaping, and inherited deadline; focused race tests (3 runs), full macOS arm64 e2e, lint, format-check, test, typecheck, and Linux/amd64 test-binary compile pass. Native linux-x64 CI remains unverified without an authorized pushed commit/runner.
 
 Merged fe51ed9217a277494f4a02cc719589a89ffb451e into local main by fast-forward; removed owned worktree/branch through Worktrunk. AC #2: fake PTY children without prompt or exit are killed and reaped in race-count=3. AC #3: hidden prompt now waits for terminal ECHO-off (no fixed sleep); full macOS smoke exercised it. AC #4: deadline fake child reports the active step; group and step progress appeared in e2e stderr. AC #5: pgrep -fl "worklease serve" returned no processes after both a failed and a passing real smoke; timed-out fake server cleanup and remote-helper SSH-EOF are covered by focused tests.
+
+User authorized publishing the 42 pre-existing local main commits. Pushed main at a9d4bc4 to origin/main; waiting for the push-triggered CI linux-x64 quality job to run mise run ci before checking AC #1.
+
+CI 36052100809 failed before e2e: internal/queue/backlog_write_test.go scratch project auto-commit fixtures inherit no Git identity on GitHub runners; macOS/Linux arm jobs were cancelled or failed for the same cause. User authorized a narrowly scoped fixture setup fix to unblock TASK-136.2 verification.
+
+Fixed authorized CI fixture blocker: scratch Backlog project now configures local Git identity before auto-commits. Focused queue tests pass under -race -count=3; lint/format-check/test/typecheck and staged hooks pass. Merged df51cab6a3b4896d71f92379655d6049dfab5c19 to main, cleaned Worktrunk checkout, pushed; awaiting linux-x64 e2e CI.
+
+CI run 36053786416 at df51cab: Quality (linux-x64) succeeded, including hooks, mise run ci, race, e2e, remote smoke groups 1-5 and documentation examples; the remote development smoke passed at 20:20:16 UTC. Local macOS arm64 mise run e2e passed. Overall workflow red for independent macOS arm64 internal/store TestConcurrentOldV2AdminReplaySchemaCompletion (authority home is unsafe); not a TASK-136.2 criterion and unrelated code is owned by another worker.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed macOS hidden-invite hang by disabling unsupported PTY terminal probes and waiting for ECHO-off; bounded subprocesses, remote server cleanup, and harness progress/deadline. Verified macOS arm64 e2e, focused race tests, project gates, and linux-x64 CI remote smoke in run 36053786416. Fixture Git identity fix df51cab unblocked CI; code fe51ed9.
+<!-- SECTION:FINAL_SUMMARY:END -->

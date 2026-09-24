@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
@@ -27,6 +29,105 @@ type cachedClaimStatus struct{}
 
 func (cachedClaimStatus) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
 	return lease.Status{Resources: []lease.ResourceStatus{{Resource: selector.Resources[0], State: "active", Claim: &lease.ClaimView{AuthorityID: selector.AuthorityID, AgentID: "worker", Active: true}}}}, nil
+}
+
+func TestQueueRecoveryJSONListsUnresolvedRecordsWithoutQueueConfig(t *testing.T) {
+	_, env := testkit.Home(t)
+	t.Setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
+	t.Setenv("XDG_CACHE_HOME", env["XDG_CACHE_HOME"])
+	var out, errs bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--json", "queue", "recovery"}, "test", "unknown", "unknown", &out, &errs); err != nil {
+		t.Fatalf("recovery JSON: %v %s", err, errs.String())
+	}
+	if !strings.Contains(out.String(), `"recovery":[]`) {
+		t.Fatalf("missing empty recovery list: %s", out.String())
+	}
+	journal, err := queueRecoveryJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 32)
+	record := queue.WriteRecord{Intent: queue.WriteIntent{OperationID: id, Ref: queue.Ref{SourceID: "tasks", ItemID: "TASK-1"}, ClaimID: "claim-1", Resources: []string{"resource:tasks"}, Action: queue.ActionRecordProgress, Append: "note", Marker: "worklease-op:" + id}, Status: "unknown", DispatchedAt: time.Unix(100, 0), LastReadback: "unknown"}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.WriteOwnerPrivate(filepath.Join(journal.Dir, id+".json"), data, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errs.Reset()
+	if err := Run(context.Background(), []string{"worklease", "--json", "queue", "recovery"}, "test", "unknown", "unknown", &out, &errs); err != nil {
+		t.Fatalf("populated recovery: %v %s", err, errs.String())
+	}
+	for _, field := range []string{id, `"claimId":"claim-1"`, `"lastReadback":"unknown"`, `"action":"record-progress"`, `"allowedNextSteps"`, `"dispatchedAt"`, `"resources"`, `"effect"`} {
+		if !strings.Contains(out.String(), field) {
+			t.Errorf("JSON recovery missing %s: %s", field, out.String())
+		}
+	}
+}
+
+func TestQueueRecoveryReadbackFailureKeepsHeldClaimVisible(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	_, path, backend := claimedLifecycle(t)
+	h, err := handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := queueRecoveryJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 32)
+	record := queue.WriteRecord{Intent: queue.WriteIntent{OperationID: id, Source: queue.Source{ID: "tasks", Adapter: "backlog-md", Locator: filepath.Join(t.TempDir(), "absent")}, Ref: queue.Ref{SourceID: "tasks", ItemID: "TASK-1"}, ClaimID: h.ClaimID, AuthorityID: backend.AuthorityID(), Resources: h.Resources}, Status: "receipt", Receipt: &queue.ProviderReceipt{SourceID: "tasks", ItemID: "TASK-1"}, CreatedAt: time.Now()}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.EnsureOwnerPrivateDir(journal.Dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.WriteOwnerPrivate(filepath.Join(journal.Dir, id+".json"), data, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	for _, jsonOutput := range []bool{false, true} {
+		args := []string{"worklease", "--local"}
+		if jsonOutput {
+			args = append(args, "--json")
+		}
+		args = append(args, "queue", "recovery", "retry", "--operation-id", id, "--handle", path)
+		var out, errs bytes.Buffer
+		runErr := Run(context.Background(), args, "test", "unknown", "unknown", &out, &errs)
+		if runErr == nil {
+			t.Fatal("failed read-back reported success")
+		}
+		output := out.String() + errs.String() + runErr.Error()
+		if !strings.Contains(output, "claim held true") && !strings.Contains(output, `"claimHeld":true`) {
+			t.Fatalf("failed read-back hid held claim: %s", output)
+		}
+		if !strings.Contains(output, "unknown") {
+			t.Fatalf("failed read-back hid outcome: %s", output)
+		}
+	}
+}
+
+func TestQueueRecoveryRetryRequiresOriginalHandle(t *testing.T) {
+	t.Parallel()
+	var out, errs bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "queue", "recovery", "retry", "--operation-id", strings.Repeat("a", 32)}, "test", "unknown", "unknown", &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "original --handle") {
+		t.Fatalf("retry without handle accepted: %v %s", err, out.String())
+	}
+}
+
+func TestQueueRecoveryReconciliationRequiresEvidence(t *testing.T) {
+	t.Parallel()
+	var out, errs bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "queue", "recovery", "reconcile", "--operation-id", strings.Repeat("a", 32), "--evidence", "checked provider"}, "test", "unknown", "unknown", &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "--no-commit") {
+		t.Fatalf("unattested reconciliation accepted: %v %s", err, out.String())
+	}
 }
 
 func TestCachedSnapshotOverlaysHeldClaimWithoutRefresh(t *testing.T) {
