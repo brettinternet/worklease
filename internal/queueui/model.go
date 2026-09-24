@@ -840,6 +840,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v.Err != nil {
 				m.ClaimPreview = nil
 				m.Notice = "Claim unavailable: " + v.Err.Error()
+				if classified := reason.As(v.Err); classified != nil && classified.Details["holder"] != nil {
+					m.Notice = claimFailureNotice(v.Err)
+				}
 			} else if v.Preview == nil || v.Preview.Identity != v.Identity {
 				m.ClaimPreview = nil
 				m.Notice = "Claim unavailable: preview identity changed"
@@ -1562,7 +1565,11 @@ func (m Model) View() string {
 		}
 	}
 	var footer strings.Builder
-	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · provider %s · claims %s · %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness), clip(m.Notice, 60))
+	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · provider %s · claims %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness))
+	if m.Notice != "" {
+		// Notices get their own line so holder, expiry, and recovery paths stay readable.
+		fmt.Fprintf(&footer, "\n%s", clip(m.Notice, m.Width))
+	}
 	if m.Filtering {
 		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
 	}

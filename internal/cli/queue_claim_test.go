@@ -225,6 +225,23 @@ func TestQueueClaimReopensPrerequisiteBeforeConfirmation(t *testing.T) {
 	if err != nil || len(status.Resources) != 1 || status.Resources[0].State != "free" {
 		t.Fatalf("failed gate left a claim held: %+v %v", status, err)
 	}
+
+	// A reopen after confirmation's own preparation is caught by the final gate.
+	prerequisite.Terminal = true
+	adapter.items[prerequisite.Ref.Key()] = prerequisite
+	plan, err := controller.prepare(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisite.Terminal = false
+	adapter.items[prerequisite.Ref.Key()] = prerequisite
+	if _, err := controller.acquire(ctx, plan); err == nil || !strings.Contains(err.Error(), "hard-condition-unsatisfied") {
+		t.Fatalf("reopen before acquisition did not stop it: %v", err)
+	}
+	status, err = backend.API.Status(ctx, lease.Selector{AuthorityID: backend.AuthorityID(), Resources: preview.Preview.Resources})
+	if err != nil || len(status.Resources) != 1 || status.Resources[0].State != "free" {
+		t.Fatalf("final gate left a claim held: %+v %v", status, err)
+	}
 }
 
 func TestQueueClaimReportsRemoteAdmissionRejectionAndLowerActualTTL(t *testing.T) {

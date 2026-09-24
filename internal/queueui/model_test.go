@@ -1003,6 +1003,24 @@ func TestClaimFailuresExposeContentionUncertaintyAndDefinitiveRejection(t *testi
 	}
 }
 
+func TestClaimContentionViewShowsHolderAndExpiry(t *testing.T) {
+	t.Parallel()
+	busy := reason.New(reason.ReasonAlreadyClaimed, "busy").With("holder", map[string]any{"agentId": "other-agent", "expiresAt": "2026-09-24T06:00:00Z"})
+	base := New(fixture())
+	base.Sources = []queue.Source{{ID: "a"}}
+	base.anchor(base.rows())
+	item := base.rows()[0]
+	for _, msg := range []tea.Msg{ClaimPreviewMsg{Identity: identity(item), Err: busy}, ClaimResultMsg{Identity: identity(item), Item: item, Err: busy}} {
+		next, _ := base.Update(msg)
+		view := next.(Model).View()
+		for _, want := range []string{"other-agent", "2026-09-24T06:00:00Z", "not retried"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("%T view missing %q:\n%s", msg, want, view)
+			}
+		}
+	}
+}
+
 func TestClaimPreviewResortsPreparedRowsWhenOrderChanges(t *testing.T) {
 	t.Parallel()
 	snapshot := fixture()

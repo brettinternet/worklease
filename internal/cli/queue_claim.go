@@ -286,7 +286,7 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 		request.PreviousExpiresAt = plan.existing.ExpiresAt
 	}
 	if selected.Remote {
-		keys, err := c.preAcquireIdentity(ctx, selected, plan)
+		keys, err := c.preAcquireCheck(ctx, selected, plan)
 		if err != nil {
 			return lease.Grant{}, err
 		}
@@ -331,7 +331,7 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 	} else if err := lock.Write(plan.handle, pending); err != nil {
 		return lease.Grant{}, err
 	}
-	keys, err := c.preAcquireIdentity(ctx, selected, plan)
+	keys, err := c.preAcquireCheck(ctx, selected, plan)
 	if err != nil || !sameResourceSelection(keys, plan.preview.Resources) {
 		_ = lock.Remove(plan.handle)
 		if err != nil {
@@ -357,12 +357,22 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 	return grant, nil
 }
 
-func (c *queueClaimController) preAcquireIdentity(ctx context.Context, selected queue.ClaimAuthority, plan queueClaimPlan) ([]string, error) {
+func (c *queueClaimController) preAcquireCheck(ctx context.Context, selected queue.ClaimAuthority, plan queueClaimPlan) ([]string, error) {
 	if c.blocked != nil && c.blocked() {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "claim actions stopped because authority identity changed")
 	}
 	if err := c.profileIdentityCurrent(); err != nil {
 		return nil, err
+	}
+	// Re-read the prerequisite closure at the last moment: a prerequisite can
+	// reopen while preview confirmation and authority status reads run.
+	fresh, err := refreshQueueActionClosure(ctx, c.registry, c.sources, plan.item)
+	if err != nil {
+		return nil, err
+	}
+	fresh.Claim = queue.ClaimObservation{}
+	if eligibility := queue.EvaluateAction(fresh, queue.ActionStart); !eligibility.Eligible {
+		return nil, reason.New(reason.ReasonInvalidArgument, "claim unavailable: "+strings.Join(eligibility.Reasons, ", "))
 	}
 	identities, err := config.LoadQueueIdentities(os.Getenv)
 	if err != nil {
