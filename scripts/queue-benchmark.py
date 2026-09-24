@@ -56,7 +56,7 @@ def standalone_memory():
         binary = str(Path(build_dir) / "queue-benchmark-memory")
         subprocess.run(["go", "build", "-o", binary, "./cmd/queue-benchmark-memory"], cwd=ROOT, check=True)
         report = {}
-        for count in (50000, 100000):
+        for count in (10000, 50000, 100000):
             observations = []
             for _ in range(SAMPLES):
                 process = subprocess.Popen([binary, str(count)], cwd=ROOT,
@@ -87,13 +87,13 @@ def main():
             command = ["/usr/bin/time", "-l", *command]
         completed = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=True)
         resident = re.search(r"(\d+)\s+maximum resident set size", completed.stderr)
-        if resident:
-            results.setdefault("_rss", {})[pattern] = int(resident.group(1))
         for line in completed.stdout.splitlines():
             match = LINE.match(line)
             if not match:
                 continue
             name, nanos, extra = match.groups()
+            if resident:
+                results.setdefault("_rss", {})[name] = int(resident.group(1))
             metrics = {key: float(value) for value, key in METRIC.findall(extra)}
             results.setdefault(name, []).append({"ms": float(nanos) / 1e6, **metrics})
     report = {
@@ -129,12 +129,8 @@ def main():
             if key in observations[0]:
                 entry[key] = percentile([o[key] for o in observations], 95)
         entry["processes"] = 1
-        if name.startswith("BenchmarkQueueInputToRender/"):
-            rss_key = name.replace("BenchmarkQueueInputToRender/", "BenchmarkQueueInputToRender/") + "$"
-        else:
-            rss_key = name + "$"
-        if rss_key in results.get("_rss", {}):
-            entry["peak_rss_bytes"] = results["_rss"][rss_key]
+        if name in results.get("_rss", {}):
+            entry["peak_rss_bytes"] = results["_rss"][name]
         report["benchmarks"][name] = entry
     print(json.dumps(report, indent=2))
 

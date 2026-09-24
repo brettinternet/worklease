@@ -20,8 +20,8 @@ func main() {
 		os.Exit(2)
 	}
 	n, err := strconv.Atoi(os.Args[1])
-	if err != nil || (n != 50000 && n != 100000) {
-		fmt.Fprintln(os.Stderr, "SUMMARY_COUNT must be 50000 or 100000")
+	if err != nil || (n != 10000 && n != 50000 && n != 100000) {
+		fmt.Fprintln(os.Stderr, "SUMMARY_COUNT must be 10000, 50000 or 100000")
 		os.Exit(2)
 	}
 	items := make(map[string]queue.Item, n)
