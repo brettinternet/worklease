@@ -22,6 +22,7 @@ man = "mkdir -p dist && go run ./cmd/worklease-man --version dev > dist/workleas
 smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version dev", depends = ["build"] }
 remote-smoke = { run = "go run ./cmd/worklease-remote-smoke --binary ./bin/worklease", depends = ["build"] }
 remote-smoke-vm = { run = "scripts/test-remote-vm.sh", depends = ["build"] }
+authority-benchmark = { run = "python3 scripts/authority-queue-benchmark.py --binary ./bin/worklease --output /tmp/worklease-authority-$(date +%s)-$$", depends = ["build"] }
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"

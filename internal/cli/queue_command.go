@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/queueui"
@@ -56,7 +57,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	backend, authorityView, err := queueAuthorityForView(ctx, cmd, selected.Authority)
+	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, cmd, selected.Authority, false)
 	if err != nil {
 		return err
 	}
@@ -123,6 +124,26 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.ViewFilters[v.Name] = filters
 		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
 	}
+	model.MeBySource = make(map[string][]string)
+	for _, src := range selected.Sources {
+		configured := sourceByID[src]
+		identityKey := "backlog-md"
+		if configured.Adapter == "github" {
+			identityKey = configured.Host
+		}
+		if identity, ok := cfg.Me[identityKey]; ok {
+			var names []string
+			if configured.Adapter == "github" {
+				var name string
+				if identity.Decode(&name) == nil && name != "" {
+					names = []string{name}
+				}
+			} else {
+				_ = identity.Decode(&names)
+			}
+			model.MeBySource[src] = names
+		}
+	}
 	model.Authority = authorityView.Profile
 	model.Scope = "local"
 	if authorityView.Remote {
@@ -144,6 +165,13 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	paths := config.UserProfilePaths(os.Getenv)
 	claims := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
+	var authorityMu sync.Mutex
+	var authorityVersion uint64 // bumped when late admission metadata replaces authorityView
+	currentAuthority := func() (queue.ClaimAuthority, uint64) {
+		authorityMu.Lock()
+		defer authorityMu.Unlock()
+		return authorityView, authorityVersion
+	}
 	var program *tea.Program
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -152,6 +180,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	var liveDone chan struct{}
 	var liveKeys map[string]string
 	var blockedIdentity atomic.Bool
+	var hydrationCancel context.CancelFunc
 	closing := false
 	restartOverlay := func(base queue.Snapshot) {
 		liveMu.Lock()
@@ -159,9 +188,17 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		if blockedIdentity.Load() {
 			return
 		}
-		keys := make(map[string]string, len(base.Items))
+		authorityMu.Lock()
+		view := authorityView
+		authorityMu.Unlock()
+		keys := make(map[string]string, len(base.Items)+1)
 		for key, item := range base.Items {
 			keys[key] = strings.Join(item.Resources, "\x00")
+		}
+		// Late admission metadata changes action eligibility, so it restarts the overlay.
+		keys["\x00admitted"] = "unknown"
+		if view.AdmittedPrefixes != nil {
+			keys["\x00admitted"] = "known\x00" + strings.Join(*view.AdmittedPrefixes, "\x00")
 		}
 		if len(keys) == len(liveKeys) && liveKeys != nil {
 			same := true
@@ -192,7 +229,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			for _, item := range base.Items {
 				items = append(items, item)
 			}
-			_ = queue.RunClaimOverlay(liveCtx, items, claims, authorityView, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
+			_ = queue.RunClaimOverlay(liveCtx, items, claims, view, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
 				updated := base.Clone()
 				for _, item := range observed {
 					updated.Items[item.Ref.Key()] = item
@@ -204,23 +241,47 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			})
 		}(liveDone)
 	}
-	start := func() {
+	start := func(notifyFailure bool) <-chan error {
+		done := make(chan error, 1)
 		workersMu.Lock()
 		if closing {
 			workersMu.Unlock()
-			return
+			done <- context.Canceled
+			close(done)
+			return done
 		}
 		workers.Add(1)
 		workersMu.Unlock()
 		go func() {
 			defer workers.Done()
-			publishQueue(ctx, loader, sources, claims, authorityView, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			err := publishQueue(ctx, loader, sources, claims, currentAuthority, paths, program, index, cachePartitions, &claimOverlay, restartOverlay)
+			if notifyFailure && err != nil && ctx.Err() == nil {
+				program.Send(queueui.RefreshedMsg{Err: err})
+			}
+			done <- err
+			close(done)
 		}()
+		return done
 	}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
+		// Supersede on selection (Update runs synchronously), not when the command
+		// executes: Bubble Tea may run an older selection's command after a newer one.
+		workersMu.Lock()
+		if hydrationCancel != nil {
+			hydrationCancel()
+			hydrationCancel = nil
+		}
+		if closing {
+			workersMu.Unlock()
+			return nil
+		}
+		hydrationCtx, cancel := context.WithCancel(ctx)
+		hydrationCancel = cancel
+		workersMu.Unlock()
 		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
 			if adapter != "backlog-md" && adapter != "github" {
+				cancel()
 				return nil
 			}
 			var source queue.Source
@@ -231,22 +292,25 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				}
 			}
 			if source.ID == "" {
+				cancel()
 				return nil
 			}
 			workersMu.Lock()
-			if closing {
+			if closing || hydrationCtx.Err() != nil {
 				workersMu.Unlock()
+				cancel()
 				return nil
 			}
 			workers.Add(1)
 			workersMu.Unlock()
 			go func() {
 				defer workers.Done()
+				defer cancel()
 				var updates <-chan queue.Snapshot
 				if adapter == "github" {
-					updates = loader.HydrateVisible(ctx, source, []queue.Ref{item.Ref})
+					updates = loader.HydrateVisible(hydrationCtx, source, []queue.Ref{item.Ref})
 				} else {
-					updates = loader.HydrateEdges(ctx, source, []queue.Ref{item.Ref}, nil, false)
+					updates = loader.HydrateEdges(hydrationCtx, source, []queue.Ref{item.Ref}, nil, false)
 				}
 				for snapshot := range updates {
 					applyStoredClaims(&snapshot, &claimOverlay)
@@ -257,10 +321,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 	}
 	model.Refresh = func() tea.Cmd {
-		return func() tea.Msg {
-			start()
-			return queueui.RefreshedMsg{}
-		}
+		return refreshCompletionCmd(func() <-chan error { return start(false) })
 	}
 	model.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
 		return func() tea.Msg {
@@ -280,10 +341,16 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			return queueui.CommentsMsg{Identity: queueIdentity(item), Err: fmt.Errorf("GitHub source unavailable")}
 		}
 	}
-	model.LoadHistory = func(item queue.Item, cursor string) tea.Cmd {
+	model.LoadHistory = func(item queue.Item, cursor string, before bool) tea.Cmd {
 		return func() tea.Msg {
-			page, err := backend.API.History(ctx, item.Resources[0], cursor, 20, false)
-			return queueui.HistoryMsg{Identity: queueIdentity(item), Page: page, Err: err}
+			var page ledger.HistoryPage
+			var err error
+			if before {
+				page, err = backend.API.HistoryBefore(ctx, item.Resources[0], cursor, 20, false)
+			} else {
+				page, err = backend.API.History(ctx, item.Resources[0], cursor, 20, false)
+			}
+			return queueui.HistoryMsg{Identity: queueIdentity(item), Page: page, Before: before, Err: err}
 		}
 	}
 	model.OpenURL = func(item queue.Item) tea.Cmd {
@@ -308,7 +375,22 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
-	start()
+	start(true)
+	if backend.HTTP != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			response, metadataErr := backend.HTTP.Metadata(ctx)
+			if metadataErr != nil || response.Metadata == nil || ctx.Err() != nil {
+				return
+			}
+			authorityMu.Lock()
+			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			authorityVersion++
+			authorityMu.Unlock()
+			start(true)
+		}()
+	}
 	for _, source := range sources {
 		adapter, ok := registry.Get(source.Adapter)
 		watcher, okWatch := adapter.(interface {
@@ -321,7 +403,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		go func(source queue.Source) {
 			defer workers.Done()
 			for ctx.Err() == nil {
-				if watchErr := watcher.WatchChanges(ctx, source, start); watchErr != nil && ctx.Err() == nil {
+				if watchErr := watcher.WatchChanges(ctx, source, func() { start(true) }); watchErr != nil && ctx.Err() == nil {
 					program.Send(queueui.RefreshedMsg{Err: watchErr})
 				}
 				select {
@@ -348,6 +430,28 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
+func refreshCompletionCmd(start func() <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		return queueui.RefreshedMsg{Err: <-start()}
+	}
+}
+
+func replaceQueueIndexSnapshot(ctx context.Context, index *queueindex.Index, partition queueindex.Partition, sourceID string, snapshot queue.Snapshot) error {
+	items := make([]queue.Item, 0)
+	for _, item := range snapshot.Items {
+		if item.Ref.SourceID == sourceID {
+			items = append(items, item)
+		}
+	}
+	deleted := make([]queue.Ref, 0)
+	for _, ref := range snapshot.Deleted {
+		if ref.SourceID == sourceID {
+			deleted = append(deleted, ref)
+		}
+	}
+	return index.ReplaceWithDeletes(ctx, partition, items, deleted, snapshot.Sources[sourceID].State == queue.CoverageComplete)
+}
+
 func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
 	partitions := make(map[string]queueindex.Partition)
 	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
@@ -415,7 +519,30 @@ func applyStoredClaims(snapshot *queue.Snapshot, stored *sync.Map) {
 	}
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, selected queue.ClaimAuthority, paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) {
+// overlayCurrentClaims recomputes the overlay if admission metadata changed
+// while it ran, so a frame never publishes claims from a superseded authority view.
+func overlayCurrentClaims(ctx context.Context, items []queue.Item, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths) []queue.Item {
+	for {
+		selected, version := authority()
+		observed := queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv)
+		if _, current := authority(); current == version || ctx.Err() != nil {
+			return observed
+		}
+	}
+}
+
+func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, stored *sync.Map) {
+	items := make([]queue.Item, 0, len(cached.Items))
+	for _, item := range cached.Items {
+		items = append(items, item)
+	}
+	for _, item := range overlayCurrentClaims(ctx, items, claims, authority, paths) {
+		cached.Items[item.Ref.Key()] = item
+		stored.Store(item.Ref.Key(), item)
+	}
+}
+
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, claims map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -434,8 +561,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			for _, done := range releases {
 				done()
 			}
-			program.Send(queueui.RefreshedMsg{Err: err})
-			return
+			return err
 		}
 		snapshot, observed, _, err := index.Read(ctx, partition, 0)
 		if err != nil {
@@ -443,8 +569,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			for _, done := range releases {
 				done()
 			}
-			program.Send(queueui.RefreshedMsg{Err: err})
-			return
+			return err
 		}
 		if snapshot.Sources[source.ID].State == queue.CoverageComplete && !observed.Before(refreshStarted) {
 			release()
@@ -460,6 +585,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		refreshSources = append(refreshSources, source)
 	}
 	if len(cached.Items) > 0 {
+		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
 		program.Send(queueui.SnapshotMsg{Snapshot: seeded})
@@ -471,13 +597,14 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 	}()
 	var latest queue.Snapshot
+	var refreshErr error
 	for snapshot := range loader.Refresh(ctx, refreshSources) {
 		latest = snapshot.Clone()
 		items := make([]queue.Item, 0, len(snapshot.Items))
 		for _, item := range snapshot.Items {
 			items = append(items, item)
 		}
-		observed := queue.OverlayClaims(ctx, items, claims, selected, paths, os.Getenv)
+		observed := overlayCurrentClaims(ctx, items, claims, authority, paths)
 		for _, item := range observed {
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
@@ -486,25 +613,12 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		onSnapshot(snapshot)
 	}
 	for _, source := range refreshSources {
-		sourceID := source.ID
-		partition, ok := partitions[sourceID]
+		partition, ok := partitions[source.ID]
 		if !ok {
 			continue
 		}
-		items := make([]queue.Item, 0)
-		for _, item := range latest.Items {
-			if item.Ref.SourceID == sourceID {
-				items = append(items, item)
-			}
-		}
-		deleted := make([]queue.Ref, 0)
-		for _, ref := range latest.Deleted {
-			if ref.SourceID == sourceID {
-				deleted = append(deleted, ref)
-			}
-		}
-		if err := index.ReplaceWithDeletes(ctx, partition, items, deleted, latest.Sources[sourceID].State == queue.CoverageComplete); err != nil {
-			program.Send(queueui.RefreshedMsg{Err: err})
+		if err := replaceQueueIndexSnapshot(ctx, index, partition, source.ID, latest); err != nil && refreshErr == nil {
+			refreshErr = err
 		}
 	}
 	// First paint and index replacement have already completed. Hydrate only
@@ -534,4 +648,15 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			onSnapshot(snapshot)
 		}
 	}
+	current := loader.Store.Current()
+	for _, source := range refreshSources {
+		coverage := current.Sources[source.ID]
+		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" && refreshErr == nil {
+			refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+		}
+	}
+	if refreshErr != nil {
+		return refreshErr
+	}
+	return ctx.Err()
 }

@@ -19,7 +19,7 @@ import (
 
 func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 	h := newQueueQueryHarness(t)
-	h.setTasks(`[{"id":"TASK-1","title":"Local task","status":"Open","ordinal":1,"isReady":true}]`)
+	h.setTasks(`[{"id":"TASK-1","title":"Local task","status":"Open","ordinal":1,"isReady":true,"assignees":["@brett"]}]`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/" {
 			t.Errorf("unexpected provider request %s %s", r.Method, r.URL)
@@ -42,13 +42,13 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 		case strings.Contains(request.Query, "viewer"):
 			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
 		case strings.Contains(request.Query, "nodes(ids:"):
-			fmt.Fprint(w, `{"data":{"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}]}}`)
+			fmt.Fprint(w, `{"data":{"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"},"assignees":{"nodes":[{"login":"brett"}]}}]}}`)
 		case strings.Contains(request.Query, "blockedBy("):
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"Owner/Repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"repository":{"nameWithOwner":"Owner/Repo"},"assignees":{"nodes":[{"login":"brett"}]},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
 		case strings.Contains(request.Query, "issue(number:"):
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issue":{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"},"assignees":{"nodes":[{"login":"brett"}]}}}}}`)
 		default:
-			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issues":{"totalCount":1,"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"Owner/Repo","issues":{"totalCount":1,"nodes":[{"id":"issue-1","number":1,"title":"GitHub task","state":"OPEN","repository":{"nameWithOwner":"Owner/Repo"},"assignees":{"nodes":[{"login":"brett"}]}}],"pageInfo":{"hasNextPage":false}}}}}`)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -57,7 +57,9 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	configuration := strings.Replace(h.queueConfig, "views:", "  - id: github\n    adapter: github\n    host: github.com\n    repository: Owner/Repo\n    account: tester\nviews:", 1)
+	configuration = strings.Replace(configuration, "me: {}", "me:\n  backlog-md: [\"@brett\", \"brett\"]\n  github.com: brett", 1)
 	configuration = strings.Replace(configuration, "sources: [local]", "sources: [local, github]", 1)
+	configuration = strings.Replace(configuration, "filter: {assigned: [nobody]}", "filter: {assigned: [me]}", 1)
 	h.writeQueueConfig(configuration)
 	newRegistry := func() *queue.Registry {
 		registry := queue.NewRegistry()
@@ -137,7 +139,8 @@ func TestCombinedBacklogAndGitHubQueryTUIParity(t *testing.T) {
 	}
 	model := queueui.New(snapshot)
 	model.ViewName = "Ready"
-	model.ViewRules = map[string]queueui.ViewRule{"Ready": {Assigned: []string{"nobody"}}}
+	model.ViewRules = map[string]queueui.ViewRule{"Ready": {Assigned: []string{"me"}}}
+	model.MeBySource = map[string][]string{"local": {"@brett", "brett"}, "github": {"brett"}}
 	model.Sources = []queue.Source{localSource, remoteSource}
 	model.Authority = output.Query.Authority.Profile + " " + output.Query.Authority.ID
 	model.Scope = output.Query.Authority.Scope

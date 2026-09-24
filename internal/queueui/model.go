@@ -25,6 +25,7 @@ type ClaimOverlayMsg struct {
 type HistoryMsg struct {
 	Identity string
 	Page     ledger.HistoryPage
+	Before   bool
 	Err      error
 }
 type CommentsMsg struct {
@@ -45,6 +46,7 @@ type Model struct {
 	ViewFilters                    map[string]queue.Filters
 	ViewRules                      map[string]ViewRule
 	ViewName, Authority, Scope, Me string
+	MeBySource                     map[string][]string
 	Sources                        []queue.Source
 	SourceErrors                   map[string]string
 	Width, Height                  int
@@ -69,7 +71,7 @@ type Model struct {
 	RebuildingClaims               bool
 	Refresh                        func() tea.Cmd
 	HydrateSelected                func(queue.Item) tea.Cmd
-	LoadHistory                    func(queue.Item, string) tea.Cmd
+	LoadHistory                    func(queue.Item, string, bool) tea.Cmd
 	LoadComments                   func(queue.Item, string) tea.Cmd
 	OpenURL                        func(queue.Item) tea.Cmd
 	rowCache                       *rowCache
@@ -130,7 +132,7 @@ func (m Model) rows() []queue.Item {
 		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
 			continue
 		}
-		if rule.Claim != "" && rule.Claim != "all" && claimState(i) != rule.Claim {
+		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
 			continue
 		}
 		if len(rule.Assigned) > 0 {
@@ -139,7 +141,7 @@ func (m Model) rows() []queue.Item {
 				switch kind {
 				case "me":
 					for _, name := range i.AssignedTo {
-						if name == m.Me && m.Me != "" {
+						if m.isMe(i, name) {
 							match = true
 						}
 					}
@@ -170,7 +172,7 @@ func (m Model) rows() []queue.Item {
 			case "Mine":
 				found := false
 				for _, name := range i.AssignedTo {
-					if name == m.Me && m.Me != "" {
+					if m.isMe(i, name) {
 						found = true
 					}
 				}
@@ -242,6 +244,7 @@ func (m *Model) anchor(rows []queue.Item) {
 	}
 }
 func (m *Model) move(delta int) {
+	previous := m.Selected
 	rows := m.rows()
 	m.anchor(rows)
 	if len(rows) == 0 {
@@ -265,6 +268,9 @@ func (m *Model) move(delta int) {
 	if m.Index >= m.Offset+maxRows {
 		m.Offset = m.Index - maxRows + 1
 	}
+	if m.Selected != previous {
+		m.clearHistory()
+	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
@@ -286,6 +292,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.Snapshot = updated
 		m.anchor(m.rows())
+		if m.Selected != previous {
+			m.clearHistory()
+		}
 		if m.Detail && m.Tab == 2 && m.Selected != previous && m.LoadComments != nil {
 			if item, ok := m.selected(m.rows()); ok {
 				m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
@@ -337,10 +346,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v.Err != nil {
 				m.HistoryError = v.Err.Error()
 			} else {
-				if m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
+				if v.Before && m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
+					m.History.Epochs = append(append([]ledger.Epoch(nil), v.Page.Epochs...), m.History.Epochs...)
+					m.History.PreviousCursor = v.Page.PreviousCursor
+					m.History.Gap = m.History.Gap || v.Page.Gap
+				} else if m.HistoryCursor != "" && m.HistoryIdentity == v.Identity {
 					m.History.Epochs = append(m.History.Epochs, v.Page.Epochs...)
 					m.History.NextCursor = v.Page.NextCursor
-					m.History.Gap = v.Page.Gap
+					m.History.Gap = m.History.Gap || v.Page.Gap
 				} else {
 					m.History = v.Page
 				}
@@ -440,22 +453,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Filtering = true
 			m.Input = m.Filter
 		case "n":
-			if m.Detail && m.Tab == 2 && m.CommentsCursor != "" && m.LoadComments != nil {
+			m.move(1)
+		case "N":
+			m.move(-1)
+		case "m":
+			// n/N stay row navigation; m pages detail activity (comments or claim epochs).
+			if m.Detail && m.Tab == 2 && !m.CommentsLoading && m.CommentsCursor != "" && m.LoadComments != nil {
 				if i, ok := m.selected(rows); ok {
 					m.CommentsLoading = true
 					return m, m.LoadComments(i, m.CommentsCursor)
 				}
 			}
-			if m.Detail && m.Tab == 3 && m.History.NextCursor != "" && m.LoadHistory != nil {
+			if m.Detail && m.Tab == 3 && !m.HistoryLoading && m.History.PreviousCursor != "" && m.LoadHistory != nil {
 				if i, ok := m.selected(rows); ok && len(i.Resources) == 1 {
 					m.HistoryLoading = true
-					m.HistoryCursor = m.History.NextCursor
-					return m, m.LoadHistory(i, m.HistoryCursor)
+					m.HistoryCursor = m.History.PreviousCursor
+					return m, m.LoadHistory(i, m.HistoryCursor, true)
 				}
 			}
-			m.move(1)
-		case "N":
-			m.move(-1)
 		case ":":
 			m.Palette = true
 			m.Input = ""
@@ -489,9 +504,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.HistoryCursor = ""
 				m.History = ledger.HistoryPage{}
 				if m.Selected != previous && m.HydrateSelected != nil {
-					return m, tea.Batch(m.LoadHistory(i, ""), m.HydrateSelected(i))
+					return m, tea.Batch(m.LoadHistory(i, "", false), m.HydrateSelected(i))
 				}
-				return m, m.LoadHistory(i, "")
+				return m, m.LoadHistory(i, "", false)
 			}
 		}
 		if m.Selected != previous && m.HydrateSelected != nil {
@@ -555,7 +570,7 @@ func (m Model) View() string {
 			fmt.Fprintf(&list, "%s %s  ", clip(s.Name, 16), clip(status, 32))
 		}
 		list.WriteByte('\n')
-		list.WriteString("ID     Title        State   Eligibility        Assigned Native  Worklease\n")
+		list.WriteString(ansi.Wrap("ID     Title        State   Eligibility        Assigned Native  Worklease", listWidth, " ") + "\n")
 		maxRows := m.Height - 8
 		if maxRows < 1 {
 			maxRows = 1
@@ -571,8 +586,8 @@ func (m Model) View() string {
 			if identity(i) == m.Selected {
 				marker = ">"
 			}
-			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), displayState(i, m.Me), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
-			list.WriteString(clip(line, listWidth))
+			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), m.displayState(i), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
+			list.WriteString(ansi.Wrap(clean(line), listWidth, " "))
 			list.WriteByte('\n')
 		}
 	}
@@ -596,8 +611,13 @@ func (m Model) View() string {
 	if m.rowCache != nil {
 		edges = m.rowCache.edges
 	}
-	if len(m.Snapshot.Sources) == 0 {
+	if len(m.Snapshot.Sources) == 0 || len(m.SourceErrors) > 0 {
 		accuracy = "unknown"
+	}
+	for _, source := range m.Sources {
+		if _, resolved := m.Snapshot.Sources[source.ID]; !resolved {
+			accuracy = "unknown"
+		}
 	}
 	for _, c := range m.Snapshot.Sources {
 		total += c.Total
@@ -684,7 +704,7 @@ func (m Model) viewCount(name string) int {
 		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
 			continue
 		}
-		if rule.Claim != "" && rule.Claim != "all" && claimState(i) != rule.Claim {
+		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
 			continue
 		}
 		if len(rule.Assigned) > 0 {
@@ -694,7 +714,7 @@ func (m Model) viewCount(name string) int {
 					found = true
 				}
 				for _, person := range i.AssignedTo {
-					if (kind == "me" && person == m.Me && m.Me != "") || kind == person {
+					if (kind == "me" && m.isMe(i, person)) || kind == person {
 						found = true
 					}
 				}
@@ -715,7 +735,7 @@ func (m Model) viewCount(name string) int {
 				}
 				found := false
 				for _, person := range i.AssignedTo {
-					if person == m.Me {
+					if m.isMe(i, person) {
 						found = true
 					}
 				}
@@ -732,9 +752,38 @@ func (m Model) viewCount(name string) int {
 	}
 	return n
 }
+func (m Model) isMe(item queue.Item, owner string) bool {
+	for _, name := range m.MeBySource[item.Ref.SourceID] {
+		if strings.EqualFold(name, owner) {
+			return true
+		}
+	}
+	return m.MeBySource == nil && owner == m.Me && m.Me != ""
+}
+func matchesClaim(item queue.Item, filter string) bool {
+	switch filter {
+	case "held":
+		return item.Claim.Active
+	case "free":
+		return item.Claim.Known && !item.Claim.Active
+	default:
+		return claimState(item) == filter
+	}
+}
+func (m *Model) clearHistory() {
+	m.History = ledger.HistoryPage{}
+	m.HistoryError = ""
+	m.HistoryLoading = false
+	m.HistoryIdentity = ""
+	m.HistoryCursor = ""
+}
 func sourceState(c queue.Coverage) string {
 	if c.Reason != "" {
-		return clean(c.Reason)
+		status := clean(c.Reason)
+		if !c.RetryAt.IsZero() {
+			status += " retry " + c.RetryAt.UTC().Format("Jan 2 15:04:05Z")
+		}
+		return status
 	}
 	if c.State == "" {
 		return "offline/unknown"
@@ -759,7 +808,7 @@ func readiness(i queue.Item) string {
 	}
 	return string(i.Readiness.Status)
 }
-func displayState(i queue.Item, me string) string {
+func (m Model) displayState(i queue.Item) string {
 	if i.ReadPermission == queue.Denied {
 		return "denied"
 	}
@@ -772,9 +821,9 @@ func displayState(i queue.Item, me string) string {
 	if i.Claim.Active {
 		return "occupied"
 	}
-	if me != "" {
+	if m.Me != "" || len(m.MeBySource[i.Ref.SourceID]) > 0 {
 		for _, name := range i.AssignedTo {
-			if name != me {
+			if !m.isMe(i, name) {
 				return "assigned elsewhere"
 			}
 		}
@@ -782,16 +831,18 @@ func displayState(i queue.Item, me string) string {
 	return readiness(i)
 }
 func claimState(i queue.Item) string {
+	state := i.Claim.State
 	if i.Claim.Reason != "" {
-		return clean(i.Claim.Reason)
+		state = i.Claim.Reason
+	} else if i.Claim.Active {
+		state = "occupied"
+	} else if !i.Claim.Known {
+		state = "unknown"
 	}
-	if i.Claim.Active {
-		return "occupied"
+	if i.Claim.Stale {
+		state += " (stale)"
 	}
-	if !i.Claim.Known {
-		return "unknown"
-	}
-	return clean(i.Claim.State)
+	return clean(state)
 }
 func detail(m Model, i queue.Item) string {
 	var b strings.Builder
@@ -828,7 +879,7 @@ func detail(m Model, i queue.Item) string {
 				fmt.Fprintf(&b, "%s · %s\n%s\n", clip(comment.Author, 32), comment.CreatedAt.Format(time.RFC3339), clip(comment.Body, min(m.Width*4, 800)))
 			}
 			if m.CommentsCursor != "" {
-				b.WriteString("Press n for more comments\n")
+				b.WriteString("Press m for more comments\n")
 			}
 		}
 	case 3:
@@ -840,18 +891,20 @@ func detail(m Model, i queue.Item) string {
 		if m.HistoryError != "" {
 			fmt.Fprintf(&b, "History unavailable: %s\n", clip(m.HistoryError, 100))
 		}
-		if m.History.Gap {
-			b.WriteString("History gap: earlier epochs pruned\n")
-		}
-		for _, e := range m.History.Epochs {
-			ended := "active"
-			if e.EndedAt != nil {
-				ended = e.EndedAt.Format(time.RFC3339)
+		if m.HistoryIdentity == identity(i) {
+			if m.History.Gap {
+				b.WriteString("History gap: earlier epochs pruned\n")
 			}
-			fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
-		}
-		if m.History.NextCursor != "" {
-			b.WriteString("More retained epochs available\n")
+			for _, e := range m.History.Epochs {
+				ended := "active"
+				if e.EndedAt != nil {
+					ended = e.EndedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
+			}
+			if m.History.PreviousCursor != "" {
+				b.WriteString("Older retained epochs available (m to load)\n")
+			}
 		}
 	}
 	return b.String()

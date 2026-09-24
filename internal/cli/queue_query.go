@@ -54,6 +54,10 @@ type queueCursor struct {
 	Offset      int    `json:"offset"`
 }
 
+func completedRefreshObserved(previous, current time.Time, coverage queue.Coverage, fresh bool) bool {
+	return coverage.State == queue.CoverageComplete && ((!current.IsZero() && current.After(previous)) || fresh)
+}
+
 func queueQueryAction(s *boundary) func(context.Context, *urfavecli.Command) error {
 	return queueQueryActionWithLoader(s, queue.NewLoader)
 }
@@ -154,6 +158,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 			}
 			observationTimes[source.ID] = observed
 			wantCache := cmd.IsSet("max-age") && fresh
+			initialObservation := observed
 			if !wantCache {
 				release, acquired, lockErr := index.TryRefreshLock(partition)
 				if lockErr != nil {
@@ -170,7 +175,8 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 						return s.handle(cmd, readErr)
 					}
 					observationTimes[source.ID] = observed
-					wantCache = cmd.IsSet("max-age") && fresh
+					completedWhileWaiting := completedRefreshObserved(initialObservation, observed, candidate.Sources[source.ID], fresh)
+					wantCache = cmd.IsSet("max-age") && fresh || completedWhileWaiting
 				}
 				if wantCache {
 					release()
@@ -194,20 +200,8 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 		snapshot := loader.Store.Current()
 		for _, source := range refreshSources {
 			if partition, ok := partitions[source.ID]; ok {
-				items := make([]queue.Item, 0)
-				for _, item := range snapshot.Items {
-					if item.Ref.SourceID == source.ID {
-						items = append(items, item)
-					}
-				}
-				deleted := make([]queue.Ref, 0)
-				for _, ref := range snapshot.Deleted {
-					if ref.SourceID == source.ID {
-						deleted = append(deleted, ref)
-					}
-				}
 				complete := snapshot.Sources[source.ID].State == queue.CoverageComplete
-				if writeErr := index.ReplaceWithDeletes(ctx, partition, items, deleted, complete); writeErr != nil {
+				if writeErr := replaceQueueIndexSnapshot(ctx, index, partition, source.ID, snapshot); writeErr != nil {
 					return s.handle(cmd, writeErr)
 				}
 				if complete {

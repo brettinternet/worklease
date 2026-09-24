@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 type reviewAdapter struct {
@@ -75,6 +76,44 @@ func runReviewAdapter(t *testing.T, adapter Adapter, hydrationLimit int) Snapsho
 	for range loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "review"}}) {
 	}
 	return loader.Store.Current()
+}
+
+type failedListAdapter struct {
+	reviewAdapter
+	err error
+}
+
+func (a *failedListAdapter) List(context.Context, Source, Query, string) (SummaryPage, error) {
+	return SummaryPage{}, a.err
+}
+
+func TestSourceListFailurePreservesGitHubClassificationAndRetry(t *testing.T) {
+	retryAt := time.Now().Add(time.Minute).Truncate(time.Second)
+	for _, test := range []struct {
+		name    string
+		err     error
+		code    string
+		retryAt time.Time
+	}{
+		{name: "429", err: GitHubRateDiagnostic{GitHubDiagnostic{Code: "rate-limited"}, retryAt}, code: "rate-limited", retryAt: retryAt},
+		// Access loss is withheld as unverified (TASK-129.3), still distinct from 429 and offline.
+		{name: "403", err: GitHubDiagnostic{Code: "permission-denied"}, code: "github-access-unverified"},
+		{name: "connection", err: GitHubDiagnostic{Code: "offline"}, code: "offline"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry := NewRegistry()
+			if err := registry.Register("failed", &failedListAdapter{err: test.err}); err != nil {
+				t.Fatal(err)
+			}
+			loader := NewLoader(registry)
+			for range loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "failed"}}) {
+			}
+			coverage := loader.Store.Current().Sources["s"]
+			if coverage.Reason != test.code || !coverage.RetryAt.Equal(test.retryAt) {
+				t.Fatalf("coverage lost diagnostic: %+v", coverage)
+			}
+		})
+	}
 }
 
 func TestReadinessCyclePropagatesReachableBlocker(t *testing.T) {

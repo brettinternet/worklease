@@ -376,10 +376,11 @@ type eventsWire struct {
 
 type historyWire struct {
 	authWire
-	Resource string `json:"resource"`
-	Cursor   string `json:"cursor"`
-	Limit    int    `json:"limit"`
-	Full     bool   `json:"full"`
+	Resource     string `json:"resource"`
+	Cursor       string `json:"cursor"`
+	BeforeCursor string `json:"beforeCursor"`
+	Limit        int    `json:"limit"`
+	Full         bool   `json:"full"`
 }
 
 func (s *Server) events(ctx context.Context, r *http.Request, b []byte) (any, error) {
@@ -408,7 +409,14 @@ func (s *Server) history(ctx context.Context, r *http.Request, b []byte) (any, e
 	if e := s.service.AuthorizeRemote(ctx, a, "read"); e != nil {
 		return nil, e
 	}
-	return ledger.NewChecked(s.store, s.service.RemoteTransactionCheck(a, "read")).History(ctx, q.Resource, q.Cursor, q.Limit, false)
+	if q.Cursor != "" && q.BeforeCursor != "" {
+		return nil, reason.Invalid("history accepts one cursor direction")
+	}
+	service := ledger.NewChecked(s.store, s.service.RemoteTransactionCheck(a, "read"))
+	if q.BeforeCursor != "" {
+		return service.HistoryBefore(ctx, q.Resource, q.BeforeCursor, q.Limit, false)
+	}
+	return service.History(ctx, q.Resource, q.Cursor, q.Limit, false)
 }
 
 type watchWire struct {

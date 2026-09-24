@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 20:10'
+updated_date: '2026-09-23 23:56'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128
@@ -57,6 +58,8 @@ This scheduler replaces the minimal per-account serialization added in TASK-128.
 Claimed under Worklease; implementing in task-129.2-scheduler worktree.
 
 Integrated code commits 19ca5c0, 86b56b7, 30715cf into main (fast-forward). Focused scheduler and GitHub rate-limit tests, race checks, lint, format-check, full test, typecheck, and staged hooks passed. One review pass caught capacity inversion and active supersession; both corrected and rechecked. Claim heartbeats remain on their existing separate control path. Process-local quotas deliberately do not imply cross-process coordination.
+
+Review: action preflight reads use action priority; selection changes supersede hydration (made selection-time, not command-time, in 00a6b2e); canceled in-flight jobs no longer coalesce new callers; 429 RetryAt and distinct failure labels reach coverage/TUI (801306e). Merged to main 013a058.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

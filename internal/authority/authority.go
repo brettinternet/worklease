@@ -37,6 +37,7 @@ type Authority interface {
 	ReconcileAtCurrentRevision(context.Context, lease.Credentials, lease.ReconcileRequest) (lease.ReconciliationReceipt, error)
 	Events(context.Context, string, int) (ledger.EventsPage, error)
 	History(context.Context, string, string, int, bool) (ledger.HistoryPage, error)
+	HistoryBefore(context.Context, string, string, int, bool) (ledger.HistoryPage, error)
 	Watch(context.Context, watch.Request) (watch.Result, error)
 }
 
@@ -66,6 +67,12 @@ func (a *LocalAuthority) History(ctx context.Context, resource, cursor string, l
 		return ledger.HistoryPage{}, reason.Invalid("local history store is unavailable")
 	}
 	return ledger.New(a.Store).History(ctx, resource, cursor, limit, full)
+}
+func (a *LocalAuthority) HistoryBefore(ctx context.Context, resource, cursor string, limit int, full bool) (ledger.HistoryPage, error) {
+	if a.Store == nil {
+		return ledger.HistoryPage{}, reason.Invalid("local history store is unavailable")
+	}
+	return ledger.New(a.Store).HistoryBefore(ctx, resource, cursor, limit, full)
 }
 func (a *LocalAuthority) Watch(ctx context.Context, r watch.Request) (watch.Result, error) {
 	if a.Store == nil {
@@ -650,6 +657,15 @@ func (a *RemoteAuthority) History(ctx context.Context, resource, cursor string, 
 	}
 	return out, e
 }
+func (a *RemoteAuthority) HistoryBefore(ctx context.Context, resource, cursor string, limit int, full bool) (ledger.HistoryPage, error) {
+	q := map[string]any{"protocolVersion": protocolVersion, "authorityId": a.Client.profile.AuthorityID, "expectedRestoreId": a.Client.profile.RestoreID, "resource": resource, "beforeCursor": cursor, "limit": limit, "full": full}
+	b, e := a.request(ctx, "/v1/history", "history", "00000000000000000000000000000000", q, false, false, "", "")
+	var out ledger.HistoryPage
+	if e == nil {
+		e = decodeResult(b, &out)
+	}
+	return out, e
+}
 func (a *RemoteAuthority) Watch(ctx context.Context, r watch.Request) (watch.Result, error) {
 	q := map[string]any{"protocolVersion": protocolVersion, "authorityId": a.Client.profile.AuthorityID, "expectedRestoreId": a.Client.profile.RestoreID, "cursor": r.Cursor, "resources": r.Resources, "until": r.Until, "timeoutMicros": r.Timeout.Microseconds()}
 	b, e := a.request(ctx, "/v1/watch", "watch", "00000000000000000000000000000000", q, false, false, "", "")
@@ -735,6 +751,10 @@ func (f *FakeAuthority) Events(context.Context, string, int) (ledger.EventsPage,
 }
 func (f *FakeAuthority) History(context.Context, string, string, int, bool) (ledger.HistoryPage, error) {
 	f.record("history")
+	return ledger.HistoryPage{}, nil
+}
+func (f *FakeAuthority) HistoryBefore(context.Context, string, string, int, bool) (ledger.HistoryPage, error) {
+	f.record("history-before")
 	return ledger.HistoryPage{}, nil
 }
 func (f *FakeAuthority) Watch(context.Context, watch.Request) (watch.Result, error) {

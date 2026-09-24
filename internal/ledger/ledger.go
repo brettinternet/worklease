@@ -78,7 +78,7 @@ func ParseCursor(value string) (Cursor, error) {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Cursor{}, cursorInvalid()
 	}
-	if c.Version != 1 || !validID(c.AuthorityID) || !validID(c.RestoreID) || (c.Feed != "events" && c.Feed != "history") || c.Sequence == "" {
+	if c.Version != 1 || !validID(c.AuthorityID) || !validID(c.RestoreID) || (c.Feed != "events" && c.Feed != "history" && c.Feed != "history-before") || c.Sequence == "" {
 		return Cursor{}, cursorInvalid()
 	}
 	if _, err := parseSequence(c.Sequence); err != nil {
@@ -521,15 +521,29 @@ type HistoryCoverage struct {
 	PrunedThroughSequence    string  `json:"prunedThroughSequence"`
 }
 type HistoryPage struct {
-	AuthorityID string          `json:"authorityId"`
-	Resource    string          `json:"resource"`
-	Coverage    HistoryCoverage `json:"coverage"`
-	Epochs      []Epoch         `json:"epochs"`
-	NextCursor  string          `json:"nextCursor"`
-	Gap         bool            `json:"gap"`
+	AuthorityID    string          `json:"authorityId"`
+	Resource       string          `json:"resource"`
+	Coverage       HistoryCoverage `json:"coverage"`
+	Epochs         []Epoch         `json:"epochs"`
+	NextCursor     string          `json:"nextCursor"`
+	PreviousCursor string          `json:"previousCursor,omitempty"`
+	Gap            bool            `json:"gap"`
 }
 
 func (s *Service) History(ctx context.Context, resource, cursor string, limit int, full bool) (HistoryPage, error) {
+	return s.history(ctx, resource, cursor, limit, full, false)
+}
+
+// HistoryBefore returns the retained epochs acquired before the supplied page.
+// Its cursor has separate semantics from History's forward cursor.
+func (s *Service) HistoryBefore(ctx context.Context, resource, cursor string, limit int, full bool) (HistoryPage, error) {
+	if cursor == "" {
+		return HistoryPage{}, reason.Invalid("backward history requires a cursor")
+	}
+	return s.history(ctx, resource, cursor, limit, full, true)
+}
+
+func (s *Service) history(ctx context.Context, resource, cursor string, limit int, full, before bool) (HistoryPage, error) {
 	if strings.TrimSpace(resource) != resource || resource == "" {
 		return HistoryPage{}, reason.Invalid("history requires one valid resource")
 	}
@@ -537,7 +551,11 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 	if e != nil {
 		return HistoryPage{}, e
 	}
-	pos, e := bindCursor(cursor, s.st.AuthorityID(), s.st.RestoreID(), "history", resource)
+	feed := "history"
+	if before {
+		feed = "history-before"
+	}
+	pos, e := bindCursor(cursor, s.st.AuthorityID(), s.st.RestoreID(), feed, resource)
 	if e != nil {
 		return HistoryPage{}, e
 	}
@@ -559,17 +577,25 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 			value := strconv.FormatInt(*earliest, 10)
 			page.Coverage.EarliestRetainedSequence = &value
 		}
-		if cursor != "" && pos < pruned {
+		if before && pruned > 0 && (earliest == nil || pos <= *earliest) {
+			page.Gap = true
+			return nil
+		}
+		if !before && cursor != "" && pos < pruned {
 			page.Gap = true
 			page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history", resource, pruned)
 			return nil
 		}
 		q := `SELECT e.claim_id,e.agent_id,e.session_id,e.work_key,e.acquired_at,coalesce(e.ended_at,0),coalesce(e.end_reason,''),e.final_revision,e.acquired_seq,coalesce(c.expires_at,0) FROM epochs e JOIN epoch_resources er ON er.claim_id=e.claim_id LEFT JOIN claims c ON c.claim_id=e.claim_id WHERE er.resource=?`
 		args := []any{resource}
-		if cursor != "" {
+		switch {
+		case before:
+			q += ` AND e.acquired_seq<? ORDER BY e.acquired_seq DESC LIMIT ?`
+			args = append(args, pos, limit)
+		case cursor != "":
 			q += ` AND e.acquired_seq>? ORDER BY e.acquired_seq ASC LIMIT ?`
 			args = append(args, pos, limit)
-		} else {
+		default:
 			q += ` ORDER BY e.acquired_seq DESC LIMIT ?`
 			args = append(args, limit)
 		}
@@ -577,13 +603,13 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 		if err != nil {
 			return storage(err)
 		}
-		defer rows.Close()
 		seqs := []int64{}
 		for rows.Next() {
 			var ep Epoch
 			var acquired, ended, seq, expires int64
 			var final *int64
 			if err := rows.Scan(&ep.ClaimID, &ep.AgentID, &ep.SessionID, &ep.WorkKey, &acquired, &ended, &ep.EndReason, &final, &seq, &expires); err != nil {
+				rows.Close()
 				return storage(err)
 			}
 			ep.AcquiredAt = time.UnixMicro(acquired).UTC()
@@ -600,20 +626,46 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 			}
 			ep.Resources, err = epochResources(ctx, tx, ep.ClaimID)
 			if err != nil {
+				rows.Close()
 				return err
 			}
 			ep.Operations, err = epochOperations(ctx, tx, ep.ClaimID, full)
 			if err != nil {
+				rows.Close()
 				return err
 			}
 			page.Epochs = append(page.Epochs, ep)
 			seqs = append(seqs, seq)
 		}
-		if cursor == "" {
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return storage(err)
+		}
+		if before || cursor == "" {
 			for i, j := 0, len(page.Epochs)-1; i < j; i, j = i+1, j-1 {
 				page.Epochs[i], page.Epochs[j] = page.Epochs[j], page.Epochs[i]
 				seqs[i], seqs[j] = seqs[j], seqs[i]
 			}
+		}
+		if len(seqs) > 0 {
+			var hasEarlier int
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM epochs e JOIN epoch_resources er ON er.claim_id=e.claim_id WHERE er.resource=? AND e.acquired_seq<?)`, resource, seqs[0]).Scan(&hasEarlier); err != nil {
+				return storage(err)
+			}
+			if hasEarlier != 0 {
+				page.PreviousCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history-before", resource, seqs[0])
+			} else if pruned > 0 {
+				page.Gap = true
+			}
+		}
+		if before {
+			if len(seqs) > 0 {
+				page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history", resource, seqs[len(seqs)-1])
+			}
+			return nil
 		}
 		next := pos
 		if len(seqs) > 0 {
@@ -622,7 +674,7 @@ func (s *Service) History(ctx context.Context, resource, cursor string, limit in
 			next = last
 		}
 		page.NextCursor = encodeCursor(s.st.AuthorityID(), s.st.RestoreID(), "history", resource, next)
-		return rows.Err()
+		return nil
 	})
 	return page, e
 }

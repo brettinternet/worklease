@@ -170,8 +170,8 @@ func (q *quotaQueue) schedule(ctx context.Context, priority RequestPriority, key
 			if !j.started {
 				j.err = ctx.Err()
 				close(j.done)
-				q.remove(j)
 			}
+			q.remove(j)
 		}
 		q.mu.Unlock()
 		return nil, ctx.Err()

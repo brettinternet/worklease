@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -158,6 +159,36 @@ func TestEmptyFeedsPreserveDurableWatermark(t *testing.T) {
 	cursor, err = ParseCursor(history.NextCursor)
 	if err != nil || cursor.Sequence != "1" || len(history.Epochs) != 0 {
 		t.Fatalf("history=%+v cursor=%+v err=%v", history, cursor, err)
+	}
+}
+
+func TestHistoryBackwardPaginationReachesOlderThanNewestTwenty(t *testing.T) {
+	ledgerSvc, leaseSvc, st, _ := fixture(t)
+	ctx := context.Background()
+	for n := 1; n <= 21; n++ {
+		claim, token := fmt.Sprintf("%032x", n), fmt.Sprintf("%064x", n)
+		grant := acquire(t, leaseSvc, st, claim, token, []string{"r"})
+		if _, err := leaseSvc.Release(ctx, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: grant.Revision}, lease.ReleaseRequest{OperationID: fmt.Sprintf("%032x", n+100), Reason: "finished", RequestNotAfter: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newest, err := ledgerSvc.History(ctx, "r", "", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(newest.Epochs) != 20 || newest.Epochs[0].ClaimID != fmt.Sprintf("%032x", 2) || newest.Epochs[19].ClaimID != fmt.Sprintf("%032x", 21) || newest.PreviousCursor == "" {
+		t.Fatalf("newest page does not expose older epochs: %+v", newest)
+	}
+	forward, err := ledgerSvc.History(ctx, "r", newest.NextCursor, 20, false)
+	if err != nil || len(forward.Epochs) != 0 {
+		t.Fatalf("forward cursor semantics changed: page=%+v err=%v", forward, err)
+	}
+	older, err := ledgerSvc.HistoryBefore(ctx, "r", newest.PreviousCursor, 20, false)
+	if err != nil || len(older.Epochs) != 1 || older.Epochs[0].ClaimID != fmt.Sprintf("%032x", 1) {
+		t.Fatalf("older page cannot reach the oldest epoch: page=%+v err=%v", older, err)
+	}
+	if _, err := ledgerSvc.HistoryBefore(ctx, "r", newest.NextCursor, 20, false); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonCursorInvalid {
+		t.Fatalf("forward cursor accepted for backward paging: %v", err)
 	}
 }
 

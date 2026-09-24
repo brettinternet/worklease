@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 21:58'
+updated_date: '2026-09-23 23:56'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128
@@ -62,6 +63,8 @@ Index core under implementation in task-129.1-index worktree; CLI/TUI integratio
 Implemented owner-private WAL index, scoped cache identity, complete/incomplete reconciliation, explicit revocation, FTS and body opt-in, cross-process lock, CLI max-age and TUI cached first frame. Independent review found four concrete defects (checkout replacement, lock order, stale fallback, empty cache); corrected and retested. Verified mise run lint, format-check, test, typecheck, hooks, focused cache and first-frame tests after rebase; code commits 6a528bc and 3586e31 fast-forwarded into main. GitHub persistence bypassed without provable access scope; unsupported OS bypasses cache.
 
 Found during TASK-128.x review: concurrent Open raced schema creation, misread it as corruption and rebuilt (deleted) a live index. Fixed with BEGIN IMMEDIATE migration (b33180f, merged 7268f9a). Not a full review of this task.
+
+Review: lock contention no longer rebuilds (deletes) a live index; concurrent queries reuse a refresh completed while waiting; cached TUI frame no longer waits on remote metadata; Backlog cache identity bound to branch/HEAD; retention invalidates partition freshness; corrupt gen-2 schema rebuilt; body-search coverage honest; adapter-to-index revocation test (4751120). Tests had leaked hook GIT_DIR into git fixtures and corrupted the repo (core.bare=true, stray commits); IsolateProcessEnvironment now strips GIT_*, queue/queueindex/queueui/instructions get isolation TestMain, lefthook unsets GIT_DIR/GIT_WORK_TREE. GitHub cache-identity finding covered by TASK-129.3's sync lock and live-authorization design. Merged to main 013a058.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

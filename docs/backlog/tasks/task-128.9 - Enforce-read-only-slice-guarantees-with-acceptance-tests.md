@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 19:43'
+updated_date: '2026-09-23 23:56'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128.4
@@ -54,6 +55,8 @@ The S2 exit criteria in plan section 16 are guarantees, not features: no provide
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation: narrowed queue authority dependency to Status, enforced read-only Backlog command and GitHub GraphQL seams with negative controls, and added AST import/mutation boundary tests. Acceptance fixtures cover combined scratch Backlog/GitHub, JSON/TUI parity, incomplete and unreadable/stale sources, local/remote scope with live status, and subprocess network sandbox denial. One independent review found six item-scoped gaps; all fixed and affected tests rerun. `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass. Implementation commit aac5f43cdc5b48dd89b2b741d094e61c072fc01c fast-forward merged to main; no D1-D27 or section 16 refinement required.
+
+Review: TUI total is unknown when a source is unresolved; incomplete-graph fixture now carries a dependency edge; combined Backlog+GitHub [me] and held/expired claim-filter TUI/JSON parity tests added (67b1f0e, a6991f2). Merged to main 013a058.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

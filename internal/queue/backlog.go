@@ -75,6 +75,17 @@ func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, stri
 	if !ok {
 		return "", "", "", false
 	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), a.timeout())
+	defer cancel()
+	branch, err := exec.CommandContext(probeCtx, backlogGitBinary, "-C", source.Locator, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", "", "", false
+	}
+	head, err := exec.CommandContext(probeCtx, backlogGitBinary, "-C", source.Locator, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", "", "", false
+	}
+	generation += ":" + strings.TrimSpace(string(branch)) + ":" + strings.TrimSpace(string(head))
 	for _, name := range []string{"backlog.config.yml", filepath.Join("backlog", "config.yml")} {
 		content, err := os.ReadFile(filepath.Join(source.Locator, name))
 		if err == nil {
@@ -99,6 +110,13 @@ type BacklogSourceDiagnostics struct {
 
 const backlogOutputLimit = 8 << 20
 const backlogTimeout = 15 * time.Second
+
+var backlogGitBinary = func() string {
+	if path, err := exec.LookPath("git"); err == nil {
+		return path
+	}
+	return "git"
+}()
 
 // BacklogAdapter reads only the configured checkout. TerminalStatuses is the caller's
 // project status mapping; provider isReady is never used to infer generic readiness.
@@ -175,6 +193,9 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	ctx, cancel := context.WithTimeout(ctx, a.timeout())
 	defer cancel()
 	priority := PriorityBackground
+	if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok && requested == PriorityAction {
+		priority = PriorityAction
+	}
 	if len(args) >= 2 && args[0] == "task" {
 		priority = PriorityVisible
 		if args[1] == "view" {
