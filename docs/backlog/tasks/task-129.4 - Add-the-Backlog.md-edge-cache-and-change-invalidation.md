@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 21:33'
+updated_date: '2026-09-24 21:25'
 labels:
   - work-queue
   - backlog-md
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129.1
@@ -57,6 +58,8 @@ Invalidation is a choice made from measurements: the long-lived `task list --jso
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented partitioned Backlog edge observations and bulk-list dependency path, authoritative non-coalesced action closure reads, priority hydration, filesystem invalidation with one-minute reconciliation, and coverage in snapshots/TUI. Tests: TestBacklogEdgeInvalidationAndIndependentPrerequisite, TestInFlightBacklogViewCannotRestoreInvalidatedEdges, TestBacklogActionClosureRereadsEveryPrerequisite, TestEdgeHydrationOrdersSelectedClosureBeforeVisibleAndBackground, TestSelectedClosureTraversesKnownEdgeToUnknownPrerequisite, TestBacklogBulkEdgesAndPartialCoverage, TestBacklogFilesystemWatchInvalidatesSameMinuteEdit, TestBacklogPeriodicReconciliationRelistsWithoutEvents, plus queue UI and full suites. One independent review found six item-scoped defects; all fixed and affected checks rerun. Worktree commits 46a32e0 and 920a5ad fast-forwarded to main; lint, format-check, test, typecheck, staged hooks passed. Default-parallel full test sporadically failed pre-existing queueindex cross-process single-flight helper under load; focused isolation passed and full suite passed with GOMAXPROCS=2, with no disabled tests.
+
+Post-completion review: fixed stale list coalescing across invalidation, late-created task dir watch, and watch registration failure fallback (6e38ec1).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

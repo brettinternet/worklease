@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 04:07'
+updated_date: '2026-09-24 21:25'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129.1
@@ -97,6 +98,8 @@ Checkpoint 2026-09-24 (real index contention): commit 25f1626 on task-129-6-loop
 Checkpoint 2026-09-24 (cold page PTY): commit 5124593 on task-129-6-loop-76edc502 adds opt-in real GitHub adapter first-page-to-live Bubble Tea PTY-output probe. D22 20 samples: request-to-output p50/p95/p99 16.65/17.50/17.56 ms; page-return-to-output 10.46/11.29/11.33 ms; one 100-summary request/sample (11,824 bytes), no full enumeration. Authentication and startup are outside timing, and PTY bytes are not physical display paint. Focused 20-sample test, lint, format-check, test, typecheck and hooks passed. Narrow review checked unique marker and page cursor; previous general review stands. Acceptance #2-4 remain open: real terminal paint, production index/provider scheduler and concurrent resources, final section 14 decisions. Next instrument production provider-to-index refresh and physical display, then per-row accounting. Do not merge or clean until complete.
 
 Completion 2026-09-24: ec19ed5 merged fast-forward into main with all earlier benchmark commits. D22 20-sample full runner adds standalone 10k/50k/100k p50/p95/p99 and RSS and corrects per-benchmark child RSS attribution; §14 workload table records process/API/bytes/quota/disk scope, revisions and 100k refresh failure boundary. 20-sample PTY tests measured 10k navigation p95 17.95 ms and cold first-page arrival-to-output p95 11.25 ms; prior combined 50k real-adapter HTTP 429/stall + graph + SQLite Replace + renewal measured p95 56.09 ms output and minimum 9m36s previous-lease margin (10m TTL). Revises 50k concurrent-refresh target to 75 ms p95; physical terminal pixels, production provider-to-index scheduler, aggregate GitHub quota and remote renewal remain explicitly unmeasured, not claimed as guarantees. Earlier general review stands; narrow diff/metrics check only. Verified full 20-sample mise queue-benchmark, opt-in PTY probes, lint, format-check, test, typecheck, doc-test, staged hooks and commit hooks. No push.
+
+Post-completion review: configured views now use worker-prepared projection (50k configured Update+View p95 ~29 ms), claim preview re-sorts prepared order (57a6571).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 23:00'
+updated_date: '2026-09-24 21:25'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-128
@@ -75,6 +76,8 @@ Remote hosted authority restart/restore integration test added on task-129.5-ove
 User approved staging the active queue-owned handle regression in TASK-130.1 because the handle is introduced there; D20 safety semantics remain unchanged. Acceptance #4 now covers the overlay identity gate, with end-to-end active-handle coverage transferred to TASK-130.1.
 
 Acceptance evidence: internal/queue/live_claims_test.go cursor/status/watch race matrix (acquire/renew/release/expiry), local authority replay, authority-time expiry without event, gap rebuild, and real hosted HTTP remote restart/restore with pinned profile; internal/queueui/model_test.go rebuilding state, stalled-provider/live-claim independence. After merging current main into task branch, mise run lint, format-check, test, typecheck, hooks all passed. Plan D20 staging clarification committed in a40dfe7; active-handle regression transferred to TASK-130.1 #9.
+
+Post-completion review: fixed unknown-after-failed-expiry retry, gap invalidation surviving provider snapshots, and made race fixture cursor-dependent (6d4f1ab).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 23:30'
+updated_date: '2026-09-24 21:25'
 labels:
   - work-queue
   - github
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129.1
@@ -69,6 +70,8 @@ Checkpoint: b264f02 on task-129-3-resume removes stale in-memory GitHub refs whe
 Checkpoint: task-129-3-resume commits a2d6fc9, a29953b, 9c6e7c4, 343997c. Fake GitHub + real index test exercises interrupted moving-page reconciliation, cursor recovery, atomic node replacement. Persist unknown/moved absence evidence without claiming deletion, batch visible GitHub detail hydration on initial paint and selection, explicit paginated lazy comments. All gates passed after each commit: mise run lint, format-check, test, typecheck, hooks and commit hook. One proportional general review pending; branch not integrated. Main advanced concurrently with TASK-129.5/TASK-130.1; merge main into branch, run gates, integrate without touching unrelated dirty main backlog records. Remaining: act on concrete review findings, verify acceptance criterion evidence and finalize only if complete.
 
 Final evidence: main fast-forward integrated 1e568e3 (branch includes 7b17b4c..c2d8aef). AC1 TestGitHubSyncPageAndWatermarkAreAtomic, TestGitHubIncrementalPagesKeepFixedWatermarkAndOverlap, TestGitHubSyncResumesAfterReopenWithMovedNode; AC2 TestLoaderNewest304StillRefreshesOlderIssue; AC3 TestGitHubReconciliationRetiresOnlyAtCompletedGeneration, TestGitHubWithheldItemRetainsUnknownIdentity, TestGitHubConfirmedAccessLossClassifiesInaccessible, TestGitHubSyncDeduplicatesByNodeIDAcrossReferences; AC4 TestLoaderDefersGitHubDetailsAndBatchesVisibleRows, TestGitHubCommentsLoadOnlyOnExplicitRead, TestActivityLoadsCommentsOnDemandAndIgnoresLatePages; AC5 github.blockedBy interpretation and section 14 document the observed removal without updatedAt; AC6 TestGitHubReconciliationContinuesAcrossFreshAdapters, TestGitHubReconciliationResumesAfterInterruptedMovingPage, TestGitHubIncrementalRevisitsIssueMovedAheadOfCursor, TestGitHub404WithholdsExistingIssueInsteadOfDeletingIt, TestGitHubTransferredNodeWithholdsItemAndDisablesClaims, TestGitHubListRejectsExpiredCursor. One general reviewer pass found four item-scoped defects; each corrected, focused regressions added; no second general pass. mise run lint, format-check, test, typecheck, hooks and commit hook passed after final corrections and main integration. docs/work-queue-tui-proposal.md section 14 updated in c2d8aef. No push. Preserve unrelated primary changes.
+
+Post-completion review: fixed resumed-reconciliation coverage, SAML/401 detail withholding, and in-flight hydration after withhold (3325314).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
