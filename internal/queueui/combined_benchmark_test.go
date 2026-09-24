@@ -17,6 +17,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/store"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/creack/pty"
@@ -124,7 +125,7 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 			return
 		}
 		rateRequests.Add(1)
-		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer server.Close()
@@ -168,7 +169,24 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 		}
 	}()
 
+	// Use the production SQLite index path concurrently with the renderer,
+	// graph traversal, provider reads, and renewal. The fixture still excludes
+	// the provider-to-index scheduler and any physical display paint.
+	indexDir := t.TempDir()
+	index, err := queueindex.Open(ctx, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	partition := queueindex.Partition{Source: "source-0", Principal: "tester", Scope: "local", Generation: "1"}
+	indexed := make([]queue.Item, 0, 10000)
+	for _, item := range snapshot.Items {
+		if item.Ref.SourceID == partition.Source {
+			indexed = append(indexed, item)
+		}
+	}
 	inputTimes := make([]time.Duration, 0, count)
+	indexTimes := make([]time.Duration, 0, count)
 	renewTimes := make([]time.Duration, 0, count)
 	minimumMargin := ttl
 	for i := 0; i < count; i++ {
@@ -195,6 +213,13 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 		}
 		graphDone := make(chan struct{})
 		go func() { _ = queue.Recompute(graph, queue.CoverageComplete); close(graphDone) }()
+		indexDone := make(chan time.Duration, 1)
+		indexErrors := make(chan error, 1)
+		go func() {
+			started := time.Now()
+			indexErrors <- index.Replace(ctx, partition, indexed, true)
+			indexDone <- time.Since(started)
+		}()
 		snapshot.Revision++
 		selected := "NEWONE"
 		key := "j"
@@ -246,6 +271,15 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("graph recompute hung")
 		}
+		select {
+		case err := <-indexErrors:
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexTimes = append(indexTimes, <-indexDone)
+		case <-time.After(30 * time.Second):
+			t.Fatal("index replace hung")
+		}
 	}
 	quantile := func(values []time.Duration, percent int) time.Duration {
 		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
@@ -254,7 +288,22 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 	if rateRequests.Load() != 1 || stalledRequests.Load() != 1 {
 		t.Fatalf("expected one rate-limited HTTP request and one stalled transport, got %d and %d", rateRequests.Load(), stalledRequests.Load())
 	}
-	t.Logf("combined PTY publication+input-to-output n=%d p50=%s p95=%s p99=%s; local renewal p50=%s p95=%s p99=%s, minimum previous-lease margin=%s; GitHub rate HTTP requests=%d, stalled HTTP requests=%d (no physical paint or remote authority)", count,
+	var indexBytes int64
+	entries, err := os.ReadDir(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().IsRegular() {
+			indexBytes += info.Size()
+		}
+	}
+	t.Logf("combined PTY publication+input-to-output n=%d p50=%s p95=%s p99=%s; local renewal p50=%s p95=%s p99=%s, minimum previous-lease margin=%s; 10k index replace p50=%s p95=%s p99=%s, disk bytes=%d; GitHub rate HTTP requests=%d, stalled HTTP requests=%d (no physical paint or remote authority)", count,
 		quantile(inputTimes, 50), quantile(inputTimes, 95), quantile(inputTimes, 99),
-		quantile(renewTimes, 50), quantile(renewTimes, 95), quantile(renewTimes, 99), minimumMargin, rateRequests.Load(), stalledRequests.Load())
+		quantile(renewTimes, 50), quantile(renewTimes, 95), quantile(renewTimes, 99), minimumMargin,
+		quantile(indexTimes, 50), quantile(indexTimes, 95), quantile(indexTimes, 99), indexBytes, rateRequests.Load(), stalledRequests.Load())
 }
