@@ -227,21 +227,26 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 }
 
 // query schedules safe reads by account quota; claims and heartbeats never use this path.
+func githubQuotaIdentity(host, account, apiBase string) string {
+	identity := "github:" + strings.ToLower(host+"\x00"+account)
+	if apiBase != "" {
+		identity += "\x00" + apiBase
+	}
+	return identity
+}
+
 const githubViewerQuery = `query { viewer { login } }`
 const githubRepositoryIdentityQuery = `query($owner:String!,$repo:String!) { repository(owner:$owner,name:$repo) { id nameWithOwner } }`
 
 func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query string, variables any, dest any) error {
-	// Only the four vetted read operations can reach the provider. This also
+	// Only explicitly vetted read operations can reach the provider. This also
 	// rejects dynamically assembled GraphQL mutations before any network I/O.
 	switch query {
-	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery:
+	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery, githubIssueCommentQuery:
 	default:
 		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
 	}
-	identity := "github:" + strings.ToLower(b.host+"\x00"+b.account)
-	if a.APIBase != "" {
-		identity += "\x00" + a.APIBase
-	} // independent test servers do not share quota
+	identity := githubQuotaIdentity(b.host, b.account, a.APIBase)
 	gate := quotaScheduler(identity, 1)
 	body, _ := json.Marshal(struct {
 		Query     string `json:"query"`

@@ -277,7 +277,7 @@ Use the generic contract's deterministic ordering for next-ready and, when expos
 
 ### Focused operational editing (D26)
 
-The queue should let a worker make the small updates needed to coordinate: enter In Progress, report Blocked, request review, mark completion, assign, or record progress/evidence. Those are workflow intents, not a universal status enum. Present the provider's actual valid transitions and required fields using explicit per-source mappings. GitHub Issues without a configured, supported Projects/label mapping does not gain an invented In Progress state.
+The queue should let a worker make the small updates needed to coordinate: enter In Progress, report Blocked, request review, mark completion, assign, or record progress/evidence. Those are workflow intents, not a universal status enum. Present the provider's actual valid transitions and required fields using explicit per-source mappings. GitHub Issues without a configured, supported Projects/label mapping does not gain an invented In Progress state. For GitHub state transitions, the write adapter supports only close-as-completed and reopen; Start/resume, Blocked, and Review have no mapping. Completion read-back must verify `state=CLOSED` and `stateReason=COMPLETED`; REST `not_planned` never establishes completion. Issue bodies and embedded checklists remain read-only because GitHub has no conditional body write.
 
 State, assignment, and progress are the first write capabilities. Add priority, labels, or other fields only when a concrete coordination workflow needs them and the adapter can preserve unrelated data and verify the result. Full issue-body editing, project schema administration, arbitrary field forms, and bulk/dependency editing are not initial goals. Unsupported fields link back to the provider instead of creating local shadow state.
 
@@ -290,9 +290,9 @@ Prefer native structured state and progress fields. Use a note or comment only w
 | Operation | Backlog.md | GitHub | Initial availability |
 | --- | --- | --- | --- |
 | Change state | `task edit --status` with a configured status | Close or reopen with a reason | Slice 6, after transition tests |
-| Record progress | `--append-notes` or `--comment` with marker | Issue comment with marker | Slice 6 |
+| Record progress | `--append-notes` or `--comment` with marker | Issue comment with HTML operation marker and verified author | Slice 6 |
 | Check a criterion | `--check-ac N` targets a mutable index | Body task lists | Read-only initially. Backlog.md needs stable criterion targeting or an atomic precondition; pre/post reads can detect, not prevent, checking the wrong criterion after a reorder. GitHub body replacement lacks compare-and-set. |
-| Assign to me | Read-modify-write with `--assignee`; the race is declared | Add-assignees endpoint | Slice 6 |
+| Assign to me | Read-modify-write with `--assignee`; the race is declared | Add-assignees endpoint; existing assignees are preserved | Slice 6 |
 | Release | No provider write | No provider write | Slice 4 |
 
 If no durable progress write exists, the queue stays useful for browsing and claims but disables Record progress. Never create sidecar task files. Adding Markdown as a separately configured source is an explicit choice, not a fallback write path. Read-only adapters can still support claims, show externally recorded progress, and verify existing provider checkpoints. Nothing may manufacture a completion checkpoint. A human who claims and then abandons an item without work needs a **cancellation**: a release with a non-completion reason, allowed only when the queue started no guarded operation or provider write under that claim. The generic contract now defines this no-effect cancellation without a provider checkpoint. Every other release still requires a verified provider checkpoint.
@@ -373,7 +373,7 @@ The remote authority's read role can inspect namespace claim metadata; it does n
 | Deployment | Credential behavior |
 | --- | --- |
 | Local Backlog.md | OS access and the supported CLI. No login. A trusted, explicitly configured checkout. |
-| Personal GitHub | `gh auth token --hostname H --user U` for the configured account, run with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed unless the source explicitly selects one. Verify `viewer.login` equals the configured account before any write and after every credential change. The token stays in process memory; Worklease never persists it. |
+| Personal GitHub | `gh auth token --hostname H --user U` for the configured account, run with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed unless the source explicitly selects one. Verify `viewer.login` equals the configured account before every write and whenever credentials change. Writes are interactive-only; unattended GitHub writes are disabled. The token stays in process memory; Worklease never persists it. |
 | Other personal integrations | The provider's credential helper, otherwise a native-app OAuth flow or explicit scoped token input. No embedded application secret. |
 | Headless or team automation | Provider app or service identities, short-lived scoped credentials, or a caller helper. Record both the initiating worker and the provider actor. |
 | Later source service | Server-managed secrets and refresh, separate client authentication, and per-source authorization. Choose explicitly between per-user delegation and a documented service identity. |
@@ -642,11 +642,11 @@ Preserve existing claim and authorization guarantees. Planned generic workflow e
 
 The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel from S1. When it lands, S3's edge cache becomes a fallback for older versions.
 
-## 17. Open questions
+## 17. Decisions and follow-ups
 
-These do not block S1 or S2. Each needs an answer recorded here before the named slice starts.
+Record decisions here before enabling the corresponding capability; settled items below do not imply support beyond their stated scope.
 
 - **Answered for 25 clients / 500 claims on D22:** polling did not saturate the authority in TASK-129.7's 10-minute-TTL run (§14); no server-side coalescing is required at this measured scale. The model predicts ~100 store polls/s; direct SQLite poll counts and larger scales remain unproven. Two shorter-TTL renewal rounds succeeded, but sustained shorter-TTL capacity cannot be inferred from the claim count alone.
 - **Answered for S4 (`queue next`):** no provider-neutral claim paging is needed. Next enumerates the complete configured source scope and dependency edges, then observes exact resource claims through the existing bounded batch-status overlay (up to 32 keys per request, split on oversized responses). It never enumerates every claim in the authority. Unknown status fails selection closed; a wave is an observation, not a reservation. Revisit paging only if a future feature must enumerate claims outside the source-scoped resource set.
-- Whether to map GitHub Projects v2 status fields; this needs the `project` scope and per-project field discovery (before S6).
-- A headless GitHub identity: GitHub App installation versus fine-grained tokens (before any unattended write).
+- **Settled for S6:** GitHub Projects v2 status mapping is deferred. It requires the `project` scope and per-project field discovery; until then, no Projects or label-based workflow state is inferred.
+- **Settled:** Unattended GitHub writes are disabled. If headless writes are considered later, use an explicitly configured GitHub App installation identity; no unattended-write support ships in this slice.
