@@ -29,6 +29,8 @@ type liveAuthorityFake struct {
 	state                     string
 	expires                   time.Time
 	watchCount                int
+	statusReads               int
+	watchEvents               int
 	atHead, atStatus, atWatch func()
 	cancel                    context.CancelFunc
 	gap                       bool
@@ -36,6 +38,9 @@ type liveAuthorityFake struct {
 	failStatusOnce            bool
 	failWatchOnce             bool
 	expireWithoutEvent        bool
+	timeoutWatches            int
+	eventAfterCursor          bool
+	advanceExpiry             func()
 	replayEvent               bool
 }
 
@@ -51,6 +56,7 @@ func (f *liveAuthorityFake) Events(_ context.Context, cursor string, limit int) 
 }
 func (f *liveAuthorityFake) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
 	f.calls = append(f.calls, "status")
+	f.statusReads++
 	if f.failStatusOnce {
 		f.failStatusOnce = false
 		return lease.Status{}, errors.New("temporary status outage")
@@ -78,11 +84,24 @@ func (f *liveAuthorityFake) Watch(_ context.Context, request watch.Request) (wat
 		f.failWatchOnce = false
 		return watch.Result{}, errors.New("temporary watch outage")
 	}
-	if f.expireWithoutEvent && f.watchCount == 1 {
-		f.state = "expired"
-		return watch.Result{AuthorityID: "authority", NextCursor: request.Cursor, TimedOut: true}, nil
+	if f.expireWithoutEvent {
+		limit := f.timeoutWatches
+		if limit == 0 {
+			limit = 1
+		}
+		if f.watchCount <= limit {
+			if f.advanceExpiry != nil {
+				f.advanceExpiry()
+			}
+			f.state = "expired"
+			return watch.Result{AuthorityID: "authority", NextCursor: request.Cursor, TimedOut: true}, nil
+		}
+		if f.cancel != nil {
+			f.cancel()
+		}
+		return watch.Result{}, context.Canceled
 	}
-	if request.Cursor != "head" || len(request.Resources) != 0 || request.Until != "" {
+	if (request.Cursor != "head" && request.Cursor != "event") || len(request.Resources) != 0 || request.Until != "" {
 		panic("filtered or non-cursor watch")
 	}
 	if f.identityChanged {
@@ -91,24 +110,48 @@ func (f *liveAuthorityFake) Watch(_ context.Context, request watch.Request) (wat
 	if f.gap && f.watchCount == 1 {
 		return watch.Result{AuthorityID: "authority", Gap: true}, nil
 	}
-	if f.watchCount == 1 || f.replayEvent && f.watchCount == 2 {
-		return watch.Result{AuthorityID: "authority", NextCursor: "head", Event: &ledger.Event{Resources: []string{f.resource}}}, nil
+	if request.Cursor == "head" && (f.eventAfterCursor || f.replayEvent) {
+		f.watchEvents++
+		return watch.Result{AuthorityID: "authority", NextCursor: "event", Event: &ledger.Event{Resources: []string{f.resource}}}, nil
 	}
-	if f.cancel != nil {
+	if f.cancel != nil && f.watchCount >= 2 {
 		f.cancel()
+		return watch.Result{}, context.Canceled
 	}
-	return watch.Result{}, context.Canceled
+	return watch.Result{AuthorityID: "authority", NextCursor: request.Cursor, TimedOut: true}, nil
+}
+
+func TestLiveAuthorityFakeOnlyEmitsPostCursorEvents(t *testing.T) {
+	t.Parallel()
+	f := &liveAuthorityFake{state: "free"}
+	result, err := f.Watch(context.Background(), watch.Request{Cursor: "head"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event != nil {
+		t.Fatalf("watch returned an event without a post-cursor mutation: %+v", result.Event)
+	}
 }
 
 func TestRunClaimOverlayCursorSnapshotWatchRaces(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"acquire", "renew", "release", "expiry"} {
 		for _, phase := range []string{"head", "status", "watch"} {
 			t.Run(action+"/"+phase, func(t *testing.T) {
 				items, sources := claimFixtures(1)
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				f := &liveAuthorityFake{state: "free", cancel: cancel, expires: time.Now().Add(time.Hour)}
-				selected := ClaimAuthority{API: f, LiveAPI: f, ID: "authority", Now: func() (time.Time, error) { return time.Now(), nil }}
+				now := time.Now()
+				expires := now.Add(time.Hour)
+				if action == "expiry" {
+					now = time.Unix(100, 0)
+					expires = now.Add(time.Second)
+				}
+				f := &liveAuthorityFake{state: "free", cancel: cancel, expires: expires, expireWithoutEvent: action == "expiry", timeoutWatches: 1}
+				if action == "expiry" {
+					f.advanceExpiry = func() { now = f.expires }
+				}
+				selected := ClaimAuthority{API: f, LiveAPI: f, ID: "authority", Now: func() (time.Time, error) { return now, nil }}
 				mutate := func() {
 					switch action {
 					case "acquire", "renew":
@@ -124,11 +167,28 @@ func TestRunClaimOverlayCursorSnapshotWatchRaces(t *testing.T) {
 				}
 				switch phase {
 				case "head":
-					f.atHead = mutate
+					f.atHead = func() {
+						mutate()
+						if action == "expiry" {
+							now = f.expires
+						}
+					}
 				case "status":
-					f.atStatus = mutate
+					f.atStatus = func() {
+						mutate()
+						if action == "expiry" {
+							now = f.expires
+						}
+					}
 				case "watch":
-					f.atWatch = mutate
+					f.atWatch = func() {
+						if f.watchCount == 1 {
+							mutate()
+							if action != "expiry" {
+								f.eventAfterCursor = true
+							}
+						}
+					}
 				}
 				var last ClaimObservation
 				_ = RunClaimOverlay(ctx, items, sources, selected, config.ProfilePaths{}, nil, func(observed []Item, _ bool, _ error) {
@@ -140,8 +200,14 @@ func TestRunClaimOverlayCursorSnapshotWatchRaces(t *testing.T) {
 						f.resource = observed[0].Resources[0]
 					}
 				})
-				if !slices.Equal(f.calls[:3], []string{"events", "status", "watch"}) || f.watchCount != 2 {
+				if len(f.calls) < 3 || !slices.Equal(f.calls[:3], []string{"events", "status", "watch"}) || f.watchCount != 2 {
 					t.Fatalf("calls: %v", f.calls)
+				}
+				if action == "expiry" && f.watchEvents != 0 {
+					t.Fatalf("expiry emitted a watch event: %d", f.watchEvents)
+				}
+				if action == "expiry" && phase == "watch" && f.statusReads < 2 {
+					t.Fatalf("expiry was not recovered through timeout: status reads=%d calls=%v", f.statusReads, f.calls)
 				}
 				want := "held"
 				if f.state == "free" {
@@ -361,6 +427,31 @@ func TestRunClaimOverlayExpiresWithoutEventAtAuthorityTime(t *testing.T) {
 		}
 	})
 	if !errors.Is(err, context.Canceled) || !slices.Equal(states, []string{"held", "expired"}) {
+		t.Fatalf("states=%v calls=%v err=%v", states, f.calls, err)
+	}
+}
+
+func TestRunClaimOverlayRetriesFailedExpiryStatusAfterTimeout(t *testing.T) {
+	items, sources := claimFixtures(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Unix(100, 0)
+	f := &liveAuthorityFake{state: "active", expires: now.Add(time.Second), expireWithoutEvent: true, timeoutWatches: 2, cancel: cancel}
+	f.atWatch = func() {
+		if f.watchCount == 1 {
+			now = f.expires
+			f.state = "expired"
+			f.failStatusOnce = true
+		}
+	}
+	var states []string
+	err := RunClaimOverlay(ctx, items, sources, ClaimAuthority{API: f, LiveAPI: f, ID: "authority", Now: func() (time.Time, error) { return now, nil }}, config.ProfilePaths{}, nil, func(observed []Item, _ bool, _ error) {
+		states = append(states, observed[0].Claim.State)
+		if observed[0].Claim.Known && observed[0].Claim.State == "expired" {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) || !slices.Equal(states, []string{"held", "unknown", "expired"}) {
 		t.Fatalf("states=%v calls=%v err=%v", states, f.calls, err)
 	}
 }
