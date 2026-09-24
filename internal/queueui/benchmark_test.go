@@ -73,6 +73,36 @@ func BenchmarkQueueFullRefreshToRender(b *testing.B) {
 	}
 }
 
+// Split the full-refresh budget into its synchronous event-loop costs. Each
+// phase uses the same fixed five-source fixture as the end-to-end benchmark.
+func BenchmarkQueueRefreshPhases(b *testing.B) {
+	for _, size := range []int{10000, 50000, 100000} {
+		b.Run(fmt.Sprintf("items-%d", size), func(b *testing.B) {
+			snapshot := benchSnapshot(size)
+			m := New(snapshot)
+			m.Sources = []queue.Source{{ID: "source-0"}, {ID: "source-1"}, {ID: "source-2"}, {ID: "source-3"}, {ID: "source-4"}}
+			b.Run("clone", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					cloned := snapshot.Clone()
+					if len(cloned.Items) != size {
+						b.Fatal("incomplete clone")
+					}
+				}
+			})
+			b.Run("projection", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					m.rowCache = &rowCache{}
+					if len(m.rows()) != size {
+						b.Fatal("incomplete projection")
+					}
+				}
+			})
+		})
+	}
+}
+
 func BenchmarkQueueWarmFirstView(b *testing.B) {
 	snapshot := benchSnapshot(10000)
 	b.ReportAllocs()
