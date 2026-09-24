@@ -274,6 +274,7 @@ const (
 	ActionResume         Action = "resume"
 	ActionReportBlocked  Action = "report-blocked"
 	ActionRecordProgress Action = "record-progress"
+	ActionAssignToMe     Action = "assign-to-me"
 	ActionRequestReview  Action = "review"
 	ActionComplete       Action = "complete"
 	ActionReopen         Action = "reopen"

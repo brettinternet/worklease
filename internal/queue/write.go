@@ -306,7 +306,7 @@ func (p WritePipeline) Start(ctx context.Context, intent WriteIntent) (WriteResu
 	if intent.Append != "" && intent.Marker != "worklease-op:"+intent.OperationID {
 		return heldUnchanged(), fmt.Errorf("invalid append marker")
 	}
-	if intent.Action != ActionRecordProgress {
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
 		mapping := map[Action]string{ActionStart: "start", ActionResume: "start", ActionReportBlocked: "blocked", ActionRequestReview: "review", ActionComplete: "complete", ActionReopen: "reopen"}[intent.Action]
 		if mapping == "" || p.Workflow[mapping] == "" || p.Workflow[mapping] != intent.Transition {
 			return heldUnchanged(), fmt.Errorf("no-workflow-mapping")
@@ -409,7 +409,7 @@ func actionWriteEligible(action Action, pre WritePreflight) bool {
 	switch action {
 	case ActionStart, ActionResume:
 		return pre.Ready
-	case ActionReportBlocked, ActionRecordProgress, ActionRequestReview, ActionReopen:
+	case ActionReportBlocked, ActionRecordProgress, ActionAssignToMe, ActionRequestReview, ActionReopen:
 		return pre.Owner
 	case ActionComplete:
 		return pre.Owner && pre.CompletionEvidence

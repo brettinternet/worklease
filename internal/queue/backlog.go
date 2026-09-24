@@ -179,7 +179,7 @@ func backlogReadCommand(binary string, args []string) bool {
 		return false
 	}
 	return len(args) == 1 && args[0] == "--version" ||
-		len(args) == 3 && args[0] == "config" && args[1] == "get" && (args[2] == "remoteOperations" || args[2] == "checkActiveBranches" || args[2] == "autoCommit" || args[2] == "bypassGitHooks") ||
+		len(args) == 3 && args[0] == "config" && args[1] == "get" && (args[2] == "remoteOperations" || args[2] == "checkActiveBranches" || args[2] == "autoCommit" || args[2] == "bypassGitHooks" || args[2] == "statuses") ||
 		len(args) == 3 && args[0] == "task" && args[1] == "list" && args[2] == "--json" ||
 		len(args) == 4 && args[0] == "task" && args[1] == "view" && args[2] != "" && args[3] == "--json"
 }
