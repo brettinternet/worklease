@@ -193,6 +193,76 @@ func TestOnDemandBatchAdapterHydratesVisibleRows(t *testing.T) {
 	}
 }
 
+type hydrationRaceAdapter struct {
+	*fakeAdapter
+	started chan struct{}
+	release chan struct{}
+	ref     Ref
+}
+
+func (a *hydrationRaceAdapter) List(ctx context.Context, _ Source, _ Query, cursor string) (SummaryPage, error) {
+	if cursor == "" {
+		return SummaryPage{Items: []Summary{{Ref: a.ref, Title: "summary"}}, NextCursor: "next", Coverage: Coverage{State: CoveragePartial}}, nil
+	}
+	select {
+	case <-a.started:
+	case <-ctx.Done():
+		return SummaryPage{}, ctx.Err()
+	}
+	return SummaryPage{}, GitHubDiagnostic{Code: "saml-sso", Detail: "authorization required"}
+}
+
+func (a *hydrationRaceAdapter) ReadItems(ctx context.Context, _ Source, refs []Ref, _ []string, _ int) []ItemOutcome {
+	close(a.started)
+	select {
+	case <-a.release:
+	case <-ctx.Done():
+		return nil
+	}
+	item := Item{Summary: Summary{Ref: refs[0], Title: "hydrated", Fresh: true}, Body: "private body"}
+	return []ItemOutcome{{Ref: refs[0], Item: &item, Kind: "found"}}
+}
+
+func (*hydrationRaceAdapter) ReadDependencies(context.Context, Source, Ref, string, int) (DependencyPage, error) {
+	return DependencyPage{Completeness: CoverageComplete}, nil
+}
+
+func TestSourceAccessWithholdInvalidatesInFlightHydration(t *testing.T) {
+	t.Parallel()
+	ref := Ref{SourceID: "s", ItemID: "1"}
+	adapter := &hydrationRaceAdapter{fakeAdapter: newFake(), started: make(chan struct{}), release: make(chan struct{}), ref: ref}
+	registry := NewRegistry()
+	registry.adapters["github"] = adapter
+	loader := NewLoader(registry)
+	loader.GitHubSync = &syncTestStore{}
+	source := Source{ID: "s", Adapter: "github"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	updates := loader.Refresh(ctx, []Source{source})
+	observedWithhold := false
+	for updates != nil {
+		select {
+		case snapshot, ok := <-updates:
+			if !ok {
+				updates = nil
+				continue
+			}
+			if snapshot.Sources[source.ID].State == CoverageUnknown && len(snapshot.Items) == 0 && !observedWithhold {
+				observedWithhold = true
+				close(adapter.release)
+			}
+		case <-ctx.Done():
+			t.Fatalf("refresh did not finish: %v", ctx.Err())
+		}
+	}
+	if !observedWithhold {
+		t.Fatal("source-wide denial was not published before hydration release")
+	}
+	if _, ok := loader.Store.Item(ref); ok {
+		t.Fatal("hydration from the withheld generation restored private content")
+	}
+}
+
 func TestGitHubSSOExpiryWithholdsCachedProjection(t *testing.T) {
 	fake := newFake()
 	ref := Ref{SourceID: "s", ItemID: "1"}

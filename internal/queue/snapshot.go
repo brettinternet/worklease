@@ -409,6 +409,14 @@ func (l *Loader) failSourceDiagnostic(ctx context.Context, source string, genera
 	}, out)
 }
 func (l *Loader) withholdSource(ctx context.Context, source Source, generation uint64, reason string, out chan<- Snapshot) {
+	l.mu.Lock()
+	if l.generation[source.ID] != generation {
+		l.mu.Unlock()
+		return
+	}
+	l.generation[source.ID]++
+	withholdGeneration := l.generation[source.ID]
+	l.mu.Unlock()
 	if l.GitHubSync != nil {
 		if err := l.GitHubSync.WithholdGitHubSource(ctx, source); err != nil {
 			reason = "github-access-unverified-payload-purge-failed"
@@ -416,7 +424,7 @@ func (l *Loader) withholdSource(ctx context.Context, source Source, generation u
 			reason = "github-reconciliation-restart-failed"
 		}
 	}
-	l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+	l.publish(ctx, source.ID, withholdGeneration, func(s *Snapshot) {
 		for key, item := range s.Items {
 			if item.Ref.SourceID == source.ID {
 				delete(s.Items, key)
@@ -521,6 +529,9 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		}()
 	}
 	for {
+		if !l.current(source.ID, generation) {
+			break
+		}
 		if ctx.Err() != nil {
 			l.failSource(ctx, source.ID, generation, "refresh-cancelled", out)
 			break
@@ -589,6 +600,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			items[key] = item
 		}
 		var retired []Ref
+		var resumedProjection []Item
 		if source.Adapter == "github" && l.GitHubSync != nil {
 			pageItems := make([]Item, 0, len(items))
 			for _, item := range items {
@@ -607,6 +619,17 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 					break
 				}
 				checkpoint.ReconciliationCursor = reconCursor
+				if completeRecon {
+					if reader, ok := l.GitHubSync.(interface {
+						ReadGitHubSyncProjection(context.Context, Source) ([]Item, error)
+					}); ok {
+						resumedProjection, commitErr = reader.ReadGitHubSyncProjection(ctx, source)
+						if commitErr != nil {
+							l.failSource(ctx, source.ID, generation, "reconciliation-read-failed", out)
+							break
+						}
+					}
+				}
 			} else {
 				syncComplete := page.NextCursor == "" && page.Coverage.State == CoverageComplete
 				if err := l.GitHubSync.CommitGitHubSyncPage(ctx, source, pageItems, page.NextCursor, scanWatermark, syncComplete); err != nil {
@@ -712,6 +735,13 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 			l.publish(ctx, source.ID, generation, func(s *Snapshot) {
 				if page.Reconciliation && complete {
+					for _, item := range resumedProjection {
+						if item.Ref.SourceID == source.ID {
+							if _, exists := s.Items[item.Ref.Key()]; !exists {
+								s.Items[item.Ref.Key()] = item
+							}
+						}
+					}
 					for _, ref := range retired {
 						delete(s.Items, ref.Key())
 					}
@@ -768,6 +798,10 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			summary.Fresh = false
 		}
 		if outcome.Err != nil {
+			if githubSourceAccessLost(outcome.Err) {
+				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
+				return
+			}
 			summary.ReadOutcome = "failed"
 			summary.Fresh = false
 		}
@@ -864,6 +898,10 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			item = &copy
 		}
 		if outcome.Err != nil {
+			if githubSourceAccessLost(outcome.Err) {
+				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
+				return
+			}
 			summary.ReadOutcome = "failed"
 			summary.Fresh = false
 		} else if outcome.Item == nil {
@@ -986,6 +1024,18 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	item.Fresh = item.Fresh && summary.Fresh
 	l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[ref.Key()] = *item }, out)
 }
+func githubSourceAccessLost(err error) bool {
+	diagnostic, ok := err.(GitHubDiagnostic)
+	if !ok {
+		return false
+	}
+	switch diagnostic.Code {
+	case "saml-sso", "authentication", "identity-changed":
+		return true
+	}
+	return false
+}
+
 func githubAccessLost(err error) bool {
 	diagnostic, ok := err.(GitHubDiagnostic)
 	if !ok {

@@ -486,6 +486,24 @@ func (s GitHubSyncStore) CommitGitHubReconciliationPage(ctx context.Context, sou
 	}
 	return s.Index.CommitGitHubReconciliationPage(ctx, p, items, cursor, state.ReconciliationGeneration, state.ReconciliationStarted, complete)
 }
+
+// ReadGitHubSyncProjection restores earlier pages after a live reconciliation page has validated access.
+func (s GitHubSyncStore) ReadGitHubSyncProjection(ctx context.Context, source queue.Source) ([]queue.Item, error) {
+	p, ok := s.partition(source)
+	if !ok {
+		return nil, errors.New("GitHub sync identity unavailable")
+	}
+	projection, _, _, err := s.Index.Read(ctx, p, -1)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]queue.Item, 0, len(projection.Items))
+	for _, item := range projection.Items {
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (s GitHubSyncStore) RestartGitHubSync(ctx context.Context, source queue.Source, reconciliation bool) error {
 	p, ok := s.partition(source)
 	if !ok {

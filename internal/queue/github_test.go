@@ -552,6 +552,65 @@ func TestGitHubIncrementalRevisitsIssueMovedAheadOfCursor(t *testing.T) {
 	}
 }
 
+func TestGitHubDetailAccessLossWithholdsSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "saml-sso", status: http.StatusForbidden, body: "SAML SSO required"},
+		{name: "authentication", status: http.StatusUnauthorized},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var failure atomic.Int32
+			a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+				query, _ := githubRequest(t, r)
+				switch {
+				case strings.Contains(query, "viewer"):
+					fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+				case strings.Contains(query, "nodes(ids:"):
+					if status := int(failure.Load()); status != 0 {
+						w.WriteHeader(status)
+						fmt.Fprint(w, test.body)
+						return
+					}
+					fmt.Fprint(w, `{"data":{"nodes":[{"id":"N1","number":1,"body":"private one","repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"body":"private two","repository":{"nameWithOwner":"org/repo"}}]}}`)
+				default:
+					fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issues":{"totalCount":2,"nodes":[{"id":"N1","number":1,"repository":{"nameWithOwner":"org/repo"}},{"id":"N2","number":2,"repository":{"nameWithOwner":"org/repo"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+				}
+			})
+			source, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+				t.Fatal(err)
+			}
+			registry := NewRegistry()
+			registry.adapters["github"] = a
+			loader := NewLoader(registry)
+			loader.GitHubSync = &syncTestStore{}
+			refs := []Ref{{source.ID, "1"}, {source.ID, "2"}}
+			items := make(map[string]Item, len(refs))
+			for i, ref := range refs {
+				items[ref.Key()] = Item{Summary: Summary{Ref: ref, Title: fmt.Sprintf("private title %d", i+1)}, Body: fmt.Sprintf("private body %d", i+1), ReadOutcome: "found"}
+			}
+			loader.Store.SeedSnapshot(Snapshot{Items: items, Sources: map[string]Coverage{source.ID: {State: CoverageComplete}}})
+			failure.Store(int32(test.status))
+			for range loader.HydrateVisible(context.Background(), source, refs) {
+			}
+			for _, item := range loader.Store.Current().Items {
+				if item.Ref.SourceID == source.ID {
+					t.Fatalf("source-wide access loss left private content visible: %+v", item)
+				}
+			}
+		})
+	}
+}
+
 func TestGitHubDependencyAccessLossWithholdsHydratedBody(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)

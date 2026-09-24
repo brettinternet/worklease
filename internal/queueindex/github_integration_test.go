@@ -65,6 +65,8 @@ func TestGitHubReconciliationContinuesAcrossFreshAdapters(t *testing.T) {
 	}
 	defer index.Close()
 	var partition queueindex.Partition
+	var sourceID string
+	var resumed queue.Snapshot
 	for invocation := 0; invocation < 2; invocation++ {
 		registry := queue.NewRegistry()
 		builtin, _ := registry.Get("github")
@@ -74,11 +76,15 @@ func TestGitHubReconciliationContinuesAcrossFreshAdapters(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		sourceID = source.ID
 		partition, _ = queueindex.ForGitHubSync(adapter, source)
 		loader := queue.NewLoader(registry)
 		loader.DeferDetails = true
 		loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
 		for range loader.Refresh(ctx, []queue.Source{source}) {
+		}
+		if invocation == 1 {
+			resumed = loader.Store.Current()
 		}
 		state, err := index.ReadGitHubSyncState(ctx, partition)
 		if err != nil {
@@ -94,6 +100,9 @@ func TestGitHubReconciliationContinuesAcrossFreshAdapters(t *testing.T) {
 	items, _, _, err := index.Read(ctx, partition, time.Hour)
 	if err != nil || len(items.Items) != 6 {
 		t.Fatalf("six-page projection incomplete: %d items, %v", len(items.Items), err)
+	}
+	if len(resumed.Items) != 6 || resumed.Sources[sourceID].State != queue.CoverageComplete {
+		t.Fatalf("fresh loader published incomplete complete view: items=%d coverage=%+v", len(resumed.Items), resumed.Sources[sourceID])
 	}
 }
 
