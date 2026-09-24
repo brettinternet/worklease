@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 13:58'
+updated_date: '2026-09-24 13:59'
 labels:
   - work-queue
 milestone: m-1
@@ -52,6 +52,8 @@ This parent is an integration checklist, not an implementation lane. It depends 
 
 <!-- SECTION:NOTES:BEGIN -->
 On main 8afe10f, all six TASK-130 children are Done. Worktree task-130-s4-integration: focused go test ./internal/cli ./internal/queue ./internal/queueui (selected S4 tests, including local/remote queue-vs-CLI contention in both directions, remote outage fail-closed, native claim not-exposed, no-work dependency reasons, 8-worker local/remote CLI and mixed MCP contention) passed. QUEUE_LIFECYCLE_COMBINED=1 measured prior-lease margin 19.226606s >= 7.5s with 50k dependency graph and 10k indexed rows; stalled-verification renewal test passed. mise run lint, format-check, test, typecheck all passed.
+
+Integration commit on main: 1df4d82. Single general review of the integration checklist and test coverage found no item-scoped defects; no code changes needed. Next resumable step: select a ready S5 or S6 child task (TASK-131.1 or TASK-132.1).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
