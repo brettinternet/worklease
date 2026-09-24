@@ -1345,3 +1345,24 @@ func TestStartWorkMissingMappingLeavesClaimOnly(t *testing.T) {
 		t.Fatalf("unsupported mapping offered Start work: %s", m.Notice)
 	}
 }
+
+func TestQueueQuitRefusesPendingCancellationInRecoveryView(t *testing.T) {
+	m := New(fixture())
+	m.OwnedClaims["/private/queue/claim.json"] = OwnedClaimMsg{Path: "/private/queue/claim.json", ClaimID: "claim", Verified: true}
+	m.Cancelling = true
+	m.ViewName = RecoveryViewID
+	m, _ = press(m, "q")
+	m, cmd := press(m, "enter")
+	if cmd != nil || m.Quitting {
+		t.Fatalf("recovery view quit while cancellation pending: %s", m.View())
+	}
+}
+
+func TestQueueQuitWarnsOnUnreadableRecoveryJournal(t *testing.T) {
+	m := New(fixture())
+	m.RecoveryError = "journal corrupt"
+	m, cmd := press(m, "q")
+	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "recovery journal unreadable: journal corrupt") {
+		t.Fatalf("unreadable journal did not warn on exit: %s", m.View())
+	}
+}

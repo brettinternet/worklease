@@ -280,7 +280,7 @@ func (c *HTTPClient) Call(ctx context.Context, s RequestSpec) (Response, error) 
 		previouslyStaged = c.requestPreviouslyStaged(p, s.HandlePath)
 		if s.HandlePath != "" {
 			replacement := handleReplacement{ClaimID: s.PreviousClaimID, Token: s.PreviousToken, Revision: s.PreviousRevision, ExpiresAt: s.PreviousExpiresAt}
-			if err := persistHandleRequest(s.HandlePath, s.ClaimID, p, s.NewClaimCredential, replacement); err != nil {
+			if err := persistHandleRequest(ctx, s.HandlePath, s.ClaimID, p, s.NewClaimCredential, replacement); err != nil {
 				if !errors.Is(err, errHandlePending) || s.Kind == "operations/begin" {
 					return Response{}, c.stagingFailure(err, previouslyStaged, "handle request could not be durably recorded")
 				}

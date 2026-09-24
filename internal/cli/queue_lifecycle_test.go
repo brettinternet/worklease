@@ -603,3 +603,42 @@ func TestQueueLifecyclePrivateDirectory(t *testing.T) {
 		t.Fatalf("private handle discovery: %v %v", paths, err)
 	}
 }
+
+func TestQueueLifecycleRenewsMinimumTTL(t *testing.T) {
+	item := queueClaimItem("tasks", "1")
+	controller, backend, adapter := newLocalQueueClaimController(t, time.Second, item)
+	preview := controller.Preview(context.Background(), item)().(queueui.ClaimPreviewMsg)
+	if preview.Err != nil {
+		t.Fatal(preview.Err)
+	}
+	if acquired := controller.AcquireClaim(context.Background(), item, *preview.Preview)().(queueui.ClaimResultMsg); acquired.Err != nil {
+		t.Fatal(acquired.Err)
+	}
+	path, err := queueClaimHandlePath(backend.Config.Home, controller.queueSession, config.LocalProfileName, adapter.source, item.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := queueLifecycle{controller: controller, now: time.Now}
+	first := lifecycle.inspect(context.Background(), path, false)
+	if !first.Verified {
+		t.Fatalf("verify: %+v", first)
+	}
+	lifecycle.now = func() time.Time { return first.NextRenewal }
+	if renewed := lifecycle.inspect(context.Background(), path, true); !strings.HasPrefix(renewed.LastResult, "renewed at") {
+		t.Fatalf("1s TTL renewal at its scheduled time: %+v", renewed)
+	}
+}
+
+type expiredVerifyAuthority struct{ commandAuthority }
+
+func (expiredVerifyAuthority) Verify(context.Context, lease.Credentials, []string) (lease.Verification, error) {
+	return lease.Verification{}, reason.New(reason.ReasonVerifyFailed, "claim expired").With("cause", reason.ReasonClaimExpired)
+}
+
+func TestQueueLifecycleShowsExpiredClaimAsLost(t *testing.T) {
+	lifecycle, path, backend := claimedLifecycle(t)
+	backend.API = expiredVerifyAuthority{backend.API}
+	if msg := lifecycle.inspect(context.Background(), path, true); !msg.Lost || msg.Verified {
+		t.Fatalf("expired claim not shown as lost: %+v", msg)
+	}
+}

@@ -1099,13 +1099,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.LoadRecovery()
 				}
 			case "q", "ctrl+c":
-				if m.Writing {
-					m.Notice = "Wait for recovery outcome before exiting"
-				} else if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 {
-					m.Quitting = true
-				} else {
-					return m, tea.Quit
-				}
+				return m.requestQuit()
 			case "v":
 				if len(m.Views) > 0 {
 					m.ViewName = m.Views[0]
@@ -1169,15 +1163,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "q", "ctrl+c":
-			if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching || m.Writing || m.WriteLoading {
-				m.Notice = "Wait for claim or launch request outcome before exiting"
-				return m, nil
-			}
-			if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 {
-				m.Quitting = true
-				return m, nil
-			}
-			return m, tea.Quit
+			return m.requestQuit()
 		case "j", "down":
 			m.move(1)
 		case "k", "up":
@@ -1602,6 +1588,21 @@ func sameResources(a, b []string) bool {
 	}
 	return true
 }
+
+// requestQuit refuses exit while a request outcome is pending and shows the
+// exit consequences whenever claims or recovery state remain.
+func (m Model) requestQuit() (tea.Model, tea.Cmd) {
+	if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching || m.Writing || m.WriteLoading {
+		m.Notice = "Wait for claim, launch, or write request outcome before exiting"
+		return m, nil
+	}
+	if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 || m.RecoveryError != "" {
+		m.Quitting = true
+		return m, nil
+	}
+	return m, tea.Quit
+}
+
 func (m Model) exitView() string {
 	var b strings.Builder
 	b.WriteString("Quit queue? Renewal stops when this process exits. No claim is released automatically.\n")
@@ -1614,6 +1615,12 @@ func (m Model) exitView() string {
 			expiry = owned.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 		fmt.Fprintf(&b, "  %s expires %s · %s · private handle %s\n", clean(claim), expiry, clean(owned.LastResult), clean(owned.Path))
+	}
+	if len(m.Recovery) > 0 || m.UncertainWrite {
+		fmt.Fprintf(&b, "  %d unresolved writes remain in recovery; their claims stay held\n", len(m.Recovery))
+	}
+	if m.RecoveryError != "" {
+		fmt.Fprintf(&b, "  recovery journal unreadable: %s\n", clean(m.RecoveryError))
 	}
 	b.WriteString("Press Enter/y to leave leases and recovery state intact, Esc/n to continue (R cancels a verified no-effect claim).\n")
 	return clipLines(b.String(), m.Width)

@@ -37,11 +37,11 @@ func sameResourceSet(request, grant []string) bool {
 
 // persistHandleRequest uses the existing owner-private handle slot for named
 // claim mutations. A different unresolved request can never replace it.
-func persistHandleRequest(path, claimID string, p PendingRequest, newToken string, replacement handleReplacement) error {
+func persistHandleRequest(ctx context.Context, path, claimID string, p PendingRequest, newToken string, replacement handleReplacement) error {
 	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	lock, err := handle.AcquireLock(context.Background(), path+".lock")
+	lock, err := handle.AcquireLock(ctx, path+".lock")
 	if err != nil {
 		return err
 	}

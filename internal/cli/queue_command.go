@@ -543,16 +543,22 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			return queueui.RefreshedMsg{Err: exec.CommandContext(ctx, binary, url).Run()}
 		}
 	}
+	// Owned handles and recovery entries are known before the first keypress,
+	// so an immediate quit still shows their exit consequences.
+	ownedPaths, err := lifecycle.paths()
+	if err != nil {
+		return fmt.Errorf("queue-owned claim handles unavailable: %w", err)
+	}
+	for _, path := range ownedPaths {
+		model.OwnedClaims[path] = queueui.OwnedClaimMsg{Path: path, LastResult: "verification pending"}
+	}
+	if entries, recoveryErr := journal.Recovery(); recoveryErr != nil {
+		model.RecoveryError = recoveryErr.Error()
+	} else {
+		model.Recovery = entries
+	}
 	// The model is handed to Bubble Tea before background producers start.
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
-		entries, err := journal.Recovery()
-		if ctx.Err() == nil {
-			program.Send(queueui.RecoveryMsg{Entries: entries, Err: err})
-		}
-	}()
 	workers.Add(1)
 	go func() {
 		defer workers.Done()

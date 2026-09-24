@@ -74,9 +74,6 @@ func renewalMargin(ttl time.Duration) time.Duration {
 	if margin > 30*time.Second {
 		margin = 30 * time.Second
 	}
-	if margin < time.Second {
-		margin = time.Second
-	}
 	return margin
 }
 
@@ -121,7 +118,7 @@ func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) qu
 	verification, err := l.controller.backend.API.Verify(ctx, l.credentials(path, h), h.Resources)
 	if err != nil {
 		msg.LastResult = "ownership unverified: " + err.Error()
-		if classified := reason.As(err); classified != nil && (classified.Reason == reason.ReasonStaleClaim || classified.Reason == reason.ReasonClaimExpired || classified.Reason == reason.ReasonVerifyFailed && classified.Details["cause"] == reason.ReasonStaleClaim) {
+		if classified := reason.As(err); classified != nil && (classified.Reason == reason.ReasonStaleClaim || classified.Reason == reason.ReasonClaimExpired || classified.Reason == reason.ReasonVerifyFailed && (classified.Details["cause"] == reason.ReasonStaleClaim || classified.Details["cause"] == reason.ReasonClaimExpired)) {
 			msg.Lost = true
 		}
 		return msg

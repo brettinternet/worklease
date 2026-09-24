@@ -382,3 +382,34 @@ func TestAuthorityTimeIsConservativeUnderAsymmetricLatency(t *testing.T) {
 		t.Fatal("response latency extended the authority-time ttl")
 	}
 }
+
+// A canceled caller must not wait indefinitely for another process's handle lock.
+func TestHandleStagingHonorsCanceledContextWhileLockHeld(t *testing.T) {
+	p := profileForTest(t)
+	root := t.TempDir()
+	if err := handle.EnsureOwnerPrivateDir(root); err != nil {
+		t.Fatal(err)
+	}
+	handlePath := root + "/claim.json"
+	held, err := handle.AcquireLock(context.Background(), handlePath+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	client, err := NewHTTPClient(p, NewFilePendingStore(root+"/pending"), roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("must not dispatch")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := client.Clock().Sample(now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Call(ctx, RequestSpec{Path: "/v1/claims/heartbeat", Kind: "heartbeat", RequestID: strings.Repeat("d", 32), Body: []byte(`{"requestNotAfter":"2099-01-01T00:00:00Z"}`), Mutating: true, HandlePath: handlePath, ClaimID: strings.Repeat("a", 32)})
+	if err == nil {
+		t.Fatal("staging succeeded without the handle lock")
+	}
+}
