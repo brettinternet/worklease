@@ -93,6 +93,54 @@ func TestQueueSchema(t *testing.T) {
 	}
 }
 
+func TestQueueGitHubProjectBindingUsesExplicitStableOptions(t *testing.T) {
+	home := t.TempDir()
+	env := func(key string) string {
+		if key == "HOME" {
+			return home
+		}
+		return ""
+	}
+	base := strings.Replace(queueFixture(home), "    account: brett\n", "    account: brett\n    project:\n      owner: acme\n      number: 5\n      id: PVT_project\n      fieldId: PVTSSF_status\n      allowWrites: true\n      options: {option-open: open, option-progress: in-progress, option-blocked: blocked, option-review: review, option-done: complete}\n    workflow: {start: option-progress, blocked: option-blocked, review: option-review}\n", 1)
+	cfg, err := parseQueue([]byte(base), env, nil)
+	if err != nil {
+		t.Fatalf("valid Projects v2 binding: %v", err)
+	}
+	project := cfg.Sources[1].Project
+	if project == nil || project.Owner != "acme" || project.Number != 5 || project.ID != "PVT_project" || project.FieldID != "PVTSSF_status" || !project.AllowWrites || project.Options["option-progress"] != "in-progress" || cfg.Sources[1].Workflow["start"] != "option-progress" {
+		t.Fatalf("project binding was not preserved: %+v", project)
+	}
+	disabled, err := parseQueue([]byte(strings.Replace(base, "      allowWrites: true\n", "", 1)), env, nil)
+	if err != nil || disabled.Sources[1].Project == nil || disabled.Sources[1].Project.AllowWrites {
+		t.Fatalf("Projects v2 writes were not disabled by default: config=%+v err=%v", disabled.Sources[1].Project, err)
+	}
+
+	cases := []struct{ name, replacement, want string }{
+		{"missing project ID", "      id: ''", "project: owner, positive number"},
+		{"invalid field ID", "      fieldId: PVT_field", "project: owner, positive number"},
+		{"invalid option state", "option-progress: doing", "project.options: expected option IDs"},
+		{"wrong start state", "start: option-open", "workflow.start: project transition"},
+		{"unknown start option", "start: option-missing", "workflow.start: project transition"},
+		{"non-boolean write switch", "      allowWrites: 'yes'", "project.allowWrites: expected boolean"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := base
+			if tc.name == "missing project ID" || tc.name == "invalid field ID" || tc.name == "non-boolean write switch" {
+				old := map[string]string{"missing project ID": "      id: PVT_project", "invalid field ID": "      fieldId: PVTSSF_status", "non-boolean write switch": "      allowWrites: true"}[tc.name]
+				content = strings.Replace(content, old, tc.replacement, 1)
+			} else if tc.name == "invalid option state" {
+				content = strings.Replace(content, "option-progress: in-progress", tc.replacement, 1)
+			} else {
+				content = strings.Replace(content, "start: option-progress", tc.replacement, 1)
+			}
+			if _, err := parseQueue([]byte(content), env, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestQueueExternalAdapterConfiguration(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

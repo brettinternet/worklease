@@ -46,6 +46,13 @@ type githubBinding struct {
 	scanOrder                                  []string
 	nodeIDs                                    map[string]string
 	newestETags                                map[string]string
+	project                                    *githubProjectBinding
+	projectFieldName                           string
+	projectOptionNames                         map[string]string
+	projectItems                               map[string]githubProjectItem
+	projectScans                               map[string]map[string]githubProjectItem
+	projectRefreshReady                        bool
+	projectWriteScope                          bool
 }
 
 // GitHubAdapter is a read-only adapter. Client and APIBase are test seams; production
@@ -188,6 +195,16 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	}
 	credentialDigest := sha256.Sum256([]byte(token))
 	b := &githubBinding{host: host, repository: repository, account: account, token: token, endpoint: endpoint, generation: host + "/" + repository + ":" + hex.EncodeToString(credentialDigest[:]), dependencies: true}
+	if rawProject := options["project"]; rawProject != "" {
+		var project githubProjectBinding
+		if err := json.Unmarshal([]byte(rawProject), &project); err != nil || !validGitHubProjectBinding(project) {
+			return Source{}, GitHubDiagnostic{"invalid-project-binding", "Projects v2 binding is invalid"}
+		}
+		b.project = &project
+		projectData, _ := json.Marshal(project)
+		projectDigest := sha256.Sum256(projectData)
+		b.generation += ":project:" + hex.EncodeToString(projectDigest[:])
+	}
 	// Verify the authenticated principal before any repository or issue data request.
 	var viewer struct {
 		Viewer struct {
@@ -220,6 +237,11 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 		}
 		b.repositoryID = repoIdentity.Repository.ID
 	}
+	if b.project != nil {
+		if err := a.discoverProject(ctx, b); err != nil {
+			return Source{}, err
+		}
+	}
 	if id == "" {
 		id = host + "/" + repository
 	}
@@ -246,7 +268,7 @@ func (a *GitHubAdapter) query(ctx context.Context, b *githubBinding, query strin
 	// Only explicitly vetted read operations can reach the provider. This also
 	// rejects dynamically assembled GraphQL mutations before any network I/O.
 	switch query {
-	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery, githubIssueCommentQuery:
+	case githubViewerQuery, githubRepositoryIdentityQuery, githubListQuery, githubIncrementalQuery, githubNodesQuery, githubDetailQuery, githubDependencyQuery, githubCommentsQuery, githubIssueCommentQuery, githubProjectDiscoveryQuery, githubProjectItemsQuery, githubProjectItemQuery:
 	default:
 		return GitHubDiagnostic{"read-only", "queue provider query is not a permitted read"}
 	}
@@ -302,6 +324,17 @@ func (a *GitHubAdapter) queryHTTP(ctx context.Context, b *githubBinding, body []
 		}
 		raw, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
 		response.Body.Close()
+		if b.project != nil {
+			// OAuth scopes are reported on each github.com response. A missing
+			// header cannot authorize a write; changed credentials need Resolve.
+			writeScope := false
+			for _, scope := range strings.Split(response.Header.Get("X-OAuth-Scopes"), ",") {
+				writeScope = writeScope || strings.TrimSpace(scope) == "project"
+			}
+			a.mu.Lock()
+			b.projectWriteScope = writeScope
+			a.mu.Unlock()
+		}
 		if readErr != nil || len(raw) > 8<<20 {
 			return nil, GitHubDiagnostic{"invalid-response", "GitHub response unreadable"}
 		}
@@ -494,7 +527,11 @@ func (a *GitHubAdapter) summary(source Source, issue githubIssue) Summary {
 	for _, person := range issue.Assignees.Nodes {
 		owners = append(owners, person.Login)
 	}
-	return Summary{Ref: Ref{source.ID, strconv.Itoa(issue.Number)}, Title: issue.Title, RawStatus: raw, State: state, Order: fmt.Sprintf("%012d", issue.Number), CanonicalID: issue.ID, AssignedTo: owners, UpdatedAt: issue.UpdatedAt, Fresh: true, Terminal: terminal}
+	summary := Summary{Ref: Ref{source.ID, strconv.Itoa(issue.Number)}, Title: issue.Title, RawStatus: raw, State: state, Order: fmt.Sprintf("%012d", issue.Number), CanonicalID: issue.ID, AssignedTo: owners, UpdatedAt: issue.UpdatedAt, Fresh: true, Terminal: terminal}
+	if project, ok := a.projectStatus(source, issue); ok {
+		applyGitHubProjectStatus(&summary, project, terminal)
+	}
+	return summary
 }
 func (a *GitHubAdapter) item(source Source, issue githubIssue) Item {
 	summary := a.summary(source, issue)
@@ -535,7 +572,24 @@ func (a *GitHubAdapter) Capabilities(_ context.Context, source Source, _ string,
 		deps.Support = Unsupported
 		deps.Reason = "dependency fields unavailable on this host"
 	}
-	return CapabilitySet{"identity": read(), "discovery": read(), "dependencies": deps, "state": read(), "progress": denied(), "assignment": denied(), "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": denied(), "synchronization": {Support: Unsupported, Permission: Denied, Availability: Available}, "effects": read(), "authentication": read()}, nil
+	capabilities := CapabilitySet{"identity": read(), "discovery": read(), "dependencies": deps, "state": read(), "progress": denied(), "assignment": denied(), "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": denied(), "synchronization": {Support: Unsupported, Permission: Denied, Availability: Available}, "effects": read(), "authentication": read()}
+	if b.project != nil {
+		capabilities["project-status"] = Capability{Support: Supported, Permission: Allowed, Availability: Available, Semantics: map[string]string{"project": b.project.ID, "field": b.project.FieldID, "refresh": "independent-complete-item-scan"}}
+		writePermission := Denied
+		reason := "project.allowWrites is disabled"
+		a.mu.Lock()
+		writeScope := b.projectWriteScope
+		a.mu.Unlock()
+		if b.project.AllowWrites && writeScope {
+			writePermission = Allowed
+			reason = ""
+		} else if b.project.AllowWrites {
+			writePermission = PermissionUnknown
+			reason = "project write scope unavailable; request project scope and reopen the queue"
+		}
+		capabilities["project-status-write"] = Capability{Support: Supported, Permission: writePermission, Availability: Available, Reason: reason}
+	}
+	return capabilities, nil
 }
 
 // pollNewestHint is never authoritative: even a valid 304 only describes this
@@ -596,6 +650,11 @@ func (a *GitHubAdapter) ListIncremental(ctx context.Context, source Source, quer
 	b, err := a.binding(source)
 	if err != nil {
 		return SummaryPage{}, err
+	}
+	if b.project != nil {
+		// Project field changes do not update issue.updatedAt. A bound project
+		// therefore uses a fresh, complete issue scan plus an independent item scan.
+		return a.List(ctx, source, query, cursor)
 	}
 	parts := strings.Split(b.repository, "/")
 	count := query.Budget
@@ -730,6 +789,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		const maxGitHubScans = 100
 		for len(b.scanOrder) >= maxGitHubScans {
 			delete(b.scans, b.scanOrder[0])
+			delete(b.projectScans, b.scanOrder[0])
 			b.scanOrder = b.scanOrder[1:]
 		}
 		b.scans[scanID] = map[string]string{}
@@ -741,6 +801,7 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 		if !keepScan {
 			a.mu.Lock()
 			delete(b.scans, scanID)
+			delete(b.projectScans, scanID)
 			for i, id := range b.scanOrder {
 				if id == scanID {
 					b.scanOrder = append(b.scanOrder[:i], b.scanOrder[i+1:]...)
@@ -750,6 +811,11 @@ func (a *GitHubAdapter) List(ctx context.Context, source Source, query Query, cu
 			a.mu.Unlock()
 		}
 	}()
+	if b.project != nil {
+		if _, err := a.projectItemsForScan(ctx, b, scanID, count); err != nil {
+			return SummaryPage{}, err
+		}
+	}
 	var result struct {
 		Repository *struct {
 			NameWithOwner string `json:"nameWithOwner"`

@@ -19,7 +19,8 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 		configured[source.ID] = source
 	}
 	mapping := configured[item.Ref.SourceID]
-	if mapping.Adapter != "backlog-md" || mapping.Workflow["start"] == "" {
+	projectStart := mapping.Adapter == "github" && mapping.Project != nil && mapping.Project.AllowWrites
+	if mapping.Workflow["start"] == "" || mapping.Adapter != "backlog-md" && !projectStart {
 		return map[string]any{"outcome": "not attempted", "reason": "no supported Start work mapping for source"}
 	}
 	if path == "" {

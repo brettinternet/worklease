@@ -70,7 +70,7 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	defer selected.Close()
 	registry := queue.NewRegistry()
 	adapter, _ := registry.Get(configured.Adapter)
-	resolved, err := adapter.Resolve(ctx, map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)})
+	resolved, err := adapter.Resolve(ctx, queueSourceOptions(*configured))
 	if err != nil {
 		return err
 	}

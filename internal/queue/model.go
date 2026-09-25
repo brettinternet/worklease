@@ -93,20 +93,29 @@ type Observation struct {
 	Coverage                Coverage  `json:"coverage"`
 }
 type Summary struct {
-	Ref             Ref           `json:"ref"`
-	Title           string        `json:"title"`
-	RawStatus       string        `json:"rawStatus"`
-	State           StateCategory `json:"state"`
-	Order           string        `json:"order,omitempty"`
-	Priority        int           `json:"priority,omitempty"`
-	CanonicalID     string        `json:"canonicalId,omitempty"`
-	ProviderReady   *bool         `json:"providerReady,omitempty"`
-	AssignedTo      []string      `json:"assignedTo,omitempty"`
-	NativeClaim     string        `json:"nativeClaim,omitempty"`
-	UpdatedAt       time.Time     `json:"updatedAt,omitempty"`
-	Fresh           bool          `json:"fresh"`
-	Terminal        bool          `json:"terminal"`
-	ProviderBlocked bool          `json:"providerBlocked"`
+	Ref                   Ref           `json:"ref"`
+	Title                 string        `json:"title"`
+	RawStatus             string        `json:"rawStatus"`
+	State                 StateCategory `json:"state"`
+	Order                 string        `json:"order,omitempty"`
+	Priority              int           `json:"priority,omitempty"`
+	CanonicalID           string        `json:"canonicalId,omitempty"`
+	ProviderReady         *bool         `json:"providerReady,omitempty"`
+	AssignedTo            []string      `json:"assignedTo,omitempty"`
+	NativeClaim           string        `json:"nativeClaim,omitempty"`
+	UpdatedAt             time.Time     `json:"updatedAt,omitempty"`
+	Fresh                 bool          `json:"fresh"`
+	Terminal              bool          `json:"terminal"`
+	ProviderBlocked       bool          `json:"providerBlocked"`
+	ProjectStatusBound    bool          `json:"projectStatusBound,omitempty"`
+	ProjectStatusKnown    bool          `json:"projectStatusKnown,omitempty"`
+	ProjectStatusRaw      string        `json:"projectStatusRaw,omitempty"`
+	ProjectStatusState    string        `json:"projectStatusState,omitempty"`
+	ProjectStatusReason   string        `json:"projectStatusReason,omitempty"`
+	ProjectStatusConflict bool          `json:"projectStatusConflict,omitempty"`
+	ProjectItemID         string        `json:"projectItemId,omitempty"`
+	ProjectFieldID        string        `json:"projectFieldId,omitempty"`
+	ProjectOptionID       string        `json:"projectOptionId,omitempty"`
 }
 type StateCategory string
 

@@ -118,15 +118,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			sourceErrors[src.ID] = "adapter-unavailable"
 			continue
 		}
-		options := map[string]string{"id": src.ID}
-		if src.Adapter != "external" {
-			options["checkout"] = src.Checkout
-			options["host"] = src.Host
-			options["repository"] = src.Repository
-			options["account"] = src.Account
-			if src.AllowGitNetwork {
-				options["allowGitNetwork"] = "true"
-			}
+		options := queueSourceOptions(src)
+		if src.Adapter == "external" {
+			options = map[string]string{"id": src.ID}
 		}
 		resolved, err := adapter.Resolve(ctx, options)
 		if err != nil {
@@ -257,7 +251,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.StateChoices = make(map[string][]queueui.StateChoice)
 	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
-		if source.Adapter == "backlog-md" {
+		if source.Adapter == "backlog-md" || source.Adapter == "github" && source.Project != nil && source.Project.AllowWrites {
 			model.StartTransitions[id] = source.Workflow["start"]
 		}
 		for _, step := range []struct {
@@ -265,7 +259,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			action queue.Action
 		}{{"start", queue.ActionStart}, {"blocked", queue.ActionReportBlocked}, {"review", queue.ActionRequestReview}, {"complete", queue.ActionComplete}, {"reopen", queue.ActionReopen}} {
 			if transition := source.Workflow[step.name]; transition != "" {
-				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen {
+				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen && (source.Project == nil || !source.Project.AllowWrites) {
 					continue
 				}
 				model.StateChoices[id] = append(model.StateChoices[id], queueui.StateChoice{Action: step.action, Label: step.name, Transition: transition})

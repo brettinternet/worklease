@@ -69,6 +69,18 @@ type QueueSource struct {
 	ExpectedVersion   string            `yaml:"expectedVersion"`
 	Config            map[string]any    `yaml:"config"`
 	CredentialRef     string            `yaml:"credentialRef"`
+	Project           *QueueProject     `yaml:"project"`
+}
+
+// QueueProject binds a GitHub repository source to exactly one Projects v2 field.
+// Option IDs remain stable across display-name changes; names are rediscovered.
+type QueueProject struct {
+	Owner       string            `yaml:"owner" json:"owner"`
+	Number      int               `yaml:"number" json:"number"`
+	ID          string            `yaml:"id" json:"id"`
+	FieldID     string            `yaml:"fieldId" json:"fieldId"`
+	Options     map[string]string `yaml:"options" json:"options"` // option ID -> open|in-progress|blocked|review|complete
+	AllowWrites bool              `yaml:"allowWrites" json:"allowWrites"`
 }
 
 type QueueClaims struct {
@@ -163,12 +175,13 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		return QueueConfig{}, fmt.Errorf("queue.yaml: invalid YAML")
 	}
 	schemas := map[string]map[string]bool{
-		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
-		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true},
-		"claims": {"policy": true, "source": true},
-		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
-		"filter": {"readiness": true, "claim": true, "assigned": true},
+		"queue":   {"version": true, "me": true, "sources": true, "views": true, "launch": true},
+		"launch":  {"name": true, "argv": true, "cwd": true, "passEnv": true},
+		"source":  {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "project": true},
+		"project": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
+		"claims":  {"policy": true, "source": true},
+		"view":    {"name": true, "authority": true, "sources": true, "filter": true},
+		"filter":  {"readiness": true, "claim": true, "assigned": true},
 	}
 	if err := checkQueueKeys(root.Content[0], "queue", schemas["queue"]); err != nil {
 		return QueueConfig{}, err
@@ -213,6 +226,18 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 			if section == "sources" {
+				if project := nested["project"]; project != nil {
+					if err := checkQueueKeys(project, label+".project", schemas["project"]); err != nil {
+						return QueueConfig{}, err
+					}
+					projectFields := nodeFields(project)
+					if allowWrites := projectFields["allowWrites"]; allowWrites != nil && (allowWrites.Kind != yaml.ScalarNode || allowWrites.Tag != "!!bool") {
+						return QueueConfig{}, fmt.Errorf("%s.project.allowWrites: expected boolean", label)
+					}
+					if options := projectFields["options"]; options != nil && options.Kind != yaml.MappingNode {
+						return QueueConfig{}, fmt.Errorf("%s.project.options: expected option ID mappings", label)
+					}
+				}
 				if workflow := nested["workflow"]; workflow != nil {
 					if err := checkQueueKeys(workflow, label+".workflow", map[string]bool{"start": true, "blocked": true, "review": true, "complete": true, "reopen": true}); err != nil {
 						return QueueConfig{}, err
@@ -320,7 +345,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		seen[s.ID] = true
 		switch s.Adapter {
 		case "backlog-md":
-			if s.Host != "" || s.Repository != "" || s.Account != "" {
+			if s.Host != "" || s.Repository != "" || s.Account != "" || s.Project != nil {
 				return QueueConfig{}, fmt.Errorf("%s: github fields are not valid for backlog-md", label)
 			}
 			if strings.HasPrefix(s.Checkout, "~/") {
@@ -344,7 +369,25 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if s.Checkout != "" || s.Claims != nil || s.AllowGitNetwork {
 				return QueueConfig{}, fmt.Errorf("%s: backlog-md fields are not valid for github", label)
 			}
+			if p := s.Project; p != nil {
+				if !validRepoPart(p.Owner) || p.Number <= 0 || !strings.HasPrefix(p.ID, "PVT_") || !strings.HasPrefix(p.FieldID, "PVTSSF_") || len(p.Options) == 0 {
+					return QueueConfig{}, fmt.Errorf("%s.project: owner, positive number, project ID, single-select field ID and option mappings required", label)
+				}
+				for option, state := range p.Options {
+					if strings.TrimSpace(option) != option || option == "" || !map[string]bool{"open": true, "in-progress": true, "blocked": true, "review": true, "complete": true}[state] {
+						return QueueConfig{}, fmt.Errorf("%s.project.options: expected option IDs mapped to workflow states", label)
+					}
+				}
+				for action, expected := range map[string]string{"start": "in-progress", "blocked": "blocked", "review": "review"} {
+					if optionID := s.Workflow[action]; optionID != "" && p.Options[optionID] != expected {
+						return QueueConfig{}, fmt.Errorf("%s.workflow.%s: project transition must be an option ID mapped to %s", label, action, expected)
+					}
+				}
+			}
 		case "external":
+			if s.Project != nil {
+				return QueueConfig{}, fmt.Errorf("%s.project: only valid for github", label)
+			}
 			// The source-specific external fields were checked against their YAML nodes above.
 		default:
 			return QueueConfig{}, fmt.Errorf("%s.adapter: unknown adapter %q", label, s.Adapter)

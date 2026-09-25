@@ -24,14 +24,18 @@ and operation.
 | Identity | Supported: configured `owner/repo` (github.com) or `host/owner/repo` (Enterprise) and issue number; retain node IDs. Detect repository rename/transfer. |
 | Discovery | Supported: GraphQL cursor pages of 100; observed `totalCount` is not a multi-page snapshot. Exclude pull requests. |
 | Dependencies | Supported where provider exposes blocked-by/blocking relationships; paginate per-item relationships and retain cross-repository references. Sub-issues are hierarchy, not prerequisites. |
-| State | Supported: issue open/closed and `stateReason`; Projects status is unsupported/deferred. |
+| State | Supported: issue open/closed and `stateReason`; optional one-project Projects v2 single-select mapping reports raw option plus normalized workflow state. Issue completion stays authoritative; contradictory statuses are visible. |
 | Progress | Supported: append issue comments. |
 | Assignment | Supported: add/remove assignees; multiple principals. |
 | Native claims | Unsupported: not exposed. |
 | Mutation | Issue edits are unconditional; unsafe methods do not support conditional requests absent endpoint-specific evidence. |
-| Synchronization | Supported: `since` filtering and conditional-GET polling; no client webhooks. Cursor/filter semantics and page coverage remain explicit. |
+| Synchronization | Supported: issue `since` filtering and conditional-GET polling; bound Projects v2 items require independent complete cursor scans (field changes do not advance issue `updatedAt`); no client webhooks. Cursor/filter semantics and page coverage remain explicit. |
 | Effects | Mutations notify watchers; disclose this as a side effect. |
-| Authentication | Use `gh auth token` for the explicitly configured host/account; verify the principal. Credentials, scopes, and quota context are account/host-scoped. |
+| Authentication | Use `gh auth token` for the explicitly configured host/account; verify the principal. Credentials, scopes, and quota context are account/host-scoped. Optional project reads require `read:project`; unconditional writes require separately approved `project` scope and explicit config opt-in. GHES Projects v2 is unprobed. |
+
+## Optional Projects v2 status
+
+Bind one explicit user/organization owner, project number and immutable project node ID, one single-select field node ID, and option IDs mapped to workflow categories in owner-private queue configuration. Resolve the bound project and field, discover configured options, and page project items completely. An inaccessible/changed project, field, option, or incomplete item scan is not evidence of readiness. An issue outside this project is unmapped and not ready; drafts and pull requests on the project never become claimable issues. Different project memberships are distinct project-item identities, not claim-key inputs. Unknown options retain their raw names. An issue closed while its project status is in progress, or open with project status Done, reports a conflict; project Done does not satisfy issue-based completion. Configured focused transitions use option IDs, not display names. A status write is unconditional and requires read-back of the exact project item, field, and option through the normal recovery pipeline. Existing sources without this binding preserve issue-only behavior.
 
 ## Worklease resource policy
 

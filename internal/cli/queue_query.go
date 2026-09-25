@@ -119,13 +119,9 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				resolveErrors[configured.ID] = "source-adapter-unavailable"
 				continue
 			}
-			opts := map[string]string{"id": configured.ID}
-			if configured.Adapter != "external" {
-				opts["checkout"] = configured.Checkout
-				opts["host"] = configured.Host
-				opts["repository"] = configured.Repository
-				opts["account"] = configured.Account
-				opts["allowGitNetwork"] = fmt.Sprint(configured.AllowGitNetwork)
+			opts := queueSourceOptions(configured)
+			if configured.Adapter == "external" {
+				opts = map[string]string{"id": configured.ID}
 			}
 			source, e := adapter.Resolve(ctx, opts)
 			if e != nil {

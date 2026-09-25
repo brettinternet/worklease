@@ -1,6 +1,6 @@
 [tools]
 go = "1.27.1"
-"npm:backlog.md" = "latest"
+"npm:backlog.md" = "1.52" # internal/queue/backlog.go requires 1.52.x
 lefthook = "latest"
 staticcheck = "2026.2.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
