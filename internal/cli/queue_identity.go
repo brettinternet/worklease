@@ -79,10 +79,13 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	if !ok {
 		return reason.Invalid("source claim inputs unavailable")
 	}
+	// Linear's stable issue UUIDs do not need an enumerated ID ledger.
+	// Its visible list is intentionally partial until reconciliation; requiring
+	// complete enumeration would make the initial claim domain unconfirmable.
 	ids := make([]string, 0)
 	seen := map[string]bool{}
 	cursor := ""
-	for {
+	for configured.Adapter != "linear" {
 		page, e := adapter.List(ctx, resolved, queue.Query{Budget: 100}, cursor)
 		if e != nil {
 			return reason.Invalid("complete fresh source enumeration required before confirmation")

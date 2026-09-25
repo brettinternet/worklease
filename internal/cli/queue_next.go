@@ -17,7 +17,7 @@ import (
 )
 
 func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) error {
-	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, registry *queue.Registry, sources []queue.Source, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
+	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, registry *queue.Registry, sources []queue.Source, claimSources map[string]queue.ClaimSource, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
 		if cmd.Bool("start") && !cmd.Bool("claim") {
 			return s.handle(cmd, reason.Invalid("--start requires --claim"))
 		}
@@ -45,7 +45,8 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				selectionLimit = 1
 			}
 		}
-		result := queue.SelectWave(scoped, visible, view.Sources, selectors, !incomplete, selectionLimit, func(item queue.Item, owner string) bool {
+		completeSelection := !incomplete || linearKnownItemSelection(cfg, sourceRows, scoped)
+		result := queue.SelectWave(scoped, visible, view.Sources, selectors, completeSelection, selectionLimit, func(item queue.Item, owner string) bool {
 			return isQueueMe(cfg, item, owner)
 		})
 		selected := result.Candidates
@@ -74,7 +75,6 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			if backend.Config.SessionID == "" {
 				return s.handle(cmd, reason.Invalid("--claim requires --session or WORKLEASE_SESSION_ID"))
 			}
-			claimSources := queue.ClaimSources(cfg, sources)
 			selected = nil
 			eligibilityChanged := false
 			for _, candidate := range result.Candidates {
@@ -163,6 +163,11 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				}
 			}
 		}
+		if incomplete && completeSelection && grant == nil && len(selected) == 0 {
+			// A finished Linear scan still cannot prove that other issues do
+			// not exist; only a successful claim is a definitive result.
+			result.Result = "incomplete"
+		}
 		var transition map[string]any
 		if cmd.Bool("start") {
 			transition = map[string]any{"outcome": "not attempted", "reason": "no claim acquired"}
@@ -185,6 +190,9 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			"excluded":      result.Excluded,
 			"skipped":       skipped,
 			"acquired":      grant != nil,
+		}
+		if incomplete && completeSelection {
+			payload["selectionScope"] = "known-linear-items"
 		}
 		if cmd.Bool("start") {
 			payload["claimOutcome"] = "not attempted"
@@ -235,6 +243,36 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		}
 		return nil
 	})
+}
+
+// Linear cannot certify complete source membership from moving-cursor scans.
+// A finished traversal may select only its observed items: every observed
+// closure must be complete, and the exact candidate is re-read before acquire.
+// Any interrupted scan, stale item, or other partial source still fails closed.
+func linearKnownItemSelection(cfg config.QueueConfig, sources []queueSourceJSON, items []queue.Item) bool {
+	partial := false
+	for _, row := range sources {
+		if row.Coverage.State == queue.CoverageComplete {
+			if row.Freshness != "fresh" {
+				return false
+			}
+			continue
+		}
+		configured := queueSourceByID(cfg.Sources, row.ID)
+		if configured.Adapter != "linear" || row.Coverage.State != queue.CoveragePartial || row.Coverage.Reason != "reconciliation-incomplete" || row.Freshness == "stale" {
+			return false
+		}
+		partial = true
+	}
+	if !partial || len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !item.Fresh || !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
+			return false
+		}
+	}
+	return true
 }
 
 func queueNextAssignmentEligible(cfg config.QueueConfig, view *config.QueueView, item queue.Item, selectors []queue.Ref) bool {
