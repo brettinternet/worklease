@@ -47,6 +47,40 @@ views:
 
 `checkout` must exist and `~` expands from HOME. Omit `claims` for host-local Backlog.md keys; a portable `generic` source must be agreed by all claimants before use. `allowGitNetwork` defaults to false. GitHub repositories use `owner/repo` and require an explicit host and account. View authorities must be `local` or a name in the trusted `profiles.yaml`; source IDs must be defined above and must not contain `:`, which separates `SOURCE:ITEM` refs. Filter keys are limited to `readiness`, `claim`, and `assigned`. Missing configuration is reported as `no-sources-configured` with this setup guidance.
 
+### Optional GitHub Projects v2 status
+
+A GitHub source can bind to **one** user- or organization-owned Projects v2 board, independent of the repository owner. Discover the project and single-select field with `gh project list --owner OWNER --format json` and `gh project field-list NUMBER --owner OWNER --format json`. Start with `gh auth refresh -h github.com -s read:project`; the existing `repo` scope is still needed for private repository issues. Record the returned immutable project/field/option IDs, not display names:
+
+```yaml
+  - id: acme-api
+    adapter: github
+    host: github.com
+    repository: acme/api
+    account: brett
+    githubProject:
+      owner: acme
+      number: 5
+      id: PVT_example_project_node_id
+      fieldId: PVTSSF_example_single_select_field_id
+      options:
+        option-id-in-progress: in-progress
+        option-id-blocked: blocked
+        option-id-review: review
+        option-id-done: complete
+      allowWrites: false
+    workflow:
+      start: option-id-in-progress
+      blocked: option-id-blocked
+      review: option-id-review
+      complete: closed
+      reopen: open
+```
+
+Replace every illustrative ID with discovery output. The `options` map is **option ID → normalized state** (`open`, `in-progress`, `blocked`, `review`, `complete`); unknown options retain their raw name and are not inferred. `workflow.start`, `blocked`, and `review` name configured option IDs for project field writes. `complete: closed` and `reopen: open` retain issue open/closed semantics; a project Done option cannot complete an open issue. An open issue marked Done (or closed issue marked In Progress) shows both states and a conflict. An issue without an item in the bound project has unmapped status and unknown readiness, not a free/ready state. Draft and pull-request project items are never claimable issues, and memberships in other projects never substitute for the bound project.
+
+Read-only project discovery and a complete project-item scan are required before mapped items become actionable. A missing/renamed project, field, or configured option, permission loss, or interrupted scan disables the mapping with a diagnostic. The project field's option names are rediscovered on refresh; option IDs remain the configuration key. Project-only edits advance project item `updatedAt`, not issue `updatedAt`, so project items are refreshed independently of the issue change cursor. The scan is bounded at 100 pages of up to 100 items (10,000 project items); larger projects fail closed instead of returning a partial ready list. The exact-item verification for writes adds API cost, and GHES Projects v2 behavior is unprobed. Existing sources without `githubProject` keep their issue-only behavior and claim keys do not change.
+
+Only after approving project edits separately, run `gh auth refresh -h github.com -s project` and set `githubProject.allowWrites: true`. Scope alone does not enable writes; the explicit flag and existing confirmation/recovery gates are also required. Project field writes are **unconditional** (no provider compare-and-set). They must read back the exact project item, field, and option through the queue recovery pipeline; if a response is lost, inspect recovery rather than retrying a mutation. Refresh the queue after changing scope or config so capabilities are rediscovered. `queue init` detects a GitHub repository but does not guess a Projects binding.
 ### Beads 1.3.0
 
 Install the pinned `bd` 1.3.0 CLI and initialize a trusted checkout with `bd init` (embedded Dolt). Queue setup for Beads is currently hand-written; `queue init` does not auto-detect it. In owner-private `queue.yaml`, add a scalar `me.beads` actor and one explicit checkout:

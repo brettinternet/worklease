@@ -14,6 +14,9 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		rProviderBlocker
 		rReadFailure
 		rAmbiguousProjection
+		rProjectStatusUnknown
+		rProjectStatusBlocked
+		rProjectStatusConflict
 	)
 	out := cloneItems(items)
 	memo := make(map[string]uint16, len(out))
@@ -39,6 +42,17 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		if item.ProviderBlocked && item.Fresh {
 			flags |= rProviderBlocker
 		}
+		if item.ProjectStatusBound {
+			if !item.ProjectStatusKnown || item.ProjectStatusState == "" || item.ProjectStatusState == "unknown" {
+				flags |= rProjectStatusUnknown
+			}
+			if item.ProjectStatusState == "blocked" {
+				flags |= rProjectStatusBlocked
+			}
+			if item.ProjectStatusConflict {
+				flags |= rProjectStatusConflict
+			}
+		}
 		if item.ReadOutcome != "" && item.ReadOutcome != "found" {
 			flags |= rReadFailure | rIncomplete
 		}
@@ -60,7 +74,13 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 				} else if !p.Terminal {
 					flags |= rUnsatisfied
 				}
-				flags |= evaluate(prereq)
+				prereqFlags := evaluate(prereq)
+				if p.Terminal && p.TerminalKnown {
+					// A completed issue satisfies the terminal condition even if its
+					// advisory project status is contradictory or unmapped.
+					prereqFlags &^= rProjectStatusUnknown | rProjectStatusBlocked | rProjectStatusConflict
+				}
+				flags |= prereqFlags
 			}
 		} else {
 			if len(item.Dependencies) > 0 && !projectsHardEdges(key, item.Dependencies, item.Relationships) {
@@ -101,7 +121,11 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 				} else if edge.Interpretation != "satisfied" {
 					flags |= rUnsupported
 				}
-				flags |= evaluate(edge.To)
+				prereqFlags := evaluate(edge.To)
+				if edge.Condition == "terminal" && exists && prerequisite.Terminal && prerequisite.TerminalKnown {
+					prereqFlags &^= rProjectStatusUnknown | rProjectStatusBlocked | rProjectStatusConflict
+				}
+				flags |= prereqFlags
 			}
 		}
 		visiting[key] = false
@@ -119,13 +143,13 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 			flags |= rIncomplete
 		}
 		status := Ready
-		if flags&(rUnsatisfied|rProviderBlocker) != 0 {
+		if flags&(rUnsatisfied|rProviderBlocker|rProjectStatusBlocked) != 0 {
 			status = Blocked
 		} else if flags != 0 {
 			status = ReadinessUnknown
 		}
 		reasons := make([]string, 0, 8)
-		for bit, name := range map[uint16]string{rIncomplete: "incomplete-closure", rStale: "stale-evidence", rMissing: "missing-prerequisite", rCycle: "hard-cycle", rUnsatisfied: "hard-condition-unsatisfied", rUnsupported: "unsupported-condition", rUnknownCondition: "unknown-condition", rProviderBlocker: "provider-blocker", rReadFailure: "item-read-failed", rAmbiguousProjection: "ambiguous-dependency-projection"} {
+		for bit, name := range map[uint16]string{rIncomplete: "incomplete-closure", rStale: "stale-evidence", rMissing: "missing-prerequisite", rCycle: "hard-cycle", rUnsatisfied: "hard-condition-unsatisfied", rUnsupported: "unsupported-condition", rUnknownCondition: "unknown-condition", rProviderBlocker: "provider-blocker", rReadFailure: "item-read-failed", rAmbiguousProjection: "ambiguous-dependency-projection", rProjectStatusUnknown: "project-status-unmapped", rProjectStatusBlocked: "project-status-blocked", rProjectStatusConflict: "project-issue-state-conflict"} {
 			if flags&bit != 0 {
 				reasons = append(reasons, name)
 			}

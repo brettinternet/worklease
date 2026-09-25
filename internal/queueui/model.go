@@ -198,9 +198,9 @@ type ReconcileResultMsg struct {
 }
 
 type StartPreview struct {
-	Claim                                             ClaimPreview
-	Source, Actor, Transition, RequiredFields, Effect string
-	SideEffects                                       []string
+	Claim                                                              ClaimPreview
+	Source, Actor, Transition, TransitionValue, RequiredFields, Effect string
+	SideEffects                                                        []string
 }
 type StartPreviewMsg struct {
 	Identity string
@@ -1532,7 +1532,7 @@ func (m Model) View() string {
 			if identity(i) == m.Selected {
 				marker = ">"
 			}
-			line := fmt.Sprintf("%s %-5s %-12s %-7s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(i.RawStatus, 7), m.displayState(i), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
+			line := fmt.Sprintf("%s %-5s %-12s %-20s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(projectStatusDisplay(i), 20), m.displayState(i), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
 			list.WriteString(ansi.Wrap(clean(line), listWidth, " "))
 			list.WriteByte('\n')
 		}
@@ -1883,6 +1883,34 @@ func readiness(i queue.Item) string {
 	}
 	return string(i.Readiness.Status)
 }
+func projectStatusRaw(item queue.Item) string {
+	if item.ProjectStatusRaw == "" {
+		switch item.ProjectStatusReason {
+		case "project-item-missing":
+			return "(no project item)"
+		case "project-status-unset":
+			return "(unset)"
+		default:
+			return "(unknown)"
+		}
+	}
+	return item.ProjectStatusRaw
+}
+
+func projectStatusState(item queue.Item) string {
+	if item.ProjectStatusState == "" {
+		return "unknown"
+	}
+	return item.ProjectStatusState
+}
+
+func projectStatusDisplay(item queue.Item) string {
+	if !item.ProjectStatusBound {
+		return item.RawStatus
+	}
+	return projectStatusRaw(item) + " → " + projectStatusState(item)
+}
+
 func (m Model) displayState(i queue.Item) string {
 	if i.ReadPermission == queue.Denied {
 		return "denied"
@@ -1932,7 +1960,14 @@ func detail(m Model, i queue.Item) string {
 	b.WriteByte('\n')
 	switch m.Tab {
 	case 0:
-		fmt.Fprintf(&b, "State %s · Ready %s · Assigned %s · Native %s\n", clean(i.RawStatus), readiness(i), clip(strings.Join(i.AssignedTo, ","), 40), clip(i.NativeClaim, 30))
+		fmt.Fprintf(&b, "Issue state %s", clean(i.RawStatus))
+		if i.ProjectStatusBound {
+			fmt.Fprintf(&b, " · Project status %s → %s", clean(projectStatusRaw(i)), clean(projectStatusState(i)))
+			if i.ProjectStatusConflict {
+				b.WriteString(" · CONFLICT: issue and project status disagree")
+			}
+		}
+		fmt.Fprintf(&b, " · Ready %s · Assigned %s · Native %s\n", readiness(i), clip(strings.Join(i.AssignedTo, ","), 40), clip(i.NativeClaim, 30))
 		b.WriteString(clip(i.Body, min(m.Width*6, 1200)) + "\n")
 		if m.StartTransitions[i.Ref.SourceID] != "" {
 			b.WriteString("Actions: S Start work (claim + provider transition); c Claim only · : start work\n")
