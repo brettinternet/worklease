@@ -16,7 +16,7 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
-worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--apply] [--json]
+worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--dry-run] [--json]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
 worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]
 worklease queue authority-id --json
@@ -121,7 +121,7 @@ not a coordinated worker. The worker acquires its own claim; the queue observes
 it only after it appears in the claim overlay. Assignment, progress, and state
 writes remain unavailable. `worklease queue authority-id --json` exposes the
 invoking worker's selected authority ID for launchers to compare before acquire.
-Source setup and configured views are described in `docs/queue.md`.
+`queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Source setup and configured views are described in `docs/queue.md`.
 
 ## Common lifecycle
 

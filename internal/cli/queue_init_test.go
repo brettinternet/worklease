@@ -4,20 +4,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 type initHarness struct {
-	t                    *testing.T
-	checkout, configPath string
+	t                         *testing.T
+	checkout, configPath, bin string
 }
 
 func newInitHarness(t *testing.T) initHarness {
@@ -40,17 +46,17 @@ func newInitHarness(t *testing.T) initHarness {
 		t.Fatalf("git commit: %v %s", err, out)
 	}
 	bin := t.TempDir()
-	backlog := "#!/bin/sh\ncase \"$*\" in\n  'config get statuses') printf '%s\\n' \"${INIT_STATUSES:-To Do, In Progress, Done}\" ;;\n  'config get defaultStatus') printf '%s\\n' \"${INIT_DEFAULT_STATUS:-To Do}\" ;;\n  'config get defaultAssignee') printf '%s\\n' \"${INIT_ASSIGNEE:-@tester}\" ;;\n  'config get '*) printf 'false\\n' ;;\n  '--version') printf '1.52.0\\n' ;;\n  'task list --json') if [ \"${INIT_LIST_ERROR:-0}\" = 1 ]; then exit 1; fi; printf '%s\\n' \"$INIT_LIST_JSON\" ;;\n  *) exit 2 ;;\nesac\n"
+	backlog := "#!/bin/sh\ncase \"$*\" in\n  'config get statuses') printf '%s\\n' \"${INIT_STATUSES:-To Do, In Progress, Done}\" ;;\n  'config get defaultStatus') printf '%s\\n' \"${INIT_DEFAULT_STATUS:-To Do}\" ;;\n  'config get defaultAssignee') printf '%s\\n' \"${INIT_ASSIGNEE-@tester}\" ;;\n  'config get '*) printf '%s\\n' \"${INIT_NETWORK:-false}\" ;;\n  '--version') printf '%s\\n' \"${INIT_VERSION:-1.52.0}\" ;;\n  'task list --json') if [ \"${INIT_LIST_ERROR:-0}\" = 1 ]; then exit 1; fi; printf '%s\\n' \"$INIT_LIST_JSON\" ;;\n  *) exit 2 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "backlog"), []byte(backlog), 0700); err != nil {
 		t.Fatal(err)
 	}
-	gh := "#!/bin/sh\nif [ \"$*\" = 'api --hostname github.com user --jq .login' ] && [ \"${INIT_GH_UNAUTH:-0}\" = 0 ]; then printf 'tester\\n'; else exit 1; fi\n"
+	gh := "#!/bin/sh\ncase \"$*\" in\n  'api --hostname github.com user --jq .login') if [ \"${INIT_GH_UNAUTH:-0}\" = 0 ]; then printf 'tester\\n'; else exit 1; fi ;;\n  'auth token --hostname github.com --user tester') printf 'fake-token\\n' ;;\n  *) exit 1 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("INIT_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[]}`)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return initHarness{t, checkout, config.QueuePath(os.Getenv)}
+	return initHarness{t, checkout, config.QueuePath(os.Getenv), bin}
 }
 
 func (h initHarness) invoke(args ...string) testkit.CLIResult {
@@ -61,9 +67,10 @@ func (h initHarness) invoke(args ...string) testkit.CLIResult {
 	})
 }
 
-func TestQueueInitPreviewApplyAndIdempotence(t *testing.T) {
+func TestQueueInitDirectWriteDryRunAndIdempotence(t *testing.T) {
 	h := newInitHarness(t)
-	preview := h.invoke("--json")
+	t.Setenv("INIT_ASSIGNEE", "")
+	preview := h.invoke("--dry-run", "--json")
 	if preview.Err != nil {
 		t.Fatalf("preview: %v %s", preview.Err, preview.Stdout)
 	}
@@ -74,33 +81,46 @@ func TestQueueInitPreviewApplyAndIdempotence(t *testing.T) {
 	if err := json.Unmarshal(preview.Stdout, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 2 || payload.Outcome != "created" || len(payload.Facts) < 5 || !strings.Contains(payload.YAML, "allowGitNetwork: false") {
+	osLogin, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.SchemaVersion != 2 || payload.Applied || payload.Outcome != "created" || len(payload.Facts) < 5 || !strings.Contains(payload.YAML, "allowGitNetwork: false") || !strings.Contains(payload.YAML, "@"+osLogin.Username) || !strings.Contains(string(preview.Stdout), `"origin":"OS user"`) {
 		t.Fatalf("preview: %s", preview.Stdout)
 	}
 	if _, err := os.Stat(filepath.Dir(h.configPath)); !os.IsNotExist(err) {
 		t.Fatalf("preview created directory: %v", err)
 	}
-	plain := h.invoke()
-	if plain.Err != nil || !strings.Contains(string(plain.Stdout), "Path: "+h.configPath) || !strings.Contains(string(plain.Stdout), "YAML:\n") || !strings.HasSuffix(strings.TrimSpace(string(plain.Stdout)), "--apply") {
+	plain := h.invoke("--dry-run")
+	if plain.Err != nil || !strings.Contains(string(plain.Stdout), "YAML:\n") || !strings.Contains(string(plain.Stdout), "from OS user") {
 		t.Fatalf("text preview: %v %s", plain.Err, plain.Stdout)
 	}
 	if _, err := os.Stat(config.QueueIdentityPath(os.Getenv)); !os.IsNotExist(err) {
 		t.Fatalf("preview wrote identity: %v", err)
 	}
+	rejected := h.invoke("--apply", "--json")
+	if rejected.Err == nil || !strings.Contains(string(rejected.Stdout), "invalid command-line arguments") {
+		t.Fatalf("removed --apply accepted: %v %s", rejected.Err, rejected.Stdout)
+	}
 	t.Setenv("INIT_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-1","title":"Ready work","status":"To Do","ordinal":1,"isReady":true,"dependencies":[]}]}`)
-	applied := h.invoke("--apply", "--json")
+	applied := h.invoke("--json")
 	if applied.Err != nil {
 		t.Fatalf("apply: %v %s %s", applied.Err, applied.Stdout, applied.Stderr)
 	}
 	if err := json.Unmarshal(applied.Stdout, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.Applied || payload.Identity != "confirmed" {
+	if !payload.Applied || payload.Identity != "confirmed" || len(payload.NextCommands) != 1 || payload.NextCommands[0] != "worklease queue" {
 		t.Fatalf("apply: %s", applied.Stdout)
 	}
 	written, err := os.ReadFile(h.configPath)
 	if err != nil || string(written) != payload.YAML {
 		t.Fatalf("rendered YAML differs from written file: %v", err)
+	}
+	for _, flow := range []string{"me: {", "sources: [{", "views: [{", "workflow: {", "filter: {", "assigned: ["} {
+		if strings.Contains(string(written), flow) {
+			t.Errorf("flow-style output %q: %s", flow, written)
+		}
 	}
 	for path, mode := range map[string]os.FileMode{filepath.Dir(h.configPath): 0700, h.configPath: 0600} {
 		info, err := os.Stat(path)
@@ -123,13 +143,17 @@ func TestQueueInitPreviewApplyAndIdempotence(t *testing.T) {
 		t.Fatalf("claim unavailable after automatic confirmation: %v %s", query.Err, query.Stdout)
 	}
 	before, _ := os.ReadFile(h.configPath)
-	again := h.invoke("--apply", "--json")
+	again := h.invoke("--json")
 	if again.Err != nil || !strings.Contains(string(again.Stdout), `"outcome":"unchanged"`) {
 		t.Fatalf("repeat: %v %s", again.Err, again.Stdout)
 	}
 	after, _ := os.ReadFile(h.configPath)
 	if string(before) != string(after) {
-		t.Fatal("idempotent apply changed file")
+		t.Fatal("idempotent init changed file")
+	}
+	plainWrite := h.invoke()
+	if plainWrite.Err != nil || strings.Contains(string(plainWrite.Stdout), "YAML:") || !strings.Contains(string(plainWrite.Stdout), "Source: project (backlog-md)") || !strings.HasSuffix(strings.TrimSpace(string(plainWrite.Stdout)), "worklease queue") {
+		t.Fatalf("write summary: %v %s", plainWrite.Err, plainWrite.Stdout)
 	}
 }
 
@@ -151,47 +175,87 @@ func TestQueueInitMergeAndUnmapped(t *testing.T) {
 	}
 	t.Setenv("INIT_STATUSES", "To Do, Done")
 	h.checkout = second
-	conflict := h.invoke("--me", "@someone-else", "--json")
-	if conflict.Err == nil || !strings.Contains(string(conflict.Stdout), "conflicts with existing me.backlog-md") {
-		t.Fatalf("me conflict: %v %s", conflict.Err, conflict.Stdout)
-	}
-	preview := h.invoke("--json")
+	preview := h.invoke("--dry-run", "--json")
 	if preview.Err != nil {
 		t.Fatalf("merge preview: %v %s", preview.Err, preview.Stdout)
 	}
 	if !strings.Contains(string(preview.Stdout), `"sourceId":"project-2"`) || !strings.Contains(string(preview.Stdout), `"start"`) {
 		t.Fatalf("missing suffix/unmapped: %s", preview.Stdout)
 	}
-	result := h.invoke("--apply")
+	result := h.invoke("--me", "@someone-else")
 	if result.Err != nil {
 		t.Fatalf("merge apply: %v %s", result.Err, result.Stdout)
 	}
 	data, err := os.ReadFile(h.configPath)
-	if err != nil || !strings.Contains(string(data), "# retained") || !strings.Contains(string(data), "# retained view") || !strings.Contains(string(data), "name: terminal") {
+	if err != nil || !strings.Contains(string(data), "# retained") || !strings.Contains(string(data), "# retained view") || !strings.Contains(string(data), "name: terminal") || !strings.Contains(string(data), "@someone-else") {
 		t.Fatalf("merge lost comments/launch: %s %v", data, err)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
 	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 2 || cfg.Sources[1].Workflow["start"] != "" {
 		t.Fatalf("merge: %+v %v", cfg, err)
 	}
+	dryAdd := h.invoke("--me", "@another", "--dry-run", "--json")
+	if dryAdd.Err != nil || !strings.Contains(string(dryAdd.Stdout), `"applied":false`) || !strings.Contains(string(dryAdd.Stdout), "init --checkout") {
+		t.Fatalf("append preview command: %v %s", dryAdd.Err, dryAdd.Stdout)
+	}
+	added := h.invoke("--me", "@another", "--json")
+	if added.Err != nil || !strings.Contains(string(added.Stdout), `"outcome":"merged"`) {
+		t.Fatalf("append principal: %v %s", added.Err, added.Stdout)
+	}
+	before, _ := os.ReadFile(h.configPath)
+	again := h.invoke("--me", "@another", "--json")
+	after, _ := os.ReadFile(h.configPath)
+	if again.Err != nil || !strings.Contains(string(again.Stdout), `"outcome":"unchanged"`) || string(before) != string(after) {
+		t.Fatalf("existing principal changed config: %v %s", again.Err, again.Stdout)
+	}
 }
 
-func TestQueueInitRefusalsAndPortable(t *testing.T) {
+func TestQueueInitNewReadyViewAfterAnotherDefault(t *testing.T) {
 	h := newInitHarness(t)
-	t.Setenv("INIT_ASSIGNEE", "@one,@two")
-	preview := h.invoke("--json")
-	if preview.Err != nil || !strings.Contains(string(preview.Stdout), "me-required") {
-		t.Fatalf("me preview: %v %s", preview.Err, preview.Stdout)
+	initial := fmt.Sprintf("version: 1\nme:\n  backlog-md: ['@tester']\nsources:\n  - id: project\n    adapter: backlog-md\n    checkout: %s\nviews:\n  - name: Team\n    authority: local\n    sources: [project]\n    filter: {assigned: [me]}\n", h.checkout)
+	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
+		t.Fatal(err)
 	}
-	refused := h.invoke("--apply", "--json")
-	if refused.Err == nil || !strings.Contains(string(refused.Stdout), `"reason":"me-required"`) {
-		t.Fatalf("me refusal: %v %s", refused.Err, refused.Stdout)
+	if err := os.WriteFile(h.configPath, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(h.configPath); !os.IsNotExist(err) {
-		t.Fatalf("refusal wrote file: %v", err)
+	second := filepath.Join(t.TempDir(), "second")
+	if out, err := testkit.GitCommand("init", "-b", "main", second).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
 	}
-	portable := h.invoke("--me", "@one", "--portable-claims", "shared/project", "--apply", "--json")
-	if portable.Err != nil || !strings.Contains(string(portable.Stdout), `"identity":"confirmation-required"`) {
+	if err := os.WriteFile(filepath.Join(second, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.checkout = second
+	result := h.invoke("--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"worklease queue --view Ready"`) {
+		t.Fatalf("new view hidden by first view: %v %s", result.Err, result.Stdout)
+	}
+}
+
+func TestQueueInitDryRunSuggestsOnlyNonDefaultFlags(t *testing.T) {
+	h := newInitHarness(t)
+	preview := h.invoke("--adapter", "backlog-md", "--source-id", "project", "--me", "@tester", "--dry-run", "--json")
+	if preview.Err != nil {
+		t.Fatalf("dry-run: %v %s", preview.Err, preview.Stdout)
+	}
+	var envelope queueInitResult
+	if err := json.Unmarshal(preview.Stdout, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.NextCommands) != 1 || strings.Contains(envelope.NextCommands[0], "--adapter") || strings.Contains(envelope.NextCommands[0], "--source-id") || strings.Contains(envelope.NextCommands[0], "--me") {
+		t.Fatalf("redundant flags: %v", envelope.NextCommands)
+	}
+	different := h.invoke("--source-id", "custom", "--dry-run", "--json")
+	if different.Err != nil || !strings.Contains(string(different.Stdout), "--source-id custom") {
+		t.Fatalf("custom source ID lost: %v %s", different.Err, different.Stdout)
+	}
+}
+
+func TestQueueInitPortableRequiresConfirmation(t *testing.T) {
+	h := newInitHarness(t)
+	portable := h.invoke("--me", "@one", "--portable-claims", "shared/project", "--json")
+	if portable.Err != nil || !strings.Contains(string(portable.Stdout), `"identity":"confirmation-required"`) || !strings.Contains(string(portable.Stdout), "worklease queue --view Ready identity confirm") {
 		t.Fatalf("portable: %v %s", portable.Err, portable.Stdout)
 	}
 	ids, err := config.LoadQueueIdentities(os.Getenv)
@@ -208,12 +272,28 @@ func TestQueueInitGitHubDetectionAndAuth(t *testing.T) {
 	if err := os.Remove(filepath.Join(h.checkout, "backlog.config.yml")); err != nil {
 		t.Fatal(err)
 	}
-	result := h.invoke("--json")
-	if result.Err != nil || !strings.Contains(string(result.Stdout), "repository: Owner/Repo") || !strings.Contains(string(result.Stdout), "github.com: tester") {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "graphql") {
+			_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"tester"},"repository":{"id":"repo-id","nameWithOwner":"Owner/Repo"}}}`)
+		}
+	}))
+	defer server.Close()
+	queueInitGitHubAdapter = func() *queue.GitHubAdapter {
+		adapter := queue.NewGitHubAdapter()
+		adapter.APIBase = server.URL + "/graphql"
+		return adapter
+	}
+	t.Cleanup(func() { queueInitGitHubAdapter = queue.NewGitHubAdapter })
+	result := h.invoke("--dry-run", "--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"value":"Owner/Repo"`) || !strings.Contains(string(result.Stdout), `"me"`) {
 		t.Fatalf("github: %v %s", result.Err, result.Stdout)
 	}
+	mismatch := h.invoke("--me", "someone-else", "--dry-run", "--json")
+	if mismatch.Err == nil || !strings.Contains(string(mismatch.Stdout), "conflicts with authenticated GitHub account") {
+		t.Fatalf("different GitHub account: %v %s", mismatch.Err, mismatch.Stdout)
+	}
 	t.Setenv("INIT_GH_UNAUTH", "1")
-	result = h.invoke("--apply", "--json")
+	result = h.invoke("--json")
 	if result.Err == nil || !strings.Contains(string(result.Stdout), "gh auth login --hostname github.com") {
 		t.Fatalf("auth: %v %s", result.Err, result.Stdout)
 	}
@@ -230,7 +310,7 @@ func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
 	if err := os.WriteFile(h.configPath, []byte("version: 99\nme: {}\nsources: []\nviews: []\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	refused := h.invoke("--apply", "--json")
+	refused := h.invoke("--json")
 	if refused.Err == nil || !strings.Contains(string(refused.Stdout), "expected 1") {
 		t.Fatalf("invalid config accepted: %v %s", refused.Err, refused.Stdout)
 	}
@@ -242,8 +322,8 @@ func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("INIT_LIST_ERROR", "1")
-	failed := h.invoke("--apply", "--json")
-	if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"applied":true`) || !strings.Contains(string(failed.Stdout), "identity confirm --source 'project' --acknowledge") {
+	failed := h.invoke("--json")
+	if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"applied":true`) || !strings.Contains(string(failed.Stdout), "identity confirm --source project --acknowledge") {
 		t.Fatalf("confirmation failure did not preserve recovery command: %v %s", failed.Err, failed.Stdout)
 	}
 	if _, err := config.LoadQueue(os.Getenv); err != nil {
@@ -258,7 +338,7 @@ func TestQueueInitRemoteAuthoritySkipsAutomaticConfirmation(t *testing.T) {
 	if err := config.SaveProfiles(config.UserProfilePaths(nil), []config.Profile{profile}, ""); err != nil {
 		t.Fatal(err)
 	}
-	result := h.invoke("--authority", "team", "--apply", "--json")
+	result := h.invoke("--authority", "team", "--json")
 	if result.Err != nil || !strings.Contains(string(result.Stdout), `"identity":"confirmation-required"`) {
 		t.Fatalf("remote authority confirmation: %v %s", result.Err, result.Stdout)
 	}
@@ -277,7 +357,7 @@ func TestQueueInitExistingIdentitySkipsAutomaticConfirmation(t *testing.T) {
 	if err := config.SaveQueueIdentities(os.Getenv, state); err != nil {
 		t.Fatal(err)
 	}
-	result := h.invoke("--apply", "--json")
+	result := h.invoke("--json")
 	if result.Err != nil || !strings.Contains(string(result.Stdout), `"identity":"confirmation-required"`) {
 		t.Fatalf("existing identity overwritten: %v %s", result.Err, result.Stdout)
 	}
@@ -303,7 +383,7 @@ func TestQueueInitConcurrentAddsPreserveBothSources(t *testing.T) {
 		go func(checkout string) {
 			defer wg.Done()
 			var stdout, stderr bytes.Buffer
-			args := []string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "init", "--checkout", checkout, "--portable-claims", "shared/project", "--apply"}
+			args := []string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "init", "--checkout", checkout, "--portable-claims", "shared/project"}
 			if err := Run(context.Background(), args, "test", "unknown", "unknown", &stdout, &stderr); err != nil {
 				failures <- err.Error() + ": " + stdout.String()
 			}
@@ -343,9 +423,103 @@ func TestQueueInitRemovesColonFromDefaultSourceID(t *testing.T) {
 	}
 }
 
+func TestQueueInitPreflightBeforeWrite(t *testing.T) {
+	for _, test := range []struct {
+		name, env, value, args, failure string
+		removeBinary                    string
+	}{
+		{"missing backlog", "", "", "", "cli-missing: install the backlog CLI", "backlog"},
+		{"unsupported version", "INIT_VERSION", "1.51.0", "", "unsupported-version: found Backlog.md 1.51.0; required 1.52.x", ""},
+		{"network consent", "INIT_NETWORK", "true", "", "git-network-consent: this project needs --allow-git-network", ""},
+		{"missing gh", "", "", "--adapter github", "cli-missing: install the gh CLI", "gh"},
+		{"unauthenticated gh", "INIT_GH_UNAUTH", "1", "--adapter github", "gh auth login --hostname github.com", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newInitHarness(t)
+			if test.env != "" {
+				t.Setenv(test.env, test.value)
+			}
+			if test.removeBinary != "" {
+				gitBinary, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(gitBinary, filepath.Join(h.bin, "git")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(h.bin, test.removeBinary)); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", h.bin)
+			}
+			if test.args != "" {
+				if out, err := testkit.GitCommand("-C", h.checkout, "remote", "add", "origin", "git@github.com:Owner/Repo.git").CombinedOutput(); err != nil {
+					t.Fatalf("remote: %v %s", err, out)
+				}
+			}
+			for _, mode := range []string{"--dry-run", "--json"} {
+				args := []string{"--json", mode}
+				if test.args != "" {
+					args = append(args, strings.Fields(test.args)...)
+					args = append(args, "--me", "tester")
+				}
+				result := h.invoke(args...)
+				if result.Err == nil || !strings.Contains(string(result.Stdout), test.failure) {
+					t.Fatalf("%s: expected %s: %v %s", mode, test.failure, result.Err, result.Stdout)
+				}
+				if _, err := os.Stat(filepath.Dir(h.configPath)); !os.IsNotExist(err) {
+					t.Fatalf("preflight wrote directory: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestQueueInitNetworkConsentAndBothDetected(t *testing.T) {
+	h := newInitHarness(t)
+	t.Setenv("INIT_NETWORK", "true")
+	if out, err := testkit.GitCommand("-C", h.checkout, "remote", "add", "origin", "git@github.com:Owner/Repo.git").CombinedOutput(); err != nil {
+		t.Fatalf("remote: %v %s", err, out)
+	}
+	result := h.invoke("--allow-git-network", "--dry-run", "--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"origin":"--allow-git-network"`) || !strings.Contains(string(result.Stdout), "allowGitNetwork: true") || !strings.Contains(string(result.Stdout), "--adapter github") || !strings.Contains(string(result.Stdout), "--checkout ") {
+		t.Fatalf("consent and hint: %v %s", result.Err, result.Stdout)
+	}
+	result = h.invoke("--allow-git-network", "--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), "adapter: backlog-md") || !strings.Contains(string(result.Stdout), "--adapter github") {
+		t.Fatalf("both detected: %v %s", result.Err, result.Stdout)
+	}
+}
+
+func TestQueueInitMissingGitDoesNotWrite(t *testing.T) {
+	h := newInitHarness(t)
+	t.Setenv("PATH", h.bin)
+	result := h.invoke("--dry-run", "--json")
+	if result.Err == nil || !strings.Contains(string(result.Stdout), "git-missing: install Git") {
+		t.Fatalf("missing Git: %v %s", result.Err, result.Stdout)
+	}
+	if _, err := os.Stat(filepath.Dir(h.configPath)); !os.IsNotExist(err) {
+		t.Fatalf("missing Git wrote directory: %v", err)
+	}
+}
+
+func TestQueueInitBareBacklogFolderNotDetected(t *testing.T) {
+	h := newInitHarness(t)
+	if err := os.Remove(filepath.Join(h.checkout, "backlog.config.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(h.checkout, "backlog"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	result := h.invoke("--json")
+	if result.Err == nil || !strings.Contains(string(result.Stdout), "cannot detect source") {
+		t.Fatalf("bare folder: %v %s", result.Err, result.Stdout)
+	}
+}
+
 func TestQueueInitInvalidInputsDoNotWrite(t *testing.T) {
 	h := newInitHarness(t)
-	for _, args := range [][]string{{"--authority", "missing", "--apply"}, {"--source-id", "bad:id", "--apply"}, {"--portable-claims", " ", "--apply"}} {
+	for _, args := range [][]string{{"--authority", "missing"}, {"--source-id", "bad:id"}, {"--portable-claims", " "}} {
 		result := h.invoke(args...)
 		if result.Err == nil {
 			t.Fatalf("accepted invalid input %v: %s", args, result.Stdout)

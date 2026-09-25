@@ -3,11 +3,11 @@
 Start in a Backlog.md checkout or a checkout with a GitHub `origin` remote:
 
 ```sh
-worklease queue init          # preview detected facts, their origins, and exact queue.yaml
-worklease queue init --apply  # write owner-private configuration
+worklease queue init            # write owner-private configuration and confirm safe initial identity
+worklease queue init --dry-run  # preview detected facts, their origins, and exact YAML without writing
 ```
 
-Use `--checkout PATH` for another repository, `--adapter backlog-md|github` to override detection, `--source-id ID` to choose an ID, `--me @name` when Backlog.md has no single default assignee, `--portable-claims SOURCE` to opt into cross-host claims, and `--authority NAME` for a trusted remote profile. `worklease queue --view NAME init` selects a different view. Re-running adds a source to the selected view or reports an already configured checkout. Only new host-local sources on the local authority are automatically identity-confirmed; for other bindings, complete the migration checklist below and run the printed `queue identity confirm` command.
+Use `--checkout PATH` for another repository, `--adapter backlog-md|github` to override detection, `--source-id ID` to choose an ID, `--portable-claims SOURCE` to opt into cross-host claims, and `--authority NAME` for a trusted remote profile. Backlog.md `me` defaults to its single `defaultAssignee`, then `@` plus the OS login; `--me @name` overrides the default or adds a name to an existing list. `--allow-git-network` explicitly consents when the Backlog.md project enables remote Git operations or active-branch checks; otherwise init refuses to write. Init checks the same adapter prerequisites as queue: Git, Backlog.md CLI 1.52.x or an authenticated `gh` account (`gh auth login --hostname HOST`). A bare `backlog/` folder is not enough to detect Backlog.md. If both Backlog.md and a GitHub origin exist, init selects Backlog.md and prints the explicit command to add GitHub. `worklease queue --view NAME init` selects a different view. Re-running adds a source to the selected view or reports an already configured checkout. Only new host-local sources on the local authority are automatically identity-confirmed; for other bindings, complete the migration checklist below and run the printed `queue identity confirm` command.
 
 ## Hand-written YAML reference
 
