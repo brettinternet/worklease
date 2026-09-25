@@ -100,3 +100,31 @@ func TestAdapterConformanceBuiltInCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestAdapterConformanceRejectsEarlyCancellationDoneMarker(t *testing.T) {
+	t.Parallel()
+	root, binary := fakeBacklog(t)
+	marker := filepath.Join(t.TempDir(), "early-cancel")
+	executable := filepath.Join(t.TempDir(), "early-done-shim")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestAdapterConformanceProcessHelper$' -- backlog-md\n", shellQuote(os.Args[0]))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{
+		Executable: executable, Config: map[string]any{"checkout": root, "binary": binary, "cancelMarker": marker, "doneAtEntry": "true"},
+		CancelMarker: marker,
+	})
+	if err != nil || report.Verdict != "fail" {
+		t.Fatalf("early cancellation completion marker was accepted: %+v %v", report, err)
+	}
+	for _, check := range report.Checks {
+		if check.ID == "cancel-notification" && check.Status == "fail" && check.Reason == "done-before-cancellation" {
+			return
+		}
+	}
+	t.Fatalf("missing early completion failure: %+v", report.Checks)
+}

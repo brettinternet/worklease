@@ -5,8 +5,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -539,6 +541,9 @@ func (s *server) list(params map[string]json.RawMessage, limits requestBudget) (
 	if json.Unmarshal(mustMarshal(params), &request) != nil || params["query"] == nil {
 		return nil, invalidParams()
 	}
+	filterJSON, _ := json.Marshal(request.Query)
+	filterDigest := sha256.Sum256(filterJSON)
+	filterScope := hex.EncodeToString(filterDigest[:])
 	items := make([]fixtureItem, 0, len(s.fixture.Items))
 	stateFilters := make(map[string]bool, len(request.Query.States))
 	for _, state := range request.Query.States {
@@ -554,7 +559,7 @@ func (s *server) list(params map[string]json.RawMessage, limits requestBudget) (
 		}
 		items = append(items, item)
 	}
-	start, cursorErr := parseCursor(request.Cursor, "list", id)
+	start, cursorErr := parseCursor(request.Cursor, "list", id, filterScope)
 	if cursorErr != nil || start > len(items) {
 		return nil, invalidParams()
 	}
@@ -564,7 +569,7 @@ func (s *server) list(params map[string]json.RawMessage, limits requestBudget) (
 		page = append(page, s.wireItem(id, items[index]))
 	}
 	for {
-		next := nextCursor("list", id, start+len(page), len(items))
+		next := nextCursor("list", id, filterScope, start+len(page), len(items))
 		contextState := "complete"
 		if next != nil {
 			contextState = "partial"
@@ -634,7 +639,7 @@ func (s *server) readDependencies(params map[string]json.RawMessage, limits requ
 			edges = append(edges, edge)
 		}
 	}
-	start, cursorErr := parseCursor(request.Cursor, "deps", id)
+	start, cursorErr := parseCursor(request.Cursor, "deps", id, ref.ItemID)
 	if cursorErr != nil || start > len(edges) {
 		return nil, invalidParams()
 	}
@@ -651,7 +656,7 @@ func (s *server) readDependencies(params map[string]json.RawMessage, limits requ
 		})
 	}
 	for {
-		next := nextCursor("deps", id, start+len(page), len(edges))
+		next := nextCursor("deps", id, ref.ItemID, start+len(page), len(edges))
 		completeness := "complete"
 		if next != nil {
 			completeness = "partial"
@@ -789,15 +794,16 @@ func (s *server) findItem(id string) *fixtureItem {
 	return nil
 }
 
-func nextCursor(kind, sourceID string, offset, total int) *string {
+func nextCursor(kind, sourceID, scope string, offset, total int) *string {
 	if offset >= total {
 		return nil
 	}
-	value := kind + ":" + base64.RawURLEncoding.EncodeToString([]byte(sourceID)) + ":" + strconv.Itoa(offset)
+	binding, _ := json.Marshal([2]string{sourceID, scope})
+	value := kind + ":" + base64.RawURLEncoding.EncodeToString(binding) + ":" + strconv.Itoa(offset)
 	return &value
 }
 
-func parseCursor(cursor *string, kind, sourceID string) (int, error) {
+func parseCursor(cursor *string, kind, sourceID, scope string) (int, error) {
 	if cursor == nil {
 		return 0, nil
 	}
@@ -806,7 +812,8 @@ func parseCursor(cursor *string, kind, sourceID string) (int, error) {
 		return 0, errors.New("invalid cursor")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || string(decoded) != sourceID {
+	var binding []string
+	if err != nil || json.Unmarshal(decoded, &binding) != nil || len(binding) != 2 || binding[0] != sourceID || binding[1] != scope {
 		return 0, errors.New("invalid cursor")
 	}
 	offset, err := strconv.Atoi(parts[2])
