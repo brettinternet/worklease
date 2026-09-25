@@ -123,7 +123,7 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 	}
 	data, err := handle.ReadOwnerPrivate(path, 1<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; create owner-private "+path+" (see docs/queue.md)")
+		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; create owner-private "+path+" (see https://github.com/brettinternet/worklease/blob/main/docs/queue.md)")
 	}
 	if err != nil {
 		return QueueConfig{}, fmt.Errorf("queue.yaml cannot be read safely: %w", err)

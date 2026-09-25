@@ -215,7 +215,7 @@ func TestLoadQueuePrivate(t *testing.T) {
 	}
 	_, err := LoadQueue(env)
 	var r *reason.Error
-	if !errors.As(err, &r) || r.Reason != "no-sources-configured" || !strings.Contains(err.Error(), "docs/queue.md") {
+	if !errors.As(err, &r) || r.Reason != "no-sources-configured" || !strings.Contains(err.Error(), "https://github.com/brettinternet/worklease/blob/main/docs/queue.md") {
 		t.Fatalf("missing diagnostic: %v", err)
 	}
 	fixture := strings.Replace(queueFixture(home), "checkout: "+home, "checkout: ~/worklease", 1)
