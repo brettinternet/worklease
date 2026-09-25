@@ -1,9 +1,11 @@
 ---
 id: TASK-136.4
 title: Run independent internal/cli and internal/mcp tests in parallel
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-24 15:05'
+updated_date: '2026-09-25 11:05'
 labels: []
 dependencies:
   - TASK-136.1
@@ -31,7 +33,31 @@ This depends on TASK-136.1 so that any failure parallelism exposes is not confus
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every test that calls `t.Setenv`, `os.Setenv`, or `os.Chdir`, or changes a package-level variable, stays serial
-- [ ] #2 `go test -race -count=3 ./internal/cli ./internal/mcp` passes
-- [ ] #3 `go test -count=1 ./internal/cli` wall time drops by at least 40% against a baseline measured on the same machine, and the task notes record both numbers
+- [x] #1 Every test that calls `t.Setenv`, `os.Setenv`, or `os.Chdir`, or changes a package-level variable, stays serial
+- [x] #2 `go test -race -count=3 ./internal/cli ./internal/mcp` passes
+- [x] #3 Record same-machine baseline and post-change CLI test wall times; safe parallelization improves wall time, and track the remaining serial-test bottleneck in a separate task.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Measure serial baseline and audit cli/mcp tests for process-global mutations and isolated fixtures.
+2. Enable parallelism only for safe top-level tests; validate environment/global safety under race.
+3. Measure wall-time improvement on same machine; run required project gates, commit, merge, and record evidence.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Baseline on this machine (worktree, go test -count=1 ./internal/cli): real 234.23 s, package 228.549 s. Claim held for TASK-136.4.
+
+Parallelized 30 isolated/pure CLI and MCP tests. Same-machine CLI post-change wall time: 224.39 s (package 221.874 s) versus baseline 234.23 s (package 228.549 s), a 4.2% wall-time improvement. Conservative direct/helper audit flagged 103 CLI tests accounting for about 209 s of the measured test duration as environment-mutating and necessarily serial. User approved replacing the unattainable 40% criterion and tracking isolation separately. Race count=3 passed with timeout 30m (CLI 872.605 s, MCP 26.927 s); default 10m Go test timeout was insufficient. lint, format-check, test, typecheck and staged hooks passed.
+
+Source review found no process-global environment, directory, package hook, or shared fixture mutation in the 30 newly parallel tests; global-mutating tests remain serial. Commit 554b79d, merged to main as 87df6ec. Serial-test isolation is tracked by TASK-136.7. A first pre-commit run encountered an unrelated queue test provider-read timeout under load; its targeted race count=3 and subsequent complete hooks and commit hooks passed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Parallelized 30 independently isolated CLI and MCP tests; race count=3 and all project checks passed. CLI wall time improved 234.23 to 224.39 s; TASK-136.7 tracks the remaining serial bottleneck. Committed 554b79d and merged 87df6ec.
+<!-- SECTION:FINAL_SUMMARY:END -->
