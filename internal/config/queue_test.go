@@ -68,6 +68,7 @@ func TestQueueSchema(t *testing.T) {
 		{"bad claims", strings.Replace(base, "policy: generic", "policy: backlog-md", 1), "sources[0].claims"},
 		{"unknown adapter", strings.Replace(base, "adapter: github", "adapter: jira", 1), "sources[1].adapter"},
 		{"duplicate id", strings.Replace(base, "id: remote", "id: local", 1), "sources[1].id"},
+		{"colon in id", strings.Replace(strings.Replace(base, "id: remote", "id: 'team:remote'", 1), "[local, remote]", "[local, 'team:remote']", 1), "sources[1].id: must not contain ':'"},
 		{"missing adapter", strings.Replace(base, "    adapter: backlog-md\n", "", 1), "sources[0].adapter"},
 		{"missing checkout", strings.Replace(base, "checkout: "+home, "checkout: /nonexistent-queue-checkout", 1), "sources[0].checkout"},
 		{"missing host", strings.Replace(base, "    host: github.com\n", "", 1), "sources[1].host"},
@@ -227,6 +228,12 @@ func TestLoadQueuePrivate(t *testing.T) {
 	profiles := "profiles:\n  - name: team\n    endpoint: https://example.com\n    credential: {path: /private/token}\n"
 	if err := os.WriteFile(filepath.Join(configDir, "profiles.yaml"), []byte(profiles), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("invalid: ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadQueue(env); !errors.As(err, &r) || r.Reason != reason.ReasonConfigInvalid {
+		t.Fatalf("invalid YAML not classified as config-invalid: %v", err)
 	}
 	if err := os.WriteFile(path, []byte(strings.Replace(fixture, "authority: local", "authority: team", 1)), 0600); err != nil {
 		t.Fatal(err)

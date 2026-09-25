@@ -356,7 +356,7 @@ func (s *Server) callTool(ctx context.Context, name string, a map[string]any) (a
 	case "key":
 		return s.key(a)
 	case "acquire":
-		return s.acquire(ctx, a)
+		return s.acquire(ctx, a, "")
 	case "queue_next":
 		return s.queueNext(ctx, a)
 	case "status":
@@ -628,7 +628,10 @@ func (s *Server) readLease(ctx context.Context, ref string, write bool) (handle.
 	return handle.Handle{}, p, nil, reason.New(reason.ReasonHandleMalformed, "lease handle is malformed")
 }
 func (s *Server) deadline() time.Time { return time.Now().UTC().Add(24 * time.Hour) }
-func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
+
+// acquire dispatches a new claim. A non-empty authorityID pins the claim to
+// the authority a caller already validated against, such as queue_next.
+func (s *Server) acquire(ctx context.Context, a map[string]any, authorityID string) (any, error) {
 	if ref, _ := argString(a, "lease"); ref != "" {
 		return s.recoverAcquire(ctx, ref)
 	}
@@ -641,6 +644,9 @@ func (s *Server) acquire(ctx context.Context, a map[string]any) (any, error) {
 		return nil, e
 	}
 	defer b.Close()
+	if authorityID != "" && b.id != authorityID {
+		return nil, reason.New(reason.ReasonAuthorityMismatch, "authority changed before acquisition")
+	}
 	ttlv, e := argNumber(a, "ttl", s.options.TTL.Seconds())
 	if e != nil || ttlv <= 0 || ttlv > 3600 {
 		return nil, reason.Invalid("ttl must be between 1s and 1h")

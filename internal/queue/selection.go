@@ -99,7 +99,11 @@ func SelectWave(scoped, visible []Item, sources []string, selectors []Ref, compl
 			claimed++
 		} else if !item.Claim.Known || item.Claim.Stale || item.Claim.Reason != "" {
 			reasons = append(reasons, "claim-unknown")
-			unknown++
+			// Claim and resource uncertainty matter only when readiness would
+			// otherwise allow a start; they must not mask a blocked result.
+			if item.Readiness.Status == Ready {
+				unknown++
+			}
 		}
 		if len(item.AssignedTo) > 0 && len(selectors) == 0 {
 			mine := false
@@ -118,7 +122,9 @@ func SelectWave(scoped, visible []Item, sources []string, selectors []Ref, compl
 		}
 		if len(item.Resources) == 0 || item.KeyInputs == nil {
 			reasons = append(reasons, "resource-unavailable")
-			unknown++
+			if item.Readiness.Status == Ready {
+				unknown++
+			}
 		}
 		if len(reasons) > 0 {
 			result.Excluded = append(result.Excluded, Exclusion{Ref: item.Ref, Reasons: reasons})

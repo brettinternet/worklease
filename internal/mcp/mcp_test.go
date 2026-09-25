@@ -13,6 +13,7 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/instructions"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/reason"
 
 	"github.com/brettinternet/worklease/internal/testkit"
 )
@@ -49,6 +50,22 @@ func TestCallLifecycleAndRedaction(t *testing.T) {
 	}
 	if released["isError"] == true {
 		t.Fatalf("release failed: %s", jsonText(released))
+	}
+}
+
+func TestMCPAcquireRejectsChangedPinnedAuthority(t *testing.T) {
+	t.Parallel()
+	home, _ := testkit.Home(t)
+	s, err := NewServer(Options{Home: home, AgentID: "test-agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"resources": []any{"pinned"}, "autoHeartbeat": false}
+	if _, err := s.acquire(context.Background(), args, "previous-authority"); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonAuthorityMismatch {
+		t.Fatalf("acquire crossed a changed authority: %v", err)
+	}
+	if result, err := s.Call(context.Background(), "acquire", args); err != nil || result["isError"] == true {
+		t.Fatalf("rejected pinned acquire left a claim: %v %s", err, jsonText(result))
 	}
 }
 
