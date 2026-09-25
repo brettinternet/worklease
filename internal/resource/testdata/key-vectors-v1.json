@@ -39,6 +39,34 @@
       "resource": "coordination:generic:f0e8af5cddaa4f1f0075700d3dd283efd2ea709a32ac10a67cfe7c43b481618c"
     },
     {
+      "name": "linear-test-1-before-team-move",
+      "provider": "linear",
+      "source": "0bfebf80-70af-4eca-9e39-2029a01f5b77",
+      "item": "075a1740-eeda-4b85-be0b-39755abf4c8c",
+      "resource": "coordination:linear:9ba640dec3ae97e81a27625fac8a83845fa02c2496736b4c65b67f4bb23d92df"
+    },
+    {
+      "name": "linear-pdev-5-after-team-move",
+      "provider": "linear",
+      "source": "0bfebf80-70af-4eca-9e39-2029a01f5b77",
+      "item": "075a1740-eeda-4b85-be0b-39755abf4c8c",
+      "resource": "coordination:linear:9ba640dec3ae97e81a27625fac8a83845fa02c2496736b4c65b67f4bb23d92df"
+    },
+    {
+      "name": "linear-test-2-other-issue",
+      "provider": "linear",
+      "source": "0bfebf80-70af-4eca-9e39-2029a01f5b77",
+      "item": "9f3b2707-b6d8-456d-9079-32f60cd33474",
+      "resource": "coordination:linear:5425903294c1a53c870f1e66f36e59f63fca3d327a7e5d29780c77bac8352df6"
+    },
+    {
+      "name": "linear-other-organization-same-issue",
+      "provider": "linear",
+      "source": "1bfebf80-70af-4eca-9e39-2029a01f5b77",
+      "item": "075a1740-eeda-4b85-be0b-39755abf4c8c",
+      "resource": "coordination:linear:10421b5b3bb33fbf233c048d5747c40a818ee633c40250bbb6eb1e3948023fd6"
+    },
+    {
       "name": "github-normalized-owner-repo",
       "provider": "github",
       "source": "Owner/Repository.GIT",
@@ -87,6 +115,18 @@
       "provider": "generic",
       "source": " ",
       "item": "TASK-126"
+    },
+    {
+      "name": "linear-missing-organization",
+      "provider": "linear",
+      "source": "",
+      "item": "075a1740-eeda-4b85-be0b-39755abf4c8c"
+    },
+    {
+      "name": "linear-missing-issue-uuid",
+      "provider": "linear",
+      "source": "0bfebf80-70af-4eca-9e39-2029a01f5b77",
+      "item": ""
     },
     {
       "name": "blank-item",
