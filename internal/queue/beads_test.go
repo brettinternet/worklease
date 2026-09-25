@@ -153,6 +153,11 @@ func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 	if out, err := git.CombinedOutput(); err != nil {
 		t.Fatalf("git stage: %v: %s", err, out)
 	}
+	git = testkit.GitCommand("-C", source.Locator, "diff", "--cached", "--name-only")
+	stagedBefore, err := git.Output()
+	if err != nil || !strings.Contains(string(stagedBefore), "unrelated.txt") {
+		t.Fatalf("initial stage: %v %s", err, stagedBefore)
+	}
 	writer := &BeadsWriteAdapter{BeadsAdapter: a, Me: "alice"}
 	ctx := context.Background()
 	ref := Ref{SourceID: source.ID, ItemID: id}
@@ -189,8 +194,8 @@ func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 	}
 	git = testkit.GitCommand("-C", source.Locator, "diff", "--cached", "--name-only")
 	out, err := git.Output()
-	if err != nil || strings.TrimSpace(string(out)) != "unrelated.txt" {
-		t.Fatalf("staged changed: %v %s", err, out)
+	if err != nil || string(out) != string(stagedBefore) {
+		t.Fatalf("staged changed: %v before %q, after %q", err, stagedBefore, out)
 	}
 	if _, err := os.Stat(hookMarker); !os.IsNotExist(err) {
 		t.Fatalf("Beads write ran Git hook: %v", err)
