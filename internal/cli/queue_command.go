@@ -34,13 +34,16 @@ func queueCommand(s *boundary) *urfave.Command {
 	return c
 }
 func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string {
-	if source.Adapter == "external" {
+	if source.Adapter == "external" || source.Adapter == "linear" {
 		if source.Account != "" {
 			return []string{source.Account}
 		}
 		return nil
 	}
 	identityKey := "backlog-md"
+	if source.Adapter == "beads" {
+		identityKey = "beads"
+	}
 	if source.Adapter == "github" {
 		identityKey = source.Host
 	}
@@ -48,7 +51,7 @@ func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string
 	if !ok {
 		return nil
 	}
-	if source.Adapter == "github" {
+	if source.Adapter == "github" || source.Adapter == "beads" {
 		var account string
 		if identity.Decode(&account) == nil && account != "" {
 			return []string{account}
@@ -118,9 +121,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			sourceErrors[src.ID] = "adapter-unavailable"
 			continue
 		}
-		options := queueSourceOptions(src)
-		if src.Adapter == "external" {
-			options = map[string]string{"id": src.ID}
+		options := map[string]string{"id": src.ID}
+		if src.Adapter != "external" {
+			options = queueSourceOptions(src)
 		}
 		resolved, err := adapter.Resolve(ctx, options)
 		if err != nil {
@@ -251,7 +254,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.StateChoices = make(map[string][]queueui.StateChoice)
 	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
-		if source.Adapter == "backlog-md" || source.Adapter == "github" && source.Project != nil && source.Project.AllowWrites {
+		if source.Adapter == "backlog-md" || source.Adapter == "github" && source.GitHubProject != nil && source.GitHubProject.AllowWrites {
 			model.StartTransitions[id] = source.Workflow["start"]
 		}
 		for _, step := range []struct {
@@ -259,7 +262,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			action queue.Action
 		}{{"start", queue.ActionStart}, {"blocked", queue.ActionReportBlocked}, {"review", queue.ActionRequestReview}, {"complete", queue.ActionComplete}, {"reopen", queue.ActionReopen}} {
 			if transition := source.Workflow[step.name]; transition != "" {
-				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen && (source.Project == nil || !source.Project.AllowWrites) {
+				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen && (source.GitHubProject == nil || !source.GitHubProject.AllowWrites) {
 					continue
 				}
 				model.StateChoices[id] = append(model.StateChoices[id], queueui.StateChoice{Action: step.action, Label: step.name, Transition: transition})
@@ -484,7 +487,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
-			if adapter != "backlog-md" && adapter != "github" {
+			if adapter != "backlog-md" && adapter != "github" && adapter != "linear" {
 				cancel()
 				return nil
 			}
@@ -513,6 +516,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				var updates <-chan queue.Snapshot
 				if adapter == "github" {
 					updates = loader.HydrateVisible(hydrationCtx, source, []queue.Ref{item.Ref})
+				} else if adapter == "beads" {
+					updates = loader.HydrateDetail(hydrationCtx, source, item.Ref)
 				} else {
 					updates = loader.HydrateEdges(hydrationCtx, source, []queue.Ref{item.Ref}, nil, false)
 				}
@@ -701,6 +706,9 @@ func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queu
 }
 
 func queueSourceFailure(err error) string {
+	if diagnostic, ok := err.(queue.BeadsDiagnostic); ok {
+		return diagnostic.Code
+	}
 	message := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(message, "rate"):
@@ -874,8 +882,10 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		switch source.Adapter {
 		case "github":
 			updates = loader.HydrateVisible(ctx, source, visible)
-		case "backlog-md":
+		case "backlog-md", "beads":
 			updates = loader.HydrateEdges(ctx, source, nil, visible, true)
+		case "linear":
+			updates = loader.HydrateEdges(ctx, source, visible, nil, false)
 		default:
 			continue
 		}

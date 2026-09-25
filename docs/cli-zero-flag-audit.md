@@ -23,11 +23,12 @@ local default, or reports the missing required input without guessing.
 | `watch` | Report missing wait condition/resource or cursor | Requires explicit wait target |
 | `gc` | Preview retention | Never applies without `--apply` |
 | `doctor` | Run read-only diagnostics | No state mutation |
-| `queue init` | Preview detected queue configuration | Reads provider facts; writes only with `--apply` |
+| `queue init` | Preflight the detected adapter and write owner-private queue configuration | `--dry-run` previews without writing; Backlog.md `me` falls back to OS login and network effects require `--allow-git-network` |
 | `queue query` | Report missing required view | Requires a configured view; read-only |
 | `queue next` | Report missing required view | Requires a configured view and complete scope; selects without acquiring |
 | `queue recovery retry` | Reject missing operation ID or original handle | Reads the provider result without dispatching another write |
 | `queue adapter approve` | Reject missing explicit source | Previews approval only; records it only with `--acknowledge` |
+| `queue adapter check` | Reject missing explicit executable | Runs only the named executable; writes a disposable provider item only with `--disposable-target` |
 | `queue recovery reconcile` | Reject missing operation ID, evidence, or attestations | Requires proof the provider write did not commit and the executor ceased; claim remains held |
 | `queue recovery checkpoint-missing` | Reject missing operation ID, original handle, evidence, or attestations | Requires verified provider effect, absent expired checkpoint, and ceased executor; claim remains held |
 | `queue authority-id` | Show the invoking worker's selected authority ID | Read-only; launchers compare it to the queue handoff before acquiring |

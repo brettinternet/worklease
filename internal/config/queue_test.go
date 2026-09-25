@@ -8,10 +8,26 @@ import (
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func queueFixture(checkout string) string {
 	return "version: 1\nme:\n  github.com: brett\n  backlog-md: ['@brett']\nsources:\n  - id: local\n    adapter: backlog-md\n    checkout: " + checkout + "\n    claims: {policy: generic, source: project}\n  - id: remote\n    adapter: github\n    host: github.com\n    repository: acme/api\n    account: brett\nviews:\n  - name: Ready\n    authority: local\n    sources: [local, remote]\n    filter: {readiness: ready, claim: free, assigned: [me, nobody]}\n"
+}
+
+func TestQueueBeadsConfiguration(t *testing.T) {
+	t.Parallel()
+	_, _ = testkit.Home(t)
+	checkout := t.TempDir()
+	content := "version: 1\nme: {beads: alice}\nsources:\n  - id: beads\n    adapter: beads\n    checkout: " + checkout + "\n    claims: {policy: generic, source: agreed-team/planning}\nviews:\n  - name: Ready\n    authority: local\n    sources: [beads]\n    filter: {readiness: ready}\n"
+	cfg, err := parseQueue([]byte(content), nil, nil)
+	if err != nil || cfg.Sources[0].Claims.Source != "agreed-team/planning" {
+		t.Fatalf("Beads config: %+v %v", cfg, err)
+	}
+	_, err = parseQueue([]byte(strings.Replace(content, "    claims: {policy: generic, source: agreed-team/planning}\n", "", 1)), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "explicit portable generic binding") {
+		t.Fatalf("missing binding: %v", err)
+	}
 }
 
 func TestQueueSchema(t *testing.T) {
@@ -101,27 +117,27 @@ func TestQueueGitHubProjectBindingUsesExplicitStableOptions(t *testing.T) {
 		}
 		return ""
 	}
-	base := strings.Replace(queueFixture(home), "    account: brett\n", "    account: brett\n    project:\n      owner: acme\n      number: 5\n      id: PVT_project\n      fieldId: PVTSSF_status\n      allowWrites: true\n      options: {option-open: open, option-progress: in-progress, option-blocked: blocked, option-review: review, option-done: complete}\n    workflow: {start: option-progress, blocked: option-blocked, review: option-review}\n", 1)
+	base := strings.Replace(queueFixture(home), "    account: brett\n", "    account: brett\n    githubProject:\n      owner: acme\n      number: 5\n      id: PVT_project\n      fieldId: PVTSSF_status\n      allowWrites: true\n      options: {option-open: open, option-progress: in-progress, option-blocked: blocked, option-review: review, option-done: complete}\n    workflow: {start: option-progress, blocked: option-blocked, review: option-review}\n", 1)
 	cfg, err := parseQueue([]byte(base), env, nil)
 	if err != nil {
 		t.Fatalf("valid Projects v2 binding: %v", err)
 	}
-	project := cfg.Sources[1].Project
+	project := cfg.Sources[1].GitHubProject
 	if project == nil || project.Owner != "acme" || project.Number != 5 || project.ID != "PVT_project" || project.FieldID != "PVTSSF_status" || !project.AllowWrites || project.Options["option-progress"] != "in-progress" || cfg.Sources[1].Workflow["start"] != "option-progress" {
 		t.Fatalf("project binding was not preserved: %+v", project)
 	}
 	disabled, err := parseQueue([]byte(strings.Replace(base, "      allowWrites: true\n", "", 1)), env, nil)
-	if err != nil || disabled.Sources[1].Project == nil || disabled.Sources[1].Project.AllowWrites {
-		t.Fatalf("Projects v2 writes were not disabled by default: config=%+v err=%v", disabled.Sources[1].Project, err)
+	if err != nil || disabled.Sources[1].GitHubProject == nil || disabled.Sources[1].GitHubProject.AllowWrites {
+		t.Fatalf("Projects v2 writes were not disabled by default: config=%+v err=%v", disabled.Sources[1].GitHubProject, err)
 	}
 
 	cases := []struct{ name, replacement, want string }{
-		{"missing project ID", "      id: ''", "project: owner, positive number"},
-		{"invalid field ID", "      fieldId: PVT_field", "project: owner, positive number"},
-		{"invalid option state", "option-progress: doing", "project.options: expected option IDs"},
+		{"missing project ID", "      id: ''", "githubProject: owner, positive number"},
+		{"invalid field ID", "      fieldId: PVT_field", "githubProject: owner, positive number"},
+		{"invalid option state", "option-progress: doing", "githubProject.options: expected option IDs"},
 		{"wrong start state", "start: option-open", "workflow.start: project transition"},
 		{"unknown start option", "start: option-missing", "workflow.start: project transition"},
-		{"non-boolean write switch", "      allowWrites: 'yes'", "project.allowWrites: expected boolean"},
+		{"non-boolean write switch", "      allowWrites: 'yes'", "githubProject.allowWrites: expected boolean"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,6 +152,50 @@ func TestQueueGitHubProjectBindingUsesExplicitStableOptions(t *testing.T) {
 			}
 			if _, err := parseQueue([]byte(content), env, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, adapter := range []string{"linear", "jira-cloud"} {
+		t.Run(adapter, func(t *testing.T) {
+			t.Parallel()
+			account := "alice"
+			scope := ""
+			if adapter == "linear" {
+				account = "72088203-6bc7-4a63-a71b-22048b88da64"
+				scope = "    organization: 0bfebf80-70af-4eca-9e39-2029a01f5b77\n    team: d19193f6-0501-485b-93af-65e829c2039d\n"
+			}
+			base := "version: 1\nme: {}\nsources:\n  - id: remote\n    adapter: " + adapter + "\n    account: " + account + "\n" + scope + "    credentialHelper: [/usr/bin/credential-helper, --token]\nviews:\n  - name: Ready\n    authority: local\n    sources: [remote]\n    filter: {}\n"
+			cfg, err := parseQueue([]byte(base), nil, nil)
+			if err != nil || len(cfg.Sources) != 1 || len(cfg.Sources[0].CredentialHelper) != 2 {
+				t.Fatalf("valid helper: %+v %v", cfg, err)
+			}
+			if adapter == "linear" {
+				validProject := strings.Replace(base, "    team: ", "    project: 9f3b2707-b6d8-456d-9079-32f60cd33474\n    team: ", 1)
+				if _, err := parseQueue([]byte(validProject), nil, nil); err != nil {
+					t.Fatalf("valid project scope: %v", err)
+				}
+				for _, invalid := range []string{strings.Replace(base, "    organization: "+"0bfebf80-70af-4eca-9e39-2029a01f5b77\n", "", 1), strings.Replace(base, "    team: d19193f6-0501-485b-93af-65e829c2039d", "    team: TEST", 1)} {
+					if _, err := parseQueue([]byte(invalid), nil, nil); err == nil {
+						t.Fatal("accepted missing or mutable Linear identity")
+					}
+				}
+			}
+			for _, tc := range []struct{ replace, with, want string }{
+				{"[/usr/bin/credential-helper, --token]", "[credential-helper]", "credentialHelper"},
+				{"[/usr/bin/credential-helper, --token]", "[]", "credentialHelper"},
+				{"[/usr/bin/credential-helper, --token]", "plain-token", "queue.yaml"},
+				{"    credentialHelper: [/usr/bin/credential-helper, --token]\n", "", "credentialHelper"},
+				{"    account: " + account + "\n", "", "account"},
+				{"    account: " + account + "\n", "    account: " + account + "\n    claims: {policy: linear, source: org}\n", "claims and writes"},
+			} {
+				_, err := parseQueue([]byte(strings.Replace(base, tc.replace, tc.with, 1)), nil, nil)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("invalid helper configuration: expected %q, got %v", tc.want, err)
+				}
 			}
 		})
 	}

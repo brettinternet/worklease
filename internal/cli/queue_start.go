@@ -23,7 +23,7 @@ type queueStartController struct {
 
 func (c queueStartController) prepare(ctx context.Context, item queue.Item) (queueui.StartPreview, queueClaimPlan, error) {
 	cfg, ok := c.write.configured[item.Ref.SourceID]
-	projectStart := cfg.Adapter == "github" && cfg.Project != nil && cfg.Project.AllowWrites
+	projectStart := cfg.Adapter == "github" && cfg.GitHubProject != nil && cfg.GitHubProject.AllowWrites
 	if !ok || cfg.Workflow["start"] == "" || cfg.Adapter != "backlog-md" && !projectStart {
 		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work has no supported provider mapping; Claim only")
 	}
@@ -40,7 +40,7 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 		if source.ID == cfg.ID {
 			current = source.Adapter == cfg.Adapter && source.Checkout == cfg.Checkout && source.Repository == cfg.Repository && source.Host == cfg.Host && source.Account == cfg.Account && source.Workflow["start"] == cfg.Workflow["start"]
 			if projectStart {
-				current = current && reflect.DeepEqual(source.Project, cfg.Project) && reflect.DeepEqual(source.Workflow, cfg.Workflow)
+				current = current && reflect.DeepEqual(source.GitHubProject, cfg.GitHubProject) && reflect.DeepEqual(source.Workflow, cfg.Workflow)
 			}
 			break
 		}

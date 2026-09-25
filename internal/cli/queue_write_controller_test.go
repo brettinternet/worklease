@@ -282,7 +282,7 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	claimItem := queueClaimItem("tasks", "TASK-1")
-	claimController, backend, fixture := newLocalQueueClaimController(t, 30*time.Second, claimItem)
+	claimController, backend, fixture := newLocalQueueClaimController(t, config.DefaultTTL, claimItem)
 	claimPreview := claimController.Preview(context.Background(), claimItem)().(queueui.ClaimPreviewMsg)
 	if claimPreview.Err != nil {
 		t.Fatal(claimPreview.Err)
@@ -332,16 +332,9 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	if err := os.Rename(originalPath, path); err != nil {
 		t.Fatal(err)
 	}
-	// The queue renews a held claim while the user interacts with a slow
-	// provider. Move the fixture handle rather than duplicating it so only one
-	// renewal loop advances this claim's revision.
-	lifecycleCtx, stopLifecycle := context.WithCancel(context.Background())
-	lifecycleDone := make(chan struct{})
-	go func() {
-		defer close(lifecycleDone)
-		(queueLifecycle{controller: claimController, now: time.Now}).run(lifecycleCtx, func(queueui.OwnedClaimMsg) {})
-	}()
-	t.Cleanup(func() { stopLifecycle(); <-lifecycleDone })
+	// The write controller is under test here; lifecycle renewal has separate
+	// tests. Keep the single moved handle and production TTL so a provider CLI
+	// call cannot race an unrelated heartbeat in this test.
 	queueConfig := fmt.Sprintf("version: 1\nme:\n  backlog-md: ['@bob']\nsources:\n  - id: tasks\n    adapter: backlog-md\n    checkout: %q\n    claims:\n      policy: generic\n      source: portable\n    workflow:\n      start: In Progress\nviews:\n  - name: Ready\n    authority: local\n    sources: [tasks]\n    filter:\n      readiness: ready\n", root)
 	if err := handle.WriteOwnerPrivate(config.QueuePath(os.Getenv), []byte(queueConfig), 1<<20); err != nil {
 		t.Fatal(err)

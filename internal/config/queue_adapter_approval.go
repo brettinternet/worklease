@@ -221,6 +221,14 @@ func PrepareQueueAdapterLaunch(env func(string) string, source QueueSource) (*Qu
 	return nil, fmt.Errorf("external adapter for source %q is not approved or its executable changed", source.ID)
 }
 
+// PrepareQueueAdapterCheckLaunch snapshots an explicitly supplied executable without
+// recording or requiring approval. Only the conformance command may use this path;
+// normal source launches must continue to require PrepareQueueAdapterLaunch.
+func PrepareQueueAdapterCheckLaunch(path string) (*QueueAdapterLaunchSnapshot, error) {
+	snapshot, _, err := copyQueueAdapterExecutable(path)
+	return snapshot, err
+}
+
 func copyQueueAdapterExecutable(path string) (*QueueAdapterLaunchSnapshot, string, error) {
 	source, err := openQueueAdapterExecutableNoSymlinks(path)
 	if err != nil {

@@ -81,20 +81,20 @@ func TestQueueStartWorkRequiresAnExplicitProjectsWriteBinding(t *testing.T) {
 	t.Parallel()
 	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "issues", ItemID: "6"}}}
 	claim := &queueClaimController{blocked: func() bool { return true }}
-	configured := config.QueueSource{ID: "issues", Adapter: "github", Host: "github.com", Repository: "org/repo", Account: "tester", Workflow: map[string]string{"start": "option-progress"}, Project: &config.QueueProject{AllowWrites: true}}
+	configured := config.QueueSource{ID: "issues", Adapter: "github", Host: "github.com", Repository: "org/repo", Account: "tester", Workflow: map[string]string{"start": "option-progress"}, GitHubProject: &config.QueueProject{AllowWrites: true}}
 	controller := queueStartController{claim: claim, write: queueWriteController{configured: map[string]config.QueueSource{"issues": configured}}}
 	_, _, err := controller.prepare(context.Background(), item)
 	if err == nil || !strings.Contains(err.Error(), "claim actions stopped") {
 		t.Fatalf("explicit project mapping was rejected before claim preparation: %v", err)
 	}
-	configured.Project.AllowWrites = false
+	configured.GitHubProject.AllowWrites = false
 	controller.write.configured["issues"] = configured
 	controller.claim = nil
 	_, _, err = controller.prepare(context.Background(), item)
 	if err == nil || !strings.Contains(err.Error(), "no supported provider mapping") {
 		t.Fatalf("GitHub Start work was enabled without project.allowWrites: %v", err)
 	}
-	configured.Project = nil
+	configured.GitHubProject = nil
 	controller.write.configured["issues"] = configured
 	_, _, err = controller.prepare(context.Background(), item)
 	if err == nil || !strings.Contains(err.Error(), "no supported provider mapping") {

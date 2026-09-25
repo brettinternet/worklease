@@ -119,13 +119,16 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				resolveErrors[configured.ID] = "source-adapter-unavailable"
 				continue
 			}
-			opts := queueSourceOptions(configured)
-			if configured.Adapter == "external" {
-				opts = map[string]string{"id": configured.ID}
+			opts := map[string]string{"id": configured.ID}
+			if configured.Adapter != "external" {
+				opts = queueSourceOptions(configured)
 			}
 			source, e := adapter.Resolve(ctx, opts)
 			if e != nil {
 				resolveErrors[configured.ID] = "source-resolve-failed"
+				if configured.Adapter == "beads" {
+					resolveErrors[configured.ID] = queueSourceFailure(e)
+				}
 				if configured.Adapter == "external" {
 					resolveErrors[configured.ID] = e.Error() // ExternalProcess bounds and redacts stderr.
 				}
@@ -560,8 +563,14 @@ func isQueueMe(cfg config.QueueConfig, item queue.Item, owner string) bool {
 				return strings.EqualFold(account, owner)
 			}
 		}
-		if source.Adapter == "external" {
+		if source.Adapter == "external" || source.Adapter == "linear" {
 			return strings.EqualFold(source.Account, owner)
+		}
+		if source.Adapter == "beads" {
+			var actor string
+			if value := cfg.Me["beads"]; value.Decode(&actor) == nil {
+				return strings.EqualFold(actor, owner)
+			}
 		}
 		if source.Adapter == "backlog-md" {
 			var names []string

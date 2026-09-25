@@ -27,9 +27,11 @@ import (
 
 func TestQueueTUIMeBySourceUsesExternalAccount(t *testing.T) {
 	t.Parallel()
-	got := queueMeBySource(config.QueueConfig{}, config.QueueSource{ID: "planning", Adapter: "external", Account: "alice"})
-	if len(got) != 1 || got[0] != "alice" {
-		t.Fatalf("external TUI identity = %v, want configured account", got)
+	for _, adapter := range []string{"external", "linear"} {
+		got := queueMeBySource(config.QueueConfig{}, config.QueueSource{ID: "planning", Adapter: adapter, Account: "alice"})
+		if len(got) != 1 || got[0] != "alice" {
+			t.Fatalf("%s TUI identity = %v, want configured account", adapter, got)
+		}
 	}
 }
 
@@ -253,7 +255,9 @@ func TestQueueFirstFrameDoesNotWaitForRemoteMetadata(t *testing.T) {
 	if err := config.SaveProfiles(paths, []config.Profile{profile}, ""); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Keep the metadata request cancellable without expiring fixture setup
+	// (Git init, commit and SQLite open) under a busy test runner.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := time.Now()
 	backend, authorityView, err := queueAuthorityForViewWithMetadata(ctx, &urfave.Command{}, "remote", false)

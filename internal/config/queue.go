@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -64,12 +65,16 @@ type QueueSource struct {
 	Host              string            `yaml:"host"`
 	Repository        string            `yaml:"repository"`
 	Account           string            `yaml:"account"`
+	Organization      string            `yaml:"organization"`
+	Team              string            `yaml:"team"`
+	Project           string            `yaml:"project"`
 	Executable        string            `yaml:"executable"`
 	ExpectedAdapterID string            `yaml:"expectedAdapterId"`
 	ExpectedVersion   string            `yaml:"expectedVersion"`
 	Config            map[string]any    `yaml:"config"`
 	CredentialRef     string            `yaml:"credentialRef"`
-	Project           *QueueProject     `yaml:"project"`
+	CredentialHelper  []string          `yaml:"credentialHelper"`
+	GitHubProject     *QueueProject     `yaml:"githubProject"`
 }
 
 // QueueProject binds a GitHub repository source to exactly one Projects v2 field.
@@ -82,6 +87,10 @@ type QueueProject struct {
 	Options     map[string]string `yaml:"options" json:"options"` // option ID -> open|in-progress|blocked|review|complete
 	AllowWrites bool              `yaml:"allowWrites" json:"allowWrites"`
 }
+
+var queueUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func queueUUID(value string) bool { return queueUUIDPattern.MatchString(value) }
 
 type QueueClaims struct {
 	Policy string `yaml:"policy" json:"policy"`
@@ -135,7 +144,7 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 	}
 	data, err := handle.ReadOwnerPrivate(path, 1<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; run worklease queue init to preview owner-private "+path+" (see https://github.com/brettinternet/worklease/blob/main/docs/queue.md)")
+		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; run worklease queue init to create owner-private "+path+" (see https://github.com/brettinternet/worklease/blob/main/docs/queue.md)")
 	}
 	if err != nil {
 		return QueueConfig{}, fmt.Errorf("queue.yaml cannot be read safely: %w", err)
@@ -175,13 +184,13 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		return QueueConfig{}, fmt.Errorf("queue.yaml: invalid YAML")
 	}
 	schemas := map[string]map[string]bool{
-		"queue":   {"version": true, "me": true, "sources": true, "views": true, "launch": true},
-		"launch":  {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source":  {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "project": true},
-		"project": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
-		"claims":  {"policy": true, "source": true},
-		"view":    {"name": true, "authority": true, "sources": true, "filter": true},
-		"filter":  {"readiness": true, "claim": true, "assigned": true},
+		"queue":         {"version": true, "me": true, "sources": true, "views": true, "launch": true},
+		"launch":        {"name": true, "argv": true, "cwd": true, "passEnv": true},
+		"source":        {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
+		"githubProject": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
+		"claims":        {"policy": true, "source": true},
+		"view":          {"name": true, "authority": true, "sources": true, "filter": true},
+		"filter":        {"readiness": true, "claim": true, "assigned": true},
 	}
 	if err := checkQueueKeys(root.Content[0], "queue", schemas["queue"]); err != nil {
 		return QueueConfig{}, err
@@ -226,16 +235,16 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 			if section == "sources" {
-				if project := nested["project"]; project != nil {
-					if err := checkQueueKeys(project, label+".project", schemas["project"]); err != nil {
+				if project := nested["githubProject"]; project != nil {
+					if err := checkQueueKeys(project, label+".githubProject", schemas["githubProject"]); err != nil {
 						return QueueConfig{}, err
 					}
 					projectFields := nodeFields(project)
 					if allowWrites := projectFields["allowWrites"]; allowWrites != nil && (allowWrites.Kind != yaml.ScalarNode || allowWrites.Tag != "!!bool") {
-						return QueueConfig{}, fmt.Errorf("%s.project.allowWrites: expected boolean", label)
+						return QueueConfig{}, fmt.Errorf("%s.githubProject.allowWrites: expected boolean", label)
 					}
 					if options := projectFields["options"]; options != nil && options.Kind != yaml.MappingNode {
-						return QueueConfig{}, fmt.Errorf("%s.project.options: expected option ID mappings", label)
+						return QueueConfig{}, fmt.Errorf("%s.githubProject.options: expected option ID mappings", label)
 					}
 				}
 				if workflow := nested["workflow"]; workflow != nil {
@@ -259,11 +268,11 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					return QueueConfig{}, fmt.Errorf("%s.adapter: expected adapter name", label)
 				}
 				switch adapter.Value {
-				case "backlog-md":
+				case "backlog-md", "beads":
 					if nested["checkout"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "github":
@@ -272,10 +281,25 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 							return QueueConfig{}, fmt.Errorf("%s.%s: required", label, key)
 						}
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
+				case "linear", "jira-cloud":
+					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "repository", "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+						return QueueConfig{}, err
+					}
+					if adapter.Value == "jira-cloud" {
+						if err := rejectQueueFields(nested, label, "organization", "team", "project"); err != nil {
+							return QueueConfig{}, err
+						}
+					}
+					if nested["account"] == nil || nested["credentialHelper"] == nil {
+						return QueueConfig{}, fmt.Errorf("%s: account and credentialHelper required", label)
+					}
 				case "external":
+					if err := rejectQueueFields(nested, label, "credentialHelper"); err != nil {
+						return QueueConfig{}, err
+					}
 					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "host", "repository"); err != nil {
 						return QueueConfig{}, err
 					}
@@ -344,9 +368,9 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		}
 		seen[s.ID] = true
 		switch s.Adapter {
-		case "backlog-md":
-			if s.Host != "" || s.Repository != "" || s.Account != "" || s.Project != nil {
-				return QueueConfig{}, fmt.Errorf("%s: github fields are not valid for backlog-md", label)
+		case "backlog-md", "beads":
+			if s.Host != "" || s.Repository != "" || s.Account != "" || s.Project != "" || s.GitHubProject != nil {
+				return QueueConfig{}, fmt.Errorf("%s: remote fields are not valid for this local source", label)
 			}
 			if strings.HasPrefix(s.Checkout, "~/") {
 				s.Checkout = filepath.Join(env("HOME"), s.Checkout[2:])
@@ -358,8 +382,13 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if s.Checkout == "" || err != nil || !st.IsDir() {
 				return QueueConfig{}, fmt.Errorf("%s.checkout: existing directory required", label)
 			}
-			if s.Claims != nil && (s.Claims.Policy != "generic" || strings.TrimSpace(s.Claims.Source) == "") {
-				return QueueConfig{}, fmt.Errorf("%s.claims: generic policy and source required", label)
+			if s.Adapter == "beads" && s.Claims == nil {
+				return QueueConfig{}, fmt.Errorf("%s.claims: Beads requires an explicit portable generic binding", label)
+			}
+			if s.Claims != nil {
+				if s.Claims.Policy != "generic" || validateQueueClaimSource(s.Claims.Source) != nil {
+					return QueueConfig{}, fmt.Errorf("%s.claims: valid generic policy and source required", label)
+				}
 			}
 		case "github":
 			parts := strings.Split(s.Repository, "/")
@@ -369,13 +398,16 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if s.Checkout != "" || s.Claims != nil || s.AllowGitNetwork {
 				return QueueConfig{}, fmt.Errorf("%s: backlog-md fields are not valid for github", label)
 			}
-			if p := s.Project; p != nil {
+			if s.Project != "" {
+				return QueueConfig{}, fmt.Errorf("%s.project: only valid for linear", label)
+			}
+			if p := s.GitHubProject; p != nil {
 				if !validRepoPart(p.Owner) || p.Number <= 0 || !strings.HasPrefix(p.ID, "PVT_") || !strings.HasPrefix(p.FieldID, "PVTSSF_") || len(p.Options) == 0 {
-					return QueueConfig{}, fmt.Errorf("%s.project: owner, positive number, project ID, single-select field ID and option mappings required", label)
+					return QueueConfig{}, fmt.Errorf("%s.githubProject: owner, positive number, project ID, single-select field ID and option mappings required", label)
 				}
 				for option, state := range p.Options {
 					if strings.TrimSpace(option) != option || option == "" || !map[string]bool{"open": true, "in-progress": true, "blocked": true, "review": true, "complete": true}[state] {
-						return QueueConfig{}, fmt.Errorf("%s.project.options: expected option IDs mapped to workflow states", label)
+						return QueueConfig{}, fmt.Errorf("%s.githubProject.options: expected option IDs mapped to workflow states", label)
 					}
 				}
 				for action, expected := range map[string]string{"start": "in-progress", "blocked": "blocked", "review": "review"} {
@@ -384,9 +416,32 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					}
 				}
 			}
+		case "linear", "jira-cloud":
+			if s.GitHubProject != nil {
+				return QueueConfig{}, fmt.Errorf("%s.githubProject: only valid for github", label)
+			}
+			if s.Adapter == "linear" {
+				if !queueUUID(s.Organization) || !queueUUID(s.Team) || !queueUUID(s.Account) || (s.Project != "" && !queueUUID(s.Project)) || s.Host != "" {
+					return QueueConfig{}, fmt.Errorf("%s: Linear requires organization, team, and account UUIDs, optional project UUID, and no host", label)
+				}
+			}
+			if strings.TrimSpace(s.Account) == "" || strings.ContainsAny(s.Account, "\r\n\x00") {
+				return QueueConfig{}, fmt.Errorf("%s.account: safe principal required", label)
+			}
+			if s.Claims != nil || s.Workflow != nil {
+				return QueueConfig{}, fmt.Errorf("%s: claims and writes are unavailable until the adapter is implemented", label)
+			}
+			if len(s.CredentialHelper) == 0 || len(s.CredentialHelper) > 32 || !filepath.IsAbs(s.CredentialHelper[0]) || filepath.Clean(s.CredentialHelper[0]) != s.CredentialHelper[0] {
+				return QueueConfig{}, fmt.Errorf("%s.credentialHelper: absolute executable and at most 32 arguments required", label)
+			}
+			for j, arg := range s.CredentialHelper {
+				if len(arg) > 4096 || strings.ContainsRune(arg, '\x00') || (j == 0 && arg == "") {
+					return QueueConfig{}, fmt.Errorf("%s.credentialHelper[%d]: invalid argument", label, j)
+				}
+			}
 		case "external":
-			if s.Project != nil {
-				return QueueConfig{}, fmt.Errorf("%s.project: only valid for github", label)
+			if s.GitHubProject != nil {
+				return QueueConfig{}, fmt.Errorf("%s.githubProject: only valid for github", label)
 			}
 			// The source-specific external fields were checked against their YAML nodes above.
 		default:
@@ -596,6 +651,12 @@ func checkQueueConfigKeys(node *yaml.Node, path string) error {
 		}
 	}
 	return nil
+}
+
+// ValidQueueAdapterManifestIdentity applies the same identity and version rules
+// to an unapproved conformance manifest as to a configured source.
+func ValidQueueAdapterManifestIdentity(id, version string) bool {
+	return validExternalAdapterID(id) && validExternalAdapterVersion(version)
 }
 
 func validExternalAdapterID(value string) bool {

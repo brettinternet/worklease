@@ -115,8 +115,10 @@ func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) 
 	switch a := read.(type) {
 	case *queue.BacklogAdapter:
 		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: intent.Principal}, nil
+	case *queue.BeadsAdapter:
+		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: intent.Principal}, nil
 	case *queue.GitHubAdapter:
-		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.Project != nil && configured.Project.AllowWrites}, nil
+		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}, nil
 	default:
 		return nil, fmt.Errorf("write adapter unavailable")
 	}

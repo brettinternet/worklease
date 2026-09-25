@@ -416,8 +416,10 @@ func refreshQueueActionClosure(ctx context.Context, registry *queue.Registry, so
 	if !ok {
 		return queue.Item{}, reason.New(reason.ReasonInvalidArgument, "claim source adapter unavailable")
 	}
-	if backlog, ok := adapter.(*queue.BacklogAdapter); ok {
-		closure, err := backlog.RefreshActionClosure(ctx, root, selected.Ref)
+	if refresher, ok := adapter.(interface {
+		RefreshActionClosure(context.Context, queue.Source, queue.Ref) (map[string]queue.Item, error)
+	}); ok {
+		closure, err := refresher.RefreshActionClosure(ctx, root, selected.Ref)
 		if err != nil {
 			return queue.Item{}, fmt.Errorf("fresh provider prerequisite closure unavailable: %w", err)
 		}

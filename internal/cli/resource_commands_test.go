@@ -237,6 +237,12 @@ func TestKeyJSONMatchesVersionedResourceVectors(t *testing.T) {
 	if resources["generic-portable-backlog-binding"] == resources["backlog-primary-nested"] {
 		t.Fatal("default backlog-md and generic portable keys unexpectedly match")
 	}
+	if resources["linear-test-1-before-team-move"] != resources["linear-pdev-5-after-team-move"] {
+		t.Fatal("Linear team/identifier move changed the organization/issue key")
+	}
+	if resources["linear-test-1-before-team-move"] == resources["linear-test-2-other-issue"] || resources["linear-test-1-before-team-move"] == resources["linear-other-organization-same-issue"] {
+		t.Fatal("Linear organization/issue boundaries collapsed")
+	}
 	if resources["github-url-form-is-distinct"] == resources["github-normalized-owner-repo"] {
 		t.Fatal("URL-form GitHub locator matched owner/repo")
 	}

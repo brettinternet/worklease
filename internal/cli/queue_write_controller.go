@@ -44,9 +44,15 @@ func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, 
 			return nil, fmt.Errorf("backlog.md identity not configured")
 		}
 		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: me[0]}, nil
+	case *queue.BeadsAdapter:
+		me := c.me[source.ID]
+		if len(me) != 1 || me[0] == "" {
+			return nil, fmt.Errorf("beads identity not configured")
+		}
+		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: me[0]}, nil
 	case *queue.GitHubAdapter:
 		configured := c.configured[source.ID]
-		allowProjectWrites := configured.Project != nil && configured.Project.AllowWrites
+		allowProjectWrites := configured.GitHubProject != nil && configured.GitHubProject.AllowWrites
 		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: allowProjectWrites}, nil
 	case *queue.ExternalAdapter:
 		configured, ok := c.configured[source.ID]
@@ -73,6 +79,17 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		return queueui.WritePreview{}, "", err
 	}
 	configured := c.configured[source.ID]
+	if source.Adapter == "beads" {
+		var liveActor string
+		if entry, ok := cfg.Me["beads"]; ok {
+			if err := entry.Decode(&liveActor); err != nil {
+				return queueui.WritePreview{}, "", err
+			}
+		}
+		if len(c.me[source.ID]) != 1 || c.me[source.ID][0] != liveActor {
+			return queueui.WritePreview{}, "", fmt.Errorf("beads actor changed; reopen the write preview")
+		}
+	}
 	if action == queue.ActionStart && source.Adapter == "backlog-md" {
 		var liveActor []string
 		if entry, ok := cfg.Me["backlog-md"]; ok {
@@ -90,8 +107,11 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			continue
 		}
 		found = true
-		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.Project != nil && (!reflect.DeepEqual(current.Project, configured.Project) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
+		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
+		}
+		if configured.Adapter == "beads" && !reflect.DeepEqual(current.Workflow, configured.Workflow) {
+			return queueui.WritePreview{}, "", fmt.Errorf("beads workflow changed; reopen the write preview")
 		}
 		if configured.Adapter == "external" {
 			if !reflect.DeepEqual(current, configured) {
@@ -140,7 +160,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		return queueui.WritePreview{}, "", fmt.Errorf("claim resources differ from confirmed source identity")
 	}
 	principal := c.configured[source.ID].Account
-	if source.Adapter == "backlog-md" {
+	if source.Adapter == "backlog-md" || source.Adapter == "beads" {
 		if names := c.me[source.ID]; len(names) > 0 {
 			principal = names[0]
 		}
@@ -166,13 +186,13 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	}
 	if action == queue.ActionRecordProgress {
 		kind := "notes"
-		if source.Adapter == "github" {
+		if source.Adapter == "github" || source.Adapter == "beads" {
 			kind = "comment"
 		}
 		intent.Patch = map[string]string{"append": kind}
-	} else if action != queue.ActionAssignToMe && source.Adapter == "backlog-md" {
+	} else if action != queue.ActionAssignToMe && (source.Adapter == "backlog-md" || source.Adapter == "beads") {
 		intent.Patch = map[string]string{"status": transition}
-	} else if configured.Project != nil && source.Adapter == "github" && (action == queue.ActionStart || action == queue.ActionResume || action == queue.ActionReportBlocked || action == queue.ActionRequestReview) {
+	} else if configured.GitHubProject != nil && source.Adapter == "github" && (action == queue.ActionStart || action == queue.ActionResume || action == queue.ActionReportBlocked || action == queue.ActionRequestReview) {
 		intent.Patch = map[string]string{"projectOptionID": transition}
 	}
 	claim := queueWriteClaim{backend: c.backend, path: path, session: c.session}
@@ -202,6 +222,14 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		}
 		if detail.AssignmentRace {
 			preview.Races = append(preview.Races, "assignment read-modify-write can overwrite concurrent assignees")
+		}
+	case *queue.BeadsWriteAdapter:
+		var detail queue.BeadsWritePreview
+		intent, detail, err = a.Prepare(ctx, intent)
+		preview.Effect = strings.Join(detail.Argv, " ")
+		preview.SideEffects = []string{"local Dolt commit (may include pending Dolt changes)", "Dolt auto-push disabled; no Git commit or hooks"}
+		if detail.AutoExport {
+			preview.SideEffects = append(preview.SideEffects, "Git-tracked .beads/issues.jsonl may change (throttled auto-export; no Git commit)")
 		}
 	case *queue.GitHubWriteAdapter:
 		var detail queue.GitHubWritePreview
@@ -288,9 +316,11 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 			switch a := read.(type) {
 			case *queue.BacklogAdapter:
 				adapter = &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: record.Intent.Principal}
+			case *queue.BeadsAdapter:
+				adapter = &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: record.Intent.Principal}
 			case *queue.GitHubAdapter:
 				configured := c.configured[record.Intent.Source.ID]
-				adapter = &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.Project != nil && configured.Project.AllowWrites}
+				adapter = &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}
 			default:
 				result.Err = fmt.Errorf("write adapter unavailable")
 				return result

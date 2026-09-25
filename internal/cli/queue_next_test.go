@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,8 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
@@ -31,6 +35,116 @@ func nextResult(t *testing.T, h *queueQueryHarness, args ...string) map[string]a
 		t.Fatal(err)
 	}
 	return response["next"].(map[string]any)
+}
+
+func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
+	binary, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("bd 1.3.0 is not installed")
+	}
+	version, err := exec.Command(binary, "version").Output()
+	if err != nil || !strings.HasPrefix(string(version), "bd version 1.3.0 (") {
+		t.Skip("bd 1.3.0 is required")
+	}
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	checkout := filepath.Join(filepath.Dir(h.home), "checkout")
+	init := exec.Command(binary, "init", "--non-interactive", "--skip-hooks", "--skip-agents", "--prefix", "probe")
+	init.Dir = checkout
+	if out, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("bd init: %v: %s", err, out)
+	}
+	for _, title := range []string{"First", "Second"} {
+		create := exec.Command(binary, "create", title, "--silent")
+		create.Dir = checkout
+		if out, err := create.CombinedOutput(); err != nil {
+			t.Fatalf("bd create: %v: %s", err, out)
+		}
+	}
+	h.writeQueueConfig(fmt.Sprintf("version: 1\nme: {beads: brett}\nsources:\n  - id: local\n    adapter: beads\n    checkout: %s\n    claims: {policy: generic, source: agreed-team/planning}\nviews:\n  - name: Ready\n    authority: local\n    sources: [local]\n    filter: {readiness: ready}\n", checkout))
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("identity confirm: %v: %s", err, data)
+	}
+	first := nextResult(t, h, "--claim", "--session", "beads-worker")
+	if first["result"] != "ready" || first["acquired"] != true {
+		t.Fatalf("CLI claim: %#v", first)
+	}
+	candidate := first["candidates"].([]any)[0].(map[string]any)
+	id := candidate["ref"].(map[string]any)["itemId"].(string)
+	key, err := h.run("key", "--provider", "generic", "--source", "agreed-team/planning", "--item", id, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var derived map[string]any
+	if err := json.Unmarshal(key, &derived); err != nil || candidate["resources"].([]any)[0] != derived["resource"] {
+		t.Fatalf("CLI/queue bytes: %s %#v", key, candidate)
+	}
+	server := queueMCPServer(t, h)
+	claimed, err := server.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "sessionId": "mcp-beads-worker", "autoHeartbeat": false})
+	if err != nil || claimed["isError"] == true {
+		t.Fatalf("MCP Beads: %v %#v", err, claimed)
+	}
+	mcpNext := claimed["structuredContent"].(map[string]any)["next"].(map[string]any)
+	if mcpNext["result"] != "ready" || mcpNext["acquired"] != true || mcpNext["candidates"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"] == id {
+		t.Fatalf("MCP did not claim independent Beads item: %#v", mcpNext)
+	}
+	secondID := mcpNext["candidates"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"].(string)
+	registry := queue.NewRegistry()
+	adapter, _ := registry.Get("beads")
+	source, err := adapter.Resolve(context.Background(), map[string]string{"id": "local", "checkout": checkout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.List(context.Background(), source, queue.Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	dep := exec.Command(binary, "dep", "add", secondID, id)
+	dep.Dir = checkout
+	if out, err := dep.CombinedOutput(); err != nil {
+		t.Fatalf("bd dep: %v: %s", err, out)
+	}
+	selected := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: secondID}}}
+	fresh, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{"local": source}, selected)
+	if err != nil || fresh.Readiness.Status != queue.Blocked {
+		t.Fatalf("action used stale bulk edges: %+v %v", fresh, err)
+	}
+	third := exec.Command(binary, "create", "TUI claim", "--silent")
+	third.Dir = checkout
+	thirdBytes, err := third.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdID := strings.TrimSpace(string(thirdBytes))
+	backend, authority, err := queueAuthorityForClaim(context.Background(), &urfave.Command{}, config.LocalProfileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	controller := &queueClaimController{backend: backend, registry: registry, sources: map[string]queue.Source{"local": source}, claimSources: map[string]queue.ClaimSource{"local": {Source: source, Policy: "generic", ClaimSource: "agreed-team/planning"}}, queueSession: strings.Repeat("e", 32), paths: config.UserProfilePaths(os.Getenv), current: func() (queue.ClaimAuthority, uint64) { return authority, 1 }, blocked: func() bool { return false }, profile: backend.Profile, profileName: config.LocalProfileName, home: backend.Config.Home}
+	thirdItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: thirdID}}}
+	preview := controller.Preview(context.Background(), thirdItem)().(queueui.ClaimPreviewMsg)
+	if preview.Err != nil || preview.Preview == nil {
+		t.Fatalf("TUI claim preview: %+v", preview)
+	}
+	acquired := controller.AcquireClaim(context.Background(), thirdItem, *preview.Preview)().(queueui.ClaimResultMsg)
+	if acquired.Err != nil || !acquired.Claim.Active {
+		t.Fatalf("TUI Claim for me: %+v", acquired)
+	}
+	blocked := exec.Command(binary, "create", "Blocked TUI claim", "--deps", "blocked-by:"+thirdID, "--silent")
+	blocked.Dir = checkout
+	blockedBytes, err := blocked.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: strings.TrimSpace(string(blockedBytes))}}}
+	if _, err := controller.prepare(context.Background(), blockedItem); err == nil {
+		t.Fatal("D11 check allowed claim of blocked Beads item")
+	}
 }
 
 func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {

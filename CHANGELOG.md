@@ -4,7 +4,7 @@
 
 ### Added
 
-- `worklease queue init` previews detected source configuration and writes owner-private `queue.yaml` with `--apply`, including safe initial local identity confirmation.
+- `worklease queue init` preflights the detected source and writes owner-private `queue.yaml` directly, including safe initial local identity confirmation. `--dry-run` previews without writing; Backlog.md identity falls back to the OS login, and Git network effects require explicit `--allow-git-network` consent.
 
 ## 1.7.3 - 2026-09-19
 
