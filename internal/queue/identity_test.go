@@ -39,6 +39,34 @@ func identityFixture() (ClaimSource, *fakeAdapter, ClaimAuthority, config.QueueI
 	return source, adapter, authority, IdentityInputs(source, authority.ID)
 }
 
+func TestBeadsPortableIdentityMatchesGenericCLIAndRejectsDisappearedIDs(t *testing.T) {
+	t.Parallel()
+	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "s", Adapter: "beads", Checkout: "/checkout", Claims: &config.QueueClaims{Policy: "generic", Source: "agreed-team/planning"}}}}
+	claims := ClaimSources(cfg, []Source{{ID: "s", Adapter: "beads", Locator: "/checkout"}})
+	source := claims["s"]
+	itemID := "probe-m5d"
+	queueKey, err := resource.Resolve(resource.Input{Provider: source.Policy, Source: source.ClaimSource, Item: itemID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliKey, err := resource.Resolve(resource.Input{Provider: "generic", Source: "agreed-team/planning", Item: itemID})
+	if err != nil || queueKey.Resource != cliKey.Resource || queueKey.Resource != "coordination:generic:f0e8af5cddaa4f1f0075700d3dd283efd2ea709a32ac10a67cfe7c43b481618c" {
+		t.Fatalf("queue/CLI key mismatch: %v %v %v", queueKey.Resource, cliKey.Resource, err)
+	}
+	adapter := newFake()
+	adapter.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", itemID}}}, Coverage: Coverage{State: CoverageComplete}}}
+	authority := ClaimAuthority{API: identityStatus{}, ID: "authority"}
+	previous := IdentityInputs(source, authority.ID)
+	previous.ItemIDs = []string{itemID}
+	if code, _ := IdentityGate(context.Background(), source, adapter, authority, previous, nil, nil); code != "" {
+		t.Fatal(code)
+	}
+	adapter.pages["s"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"s", "probe-new"}}}, Coverage: Coverage{State: CoverageComplete}}}
+	if code, _ := IdentityGate(context.Background(), source, adapter, authority, previous, nil, nil); code != "identity-changed" {
+		t.Fatalf("renamed ID enabled claims: %s", code)
+	}
+}
+
 func TestIdentityDuplicateGuardRechecksFreshList(t *testing.T) {
 	source, adapter, authority, receipt := identityFixture()
 	if code, _ := IdentityGate(context.Background(), source, adapter, authority, receipt, nil, nil); code != "" {

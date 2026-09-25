@@ -212,6 +212,30 @@ func (l *Loader) HydrateVisible(ctx context.Context, source Source, refs []Ref) 
 	return out
 }
 
+// HydrateDetail loads one selected item even when bulk edges already established
+// its readiness; a complete dependency page does not contain its description.
+func (l *Loader) HydrateDetail(ctx context.Context, source Source, ref Ref) <-chan Snapshot {
+	out := make(chan Snapshot, 8)
+	a, ok := l.Registry.Get(source.Adapter)
+	if !ok {
+		close(out)
+		return out
+	}
+	l.mu.Lock()
+	generation := l.generation[source.ID]
+	l.mu.Unlock()
+	go func() {
+		defer close(out)
+		if ref.SourceID != source.ID || !l.current(source.ID, generation) {
+			return
+		}
+		if item, found := l.Store.Item(ref); found {
+			l.hydrateItem(ctx, a, source, generation, ref, item, out)
+		}
+	}()
+	return out
+}
+
 // HydrateEdges fills a Backlog source after summary publication. The selected
 // closure runs first, followed by visible rows and then remaining summaries.
 // Every provider view is scheduled by quotaScheduler, never by an unbounded

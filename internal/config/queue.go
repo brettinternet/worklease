@@ -234,7 +234,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					return QueueConfig{}, fmt.Errorf("%s.adapter: expected adapter name", label)
 				}
 				switch adapter.Value {
-				case "backlog-md":
+				case "backlog-md", "beads":
 					if nested["checkout"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
 					}
@@ -319,9 +319,9 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		}
 		seen[s.ID] = true
 		switch s.Adapter {
-		case "backlog-md":
+		case "backlog-md", "beads":
 			if s.Host != "" || s.Repository != "" || s.Account != "" {
-				return QueueConfig{}, fmt.Errorf("%s: github fields are not valid for backlog-md", label)
+				return QueueConfig{}, fmt.Errorf("%s: remote fields are not valid for this local source", label)
 			}
 			if strings.HasPrefix(s.Checkout, "~/") {
 				s.Checkout = filepath.Join(env("HOME"), s.Checkout[2:])
@@ -333,8 +333,13 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if s.Checkout == "" || err != nil || !st.IsDir() {
 				return QueueConfig{}, fmt.Errorf("%s.checkout: existing directory required", label)
 			}
-			if s.Claims != nil && (s.Claims.Policy != "generic" || strings.TrimSpace(s.Claims.Source) == "") {
-				return QueueConfig{}, fmt.Errorf("%s.claims: generic policy and source required", label)
+			if s.Adapter == "beads" && s.Claims == nil {
+				return QueueConfig{}, fmt.Errorf("%s.claims: Beads requires an explicit portable generic binding", label)
+			}
+			if s.Claims != nil {
+				if s.Claims.Policy != "generic" || validateQueueClaimSource(s.Claims.Source) != nil {
+					return QueueConfig{}, fmt.Errorf("%s.claims: valid generic policy and source required", label)
+				}
 			}
 		case "github":
 			parts := strings.Split(s.Repository, "/")

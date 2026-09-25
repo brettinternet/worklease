@@ -8,10 +8,26 @@ import (
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func queueFixture(checkout string) string {
 	return "version: 1\nme:\n  github.com: brett\n  backlog-md: ['@brett']\nsources:\n  - id: local\n    adapter: backlog-md\n    checkout: " + checkout + "\n    claims: {policy: generic, source: project}\n  - id: remote\n    adapter: github\n    host: github.com\n    repository: acme/api\n    account: brett\nviews:\n  - name: Ready\n    authority: local\n    sources: [local, remote]\n    filter: {readiness: ready, claim: free, assigned: [me, nobody]}\n"
+}
+
+func TestQueueBeadsConfiguration(t *testing.T) {
+	t.Parallel()
+	_, _ = testkit.Home(t)
+	checkout := t.TempDir()
+	content := "version: 1\nme: {beads: alice}\nsources:\n  - id: beads\n    adapter: beads\n    checkout: " + checkout + "\n    claims: {policy: generic, source: agreed-team/planning}\nviews:\n  - name: Ready\n    authority: local\n    sources: [beads]\n    filter: {readiness: ready}\n"
+	cfg, err := parseQueue([]byte(content), nil, nil)
+	if err != nil || cfg.Sources[0].Claims.Source != "agreed-team/planning" {
+		t.Fatalf("Beads config: %+v %v", cfg, err)
+	}
+	_, err = parseQueue([]byte(strings.Replace(content, "    claims: {policy: generic, source: agreed-team/planning}\n", "", 1)), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "explicit portable generic binding") {
+		t.Fatalf("missing binding: %v", err)
+	}
 }
 
 func TestQueueSchema(t *testing.T) {

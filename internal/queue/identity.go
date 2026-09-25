@@ -27,14 +27,13 @@ func IdentityInputs(source ClaimSource, authorityID string) config.QueueIdentity
 // with a complete fresh list. Backlog.md can renumber a task (duplicate ID
 // repair), which changes its key under either key policy (D12, D24).
 func TracksItemIDs(source ClaimSource, authorityID string) bool {
-	return source.Source.Adapter == "backlog-md"
+	return source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads"
 }
 
-// portableBacklogBinding is a D12 generic Backlog.md binding. It rejects
-// duplicate IDs from a fresh list before enabling claims and before each
-// acquisition; other Backlog.md sources compare fresh lists only at acquisition.
-func portableBacklogBinding(source ClaimSource, authorityID string) bool {
-	return source.Source.Adapter == "backlog-md" && IdentityInputs(source, authorityID).Policy == "generic"
+// portableLocalBinding requires a fresh complete list and unique IDs before
+// claims are enabled or acquired for a portable local source.
+func portableLocalBinding(source ClaimSource, authorityID string) bool {
+	return (source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads") && IdentityInputs(source, authorityID).Policy == "generic"
 }
 
 func SameIdentity(a, b config.QueueIdentity) bool {
@@ -56,25 +55,35 @@ func IdentityGate(ctx context.Context, source ClaimSource, adapter Adapter, auth
 		return "identity-changed", identityDetail(adapter, source.Source)
 	}
 	freshIDs := map[string]bool(nil)
-	if portableBacklogBinding(source, authority.ID) {
+	if portableLocalBinding(source, authority.ID) {
 		page, err := adapter.List(ctx, source.Source, Query{}, "")
 		if err != nil {
-			return "identity-unknown", "fresh Backlog.md list unavailable"
+			if diagnostic, ok := err.(BeadsDiagnostic); ok && diagnostic.Code == "duplicate-item-id" {
+				return "duplicate-item-id", "Beads contains repeated IDs; resolve the duplicate and old claims before rebinding"
+			}
+			return "identity-unknown", "fresh local source list unavailable"
 		}
 		freshIDs = make(map[string]bool, len(page.Items))
 		for _, summary := range page.Items {
 			if freshIDs[summary.Ref.ItemID] {
-				return "duplicate-item-id", "Backlog.md list contains repeated task IDs; resolve duplicates and old claims before rebinding"
+				return "duplicate-item-id", "local source list contains repeated item IDs; resolve duplicates and old claims before rebinding"
 			}
 			freshIDs[summary.Ref.ItemID] = true
 		}
 		if page.Coverage.State != CoverageComplete {
-			return "identity-unknown", "Backlog.md list is incomplete"
+			return "identity-unknown", "local source list is incomplete"
 		}
 	}
 	for _, item := range observed {
 		if item.Ref.SourceID == source.Source.ID && item.ReadOutcome == "identity-changed" {
 			return "identity-changed", identityDetail(adapter, source.Source)
+		}
+	}
+	if source.Source.Adapter == "beads" {
+		for _, id := range previous.ItemIDs {
+			if freshIDs != nil && !freshIDs[id] {
+				return "identity-changed", "Beads item ID disappeared; confirm renumbering or deletion and migrate old keys before claiming"
+			}
 		}
 	}
 	if previous.Policy == "" {
@@ -177,7 +186,7 @@ func PreAcquireIdentity(ctx context.Context, source ClaimSource, adapter Adapter
 		if err != nil || page.Coverage.State != CoverageComplete {
 			return nil, fmt.Errorf("fresh source enumeration required before acquisition")
 		}
-		portable := portableBacklogBinding(source, authority.ID)
+		portable := portableLocalBinding(source, authority.ID)
 		found := false
 		seen := make(map[string]bool, len(page.Items))
 		for _, summary := range page.Items {

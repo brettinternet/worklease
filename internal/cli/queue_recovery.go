@@ -104,7 +104,7 @@ func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) 
 	if !ok {
 		return nil, fmt.Errorf("write adapter unavailable")
 	}
-	resolved, err := read.Resolve(ctx, map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)})
+	resolved, err := read.Resolve(ctx, map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork), "completeStatus": configured.Workflow["complete"]})
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +115,8 @@ func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) 
 	switch a := read.(type) {
 	case *queue.BacklogAdapter:
 		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: intent.Principal}, nil
+	case *queue.BeadsAdapter:
+		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: intent.Principal}, nil
 	case *queue.GitHubAdapter:
 		return queue.NewGitHubWriteAdapter(a, true), nil
 	default:

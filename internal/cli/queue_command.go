@@ -41,6 +41,9 @@ func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string
 		return nil
 	}
 	identityKey := "backlog-md"
+	if source.Adapter == "beads" {
+		identityKey = "beads"
+	}
 	if source.Adapter == "github" {
 		identityKey = source.Host
 	}
@@ -48,7 +51,7 @@ func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string
 	if !ok {
 		return nil
 	}
-	if source.Adapter == "github" {
+	if source.Adapter == "github" || source.Adapter == "beads" {
 		var account string
 		if identity.Decode(&account) == nil && account != "" {
 			return []string{account}
@@ -119,6 +122,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			continue
 		}
 		options := map[string]string{"id": src.ID}
+		if src.Adapter == "beads" {
+			options["completeStatus"] = src.Workflow["complete"]
+		}
 		if src.Adapter != "external" {
 			options["checkout"] = src.Checkout
 			options["host"] = src.Host
@@ -519,6 +525,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 				var updates <-chan queue.Snapshot
 				if adapter == "github" {
 					updates = loader.HydrateVisible(hydrationCtx, source, []queue.Ref{item.Ref})
+				} else if adapter == "beads" {
+					updates = loader.HydrateDetail(hydrationCtx, source, item.Ref)
 				} else {
 					updates = loader.HydrateEdges(hydrationCtx, source, []queue.Ref{item.Ref}, nil, false)
 				}
@@ -707,6 +715,9 @@ func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queu
 }
 
 func queueSourceFailure(err error) string {
+	if diagnostic, ok := err.(queue.BeadsDiagnostic); ok {
+		return diagnostic.Code
+	}
 	message := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(message, "rate"):
@@ -880,7 +891,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		switch source.Adapter {
 		case "github":
 			updates = loader.HydrateVisible(ctx, source, visible)
-		case "backlog-md":
+		case "backlog-md", "beads":
 			updates = loader.HydrateEdges(ctx, source, nil, visible, true)
 		default:
 			continue

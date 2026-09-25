@@ -32,6 +32,13 @@
       "resource": "coordination:generic:f6e6df0bd554949ea97c94ccd9de78e2a656432654d7057ec4a56c3bb8062cd1"
     },
     {
+      "name": "generic-portable-beads-binding",
+      "provider": "generic",
+      "source": "agreed-team/planning",
+      "item": "probe-m5d",
+      "resource": "coordination:generic:f0e8af5cddaa4f1f0075700d3dd283efd2ea709a32ac10a67cfe7c43b481618c"
+    },
+    {
       "name": "github-normalized-owner-repo",
       "provider": "github",
       "source": "Owner/Repository.GIT",

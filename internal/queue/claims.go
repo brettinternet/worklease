@@ -35,7 +35,10 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 			continue
 		}
 		input := ClaimSource{Source: source}
-		if configured.Adapter == "external" {
+		if configured.Adapter == "beads" && (configured.Claims == nil || configured.Claims.Policy != "generic" || !validExternalClaimSource(configured.Claims.Source)) {
+			input.BlockReason = "claim-binding-required"
+			input.BlockDetail = "Beads claims require an explicit portable generic source binding"
+		} else if configured.Adapter == "external" {
 			switch {
 			case configured.Claims == nil:
 				input.BlockReason = "claim-binding-required"
@@ -113,7 +116,7 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 			item.Claim.Reason, item.Claim.Detail = source.BlockReason, source.BlockDetail
 			policy := source.Policy
 			keySource := source.ClaimSource
-			if isExternalClaimSource(source.Source) {
+			if isExternalClaimSource(source.Source) || source.Source.Adapter == "beads" {
 				if policy != "generic" || !validExternalClaimSource(keySource) {
 					if item.Claim.Reason == "" {
 						item.Claim.Reason = "claim-binding-required"
@@ -144,7 +147,7 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):
 					item.Claim.Reason = "resource-not-admitted"
 				default:
-					if source.Source.Adapter == "backlog-md" && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env) {
+					if (source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads") && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env) {
 						item.Claim.Reason = "authority-mismatch"
 					}
 					indexes[key.Resource] = append(indexes[key.Resource], i)
