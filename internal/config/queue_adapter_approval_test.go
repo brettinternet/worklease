@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -27,6 +29,20 @@ func TestQueueAdapterApprovalIsExplicitDurableAndSourceBound(t *testing.T) {
 	}
 	if err := CheckQueueAdapterApproval(env, source); err != nil {
 		t.Fatalf("approved executable rejected: %v", err)
+	}
+	// Existing opaque-reference approvals must retain their original binding
+	// digest when the optional helper is not configured.
+	oldBinding, err := json.Marshal(struct {
+		Config        map[string]any `json:"config"`
+		CredentialRef string         `json:"credentialRef"`
+	}{source.Config, source.CredentialRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := sha256.Sum256(oldBinding)
+	entry, err := currentQueueAdapterApproval(source)
+	if err != nil || entry.ConfigSHA256 != hex.EncodeToString(oldDigest[:]) {
+		t.Fatalf("legacy approval binding changed: %+v %v", entry, err)
 	}
 	data, err := os.ReadFile(QueueAdapterApprovalPath(env))
 	if err != nil {

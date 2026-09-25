@@ -218,6 +218,25 @@ func TestQueueExternalAdapterConfiguration(t *testing.T) {
 	if _, err := parseQueue([]byte(withoutCredential), env, nil); err != nil {
 		t.Fatalf("optional credential reference: %v", err)
 	}
+	withHelper := strings.Replace(withoutCredential, "    config: {tenant: acme}\n", "    config: {tenant: acme, origin: 'https://api.example.test'}\n    account: alice\n    credentialHelper: [/opt/example/helper, --account=alice]\n", 1)
+	parsed, err := parseQueue([]byte(withHelper), env, nil)
+	if err != nil || len(parsed.Sources[0].CredentialHelper) != 2 || parsed.Sources[0].Account != "alice" {
+		t.Fatalf("host-resolved credential configuration: %+v, %v", parsed, err)
+	}
+	for _, tc := range []struct{ name, content, want string }{
+		{"missing origin", strings.Replace(withHelper, "origin: 'https://api.example.test'", "origin: ''", 1), "config.origin"},
+		{"insecure origin", strings.Replace(withHelper, "https://api.example.test", "http://api.example.test", 1), "config.origin"},
+		{"relative helper", strings.Replace(withHelper, "/opt/example/helper", "./helper", 1), "credentialHelper[0]"},
+		{"missing account", strings.Replace(withHelper, "    account: alice\n", "", 1), "credentialHelper"},
+		{"legacy reference", strings.Replace(withHelper, "    account: alice\n", "    account: alice\n    credentialRef: legacy\n", 1), "credentialRef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseQueue([]byte(tc.content), env, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
 	builtInWithExternalField := strings.Replace(queueFixture(home), "    adapter: backlog-md", "    adapter: backlog-md\n    executable: /opt/adapter", 1)
 	if _, err := parseQueue([]byte(builtInWithExternalField), env, nil); err == nil || !strings.Contains(err.Error(), "sources[0].executable") {
 		t.Fatalf("built-in accepted external-only field: %v", err)

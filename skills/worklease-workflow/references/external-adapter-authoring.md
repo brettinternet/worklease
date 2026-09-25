@@ -58,7 +58,7 @@ worklease queue adapter check --executable /absolute/path/worklease-sample-adapt
 
 The checker reports one pass/fail/skip entry per check. Skipped probes are not
 passes: a normal read-only sample cannot demonstrate write recovery, and
-blocking cancellation fixtures and adapter-side secret handling must be tested separately. To exercise cancellation, configure a fixture that blocks the `__worklease_conformance_cancel__` list query, writes `PATH.request` when entered and `PATH.done` after handling `$/cancelRequest`, and pass a fresh `--cancel-marker PATH`. An ignored cancellation fails the check; without a marker it is skipped. The result
+blocking cancellation fixtures must be tested separately. For adapters declaring `host-credential-v1`, the checker sends a disposable secret canary and fails if the adapter echoes it on stdout, stderr, or in diagnostics. To exercise cancellation, configure a fixture that blocks the `__worklease_conformance_cancel__` list query, writes `PATH.request` when entered and `PATH.done` after handling `$/cancelRequest`, and pass a fresh `--cancel-marker PATH`. An ignored cancellation fails the check; without a marker it is skipped. The result
 uses the CLI schema-version 2 envelope, `queue-adapter-check` operation, and
 `verdict`, `manifest`, and `checks` fields. A failed check exits 65 with
 `adapter-conformance-failed` and the checks in `error.details`; invalid inputs
@@ -82,6 +82,40 @@ sandbox**. A malicious approved executable can access files and network
 resources available to that user. Keep approval limited to reviewed binaries,
 use the host's restricted environment, and treat provider titles and bodies as
 data rather than instructions.
+
+## Add host-managed credentials to your adapter
+
+The sample above remains read-only and unauthenticated. For a provider adapter,
+configure a private helper and approved scope (not a literal token):
+
+```yaml
+sources:
+  - id: provider
+    adapter: external
+    executable: /absolute/path/provider-adapter
+    expectedAdapterId: example.provider
+    expectedVersion: 1.0.0
+    account: alice
+    credentialHelper: [/absolute/path/provider-token-helper]
+    config: {origin: "https://api.provider.example", tenant: team-one}
+```
+
+Your helper prints one token line on stdout and obtains it from an owner-private
+store. In `initialize`, inspect `hostFeatures` for `host-credential-v1`; declare
+it in `manifest.authentication` (and `requiredFeatures` if required to run).
+Handle the host's `credential` request **before** `resolve`: read the token only
+from `params.credential`, query the authenticated provider identity at
+`params.origin`, check the token's provider scope, then return
+`{"sourceId":"provider","origin":"https://api.provider.example","principal":"alice","expiresAt":"2027-01-01T00:00:00Z"}`
+with the same source ID/origin and actual verified principal. `expiresAt` is
+optional; never report an expired credential as valid. Replace the prior token
+on subsequent `credential` calls; the host refreshes before each operation
+without restarting the process. Never echo tokens in results, errors, stdout,
+stderr, logs or receipts. The host compares the result with the approved
+account and origin and blocks mismatches; it cannot independently verify your
+provider API, so your adapter must perform that verification honestly.
+Reapprove after changing helper, origin, tenant or account. An adapter without
+this feature continues using its opaque `credentialRef` on `resolve`.
 
 ## Run and verify
 
