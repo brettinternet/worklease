@@ -26,6 +26,7 @@ type writeFixture struct {
 	writeErr         error
 	readErr          error
 	checkpointErr    error
+	statusErr        error
 	verifyErr        error
 	transitionErr    error
 	writeStarted     chan struct{}
@@ -57,6 +58,9 @@ func (f *writeFixture) Verify(context.Context, WriteIntent) error {
 	return f.verifyErr
 }
 func (f *writeFixture) CheckpointStatus(_ context.Context, intent WriteIntent, _ ProviderReceipt) (WriteVerification, error) {
+	if f.statusErr != nil {
+		return WriteUnknown, f.statusErr
+	}
 	if f.checkpointEffect && (f.checkpointRef == "" || f.checkpointRef == intent.OperationRef) {
 		return WriteVerified, nil
 	}
@@ -188,6 +192,90 @@ func TestWritePipelineCheckpointLostResponseDoesNotRepeat(t *testing.T) {
 	result, err = p.Recover(context.Background(), intent.OperationID)
 	if err != nil || result.Outcome != WriteVerified || f.calls != 1 || f.checkpointCalls != 1 {
 		t.Fatalf("checkpoint replayed or lost: %+v %v dispatch=%d checkpoint=%d", result, err, f.calls, f.checkpointCalls)
+	}
+}
+
+func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
+	t.Parallel()
+	for _, lostResponse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "receipt", true: "lost append"}[lostResponse], func(t *testing.T) {
+			t.Parallel()
+			p, f, intent := writeSetup(t)
+			clock := intent.CheckpointNotAfter.Add(-time.Minute)
+			p.Now = func() time.Time { return clock }
+			if lostResponse {
+				intent.Append = "progress"
+				intent.Marker = "worklease-op:" + intent.OperationID
+				f.writeErr = errors.New("response lost")
+				f.observation.AppendProof = true
+				f.observation.AppendContent = intent.Append
+				f.observation.MarkerCount = 1
+				f.observation.OperationID = intent.OperationID
+			} else {
+				f.checkpointErr = errors.New("checkpoint unavailable")
+			}
+			result, _ := p.Start(context.Background(), intent)
+			if result.Outcome != WriteUnknown || f.calls != 1 {
+				t.Fatalf("start=%+v dispatches=%d", result, f.calls)
+			}
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
+				t.Fatal("accepted attestation before deadline or provider verification")
+			}
+			before := f.checkpointCalls
+			clock = intent.CheckpointNotAfter.Add(time.Second)
+			f.verifyErr = errors.New("claim expired")
+			result, err := p.Recover(context.Background(), intent.OperationID)
+			if err != nil || result.Outcome != WriteUnknown || f.calls != 1 || f.checkpointCalls != before {
+				t.Fatalf("expired retry=%+v err=%v dispatches=%d checkpoints=%d", result, err, f.calls, f.checkpointCalls)
+			}
+			entries, err := p.Journal.Recovery()
+			if err != nil || len(entries) != 1 || entries[0].Status != "checkpoint-pending" || len(entries[0].Next) != 2 {
+				t.Fatalf("attestation not offered: %+v %v", entries, err)
+			}
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", false); err == nil {
+				t.Fatal("accepted live executor")
+			}
+			f.statusErr = errors.New("authority unavailable")
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
+				t.Fatal("accepted unavailable authority")
+			}
+			f.statusErr = nil
+			f.checkpointEffect = true
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
+				t.Fatal("accepted committed checkpoint")
+			}
+			f.checkpointEffect = false
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err != nil {
+				t.Fatal(err)
+			}
+			record, err := p.Journal.Read(intent.OperationID)
+			if err != nil || record.Status != "checkpoint-missing" || record.ResolvedAt.IsZero() || record.ReconciliationOperator != "brett" || record.Reconciliation == "" {
+				t.Fatalf("record=%+v err=%v", record, err)
+			}
+			again, err := p.Recover(context.Background(), intent.OperationID)
+			if err != nil || again.Outcome != WriteCheckpointMissing || f.calls != 1 || f.checkpointCalls != before {
+				t.Fatalf("repeat=%+v err=%v dispatches=%d checkpoints=%d", again, err, f.calls, f.checkpointCalls)
+			}
+			entries, err = p.Journal.Recovery()
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("terminal record remains unresolved: %+v %v", entries, err)
+			}
+			if yes, err := p.Journal.CanCancel(intent.ClaimID); err != nil || yes {
+				t.Fatalf("effectful claim cancellable: %t %v", yes, err)
+			}
+			intent.OperationID = strings.Repeat("b", 32)
+			intent.CheckpointNotAfter = clock.Add(time.Hour)
+			f.verifyErr = nil
+			if lostResponse {
+				intent.Marker = "worklease-op:" + intent.OperationID
+				f.writeErr = nil
+				f.observation.OperationID = intent.OperationID
+			}
+			_, _ = p.Start(context.Background(), intent)
+			if f.calls != 2 {
+				t.Fatalf("new operation blocked after terminal status: dispatches=%d", f.calls)
+			}
+		})
 	}
 }
 

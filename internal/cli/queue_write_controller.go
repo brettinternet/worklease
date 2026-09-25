@@ -308,6 +308,35 @@ func (c queueWriteController) Reconcile(ctx context.Context, entry queue.Recover
 	}
 }
 
+func (c queueWriteController) AttestCheckpointMissing(ctx context.Context, entry queue.RecoveryEntry, evidence string) tea.Cmd {
+	return func() tea.Msg {
+		result := queueui.ReconcileResultMsg{OperationID: entry.OperationID, Status: "checkpoint-missing"}
+		operator, err := user.Current()
+		if err != nil || operator.Username == "" {
+			result.Err = fmt.Errorf("operator identity unavailable")
+			return result
+		}
+		record, err := c.journal.Read(entry.OperationID)
+		if err != nil {
+			result.Err = err
+			return result
+		}
+		path, err := queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, record.Intent.Source, record.Intent.Ref)
+		if err != nil {
+			result.Err = err
+			return result
+		}
+		if c.backend.AuthorityID() != record.Intent.AuthorityID {
+			result.Err = fmt.Errorf("selected authority differs from recovery intent")
+			return result
+		}
+		recoverCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+		defer stop()
+		result.Err = (queue.WritePipeline{Journal: c.journal, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}}).AttestCheckpointMissing(recoverCtx, entry.OperationID, operator.Username, evidence, true)
+		return result
+	}
+}
+
 func (c queueWriteController) Confirm(ctx context.Context, preview queueui.WritePreview) tea.Cmd {
 	return func() tea.Msg {
 		id := preview.Intent.OperationID

@@ -280,6 +280,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.ReconcileRecovery = func(entry queue.RecoveryEntry, evidence string) tea.Cmd {
 		return writeController.Reconcile(ctx, entry, evidence)
 	}
+	model.AttestCheckpointMissing = func(entry queue.RecoveryEntry, evidence string) tea.Cmd {
+		return writeController.AttestCheckpointMissing(ctx, entry, evidence)
+	}
 	model.PreviewLaunch = func(item queue.Item) []queue.LaunchOption {
 		selected, _ := currentAuthority()
 		identities, identityErr := config.LoadQueueIdentities(os.Getenv)

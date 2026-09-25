@@ -56,6 +56,8 @@ const (
 	WriteVerified WriteVerification = "verified"
 	WriteConflict WriteVerification = "conflict"
 	WriteUnknown  WriteVerification = "unknown"
+	// Provider effect verified, but its authority checkpoint cannot be committed.
+	WriteCheckpointMissing WriteVerification = "checkpoint-missing"
 )
 
 // ReceiptObservation is source evidence. AppendProof must come from the
@@ -151,6 +153,9 @@ func (r WriteRecord) RecoveryEntry() RecoveryEntry {
 		effect = "assign " + r.Intent.Principal
 	}
 	next := []string{"retry read-back"}
+	if r.Status == "checkpoint-pending" {
+		next = []string{"retry authority checkpoint status", "attest verified provider effect, absent checkpoint and executor cessation after deadline"}
+	}
 	if r.Status == "unknown" && r.Receipt == nil && r.LastReadback != string(WriteVerified) {
 		next = append(next, "operator reconciliation after proving no commit and executor cessation")
 	}
@@ -270,7 +275,7 @@ func (j WriteJournal) Recovery() ([]RecoveryEntry, error) {
 	}
 	entries := make([]RecoveryEntry, 0, len(records))
 	for _, record := range records {
-		if record.Status != "resolved" && record.Status != "reconciled" {
+		if record.Status != "resolved" && record.Status != "reconciled" && record.Status != "checkpoint-missing" {
 			entries = append(entries, record.RecoveryEntry())
 		}
 	}
@@ -330,7 +335,7 @@ func (j WriteJournal) Prune(now time.Time) error {
 		return err
 	}
 	for _, record := range records {
-		if record.Status != "resolved" && record.Status != "reconciled" || record.ResolvedAt.IsZero() || now.Sub(record.ResolvedAt) < resolvedWriteRetention {
+		if record.Status != "resolved" && record.Status != "reconciled" && record.Status != "checkpoint-missing" || record.ResolvedAt.IsZero() || now.Sub(record.ResolvedAt) < resolvedWriteRetention {
 			continue
 		}
 		path, err := j.path(record.Intent.OperationID)
@@ -417,7 +422,7 @@ func (p WritePipeline) Start(ctx context.Context, intent WriteIntent) (WriteResu
 		return heldUnchanged(), err
 	} else {
 		for _, record := range records {
-			if record.Status != "resolved" && record.Status != "reconciled" && record.Intent.Ref == intent.Ref {
+			if record.Status != "resolved" && record.Status != "reconciled" && record.Status != "checkpoint-missing" && record.Intent.Ref == intent.Ref {
 				return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "item has unresolved provider write; recovery required"}, nil
 			}
 		}
@@ -509,6 +514,9 @@ func (p WritePipeline) Recover(ctx context.Context, id string) (WriteResult, err
 	if record.Status == "reconciled" {
 		return WriteResult{Outcome: WriteConflict, ClaimHeld: true, Detail: "operator reconciliation recorded; no automatic checkpoint"}, nil
 	}
+	if record.Status == "checkpoint-missing" {
+		return WriteResult{Outcome: WriteCheckpointMissing, ClaimHeld: true, Detail: "provider verified; checkpoint expired without commit; claim not released"}, nil
+	}
 	return p.verify(ctx, record)
 }
 
@@ -536,6 +544,43 @@ func (p WritePipeline) Reconcile(ctx context.Context, id, operator, evidence str
 		return fmt.Errorf("provider write already observed; reconciliation cannot assert no commit")
 	}
 	record.Status = "reconciled"
+	record.Reconciliation = evidence
+	record.ReconciliationOperator = operator
+	record.ResolvedAt = p.now()
+	return p.Journal.save(record, false)
+}
+
+// AttestCheckpointMissing closes a verified provider effect only after the
+// operator has established that no executor can still complete the expired
+// checkpoint. An unknown authority status alone is not proof of cessation.
+func (p WritePipeline) AttestCheckpointMissing(ctx context.Context, id, operator, evidence string, executorCeased bool) error {
+	if strings.TrimSpace(operator) == "" || strings.TrimSpace(evidence) == "" || !executorCeased || p.Claim == nil {
+		return fmt.Errorf("checkpoint attestation requires operator identity, evidence, executor cessation and the original authority")
+	}
+	record, err := p.Journal.Read(id)
+	if err != nil {
+		return err
+	}
+	lock, err := p.Journal.lockItem(ctx, record.Intent.Ref)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	record, err = p.Journal.Read(id)
+	if err != nil {
+		return err
+	}
+	if record.Status != "checkpoint-pending" || record.LastReadback != string(WriteVerified) || record.Receipt == nil || record.Intent.CheckpointNotAfter.IsZero() || p.now().Before(record.Intent.CheckpointNotAfter) {
+		return fmt.Errorf("verified provider effect with expired pending checkpoint required")
+	}
+	status, err := p.Claim.CheckpointStatus(ctx, record.Intent, *record.Receipt)
+	if err != nil {
+		return err
+	}
+	if status != WriteUnknown {
+		return fmt.Errorf("checkpoint is committed or conflicts with the recorded request; retry recovery")
+	}
+	record.Status = "checkpoint-missing"
 	record.Reconciliation = evidence
 	record.ReconciliationOperator = operator
 	record.ResolvedAt = p.now()
@@ -571,9 +616,6 @@ func (p WritePipeline) verify(ctx context.Context, record WriteRecord) (WriteRes
 	if result != WriteVerified {
 		return WriteResult{Outcome: result, ClaimHeld: true, Detail: "read-back not verified; recovery required"}, nil
 	}
-	if err := p.Claim.Verify(ctx, intent); err != nil {
-		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true}, err
-	}
 	if record.Receipt == nil { // Lost response: retain independently verified source identity.
 		record.Receipt = &ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID, ID: observation.ReceiptID, Actor: observation.Actor}
 		if err := p.Journal.save(record, false); err != nil {
@@ -600,7 +642,10 @@ func (p WritePipeline) finishCheckpoint(ctx context.Context, record WriteRecord)
 	}
 	if status == WriteUnknown {
 		if !p.now().Before(record.Intent.CheckpointNotAfter) {
-			return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "checkpoint replay deadline expired; reconciliation required"}, nil
+			return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "provider verified; checkpoint deadline expired; operator attestation required"}, nil
+		}
+		if err := p.Claim.Verify(ctx, record.Intent); err != nil {
+			return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "claim unverified; checkpoint not replayed"}, err
 		}
 		// Exact idempotent replay is safe even if the first response was lost.
 		if err := p.Claim.Checkpoint(ctx, record.Intent, *record.Receipt); err != nil {
