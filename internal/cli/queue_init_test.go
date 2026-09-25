@@ -80,6 +80,13 @@ func TestQueueInitPreviewApplyAndIdempotence(t *testing.T) {
 	if _, err := os.Stat(filepath.Dir(h.configPath)); !os.IsNotExist(err) {
 		t.Fatalf("preview created directory: %v", err)
 	}
+	plain := h.invoke()
+	if plain.Err != nil || !strings.Contains(string(plain.Stdout), "Path: "+h.configPath) || !strings.Contains(string(plain.Stdout), "YAML:\n") || !strings.HasSuffix(strings.TrimSpace(string(plain.Stdout)), "--apply") {
+		t.Fatalf("text preview: %v %s", plain.Err, plain.Stdout)
+	}
+	if _, err := os.Stat(config.QueueIdentityPath(os.Getenv)); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote identity: %v", err)
+	}
 	t.Setenv("INIT_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-1","title":"Ready work","status":"To Do","ordinal":1,"isReady":true,"dependencies":[]}]}`)
 	applied := h.invoke("--apply", "--json")
 	if applied.Err != nil {
@@ -90,6 +97,10 @@ func TestQueueInitPreviewApplyAndIdempotence(t *testing.T) {
 	}
 	if !payload.Applied || payload.Identity != "confirmed" {
 		t.Fatalf("apply: %s", applied.Stdout)
+	}
+	written, err := os.ReadFile(h.configPath)
+	if err != nil || string(written) != payload.YAML {
+		t.Fatalf("rendered YAML differs from written file: %v", err)
 	}
 	for path, mode := range map[string]os.FileMode{filepath.Dir(h.configPath): 0700, h.configPath: 0600} {
 		info, err := os.Stat(path)
@@ -140,6 +151,10 @@ func TestQueueInitMergeAndUnmapped(t *testing.T) {
 	}
 	t.Setenv("INIT_STATUSES", "To Do, Done")
 	h.checkout = second
+	conflict := h.invoke("--me", "@someone-else", "--json")
+	if conflict.Err == nil || !strings.Contains(string(conflict.Stdout), "conflicts with existing me.backlog-md") {
+		t.Fatalf("me conflict: %v %s", conflict.Err, conflict.Stdout)
+	}
 	preview := h.invoke("--json")
 	if preview.Err != nil {
 		t.Fatalf("merge preview: %v %s", preview.Err, preview.Stdout)
@@ -236,6 +251,23 @@ func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
 	}
 }
 
+func TestQueueInitRemoteAuthoritySkipsAutomaticConfirmation(t *testing.T) {
+	h := newInitHarness(t)
+	profile := testProfile("team")
+	profile.Credential.Path = filepath.Join(t.TempDir(), "credential")
+	if err := config.SaveProfiles(config.UserProfilePaths(nil), []config.Profile{profile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	result := h.invoke("--authority", "team", "--apply", "--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"identity":"confirmation-required"`) {
+		t.Fatalf("remote authority confirmation: %v %s", result.Err, result.Stdout)
+	}
+	ids, err := config.LoadQueueIdentities(os.Getenv)
+	if err != nil || len(ids.Sources) != 0 {
+		t.Fatalf("remote authority confirmed: %+v %v", ids, err)
+	}
+}
+
 func TestQueueInitExistingIdentitySkipsAutomaticConfirmation(t *testing.T) {
 	h := newInitHarness(t)
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
@@ -295,6 +327,19 @@ func TestQueueInitIgnoresProviderEnvironmentOverrides(t *testing.T) {
 	result := h.invoke("--json")
 	if result.Err != nil || !strings.Contains(string(result.Stdout), "In Progress") {
 		t.Fatalf("environment redirected detection: %v %s", result.Err, result.Stdout)
+	}
+}
+
+func TestQueueInitRemovesColonFromDefaultSourceID(t *testing.T) {
+	h := newInitHarness(t)
+	withColon := filepath.Join(filepath.Dir(h.checkout), "proj:ect")
+	if err := os.Rename(h.checkout, withColon); err != nil {
+		t.Fatal(err)
+	}
+	h.checkout = withColon
+	result := h.invoke("--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"sourceId":"project"`) {
+		t.Fatalf("source ID: %v %s", result.Err, result.Stdout)
 	}
 }
 
