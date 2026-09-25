@@ -150,7 +150,7 @@ func queueRecoveryJournal() (queue.WriteJournal, error) {
 func queueRecoveryCommand(s *boundary) *urfave.Command {
 	command := &urfave.Command{Name: "recovery", Usage: "list unresolved provider writes", UsageText: "worklease queue recovery [--json]"}
 	command.Commands = []*urfave.Command{{
-		Name: "retry", Usage: "read back one journaled write without redispatching it",
+		Name: "retry", Usage: "read back a write or check an expired checkpoint without redispatching",
 		Flags: []urfave.Flag{&urfave.StringFlag{Name: "operation-id", Usage: "exact journaled operation ID"}, &urfave.StringFlag{Name: "handle", Usage: "private handle for the original claim"}},
 		Action: func(ctx context.Context, cmd *urfave.Command) error {
 			if cmd.String("operation-id") == "" || cmd.String("handle") == "" {
@@ -228,6 +228,50 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 				return output.WriteSuccess(s.writer, "queue-recovery-reconcile", map[string]any{"operationId": cmd.String("operation-id"), "operator": operator.Username, "status": "reconciled", "claimHeld": true})
 			}
 			_, err = fmt.Fprintf(s.writer, "Reconciled %s; claim remains held\n", cmd.String("operation-id"))
+			return err
+		},
+	}, {
+		Name: "checkpoint-missing", Usage: "attest verified provider effect with no committed checkpoint after the deadline",
+		Flags: []urfave.Flag{
+			&urfave.StringFlag{Name: "operation-id", Usage: "exact journaled operation ID"},
+			&urfave.StringFlag{Name: "handle", Usage: "private handle for the original claim"},
+			&urfave.StringFlag{Name: "evidence", Usage: "typed provider and authority audit evidence"},
+			&urfave.BoolFlag{Name: "provider-verified", Usage: "attest that the provider effect occurred"},
+			&urfave.BoolFlag{Name: "checkpoint-absent", Usage: "attest that the original checkpoint did not commit"},
+			&urfave.BoolFlag{Name: "executor-ceased", Usage: "attest that no executor can still commit the checkpoint"},
+		},
+		Action: func(ctx context.Context, cmd *urfave.Command) error {
+			if cmd.String("operation-id") == "" || cmd.String("handle") == "" || strings.TrimSpace(cmd.String("evidence")) == "" || !cmd.Bool("provider-verified") || !cmd.Bool("checkpoint-absent") || !cmd.Bool("executor-ceased") {
+				return s.handle(cmd, reason.Invalid("checkpoint-missing requires --operation-id, --handle, --evidence, --provider-verified, --checkpoint-absent and --executor-ceased"))
+			}
+			operator, err := user.Current()
+			if err != nil || operator.Username == "" {
+				return s.handle(cmd, reason.Invalid("operator identity unavailable"))
+			}
+			journal, err := queueRecoveryJournal()
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			record, err := journal.Read(cmd.String("operation-id"))
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			backend, err := authorityFor(ctx, cmd, true)
+			if err != nil {
+				return s.handle(cmd, err)
+			}
+			defer backend.Close()
+			if backend.AuthorityID() != record.Intent.AuthorityID {
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "selected authority differs from recovery intent"))
+			}
+			pipeline := queue.WritePipeline{Journal: journal, Claim: queueWriteClaim{backend: backend, path: cmd.String("handle")}}
+			if err := pipeline.AttestCheckpointMissing(ctx, record.Intent.OperationID, operator.Username, cmd.String("evidence"), true); err != nil {
+				return s.handle(cmd, err)
+			}
+			if cmd.Bool("json") {
+				return output.WriteSuccess(s.writer, "queue-recovery-checkpoint-missing", map[string]any{"operationId": record.Intent.OperationID, "operator": operator.Username, "status": "checkpoint-missing", "claimHeld": true})
+			}
+			_, err = fmt.Fprintf(s.writer, "Provider verified, checkpoint missing for %s; claim remains held\n", record.Intent.OperationID)
 			return err
 		},
 	}}

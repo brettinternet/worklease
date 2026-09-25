@@ -150,6 +150,44 @@ func TestRecoveryReconciliationRequiresTypedEvidenceAndNoActiveDispatch(t *testi
 	}
 }
 
+func TestRecoveryCheckpointMissingAttestationAndTerminalNotice(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.ViewName = RecoveryViewID
+	entry := queue.RecoveryEntry{OperationID: "operation-1", Ref: queue.Ref{SourceID: "a", ItemID: "1"}, Status: "checkpoint-pending", Next: []string{"retry authority checkpoint status", "attest verified provider effect"}}
+	next, _ := m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{entry}})
+	m = next.(Model)
+	called := 0
+	m.AttestCheckpointMissing = func(queue.RecoveryEntry, string) tea.Cmd {
+		called++
+		return func() tea.Msg {
+			return ReconcileResultMsg{OperationID: entry.OperationID, Status: "checkpoint-missing"}
+		}
+	}
+	m, _ = press(m, "e")
+	if !m.RecoveryEvidence || !strings.Contains(m.View(), "PROVIDER VERIFIED; CHECKPOINT ABSENT") {
+		t.Fatalf("missing attestation prompt: %s", m.View())
+	}
+	for _, char := range "PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: provider and authority audit evidence" {
+		m, _ = press(m, string(char))
+	}
+	m, cmd := press(m, "enter")
+	if called != 1 || cmd == nil {
+		t.Fatal("checkpoint attestation did not dispatch")
+	}
+	m.UncertainWrite = true
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if !strings.Contains(m.Notice, "checkpoint missing") {
+		t.Fatalf("terminal outcome hidden: %s", m.Notice)
+	}
+	next, _ = m.Update(RecoveryMsg{})
+	m = next.(Model)
+	if m.UncertainWrite || strings.Contains(m.View(), "RECOVERY REQUIRED") {
+		t.Fatalf("terminal recovery still reported uncertain: %s", m.View())
+	}
+}
+
 func TestProviderWritePreviewDisplaysConsentBoundary(t *testing.T) {
 	t.Parallel()
 	for _, action := range []queue.Action{queue.ActionStart, queue.ActionRecordProgress, queue.ActionAssignToMe} {

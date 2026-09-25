@@ -193,6 +193,7 @@ type WriteResultMsg struct {
 }
 type ReconcileResultMsg struct {
 	OperationID string
+	Status      string
 	Err         error
 }
 
@@ -304,6 +305,7 @@ type Model struct {
 	LoadRecovery                          func() tea.Cmd
 	RetryRecovery                         func(queue.RecoveryEntry) tea.Cmd
 	ReconcileRecovery                     func(queue.RecoveryEntry, string) tea.Cmd
+	AttestCheckpointMissing               func(queue.RecoveryEntry, string) tea.Cmd
 	StateChoices                          map[string][]StateChoice
 	WriteChoices                          []StateChoice
 	WriteChoiceIndex                      int
@@ -757,6 +759,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Writing = false
 		if v.Err != nil {
 			m.Notice = "Reconciliation refused; claim held: " + v.Err.Error()
+		} else if v.Status == "checkpoint-missing" {
+			m.UncertainWrite = false
+			m.Notice = "Provider verified; expired checkpoint missing; claim remains held · " + v.OperationID
 		} else {
 			m.Notice = "Reconciliation recorded; claim remains held · " + v.OperationID
 		}
@@ -974,11 +979,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				evidence := strings.TrimSpace(m.Input)
 				m.Input, m.RecoveryEvidence = "", false
-				if strings.HasPrefix(evidence, "NO COMMIT; EXECUTOR STOPPED: ") && len(evidence) > len("NO COMMIT; EXECUTOR STOPPED: ")+10 && m.RecoveryIndex < len(m.Recovery) && m.ReconcileRecovery != nil {
-					m.Writing = true
-					return m, m.ReconcileRecovery(m.Recovery[m.RecoveryIndex], evidence)
+				if m.RecoveryIndex < len(m.Recovery) {
+					entry := m.Recovery[m.RecoveryIndex]
+					if entry.Status == "checkpoint-pending" && strings.HasPrefix(evidence, "PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ") && len(evidence) > len("PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ")+10 && m.AttestCheckpointMissing != nil {
+						m.Writing = true
+						return m, m.AttestCheckpointMissing(entry, evidence)
+					}
+					if entry.Status == "unknown" && strings.HasPrefix(evidence, "NO COMMIT; EXECUTOR STOPPED: ") && len(evidence) > len("NO COMMIT; EXECUTOR STOPPED: ")+10 && m.ReconcileRecovery != nil {
+						m.Writing = true
+						return m, m.ReconcileRecovery(entry, evidence)
+					}
 				}
-				m.Notice = "Type both attestations and provider audit evidence to reconcile"
+				m.Notice = "Type the matching attestations and audit evidence to reconcile"
 			case "backspace":
 				r := []rune(m.Input)
 				if len(r) > 0 {
@@ -1089,7 +1101,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.RecoveryEvidence = true
 					m.Input = ""
 				} else {
-					m.Notice = "Reconciliation unavailable while dispatch or verification remains possible"
+					m.Notice = "Attestation unavailable while dispatch or verification remains possible"
 				}
 			case "u":
 				if m.LoadRecovery != nil {
@@ -1420,6 +1432,9 @@ func (m Model) View() string {
 		return clipLines("Progress note (provider append; Enter previews, Esc cancels):\n"+m.Input, m.Width)
 	}
 	if m.RecoveryEvidence {
+		if m.RecoveryIndex < len(m.Recovery) && m.Recovery[m.RecoveryIndex].Status == "checkpoint-pending" {
+			return clipLines("Type PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: followed by provider and authority audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
+		}
 		return clipLines("Type NO COMMIT; EXECUTOR STOPPED: followed by provider audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
 	}
 	if m.LaunchOptions != nil {
@@ -1460,7 +1475,7 @@ func (m Model) View() string {
 			}
 			fmt.Fprintf(&b, "%s %s %s %s · %s · claim held %s\n  resources %s · actor %s · effect %s\n  marker %s · required effects %s\n  dispatched %s · read-back %s\n  next %s\n", marker, clean(entry.OperationID), clean(entry.Ref.String()), clean(entry.Status), clean(string(entry.Action)), clean(entry.ClaimID), clean(strings.Join(entry.Resources, ", ")), clean(entry.Principal), clean(entry.Effect), clean(entry.Marker), clean(strings.Join(entry.Effects, ", ")), recoveryTime(entry.Dispatched), clean(entry.Readback), clean(strings.Join(entry.Next, "; ")))
 		}
-		b.WriteString("j/k select · r retry read-back · e reconcile with evidence when offered · u reload · v switch view · q quit\n")
+		b.WriteString("j/k select · r retry read-back / inspect checkpoint · e attest with evidence when offered · u reload · v switch view · q quit\n")
 		return clipLines(b.String(), m.Width)
 	}
 	rows := m.rows()
