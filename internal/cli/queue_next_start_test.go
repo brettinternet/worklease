@@ -164,7 +164,9 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 				if mode == "cli" {
 					next = nextStartCLI(t, home, "--claim", "--start", "--session", "worker")
 				} else {
-					s, err := mcp.NewServer(mcp.Options{Home: home, ProfileName: config.LocalProfileName, TTL: 30 * time.Second, QueueNext: mcpQueueNext(home, config.LocalProfileName)})
+					// Heartbeats are off, so the claim must outlive the Backlog CLI
+					// writes even on a loaded runner.
+					s, err := mcp.NewServer(mcp.Options{Home: home, ProfileName: config.LocalProfileName, TTL: config.DefaultTTL, QueueNext: mcpQueueNext(home, config.LocalProfileName)})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -190,7 +192,7 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					entries, err := journal.Recovery()
+					entries, err := journal.Recovery(time.Now())
 					if err != nil || len(entries) != 1 {
 						t.Fatalf("unknown write not journaled: %+v %v", entries, err)
 					}

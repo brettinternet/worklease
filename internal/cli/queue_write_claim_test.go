@@ -60,7 +60,7 @@ func TestQueueWriteClaimReplaysExactCheckpointOnOriginalHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs := map[string]any{"kind": "checkpoint", "authorityId": intent.AuthorityID, "claimId": intent.ClaimID, "ttl": intent.CheckpointTTL.Microseconds(), "checkpoint": json.RawMessage(checkpointData), "requestNotAfter": intent.CheckpointNotAfter.UTC().UnixMicro()}
+	inputs := map[string]any{"kind": "checkpoint", "authorityId": intent.AuthorityID, "claimId": intent.ClaimID, "ttl": intent.CheckpointTTL.Microseconds(), "checkpoint": json.RawMessage(checkpointData), "requestNotAfter": intent.CheckpointNotAfter.UTC().UnixMicro(), "holdUntil": updated.HoldUntil.UTC().UnixMicro()}
 	if err := beginHandleMutation(path, &updated, "checkpoint", intent.OperationRef, intent.CheckpointNotAfter, inputs); err != nil {
 		t.Fatal(err)
 	}

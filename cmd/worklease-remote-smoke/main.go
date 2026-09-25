@@ -670,17 +670,21 @@ func boundedCommandContext(ctx context.Context, name string, args ...string) *ex
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		} else {
-			return err
-		}
-	}
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	return cmd
+}
+
+// killProcessGroup kills a child started as a process-group leader together
+// with every descendant still in its group.
+func killProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	} else {
+		return err
+	}
 }
 
 func run(binary, evidence string, keep bool, remoteHosts ...string) error {
@@ -692,11 +696,17 @@ func run(binary, evidence string, keep bool, remoteHosts ...string) error {
 }
 
 func runWithDeadline(binary, evidence string, keep bool, timeout time.Duration, remoteHosts ...string) (runErr error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Ctrl-C or SIGTERM cancels the shared context like the deadline does, so
+	// deferred cleanup stops every child process group before exit.
+	interruptible, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(interruptible, timeout)
 	smokeContext = ctx
 	defer func() {
-		if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			runErr = fmt.Errorf("remote smoke deadline during %s: %w", smokeStep(), ctx.Err())
+		} else if ctx.Err() != nil {
+			runErr = fmt.Errorf("remote smoke interrupted during %s: %w", smokeStep(), ctx.Err())
 		}
 		cancel()
 		smokeContext = context.Background()
@@ -2474,6 +2484,9 @@ func (h *harness) cliHiddenInvite(c client, invitePath string, args ...string) e
 }
 
 func runHiddenInvite(cmd *exec.Cmd, invite []byte, promptTimeout time.Duration) error {
+	// pty.Start makes the child a session and process-group leader. Kill the
+	// whole group so a descendant cannot outlive a timed-out enrollment.
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	terminal, err := pty.Start(cmd)
 	if err != nil {
 		return err
@@ -2513,7 +2526,7 @@ func runHiddenInvite(cmd *exec.Cmd, invite []byte, promptTimeout time.Duration) 
 		err = fmt.Errorf("hidden invite child exited before prompting (child output: %q)", capture.Bytes())
 	}
 	if err != nil {
-		_ = cmd.Process.Kill()
+		_ = killProcessGroup(cmd)
 	}
 	waitErr := cmd.Wait()
 	_ = terminal.Close()

@@ -300,29 +300,12 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 		var adapter queue.WriteAdapter
 		var workflow map[string]string
 		cleanup := func() {}
-		if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
-			var err error
-			adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
+		// Checkpoint recovery reads only the authority; a removed or changed
+		// source must not block it.
+		if record.NeedsProviderReadback() {
+			adapter, workflow, cleanup, err = c.recoveryAdapter(ctx, record.Intent)
 			if err != nil {
 				result.Err = err
-				return result
-			}
-		} else {
-			read, ok := c.registry.Get(record.Intent.Source.Adapter)
-			if !ok {
-				result.Err = fmt.Errorf("write adapter unavailable")
-				return result
-			}
-			switch a := read.(type) {
-			case *queue.BacklogAdapter:
-				adapter = &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: record.Intent.Principal}
-			case *queue.BeadsAdapter:
-				adapter = &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: record.Intent.Principal}
-			case *queue.GitHubAdapter:
-				configured := c.configured[record.Intent.Source.ID]
-				adapter = &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}
-			default:
-				result.Err = fmt.Errorf("write adapter unavailable")
 				return result
 			}
 		}
@@ -332,6 +315,31 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal, Workflow: workflow}
 		result.Result, result.Err = pipeline.Recover(recoverCtx, entry.OperationID)
 		return result
+	}
+}
+
+func (c queueWriteController) recoveryAdapter(ctx context.Context, intent queue.WriteIntent) (queue.WriteAdapter, map[string]string, func(), error) {
+	if intent.Source.Adapter == queue.ExternalSourceAdapterKey(intent.Source.ID) {
+		adapter, workflow, cleanup, err := queueExternalRecoveryAdapter(ctx, intent)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return adapter, workflow, cleanup, nil
+	}
+	read, ok := c.registry.Get(intent.Source.Adapter)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("write adapter unavailable")
+	}
+	switch a := read.(type) {
+	case *queue.BacklogAdapter:
+		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: intent.Principal}, nil, func() {}, nil
+	case *queue.BeadsAdapter:
+		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: intent.Principal}, nil, func() {}, nil
+	case *queue.GitHubAdapter:
+		configured := c.configured[intent.Source.ID]
+		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}, nil, func() {}, nil
+	default:
+		return nil, nil, nil, fmt.Errorf("write adapter unavailable")
 	}
 }
 

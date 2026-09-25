@@ -178,7 +178,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	model.LoadRecovery = func() tea.Cmd {
 		return func() tea.Msg {
-			entries, err := journal.Recovery()
+			entries, err := journal.Recovery(time.Now())
 			return queueui.RecoveryMsg{Entries: entries, Err: err}
 		}
 	}
@@ -592,7 +592,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	for _, path := range ownedPaths {
 		model.OwnedClaims[path] = queueui.OwnedClaimMsg{Path: path, LastResult: "verification pending"}
 	}
-	if entries, recoveryErr := journal.Recovery(); recoveryErr != nil {
+	if entries, recoveryErr := journal.Recovery(time.Now()); recoveryErr != nil {
 		model.RecoveryError = recoveryErr.Error()
 	} else {
 		model.Recovery = entries

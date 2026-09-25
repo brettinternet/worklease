@@ -65,7 +65,7 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 		if len(actor) == 0 || actor[0] == "" || !slices.Equal(actor, liveActor) {
 			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("provider actor changed or is not configured; reopen the queue")
 		}
-		intent, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
+		intent, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: randomHex(16), Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
 		if err != nil {
 			return queueui.StartPreview{}, queueClaimPlan{}, err
 		}
@@ -90,7 +90,7 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 		if actor == "" {
 			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("GitHub account is not configured")
 		}
-		intent, detail, err := writer.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor, Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"projectOptionID": transition}})
+		intent, detail, err := writer.Prepare(ctx, queue.WriteIntent{OperationID: randomHex(16), Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor, Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"projectOptionID": transition}})
 		if err != nil {
 			return queueui.StartPreview{}, queueClaimPlan{}, err
 		}

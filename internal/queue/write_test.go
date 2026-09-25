@@ -28,6 +28,8 @@ type writeFixture struct {
 	checkpointErr    error
 	statusErr        error
 	verifyErr        error
+	verifyErrAfter   int // fail Verify with verifyErr only after this many successes
+	verifies         int
 	transitionErr    error
 	writeStarted     chan struct{}
 	writeResume      chan struct{}
@@ -54,6 +56,10 @@ func (f *writeFixture) ReadReceipt(context.Context, WriteIntent, *ProviderReceip
 func (f *writeFixture) Verify(context.Context, WriteIntent) error {
 	if f.checkpointEffect && f.staleAfterCommit {
 		return errors.New("revision changed")
+	}
+	f.verifies++
+	if f.verifies <= f.verifyErrAfter {
+		return nil
 	}
 	return f.verifyErr
 }
@@ -221,6 +227,9 @@ func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
 			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
 				t.Fatal("accepted attestation before deadline or provider verification")
 			}
+			if entries, err := p.Journal.Recovery(p.now()); err != nil || len(entries) != 1 || entries[0].Status == "checkpoint-pending" && len(entries[0].Next) != 1 {
+				t.Fatalf("attestation offered before checkpoint deadline: %+v %v", entries, err)
+			}
 			before := f.checkpointCalls
 			clock = intent.CheckpointNotAfter.Add(time.Second)
 			f.verifyErr = errors.New("claim expired")
@@ -228,7 +237,7 @@ func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
 			if err != nil || result.Outcome != WriteUnknown || f.calls != 1 || f.checkpointCalls != before {
 				t.Fatalf("expired retry=%+v err=%v dispatches=%d checkpoints=%d", result, err, f.calls, f.checkpointCalls)
 			}
-			entries, err := p.Journal.Recovery()
+			entries, err := p.Journal.Recovery(p.now())
 			if err != nil || len(entries) != 1 || entries[0].Status != "checkpoint-pending" || len(entries[0].Next) != 2 {
 				t.Fatalf("attestation not offered: %+v %v", entries, err)
 			}
@@ -256,7 +265,7 @@ func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
 			if err != nil || again.Outcome != WriteCheckpointMissing || f.calls != 1 || f.checkpointCalls != before {
 				t.Fatalf("repeat=%+v err=%v dispatches=%d checkpoints=%d", again, err, f.calls, f.checkpointCalls)
 			}
-			entries, err = p.Journal.Recovery()
+			entries, err = p.Journal.Recovery(p.now())
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("terminal record remains unresolved: %+v %v", entries, err)
 			}
@@ -346,6 +355,20 @@ func TestWritePipelineReconciliationRequiresExplicitEvidence(t *testing.T) {
 	}
 }
 
+func TestWritePipelineUnverifiedClaimAfterJournalStaysHeld(t *testing.T) {
+	t.Parallel()
+	p, f, intent := writeSetup(t)
+	// Both preflight checks pass; the post-journal check fails transiently.
+	f.verifyErr, f.verifyErrAfter = errors.New("authority unavailable"), 2
+	result, err := p.Start(context.Background(), intent)
+	if err == nil || result.Outcome != WriteUnknown || !result.ClaimHeld || f.calls != 0 {
+		t.Fatalf("result=%+v err=%v dispatches=%d", result, err, f.calls)
+	}
+	if entries, err := p.Journal.Recovery(p.now()); err != nil || len(entries) != 1 {
+		t.Fatalf("journaled intent hidden from recovery: %+v %v", entries, err)
+	}
+}
+
 func TestWriteJournalDoesNotOfferReconciliationDuringDispatch(t *testing.T) {
 	t.Parallel()
 	p, f, intent := writeSetup(t)
@@ -357,7 +380,7 @@ func TestWriteJournalDoesNotOfferReconciliationDuringDispatch(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("write never started")
 	}
-	entries, err := p.Journal.Recovery()
+	entries, err := p.Journal.Recovery(p.now())
 	if err != nil || len(entries) != 1 || entries[0].Status != "dispatching" || len(entries[0].Next) != 1 {
 		t.Fatalf("reconciliation offered during dispatch: %+v %v", entries, err)
 	}
@@ -376,7 +399,7 @@ func TestWriteJournalRecoveryProjection(t *testing.T) {
 	if result, err := p.Start(context.Background(), intent); err == nil || result.Outcome != WriteUnknown {
 		t.Fatalf("expected uncertain write: %+v %v", result, err)
 	}
-	entries, err := p.Journal.Recovery()
+	entries, err := p.Journal.Recovery(p.now())
 	if err != nil || len(entries) != 1 || entries[0].Dispatched == nil || entries[0].ClaimID != intent.ClaimID || len(entries[0].Next) != 2 {
 		t.Fatalf("recovery entry: %+v %v", entries, err)
 	}
@@ -384,7 +407,7 @@ func TestWriteJournalRecoveryProjection(t *testing.T) {
 	if _, err := p.Recover(context.Background(), intent.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	entries, err = p.Journal.Recovery()
+	entries, err = p.Journal.Recovery(p.now())
 	if err != nil || len(entries) != 1 || entries[0].Readback != string(WriteUnknown) || f.calls != 1 {
 		t.Fatalf("read-back did not persist without redispatch: %+v %v", entries, err)
 	}
@@ -401,7 +424,7 @@ func TestWriteJournalRecoveryProjection(t *testing.T) {
 	if err != nil || record.ReconciliationOperator != "brett" || record.Reconciliation == "" {
 		t.Fatalf("operator evidence missing: %+v %v", record, err)
 	}
-	entries, err = p.Journal.Recovery()
+	entries, err = p.Journal.Recovery(p.now())
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("reconciled entry remains open: %+v %v", entries, err)
 	}

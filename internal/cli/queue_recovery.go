@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/output"
@@ -180,10 +181,14 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 			var adapter queue.WriteAdapter
 			var workflow map[string]string
 			cleanup := func() {}
-			if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
-				adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
-			} else {
-				adapter, err = queueBuiltinRecoveryAdapter(ctx, record.Intent)
+			// Checkpoint recovery reads only the authority; a removed or
+			// changed source must not block it.
+			if record.NeedsProviderReadback() {
+				if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
+					adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
+				} else {
+					adapter, err = queueBuiltinRecoveryAdapter(ctx, record.Intent)
+				}
 			}
 			result := queue.WriteResult{Outcome: queue.WriteUnknown, ClaimHeld: true}
 			if err != nil {
@@ -282,7 +287,7 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		entries, err := journal.Recovery()
+		entries, err := journal.Recovery(time.Now())
 		if err != nil {
 			return s.handle(cmd, err)
 		}

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -77,7 +78,50 @@ func TestHiddenInviteChild(t *testing.T) {
 		_, _ = fmt.Fprint(os.Stderr, "Invite: ")
 		_, _ = term.ReadPassword(int(os.Stdin.Fd()))
 	}
+	if mode == "descendant" {
+		// A hangup-immune grandchild that only a process-group kill stops. It
+		// records its PID only after ignoring SIGHUP.
+		descendant := exec.Command("/bin/sh", "-c", `trap "" HUP; echo $$ > "$QUEUE_TEST_HIDDEN_INVITE_PID"; exec sleep 60`)
+		if err := descendant.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+// On Linux a SIGHUP-immune descendant survives when only the PTY leader is
+// killed; macOS also tears down the terminal's process group.
+func TestHiddenInviteCancellationKillsDescendants(t *testing.T) {
+	t.Parallel()
+	pidPath := filepath.Join(t.TempDir(), "descendant.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHiddenInviteChild$")
+	cmd.Env = append(os.Environ(), "QUEUE_TEST_HIDDEN_INVITE=descendant", "QUEUE_TEST_HIDDEN_INVITE_PID="+pidPath)
+	done := make(chan error, 1)
+	go func() { done <- runHiddenInvite(cmd, []byte("private-invite"), time.Minute) }()
+	deadline := time.Now().Add(10 * time.Second)
+	var pid int
+	for pid == 0 {
+		if data, err := os.ReadFile(pidPath); err == nil && len(data) > 0 {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		} else if time.Now().After(deadline) {
+			t.Fatal("fake child never started its descendant")
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled enrollment unexpectedly succeeded")
+	}
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatal("descendant survived hidden invite cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestHiddenInviteChildBounded(t *testing.T) {

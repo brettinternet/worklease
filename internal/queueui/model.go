@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -260,47 +261,50 @@ type ViewRule struct {
 	Assigned         []string
 }
 type Model struct {
-	Snapshot                              queue.Snapshot
-	Views                                 []string
-	ViewFilters                           map[string]queue.Filters
-	ViewRules                             map[string]ViewRule
-	ViewName, Authority, Scope, Me        string
-	MeBySource                            map[string][]string
-	Sources                               []queue.Source
-	SourceErrors                          map[string]string
-	Width, Height                         int
-	Selected                              string
-	Index, Offset                         int
-	DetailOffset                          int
-	Detail                                bool
-	Tab                                   int
-	Filter, Input, Notice                 string
-	Filtering, Palette, Help              bool
-	History                               ledger.HistoryPage
-	HistoryError                          string
-	HistoryLoading                        bool
-	HistoryIdentity                       string
-	HistoryCursor                         string
-	Comments                              []queue.GitHubComment
-	CommentsCursor                        string
-	CommentsIdentity                      string
-	CommentsLoading                       bool
-	CommentsError                         string
-	ClaimFreshness                        string
-	RebuildingClaims                      bool
-	ClaimLoading, Claiming, Cancelling    bool
-	ClaimPreview                          *ClaimPreview
-	StartPreview                          *StartPreview
-	StartTransitions                      map[string]string
-	LaunchOptions                         []queue.LaunchOption
-	LaunchIdentity                        string
-	LaunchRef                             queue.Ref
-	LaunchIndex                           int
-	Launching                             bool
-	OwnedClaims                           map[string]OwnedClaimMsg
-	Recovery                              []queue.RecoveryEntry
-	RecoveryIndex                         int
-	RecoveryEvidence                      bool
+	Snapshot                           queue.Snapshot
+	Views                              []string
+	ViewFilters                        map[string]queue.Filters
+	ViewRules                          map[string]ViewRule
+	ViewName, Authority, Scope, Me     string
+	MeBySource                         map[string][]string
+	Sources                            []queue.Source
+	SourceErrors                       map[string]string
+	Width, Height                      int
+	Selected                           string
+	Index, Offset                      int
+	DetailOffset                       int
+	Detail                             bool
+	Tab                                int
+	Filter, Input, Notice              string
+	Filtering, Palette, Help           bool
+	History                            ledger.HistoryPage
+	HistoryError                       string
+	HistoryLoading                     bool
+	HistoryIdentity                    string
+	HistoryCursor                      string
+	Comments                           []queue.GitHubComment
+	CommentsCursor                     string
+	CommentsIdentity                   string
+	CommentsLoading                    bool
+	CommentsError                      string
+	ClaimFreshness                     string
+	RebuildingClaims                   bool
+	ClaimLoading, Claiming, Cancelling bool
+	ClaimPreview                       *ClaimPreview
+	StartPreview                       *StartPreview
+	StartTransitions                   map[string]string
+	LaunchOptions                      []queue.LaunchOption
+	LaunchIdentity                     string
+	LaunchRef                          queue.Ref
+	LaunchIndex                        int
+	Launching                          bool
+	OwnedClaims                        map[string]OwnedClaimMsg
+	Recovery                           []queue.RecoveryEntry
+	RecoveryIndex                      int
+	RecoveryEvidence                   bool
+	// RecoveryEvidenceEntry is the operation selected when the evidence prompt
+	// opened; a list refresh must not redirect typed evidence to another one.
+	RecoveryEvidenceEntry                 queue.RecoveryEntry
 	RecoveryError                         string
 	LoadRecovery                          func() tea.Cmd
 	RetryRecovery                         func(queue.RecoveryEntry) tea.Cmd
@@ -979,16 +983,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				evidence := strings.TrimSpace(m.Input)
 				m.Input, m.RecoveryEvidence = "", false
-				if m.RecoveryIndex < len(m.Recovery) {
-					entry := m.Recovery[m.RecoveryIndex]
-					if entry.Status == "checkpoint-pending" && strings.HasPrefix(evidence, "PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ") && len(evidence) > len("PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ")+10 && m.AttestCheckpointMissing != nil {
-						m.Writing = true
-						return m, m.AttestCheckpointMissing(entry, evidence)
-					}
-					if entry.Status == "unknown" && strings.HasPrefix(evidence, "NO COMMIT; EXECUTOR STOPPED: ") && len(evidence) > len("NO COMMIT; EXECUTOR STOPPED: ")+10 && m.ReconcileRecovery != nil {
-						m.Writing = true
-						return m, m.ReconcileRecovery(entry, evidence)
-					}
+				selected := m.RecoveryEvidenceEntry
+				current := slices.IndexFunc(m.Recovery, func(entry queue.RecoveryEntry) bool {
+					return entry.OperationID == selected.OperationID && entry.Status == selected.Status
+				})
+				if current < 0 {
+					m.Notice = "Recovery operation changed; review it and attest again"
+					return m, nil
+				}
+				entry := m.Recovery[current]
+				if entry.Status == "checkpoint-pending" && strings.HasPrefix(evidence, "PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ") && len(evidence) > len("PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: ")+10 && m.AttestCheckpointMissing != nil {
+					m.Writing = true
+					return m, m.AttestCheckpointMissing(entry, evidence)
+				}
+				if entry.Status == "unknown" && strings.HasPrefix(evidence, "NO COMMIT; EXECUTOR STOPPED: ") && len(evidence) > len("NO COMMIT; EXECUTOR STOPPED: ")+10 && m.ReconcileRecovery != nil {
+					m.Writing = true
+					return m, m.ReconcileRecovery(entry, evidence)
 				}
 				m.Notice = "Type the matching attestations and audit evidence to reconcile"
 			case "backspace":
@@ -1099,6 +1109,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "e":
 				if len(m.Recovery) > 0 && len(m.Recovery[m.RecoveryIndex].Next) > 1 && !m.Writing {
 					m.RecoveryEvidence = true
+					m.RecoveryEvidenceEntry = m.Recovery[m.RecoveryIndex]
 					m.Input = ""
 				} else {
 					m.Notice = "Attestation unavailable while dispatch or verification remains possible"
@@ -1432,7 +1443,7 @@ func (m Model) View() string {
 		return clipLines("Progress note (provider append; Enter previews, Esc cancels):\n"+m.Input, m.Width)
 	}
 	if m.RecoveryEvidence {
-		if m.RecoveryIndex < len(m.Recovery) && m.Recovery[m.RecoveryIndex].Status == "checkpoint-pending" {
+		if m.RecoveryEvidenceEntry.Status == "checkpoint-pending" {
 			return clipLines("Type PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: followed by provider and authority audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
 		}
 		return clipLines("Type NO COMMIT; EXECUTOR STOPPED: followed by provider audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
@@ -124,6 +128,14 @@ func TestQueueStartWorkComposesClaimAndProviderTransition(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"assignees": [\n    "@bob"`) {
 		t.Fatal("Start work assigned the item")
+	}
+	// The provider-write checkpoint must keep the queue hold so the normal
+	// heartbeat lifecycle can still renew the claim.
+	lifecycle := queueLifecycle{controller: controller.claim, now: time.Now}
+	first := lifecycle.inspect(ctx, result.Claim.HandlePath, false)
+	lifecycle.now = func() time.Time { return first.NextRenewal.Add(time.Millisecond) }
+	if renewed := lifecycle.inspect(ctx, result.Claim.HandlePath, true); !renewed.Verified || !strings.HasPrefix(renewed.LastResult, "renewed at") {
+		t.Fatalf("claim not renewable after Start work: first=%+v renewed=%+v", first, renewed)
 	}
 }
 
@@ -252,5 +264,121 @@ func TestQueueStartWorkRevalidatesPrerequisitesBeforeClaim(t *testing.T) {
 	status, err := controller.claim.backend.API.Status(ctx, lease.Selector{AuthorityID: controller.claim.backend.AuthorityID(), Resources: preview.Preview.Claim.Resources})
 	if err != nil || len(status.Resources) != 1 || status.Resources[0].State != "free" {
 		t.Fatalf("blocked claim held: %+v %v", status, err)
+	}
+}
+
+func TestQueueStartWorkPreviewsGitHubProjectStatusBinding(t *testing.T) {
+	ctx := context.Background()
+	item := queueClaimItem("issues", "6")
+	claim, backend, _ := newLocalQueueClaimController(t, config.DefaultTTL, item)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/" {
+			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode GitHub request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(request.Query, "query") {
+			t.Errorf("preview attempted a GitHub mutation: %s", request.Query)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("X-OAuth-Scopes", "repo, project")
+		switch {
+		case strings.Contains(request.Query, "viewer {"):
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+		case strings.Contains(request.Query, "fields(first:$count"):
+			fmt.Fprint(w, `{"data":{"node":{"id":"PVT_project5","number":5,"owner":{"login":"acme"},"fields":{"nodes":[{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","name":"Workflow","options":[{"id":"option-open","name":"Open"},{"id":"option-progress","name":"In Progress"}]}],"pageInfo":{"hasNextPage":false}}}}}`)
+		case strings.Contains(request.Query, "items(first:$count"):
+			fmt.Fprint(w, `{"data":{"node":{"id":"PVT_project5","number":5,"owner":{"login":"acme"},"items":{"nodes":[{"id":"PVTI_project5_issue6","content":{"__typename":"Issue","id":"ISSUE_6","number":6,"repository":{"nameWithOwner":"org/repo"}},"fieldValueByName":{"name":"Open","optionId":"option-open","field":{"id":"PVTSSF_status"}}}],"pageInfo":{"hasNextPage":false}}}}}`)
+		case strings.Contains(request.Query, "node(id:$itemID)"):
+			fmt.Fprint(w, `{"data":{"node":{"id":"PVTI_project5_issue6","updatedAt":"2026-09-25T17:30:13Z","project":{"id":"PVT_project5","number":5,"owner":{"login":"acme"}},"content":{"__typename":"Issue","id":"ISSUE_6","number":6,"repository":{"nameWithOwner":"org/repo"}},"fieldValueByName":{"name":"Open","optionId":"option-open","field":{"id":"PVTSSF_status"}}}}}`)
+		case strings.Contains(request.Query, "blockedBy("):
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"id":"ISSUE_6","number":6,"repository":{"nameWithOwner":"org/repo"},"blockedBy":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"subIssues":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"parent":null}}}}`)
+		case strings.Contains(request.Query, "issue(number:"):
+			fmt.Fprint(w, `{"data":{"repository":{"nameWithOwner":"org/repo","issue":{"id":"ISSUE_6","number":6,"title":"Start target","body":"","state":"OPEN","stateReason":"","updatedAt":"2026-09-25T17:29:33Z","repository":{"nameWithOwner":"org/repo"},"assignees":{"nodes":[]}}}}}`)
+		default:
+			t.Errorf("unexpected GitHub query: %s", request.Query)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	ghBinary := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(ghBinary, []byte("#!/bin/sh\nprintf 'test-token\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	project := config.QueueProject{Owner: "acme", Number: 5, ID: "PVT_project5", FieldID: "PVTSSF_status", Options: map[string]string{"option-open": "open", "option-progress": "in-progress"}, AllowWrites: true}
+	projectJSON, err := json.Marshal(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := queue.NewRegistry()
+	read, ok := registry.Get("github")
+	if !ok {
+		t.Fatal("GitHub adapter unavailable")
+	}
+	github := read.(*queue.GitHubAdapter)
+	github.Binary, github.APIBase = ghBinary, server.URL
+	source, err := github.Resolve(ctx, map[string]string{"id": "issues", "host": "github.com", "repository": "org/repo", "account": "tester", "project": string(projectJSON)})
+	if err != nil {
+		t.Fatalf("resolve GitHub source: %v", err)
+	}
+	if err := github.RefreshProjectStatus(ctx, source); err != nil {
+		t.Fatalf("refresh project status: %v", err)
+	}
+
+	identity := config.QueueIdentity{Adapter: source.Adapter, Locator: source.Locator, Policy: "github", Source: source.Locator, AuthorityID: backend.AuthorityID()}
+	if err := config.SaveQueueIdentities(os.Getenv, config.QueueIdentities{Version: 1, Sources: map[string]config.QueueIdentity{source.ID: identity}}); err != nil {
+		t.Fatal(err)
+	}
+	queueConfig := `version: 1
+me: {}
+sources:
+  - id: issues
+    adapter: github
+    host: github.com
+    repository: org/repo
+    account: tester
+    workflow:
+      start: option-progress
+    githubProject:
+      owner: acme
+      number: 5
+      id: PVT_project5
+      fieldId: PVTSSF_status
+      options:
+        option-open: open
+        option-progress: in-progress
+      allowWrites: true
+views:
+  - name: Ready
+    authority: local
+    sources: [issues]
+    filter:
+      readiness: ready
+`
+	if err := handle.WriteOwnerPrivate(config.QueuePath(os.Getenv), []byte(queueConfig), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	claim.registry = registry
+	claim.sources = map[string]queue.Source{source.ID: source}
+	claim.claimSources = map[string]queue.ClaimSource{source.ID: {Source: source, ClaimSource: source.Locator}}
+	configured := config.QueueSource{ID: source.ID, Adapter: source.Adapter, Host: "github.com", Repository: "org/repo", Account: "tester", Workflow: map[string]string{"start": "option-progress"}, GitHubProject: &project}
+	controller := queueStartController{claim: claim, write: queueWriteController{registry: registry, configured: map[string]config.QueueSource{source.ID: configured}}}
+
+	preview := controller.Preview(ctx, item)().(queueui.StartPreviewMsg)
+	if preview.Err != nil || preview.Preview == nil {
+		t.Fatalf("GitHub project Start preview: %+v", preview)
+	}
+	if preview.Preview.TransitionValue != "option-progress" || !strings.Contains(preview.Preview.RequiredFields, "In Progress") {
+		t.Fatalf("project option missing from Start preview: %+v", preview.Preview)
 	}
 }

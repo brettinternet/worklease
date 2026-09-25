@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
@@ -26,8 +24,11 @@ type queueWriteClaim struct {
 	session string
 }
 
-func (c queueWriteClaim) preservesMCPHold(h handle.Handle) bool {
-	return !h.HoldUntil.IsZero() && filepath.Dir(c.path) == filepath.Join(c.backend.Config.Home, "handles") && strings.HasPrefix(filepath.Base(c.path), "mcp-")
+// preservesHold reports whether the queue or MCP admitted this handle with a
+// hold ceiling. A queue write checkpoint keeps it, so the normal renewal
+// lifecycle continues within the original bound.
+func (c queueWriteClaim) preservesHold(h handle.Handle) bool {
+	return !h.HoldUntil.IsZero()
 }
 
 func (c queueWriteClaim) read(intent queue.WriteIntent) (handle.Handle, error) {
@@ -104,7 +105,7 @@ func (c queueWriteClaim) CheckpointStatus(ctx context.Context, intent queue.Writ
 		actor = &lease.RemoteActor{InstallationID: operation.InstallationID, ExpectedRestoreID: operation.RestoreID}
 	}
 	hold := time.Time{}
-	if !c.backend.Remote && c.preservesMCPHold(h) {
+	if !c.backend.Remote && c.preservesHold(h) {
 		hold = h.HoldUntil
 	}
 	hash, err := lease.CheckpointRequestHash(intent.AuthorityID, intent.ClaimID, []byte(data), intent.CheckpointTTL, intent.CheckpointNotAfter, hold, actor)
@@ -156,7 +157,7 @@ func (c queueWriteClaim) restoreCheckpointHandle(ctx context.Context, intent que
 	}
 	h.State, h.PendingRequest = "ready", nil
 	h.Revision, h.ExpiresAt = revision, expiry
-	if !c.preservesMCPHold(h) {
+	if !c.preservesHold(h) {
 		h.HoldUntil = time.Time{}
 	}
 	return lock.Write(c.path, h)
@@ -169,7 +170,7 @@ func (c queueWriteClaim) credentialPath() string {
 	return ""
 }
 
-// queuePreserveHold keeps an MCP-owned lease inside its admitted hold budget
+// queuePreserveHold keeps a queue- or MCP-owned lease inside its admitted hold budget
 // when the journaled write checkpoints through the ordinary CLI lifecycle.
 type queuePreserveHold struct{}
 
@@ -178,7 +179,7 @@ func (c queueWriteClaim) Checkpoint(ctx context.Context, intent queue.WriteInten
 	if err != nil {
 		return err
 	}
-	if !c.backend.Remote && c.preservesMCPHold(h) {
+	if !c.backend.Remote && c.preservesHold(h) {
 		ctx = context.WithValue(ctx, queuePreserveHold{}, true)
 	}
 	data, err := queueCheckpointData(intent, receipt)

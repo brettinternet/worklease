@@ -542,7 +542,7 @@ func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadlin
 		return reason.New(reason.ReasonReplayExpired, "request-not-after is required")
 	}
 	// An explicit CLI mutation normally takes the handle outside an MCP hold.
-	// The queue's MCP Start work checkpoint instead retains the exact admitted
+	// A queue write checkpoint instead retains the exact admitted
 	// ceiling in its pending request so interrupted dispatch replays boundedly.
 	if inputInt64(inputs, "holdUntil") == 0 {
 		h.HoldUntil = time.Time{}

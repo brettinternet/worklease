@@ -363,7 +363,7 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 			t.Fatalf("%s missing effect, claim, or races: %+v", tc.action, preview.Preview)
 		}
 	}
-	if entries, err := journal.Recovery(); err != nil || len(entries) != 0 {
+	if entries, err := journal.Recovery(time.Now()); err != nil || len(entries) != 0 {
 		t.Fatalf("preview dispatched: %+v %v", entries, err)
 	}
 	preview := controller.Preview(context.Background(), item, queue.ActionStart, "In Progress", "")().(queueui.WritePreviewMsg)
@@ -401,7 +401,7 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	if rejected.Err == nil || rejected.Result.Outcome == queue.WriteVerified {
 		t.Fatalf("stale preview dispatched: %+v", rejected)
 	}
-	if entries, err := journal.Recovery(); err != nil || len(entries) != 0 {
+	if entries, err := journal.Recovery(time.Now()); err != nil || len(entries) != 0 {
 		t.Fatalf("preview wrote without confirmation or stale intent dispatched: %+v %v", entries, err)
 	}
 }

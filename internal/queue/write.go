@@ -145,7 +145,19 @@ type RecoveryEntry struct {
 	Next        []string   `json:"allowedNextSteps"`
 }
 
-func (r WriteRecord) RecoveryEntry() RecoveryEntry {
+// NeedsProviderReadback reports whether recovery must read the provider. Once
+// the provider effect is verified, only the authority checkpoint remains.
+func (r WriteRecord) NeedsProviderReadback() bool {
+	switch r.Status {
+	case "checkpoint-pending", "resolved", "reconciled", "checkpoint-missing":
+		return false
+	}
+	return true
+}
+
+// RecoveryEntry offers checkpoint-missing attestation only after the
+// checkpoint deadline, once the authority can no longer commit the request.
+func (r WriteRecord) RecoveryEntry(now time.Time) RecoveryEntry {
 	effect := r.Intent.Transition
 	if r.Intent.Append != "" {
 		effect = "append " + r.Intent.Patch["append"] + ": " + r.Intent.Append
@@ -154,7 +166,10 @@ func (r WriteRecord) RecoveryEntry() RecoveryEntry {
 	}
 	next := []string{"retry read-back"}
 	if r.Status == "checkpoint-pending" {
-		next = []string{"retry authority checkpoint status", "attest verified provider effect, absent checkpoint and executor cessation after deadline"}
+		next = []string{"retry authority checkpoint status"}
+		if !r.Intent.CheckpointNotAfter.IsZero() && !now.Before(r.Intent.CheckpointNotAfter) {
+			next = append(next, "attest verified provider effect, absent checkpoint and executor cessation after deadline")
+		}
 	}
 	if r.Status == "unknown" && r.Receipt == nil && r.LastReadback != string(WriteVerified) {
 		next = append(next, "operator reconciliation after proving no commit and executor cessation")
@@ -268,7 +283,7 @@ func (j WriteJournal) save(record WriteRecord, create bool) error {
 	return handle.WriteOwnerPrivate(path, data, maxWriteRecord)
 }
 
-func (j WriteJournal) Recovery() ([]RecoveryEntry, error) {
+func (j WriteJournal) Recovery(now time.Time) ([]RecoveryEntry, error) {
 	records, err := j.Records()
 	if err != nil {
 		return nil, err
@@ -276,7 +291,7 @@ func (j WriteJournal) Recovery() ([]RecoveryEntry, error) {
 	entries := make([]RecoveryEntry, 0, len(records))
 	for _, record := range records {
 		if record.Status != "resolved" && record.Status != "reconciled" && record.Status != "checkpoint-missing" {
-			entries = append(entries, record.RecoveryEntry())
+			entries = append(entries, record.RecoveryEntry(now))
 		}
 	}
 	return entries, nil
@@ -448,7 +463,9 @@ func (p WritePipeline) Start(ctx context.Context, intent WriteIntent) (WriteResu
 	}
 	// Recheck after persisting, so a cancelled claim is not used to dispatch.
 	if err := p.Claim.Verify(ctx, intent); err != nil {
-		return WriteResult{Outcome: WriteUnknown, ClaimHeld: false, Detail: "claim changed after journaling; recovery required"}, err
+		// A failed verification does not prove the claim is gone; keep the
+		// journaled intent visible as held until recovery resolves it.
+		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true, Detail: "claim unverified after journaling; recovery required"}, err
 	}
 	// The fsynced intent is the point of no cancellation. Even a failed
 	// dispatch is unknown unless the source proves it made no effect.

@@ -150,6 +150,33 @@ func TestRecoveryReconciliationRequiresTypedEvidenceAndNoActiveDispatch(t *testi
 	}
 }
 
+func TestRecoveryEvidenceStaysBoundToSelectedOperation(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.ViewName = RecoveryViewID
+	next := []string{"retry read-back", "operator reconciliation after cessation"}
+	first := queue.RecoveryEntry{OperationID: "operation-1", Status: "unknown", Next: next}
+	second := queue.RecoveryEntry{OperationID: "operation-2", Status: "unknown", Next: next}
+	updated, _ := m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{first, second}})
+	m = updated.(Model)
+	var reconciled []string
+	m.ReconcileRecovery = func(entry queue.RecoveryEntry, _ string) tea.Cmd {
+		reconciled = append(reconciled, entry.OperationID)
+		return func() tea.Msg { return ReconcileResultMsg{} }
+	}
+	m, _ = press(m, "e")
+	for _, char := range "NO COMMIT; EXECUTOR STOPPED: provider audit for operation one" {
+		m, _ = press(m, string(char))
+	}
+	// operation-1 resolves elsewhere; operation-2 moves into the selected row.
+	updated, _ = m.Update(RecoveryMsg{Entries: []queue.RecoveryEntry{second}})
+	m = updated.(Model)
+	m, _ = press(m, "enter")
+	if len(reconciled) != 0 {
+		t.Fatalf("evidence for operation-1 reconciled %v", reconciled)
+	}
+}
+
 func TestRecoveryCheckpointMissingAttestationAndTerminalNotice(t *testing.T) {
 	t.Parallel()
 	m := New(fixture())

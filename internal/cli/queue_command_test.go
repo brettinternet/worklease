@@ -125,6 +125,44 @@ func TestQueueRecoveryReadbackFailureKeepsHeldClaimVisible(t *testing.T) {
 	}
 }
 
+func TestQueueRecoveryRetryCheckpointWithoutConfiguredSource(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	_, path, backend := claimedLifecycle(t)
+	h, err := handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The provider effect was verified and the checkpoint committed, but the
+	// response was lost and the source has since left queue.yaml.
+	intent := queue.WriteIntent{OperationID: randomHex(16), OperationRef: randomHex(16), Source: queue.Source{ID: "removed", Adapter: "backlog-md", Locator: filepath.Join(t.TempDir(), "absent")}, Ref: queue.Ref{SourceID: "removed", ItemID: "TASK-1"}, Principal: "alice", AuthorityID: backend.AuthorityID(), ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: h.Resources, CheckpointTTL: 30 * time.Second, CheckpointNotAfter: time.Now().Add(10 * time.Minute)}
+	receipt := queue.ProviderReceipt{SourceID: "removed", ItemID: "TASK-1", ID: "provider-receipt", Actor: "alice"}
+	if err := (queueWriteClaim{backend: backend, path: path}).Checkpoint(context.Background(), intent, receipt); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := queueRecoveryJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.EnsureOwnerPrivateDir(journal.Dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(queue.WriteRecord{Intent: intent, Receipt: &receipt, Status: "checkpoint-pending", LastReadback: string(queue.WriteVerified), CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.WriteOwnerPrivate(filepath.Join(journal.Dir, intent.OperationID+".json"), data, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--local", "--json", "queue", "recovery", "retry", "--operation-id", intent.OperationID, "--handle", path}, "test", "unknown", "unknown", &out, &errs); err != nil {
+		t.Fatalf("checkpoint recovery required the removed source: %v %s %s", err, out.String(), errs.String())
+	}
+	if !strings.Contains(out.String(), `"outcome":"verified"`) {
+		t.Fatalf("committed checkpoint not verified: %s", out.String())
+	}
+}
+
 func TestQueueRecoveryRetryMissingOperation(t *testing.T) {
 	_, env := testkit.Home(t)
 	t.Setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
