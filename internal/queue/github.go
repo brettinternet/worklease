@@ -482,15 +482,19 @@ func (a *GitHubAdapter) relatedRef(host string, issue githubRelated) Ref {
 }
 func (a *GitHubAdapter) summary(source Source, issue githubIssue) Summary {
 	terminal := issue.State == "CLOSED"
-	state := StateOpen
+	state, raw := StateOpen, issue.State
 	if terminal {
 		state = StateComplete
+		// Preserve a non-success close reason beside the terminal interpretation.
+		if reason := strings.ToUpper(issue.StateReason); reason != "" && reason != "COMPLETED" {
+			raw += ":" + reason
+		}
 	}
 	owners := make([]string, 0, len(issue.Assignees.Nodes))
 	for _, person := range issue.Assignees.Nodes {
 		owners = append(owners, person.Login)
 	}
-	return Summary{Ref: Ref{source.ID, strconv.Itoa(issue.Number)}, Title: issue.Title, RawStatus: issue.State, State: state, Order: fmt.Sprintf("%012d", issue.Number), CanonicalID: issue.ID, AssignedTo: owners, UpdatedAt: issue.UpdatedAt, Fresh: true, Terminal: terminal}
+	return Summary{Ref: Ref{source.ID, strconv.Itoa(issue.Number)}, Title: issue.Title, RawStatus: raw, State: state, Order: fmt.Sprintf("%012d", issue.Number), CanonicalID: issue.ID, AssignedTo: owners, UpdatedAt: issue.UpdatedAt, Fresh: true, Terminal: terminal}
 }
 func (a *GitHubAdapter) item(source Source, issue githubIssue) Item {
 	summary := a.summary(source, issue)

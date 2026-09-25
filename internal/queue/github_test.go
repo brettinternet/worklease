@@ -734,3 +734,14 @@ func TestGitHubUnsupportedDependencyFields(t *testing.T) {
 		t.Fatalf("capability: %+v %v", caps, err)
 	}
 }
+
+func TestGitHubSummaryDisclosesNonSuccessCloseReason(t *testing.T) {
+	t.Parallel()
+	a := &GitHubAdapter{}
+	for _, tc := range []struct{ state, reason, raw string }{{"OPEN", "", "OPEN"}, {"CLOSED", "COMPLETED", "CLOSED"}, {"CLOSED", "NOT_PLANNED", "CLOSED:NOT_PLANNED"}} {
+		got := a.summary(Source{ID: "gh"}, githubIssue{Number: 1, State: tc.state, StateReason: tc.reason})
+		if got.RawStatus != tc.raw || got.Terminal != (tc.state == "CLOSED") {
+			t.Errorf("%s/%s summary = %q terminal %t", tc.state, tc.reason, got.RawStatus, got.Terminal)
+		}
+	}
+}

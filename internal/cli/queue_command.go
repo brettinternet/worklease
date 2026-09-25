@@ -24,7 +24,7 @@ import (
 )
 
 func queueCommand(s *boundary) *urfave.Command {
-	c := &urfave.Command{Name: "queue", Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease queue --view Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Usage: "configured queue view `NAME`"}}}
+	c := &urfave.Command{Name: "queue", Aliases: []string{"q"}, Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease q -v Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Aliases: []string{"v"}, Usage: "configured queue view `NAME`"}}}
 	c.Action = func(ctx context.Context, cmd *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return s.handle(cmd, reason.Invalid("queue TUI is text-only; use queue query --json when available"))

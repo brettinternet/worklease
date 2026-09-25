@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 16:12'
+updated_date: '2026-09-25 15:45'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130
@@ -74,6 +75,8 @@ This task also defines the provider-neutral workflow intents (start, blocked, re
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented provider-neutral recoverable write path in 668b07b and transition rejection test in 1db89cc, both fast-forward merged to main. Fake adapter fault tests cover preflight refusal, durable journal/privacy/retention, marker content/provenance and effects, unknown response/recovery, operator reconciliation, action-specific eligibility, exact checkpoint replay after lost response, and cancellation-vs-write interleaving. Verified focused race tests (3 runs) for queue/config/cli, plus mise run lint, format-check, test, typecheck, staged hooks. One general review found two concrete races (cancellation admission and committed checkpoint response loss); both fixed and rerun with focused tests. No proposal decision was contradicted or refined; §8 is unchanged. No remaining blocker. Next: TASK-132.2 and TASK-132.3 can implement concrete provider write adapters against this boundary; not started here.
+
+Review 2026-09-25 (c5a29ab): recovery of a checkpoint-pending record re-read the provider first, so a committed checkpoint could not resolve while the provider was unavailable; now finishes the checkpoint directly (TestWritePipelineCrashAfterCommittedCheckpoint with read error). Follow-up TASK-138: a verified write whose checkpoint misses CheckpointNotAfter has no terminal path and blocks later writes on the item. Backlog.md append provenance rests on marker+content since the provider exposes no independent author; accepted per AC #3.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

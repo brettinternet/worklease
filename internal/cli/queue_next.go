@@ -206,6 +206,8 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			label = "claim acquired; worker must heartbeat and release"
 			if transition != nil && transition["outcome"] == "rejected" {
 				label = "Claim acquired; status unchanged"
+			} else if transition != nil && transition["outcome"] == "not attempted" {
+				label = "Claim acquired; transition not attempted"
 			} else if transition != nil && transition["outcome"] == "unknown" {
 				label = "Claim acquired; provider outcome requires recovery"
 			}

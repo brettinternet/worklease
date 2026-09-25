@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 16:41'
+updated_date: '2026-09-25 15:45'
 labels:
   - work-queue
   - backlog-md
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.1
@@ -61,6 +62,8 @@ Plan section 5 and TASK-126.6 cover Git effects. With auto_commit on, a write cr
 Implemented isolated Backlog.md write adapter and scratch integration tests for state, progress marker/recovery, assignment conflict, criterion rejection, and auto-commit/hooks/staged isolation. Focused race tests (3x), lint, format-check, full test, typecheck and staged hooks passed in task-132-2-backlog-writes. One general review pass pending; then commit/merge/finalize.
 
 Review: one general pass found hook-preview drift, unsafe comma-bearing assignee, comment prefix spoofing, later Git commit, and later note append; all five were fixed and directly retested. Final focused race go test -race -count=3 -run ^TestBacklogWrite ./internal/queue passed; mise run lint, format-check, test, typecheck, staged hooks passed after fixes. Code/docs commit 7daccf457c969942ead9bfcce55062c3c5adbaa4 fast-forward merged to main; owned worktree and branch removed, Herdr workspace wN8 closed. AC evidence: TestBacklogWritePipelineScratchProject (state status view, notes/comment marker, assignment); TestBacklogWriteAssignmentConflictAndCriterionUnavailable (concurrent edit, no criterion mutation); TestBacklogWriteMarkerAndStatusVerification, LostAppendResponseRecoversWithoutRedispatch, AppendRecoveryWithFollowingWrites, PreviewRejectsHookPolicyDriftAndUnsafeAssignee, CommitVerifiedAfterUnrelatedCommit, AutoCommitPreviewAndReceipt (on/off, hooks, unrelated staged file). Proposal §6 updated in same commit.
+
+Review 2026-09-25 (c5a29ab): 'queue recovery retry' built an unresolved Backlog.md/GitHub adapter, so every cross-process read-back failed with invalid-source. It now resolves the journaled source from queue.yaml, rejects drift, and keeps the held claim visible when the source is unavailable (TestQueueRecoveryAdapterResolvesJournaledBacklogSource).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

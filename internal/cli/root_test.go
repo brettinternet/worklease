@@ -13,6 +13,38 @@ import (
 	urfavecli "github.com/urfave/cli/v3"
 )
 
+func TestNestedUsageErrorsAreClassifiedWithoutHelpOutput(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{
+		{"queue", "--invalid"},
+		{"queue", "recovery", "retry", "--invalid"},
+		{"enroll", "--invalid"},
+		{"profile", "add", "--invalid"},
+		{"completion", "bash", "--invalid=sensitive-value"},
+	} {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			argv := append([]string{"worklease"}, args...)
+			argv = append(argv, "--json")
+			err := Run(context.Background(), argv, "dev", "unknown", "unknown", &stdout, &stderr)
+			if err == nil || reason.As(err) == nil || reason.As(err).ExitCode() != reason.ExitInvalid {
+				t.Fatalf("usage error: %v", err)
+			}
+			var result struct {
+				OK    bool `json:"ok"`
+				Error struct {
+					Reason   string `json:"reason"`
+					ExitCode int    `json:"exitCode"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.OK || result.Error.Reason != reason.ReasonInvalidArgument || result.Error.ExitCode != reason.ExitInvalid || stderr.Len() != 0 || strings.Contains(stdout.String(), "sensitive-value") {
+				t.Fatalf("usage output: %v, stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestVersionTextAndJSON(t *testing.T) {
 	for _, args := range [][]string{{"worklease", "version", "--json"}, {"worklease", "--json", "version"}, {"worklease", "--version", "--json"}} {
 		var stdout, stderr bytes.Buffer
@@ -45,6 +77,16 @@ func TestVersionTextAndJSON(t *testing.T) {
 				t.Fatalf("text output = %q, want %q", text.String(), test.want)
 			}
 		})
+	}
+}
+
+func TestRootVersionShortFlagRemainsLocal(t *testing.T) {
+	var output bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "-v"}, "1.2.3", "unknown", "unknown", &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "worklease 1.2.3") {
+		t.Fatalf("root -v = %q", output.String())
 	}
 }
 
@@ -358,7 +400,8 @@ func TestShortOptionNamespaceIsExactAndRemovedAliasesFail(t *testing.T) {
 	collect := func(flags []urfavecli.Flag) {
 		for _, flag := range flags {
 			for _, name := range flag.Names()[1:] {
-				if len(name) == 1 {
+				// The queue's -v/--view is scoped below the root's local -v/--version.
+				if len(name) == 1 && !(name == "v" && flag.Names()[0] == "view") {
 					got[name] = flag.Names()[0]
 				}
 			}

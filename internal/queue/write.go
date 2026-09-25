@@ -544,6 +544,11 @@ func (p WritePipeline) Reconcile(ctx context.Context, id, operator, evidence str
 
 func (p WritePipeline) verify(ctx context.Context, record WriteRecord) (WriteResult, error) {
 	intent := record.Intent
+	// The provider effect was verified before entering checkpoint-pending;
+	// only the checkpoint remains, so recovery must not depend on the provider.
+	if record.Status == "checkpoint-pending" {
+		return p.finishCheckpoint(ctx, record)
+	}
 	observation, err := p.Adapter.ReadReceipt(ctx, intent, record.Receipt)
 	if err != nil {
 		if record.Receipt == nil {
@@ -565,9 +570,6 @@ func (p WritePipeline) verify(ctx context.Context, record WriteRecord) (WriteRes
 	}
 	if result != WriteVerified {
 		return WriteResult{Outcome: result, ClaimHeld: true, Detail: "read-back not verified; recovery required"}, nil
-	}
-	if record.Status == "checkpoint-pending" {
-		return p.finishCheckpoint(ctx, record)
 	}
 	if err := p.Claim.Verify(ctx, intent); err != nil {
 		return WriteResult{Outcome: WriteUnknown, ClaimHeld: true}, err

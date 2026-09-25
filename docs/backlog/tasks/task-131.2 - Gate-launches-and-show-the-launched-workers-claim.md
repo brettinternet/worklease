@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 15:05'
+updated_date: '2026-09-25 15:45'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-131.1
@@ -58,6 +59,8 @@ Implemented shared launch gating/preview, TUI picker and process handoff, query 
 Review found three concrete issues; fixed retired-key migration handoff with pre-launch identity gate, exact-ref preview confirmation, and asynchronous child reaping. Verified focused migration/launcher/UI tests and full lint, format-check, test, typecheck. Hooks and integration pending.
 
 Delivered on main: 4050c17 (implementation) and 23e9f0c (unclaimed-launch/overlay acceptance), both worktrees removed. Evidence: TestLaunchGatesAndPublicPreview, TestLaunchHandoffIncludesRetiredBindingKeys, TestQueueQueryReportsEachLaunchActionAndItsGate, TestLaunchPickerPreviewsAndDoesNotInventWorkerClaim, TestSuccessfulLaunchDoesNotClaimUntilWorkerAppearsInOverlay, TestReferenceLauncherClaimsExactQueueHandoff (GitHub and portable Backlog binding, exact authority/resources, no-claim child), TestLaunchProcessStartFailureHasNoClaimSideEffect, TestDetachedLaunchReapsShortLivedChildren; mise run lint, format-check, test, typecheck, hooks all passed. One general review pass: three concrete findings corrected and retested; no remaining blocker.
+
+Review 2026-09-25: launch gates, env allowlist, argv isolation, reference launcher, and start-failure paths hold. Picker/query gate observes only the current key, so a retired key held by the queue via another source is caught only at confirmation (launch still refused safely); accepted. No fix or follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

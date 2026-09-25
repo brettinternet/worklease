@@ -119,6 +119,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 	}
 	state.root = root
 	setShellCompletionHandlers(root)
+	setDefaultUsageErrors(root, state)
 	if err := validateCLICommandTree(root); err != nil {
 		panic(err)
 	}
@@ -236,6 +237,24 @@ func hasJSON(args []string) bool {
 	return false
 }
 
+// Every command needs a classified usage error; otherwise the framework
+// writes help and returns an unclassified internal error (including in JSON mode).
+func setDefaultUsageErrors(root *urfavecli.Command, s *boundary) {
+	var visit func(*urfavecli.Command)
+	visit = func(cmd *urfavecli.Command) {
+		if cmd.OnUsageError == nil {
+			cmd.OnUsageError = func(_ context.Context, current *urfavecli.Command, _ error, _ bool) error {
+				// Parser errors can contain argv values, so do not echo them.
+				return s.handle(current, reason.Invalid("invalid command-line arguments"))
+			}
+		}
+		for _, child := range cmd.Commands {
+			visit(child)
+		}
+	}
+	visit(root)
+}
+
 func validateCLICommandTree(root *urfavecli.Command) error {
 	shortMeanings := make(map[string]string)
 	var visit func(*urfavecli.Command, map[string]string) error
@@ -243,6 +262,10 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 		seen := make(map[string]string, len(inherited))
 		for k, v := range inherited {
 			seen[k] = v
+		}
+		next := make(map[string]string, len(inherited))
+		for k, v := range inherited {
+			next[k] = v
 		}
 		for _, flag := range cmd.Flags {
 			if flag == nil {
@@ -266,6 +289,11 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 					return fmt.Errorf("flag %q used by %s and %s", name, previous, cmd.Name)
 				}
 				seen[name] = cmd.Name
+				// Local flags belong only to this command, so descendants may reuse their aliases.
+				if local, ok := flag.(interface{ IsLocal() bool }); ok && local.IsLocal() {
+					continue
+				}
+				next[name] = cmd.Name
 				if len(name) == 1 {
 					if meaning, ok := shortMeanings[name]; ok && meaning != names[0] {
 						return fmt.Errorf("short flag %q means both %s and %s", name, meaning, names[0])
@@ -273,10 +301,6 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 					shortMeanings[name] = names[0]
 				}
 			}
-		}
-		next := make(map[string]string, len(seen))
-		for k, v := range seen {
-			next[k] = v
 		}
 		for _, child := range cmd.Commands {
 			if err := visit(child, next); err != nil {

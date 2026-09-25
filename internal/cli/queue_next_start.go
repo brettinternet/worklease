@@ -13,7 +13,7 @@ import (
 // queueNextStart is a separate outcome after acquisition. The caller keeps its
 // claim even when the provider rejects or cannot establish the write outcome.
 func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item, registry *queue.Registry, sources []queue.Source, backend *authorityContext, auth queue.ClaimAuthority, session, path string) map[string]any {
-	outcome := map[string]any{"outcome": "rejected", "message": "Claim acquired; status unchanged"}
+	outcome := map[string]any{"outcome": "not attempted", "message": "Claim acquired; transition not attempted"}
 	configured := make(map[string]config.QueueSource, len(cfg.Sources))
 	for _, source := range cfg.Sources {
 		configured[source.ID] = source
@@ -35,6 +35,8 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 		return outcome
 	}
 	if eligibility := queue.EvaluateAction(fresh, queue.ActionStart); !eligibility.Eligible {
+		outcome["outcome"] = "rejected"
+		outcome["message"] = "Claim acquired; status unchanged"
 		outcome["reason"] = "start eligibility changed: " + strings.Join(eligibility.Reasons, "; ")
 		return outcome
 	}
@@ -72,6 +74,8 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 	case written.Err == nil && written.Result.Outcome == queue.WriteVerified:
 		return map[string]any{"outcome": "applied", "operationId": written.OperationID}
 	case written.Result.Outcome == queue.WriteConflict && written.Result.SourceUnchanged:
+		outcome["outcome"] = "rejected"
+		outcome["message"] = "Claim acquired; status unchanged"
 		if written.Err != nil {
 			outcome["reason"] = written.Err.Error()
 		}

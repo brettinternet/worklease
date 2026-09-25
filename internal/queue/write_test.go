@@ -195,6 +195,7 @@ func TestWritePipelineCrashAfterCommittedCheckpoint(t *testing.T) {
 	t.Parallel()
 	p, f, intent := writeSetup(t)
 	f.checkpointEffect, f.staleAfterCommit = true, true
+	f.readErr = errors.New("provider unavailable")
 	receipt := &ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID, ID: "receipt-1", Actor: intent.Principal}
 	record := WriteRecord{Intent: intent, Receipt: receipt, Status: "checkpoint-pending", CreatedAt: time.Now()}
 	if err := p.Journal.save(record, true); err != nil {
