@@ -1,9 +1,11 @@
 ---
 id: TASK-142.1
 title: Probe Linear API behavior on a dedicated test team
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-25 16:30'
+updated_date: '2026-09-25 16:55'
 labels:
   - work-queue
 milestone: m-1
@@ -29,3 +31,9 @@ D29 and the Linear declarations are hypotheses. Use only the user-approved dedic
 - [ ] #3 Establish workflow state types, single-assignee semantics, request and complexity limits/headers, Markdown operation-marker round-trip, and native claim absence or capabilities against §9
 - [ ] #4 Clean up every synthetic issue and revise D29 and §7 for any contradicted assumptions; no existing issue is mutated
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Obtain Linear API key via secure local credential store and confirm a dedicated disposable test team. 2. Probe only synthetic issues with bounded GraphQL reads/mutations, record sanitized identity, pagination, relations, visibility, workflow, limits and marker evidence. 3. Delete/archive every synthetic issue, update proposal §3/D29/§7 with evidence and uncertainties, run repository quality gates, commit and merge the worktree, then finalize the task from the primary checkout.
+<!-- SECTION:PLAN:END -->
