@@ -858,7 +858,7 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 				complete = false
 				break
 			}
-			if page.Completeness != CoverageComplete && page.NextCursor == "" {
+			if page.Completeness == CoverageUnknown || (page.Completeness != CoverageComplete && page.NextCursor == "") {
 				complete = false
 			}
 			item.Relationships = append(item.Relationships, page.Edges...)
@@ -977,7 +977,7 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			allComplete = false
 			break
 		}
-		if deps.Completeness != CoverageComplete {
+		if deps.Completeness == CoverageUnknown || (deps.Completeness != CoverageComplete && deps.NextCursor == "") {
 			allComplete = false
 		}
 		if observationMismatch(item.Observation, deps.Observation) {

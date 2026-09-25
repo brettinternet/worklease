@@ -104,7 +104,7 @@ func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) 
 	if !ok {
 		return nil, fmt.Errorf("write adapter unavailable")
 	}
-	resolved, err := read.Resolve(ctx, map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork), "completeStatus": configured.Workflow["complete"]})
+	resolved, err := read.Resolve(ctx, queueSourceOptions(*configured))
 	if err != nil {
 		return nil, err
 	}

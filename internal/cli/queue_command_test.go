@@ -27,9 +27,11 @@ import (
 
 func TestQueueTUIMeBySourceUsesExternalAccount(t *testing.T) {
 	t.Parallel()
-	got := queueMeBySource(config.QueueConfig{}, config.QueueSource{ID: "planning", Adapter: "external", Account: "alice"})
-	if len(got) != 1 || got[0] != "alice" {
-		t.Fatalf("external TUI identity = %v, want configured account", got)
+	for _, adapter := range []string{"external", "linear"} {
+		got := queueMeBySource(config.QueueConfig{}, config.QueueSource{ID: "planning", Adapter: adapter, Account: "alice"})
+		if len(got) != 1 || got[0] != "alice" {
+			t.Fatalf("%s TUI identity = %v, want configured account", adapter, got)
+		}
 	}
 }
 

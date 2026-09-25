@@ -22,13 +22,12 @@ import (
 
 func TestQueueQueryMeMatchesExternalAccount(t *testing.T) {
 	t.Parallel()
-	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "planning", Adapter: "external", Account: "Alice"}}}
-	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "planning", ItemID: "item-1"}}}
-	if !isQueueMe(cfg, item, "alice") {
-		t.Fatal("external account was not matched as the queue principal")
-	}
-	if isQueueMe(cfg, item, "other") {
-		t.Fatal("external account matched a different provider identity")
+	for _, adapter := range []string{"external", "linear"} {
+		cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "planning", Adapter: adapter, Account: "Alice"}}}
+		item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "planning", ItemID: "item-1"}}}
+		if !isQueueMe(cfg, item, "alice") || isQueueMe(cfg, item, "other") {
+			t.Fatalf("%s account did not match only the configured principal", adapter)
+		}
 	}
 }
 
