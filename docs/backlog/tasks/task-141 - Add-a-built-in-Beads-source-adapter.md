@@ -1,11 +1,11 @@
 ---
 id: TASK-141
 title: Add a built-in Beads source adapter
-status: In Progress
+status: Done
 assignee:
   - '@pi-task-141'
 created_date: '2026-09-25 16:26'
-updated_date: '2026-09-25 16:42'
+updated_date: '2026-09-25 19:36'
 labels:
   - work-queue
 milestone: m-1
@@ -33,17 +33,17 @@ No `beads` resource policy is built in. Portable coordination uses the existing 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 docs/work-queue-tui-proposal.md records the decision in §2 and §16, a §3 evidence subsection from a scale and side-effect probe of a pinned `bd` version on disposable projects (list and show cost at 102, 1,000, and 10,000 issues; JSON schemas; dependency fields in bulk output; daemon, commit, hook, and remote behavior on reads and writes; ID generation and collision behavior across clones), and a Beads column in the §7 declarations table.
-- [ ] #2 The adapter uses only documented `bd` JSON output and documented write flags, pins or checks the supported version, and reports a structured diagnostic on version drift or unparseable output.
-- [ ] #3 A Beads source is configured in queue.yaml with one explicit checkout; reads that can contact remotes or trigger commits are declared effects requiring the same explicit consent as Backlog.md remote operations, and a local-only source makes no network access.
-- [ ] #4 Claims use the existing `generic` policy through an explicit portable source binding confirmed by the identity gate; identity vectors pin the keys, queue- and CLI-derived keys are byte-equal, and duplicate or renamed IDs disable claims per D12.
-- [ ] #5 Beads blocking dependencies become hard prerequisites with the configured completion condition; parent-child, related, and discovered-from relations are informational unless the probe and a recorded decision say otherwise. Beads' own ready result is shown as provider-reported beside queue readiness.
-- [ ] #6 Beads in-progress status and assignee are displayed as provider state and assignment, never as claims or claim availability.
-- [ ] #7 Change detection keeps the index fresh without a process per issue on every refresh, using bulk output or a probed invalidation signal; a partial read never proves deletion.
-- [ ] #8 Claim for me, the D11 check, `queue next --claim`, and MCP `queue_next` work on Beads sources.
-- [ ] #9 Focused writes (state, progress note or comment with operation marker, assign-to-me) ship after reads are proven, follow the §8 recovery pipeline, disclose Git effects in previews, and verify read-back including any commit.
-- [ ] #10 The adapter passes the shared adapter conformance suite; tests cover missing or incompatible `bd`, daemon-induced concurrent changes, duplicate IDs, dependency cycles, and unrelated staged changes staying staged.
-- [ ] #11 User-facing queue docs describe Beads setup, the portable binding, and declared side effects.
+- [x] #1 docs/work-queue-tui-proposal.md records the decision in §2 and §16, a §3 evidence subsection from a scale and side-effect probe of a pinned `bd` version on disposable projects (list and show cost at 102, 1,000, and 10,000 issues; JSON schemas; dependency fields in bulk output; daemon, commit, hook, and remote behavior on reads and writes; ID generation and collision behavior across clones), and a Beads column in the §7 declarations table.
+- [x] #2 The adapter uses only documented `bd` JSON output and documented write flags, pins or checks the supported version, and reports a structured diagnostic on version drift or unparseable output.
+- [x] #3 A Beads source is configured in queue.yaml with one explicit checkout; reads that can contact remotes or trigger commits are declared effects requiring the same explicit consent as Backlog.md remote operations, and a local-only source makes no network access.
+- [x] #4 Claims use the existing `generic` policy through an explicit portable source binding confirmed by the identity gate; identity vectors pin the keys, queue- and CLI-derived keys are byte-equal, and duplicate or renamed IDs disable claims per D12.
+- [x] #5 Beads blocking dependencies become hard prerequisites with the configured completion condition; parent-child, related, and discovered-from relations are informational unless the probe and a recorded decision say otherwise. Beads' own ready result is shown as provider-reported beside queue readiness.
+- [x] #6 Beads in-progress status and assignee are displayed as provider state and assignment, never as claims or claim availability.
+- [x] #7 Change detection keeps the index fresh without a process per issue on every refresh, using bulk output or a probed invalidation signal; a partial read never proves deletion.
+- [x] #8 Claim for me, the D11 check, `queue next --claim`, and MCP `queue_next` work on Beads sources.
+- [x] #9 Focused writes (state, progress note or comment with operation marker, assign-to-me) ship after reads are proven, follow the §8 recovery pipeline, disclose Git effects in previews, and verify read-back including any commit.
+- [x] #10 The adapter passes the shared adapter conformance suite; tests cover missing or incompatible `bd`, daemon-induced concurrent changes, duplicate IDs, dependency cycles, and unrelated staged changes staying staged.
+- [x] #11 User-facing queue docs describe Beads setup, the portable binding, and declared side effects.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,3 +54,15 @@ No `beads` resource policy is built in. Portable coordination uses the existing 
 3. Add recoverable writes and CLI/MCP integration, user docs and tests.
 4. Run focused and repository gates, review, commit/merge in worktree, finalize task and clean up.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Pinned and probed bd 1.3.0 on disposable embedded-Dolt fixtures: 102/1000/10000 bulk list/show measurements, JSON schema, Git/Dolt/hook/remote behavior, and cross-clone ID collision (docs/work-queue-tui-proposal.md). Implemented bulk Beads reads, typed edges, portable generic claim binding, guarded recoverable writes, queue CLI/MCP/TUI routing, and docs. Verified focused TestBeads*, TestQueueBeadsConfiguration, TestBeadsQueueNextClaimAndMCP (TUI claim controller/D11), and TestAdapterConformance/beads with go test -race -count=3 and bd 1.3.0 on PATH. Reviewer findings for unsupported Start work advertisement and missing selected description were fixed. After merge to main (265e600), mise run lint, format-check, test, typecheck passed with a dedicated Go cache and serialized test parallelism; mise run hooks passed before commits. No Definition of Done checklist was configured.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Shipped Beads 1.3.0 queue source with portable confirmed claims, bulk typed dependencies, CLI/MCP/TUI claim paths, recoverable focused writes, guarded local/remote effects, conformance tests, benchmark, and setup docs. Verified with disposable Beads fixtures, targeted three-run race tests, shared conformance suite, full repository gates, and Lefthook.
+<!-- SECTION:FINAL_SUMMARY:END -->

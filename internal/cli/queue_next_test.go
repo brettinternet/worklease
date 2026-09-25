@@ -17,6 +17,7 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
@@ -111,6 +112,38 @@ func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
 	fresh, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{"local": source}, selected)
 	if err != nil || fresh.Readiness.Status != queue.Blocked {
 		t.Fatalf("action used stale bulk edges: %+v %v", fresh, err)
+	}
+	third := exec.Command(binary, "create", "TUI claim", "--silent")
+	third.Dir = checkout
+	thirdBytes, err := third.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdID := strings.TrimSpace(string(thirdBytes))
+	backend, authority, err := queueAuthorityForClaim(context.Background(), &urfave.Command{}, config.LocalProfileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	controller := &queueClaimController{backend: backend, registry: registry, sources: map[string]queue.Source{"local": source}, claimSources: map[string]queue.ClaimSource{"local": {Source: source, Policy: "generic", ClaimSource: "agreed-team/planning"}}, queueSession: strings.Repeat("e", 32), paths: config.UserProfilePaths(os.Getenv), current: func() (queue.ClaimAuthority, uint64) { return authority, 1 }, blocked: func() bool { return false }, profile: backend.Profile, profileName: config.LocalProfileName, home: backend.Config.Home}
+	thirdItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: thirdID}}}
+	preview := controller.Preview(context.Background(), thirdItem)().(queueui.ClaimPreviewMsg)
+	if preview.Err != nil || preview.Preview == nil {
+		t.Fatalf("TUI claim preview: %+v", preview)
+	}
+	acquired := controller.AcquireClaim(context.Background(), thirdItem, *preview.Preview)().(queueui.ClaimResultMsg)
+	if acquired.Err != nil || !acquired.Claim.Active {
+		t.Fatalf("TUI Claim for me: %+v", acquired)
+	}
+	blocked := exec.Command(binary, "create", "Blocked TUI claim", "--deps", "blocked-by:"+thirdID, "--silent")
+	blocked.Dir = checkout
+	blockedBytes, err := blocked.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: strings.TrimSpace(string(blockedBytes))}}}
+	if _, err := controller.prepare(context.Background(), blockedItem); err == nil {
+		t.Fatal("D11 check allowed claim of blocked Beads item")
 	}
 }
 

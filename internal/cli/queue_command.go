@@ -34,7 +34,7 @@ func queueCommand(s *boundary) *urfave.Command {
 	return c
 }
 func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string {
-	if source.Adapter == "external" {
+	if source.Adapter == "external" || source.Adapter == "linear" {
 		if source.Account != "" {
 			return []string{source.Account}
 		}
@@ -122,17 +122,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			continue
 		}
 		options := map[string]string{"id": src.ID}
-		if src.Adapter == "beads" {
-			options["completeStatus"] = src.Workflow["complete"]
-		}
 		if src.Adapter != "external" {
-			options["checkout"] = src.Checkout
-			options["host"] = src.Host
-			options["repository"] = src.Repository
-			options["account"] = src.Account
-			if src.AllowGitNetwork {
-				options["allowGitNetwork"] = "true"
-			}
+			options = queueSourceOptions(src)
 		}
 		resolved, err := adapter.Resolve(ctx, options)
 		if err != nil {
@@ -159,6 +150,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	defer index.Close()
 	loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
+	loader.LinearSync = queueindex.LinearSyncStore{Index: index, Registry: registry}
 	cachePartitions, err := seedQueueIndex(ctx, index, registry, sources, loader)
 	if err != nil {
 		return err
@@ -496,7 +488,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
-			if adapter != "backlog-md" && adapter != "github" {
+			if adapter != "backlog-md" && adapter != "github" && adapter != "linear" {
 				cancel()
 				return nil
 			}
@@ -893,6 +885,8 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			updates = loader.HydrateVisible(ctx, source, visible)
 		case "backlog-md", "beads":
 			updates = loader.HydrateEdges(ctx, source, nil, visible, true)
+		case "linear":
+			updates = loader.HydrateEdges(ctx, source, visible, nil, false)
 		default:
 			continue
 		}

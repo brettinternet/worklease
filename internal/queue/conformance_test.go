@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,8 +33,8 @@ func TestAdapterConformanceSampleProcessHelper(t *testing.T) {
 	}
 }
 
-// TestAdapterConformanceProcessHelper is a test-only wire shim for the two built-in
-// adapters. Both are exercised by ExternalAdapter and its production process host.
+// TestAdapterConformanceProcessHelper is a test-only wire shim for built-in
+// adapters exercised through ExternalAdapter and its production process host.
 func TestAdapterConformanceProcessHelper(t *testing.T) {
 	separator := -1
 	for i, arg := range os.Args {
@@ -62,7 +64,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 		var diagnostic string
 		switch request.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": 1, "manifest": map[string]any{"id": "conformance.shim", "version": "1.0.0", "protocol": map[string]int{"minMajor": 1, "maxMajor": 1}, "configSchema": map[string]any{"type": "object"}, "authentication": []string{}, "resourcePolicy": "generic", "capabilities": []string{"identity", "discovery", "dependencies", "state", "mutation"}, "requiredFeatures": []string{}}}
+			capabilities := []string{"identity", "discovery", "dependencies", "state", "mutation"}
+			if kind == "linear" {
+				capabilities = capabilities[:4]
+			} // no writes in this stage
+			result = map[string]any{"protocolVersion": 1, "manifest": map[string]any{"id": "conformance.shim", "version": "1.0.0", "protocol": map[string]int{"minMajor": 1, "maxMajor": 1}, "configSchema": map[string]any{"type": "object"}, "authentication": []string{}, "resourcePolicy": "generic", "capabilities": capabilities, "requiredFeatures": []string{}}}
 		case "resolve":
 			var cfg map[string]string
 			if json.Unmarshal(request.Params["config"], &cfg) != nil {
@@ -75,12 +81,22 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				built.Binary = cfg["binary"]
 				adapter = built
 				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "checkout": cfg["checkout"]})
+			case "beads":
+				built := NewBeadsAdapter()
+				built.Binary = cfg["binary"]
+				adapter = built
+				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "checkout": cfg["checkout"]})
 			case "github":
 				built := NewGitHubAdapter()
 				built.Binary = cfg["binary"]
 				built.APIBase = cfg["apiBase"]
 				adapter = built
 				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "host": "github.com", "repository": "org/repo", "account": "tester"})
+			case "linear":
+				built := NewLinearAdapter()
+				built.APIBase = cfg["apiBase"]
+				adapter = built
+				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "organization": linearTestOrg, "team": linearTestTeam, "account": linearTestViewer, "credentialHelper": `["/bin/echo","fixture-token"]`})
 			}
 			if source.ID == "" {
 				diagnostic = "unavailable-source"
@@ -118,7 +134,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			providerCursor := page
 			start := 0
-			if kind == "backlog-md" {
+			if kind == "backlog-md" || kind == "beads" {
 				providerCursor = ""
 				if page != "" {
 					start, _ = strconv.Atoi(page)
@@ -133,7 +149,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				break
 			}
 			end := len(items.Items)
-			if kind == "backlog-md" && end > start+1 {
+			if (kind == "backlog-md" || kind == "beads") && end > start+1 {
 				end = start + 1
 			}
 			wire := make([]any, 0, end-start)
@@ -142,7 +158,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			state := "complete"
 			var next any
-			if kind == "backlog-md" && end < len(items.Items) {
+			if (kind == "backlog-md" || kind == "beads") && end < len(items.Items) {
 				state, next = "partial", strconv.Itoa(end)
 			} else if items.NextCursor != "" {
 				state, next = "partial", items.NextCursor
@@ -178,6 +194,15 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 					return
 				} // A stale precondition must never dispatch a mutation.
 				if diagnostic, ok := err.(BacklogDiagnostic); !ok || diagnostic.Code != "conflict" {
+					return
+				}
+			case *BeadsAdapter:
+				intent.Effects = []string{"dolt-commit:deliberately-stale"}
+				_, err := (&BeadsWriteAdapter{BeadsAdapter: built, Me: "tester"}).Write(context.Background(), intent)
+				if err == nil {
+					return
+				}
+				if diagnostic, ok := err.(BeadsDiagnostic); !ok || diagnostic.Code != "conflict" {
 					return
 				}
 			case *GitHubAdapter:
@@ -302,7 +327,13 @@ func conformanceItem(item Summary, body string) map[string]any {
 
 func TestAdapterConformance(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"backlog-md", "github", "sample"} {
+	kinds := []string{"backlog-md", "github", "linear", "sample"}
+	if binary, err := exec.LookPath("bd"); err == nil {
+		if version, err := exec.Command(binary, "version").Output(); err == nil && strings.HasPrefix(string(version), "bd version 1.3.0 (") {
+			kinds = append(kinds, "beads")
+		}
+	}
+	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			_, paths := testkit.Home(t)
@@ -319,6 +350,45 @@ func TestAdapterConformance(t *testing.T) {
 			} else if kind == "backlog-md" {
 				root, binary := fakeBacklog(t)
 				fixture["checkout"], fixture["binary"] = root, binary
+			} else if kind == "beads" {
+				binary, _, source := beadsFixture(t)
+				fixture["checkout"], fixture["binary"] = source.Locator, binary
+				itemID = beadsCommand(t, binary, source.Locator, "create", "First", "--silent")
+				beadsCommand(t, binary, source.Locator, "create", "Second", "--silent")
+			} else if kind == "linear" {
+				itemID = linearTestIssue
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						Query     string
+						Variables map[string]json.RawMessage
+					}
+					_ = json.NewDecoder(r.Body).Decode(&req)
+					var data any
+					switch req.Query {
+					case linearIdentityQuery:
+						data = linearIdentityFixture(req.Query)
+					case linearListQuery:
+						first := string(req.Variables["after"]) == "null"
+						id := linearTestBlocker
+						if first {
+							id = linearTestIssue
+						}
+						data = map[string]any{"team": map[string]any{"id": linearTestTeam, "issues": map[string]any{"nodes": []any{linearIssueFixture(id, "unstarted")}, "pageInfo": map[string]any{"hasNextPage": first, "endCursor": "next"}}}}
+					case linearDetailQuery:
+						data = map[string]any{"issue": linearIssueFixture(linearTestIssue, "unstarted")}
+					case linearRelationsQuery:
+						data = map[string]any{"issue": map[string]any{"id": linearTestIssue, "team": map[string]any{"id": linearTestTeam}, "relations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}}}
+					case linearInverseQuery:
+						data = map[string]any{"issue": map[string]any{"id": linearTestIssue, "team": map[string]any{"id": linearTestTeam}, "inverseRelations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}}}
+					}
+					if data == nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+				}))
+				t.Cleanup(server.Close)
+				fixture["apiBase"] = server.URL
 			} else {
 				itemID = "1"
 				built, server := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -361,13 +431,18 @@ func TestAdapterConformance(t *testing.T) {
 			if err != nil || check.Verdict != "pass" {
 				t.Fatalf("shared conformance checks: %+v %v", check, err)
 			}
-			configJSON, err := json.Marshal(fixture)
-			if err != nil {
-				t.Fatal(err)
-			}
-			command, err := testkit.RunTestProcess("adapter-cli", 15*time.Second, executable, string(configJSON))
-			if err != nil || !strings.Contains(string(command.Stdout), `"verdict":"pass"`) {
-				t.Fatalf("%s fixture did not pass the shipped CLI: %v: %s %s", kind, err, command.Stdout, command.Stderr)
+			// The Beads fixture exercises the shared host above and the shipped
+			// queue CLI separately; duplicating its Dolt subprocesses here can
+			// exceed the external CLI's fixed process budget.
+			if kind != "beads" {
+				configJSON, err := json.Marshal(fixture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				command, err := testkit.RunTestProcess("adapter-cli", 15*time.Second, executable, string(configJSON))
+				if err != nil || !strings.Contains(string(command.Stdout), `"verdict":"pass"`) {
+					t.Fatalf("%s fixture did not pass the shipped CLI: %v: %s %s", kind, err, command.Stdout, command.Stderr)
+				}
 			}
 			for _, id := range []string{"initialize", "resolve", "capabilities", "list-budget", "read-items", "dependencies", "host-output-guards"} {
 				found := false
@@ -421,6 +496,9 @@ func TestAdapterConformance(t *testing.T) {
 			if _, err := adapter.ReadDependencies(context.Background(), source, ref, "", 100); err != nil {
 				t.Fatal(err)
 			}
+			if kind == "linear" {
+				return
+			} // read-only stage: no mutation/receipt contract until TASK-142.7
 			process, err := adapter.validatedProcess(source)
 			if err != nil {
 				t.Fatal(err)

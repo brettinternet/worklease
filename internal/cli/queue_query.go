@@ -120,15 +120,8 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				continue
 			}
 			opts := map[string]string{"id": configured.ID}
-			if configured.Adapter == "beads" {
-				opts["completeStatus"] = configured.Workflow["complete"]
-			}
 			if configured.Adapter != "external" {
-				opts["checkout"] = configured.Checkout
-				opts["host"] = configured.Host
-				opts["repository"] = configured.Repository
-				opts["account"] = configured.Account
-				opts["allowGitNetwork"] = fmt.Sprint(configured.AllowGitNetwork)
+				opts = queueSourceOptions(configured)
 			}
 			source, e := adapter.Resolve(ctx, opts)
 			if e != nil {
@@ -155,6 +148,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		}
 		defer index.Close()
 		loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
+		loader.LinearSync = queueindex.LinearSyncStore{Index: index, Registry: registry}
 		maxAge := time.Duration(0)
 		if cmd.IsSet("max-age") {
 			maxAge = cmd.Duration("max-age")
@@ -570,7 +564,7 @@ func isQueueMe(cfg config.QueueConfig, item queue.Item, owner string) bool {
 				return strings.EqualFold(account, owner)
 			}
 		}
-		if source.Adapter == "external" {
+		if source.Adapter == "external" || source.Adapter == "linear" {
 			return strings.EqualFold(source.Account, owner)
 		}
 		if source.Adapter == "beads" {
