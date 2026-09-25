@@ -114,18 +114,35 @@ func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
 	for _, adapter := range []string{"linear", "jira-cloud"} {
 		t.Run(adapter, func(t *testing.T) {
 			t.Parallel()
-			base := "version: 1\nme: {}\nsources:\n  - id: remote\n    adapter: " + adapter + "\n    account: alice\n    credentialHelper: [/usr/bin/credential-helper, --token]\nviews:\n  - name: Ready\n    authority: local\n    sources: [remote]\n    filter: {}\n"
+			account := "alice"
+			scope := ""
+			if adapter == "linear" {
+				account = "72088203-6bc7-4a63-a71b-22048b88da64"
+				scope = "    organization: 0bfebf80-70af-4eca-9e39-2029a01f5b77\n    team: d19193f6-0501-485b-93af-65e829c2039d\n"
+			}
+			base := "version: 1\nme: {}\nsources:\n  - id: remote\n    adapter: " + adapter + "\n    account: " + account + "\n" + scope + "    credentialHelper: [/usr/bin/credential-helper, --token]\nviews:\n  - name: Ready\n    authority: local\n    sources: [remote]\n    filter: {}\n"
 			cfg, err := parseQueue([]byte(base), nil, nil)
 			if err != nil || len(cfg.Sources) != 1 || len(cfg.Sources[0].CredentialHelper) != 2 {
 				t.Fatalf("valid helper: %+v %v", cfg, err)
+			}
+			if adapter == "linear" {
+				validProject := strings.Replace(base, "    team: ", "    project: 9f3b2707-b6d8-456d-9079-32f60cd33474\n    team: ", 1)
+				if _, err := parseQueue([]byte(validProject), nil, nil); err != nil {
+					t.Fatalf("valid project scope: %v", err)
+				}
+				for _, invalid := range []string{strings.Replace(base, "    organization: "+"0bfebf80-70af-4eca-9e39-2029a01f5b77\n", "", 1), strings.Replace(base, "    team: d19193f6-0501-485b-93af-65e829c2039d", "    team: TEST", 1)} {
+					if _, err := parseQueue([]byte(invalid), nil, nil); err == nil {
+						t.Fatal("accepted missing or mutable Linear identity")
+					}
+				}
 			}
 			for _, tc := range []struct{ replace, with, want string }{
 				{"[/usr/bin/credential-helper, --token]", "[credential-helper]", "credentialHelper"},
 				{"[/usr/bin/credential-helper, --token]", "[]", "credentialHelper"},
 				{"[/usr/bin/credential-helper, --token]", "plain-token", "queue.yaml"},
 				{"    credentialHelper: [/usr/bin/credential-helper, --token]\n", "", "credentialHelper"},
-				{"    account: alice\n", "", "account"},
-				{"    account: alice\n", "    account: alice\n    claims: {policy: linear, source: org}\n", "claims and writes"},
+				{"    account: " + account + "\n", "", "account"},
+				{"    account: " + account + "\n", "    account: " + account + "\n    claims: {policy: linear, source: org}\n", "claims and writes"},
 			} {
 				_, err := parseQueue([]byte(strings.Replace(base, tc.replace, tc.with, 1)), nil, nil)
 				if err == nil || !strings.Contains(err.Error(), tc.want) {

@@ -333,7 +333,7 @@ type Adapter interface {
 type Registry struct{ adapters map[string]Adapter }
 
 func NewRegistry() *Registry {
-	return &Registry{adapters: map[string]Adapter{"backlog-md": NewBacklogAdapter(), "beads": NewBeadsAdapter(), "github": NewGitHubAdapter()}}
+	return &Registry{adapters: map[string]Adapter{"backlog-md": NewBacklogAdapter(), "beads": NewBeadsAdapter(), "github": NewGitHubAdapter(), "linear": NewLinearAdapter()}}
 }
 func (r *Registry) Register(name string, a Adapter) error {
 	if strings.TrimSpace(name) == "" || a == nil {
