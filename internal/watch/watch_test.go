@@ -290,14 +290,17 @@ func TestWaitTimeoutContinuationDoesNotSkipLateEvent(t *testing.T) {
 	filter := ledger.ResourcesFilter([]string{"r"})
 	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", filter, 0)
 	writeErr := make(chan error, 1)
+	// PollInterval exceeds Timeout, so Wait scans once at the start and never
+	// again. An event written after that scan is late; one written after the
+	// deadline still exercises the continuation.
 	go func() {
-		time.Sleep(140 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 		writeErr <- st.Write(ctx, func(tx *store.Tx) error {
 			_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("8", 32)})
 			return err
 		})
 	}()
-	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 180 * time.Millisecond, PollInterval: 100 * time.Millisecond})
+	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 300 * time.Millisecond, PollInterval: MaxPoll})
 	if err != nil {
 		t.Fatal(err)
 	}
