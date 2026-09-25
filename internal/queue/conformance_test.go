@@ -361,6 +361,14 @@ func TestAdapterConformance(t *testing.T) {
 			if err != nil || check.Verdict != "pass" {
 				t.Fatalf("shared conformance checks: %+v %v", check, err)
 			}
+			configJSON, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			command, err := testkit.RunTestProcess("adapter-cli", 15*time.Second, executable, string(configJSON))
+			if err != nil || !strings.Contains(string(command.Stdout), `"verdict":"pass"`) {
+				t.Fatalf("%s fixture did not pass the shipped CLI: %v: %s %s", kind, err, command.Stdout, command.Stderr)
+			}
 			for _, id := range []string{"initialize", "resolve", "capabilities", "list-budget", "read-items", "dependencies", "host-output-guards"} {
 				found := false
 				for _, entry := range check.Checks {
