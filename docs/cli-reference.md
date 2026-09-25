@@ -16,6 +16,7 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
+worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--apply] [--json]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
 worklease queue authority-id --json
 worklease queue --view NAME identity confirm --source SOURCE --acknowledge

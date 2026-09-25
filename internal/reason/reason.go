@@ -41,6 +41,8 @@ const (
 	ReasonConfigInvalid                  = "config-invalid"
 	ReasonConfigMissing                  = "config-missing"
 	ReasonNoSourcesConfigured            = "no-sources-configured"
+	ReasonMeRequired                     = "me-required"
+	ReasonBindingMigrationRequired       = "binding-migration-required"
 	ReasonClaimSelectionMissing          = "claim-selection-missing"
 	ReasonResourceInputConflict          = "resource-input-conflict"
 	ReasonInvalidResource                = "invalid-resource"
@@ -154,7 +156,7 @@ var registry = map[string]int{
 	ReasonOperationRequestMismatch: ExitLedger, ReasonUnknownOutcome: ExitLedger, ReasonExpectedHashMismatch: ExitLedger,
 	ReasonReconciliationConflict: ExitLedger, ReasonOperationAmbiguous: ExitLedger, ReasonOperationNotFound: ExitLedger,
 	ReasonReplayExpired:   ExitLedger,
-	ReasonInvalidArgument: ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid,
+	ReasonInvalidArgument: ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid, ReasonMeRequired: ExitInvalid, ReasonBindingMigrationRequired: ExitInvalid,
 	ReasonClaimSelectionMissing: ExitInvalid, ReasonResourceInputConflict: ExitInvalid, ReasonInvalidResource: ExitInvalid,
 	ReasonUnknownPolicy: ExitInvalid, ReasonInvalidPath: ExitInvalid, ReasonHandleUnsafe: ExitInvalid,
 	ReasonHandleMalformed: ExitInvalid, ReasonCredentialUnsafe: ExitInvalid, ReasonCredentialMalformed: ExitInvalid,

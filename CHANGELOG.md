@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `worklease queue init` previews detected source configuration and writes owner-private `queue.yaml` with `--apply`, including safe initial local identity confirmation.
+
 ## 1.7.3 - 2026-09-19
 
 ### Fixed

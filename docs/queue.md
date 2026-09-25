@@ -1,5 +1,16 @@
 # Work queue configuration
 
+Start in a Backlog.md checkout or a checkout with a GitHub `origin` remote:
+
+```sh
+worklease queue init          # preview detected facts, their origins, and exact queue.yaml
+worklease queue init --apply  # write owner-private configuration
+```
+
+Use `--checkout PATH` for another repository, `--adapter backlog-md|github` to override detection, `--source-id ID` to choose an ID, `--me @name` when Backlog.md has no single default assignee, `--portable-claims SOURCE` to opt into cross-host claims, and `--authority NAME` for a trusted remote profile. `worklease queue --view NAME init` selects a different view. Re-running adds a source to the selected view or reports an already configured checkout. Only new host-local sources on the local authority are automatically identity-confirmed; for other bindings, complete the migration checklist below and run the printed `queue identity confirm` command.
+
+## Hand-written YAML reference
+
 The read-only queue uses owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. No repository configuration is read. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.
 
 ```yaml

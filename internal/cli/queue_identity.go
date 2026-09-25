@@ -63,7 +63,7 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	if configured == nil {
 		return reason.Invalid("unknown queue source")
 	}
-	selected, authority, err := queueAuthorityForView(ctx, cmd, view.Authority)
+	selected, authority, err := queueAuthorityForClaim(ctx, cmd, view.Authority)
 	if err != nil {
 		return err
 	}

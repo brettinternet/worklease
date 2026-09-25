@@ -401,7 +401,9 @@ func EnsureOwnerPrivateDir(path string) error {
 		}
 		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if errors.Is(e, unix.ENOENT) {
-			if e = unix.Mkdirat(fd, part, 0700); e == nil {
+			// Another owner process may create this component concurrently.
+			// Open and validate it below even when mkdir reports EEXIST.
+			if e = unix.Mkdirat(fd, part, 0700); e == nil || errors.Is(e, unix.EEXIST) {
 				next, e = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			}
 		}

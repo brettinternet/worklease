@@ -123,7 +123,7 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 	}
 	data, err := handle.ReadOwnerPrivate(path, 1<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; create owner-private "+path+" (see https://github.com/brettinternet/worklease/blob/main/docs/queue.md)")
+		return QueueConfig{}, reason.New(reason.ReasonNoSourcesConfigured, "no queue sources configured; run worklease queue init to preview owner-private "+path+" (see https://github.com/brettinternet/worklease/blob/main/docs/queue.md)")
 	}
 	if err != nil {
 		return QueueConfig{}, fmt.Errorf("queue.yaml cannot be read safely: %w", err)
@@ -137,6 +137,16 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 		return QueueConfig{}, reason.New(reason.ReasonConfigInvalid, err.Error())
 	}
 	return cfg, err
+}
+
+// ValidateQueue applies the same strict validation as LoadQueue to proposed bytes.
+func ValidateQueue(data []byte, env func(string) string) (QueueConfig, error) {
+	path := QueuePath(env)
+	profiles, _, err := LoadProfiles(ProfilePaths{Profiles: filepath.Join(filepath.Dir(path), "profiles.yaml")})
+	if err != nil {
+		return QueueConfig{}, fmt.Errorf("queue authority profiles: %w", err)
+	}
+	return parseQueue(data, env, profiles)
 }
 
 func parseQueue(data []byte, env func(string) string, profiles map[string]Profile) (QueueConfig, error) {

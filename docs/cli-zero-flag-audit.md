@@ -23,6 +23,7 @@ local default, or reports the missing required input without guessing.
 | `watch` | Report missing wait condition/resource or cursor | Requires explicit wait target |
 | `gc` | Preview retention | Never applies without `--apply` |
 | `doctor` | Run read-only diagnostics | No state mutation |
+| `queue init` | Preview detected queue configuration | Reads provider facts; writes only with `--apply` |
 | `queue query` | Report missing required view | Requires a configured view; read-only |
 | `queue next` | Report missing required view | Requires a configured view and complete scope; selects without acquiring |
 | `queue recovery retry` | Reject missing operation ID or original handle | Reads the provider result without dispatching another write |
