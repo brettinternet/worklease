@@ -4,9 +4,10 @@ title: 'Work queue S8: evidence-driven additions intake'
 status: Done
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-25 16:41'
+updated_date: '2026-09-25 23:07'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -99,6 +100,8 @@ TASK-143.2 (host-resolved credentials for external adapters) should depend on th
 Correction: TASK-143.2 now depends on TASK-142.2 (credential helper exists).
 
 Post-merge main validation at 452777a: mise run lint, format-check, test, typecheck, doc-test all passed. Remaining work belongs to TASK-142.1 (securely obtain offered Linear API key and probe dedicated test team), then TASK-142.2–.7; Jira TASK-139 awaits the helper. No intake blocker.
+
+Post-completion review: D29–D33 and §16/§17 S8 decisions present; accepted additions TASK-139/140/141/142 exist with criteria; GitLab, native-authority study, and source service deferred. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

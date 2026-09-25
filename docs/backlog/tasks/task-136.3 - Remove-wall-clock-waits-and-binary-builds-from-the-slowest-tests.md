@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-25 06:06'
-labels: []
+updated_date: '2026-09-25 23:07'
+labels:
+  - reviewed
 dependencies: []
 parent_task_id: TASK-136
 priority: medium
@@ -54,6 +55,8 @@ Per-package seconds from go test -count=1 -json ./... before -> after (2026-09-2
 One-time deliberate break checks: made queueindex.open return success despite migration error; TestBusyOpenDoesNotRebuildLiveIndex failed with second Open unexpectedly succeeded under write lock. Made MCP status reject lease references; moved TestReferencesCrossServerPendingRecoveryAndRestartHold failed on second-server reference. Both mutations reverted, focused tests and full suite passed afterward. CLI/MCP handle test 0.10s, queueindex busy Open 0.12s. Local MCP and ledger expiry tests set stored expires_at into the past instead of sleeping. Remote MCP expiry still waits ~1.1s: MCP acquire enforces minimum 1s TTL (internal/mcp/mcp.go); remote hosted authority owns its clock, so a client test cannot advance it. Watch tests use 100-180ms timeouts and a 140ms late event; production MinPoll remains 50ms. Queueindex production busy_timeout remains 10000ms; only the locked test uses 100ms.
 
 Review: one bounded item-scoped pass over the diff found no remaining concrete defects. Gates passed on code commit 35523e6: mise run lint, format-check, test, typecheck, hooks; go test -race -count=3 for changed CLI, MCP expiry, queueindex and watch cases; fresh go test -count=1 -json ./... before/after. Committed 35523e6 and fast-forward merged into main; Worktrunk worktree and branch removed after verifying receipt and same-commit integration. No push.
+
+Post-completion review (b33ff23): TestWaitTimeoutContinuationDoesNotSkipLateEvent left only 40 ms between the last scan and the injected event, so a delayed Wait start could observe it early; now PollInterval exceeds Timeout (one scan) with a 250 ms write. TestLockIsSingleFlightAcrossProcesses busy-spun with a 2 s helper-start deadline and leaked blocked helpers on failure; now polls every 10 ms, allows 20 s, and kills helpers in cleanup. Race count=3 and all gates passed. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

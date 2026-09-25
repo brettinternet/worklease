@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-25 11:05'
-labels: []
+updated_date: '2026-09-25 23:07'
+labels:
+  - reviewed
 dependencies:
   - TASK-136.1
 parent_task_id: TASK-136
@@ -54,6 +55,8 @@ Baseline on this machine (worktree, go test -count=1 ./internal/cli): real 234.2
 Parallelized 30 isolated/pure CLI and MCP tests. Same-machine CLI post-change wall time: 224.39 s (package 221.874 s) versus baseline 234.23 s (package 228.549 s), a 4.2% wall-time improvement. Conservative direct/helper audit flagged 103 CLI tests accounting for about 209 s of the measured test duration as environment-mutating and necessarily serial. User approved replacing the unattainable 40% criterion and tracking isolation separately. Race count=3 passed with timeout 30m (CLI 872.605 s, MCP 26.927 s); default 10m Go test timeout was insufficient. lint, format-check, test, typecheck and staged hooks passed.
 
 Source review found no process-global environment, directory, package hook, or shared fixture mutation in the 30 newly parallel tests; global-mutating tests remain serial. Commit 554b79d, merged to main as 87df6ec. Serial-test isolation is tracked by TASK-136.7. A first pre-commit run encountered an unrelated queue test provider-read timeout under load; its targeted race count=3 and subsequent complete hooks and commit hooks passed.
+
+Post-completion review: the 30 parallel CLI/MCP tests touch no process environment, directory, or package-level state (only remote_test.go uses t.Setenv and stays serial). No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
