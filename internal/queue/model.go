@@ -229,11 +229,15 @@ type SummaryPage struct {
 	Observation    Observation
 	Incremental    bool
 	Reconciliation bool
+	// TraversalComplete means the bounded provider window ended without an error;
+	// it does not imply complete membership or visibility of the source.
+	TraversalComplete bool
 }
 type SyncCheckpoint struct {
 	Cursor                   string
 	CommittedWatermark       time.Time
 	ScanWatermark            time.Time
+	RelationOffset           int
 	ReconciliationCursor     string
 	ReconciliationGeneration int64
 	ReconciliationStarted    time.Time
@@ -247,6 +251,13 @@ type GitHubSyncStore interface {
 	RestartGitHubSync(context.Context, Source, bool) error
 	WithholdGitHubItem(context.Context, Source, Ref) error
 	WithholdGitHubSource(context.Context, Source) error
+}
+type LinearSyncStore interface {
+	LockLinearSync(context.Context, Source) (func(), error)
+	LoadLinearSync(context.Context, Source) (SyncCheckpoint, error)
+	CommitLinearSyncPage(context.Context, Source, []Item, string, time.Time, bool) error
+	RestartLinearSync(context.Context, Source) error
+	AdvanceLinearRelations(context.Context, Source, int) error
 }
 type IncrementalListAdapter interface {
 	ListIncremental(context.Context, Source, Query, string, time.Time, time.Time) (SummaryPage, error)

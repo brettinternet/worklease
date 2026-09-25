@@ -758,6 +758,34 @@ func TestDamagedGenerationTwoSchemaIsRebuilt(t *testing.T) {
 	}
 }
 
+func TestLinearSyncSchemaMigratesFromSeven(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	idx, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = idx.db.ExecContext(ctx, `DROP TABLE linear_sync; PRAGMA user_version=7`); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	var version int
+	if err = idx.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != SchemaGeneration {
+		t.Fatalf("schema generation: %d %v", version, err)
+	}
+	if _, err = idx.db.ExecContext(ctx, `SELECT relation_offset FROM linear_sync`); err != nil {
+		t.Fatalf("missing Linear sync table: %v", err)
+	}
+}
+
 func TestCorruptOrUnknownSchemaRebuiltOnce(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := Open(context.Background(), dir)

@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -159,6 +160,7 @@ type Loader struct {
 	Registry       *Registry
 	Store          *Store
 	GitHubSync     GitHubSyncStore
+	LinearSync     LinearSyncStore
 	Query          Query
 	Fields         []string
 	Budget         int
@@ -371,11 +373,12 @@ func sendSnapshot(ctx context.Context, ch chan<- Snapshot, s Snapshot) {
 	case <-ctx.Done():
 	}
 }
-func (l *Loader) publish(ctx context.Context, source string, generation uint64, update func(*Snapshot), out chan<- Snapshot) {
+func (l *Loader) publish(ctx context.Context, source string, generation uint64, update func(*Snapshot), out chan<- Snapshot) bool {
 	snap, published := l.Store.publishComputed(update, true, func() bool { return l.current(source, generation) })
 	if published {
 		sendSnapshot(ctx, out, snap)
 	}
+	return published
 }
 func (l *Loader) failSource(ctx context.Context, source string, generation uint64, reason string, out chan<- Snapshot) {
 	l.failSourceDiagnostic(ctx, source, generation, reason, time.Time{}, out)
@@ -414,7 +417,7 @@ func (l *Loader) withholdSource(ctx context.Context, source Source, generation u
 	l.generation[source.ID]++
 	withholdGeneration := l.generation[source.ID]
 	l.mu.Unlock()
-	if l.GitHubSync != nil {
+	if source.Adapter == "github" && l.GitHubSync != nil {
 		if err := l.GitHubSync.WithholdGitHubSource(ctx, source); err != nil {
 			reason = "github-access-unverified-payload-purge-failed"
 		} else if err := l.GitHubSync.RestartGitHubSync(ctx, source, true); err != nil {
@@ -431,6 +434,14 @@ func (l *Loader) withholdSource(ctx context.Context, source Source, generation u
 	}, out)
 }
 func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, generation uint64, out chan<- Snapshot) {
+	if source.Adapter == "linear" && l.LinearSync != nil {
+		release, err := l.LinearSync.LockLinearSync(ctx, source)
+		if err != nil {
+			l.failSource(ctx, source.ID, generation, "sync-lock-unavailable", out)
+			return
+		}
+		defer release()
+	}
 	if source.Adapter == "github" && l.GitHubSync != nil {
 		release, err := l.GitHubSync.LockGitHubSync(ctx, source)
 		if err != nil {
@@ -445,6 +456,39 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 	var reconcile bool
 	incrementalAdapter, supportsIncremental := a.(IncrementalListAdapter)
 	useIncremental := false
+	if source.Adapter == "linear" && supportsIncremental && l.LinearSync != nil {
+		var err error
+		checkpoint, err = l.LinearSync.LoadLinearSync(ctx, source)
+		if err != nil {
+			l.failSource(ctx, source.ID, generation, "sync-state-unavailable", out)
+			return
+		}
+		// A fresh process has no access-verified projection. Its first scan
+		// must enumerate from the start; indexed payloads are never seeded.
+		projection := false
+		for _, item := range l.Store.Current().Items {
+			if item.Ref.SourceID == source.ID {
+				projection = true
+				break
+			}
+		}
+		if !projection && (checkpoint.Cursor != "" || !checkpoint.CommittedWatermark.IsZero()) {
+			if err := l.LinearSync.RestartLinearSync(ctx, source); err != nil {
+				l.failSource(ctx, source.ID, generation, "sync-state-unavailable", out)
+				return
+			}
+			checkpoint.Cursor = ""
+			checkpoint.CommittedWatermark = time.Time{}
+			checkpoint.ScanWatermark = time.Time{}
+		}
+		cursor = checkpoint.Cursor
+		committedWatermark = checkpoint.CommittedWatermark
+		scanWatermark = checkpoint.ScanWatermark
+		useIncremental = projection && !committedWatermark.IsZero()
+		if cursor == "" || scanWatermark.IsZero() {
+			scanWatermark = time.Now().UTC()
+		}
+	}
 	if source.Adapter == "github" && supportsIncremental && l.GitHubSync != nil {
 		var err error
 		checkpoint, err = l.GitHubSync.LoadGitHubSync(ctx, source)
@@ -501,6 +545,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 	seenCursors := map[string]bool{}
 	pagesRead := 0
 	scanComplete := true
+	windowFinished := false
 	limit := l.HydrationLimit
 	if limit < 1 {
 		limit = 1
@@ -544,6 +589,13 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			page, err = a.List(ctx, source, l.Query, cursor)
 		}
 		if err != nil {
+			if linearSourceAccessLost(err) || linearItemUnavailable(err) {
+				l.withholdSource(ctx, source, generation, "linear-access-unverified", out)
+				break
+			}
+			if diagnostic, ok := err.(LinearDiagnostic); ok && diagnostic.Code == "invalid-cursor" && l.LinearSync != nil {
+				_ = l.LinearSync.RestartLinearSync(ctx, source)
+			}
 			if diagnostic, ok := err.(GitHubDiagnostic); ok && diagnostic.Code == "invalid-cursor" && source.Adapter == "github" && l.GitHubSync != nil {
 				_ = l.GitHubSync.RestartGitHubSync(ctx, source, reconcile)
 			}
@@ -580,6 +632,12 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			seenRefs[key] = true
 			refs = append(refs, summary.Ref)
 			item := Item{Summary: summary, ReadOutcome: "summary-only", DependenciesKnown: false, Observation: page.Observation, Coverage: coverage}
+			if source.Adapter == "linear" {
+				if previous, ok := l.Store.Current().Items[key]; ok && !observationMismatch(previous.Observation, page.Observation) {
+					item.Relationships = previous.Relationships // hints, not a newly complete closure
+					item.Closure = CoverageUnknown
+				}
+			}
 			if cached, ok := a.(interface {
 				CachedEdges(Source, Ref) (DependencyPage, bool)
 			}); ok {
@@ -647,7 +705,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 				break
 			}
 		}
-		l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+		published := l.publish(ctx, source.ID, generation, func(s *Snapshot) {
 			if cursor == "" {
 				for key, item := range s.Items {
 					if item.Ref.SourceID == source.ID {
@@ -691,6 +749,19 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 			s.Sources[source.ID] = coverage
 		}, out)
+		if !published {
+			break // superseded before publication: do not persist unseen pages
+		}
+		if source.Adapter == "linear" && l.LinearSync != nil {
+			pageItems := make([]Item, 0, len(items))
+			for _, item := range items {
+				pageItems = append(pageItems, item)
+			}
+			if err := l.LinearSync.CommitLinearSyncPage(ctx, source, pageItems, page.NextCursor, scanWatermark, page.TraversalComplete); err != nil {
+				l.failSource(ctx, source.ID, generation, "sync-state-write-failed", out)
+				break
+			}
+		}
 		// Expensive per-item providers hydrate only explicitly requested details.
 		_, onDemand := a.(interface{ OnDemandDetails() })
 		batchHydration := isBatchHydrator(a)
@@ -718,6 +789,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		}
 		cursor = page.NextCursor
 		if cursor == "" {
+			windowFinished = page.TraversalComplete
 			complete := scanComplete && page.Coverage.State == CoverageComplete
 			if complete && (!page.Incremental || page.Reconciliation) {
 				coverage.State = CoverageComplete
@@ -762,6 +834,12 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			break
 		}
 		seenCursors[cursor] = true
+		if source.Adapter == "linear" && pagesRead >= githubPagesPerRefresh {
+			coverage.State = CoveragePartial
+			coverage.Reason = "linear-page-budget-reached"
+			l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Sources[source.ID] = coverage }, out)
+			break
+		}
 		if source.Adapter == "github" && pagesRead >= githubPagesPerRefresh {
 			coverage.State = CoveragePartial
 			coverage.Reason = "github-page-budget-reached"
@@ -771,6 +849,34 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 	}
 	close(jobs)
 	workers.Wait()
+	// Relation add/remove and archive need not update the source endpoint.
+	// Sweep known issues independently of the updatedAt window, in bounded
+	// round-robin batches across refreshes. Failed reads stay unknown rather
+	// than replacing a complete closure with partial graph evidence.
+	if source.Adapter == "linear" && l.LinearSync != nil && windowFinished && ctx.Err() == nil && l.current(source.ID, generation) {
+		items := l.Store.Current().Items
+		keys := make([]string, 0, len(items))
+		for key, item := range items {
+			if item.Ref.SourceID == source.ID {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		if len(keys) != 0 {
+			const relationSweepBudget = 50
+			count := min(relationSweepBudget, len(keys))
+			start := checkpoint.RelationOffset % len(keys)
+			for n := range count {
+				item := items[keys[(start+n)%len(keys)]]
+				if !seenRefs[item.Ref.Key()] && ctx.Err() == nil && l.current(source.ID, generation) {
+					l.hydrateItem(ctx, a, source, generation, item.Ref, item, out)
+				}
+			}
+			if ctx.Err() == nil && l.current(source.ID, generation) {
+				_ = l.LinearSync.AdvanceLinearRelations(ctx, source, (start+count)%len(keys))
+			}
+		}
+	}
 }
 func isBatchHydrator(adapter Adapter) bool {
 	_, ok := adapter.(interface{ BatchHydration() })
@@ -795,6 +901,10 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			summary.Fresh = false
 		}
 		if outcome.Err != nil {
+			if linearSourceAccessLost(outcome.Err) {
+				l.withholdSource(ctx, source, generation, "linear-access-unverified", out)
+				return
+			}
 			if githubSourceAccessLost(outcome.Err) {
 				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
 				return
@@ -846,6 +956,15 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			}
 			page, err := a.ReadDependencies(ctx, source, job.ref, cursor, l.Budget)
 			if err != nil {
+				if linearSourceAccessLost(err) {
+					l.withholdSource(ctx, source, generation, "linear-access-unverified", out)
+					return
+				}
+				if linearItemUnavailable(err) {
+					l.publish(ctx, source.ID, generation, func(s *Snapshot) { delete(s.Items, job.ref.Key()) }, out)
+					withheld = true
+					break
+				}
 				if githubAccessLost(err) {
 					if l.GitHubSync != nil {
 						_ = l.GitHubSync.WithholdGitHubItem(ctx, source, job.ref)
@@ -895,6 +1014,10 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			item = &copy
 		}
 		if outcome.Err != nil {
+			if linearSourceAccessLost(outcome.Err) {
+				l.withholdSource(ctx, source, generation, "linear-access-unverified", out)
+				return
+			}
 			if githubSourceAccessLost(outcome.Err) {
 				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
 				return
@@ -967,6 +1090,14 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		}
 		deps, err := a.ReadDependencies(ctx, source, ref, depCursor, l.Budget)
 		if err != nil {
+			if linearSourceAccessLost(err) {
+				l.withholdSource(ctx, source, generation, "linear-access-unverified", out)
+				return
+			}
+			if linearItemUnavailable(err) {
+				l.publish(ctx, source.ID, generation, func(s *Snapshot) { delete(s.Items, ref.Key()) }, out)
+				return
+			}
 			if githubAccessLost(err) {
 				if l.GitHubSync != nil {
 					_ = l.GitHubSync.WithholdGitHubItem(ctx, source, ref)
@@ -1013,6 +1144,13 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		}
 		seenDependencyCursors[depCursor] = true
 	}
+	if !allComplete {
+		// Incomplete relation pagination is not replacement evidence. Keep
+		// previously observed edges as hints, but never call them complete.
+		if old, ok := l.Store.Current().Items[ref.Key()]; ok && len(old.Relationships) > 0 {
+			item.Relationships = old.Relationships
+		}
+	}
 	item.DependenciesKnown = allComplete
 	item.Closure = CoverageUnknown
 	if allComplete {
@@ -1020,6 +1158,21 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 	}
 	item.Fresh = item.Fresh && summary.Fresh
 	l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[ref.Key()] = *item }, out)
+}
+func linearSourceAccessLost(err error) bool {
+	diagnostic, ok := err.(LinearDiagnostic)
+	if !ok {
+		return false
+	}
+	switch diagnostic.Code {
+	case "authentication", "permission-denied", "identity-changed":
+		return true
+	}
+	return false
+}
+func linearItemUnavailable(err error) bool {
+	diagnostic, ok := err.(LinearDiagnostic)
+	return ok && diagnostic.Code == "not-found-or-inaccessible"
 }
 func githubSourceAccessLost(err error) bool {
 	diagnostic, ok := err.(GitHubDiagnostic)
