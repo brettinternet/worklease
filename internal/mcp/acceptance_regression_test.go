@@ -15,6 +15,7 @@ import (
 )
 
 func TestQueuedToolCallWaitsBehindEightAndEOFIsBounded(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "queue-test", PollInterval: 10 * time.Millisecond})
 	if err != nil {
@@ -70,6 +71,7 @@ func TestQueuedToolCallWaitsBehindEightAndEOFIsBounded(t *testing.T) {
 }
 
 func TestDuplicateIDsLegacyNegotiationAndMalformedInput(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home})
 	if err != nil {
@@ -118,6 +120,7 @@ func TestDuplicateIDsLegacyNegotiationAndMalformedInput(t *testing.T) {
 }
 
 func TestOversizedInputAndExactElevenToolSchemas(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home})
 	if err != nil {
@@ -200,6 +203,7 @@ func TestAutomaticHeartbeatHasOneOwnerAndDoesNotResumeAfterRestart(t *testing.T)
 }
 
 func TestEndToEndDiscoveredClientUsesOnlyLeaseReference(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "e2e-client", PollInterval: 10 * time.Millisecond})
 	if err != nil {
@@ -308,6 +312,7 @@ func (c *testClient) close(t *testing.T) {
 }
 
 func TestRejectedCheckpointDoesNotStrandLease(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "checkpoint-test"})
 	if err != nil {

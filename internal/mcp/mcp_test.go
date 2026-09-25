@@ -18,6 +18,7 @@ import (
 )
 
 func TestCallLifecycleAndRedaction(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "test-agent"})
 	if err != nil {
@@ -103,6 +104,7 @@ func TestMCPAcquireSessionDefaultsAndPrecedence(t *testing.T) {
 }
 
 func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "test-agent"})
 	if err != nil {
@@ -202,6 +204,7 @@ func TestMCPArgumentTypesHoldCeilingAndCanonicalInstructions(t *testing.T) {
 }
 
 func TestMCPAcquireFixesHoldDeadlineBeforeWaiting(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "waiter"})
 	if err != nil {
@@ -234,6 +237,7 @@ func TestMCPAcquireFixesHoldDeadlineBeforeWaiting(t *testing.T) {
 }
 
 func TestServeCancellationClosesIdleInputAndBrokenOutput(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home})
 	if err != nil {
@@ -270,6 +274,7 @@ type failWriter struct{}
 func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestStdioNegotiationSurfaceAndProtocolErrors(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home})
 	if err != nil {

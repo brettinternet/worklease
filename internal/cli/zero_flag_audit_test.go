@@ -11,6 +11,7 @@ import (
 )
 
 func TestZeroFlagAuditCoversEveryLeafCommand(t *testing.T) {
+	t.Parallel()
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate repository")
