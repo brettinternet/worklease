@@ -1,0 +1,68 @@
+{
+  "items": [
+    {
+      "id": "sample-1",
+      "title": "Review the sample adapter",
+      "rawStatus": "open",
+      "state": "open",
+      "order": "1",
+      "priority": 1,
+      "providerReady": true,
+      "assignedTo": [],
+      "nativeClaim": "",
+      "updatedAt": "2025-01-02T03:04:05Z",
+      "body": "A static fixture item used to demonstrate read-only adapter responses."
+    },
+    {
+      "id": "sample-2",
+      "title": "Read the protocol contract",
+      "rawStatus": "in-progress",
+      "state": "in-progress",
+      "order": "2",
+      "priority": 2,
+      "providerReady": true,
+      "assignedTo": ["sample-owner"],
+      "nativeClaim": "",
+      "updatedAt": "2025-01-02T03:05:06Z",
+      "body": "A second static fixture item."
+    },
+    {
+      "id": "sample-3",
+      "title": "Publish an authoring guide",
+      "rawStatus": "complete",
+      "state": "complete",
+      "order": "3",
+      "priority": 3,
+      "providerReady": true,
+      "assignedTo": [],
+      "nativeClaim": "",
+      "updatedAt": "2025-01-02T03:06:07Z",
+      "body": "A terminal item used as a dependency prerequisite."
+    }
+  ],
+  "inaccessibleItemIds": ["sample-private"],
+  "dependencies": [
+    {
+      "fromId": "sample-1",
+      "toId": "sample-3",
+      "relationshipType": "dependency",
+      "direction": "prerequisite",
+      "completionCondition": "terminal",
+      "rawOutcome": {"state": "complete"},
+      "interpretation": {"result": "satisfied"},
+      "provenance": "sample-fixture",
+      "providerVersion": "sample-fixture-v1"
+    },
+    {
+      "fromId": "sample-1",
+      "toId": "sample-2",
+      "relationshipType": "parent-child",
+      "direction": "non-blocking",
+      "completionCondition": null,
+      "rawOutcome": {"relationship": "parent-child"},
+      "interpretation": {"note": "hierarchy is not a blocking dependency"},
+      "provenance": "sample-fixture",
+      "providerVersion": "sample-fixture-v1"
+    }
+  ]
+}
