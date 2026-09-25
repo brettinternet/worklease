@@ -78,6 +78,49 @@ func queueExternalRecoveryAdapter(ctx context.Context, intent queue.WriteIntent)
 	return queue.NewExternalWriteAdapter(adapter), configured.Workflow, cleanup, nil
 }
 
+// queueBuiltinRecoveryAdapter resolves the journaled source afresh, because a
+// new process has no resolved binding and read-back must not run against a
+// drifted source.
+func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) (queue.WriteAdapter, error) {
+	if intent.Source.ID == "" || intent.Source.ID != intent.Ref.SourceID {
+		return nil, fmt.Errorf("journaled source identity is invalid")
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	var configured *config.QueueSource
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ID == intent.Source.ID {
+			configured = &cfg.Sources[i]
+			break
+		}
+	}
+	if configured == nil || configured.Adapter != intent.Source.Adapter {
+		return nil, fmt.Errorf("journaled source is no longer configured")
+	}
+	read, ok := queue.NewRegistry().Get(configured.Adapter)
+	if !ok {
+		return nil, fmt.Errorf("write adapter unavailable")
+	}
+	resolved, err := read.Resolve(ctx, map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)})
+	if err != nil {
+		return nil, err
+	}
+	resolved.ID, resolved.Adapter = configured.ID, configured.Adapter
+	if resolved != intent.Source {
+		return nil, fmt.Errorf("source resolution drifted from journaled source")
+	}
+	switch a := read.(type) {
+	case *queue.BacklogAdapter:
+		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: intent.Principal}, nil
+	case *queue.GitHubAdapter:
+		return queue.NewGitHubWriteAdapter(a, true), nil
+	default:
+		return nil, fmt.Errorf("write adapter unavailable")
+	}
+}
+
 func externalRecoveryWorkflowKey(action queue.Action) string {
 	switch action {
 	case queue.ActionStart, queue.ActionResume:
@@ -132,29 +175,18 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 			var workflow map[string]string
 			cleanup := func() {}
 			if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
-				var err error
 				adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
-				if err != nil {
-					return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, "external recovery source is unavailable: "+err.Error()))
-				}
 			} else {
-				registry := queue.NewRegistry()
-				read, ok := registry.Get(record.Intent.Source.Adapter)
-				if !ok {
-					return s.handle(cmd, reason.Invalid("write adapter unavailable"))
-				}
-				switch source := read.(type) {
-				case *queue.BacklogAdapter:
-					adapter = &queue.BacklogWriteAdapter{BacklogAdapter: source, Me: record.Intent.Principal}
-				case *queue.GitHubAdapter:
-					adapter = queue.NewGitHubWriteAdapter(source, true)
-				default:
-					return s.handle(cmd, reason.Invalid("write adapter unavailable"))
-				}
+				adapter, err = queueBuiltinRecoveryAdapter(ctx, record.Intent)
 			}
-			defer cleanup()
-			pipeline := queue.WritePipeline{Journal: journal, Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: cmd.String("handle")}, Workflow: workflow}
-			result, err := pipeline.Recover(ctx, record.Intent.OperationID)
+			result := queue.WriteResult{Outcome: queue.WriteUnknown, ClaimHeld: true}
+			if err != nil {
+				err = fmt.Errorf("recovery source is unavailable: %w", err)
+			} else {
+				defer cleanup()
+				pipeline := queue.WritePipeline{Journal: journal, Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: cmd.String("handle")}, Workflow: workflow}
+				result, err = pipeline.Recover(ctx, record.Intent.OperationID)
+			}
 			if err != nil {
 				return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, fmt.Sprintf("read-back %s; claim held %t; operation %s: %v", result.Outcome, result.ClaimHeld, record.Intent.OperationID, err)).With("result", result).With("operationId", record.Intent.OperationID))
 			}
