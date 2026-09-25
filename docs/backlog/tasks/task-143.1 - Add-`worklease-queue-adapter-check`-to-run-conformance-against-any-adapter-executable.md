@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-25 16:38'
-updated_date: '2026-09-25 18:20'
+updated_date: '2026-09-25 18:21'
 labels:
   - work-queue
   - external-adapter
@@ -51,6 +51,8 @@ The user wants the CLI approached with API-driven design: every command added he
 Implemented external adapter check through the production supervised host without queue/approval/authority writes. Shared checker exercised by built-in Backlog.md, GitHub, and sample fixture tests; CLI Run exercised with sample and failure/usage/redaction cases. Optional cancellation marker fixture observes $/cancelRequest; disposable target gates receipt/readback/unknown probes. Reviewer found six concrete defects (relative path, unauthorized progress, long pagination, independent claim source, cancellation, usage operation), corrected and covered with focused tests. lint, format-check, test, typecheck and focused race count=3 passed.
 
 Objective acceptance: internal/cli TestQueueAdapterCheckSampleWithoutApprovalOrQueueState verifies sample CLI, inline/file config, no queue/approval writes, JSON pass/fail/usage exits; TestQueueAdapterCheckDoesNotEchoAdapterSecrets covers malicious stdout/stderr. internal/queue TestAdapterConformance runs Backlog.md, GitHub and sample fixtures through both shared engine and public CLI; TestAdapterConformanceMutationRequiresExplicitDisposableTarget checks no write without target, receipt/readback/unknown with exactly one dispatch; TestAdapterConformanceDetectsIgnoredCancellation and built-in cancel-marker fixture check notifications; TestAdapterConformanceSkipsUnauthorizedProgress and LargeSourceAndIndependentClaimSource cover authorization and bounded pagination. docs/cli-reference.md and external-adapter-authoring.md specify JSON and exit codes. Review findings corrected; no second general review. Commits: 12c6c94, merge f7e5171, test isolation 9e467b2, CLI fixtures a24a162. Final main gates lint, format-check, test, typecheck, hooks; changed tests race count=3 passed. Remaining blocker: none. Next step: release claim; dependent TASK-143.3 may start.
+
+Delivery confirmed on main: code merge f7e5171, test stability 9e467b2, CLI fixture integration a24a162, task completion 5f81d78. Worktrunk worktree and branch task-143-1-adapter-check removed after confirming merged ancestry; Herdr workspace wQW closed after inspecting its sole shell pane. Claim released (assignee cleared). No remaining blocker or further action for TASK-143.1; next eligible dependent is TASK-143.3.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
