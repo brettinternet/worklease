@@ -15,7 +15,7 @@ Backlog items cite these IDs. Changing a decision means updating this table and 
 | ID | Decision | Basis |
 | --- | --- | --- |
 | D1 | Scope is queue and coordination. Not an agent runtime, autonomous scheduler, or replacement tracker. | Confirmed |
-| D2 | Initial sources are built-in Backlog.md and GitHub Issues adapters. | Confirmed |
+| D2 | Initial sources are built-in Backlog.md and GitHub Issues adapters. Linear and Jira Cloud are accepted S8 additions, not initial sources (§16). | Confirmed initial sources; user requests on 2026-09-25 |
 | D3 | Source adapters run in the client. A remote Worklease authority changes claim coordination only. A separate source service waits for measured need (§15). | Confirmed |
 | D4 | Each actionable scope uses one selected Worklease authority. Provider-native claims are observed, never mirrored, and never become an authority until they pass §9 admission. Neither initial provider exposes one. | Confirmed + evidence |
 | D5 | Assignment is advisory and displayed beside claims. The primitive Claim action never assigns or changes provider state; Start work is a separate, explicit composition (D26). | Design |
@@ -42,6 +42,8 @@ Backlog items cite these IDs. Changing a decision means updating this table and 
 | D26 | Support focused state, assignment, and progress edits, plus additional fields only for demonstrated coordination needs. Explicit Start work revalidates, claims, then performs a configured provider transition with separate outcomes. No cross-system atomicity or implicit assignment. | Product discussion |
 | D27 | Interpret typed, source-qualified hard edges with named completion conditions, provenance and raw outcome alongside interpretation. Legacy `dependencies` retain terminal semantics; hierarchy, related work, and shared-resource contention are not hard prerequisites. Explain action-specific eligibility and parallel-ready groups; do not infer edges or schedule agents. | Generic contract + v1 fixtures |
 | D28 | Agents select and claim in one step. `queue next --claim` (CLI) and `queue_next` with `claim: true` (MCP) walk the `selectNext` order from one snapshot. Each candidate is revalidated and then acquired with the caller's session and no wait. On contention they skip to the next candidate. They hold at most one claim, stop on an uncertain acquire, and never retry in a loop. The caller owns the resulting claim, handle, and heartbeat. `--start` / `start: true` adds the D26 Start work transition with separate outcomes. Provider status such as In Progress is never the lock. | User: concurrent agent loops lost minutes between selection and acquisition |
+| D29 | Accept a built-in Linear Go adapter, using its GraphQL HTTPS API and a user-configured credential-helper argv (token only in memory). Verify `viewer` on credential change and before every write. Use the existing static `linear` resource policy with the organization ID as source and issue UUID as item; team and mutable issue identifier are locators/display only. Serialize requests per organization/account within each client, respecting request and complexity limits. Probe these assumptions before enabling writes. | User request for Linear on 2026-09-25; API behavior still unprobed |
+| D30 | Accept a built-in Jira Cloud adapter using user-configured API-token credentials; defer Jira Data Center and OAuth pending separate evidence. Stable issue identity, write semantics, and limits require a live probe before implementation decisions are finalized. | User request for Jira on 2026-09-25; TASK-139, DRAFT-14 |
 
 ## 3. Evidence
 
@@ -85,6 +87,14 @@ Live probe on 2026-09-23 against the user-approved `brettinternet/worklease` rep
 | The REST issues list includes pull requests. `gh auth token` accepts `--hostname` and `--user`. | Filter out pull requests. Resolve credentials for an explicit account, never the active one. |
 
 GitHub's [API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api) also warn that updated-order pagination moves records between pages and that a 404 can mean missing permission, not deletion. The loading design must account for both. Repository rename, issue transfer, and lost-access behavior were not exercised: the user explicitly prohibited renames, transfers, and permission changes. No GHES instance was provided. These remain unknowns for TASK-128.5; preserve the configured locator, disable claims on identity ambiguity, and never interpret a 404 alone as deletion.
+
+### Linear (S8, probe pending)
+
+The user's 2026-09-25 request for Linear support in a frequently used environment establishes demand, not API behavior. The Linear probe subtask will use a dedicated, user-approved test team and only synthetic issues, cleaning up mutations. It must establish viewer/organization/team IDs, Relay page limits and ordering, `updatedAt` filtering and relation-change behavior, archive/trash/permission-loss visibility, stable identity across team moves, workflow state types, rate and complexity limits, single-assignee behavior, Markdown operation-marker round-trip, and whether native claims exist. Until then, §7 declarations marked unknown are not authorization to claim or write.
+
+### Jira Cloud (S8, probe pending)
+
+The user's 2026-09-25 Jira request establishes demand for Jira Cloud with API tokens (TASK-139); it does not establish endpoint behavior. A live probe on a user-approved test project will establish search, links, moves, visibility, transitions, rate limits, ADF markers, and native-claim semantics before capabilities are declared. Jira Data Center and OAuth are not accepted by this intake.
 
 ### Worklease authority (commit 9ca754c)
 
@@ -217,19 +227,19 @@ Unknown never means allowed. Read-only discovery never probes a capability by at
 
 Initial declarations, from §3 evidence:
 
-| Group | Backlog.md 1.52 | GitHub Issues (github.com) |
-| --- | --- | --- |
-| Identity | Task ID in one explicit checkout; host-local key or D12 binding; renumbered by duplicate repair | `owner/repo` and number; node IDs retained; rename and transfer detected |
-| Discovery | Complete list in one call; no cursor; exact observed total | GraphQL cursor pages of 100; observed `totalCount`, not a multi-page snapshot; pull requests excluded |
-| Dependencies | Intra-project edges per task view; closure per item; provider-reported `isReady` | `blockedBy`/`blocking` per item with totals; cross-repository references; sub-issues are hierarchy only |
-| State | Configured statuses; terminal mapping from caller config | Open or closed with `stateReason`; Projects status deferred |
-| Progress | Append notes or comment; criterion-index edits exist but queue writes are initially disabled (§8) | Append comment |
-| Assignment | Multiple, replace-all only | Multiple, add and remove endpoints |
-| Native claims | Not exposed | Not exposed |
-| Mutation | Unconditional CLI edits | Unconditional; no conditional unsafe methods |
-| Synchronization | Watch stream or filesystem invalidation; minute timestamps | `since` filter, conditional-GET polling; no client webhooks |
-| Effects | Optional Git fetch, commit, and hooks per project config | Notifications to watchers |
-| Authentication | OS file access | `gh` helper for an explicit host and account |
+| Group | Backlog.md 1.52 | GitHub Issues (github.com) | Linear (S8, pending probe) |
+| --- | --- | --- | --- |
+| Identity | Task ID in one explicit checkout; host-local key or D12 binding; renumbered by duplicate repair | `owner/repo` and number; node IDs retained; rename and transfer detected | Proposed organization ID + issue UUID; move behavior unverified |
+| Discovery | Complete list in one call; no cursor; exact observed total | GraphQL cursor pages of 100; observed `totalCount`, not a multi-page snapshot; pull requests excluded | Relay pagination limits/order and filters unknown |
+| Dependencies | Intra-project edges per task view; closure per item; provider-reported `isReady` | `blockedBy`/`blocking` per item with totals; cross-repository references; sub-issues are hierarchy only | Proposed blocking edges; direction, completeness and change signals unknown |
+| State | Configured statuses; terminal mapping from caller config | Open or closed with `stateReason`; Projects status deferred | Workflow state types and transitions unknown |
+| Progress | Append notes or comment; criterion-index edits exist but queue writes are initially disabled (§8) | Append comment | Comment marker round-trip unknown |
+| Assignment | Multiple, replace-all only | Multiple, add and remove endpoints | Proposed single assignee; replacement semantics unverified |
+| Native claims | Not exposed | Not exposed | Unknown; study only if §9 evidence warrants |
+| Mutation | Unconditional CLI edits | Unconditional; no conditional unsafe methods | Unknown; no writes before probe/recovery verification |
+| Synchronization | Watch stream or filesystem invalidation; minute timestamps | `since` filter, conditional-GET polling; no client webhooks | `updatedAt` and relation-reconciliation behavior unknown |
+| Effects | Optional Git fetch, commit, and hooks per project config | Notifications to watchers | Unknown |
+| Authentication | OS file access | `gh` helper for an explicit host and account | Proposed user-configured credential-helper argv; viewer verification before writes |
 
 Queue-facing operations extend the existing conceptual contract:
 
@@ -374,7 +384,9 @@ The remote authority's read role can inspect namespace claim metadata; it does n
 | --- | --- |
 | Local Backlog.md | OS access and the supported CLI. No login. A trusted, explicitly configured checkout. |
 | Personal GitHub | `gh auth token --hostname H --user U` for the configured account, run with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed unless the source explicitly selects one. Verify `viewer.login` equals the configured account before every write and whenever credentials change. Writes are interactive-only; unattended GitHub writes are disabled. The token stays in process memory; Worklease never persists it. |
-| Other personal integrations | The provider's credential helper, otherwise a native-app OAuth flow or explicit scoped token input. No embedded application secret. |
+| Personal Linear | User-configured helper argv supplies a token held only in memory. Verify `viewer` against the configured account on credential change and before each write; no implicit active account. Helper runtime/output and environment are bounded, and stderr is redacted. |
+| Personal Jira Cloud | User-configured helper argv supplies API-token credentials held only in memory; verify the configured account ID before writes. OAuth and Jira Data Center are deferred. |
+| Other personal integrations | A provider-specific credential helper or a separately accepted authentication flow; no embedded application secret. |
 | Headless or team automation | Provider app or service identities, short-lived scoped credentials, or a caller helper. Record both the initiating worker and the provider actor. |
 | Later source service | Server-managed secrets and refresh, separate client authentication, and per-source authorization. Choose explicitly between per-user delegation and a documented service identity. |
 
@@ -395,7 +407,7 @@ Partition caches by source instance, tenant, principal/access scope, and configu
 | Source adapters | Built-in Go interfaces first. After slice 6, a versioned out-of-process protocol (D16). |
 | Resource policies | Static built-ins only. They define exclusion domains, and divergent plugin-derived keys would silently split them. External adapters select an existing policy, usually `generic`. |
 | Claim authorities | Local and remote only. Native provider authority requires §9 admission. No storage plugins. |
-| Credential helpers | Built-in `gh`. A generic helper protocol, modeled on Git credential helpers, when a third provider needs it. |
+| Credential helpers | Built-in `gh` remains for GitHub. A generic, user-configured argv helper ships with Linear and is reused by Jira Cloud; it has bounded runtime/output, a scrubbed environment, redacted stderr, and per-credential serialization. |
 | Views, filters, status maps, keymaps | Declarative user configuration. Readiness and resource derivation stay inspectable and deterministic. |
 | Launch actions | User-configured argv templates (D18, §12). |
 | Notifications | Later: consume the existing public events and watch stream from outside. No callbacks inside claim transactions. |
@@ -641,13 +653,19 @@ Preserve existing claim and authorization guarantees. Planned generic workflow e
 | S5 Launch actions | S4 | Argv templates, the allowlisted environment, cwd, the D11 and held-claim gates, and display of the worker's claim once it appears. | With secret variables set in the queue's environment, none reach the child unless named in `passEnv`. Hostile titles and option-like IDs cannot inject arguments. Claim then Launch and unresolved cwd are refused with explanations. A tested launcher consumes the handoff, and the worker verifies the same authority and exact resources, including portable Backlog bindings. |
 | S6 Provider writes | S4 | Focused state, progress, and assignment operations plus explicit Start work per §8 (including `queue next --claim --start` and MCP `start: true`, D28), with the recovery journal, markers, read-back, cancellation, and recovery UI. Keep unsafe checklist/body writes disabled. | Lost responses and partial failures are injected at each boundary. Start work never writes after contention, never invents a status, and reports claim/transition outcomes separately. A newly blocked owner can report the blocker without authorizing further implementation. A marker with wrong content or duplicate matches is not a verified result. Lagging read-back stays unresolved and never re-dispatches. Cancellation is refused once any write or guarded operation has started. Assignment-only and progress-unsupported sources behave honestly. |
 | S7 External adapter protocol | S6 | A JSON-RPC 2.0 stdio protocol derived from both built-ins, plus a manifest, authoring guide, sample adapter, compatibility policy, and shared conformance suite. | The built-ins pass the suite. Tests cover crashes, malformed output, cancellation, and secret redaction. Installation requires explicit approval. |
-| S8 Evidence-driven additions | S7 or measured need | Beads, Linear, Jira, or GitLab by demand. A native-authority study per §9. A source service once duplicated traffic, latency, and authorization needs are measured. | Each is its own decision, with evidence recorded here first. |
+| S8 Evidence-driven additions | S7 for external adapters; otherwise named demand or measured need | Accept built-in Linear (D29) and Jira Cloud API-token adapters (D30) on user requests dated 2026-09-25. Defer Beads and GitLab without demand; defer a native-authority study without an admission requirement (§9); defer a separately authenticated source service without measured duplicate traffic, latency, and authorization need. Jira Data Center and OAuth remain outside accepted scope. | TASK-134 records evidence and decisions first; accepted additions each have their own task (Linear parent and TASK-139). Probe before asserting unknown provider semantics. |
 
 The upstream Backlog.md bulk-dependency request (`TASK-127`) runs in parallel from S1. When it lands, S3's edge cache becomes a fallback for older versions.
 
 ## 17. Decisions and follow-ups
 
 Record decisions here before enabling the corresponding capability; settled items below do not imply support beyond their stated scope.
+
+- **S8 accepted — Linear:** user request on 2026-09-25: used frequently in one environment. Build a built-in Go adapter (D29), with probe, generic credential helper, identity vectors, read/sync, claims, then focused writes as separately ordered subtasks of its own parent task. The probe needs a dedicated test team; no API behavior is presumed from the request.
+- **S8 accepted — Jira Cloud API tokens:** user request on 2026-09-25; TASK-139 owns a built-in adapter after the Linear helper, with a live test-project probe. **Deferred — Jira Data Center:** distinct auth, identity, search, and comment semantics need separate demand and investigation. **Deferred — OAuth:** no current requirement; DRAFT-14 tracks reconsideration, not implementation.
+- **S8 deferred — Beads and GitLab:** no named request or measured need for either; do not create implementation tasks.
+- **S8 deferred — native-authority study:** no requirement for a provider-native renewable, fenced claim. Whether Linear or Jira exposes anything meeting every §9 admission criterion remains unprobed; assignment is not a claim. No study task until a concrete requirement or evidence exists.
+- **S8 deferred — source service:** no measurement demonstrating duplicated source traffic, latency, and authorization need together. The existing per-user index and per-quota scheduling (§14–15) remain the baseline; TASK-129.7 measured authority load, not source-service demand. No service task until that evidence exists.
 
 - **Answered for 25 clients / 500 claims on D22:** polling did not saturate the authority in TASK-129.7's 10-minute-TTL run (§14). All 25 overlays drained the 500-renewal burst to head without a gap, at about a quarter of one authority core; no server-side coalescing is required at this measured scale. Watches return one event per response, so burst catch-up is linear in event count (200 s with CLI-subprocess clients; in-process clients are estimated at seconds but unmeasured). Store polling (~100/s) is modeled, not counted; direct SQLite poll counts and larger scales remain unproven. Two shorter-TTL renewal rounds succeeded, but sustained shorter-TTL capacity cannot be inferred from the claim count alone.
 - **Answered for S4 (`queue next`):** no provider-neutral claim paging is needed. Next enumerates the complete configured source scope and dependency edges, then observes exact resource claims through the existing bounded batch-status overlay (up to 32 keys per request, split on oversized responses). It never enumerates every claim in the authority. Unknown status fails selection closed; a wave is an observation, not a reservation. Revisit paging only if a future feature must enumerate claims outside the source-scoped resource set.
