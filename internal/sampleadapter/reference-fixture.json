@@ -1,0 +1,29 @@
+{
+  "principal": "alice",
+  "version": 1,
+  "transitions": {
+    "start": "Doing",
+    "blocked": "Blocked",
+    "review": "Review",
+    "complete": "Done",
+    "reopen": "Open"
+  },
+  "items": [
+    {
+      "id": "reference-1",
+      "title": "Disposable reference adapter item",
+      "rawStatus": "Open",
+      "state": "open",
+      "order": "1",
+      "priority": 1,
+      "providerReady": true,
+      "assignedTo": [],
+      "nativeClaim": "",
+      "updatedAt": "2025-01-02T03:04:05Z",
+      "body": "Copy this fixture before running mutation checks."
+    }
+  ],
+  "inaccessibleItemIds": [],
+  "dependencies": [],
+  "writes": []
+}
