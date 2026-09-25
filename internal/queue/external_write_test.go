@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/sampleadapter"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
@@ -460,5 +461,197 @@ func writeWireItem(ref Ref) map[string]any {
 		"ref": ref, "title": "Write fixture", "rawStatus": "Open", "state": "open", "order": "1", "priority": 0,
 		"canonicalId": ref.SourceID + ":" + ref.ItemID, "providerReady": true, "assignedTo": []string{}, "nativeClaim": "none",
 		"updatedAt": time.Now().UTC(), "body": "", "terminal": false, "providerBlocked": false,
+	}
+}
+
+func TestReferenceAdapterThroughHostWritesConfiguredActions(t *testing.T) {
+	t.Parallel()
+	writer, source, storePath := newReferenceExternalWriteAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cases := []struct {
+		action     Action
+		transition string
+		patch      map[string]string
+		appendText string
+	}{
+		{action: ActionStart, transition: "Doing", patch: map[string]string{"status": "Doing"}},
+		{action: ActionRecordProgress, patch: map[string]string{"append": "comment"}, appendText: "reference progress"},
+		{action: ActionAssignToMe},
+	}
+	for index, test := range cases {
+		operationID := fmt.Sprintf("%032x", index+1)
+		intent := WriteIntent{
+			OperationID: operationID, Source: source, Ref: Ref{SourceID: source.ID, ItemID: "reference-1"},
+			Principal: "alice", Action: test.action, Transition: test.transition,
+			Patch: test.patch, Append: test.appendText,
+		}
+		prepared, preview, err := writer.Prepare(ctx, intent)
+		if err != nil || preview.ConditionalWrite || preview.ExpectedVersion == nil {
+			t.Fatalf("prepare %s: preview=%+v error=%v", externalWriteMethod(test.action), preview, err)
+		}
+		receipt, err := writer.Write(ctx, prepared)
+		if err != nil || receipt.SourceID != source.ID || receipt.ItemID != intent.Ref.ItemID || receipt.Actor != "alice" || receipt.Version == "" || receipt.ID == "" {
+			t.Fatalf("write %s: receipt=%+v error=%v", externalWriteMethod(test.action), receipt, err)
+		}
+		observation, err := writer.ReadReceipt(ctx, prepared, &receipt)
+		if err != nil || checkWriteEvidence(prepared, &receipt, observation) != WriteVerified {
+			t.Fatalf("readback %s: observation=%+v error=%v", externalWriteMethod(test.action), observation, err)
+		}
+	}
+	var store struct {
+		Version int64 `json:"version"`
+		Items   []struct {
+			AssignedTo []string `json:"assignedTo"`
+			Comments   []any    `json:"comments"`
+		} `json:"items"`
+		Writes []json.RawMessage `json:"writes"`
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil || json.Unmarshal(data, &store) != nil || store.Version != 4 || len(store.Writes) != 3 || len(store.Items) != 1 || len(store.Items[0].Comments) != 1 || len(store.Items[0].AssignedTo) != 1 || store.Items[0].AssignedTo[0] != "alice" {
+		t.Fatalf("fixture effects: %+v error=%v", store, err)
+	}
+}
+
+func TestReferenceAdapterLostResponseRecoversWithClaimAndNoRedispatch(t *testing.T) {
+	t.Parallel()
+	writer, source, storePath := newReferenceExternalWriteAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	intent := WriteIntent{
+		OperationID: strings.Repeat("e", 32), Source: source, Ref: Ref{SourceID: source.ID, ItemID: "reference-1"},
+		Principal: "alice", Action: ActionRecordProgress, Patch: map[string]string{"append": "comment"}, Append: "lost response progress",
+		AuthorityID: "authority-ref", ClaimID: "claim-ref", ClaimRevision: 2, Resources: []string{"generic:fixture/reference/reference-1"}, CheckpointTTL: time.Minute,
+	}
+	prepared, _, err := writer.Prepare(ctx, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, paths := testkit.Home(t)
+	journal, err := NewWriteJournal(filepath.Join(paths["XDG_STATE_HOME"], "worklease", "queue-recovery"), filepath.Join(paths["HOME"], ".cache", "worklease", "queue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := &referencePipelineClaim{}
+	pipeline := WritePipeline{Adapter: lostReferenceExternalWriteResponse{writer}, Claim: claim, Journal: journal}
+	result, err := pipeline.Start(ctx, prepared)
+	if err == nil || result.Outcome != WriteUnknown || !result.ClaimHeld {
+		t.Fatalf("lost response result=%+v error=%v", result, err)
+	}
+	record, err := journal.Read(prepared.OperationID)
+	if err != nil || record.Status != "unknown" || record.Receipt != nil {
+		t.Fatalf("unknown journal record=%+v error=%v", record, err)
+	}
+	result, err = pipeline.Recover(ctx, prepared.OperationID)
+	if err != nil || result.Outcome != WriteVerified || !result.ClaimHeld || claim.verifyCalls != 4 || claim.checkpointCalls != 1 {
+		t.Fatalf("recovery result=%+v error=%v claim=%+v", result, err, claim)
+	}
+	data, err := os.ReadFile(storePath)
+	var store struct {
+		Writes []json.RawMessage `json:"writes"`
+		Items  []struct {
+			Comments []json.RawMessage `json:"comments"`
+		} `json:"items"`
+	}
+	if err != nil || json.Unmarshal(data, &store) != nil || len(store.Writes) != 1 || len(store.Items) != 1 || len(store.Items[0].Comments) != 1 {
+		t.Fatalf("recovery redispatched the provider write: store=%+v error=%v", store, err)
+	}
+}
+
+type lostReferenceExternalWriteResponse struct{ *ExternalWriteAdapter }
+
+func (a lostReferenceExternalWriteResponse) Write(ctx context.Context, intent WriteIntent) (ProviderReceipt, error) {
+	if _, err := a.ExternalWriteAdapter.Write(ctx, intent); err != nil {
+		return ProviderReceipt{}, err
+	}
+	return ProviderReceipt{}, fmt.Errorf("response lost after the fixture write was applied")
+}
+
+type referencePipelineClaim struct {
+	verifyCalls     int
+	checkpointCalls int
+	checkpointed    bool
+}
+
+func (c *referencePipelineClaim) Verify(context.Context, WriteIntent) error {
+	c.verifyCalls++
+	return nil
+}
+
+func (c *referencePipelineClaim) Checkpoint(context.Context, WriteIntent, ProviderReceipt) error {
+	c.checkpointCalls++
+	c.checkpointed = true
+	return nil
+}
+
+func (c *referencePipelineClaim) CheckpointStatus(context.Context, WriteIntent, ProviderReceipt) (WriteVerification, error) {
+	if c.checkpointed {
+		return WriteVerified, nil
+	}
+	return WriteUnknown, nil
+}
+
+func newReferenceExternalWriteAdapter(t *testing.T) (*ExternalWriteAdapter, Source, string) {
+	t.Helper()
+	storePath := filepath.Join(t.TempDir(), "reference-store.json")
+	store := map[string]any{
+		"principal": "alice", "version": 1,
+		"transitions": map[string]string{"start": "Doing", "blocked": "Blocked", "review": "Review", "complete": "Done", "reopen": "Open"},
+		"items": []any{map[string]any{
+			"id": "reference-1", "title": "Disposable reference item", "rawStatus": "Open", "state": "open", "order": "1", "priority": 1,
+			"providerReady": true, "assignedTo": []string{}, "nativeClaim": "", "updatedAt": "2025-01-02T03:04:05Z", "body": "fixture",
+		}},
+		"inaccessibleItemIds": []string{}, "dependencies": []any{}, "writes": []any{},
+	}
+	data, err := json.Marshal(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "reference-adapter")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestReferenceAdapterProcessHelper$' -- reference\n", shellQuote(testBinary))
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := config.QueueSource{
+		ID: "reference-host", Adapter: "external", Executable: canonical,
+		ExpectedAdapterID: "worklease.reference.local-fixture", ExpectedVersion: "1.0.0", Account: "alice",
+		Claims:   &config.QueueClaims{Policy: "generic", Source: "fixture/reference"},
+		Workflow: map[string]string{"start": "Doing", "blocked": "Blocked", "review": "Review", "complete": "Done", "reopen": "Open"},
+		Config:   map[string]any{"fixturePath": storePath},
+	}
+	if err := config.ApproveQueueAdapter(context.Background(), env, configured); err != nil {
+		t.Fatalf("approve reference adapter: %v", err)
+	}
+	read := &ExternalAdapter{source: configured, env: env}
+	t.Cleanup(read.Close)
+	source, err := read.Resolve(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolve reference adapter: %v", err)
+	}
+	return NewExternalWriteAdapter(read), source, storePath
+}
+
+func TestReferenceAdapterProcessHelper(t *testing.T) {
+	for index, argument := range os.Args {
+		if argument != "--" || index+1 >= len(os.Args) || os.Args[index+1] != "reference" {
+			continue
+		}
+		if err := sampleadapter.RunReference(os.Stdin, os.Stdout); err != nil {
+			t.Fatalf("serve reference adapter: %v", err)
+		}
+		return
 	}
 }
