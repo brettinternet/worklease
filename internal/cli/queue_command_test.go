@@ -343,6 +343,21 @@ func TestRefreshCompletionWaitsForFailure(t *testing.T) {
 	}
 }
 
+func TestQueueAliasAndViewShortFlag(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	h.setTasks("[]")
+
+	data, err := h.run("q", "-v", "Ready", "query", "--json")
+	if err != nil || !strings.Contains(string(data), `"view":"Ready"`) {
+		t.Fatalf("q -v Ready query: %v (%s)", err, data)
+	}
+
+	data, err = h.run("q", "-v", "Missing")
+	if err == nil || !strings.Contains(err.Error(), "unknown queue view: Missing") {
+		t.Fatalf("q -v Missing: %v (%s)", err, data)
+	}
+}
+
 func TestQueueCommandRejectsJSONWithoutEnteringTerminal(t *testing.T) {
 	var out, errs bytes.Buffer
 	err := Run(context.Background(), []string{"worklease", "--json", "queue"}, "test", "unknown", "unknown", &out, &errs)

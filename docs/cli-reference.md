@@ -99,10 +99,11 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 
 ## Work queue
 
-`worklease queue [--view NAME]` opens the configured view from the owner's private
-`queue.yaml` in a Bubble Tea terminal. It shows source coverage, readiness,
-assignment, native occupancy, authority-scoped Worklease claims, and lazy claim
-history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
+`worklease queue [--view NAME]` (or `worklease q [-v NAME]`) opens the
+configured view from the owner's private `queue.yaml` in a Bubble Tea terminal.
+Root-level `worklease -v` still shows the version. The queue shows source
+coverage, readiness, assignment, native occupancy, authority-scoped Worklease
+claims, and lazy claim history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
 loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, `c` previews
 Claim for me, and `x` previews configured launch actions. Launch shows argv, cwd,
 environment variable names, and authority; Enter starts the selected process,

@@ -244,6 +244,10 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 		for k, v := range inherited {
 			seen[k] = v
 		}
+		next := make(map[string]string, len(inherited))
+		for k, v := range inherited {
+			next[k] = v
+		}
 		for _, flag := range cmd.Flags {
 			if flag == nil {
 				return fmt.Errorf("nil flag in %s", cmd.Name)
@@ -266,6 +270,11 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 					return fmt.Errorf("flag %q used by %s and %s", name, previous, cmd.Name)
 				}
 				seen[name] = cmd.Name
+				// Local flags belong only to this command, so descendants may reuse their aliases.
+				if local, ok := flag.(interface{ IsLocal() bool }); ok && local.IsLocal() {
+					continue
+				}
+				next[name] = cmd.Name
 				if len(name) == 1 {
 					if meaning, ok := shortMeanings[name]; ok && meaning != names[0] {
 						return fmt.Errorf("short flag %q means both %s and %s", name, meaning, names[0])
@@ -273,10 +282,6 @@ func validateCLICommandTree(root *urfavecli.Command) error {
 					shortMeanings[name] = names[0]
 				}
 			}
-		}
-		next := make(map[string]string, len(seen))
-		for k, v := range seen {
-			next[k] = v
 		}
 		for _, child := range cmd.Commands {
 			if err := visit(child, next); err != nil {

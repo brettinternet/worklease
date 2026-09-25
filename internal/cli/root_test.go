@@ -48,6 +48,16 @@ func TestVersionTextAndJSON(t *testing.T) {
 	}
 }
 
+func TestRootVersionShortFlagRemainsLocal(t *testing.T) {
+	var output bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "-v"}, "1.2.3", "unknown", "unknown", &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "worklease 1.2.3") {
+		t.Fatalf("root -v = %q", output.String())
+	}
+}
+
 func TestParserFailuresKeepOneJSONEnvelopeAndRedact(t *testing.T) {
 	token := strings.Repeat("a", 64)
 	for _, args := range [][]string{{"worklease", "--json", "--unknown=" + token}, {"worklease", "version", "--json", "--unknown=" + token}, {"worklease", "--json", string([]byte{0xff})}} {
@@ -358,7 +368,8 @@ func TestShortOptionNamespaceIsExactAndRemovedAliasesFail(t *testing.T) {
 	collect := func(flags []urfavecli.Flag) {
 		for _, flag := range flags {
 			for _, name := range flag.Names()[1:] {
-				if len(name) == 1 {
+				// The queue's -v/--view is scoped below the root's local -v/--version.
+				if len(name) == 1 && !(name == "v" && flag.Names()[0] == "view") {
 					got[name] = flag.Names()[0]
 				}
 			}
