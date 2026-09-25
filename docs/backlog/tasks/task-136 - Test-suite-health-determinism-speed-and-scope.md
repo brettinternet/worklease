@@ -1,9 +1,11 @@
 ---
 id: TASK-136
 title: 'Test suite health: determinism, speed, and scope'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-24 15:04'
+updated_date: '2026-09-25 12:11'
 labels: []
 dependencies: []
 priority: medium
@@ -31,5 +33,23 @@ Rerun the measurements before starting a subtask; numbers drift as the code chan
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every subtask is Done or explicitly closed with a recorded reason
+- [x] #1 Every subtask is Done or explicitly closed with a recorded reason
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Verify all seven child statuses and acceptance criteria from the authoritative Backlog list; record the evidence, close this coordination-only parent, and commit the provider record on main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Provider evidence (backlog task list --json, 2026-09-25): TASK-136.1 through TASK-136.7 are all Done with all acceptance criteria checked (6/6, 5/5, 6/6, 3/3, 4/4, 3/3, 3/3 respectively). Latest child TASK-136.5 was merged via 8c13a09 and finalized in 0d2ceb5; all four quality gates and focused race checks passed there. This parent has no code change; only the authoritative Backlog record is committed on main.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All seven subtasks are Done with every acceptance criterion checked; parent verified from Backlog task list JSON and closed.
+<!-- SECTION:FINAL_SUMMARY:END -->
