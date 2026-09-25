@@ -299,6 +299,242 @@ func TestExternalAdapterConfigSchemaFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExternalAdapterHostCredentialRefreshAndScope(t *testing.T) {
+	t.Parallel()
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	marker := filepath.Join(t.TempDir(), "methods")
+	source := externalAdapterTestSource(t, env, "credential-source", marker)
+	source.Executable = writeScopedExternalAdapterScriptMode(t, source.ID, marker, "credential-ok")
+	source.Config["origin"] = "https://api.example.test"
+	source.Account = "alice"
+	secretPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(secretPath, []byte("first-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(t.TempDir(), "helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexec cat "+shellQuote(secretPath)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source.CredentialHelper = []string{helper}
+	if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	cleanup, err := RegisterExternalSources(registry, []config.QueueSource{source}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	adapter, ok := registry.Get(ExternalSourceAdapterKey(source.ID))
+	if !ok {
+		t.Fatal("adapter not registered")
+	}
+	resolved, err := adapter.Resolve(context.Background(), map[string]string{"id": source.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte("replacement-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Capabilities(context.Background(), resolved, "alice", nil); err != nil {
+		t.Fatalf("refresh without process restart: %v", err)
+	}
+	methods, err := os.ReadFile(marker)
+	if err != nil || strings.Count(string(methods), "credential\n") != 2 || strings.Count(string(methods), "started\n") != 1 || strings.Contains(string(methods), "token") {
+		t.Fatalf("credential refresh did not stay on one process or leaked in marker: %q (%v)", methods, err)
+	}
+	for name, mutate := range map[string]func(*config.QueueSource){
+		"helper":  func(s *config.QueueSource) { s.CredentialHelper = []string{"/other/helper"} },
+		"origin":  func(s *config.QueueSource) { s.Config["origin"] = "https://other.example.test" },
+		"account": func(s *config.QueueSource) { s.Account = "bob" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed, err := cloneExternalQueueSource(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(&changed)
+			if err := config.CheckQueueAdapterApproval(env, changed); err == nil {
+				t.Fatal("changed credential scope retained approval")
+			}
+		})
+	}
+}
+
+func TestExternalAdapterHostCredentialMismatch(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"credential-mismatch", "credential-origin-mismatch", "credential-expired"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			_, paths := testkit.Home(t)
+			env := externalTestEnvironment(paths)
+			source := externalAdapterTestSource(t, env, "mismatch", "")
+			source.Executable = writeScopedExternalAdapterScriptMode(t, source.ID, "", mode)
+			source.Config["origin"] = "https://api.example.test"
+			source.Account = "alice"
+			helper := filepath.Join(t.TempDir(), "helper")
+			if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf 'secret-canary\\n'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			source.CredentialHelper = []string{helper}
+			if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+				t.Fatal(err)
+			}
+			adapter := &ExternalAdapter{source: source, env: env}
+			defer adapter.Close()
+			_, err := adapter.Resolve(context.Background(), nil)
+			want := "credential-scope-mismatch"
+			if mode == "credential-expired" {
+				want = "credential-expired"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "secret-canary") {
+				t.Fatalf("expected sanitized %s, got %v", want, err)
+			}
+		})
+	}
+}
+
+func TestExternalAdapterRejectsUndeclaredCredentialFeature(t *testing.T) {
+	t.Parallel()
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	source := externalAdapterTestSource(t, env, "undeclared", "")
+	source.Config["origin"] = "https://api.example.test"
+	source.Account = "alice"
+	source.CredentialHelper = []string{"/unused/helper"}
+	if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &ExternalAdapter{source: source, env: env}
+	defer adapter.Close()
+	if _, err := adapter.Resolve(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "credential-feature-required") {
+		t.Fatalf("helper ran against adapter without negotiated feature: %v", err)
+	}
+}
+
+func TestExternalAdapterCredentialReadPrincipalDrift(t *testing.T) {
+	t.Parallel()
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	source := externalAdapterTestSource(t, env, "drift", "")
+	source.Executable = writeScopedExternalAdapterScriptMode(t, source.ID, "", "credential-context-drift")
+	source.Config["origin"] = "https://api.example.test"
+	source.Account = "alice"
+	helper := filepath.Join(t.TempDir(), "helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf 'secret-canary\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source.CredentialHelper = []string{helper}
+	if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &ExternalAdapter{source: source, env: env}
+	defer adapter.Close()
+	resolved, err := adapter.Resolve(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.List(context.Background(), resolved, Query{Budget: 1}, "")
+	if err == nil || !strings.Contains(err.Error(), "credential-scope-mismatch") {
+		t.Fatalf("post-resolve principal drift exposed a read: %v", err)
+	}
+}
+
+func TestExternalAdapterCredentialRotationCannotRaceWrite(t *testing.T) {
+	t.Parallel()
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	marker := filepath.Join(t.TempDir(), "methods")
+	source := externalAdapterTestSource(t, env, "rotation", marker)
+	source.Executable = writeScopedExternalAdapterScriptMode(t, source.ID, marker, "credential-rotation")
+	source.Config["origin"] = "https://api.example.test"
+	source.Account = "alice"
+	counter := filepath.Join(t.TempDir(), "helper-count")
+	if err := os.WriteFile(counter, []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(t.TempDir(), "helper")
+	command := "#!/bin/sh\ncount=$(cat " + shellQuote(counter) + ")\ncase $count in 0|1) printf 'alice-token\\n';; *) printf 'bob-token\\n';; esac\nprintf '%s\\n' $((count+1)) > " + shellQuote(counter) + "\n"
+	if err := os.WriteFile(helper, []byte(command), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source.CredentialHelper = []string{helper}
+	if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	process, err := NewExternalProcess(source, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.Close()
+	var resolved externalResolveResult
+	if err := process.Call(context.Background(), "resolve", map[string]any{"sourceId": source.ID, "config": source.Config}, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			var response json.RawMessage
+			results <- process.Call(context.Background(), "recordProgress", map[string]any{
+				"ref": Ref{SourceID: source.ID, ItemID: "item-one"}, "operationId": "rotation-op", "patch": map[string]string{"text": "progress"},
+				"authority": map[string]string{"authorizationRef": "fixture", "scope": "item"}, "budget": externalBudget(1),
+			}, &response)
+		}()
+	}
+	close(start)
+	var succeeded, refused int
+	for i := 0; i < 2; i++ {
+		if err := <-results; err == nil {
+			succeeded++
+		} else if strings.Contains(err.Error(), "credential-scope-mismatch") {
+			refused++
+		} else {
+			t.Fatalf("unexpected write failure: %v", err)
+		}
+	}
+	methods, err := os.ReadFile(marker)
+	if err != nil || succeeded != 1 || refused != 1 || strings.Count(string(methods), "recordProgress\n") != 1 || strings.Contains(string(methods), "bob-write") {
+		t.Fatalf("rotated unverified credential reached write: success=%d refused=%d methods=%q err=%v", succeeded, refused, methods, err)
+	}
+}
+
+func TestExternalAdapterCredentialConformanceLeak(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		mode, want string
+	}{
+		{"credential-ok", "pass"},
+		{"credential-leak", "fail"},
+		{"credential-stdout-leak", "fail"},
+		{"credential-padded-leak", "fail"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			t.Parallel()
+			executable := writeScopedExternalAdapterScriptMode(t, "adapter-check", "", test.mode)
+			report, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: map[string]any{"project": "adapter-check", "origin": "https://api.example.test"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			serialized, err := json.Marshal(report)
+			if err != nil || strings.Contains(string(serialized), "worklease-conformance-credential-canary") {
+				t.Fatalf("conformance report leaked credential: %s (%v)", serialized, err)
+			}
+			for _, check := range report.Checks {
+				if check.ID == "credential-leak" {
+					if check.Status != test.want {
+						t.Fatalf("credential probe: %+v", check)
+					}
+					return
+				}
+			}
+			t.Fatal("missing credential leak check")
+		})
+	}
+}
+
 func externalAdapterTestSource(t *testing.T, env func(string) string, id, marker string) config.QueueSource {
 	t.Helper()
 	source := config.QueueSource{
@@ -339,6 +575,7 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 		}
 	}
 	resolved := false
+	activePrincipal := ""
 	listCalls := 0
 	reader := bufio.NewReader(os.Stdin)
 	for {
@@ -360,7 +597,7 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 				_ = file.Close()
 			}
 		}
-		if mode != "" && request.Method != "initialize" && request.Method != "resolve" && !resolved {
+		if mode != "" && request.Method != "initialize" && request.Method != "resolve" && request.Method != "credential" && !resolved {
 			return
 		}
 		if mode == "crash-first-list" && processNumber == 1 && request.Method == "list" {
@@ -372,23 +609,62 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 		var result any
 		switch request.Method {
 		case "initialize":
+			properties := map[string]any{"project": map[string]any{"type": "string", "minLength": 1}}
+			required := []string{"project"}
+			authentication := []string{}
+			if strings.HasPrefix(mode, "credential") {
+				properties["origin"] = map[string]any{"type": "string"}
+				required = append(required, "origin")
+				authentication = []string{"host-credential-v1"}
+			}
 			result = map[string]any{
 				"protocolVersion": 1,
 				"manifest": map[string]any{
 					"id": "example.adapter", "version": "1.2.3",
 					"protocol": map[string]int{"minMajor": 1, "maxMajor": 1},
 					"configSchema": map[string]any{
-						"type": "object", "properties": map[string]any{"project": map[string]any{"type": "string", "minLength": 1}},
-						"required": []string{"project"}, "additionalProperties": false,
+						"type": "object", "properties": properties,
+						"required": required, "additionalProperties": false,
 					},
-					"authentication": []string{}, "resourcePolicy": "generic", "capabilities": []string{"discovery", "dependencies"}, "requiredFeatures": []string{},
+					"authentication": authentication, "resourcePolicy": "generic", "capabilities": []string{"discovery", "dependencies"}, "requiredFeatures": []string{},
 				},
 			}
+		case "credential":
+			id := requestSourceID(request.Params)
+			var origin, token string
+			_ = json.Unmarshal(request.Params["origin"], &origin)
+			_ = json.Unmarshal(request.Params["credential"], &token)
+			if !strings.HasPrefix(mode, "credential") || id != expectedSource || origin == "" || token == "" {
+				return
+			}
+			principal := "alice"
+			if mode == "credential-mismatch" || mode == "credential-rotation" && token == "bob-token" {
+				principal = "mallory"
+			}
+			activePrincipal = principal
+			if mode == "credential-leak" || mode == "credential-padded-leak" {
+				if mode == "credential-padded-leak" {
+					_, _ = fmt.Fprint(os.Stderr, strings.Repeat("x", externalStderrLimit+4096))
+				}
+				_, _ = fmt.Fprint(os.Stderr, token)
+			}
+			if mode == "credential-origin-mismatch" {
+				origin = "https://other.example.test"
+			}
+			expires := time.Now().Add(time.Hour)
+			if mode == "credential-expired" {
+				expires = time.Now().Add(-time.Hour)
+			}
+			result = map[string]any{"sourceId": id, "origin": origin, "principal": principal, "expiresAt": expires.UTC().Format(time.RFC3339Nano)}
+			if mode == "credential-stdout-leak" {
+				result.(map[string]any)["echo"] = token
+			}
+
 		case "resolve":
 			id := requestSourceID(request.Params)
 			var configuration map[string]any
 			_ = json.Unmarshal(request.Params["config"], &configuration)
-			if id != expectedSource || configuration["project"] != id {
+			if id != expectedSource || configuration["project"] != id || (strings.HasPrefix(mode, "credential") && configuration["origin"] != "https://api.example.test") {
 				return
 			}
 			if mode == "crash-first-list" {
@@ -432,6 +708,17 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 			} else {
 				return
 			}
+		case "recordProgress":
+			if mode != "credential-rotation" {
+				return
+			}
+			if activePrincipal == "mallory" && marker != "" {
+				if file, err := os.OpenFile(marker, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+					_, _ = fmt.Fprintln(file, "bob-write")
+					_ = file.Close()
+				}
+			}
+			result = map[string]any{"context": wireContext(expectedSource, "complete", nil), "receipt": map[string]any{"sourceId": expectedSource}}
 		case "readItems":
 			id := requestSourceID(request.Params)
 			var refs []Ref
@@ -473,6 +760,16 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 			}
 		default:
 			return
+		}
+		if strings.HasPrefix(mode, "credential") {
+			if envelope, ok := result.(map[string]any); ok {
+				if context, ok := envelope["context"].(map[string]any); ok {
+					context["principal"] = "alice"
+					if mode == "credential-context-drift" && request.Method == "list" {
+						context["principal"] = "mallory"
+					}
+				}
+			}
 		}
 		encoded, err := json.Marshal(result)
 		if err != nil {

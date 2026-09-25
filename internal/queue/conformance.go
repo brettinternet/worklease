@@ -70,13 +70,18 @@ func CheckExternalAdapter(ctx context.Context, options AdapterCheckOptions) (Ada
 		return finishAdapterCheck(report), nil
 	}
 	// Never include the raw manifest: configSchema and optional fields are adapter-controlled.
-	report.Manifest = &AdapterCheckManifest{ID: redactExternalText(manifest.ID, process.secrets), Version: redactExternalText(manifest.Version, process.secrets), ProtocolMajor: 1}
+	report.Manifest = &AdapterCheckManifest{ID: redactExternalText(manifest.ID, process.secretValues()), Version: redactExternalText(manifest.Version, process.secretValues()), ProtocolMajor: 1}
 	add("initialize", "pass", "negotiated-v1", "Host accepted the v1 manifest")
 	if err := validateExternalConfig(manifest.ConfigSchema, cfg.Config); err != nil {
 		add("config", "fail", "config-invalid", "Configuration does not match the manifest schema")
 		return finishAdapterCheck(report), nil
 	}
 	add("config", "pass", "config-valid", "Configuration matches the manifest schema")
+	if externalWriteContains(manifest.Authentication, "host-credential-v1") || externalWriteContains(manifest.RequiredFeatures, "host-credential-v1") {
+		checkAdapterCredentialLeak(ctx, cfg, add)
+	} else {
+		add("credential-leak", "skip", "feature-undeclared", "Adapter does not request the optional host credential channel")
+	}
 	adapter := &ExternalAdapter{source: cfg, process: process}
 	source, err := adapter.Resolve(ctx, nil)
 	if err != nil {
@@ -221,12 +226,45 @@ func CheckExternalAdapter(ctx context.Context, options AdapterCheckOptions) (Ada
 	return finishAdapterCheck(report), nil
 }
 
+func checkAdapterCredentialLeak(ctx context.Context, cfg config.QueueSource, add func(string, string, string, string)) {
+	probe, err := NewExternalProcessForCheck(cfg)
+	if err != nil {
+		add("credential-leak", "fail", "credential-channel-failed", "Could not start a credential probe process")
+		return
+	}
+	// The disposable sentinel is never a provider credential. An adapter may
+	// reject it as authentication-failed, but cannot emit it on either pipe.
+	secret := "worklease-conformance-credential-canary"
+	probe.rememberSecret(secret)
+	probe.probeSecret.Store(&secret)
+	var response json.RawMessage
+	probeErr := probe.Call(ctx, "credential", map[string]any{"sourceId": cfg.ID, "origin": "https://conformance.invalid", "credential": secret}, &response)
+	probe.Close()
+	probe.mu.Lock()
+	probeRun := probe.run
+	probe.mu.Unlock()
+	leaked := probe.probeLeak.Load() || strings.Contains(string(response), secret)
+	if probeRun != nil {
+		<-probeRun.stderrDone
+		probeRun.stderrMu.Lock()
+		leaked = leaked || strings.Contains(string(probeRun.stderrData), secret)
+		probeRun.stderrMu.Unlock()
+	}
+	if leaked || strings.Contains(fmt.Sprint(probeErr), secret) {
+		add("credential-leak", "fail", "credential-leaked", "Adapter emitted the credential on stdout, stderr or in a diagnostic")
+	} else if probeErr != nil && !strings.Contains(probeErr.Error(), "authentication-failed") && !strings.Contains(probeErr.Error(), "credential-scope-mismatch") {
+		add("credential-leak", "fail", "credential-channel-failed", "Adapter did not accept the credential protocol method")
+	} else {
+		add("credential-leak", "pass", "credential-contained", "Credential channel did not expose the sentinel in adapter output or host diagnostics")
+	}
+}
+
 func finishAdapterCheck(report AdapterCheckReport) AdapterCheckReport {
 	seen := make(map[string]bool, len(report.Checks))
 	for _, check := range report.Checks {
 		seen[check.ID] = true
 	}
-	for _, id := range []string{"initialize", "config", "resolve", "capabilities", "list-budget", "continuation", "read-items", "dependencies", "resource-policy", "host-output-guards", "host-input-guards", "deadline", "cancel-notification", "crash-recovery", "secret-redaction", "mutation-receipt", "lost-response", "unknown-outcome"} {
+	for _, id := range []string{"initialize", "config", "resolve", "capabilities", "list-budget", "continuation", "read-items", "dependencies", "resource-policy", "host-output-guards", "host-input-guards", "deadline", "cancel-notification", "crash-recovery", "secret-redaction", "credential-leak", "mutation-receipt", "lost-response", "unknown-outcome"} {
 		if !seen[id] {
 			report.Checks = append(report.Checks, AdapterCheck{ID: id, Status: "skip", Reason: "prior-check-failed", Detail: "A prerequisite check failed"})
 		}

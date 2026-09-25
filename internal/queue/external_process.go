@@ -37,7 +37,7 @@ const (
 )
 
 var externalMethods = map[string]bool{
-	"resolve": true, "capabilities": true, "list": true, "readItems": true,
+	"resolve": true, "credential": true, "capabilities": true, "list": true, "readItems": true,
 	"readDependencies": true, "changes": true, "readItem": true,
 	"resourcePolicy": true, "writeState": true, "recordProgress": true,
 	"assign": true, "readReceipt": true, "resolveReviewBoundary": true, "archive": true,
@@ -49,6 +49,7 @@ var externalDiagnostics = map[string]bool{
 	"authentication-required": true, "authentication-failed": true,
 	"authorization-denied": true, "conflict": true, "rate-limited": true,
 	"unavailable-source": true, "incomplete-graph": true, "unknown-outcome": true,
+	"credential-scope-mismatch": true,
 }
 
 type ExternalAdapterManifest struct {
@@ -119,9 +120,14 @@ type ExternalProcess struct {
 	runGeneration uint64
 
 	initializeMu sync.Mutex
+	credentialMu sync.Mutex
+	credentials  *CredentialHelper
+	secretsMu    sync.Mutex
 	secrets      []string
 	beforeStart  func()
 	checkMode    bool // explicit conformance probe; never used by configured sources
+	probeSecret  atomic.Pointer[string]
+	probeLeak    atomic.Bool
 }
 
 // NewExternalProcess verifies owner approval against a private executable snapshot before starting it.
@@ -156,6 +162,7 @@ func newExternalProcessMode(source config.QueueSource, env func(string) string, 
 		answeredIDs: make(map[string]bool),
 		slots:       make(chan struct{}, externalMaxInFlight),
 		beforeStart: beforeStart,
+		credentials: new(CredentialHelper),
 	}
 	client.secrets = externalSecretValues(source, env)
 	client.checkMode = checkMode
@@ -221,10 +228,22 @@ func (p *ExternalProcess) Call(ctx context.Context, method string, params any, r
 	if !externalMethods[method] {
 		return fmt.Errorf("external adapter method is not supported")
 	}
+	// Keep verification, credential installation, and provider dispatch in one
+	// critical section. A concurrent refresh must never replace a verified
+	// principal between authorization and a write (or while a read is pending).
+	if len(p.source.CredentialHelper) != 0 && method != "credential" {
+		p.credentialMu.Lock()
+		defer p.credentialMu.Unlock()
+	}
 	ctx, cancel := boundedExternalContext(ctx)
 	defer cancel()
 	if _, err := p.ensureInitialized(ctx); err != nil {
 		return externalContextError(method, err, false)
+	}
+	if len(p.source.CredentialHelper) != 0 && method != "credential" {
+		if err := p.refreshCredential(ctx); err != nil {
+			return err
+		}
 	}
 	p.initializeMu.Lock()
 	run, err := p.ensureInitializedLocked(ctx)
@@ -242,6 +261,19 @@ func (p *ExternalProcess) Call(ctx context.Context, method string, params any, r
 	if err != nil {
 		return externalContextError(method, err, dispatched)
 	}
+	if len(p.source.CredentialHelper) != 0 && method != "credential" {
+		var observed struct {
+			Context struct {
+				Principal *string `json:"principal"`
+			} `json:"context"`
+		}
+		if json.Unmarshal(response, &observed) != nil || observed.Context.Principal == nil || *observed.Context.Principal != p.source.Account {
+			if isExternalMutation(method) && dispatched {
+				return fmt.Errorf("external adapter write outcome is unknown after dispatch")
+			}
+			return fmt.Errorf("credential-scope-mismatch: observed principal differs from approved account")
+		}
+	}
 	if result == nil {
 		return nil
 	}
@@ -253,6 +285,100 @@ func (p *ExternalProcess) Call(ctx context.Context, method string, params any, r
 		return fmt.Errorf("external adapter returned an invalid result")
 	}
 	return nil
+}
+
+func (p *ExternalProcess) refreshCredential(ctx context.Context) error {
+	origin, _ := p.source.Config["origin"].(string)
+	if origin == "" || p.source.Account == "" {
+		return fmt.Errorf("credential-scope-mismatch: source origin and principal are required")
+	}
+	var deliveryError error
+	_, err := p.credentials.Resolve(ctx, p.source.CredentialHelper, p.source.Account, func(ctx context.Context, token string) (string, error) {
+		principal, err := p.DeliverCredential(ctx, token, origin)
+		deliveryError = err
+		return principal, err
+	})
+	if err != nil {
+		mismatch := strings.Contains(err.Error(), "principal differs") || deliveryError != nil && strings.HasPrefix(deliveryError.Error(), "credential-scope-mismatch:")
+		if mismatch {
+			p.mu.Lock()
+			run := p.run
+			p.mu.Unlock()
+			if run != nil {
+				p.failProcess(run, "credential-scope-mismatch", false)
+			}
+			return fmt.Errorf("credential-scope-mismatch: verified credential did not match approved scope")
+		}
+		if deliveryError != nil && strings.HasPrefix(deliveryError.Error(), "credential-expired:") {
+			return fmt.Errorf("credential-expired: adapter reported an expired credential")
+		}
+		return fmt.Errorf("credential-delivery-failed: helper or adapter verification failed")
+	}
+	return nil
+}
+
+// DeliverCredential uses the negotiated, source-scoped stdin protocol channel.
+// No credential is retained in configuration or included in any returned error.
+func (p *ExternalProcess) DeliverCredential(ctx context.Context, token, origin string) (string, error) {
+	if token == "" || origin == "" || (len(p.source.CredentialHelper) == 0 && !p.checkMode) {
+		return "", fmt.Errorf("credential-feature-required: host credential channel is unavailable")
+	}
+	manifest, err := p.Initialize(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !externalWriteContains(manifest.Authentication, "host-credential-v1") && !externalWriteContains(manifest.RequiredFeatures, "host-credential-v1") {
+		return "", fmt.Errorf("credential-feature-required: adapter does not declare host-credential-v1")
+	}
+	p.rememberSecret(token)
+	var result struct {
+		SourceID  string `json:"sourceId"`
+		Origin    string `json:"origin"`
+		Principal string `json:"principal"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	var raw json.RawMessage
+	if err := p.Call(ctx, "credential", map[string]any{"sourceId": p.source.ID, "origin": origin, "credential": token}, &raw); err != nil {
+		return "", fmt.Errorf("credential-delivery-failed: adapter rejected host credential")
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields["sourceId"] == nil || fields["origin"] == nil || fields["principal"] == nil || bytes.Contains(raw, []byte(token)) {
+		return "", fmt.Errorf("credential-delivery-failed: invalid adapter verification result")
+	}
+	for name := range fields {
+		if name != "sourceId" && name != "origin" && name != "principal" && name != "expiresAt" {
+			return "", fmt.Errorf("credential-delivery-failed: invalid adapter verification result")
+		}
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return "", fmt.Errorf("credential-delivery-failed: invalid adapter verification result")
+	}
+	if result.SourceID != p.source.ID || result.Origin != origin || result.Principal == "" || !validExternalText(result.Principal) {
+		return "", fmt.Errorf("credential-scope-mismatch: adapter did not verify source, origin and principal")
+	}
+	if result.ExpiresAt != "" {
+		expiry, err := time.Parse(time.RFC3339Nano, result.ExpiresAt)
+		if err != nil || !strings.HasSuffix(result.ExpiresAt, "Z") || !expiry.After(time.Now()) {
+			return "", fmt.Errorf("credential-expired: adapter reported an expired credential")
+		}
+	}
+	return result.Principal, nil
+}
+
+func (p *ExternalProcess) rememberSecret(token string) {
+	p.secretsMu.Lock()
+	defer p.secretsMu.Unlock()
+	p.secrets = append(p.secrets, token)
+	if encoded, err := json.Marshal(token); err == nil && len(encoded) > 2 {
+		p.secrets = append(p.secrets, string(encoded[1:len(encoded)-1]))
+	}
+	p.secrets = append(p.secrets, url.QueryEscape(token), url.PathEscape(token))
+}
+
+func (p *ExternalProcess) secretValues() []string {
+	p.secretsMu.Lock()
+	defer p.secretsMu.Unlock()
+	return append([]string(nil), p.secrets...)
 }
 
 // Close terminates the source's process and fails any outstanding calls.
@@ -293,7 +419,7 @@ func (p *ExternalProcess) ensureInitializedLocked(ctx context.Context) (*externa
 		return run, nil
 	}
 	var raw json.RawMessage
-	params := map[string]any{"protocolMajors": []int{1}, "hostFeatures": []string{}}
+	params := map[string]any{"protocolMajors": []int{1}, "hostFeatures": []string{"host-credential-v1"}}
 	_, dispatched, err := p.callRun(ctx, run, "initialize", params, &raw)
 	if err != nil {
 		if dispatched {
@@ -304,7 +430,14 @@ func (p *ExternalProcess) ensureInitializedLocked(ctx context.Context) (*externa
 	manifest, err := validateExternalManifest(raw, p.source)
 	if err != nil {
 		p.failProcess(run, "invalid adapter manifest", false)
+		if strings.HasPrefix(err.Error(), "credential-feature-required:") {
+			return nil, fmt.Errorf("credential-feature-required: adapter does not declare host-credential-v1")
+		}
 		return nil, p.errorWithStderr(run, "invalid adapter manifest")
+	}
+	if !p.checkMode && len(p.source.CredentialHelper) == 0 && externalWriteContains(manifest.RequiredFeatures, "host-credential-v1") {
+		p.failProcess(run, "credential-feature-required", false)
+		return nil, fmt.Errorf("credential-feature-required: source needs a host credential helper")
 	}
 	p.mu.Lock()
 	if p.closed || p.run != run || run.dead.Load() {
@@ -658,6 +791,9 @@ func (p *ExternalProcess) readResponses(run *externalProcessRun) {
 			}
 			return
 		}
+		if secret := p.probeSecret.Load(); p.checkMode && secret != nil && bytes.Contains(frame, []byte(*secret)) {
+			p.probeLeak.Store(true)
+		}
 		id, result, diagnostic, err := parseExternalResponse(frame)
 		if err != nil {
 			p.failProcess(run, "adapter protocol response is invalid", false)
@@ -704,9 +840,21 @@ func (p *ExternalProcess) readResponses(run *externalProcessRun) {
 func (p *ExternalProcess) drainStderr(run *externalProcessRun) {
 	defer close(run.stderrDone)
 	buffer := make([]byte, 4096)
+	var probeTail []byte
 	for {
 		n, err := run.stderr.Read(buffer)
 		if n > 0 {
+			if secret := p.probeSecret.Load(); p.checkMode && secret != nil {
+				combined := append(probeTail, buffer[:n]...)
+				if bytes.Contains(combined, []byte(*secret)) {
+					p.probeLeak.Store(true)
+				}
+				keep := len(*secret) - 1
+				if keep > len(combined) {
+					keep = len(combined)
+				}
+				probeTail = append(probeTail[:0], combined[len(combined)-keep:]...)
+			}
 			run.stderrMu.Lock()
 			remaining := externalStderrLimit - len(run.stderrData)
 			if remaining > 0 {
@@ -749,9 +897,16 @@ func (p *ExternalProcess) failProcess(run *externalProcessRun, message string, r
 		p.mu.Unlock()
 
 		_ = run.stdin.Close()
+		terminateExternalProcess(run.cmd)
+		// Let the bounded stderr reader consume already-written diagnostics before
+		// closing its pipe. The conformance probe must see bytes beyond the
+		// retained 64 KiB even when the response races process shutdown.
+		select {
+		case <-run.stderrDone:
+		case <-time.After(time.Second):
+		}
 		_ = run.stdout.Close()
 		_ = run.stderr.Close()
-		terminateExternalProcess(run.cmd)
 		for _, call := range pending {
 			<-p.slots
 			call.result <- externalResponse{err: fmt.Errorf("%s", message), run: run}
@@ -767,8 +922,9 @@ func (p *ExternalProcess) errorWithStderr(run *externalProcessRun, message strin
 	run.stderrMu.Lock()
 	stderr := append([]byte(nil), run.stderrData...)
 	run.stderrMu.Unlock()
-	diagnostic := redactExternalText(string(stderr), p.secrets)
-	for _, secret := range p.secrets {
+	secrets := p.secretValues()
+	diagnostic := redactExternalText(string(stderr), secrets)
+	for _, secret := range secrets {
 		if len(secret) > externalDiagnosticLimit {
 			diagnostic = ""
 			break
@@ -863,7 +1019,9 @@ func validateExternalScope(params map[string]json.RawMessage, sourceID, method, 
 					}
 				}
 				if isExternalCredentialField(childKey) {
-					return fmt.Errorf("raw credentials are not permitted in external adapter parameters")
+					if method != "credential" || !root || childKey != "credential" || credentialRef != "" {
+						return fmt.Errorf("raw credentials are not permitted in external adapter parameters")
+					}
 				}
 				if err := walk(child, false); err != nil {
 					return err
@@ -1047,7 +1205,7 @@ func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (E
 		!config.ValidQueueAdapterManifestIdentity(manifest.ID, manifest.Version) ||
 		manifest.Protocol.MinMajor > 1 || manifest.Protocol.MaxMajor < 1 ||
 		manifest.Protocol.MinMajor < 1 || manifest.Protocol.MaxMajor < manifest.Protocol.MinMajor ||
-		manifest.ResourcePolicy != "generic" || len(manifest.RequiredFeatures) != 0 {
+		manifest.ResourcePolicy != "generic" {
 		return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
 	}
 	var schema map[string]json.RawMessage
@@ -1063,8 +1221,16 @@ func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (E
 			return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
 		}
 	}
-	if len(manifest.RequiredFeatures) != 0 || hasDuplicateStrings(manifest.Capabilities) || hasDuplicateStrings(manifest.RequiredFeatures) || !validExternalObjectKeys(manifestFields["protocol"], "minMajor", "maxMajor") {
+	if hasDuplicateStrings(manifest.Capabilities) || hasDuplicateStrings(manifest.RequiredFeatures) || !validExternalObjectKeys(manifestFields["protocol"], "minMajor", "maxMajor") {
 		return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
+	}
+	for _, feature := range manifest.RequiredFeatures {
+		if feature != "host-credential-v1" {
+			return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
+		}
+	}
+	if len(source.CredentialHelper) != 0 && !externalWriteContains(manifest.RequiredFeatures, "host-credential-v1") && !externalWriteContains(manifest.Authentication, "host-credential-v1") {
+		return ExternalAdapterManifest{}, fmt.Errorf("credential-feature-required: adapter does not declare host-credential-v1")
 	}
 	manifest.Raw = append(json.RawMessage(nil), fields["manifest"]...)
 	return manifest, nil
@@ -1171,6 +1337,7 @@ func externalDiagnosticCode(diagnostic string) int {
 		"authentication-required": -32002, "authentication-failed": -32003,
 		"authorization-denied": -32004, "conflict": -32005, "rate-limited": -32006,
 		"unavailable-source": -32007, "incomplete-graph": -32008, "unknown-outcome": -32009,
+		"credential-scope-mismatch": -32010,
 	}
 	return codes[diagnostic]
 }

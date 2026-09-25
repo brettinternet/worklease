@@ -148,6 +148,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		}
 		defer index.Close()
 		loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
+		loader.LinearSync = queueindex.LinearSyncStore{Index: index, Registry: registry}
 		maxAge := time.Duration(0)
 		if cmd.IsSet("max-age") {
 			maxAge = cmd.Duration("max-age")

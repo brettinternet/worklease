@@ -22,7 +22,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-const SchemaGeneration = 7
+const SchemaGeneration = 8
 const Retention = 30 * 24 * time.Hour
 
 type Partition struct{ Source, Principal, Scope, Generation string }
@@ -170,7 +170,7 @@ func (i *Index) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != SchemaGeneration {
+	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS body_partitions (partition TEXT PRIMARY KEY)`); err != nil {
@@ -182,6 +182,7 @@ func (i *Index) migrate(ctx context.Context) error {
 			"partitions":      {"partition", "observed", "complete"},
 			"search":          {"partition", "ref", "title", "body"},
 			"body_partitions": {"partition"},
+			"linear_sync":     {"partition", "cursor", "committed_watermark", "scan_watermark", "relation_offset"},
 		} {
 			rows, err := conn.QueryContext(ctx, "PRAGMA table_info("+table+")")
 			if err != nil {
@@ -258,6 +259,12 @@ func (i *Index) migrate(ctx context.Context) error {
 			if _, err = conn.ExecContext(ctx, statement); err != nil {
 				return err
 			}
+		}
+		version = 7
+	}
+	if version == 7 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE linear_sync (partition TEXT PRIMARY KEY, cursor TEXT NOT NULL, committed_watermark INTEGER NOT NULL, scan_watermark INTEGER NOT NULL, relation_offset INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=8`); err != nil {
+			return err
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {

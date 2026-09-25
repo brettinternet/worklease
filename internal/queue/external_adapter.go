@@ -33,6 +33,7 @@ func RegisterExternalSources(registry *Registry, configured []config.QueueSource
 		adapter *ExternalAdapter
 	}
 	registrations := make([]registration, 0)
+	credentials := new(CredentialHelper)
 	seen := make(map[string]bool)
 	for _, source := range configured {
 		if source.Adapter != "external" {
@@ -53,7 +54,7 @@ func RegisterExternalSources(registry *Registry, configured []config.QueueSource
 		if err != nil {
 			return nil, err
 		}
-		registrations = append(registrations, registration{key: key, adapter: &ExternalAdapter{source: copy, env: env}})
+		registrations = append(registrations, registration{key: key, adapter: &ExternalAdapter{source: copy, env: env, credentials: credentials}})
 	}
 	for i, registration := range registrations {
 		if err := registry.Register(registration.key, registration.adapter); err != nil {
@@ -79,8 +80,9 @@ func RegisterExternalSources(registry *Registry, configured []config.QueueSource
 // ExternalAdapter adapts one supervised external process to the queue read model.
 // Its process is created lazily on Resolve and is always bound to one source ID.
 type ExternalAdapter struct {
-	source config.QueueSource
-	env    func(string) string
+	source      config.QueueSource
+	env         func(string) string
+	credentials *CredentialHelper
 
 	mu                 sync.Mutex
 	resolveMu          sync.Mutex
@@ -475,6 +477,9 @@ func (a *ExternalAdapter) getProcess() (*ExternalProcess, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.credentials != nil {
+		process.credentials = a.credentials
+	}
 	a.process = process
 	return process, nil
 }
@@ -499,8 +504,12 @@ func (a *ExternalAdapter) resolveProcess(ctx context.Context, process *ExternalP
 	if err := process.Call(ctx, "resolve", params, &result); err != nil {
 		return Source{}, 0, err
 	}
-	if _, err := result.Context.observation(); err != nil {
+	observation, err := result.Context.observation()
+	if err != nil {
 		return Source{}, 0, err
+	}
+	if len(a.source.CredentialHelper) != 0 && observation.Principal != a.source.Account {
+		return Source{}, 0, fmt.Errorf("credential-scope-mismatch: resolved principal differs from approved account")
 	}
 	if result.Source.ID != a.source.ID || !validExternalText(result.Source.Name) || !validExternalLocator(result.Source.Locator) {
 		return Source{}, 0, fmt.Errorf("external adapter resolved a different or invalid source")
@@ -1182,6 +1191,7 @@ func cloneExternalQueueSource(source config.QueueSource) (config.QueueSource, er
 		return config.QueueSource{}, fmt.Errorf("external adapter source configuration is invalid")
 	}
 	source.Config = copied
+	source.CredentialHelper = append([]string(nil), source.CredentialHelper...)
 	return source, nil
 }
 

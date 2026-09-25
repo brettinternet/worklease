@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -297,9 +298,6 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 						return QueueConfig{}, fmt.Errorf("%s: account and credentialHelper required", label)
 					}
 				case "external":
-					if err := rejectQueueFields(nested, label, "credentialHelper"); err != nil {
-						return QueueConfig{}, err
-					}
 					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "host", "repository"); err != nil {
 						return QueueConfig{}, err
 					}
@@ -562,6 +560,28 @@ func validateExternalQueueSource(label string, fields map[string]*yaml.Node) err
 		}
 		if err := validateQueueClaimSource(source); err != nil {
 			return fmt.Errorf("%s.claims.source: %w", label, err)
+		}
+	}
+	if helper := fields["credentialHelper"]; helper != nil {
+		if fields["account"] == nil || fields["credentialRef"] != nil {
+			return fmt.Errorf("%s.credentialHelper: account required and credentialRef is mutually exclusive", label)
+		}
+		if helper.Kind != yaml.SequenceNode || len(helper.Content) == 0 || len(helper.Content) > 32 {
+			return fmt.Errorf("%s.credentialHelper: absolute executable and at most 32 arguments required", label)
+		}
+		for i, arg := range helper.Content {
+			if arg.Kind != yaml.ScalarNode || arg.Tag != "!!str" || len(arg.Value) > 4096 || strings.ContainsRune(arg.Value, '\x00') || (i == 0 && (!filepath.IsAbs(arg.Value) || filepath.Clean(arg.Value) != arg.Value)) {
+				return fmt.Errorf("%s.credentialHelper[%d]: invalid argument", label, i)
+			}
+		}
+		var configuration map[string]any
+		if err := fields["config"].Decode(&configuration); err != nil {
+			return fmt.Errorf("%s.config: invalid credential origin", label)
+		}
+		origin, _ := configuration["origin"].(string)
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+			return fmt.Errorf("%s.config.origin: canonical HTTPS origin required for credential helper", label)
 		}
 	}
 	if account := fields["account"]; account != nil {
