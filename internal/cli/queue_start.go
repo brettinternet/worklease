@@ -23,7 +23,8 @@ type queueStartController struct {
 
 func (c queueStartController) prepare(ctx context.Context, item queue.Item) (queueui.StartPreview, queueClaimPlan, error) {
 	cfg, ok := c.write.configured[item.Ref.SourceID]
-	if !ok || cfg.Workflow["start"] == "" || cfg.Adapter != "backlog-md" {
+	projectStart := cfg.Adapter == "github" && cfg.GitHubProject != nil && cfg.GitHubProject.AllowWrites
+	if !ok || cfg.Workflow["start"] == "" || cfg.Adapter != "backlog-md" && !projectStart {
 		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work has no supported provider mapping; Claim only")
 	}
 	plan, err := c.claim.prepare(ctx, item)
@@ -38,6 +39,9 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 	for _, source := range live.Sources {
 		if source.ID == cfg.ID {
 			current = source.Adapter == cfg.Adapter && source.Checkout == cfg.Checkout && source.Repository == cfg.Repository && source.Host == cfg.Host && source.Account == cfg.Account && source.Workflow["start"] == cfg.Workflow["start"]
+			if projectStart {
+				current = current && reflect.DeepEqual(source.GitHubProject, cfg.GitHubProject) && reflect.DeepEqual(source.Workflow, cfg.Workflow)
+			}
 			break
 		}
 	}
@@ -50,41 +54,57 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 	if err != nil {
 		return queueui.StartPreview{}, queueClaimPlan{}, err
 	}
-	backlog, ok := adapter.(*queue.BacklogWriteAdapter)
-	if !ok {
-		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work has no supported provider mapping; Claim only")
-	}
-	actor := c.write.me[plan.source.Source.ID]
-	var liveActor []string
-	if entry, ok := live.Me["backlog-md"]; ok {
-		if err := entry.Decode(&liveActor); err != nil {
+	if backlog, ok := adapter.(*queue.BacklogWriteAdapter); ok {
+		actor := c.write.me[plan.source.Source.ID]
+		var liveActor []string
+		if entry, ok := live.Me["backlog-md"]; ok {
+			if err := entry.Decode(&liveActor); err != nil {
+				return queueui.StartPreview{}, queueClaimPlan{}, err
+			}
+		}
+		if len(actor) == 0 || actor[0] == "" || !slices.Equal(actor, liveActor) {
+			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("provider actor changed or is not configured; reopen the queue")
+		}
+		intent, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
+		if err != nil {
 			return queueui.StartPreview{}, queueClaimPlan{}, err
 		}
+		preflight, err := backlog.Inspect(ctx, intent)
+		if err != nil {
+			return queueui.StartPreview{}, queueClaimPlan{}, err
+		}
+		if !preflight.Capability || !preflight.Authorized || !preflight.InScope || !preflight.Fresh || !preflight.NativeAvailable || !preflight.Ready || preflight.Precondition != intent.Precondition {
+			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work provider permission or readiness unavailable")
+		}
+		effects := []string{"provider status change", "local Backlog.md watchers may refresh"}
+		if detail.CreatesCommit {
+			effects = append(effects, "Git commit")
+		}
+		if detail.RunsHooks {
+			effects = append(effects, "Git hooks")
+		}
+		return queueui.StartPreview{Claim: plan.preview, Source: plan.source.Source.ID + " (" + plan.source.Source.Locator + ")", Actor: actor[0], Transition: transition, TransitionValue: transition, RequiredFields: "status=" + transition, Effect: strings.Join(detail.Argv, " "), SideEffects: effects}, plan, nil
 	}
-	if len(actor) == 0 || actor[0] == "" || !slices.Equal(actor, liveActor) {
-		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("provider actor changed or is not configured; reopen the queue")
+	if writer, ok := adapter.(*queue.GitHubWriteAdapter); ok && projectStart {
+		actor := cfg.Account
+		if actor == "" {
+			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("GitHub account is not configured")
+		}
+		intent, detail, err := writer.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor, Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"projectOptionID": transition}})
+		if err != nil {
+			return queueui.StartPreview{}, queueClaimPlan{}, err
+		}
+		preflight, err := writer.Inspect(ctx, intent)
+		if err != nil {
+			return queueui.StartPreview{}, queueClaimPlan{}, err
+		}
+		if !preflight.Capability || !preflight.Authorized || !preflight.InScope || !preflight.Fresh || !preflight.NativeAvailable || !preflight.Ready || preflight.Precondition != intent.Precondition {
+			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work provider permission or readiness unavailable")
+		}
+		optionName := strings.TrimPrefix(detail.Operation, "set-project-status-unconditionally: ")
+		return queueui.StartPreview{Claim: plan.preview, Source: plan.source.Source.ID + " (" + plan.source.Source.Locator + ")", Actor: actor, Transition: optionName, TransitionValue: transition, RequiredFields: "project status=" + optionName, Effect: detail.Operation, SideEffects: []string{"GitHub Projects v2 item status update; transition is unconditional"}}, plan, nil
 	}
-	// Prepare reads the current provider task and checks the mapped status and
-	// permissions without needing an acquired claim or dispatching a write.
-	intent, detail, err := backlog.Prepare(ctx, queue.WriteIntent{OperationID: "start-preview", Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor[0], Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"status": transition}})
-	if err != nil {
-		return queueui.StartPreview{}, queueClaimPlan{}, err
-	}
-	preflight, err := backlog.Inspect(ctx, intent)
-	if err != nil {
-		return queueui.StartPreview{}, queueClaimPlan{}, err
-	}
-	if !preflight.Capability || !preflight.Authorized || !preflight.InScope || !preflight.Fresh || !preflight.NativeAvailable || !preflight.Ready || preflight.Precondition != intent.Precondition {
-		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work provider permission or readiness unavailable")
-	}
-	effects := []string{"provider status change", "local Backlog.md watchers may refresh"}
-	if detail.CreatesCommit {
-		effects = append(effects, "Git commit")
-	}
-	if detail.RunsHooks {
-		effects = append(effects, "Git hooks")
-	}
-	return queueui.StartPreview{Claim: plan.preview, Source: plan.source.Source.ID + " (" + plan.source.Source.Locator + ")", Actor: actor[0], Transition: transition, RequiredFields: "status=" + transition, Effect: strings.Join(detail.Argv, " "), SideEffects: effects}, plan, nil
+	return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work has no supported provider mapping; Claim only")
 }
 
 func (c queueStartController) Preview(ctx context.Context, item queue.Item) tea.Cmd {
@@ -128,7 +148,11 @@ func (c queueStartController) Start(ctx context.Context, item queue.Item, previe
 			}
 		}
 		if err == nil {
-			writePreview, _, prepareErr := c.write.prepare(ctx, observed, queue.ActionStart, preview.Transition, "", "", "")
+			transition := preview.TransitionValue
+			if transition == "" {
+				transition = preview.Transition
+			}
+			writePreview, _, prepareErr := c.write.prepare(ctx, observed, queue.ActionStart, transition, "", "", "")
 			err = prepareErr
 			if err == nil {
 				written := c.write.Confirm(ctx, writePreview)().(queueui.WriteResultMsg)

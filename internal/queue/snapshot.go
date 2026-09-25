@@ -541,6 +541,23 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			scanWatermark = time.Now().UTC()
 		}
 	}
+	var projectStatusAdapter interface {
+		ProjectStatusBound(Source) bool
+		RefreshProjectStatus(context.Context, Source) error
+		ApplyProjectStatus(Source, Item) Item
+	}
+	if candidate, ok := a.(interface {
+		ProjectStatusBound(Source) bool
+		RefreshProjectStatus(context.Context, Source) error
+		ApplyProjectStatus(Source, Item) Item
+	}); ok && candidate.ProjectStatusBound(source) {
+		projectStatusAdapter = candidate
+		if err := candidate.RefreshProjectStatus(ctx, source); err != nil {
+			l.failSourceError(ctx, source.ID, generation, err, out)
+			return
+		}
+	}
+	projectStatusApplied := false
 	seenRefs := map[string]bool{}
 	seenCursors := map[string]bool{}
 	pagesRead := 0
@@ -706,6 +723,18 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 			}
 		}
 		published := l.publish(ctx, source.ID, generation, func(s *Snapshot) {
+			if projectStatusAdapter != nil {
+				for key, existing := range s.Items {
+					if existing.Ref.SourceID != source.ID {
+						continue
+					}
+					if !projectStatusApplied {
+						existing.Fresh = false
+						existing.ReadOutcome = "stale"
+					}
+					s.Items[key] = projectStatusAdapter.ApplyProjectStatus(source, existing)
+				}
+			}
 			if cursor == "" {
 				for key, item := range s.Items {
 					if item.Ref.SourceID == source.ID {
@@ -752,6 +781,7 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 		if !published {
 			break // superseded before publication: do not persist unseen pages
 		}
+		projectStatusApplied = true
 		if source.Adapter == "linear" && l.LinearSync != nil {
 			pageItems := make([]Item, 0, len(items))
 			for _, item := range items {
@@ -807,6 +837,11 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 					for _, item := range resumedProjection {
 						if item.Ref.SourceID == source.ID {
 							if _, exists := s.Items[item.Ref.Key()]; !exists {
+								if projectStatusAdapter != nil {
+									item = projectStatusAdapter.ApplyProjectStatus(source, item)
+									item.Fresh = false // Issue evidence came from a prior reconciliation pass.
+									item.ReadOutcome = "stale"
+								}
 								s.Items[item.Ref.Key()] = item
 							}
 						}

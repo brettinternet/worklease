@@ -109,6 +109,54 @@ func TestQueueSchema(t *testing.T) {
 	}
 }
 
+func TestQueueGitHubProjectBindingUsesExplicitStableOptions(t *testing.T) {
+	home := t.TempDir()
+	env := func(key string) string {
+		if key == "HOME" {
+			return home
+		}
+		return ""
+	}
+	base := strings.Replace(queueFixture(home), "    account: brett\n", "    account: brett\n    githubProject:\n      owner: acme\n      number: 5\n      id: PVT_project\n      fieldId: PVTSSF_status\n      allowWrites: true\n      options: {option-open: open, option-progress: in-progress, option-blocked: blocked, option-review: review, option-done: complete}\n    workflow: {start: option-progress, blocked: option-blocked, review: option-review}\n", 1)
+	cfg, err := parseQueue([]byte(base), env, nil)
+	if err != nil {
+		t.Fatalf("valid Projects v2 binding: %v", err)
+	}
+	project := cfg.Sources[1].GitHubProject
+	if project == nil || project.Owner != "acme" || project.Number != 5 || project.ID != "PVT_project" || project.FieldID != "PVTSSF_status" || !project.AllowWrites || project.Options["option-progress"] != "in-progress" || cfg.Sources[1].Workflow["start"] != "option-progress" {
+		t.Fatalf("project binding was not preserved: %+v", project)
+	}
+	disabled, err := parseQueue([]byte(strings.Replace(base, "      allowWrites: true\n", "", 1)), env, nil)
+	if err != nil || disabled.Sources[1].GitHubProject == nil || disabled.Sources[1].GitHubProject.AllowWrites {
+		t.Fatalf("Projects v2 writes were not disabled by default: config=%+v err=%v", disabled.Sources[1].GitHubProject, err)
+	}
+
+	cases := []struct{ name, replacement, want string }{
+		{"missing project ID", "      id: ''", "githubProject: owner, positive number"},
+		{"invalid field ID", "      fieldId: PVT_field", "githubProject: owner, positive number"},
+		{"invalid option state", "option-progress: doing", "githubProject.options: expected option IDs"},
+		{"wrong start state", "start: option-open", "workflow.start: project transition"},
+		{"unknown start option", "start: option-missing", "workflow.start: project transition"},
+		{"non-boolean write switch", "      allowWrites: 'yes'", "githubProject.allowWrites: expected boolean"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := base
+			if tc.name == "missing project ID" || tc.name == "invalid field ID" || tc.name == "non-boolean write switch" {
+				old := map[string]string{"missing project ID": "      id: PVT_project", "invalid field ID": "      fieldId: PVTSSF_status", "non-boolean write switch": "      allowWrites: true"}[tc.name]
+				content = strings.Replace(content, old, tc.replacement, 1)
+			} else if tc.name == "invalid option state" {
+				content = strings.Replace(content, "option-progress: in-progress", tc.replacement, 1)
+			} else {
+				content = strings.Replace(content, "start: option-progress", tc.replacement, 1)
+			}
+			if _, err := parseQueue([]byte(content), env, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, adapter := range []string{"linear", "jira-cloud"} {
@@ -217,6 +265,25 @@ func TestQueueExternalAdapterConfiguration(t *testing.T) {
 	withoutCredential := strings.Replace(valid, "    credentialRef: credential:github\n", "", 1)
 	if _, err := parseQueue([]byte(withoutCredential), env, nil); err != nil {
 		t.Fatalf("optional credential reference: %v", err)
+	}
+	withHelper := strings.Replace(withoutCredential, "    config: {tenant: acme}\n", "    config: {tenant: acme, origin: 'https://api.example.test'}\n    account: alice\n    credentialHelper: [/opt/example/helper, --account=alice]\n", 1)
+	parsed, err := parseQueue([]byte(withHelper), env, nil)
+	if err != nil || len(parsed.Sources[0].CredentialHelper) != 2 || parsed.Sources[0].Account != "alice" {
+		t.Fatalf("host-resolved credential configuration: %+v, %v", parsed, err)
+	}
+	for _, tc := range []struct{ name, content, want string }{
+		{"missing origin", strings.Replace(withHelper, "origin: 'https://api.example.test'", "origin: ''", 1), "config.origin"},
+		{"insecure origin", strings.Replace(withHelper, "https://api.example.test", "http://api.example.test", 1), "config.origin"},
+		{"relative helper", strings.Replace(withHelper, "/opt/example/helper", "./helper", 1), "credentialHelper[0]"},
+		{"missing account", strings.Replace(withHelper, "    account: alice\n", "", 1), "credentialHelper"},
+		{"legacy reference", strings.Replace(withHelper, "    account: alice\n", "    account: alice\n    credentialRef: legacy\n", 1), "credentialRef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseQueue([]byte(tc.content), env, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
 	}
 	builtInWithExternalField := strings.Replace(queueFixture(home), "    adapter: backlog-md", "    adapter: backlog-md\n    executable: /opt/adapter", 1)
 	if _, err := parseQueue([]byte(builtInWithExternalField), env, nil); err == nil || !strings.Contains(err.Error(), "sources[0].executable") {

@@ -20,7 +20,8 @@ import (
 // operation; there is intentionally no unattended write mode.
 type GitHubWriteAdapter struct {
 	*GitHubAdapter
-	Interactive bool
+	Interactive        bool
+	AllowProjectWrites bool
 }
 
 type GitHubWritePreview struct {
@@ -28,6 +29,7 @@ type GitHubWritePreview struct {
 	Marker                  string `json:"marker,omitempty"`
 	ConditionalBodyWrite    bool   `json:"conditionalBodyWrite"`
 	PreservesOtherAssignees bool   `json:"preservesOtherAssignees,omitempty"`
+	Unconditional           bool   `json:"unconditional,omitempty"`
 }
 
 const githubIssueCommentQuery = `query($owner:String!,$repo:String!,$number:Int!,$after:String,$count:Int!) { rateLimit { remaining resetAt } repository(owner:$owner,name:$repo) { nameWithOwner issue(number:$number) { number repository { nameWithOwner } comments(first:$count,after:$after) { nodes { id body createdAt author { login } } pageInfo { hasNextPage endCursor } } } } }`
@@ -83,6 +85,13 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 		if len(intent.Patch) == 0 {
 			intent.Patch = map[string]string{"assignee": b.account}
 		}
+	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview:
+		if !a.projectWritesAllowed(b) {
+			return intent, preview, GitHubDiagnostic{"project-write-disabled", "Projects v2 status writes require project.allowWrites and approved write scope"}
+		}
+		if len(intent.Patch) == 0 {
+			intent.Patch = map[string]string{"projectOptionID": intent.Transition}
+		}
 	default:
 		return intent, preview, GitHubDiagnostic{"no-workflow-mapping", "GitHub Issues has no supported mapping for this action"}
 	}
@@ -97,6 +106,21 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 	issue, err := a.writeIssue(ctx, b, intent)
 	if err != nil {
 		return intent, preview, err
+	}
+	if isGitHubProjectStatusAction(intent.Action) {
+		projectItem, err := githubProjectItemByIssue(ctx, a.GitHubAdapter, b, issue)
+		if err != nil {
+			return intent, preview, err
+		}
+		intent.Patch = map[string]string{"projectID": b.project.ID, "projectItemID": projectItem.itemID, "projectFieldID": b.project.FieldID, "projectOptionID": intent.Transition, "issueNodeID": issue.ID}
+		if err := validateGitHubWriteIntent(intent, b.account); err != nil {
+			return intent, preview, err
+		}
+		intent.Precondition = githubProjectWriteVersion(issue, projectItem)
+		preview.Operation = "set-project-status-unconditionally: " + a.projectOptionName(b, intent.Transition)
+		preview.Unconditional = true
+		preview.ConditionalBodyWrite = false
+		return intent, preview, nil
 	}
 	intent.Precondition = githubWriteVersion(issue)
 	preview.ConditionalBodyWrite = false
@@ -142,6 +166,15 @@ func validateGitHubWriteIntent(intent WriteIntent, account string) error {
 		if !exactStringMap(intent.Patch, map[string]string{"assignee": account}) || intent.Append != "" || intent.Marker != "" {
 			return GitHubDiagnostic{"invalid-intent", "assignment must add only the configured account"}
 		}
+	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview:
+		if intent.Append != "" || intent.Marker != "" || intent.Transition == "" {
+			return GitHubDiagnostic{"invalid-intent", "project status transition requires a configured option ID"}
+		}
+		prepared := exactStringMap(intent.Patch, map[string]string{"projectOptionID": intent.Transition})
+		complete := len(intent.Patch) == 5 && intent.Patch["projectOptionID"] == intent.Transition && intent.Patch["projectID"] != "" && intent.Patch["projectItemID"] != "" && intent.Patch["projectFieldID"] != "" && intent.Patch["issueNodeID"] != ""
+		if !prepared && !complete {
+			return GitHubDiagnostic{"invalid-intent", "project status write must target the exact configured item, field, and option"}
+		}
 	default:
 		return GitHubDiagnostic{"no-workflow-mapping", "GitHub Issues has no supported mapping for this action"}
 	}
@@ -160,9 +193,43 @@ func exactStringMap(actual, expected map[string]string) bool {
 	return true
 }
 
+func (a *GitHubWriteAdapter) projectWritesAllowed(binding *githubBinding) bool {
+	if binding == nil || binding.project == nil || !binding.project.AllowWrites || !a.AllowProjectWrites {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return binding.projectWriteScope
+}
+
+func (a *GitHubWriteAdapter) projectOptionName(binding *githubBinding, optionID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if name := binding.projectOptionNames[optionID]; name != "" {
+		return name
+	}
+	return optionID
+}
+
 func (a *GitHubWriteAdapter) ValidateTransition(_ context.Context, source Source, action Action, transition string) error {
 	if source.Adapter != "github" {
 		return GitHubDiagnostic{"invalid-source", "GitHub source required"}
+	}
+	if expected := githubProjectStateForAction(action); expected != "" {
+		binding, err := a.binding(source)
+		if err != nil {
+			return err
+		}
+		if binding.project == nil {
+			return GitHubDiagnostic{"no-workflow-mapping", "GitHub Issues has no supported mapping for this action"}
+		}
+		if !a.projectWritesAllowed(binding) {
+			return GitHubDiagnostic{"project-write-disabled", "Projects v2 status writes require project.allowWrites and approved write scope"}
+		}
+		if binding.project.Options[transition] != expected {
+			return GitHubDiagnostic{"no-workflow-mapping", "configured project option ID does not map to this workflow action"}
+		}
+		return nil
 	}
 	switch action {
 	case ActionComplete:
@@ -250,6 +317,28 @@ func (a *GitHubWriteAdapter) inspect(ctx context.Context, intent WriteIntent) (W
 	if err != nil {
 		return pre, nil, err
 	}
+	if isGitHubProjectStatusAction(intent.Action) {
+		if !a.projectWritesAllowed(b) || intent.Patch["projectID"] != b.project.ID || intent.Patch["projectFieldID"] != b.project.FieldID || intent.Patch["projectOptionID"] != intent.Transition {
+			return pre, nil, GitHubDiagnostic{"project-write-disabled", "Projects v2 status write no longer matches the configured field or option"}
+		}
+		item, err := a.readProjectItem(ctx, b, intent.Patch["projectItemID"])
+		if err != nil {
+			return pre, nil, err
+		}
+		if item.issueID != intent.Patch["issueNodeID"] || item.issueID != issue.ID || item.number != issue.Number {
+			return pre, nil, GitHubDiagnostic{"project-item-changed", "exact Projects v2 item no longer matches the configured issue"}
+		}
+		version := githubProjectWriteVersion(issue, item)
+		if intent.Precondition == "" || version != intent.Precondition {
+			return pre, nil, GitHubDiagnostic{"conflict", "issue or project item changed since write preview"}
+		}
+		pre = WritePreflight{Capability: true, Authorized: true, InScope: true, Fresh: true, NativeAvailable: true, Owner: true, Precondition: version}
+		if intent.Action == ActionStart || intent.Action == ActionResume {
+			currentState, mapped := b.project.Options[item.optionID]
+			pre.Ready = issue.State == "OPEN" && mapped && currentState != "blocked" && currentState != "complete"
+		}
+		return pre, b, nil
+	}
 	version := githubWriteVersion(issue)
 	if intent.Precondition == "" || version != intent.Precondition {
 		return pre, nil, GitHubDiagnostic{"conflict", "issue changed since write preview"}
@@ -288,6 +377,9 @@ func (a *GitHubWriteAdapter) Write(ctx context.Context, intent WriteIntent) (Pro
 		if viewer != current.account {
 			return nil, GitHubDiagnostic{"authentication", "authenticated principal does not match configured account"}
 		}
+		if isGitHubProjectStatusAction(intent.Action) && !a.projectWritesAllowed(current) {
+			return nil, GitHubDiagnostic{"project-write-disabled", "Projects v2 write scope or configuration changed before dispatch"}
+		}
 		// Space the actual REST mutations, not their preceding viewer checks.
 		if err := gate.mutationSlot(workCtx); err != nil {
 			return nil, err
@@ -319,6 +411,9 @@ func githubWriteScheduleError(err error) error {
 }
 
 func (a *GitHubWriteAdapter) dispatch(ctx context.Context, b *githubBinding, gate *quotaQueue, intent WriteIntent, actor string) (ProviderReceipt, error) {
+	if isGitHubProjectStatusAction(intent.Action) {
+		return a.dispatchProjectStatus(ctx, b, gate, intent)
+	}
 	var payload any
 	var method, endpoint string
 	parts := strings.Split(b.repository, "/")
@@ -379,6 +474,66 @@ func (a *GitHubWriteAdapter) dispatch(ctx context.Context, b *githubBinding, gat
 		receipt.ID, receipt.Actor = comment.ID, actor
 	}
 	return receipt, nil
+}
+
+const githubProjectStatusMutation = `mutation($projectID:ID!,$itemID:ID!,$fieldID:ID!,$optionID:String!) { updateProjectV2ItemFieldValue(input:{projectId:$projectID,itemId:$itemID,fieldId:$fieldID,value:{singleSelectOptionId:$optionID}}) { projectV2Item { id } } }`
+
+func (a *GitHubWriteAdapter) dispatchProjectStatus(ctx context.Context, binding *githubBinding, gate *quotaQueue, intent WriteIntent) (ProviderReceipt, error) {
+	body, _ := json.Marshal(struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}{githubProjectStatusMutation, map[string]any{"projectID": binding.project.ID, "itemID": intent.Patch["projectItemID"], "fieldID": intent.Patch["projectFieldID"], "optionID": intent.Patch["projectOptionID"]}})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, binding.endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return ProviderReceipt{}, GitHubDiagnostic{"invalid-source", "invalid GitHub API endpoint"}
+	}
+	request.Header.Set("Authorization", "Bearer "+binding.token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/vnd.github+json")
+	response, err := a.client().Do(request) // A GraphQL mutation is never retried.
+	if err != nil {
+		return ProviderReceipt{}, GitHubDiagnostic{"offline", "Projects v2 write outcome unknown; recovery required"}
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
+	response.Body.Close()
+	a.observeWriteRate(gate, response, raw)
+	if readErr != nil || len(raw) > 8<<20 {
+		return ProviderReceipt{}, GitHubDiagnostic{"invalid-response", "Projects v2 write response unreadable; recovery required"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return ProviderReceipt{}, githubWriteHTTPError(response, raw, gate)
+	}
+	var payload struct {
+		Data struct {
+			Update *struct {
+				Item *struct {
+					ID string `json:"id"`
+				} `json:"projectV2Item"`
+			} `json:"updateProjectV2ItemFieldValue"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ProviderReceipt{}, GitHubDiagnostic{"invalid-response", "Projects v2 write response invalid; recovery required"}
+	}
+	if len(payload.Errors) > 0 {
+		for _, issue := range payload.Errors {
+			if strings.EqualFold(issue.Type, "FORBIDDEN") {
+				return ProviderReceipt{}, GitHubDiagnostic{"project-permission-denied", "Projects v2 write permission denied; outcome unknown and recovery required"}
+			}
+			if strings.Contains(strings.ToLower(issue.Message), "rate limit") {
+				return ProviderReceipt{}, GitHubDiagnostic{"rate-limited", "Projects v2 write quota exhausted; outcome unknown and recovery required"}
+			}
+		}
+		return ProviderReceipt{}, GitHubDiagnostic{"provider-error", "Projects v2 write failed; outcome unknown and recovery required"}
+	}
+	if payload.Data.Update == nil || payload.Data.Update.Item == nil || payload.Data.Update.Item.ID != intent.Patch["projectItemID"] {
+		return ProviderReceipt{}, GitHubDiagnostic{"invalid-response", "Projects v2 item receipt could not be verified; recovery required"}
+	}
+	return ProviderReceipt{SourceID: intent.Ref.SourceID, ItemID: intent.Ref.ItemID, ID: intent.Patch["projectItemID"]}, nil
 }
 
 func githubRESTBase(host, apiBase string) string {
@@ -498,6 +653,24 @@ func (a *GitHubWriteAdapter) ReadReceipt(ctx context.Context, intent WriteIntent
 			// Read-back can lag a committed write; do not close recovery yet.
 			return observed, nil
 		}
+	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview:
+		// Recovery is read-only and must remain possible after write opt-in is
+		// revoked; the dispatch gate is enforced in Prepare, Inspect, and Write.
+		if b.project == nil || intent.Patch["projectID"] != b.project.ID || intent.Patch["projectFieldID"] != b.project.FieldID || intent.Patch["projectOptionID"] != intent.Transition {
+			return observed, GitHubDiagnostic{"project-binding-changed", "journaled Projects v2 item or field no longer matches the configured binding"}
+		}
+		item, err := a.readProjectItem(ctx, b, intent.Patch["projectItemID"])
+		if err != nil {
+			return observed, err
+		}
+		if item.issueID != intent.Patch["issueNodeID"] || item.issueID != issue.ID || item.number != issue.Number || item.optionID != intent.Patch["projectOptionID"] {
+			return observed, nil
+		}
+		observed.Patch = map[string]string{}
+		for key, value := range intent.Patch {
+			observed.Patch[key] = value
+		}
+		observed.ReceiptID = item.itemID
 	case ActionAssignToMe:
 		found := false
 		for _, assignee := range issue.Assignees.Nodes {

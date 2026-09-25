@@ -255,7 +255,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.StateChoices = make(map[string][]queueui.StateChoice)
 	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
-		if source.Adapter == "backlog-md" {
+		if source.Adapter == "backlog-md" || source.Adapter == "github" && source.GitHubProject != nil && source.GitHubProject.AllowWrites {
 			model.StartTransitions[id] = source.Workflow["start"]
 		}
 		for _, step := range []struct {
@@ -263,7 +263,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			action queue.Action
 		}{{"start", queue.ActionStart}, {"blocked", queue.ActionReportBlocked}, {"review", queue.ActionRequestReview}, {"complete", queue.ActionComplete}, {"reopen", queue.ActionReopen}} {
 			if transition := source.Workflow[step.name]; transition != "" {
-				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen {
+				if source.Adapter == "github" && step.action != queue.ActionComplete && step.action != queue.ActionReopen && (source.GitHubProject == nil || !source.GitHubProject.AllowWrites) {
 					continue
 				}
 				model.StateChoices[id] = append(model.StateChoices[id], queueui.StateChoice{Action: step.action, Label: step.name, Transition: transition})

@@ -1,5 +1,6 @@
 [tools]
 go = "1.27.1"
+"github:steveyegge/beads" = "1.3.0" # internal/queue/beads.go requires 1.3.0
 "npm:backlog.md" = "1.52" # internal/queue/backlog.go requires 1.52.x
 lefthook = "latest"
 staticcheck = "2026.2.1"
@@ -11,7 +12,8 @@ cli = "go run ./cmd/worklease"
 lint = "staticcheck ./..."
 format = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
 format-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
-test = "go test ./..."
+beads-check = "bd version | grep -Eq '^bd version 1[.]3[.]0 [(]'"
+test = { run = "go test ./...", depends = ["beads-check"] }
 queue-benchmark = "python3 scripts/queue-benchmark.py"
 typecheck = "go vet ./..."
 hooks-install = "lefthook install"
@@ -26,6 +28,6 @@ authority-benchmark = { run = "python3 scripts/authority-queue-benchmark.py --bi
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
-race = "go test -race ./..."
+race = { run = "go test -race ./...", depends = ["beads-check"] }
 vuln = "govulncheck ./..."
 ci = { depends = ["format-check", "lint", "typecheck", "test", "race", "vuln", "e2e", "man"] }

@@ -51,7 +51,9 @@ func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, 
 		}
 		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: me[0]}, nil
 	case *queue.GitHubAdapter:
-		return queue.NewGitHubWriteAdapter(a, true), nil
+		configured := c.configured[source.ID]
+		allowProjectWrites := configured.GitHubProject != nil && configured.GitHubProject.AllowWrites
+		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: allowProjectWrites}, nil
 	case *queue.ExternalAdapter:
 		configured, ok := c.configured[source.ID]
 		if !ok || configured.Adapter != "external" || configured.Account == "" {
@@ -105,7 +107,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			continue
 		}
 		found = true
-		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] {
+		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
 		}
 		if configured.Adapter == "beads" && !reflect.DeepEqual(current.Workflow, configured.Workflow) {
@@ -190,6 +192,8 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		intent.Patch = map[string]string{"append": kind}
 	} else if action != queue.ActionAssignToMe && (source.Adapter == "backlog-md" || source.Adapter == "beads") {
 		intent.Patch = map[string]string{"status": transition}
+	} else if configured.GitHubProject != nil && source.Adapter == "github" && (action == queue.ActionStart || action == queue.ActionResume || action == queue.ActionReportBlocked || action == queue.ActionRequestReview) {
+		intent.Patch = map[string]string{"projectOptionID": transition}
 	}
 	claim := queueWriteClaim{backend: c.backend, path: path, session: c.session}
 	if err := claim.Verify(ctx, intent); err != nil {
@@ -240,7 +244,12 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		if intent.Action == queue.ActionComplete || intent.Action == queue.ActionReopen {
 			preview.Effect += ": " + intent.Transition
 		}
-		preview.SideEffects = []string{"GitHub issue notification to watchers"}
+		if detail.Unconditional {
+			preview.SideEffects = []string{"GitHub Projects v2 item status update"}
+			preview.Races = append(preview.Races, "project status transition is unconditional; external project writers are not fenced")
+		} else {
+			preview.SideEffects = []string{"GitHub issue notification to watchers"}
+		}
 	case *queue.ExternalWriteAdapter:
 		var detail queue.ExternalWritePreview
 		intent, detail, err = a.Prepare(ctx, intent)
@@ -310,7 +319,8 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 			case *queue.BeadsAdapter:
 				adapter = &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: record.Intent.Principal}
 			case *queue.GitHubAdapter:
-				adapter = queue.NewGitHubWriteAdapter(a, true)
+				configured := c.configured[record.Intent.Source.ID]
+				adapter = &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}
 			default:
 				result.Err = fmt.Errorf("write adapter unavailable")
 				return result

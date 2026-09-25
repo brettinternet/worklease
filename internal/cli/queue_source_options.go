@@ -19,5 +19,9 @@ func queueSourceOptions(source config.QueueSource) map[string]string {
 		encoded, _ := json.Marshal(source.CredentialHelper)
 		options["credentialHelper"] = string(encoded)
 	}
+	if source.Adapter == "github" && source.GitHubProject != nil {
+		data, _ := json.Marshal(source.GitHubProject)
+		options["project"] = string(data)
+	}
 	return options
 }
