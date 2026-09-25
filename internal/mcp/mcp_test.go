@@ -238,7 +238,6 @@ func TestMCPAcquireFixesHoldDeadlineBeforeWaiting(t *testing.T) {
 	}
 	_ = bundle.st.Close()
 
-	started := time.Now().UTC()
 	acquired, err := s.Call(context.Background(), "acquire", map[string]any{"resources": []any{"waited-resource"}, "ttl": float64(2), "wait": float64(2), "maxHold": float64(60), "autoHeartbeat": false})
 	if err != nil || acquired["isError"] == true {
 		t.Fatalf("waited acquire: %v %v", acquired, err)
@@ -248,8 +247,13 @@ func TestMCPAcquireFixesHoldDeadlineBeforeWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.HoldUntil.After(started.Add(60*time.Second + 500*time.Millisecond)) {
-		t.Fatalf("hold deadline moved with wait: started=%s hold=%s", started, h.HoldUntil)
+	claim := content["claim"].(map[string]any)
+	acquiredAt, err := time.Parse(time.RFC3339Nano, claim["acquiredAt"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.HoldUntil.Before(acquiredAt.Add(60 * time.Second)) {
+		t.Fatalf("hold deadline moved with wait: acquired=%s hold=%s", acquiredAt, h.HoldUntil)
 	}
 }
 

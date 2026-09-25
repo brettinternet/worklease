@@ -104,5 +104,5 @@ jobs:
       - name: Run platform tests and static build
         run: |
           mise run beads-check
-          go test ./...
+          go test -p 1 ./...
           mise run build
