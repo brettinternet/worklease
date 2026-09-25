@@ -18,6 +18,7 @@ worklease policy describe NAME
 worklease history [--resource RESOURCE]
 worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--apply] [--json]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
+worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]
 worklease queue authority-id --json
 worklease queue --view NAME identity confirm --source SOURCE --acknowledge
 ```
@@ -48,6 +49,14 @@ Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
 unsupported. Acquire persists a client-generated credential before dispatch and
 never returns it in text or JSON.
+
+## External adapter conformance
+
+`queue adapter check` launches only the explicitly named canonical absolute executable through the production supervised host. It snapshots its bytes but never reads/writes queue.yaml, adapter approvals, the queue index, or Worklease authority. The configuration is a JSON object supplied inline with `--adapter-config` or in a file with `--adapter-config-file`; it must satisfy the negotiated manifest schema. The process has user privileges, not a sandbox. Inspect it before running. Without `--disposable-target ITEM` no mutation is dispatched. With the flag, the checker may append a marked progress note **to that existing disposable item**; do not point it at real work. A read-only adapter does not write even when a target is supplied.
+
+`--json` uses the usual schema-version 2 envelope, operation `queue-adapter-check`. Successful results contain `verdict: "pass"`, a bounded manifest summary (`id`, `version`, `protocolMajor`), and `checks: [{id,status,reason,detail}]`. `status` is `pass`, `fail`, or `skip`; skips include a reason and do not count as passes. Details never contain provider payloads or stderr. A conformance failure returns `ok: false`, `error.reason: "adapter-conformance-failed"`, `error.exitCode: 65`, and `error.details.verdict` and `error.details.checks` in the same shape. An invalid flag, unreadable executable, or configuration error exits 64 (`invalid-argument`); success exits 0. Output is one JSON document per invocation. Human text renders the same check list.
+
+The checker exercises negotiation, configuration, source binding, capability/list/read/dependency semantics, continuation and budget, static resource-policy inputs, host frame/collection/deadline guards, and (only with an explicit target and declared supported mutation) a receipt and read-back without redispatch. The host tests crash restart and a redaction sentinel. To check adapter cancellation, configure a disposable fixture that blocks a `list` query with text `__worklease_conformance_cancel__`, writes `PATH.request` when it begins, handles `$/cancelRequest`, and writes `PATH.done` after aborting. Pass a fresh `--cancel-marker PATH` and the corresponding fixture config. Without that marker the check is `skip`, **not** certification of cancellation behavior. The checker only reads the marker files; the adapter creates them. Check those failure modes in your adapter's own tests before shipping.
 
 ## Short options
 

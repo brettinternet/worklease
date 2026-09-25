@@ -50,6 +50,23 @@ sources:
     config: {}
 ```
 
+Before adding the source to queue.yaml or approving it, check the built executable:
+
+```sh
+worklease queue adapter check --executable /absolute/path/worklease-sample-adapter --adapter-config '{}' --json
+```
+
+The checker reports one pass/fail/skip entry per check. Skipped probes are not
+passes: a normal read-only sample cannot demonstrate write recovery, and
+blocking cancellation fixtures and adapter-side secret handling must be tested separately. To exercise cancellation, configure a fixture that blocks the `__worklease_conformance_cancel__` list query, writes `PATH.request` when entered and `PATH.done` after handling `$/cancelRequest`, and pass a fresh `--cancel-marker PATH`. An ignored cancellation fails the check; without a marker it is skipped. The result
+uses the CLI schema-version 2 envelope, `queue-adapter-check` operation, and
+`verdict`, `manifest`, and `checks` fields. A failed check exits 65 with
+`adapter-conformance-failed` and the checks in `error.details`; invalid inputs
+exit 64; success exits 0. For an adapter that declares and supports mutations,
+`--disposable-target ITEM` explicitly opts into a marked progress write and
+receipt read-back against **only a disposable provider item**. Omit it for
+production items. Config may instead be loaded with `--adapter-config-file FILE`.
+
 Preview and inspect the exact source binding, executable path, identity/version,
 and digest before acknowledging owner approval:
 
@@ -73,14 +90,13 @@ From the repository root:
 ```sh
 go build -o /absolute/path/worklease-sample-adapter ./cmd/worklease-sample-adapter
 go test ./internal/sampleadapter
-# The conformance tests approve their isolated fixture executables; they do
-# not approve or run the binary you built above.
+worklease queue adapter check --executable /absolute/path/worklease-sample-adapter --json
+# In-repo fixtures exercise the same check implementation:
 go test ./internal/queue -run TestAdapterConformance
 ```
 
-The last command is the host conformance suite. It exercises the adapter
-through the production host rather than treating a successful process launch as
-proof of protocol conformance. The in-process sample tests also launch a
+Both checks exercise the production host rather than treating a successful
+process launch as proof of protocol conformance. The in-process sample tests also launch a
 one-purpose test-binary shim that calls the same exported `Run` function, so
 they do not build executables from within Go tests.
 

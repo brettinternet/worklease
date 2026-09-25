@@ -14,6 +14,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
+	"github.com/brettinternet/worklease/internal/sampleadapter"
 )
 
 func TestQueueAdapterApprovalProcessHelper(t *testing.T) {
@@ -28,6 +29,106 @@ func TestQueueAdapterApprovalProcessHelper(t *testing.T) {
 		return
 	}
 	runQueueAdapterApprovalProcessHelper(os.Args[separator+1])
+}
+
+func TestQueueAdapterCheckSampleWithoutApprovalOrQueueState(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	before, err := os.ReadFile(config.QueuePath(os.Getenv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sample-check")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestQueueAdapterCheckSampleHelper$' -- sample\n", shellQuote(binary))
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := h.run("queue", "adapter", "check", "--executable", path, "--json")
+	if err != nil {
+		t.Fatalf("sample conformance: %v: %s", err, data)
+	}
+	var result struct {
+		SchemaVersion int                  `json:"schemaVersion"`
+		Operation     string               `json:"operation"`
+		Verdict       string               `json:"verdict"`
+		Checks        []queue.AdapterCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || result.SchemaVersion != 2 || result.Operation != "queue-adapter-check" || result.Verdict != "pass" {
+		t.Fatalf("check result: %+v %v: %s", result, err, data)
+	}
+	if len(result.Checks) < 10 {
+		t.Fatalf("missing checks: %+v", result.Checks)
+	}
+	configPath := filepath.Join(t.TempDir(), "fixture.json")
+	if err := os.WriteFile(configPath, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := h.run("queue", "adapter", "check", "--executable", path, "--adapter-config-file", configPath, "--json")
+	if err != nil || !strings.Contains(string(fromFile), `"verdict":"pass"`) {
+		t.Fatalf("configuration file: %v %s", err, fromFile)
+	}
+	if _, err := os.Stat(config.QueueAdapterApprovalPath(os.Getenv)); !os.IsNotExist(err) {
+		t.Fatalf("check wrote approval: %v", err)
+	}
+	after, err := os.ReadFile(config.QueuePath(os.Getenv))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("check modified queue: %v", err)
+	}
+	bad, err := h.run("queue", "adapter", "check", "--executable", path, "--adapter-config", `{"wrong":"canary-credential-sentinel"}`, "--json")
+	if err == nil || !strings.Contains(string(bad), `"reason":"adapter-conformance-failed"`) || !strings.Contains(string(bad), `"exitCode":65`) || !strings.Contains(string(bad), `"operation":"queue-adapter-check"`) || strings.Contains(string(bad), "canary-credential-sentinel") {
+		t.Fatalf("conformance failure: %v %s", err, bad)
+	}
+	relative, err := filepath.Rel("/", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeResult, err := h.run("queue", "adapter", "check", "--executable", relative, "--json")
+	if err == nil || !strings.Contains(string(relativeResult), `"exitCode":64`) {
+		t.Fatalf("relative executable: %v %s", err, relativeResult)
+	}
+	unknown, err := h.run("queue", "adapter", "check", "--not-a-flag", "--json")
+	if err == nil || !strings.Contains(string(unknown), `"operation":"queue-adapter-check"`) || !strings.Contains(string(unknown), `"exitCode":64`) {
+		t.Fatalf("unknown flag: %v %s", err, unknown)
+	}
+	usage, err := h.run("queue", "adapter", "check", "--executable", path, "--adapter-config", `[]`, "--json")
+	if err == nil || !strings.Contains(string(usage), `"exitCode":64`) {
+		t.Fatalf("usage failure: %v %s", err, usage)
+	}
+}
+
+func TestQueueAdapterCheckDoesNotEchoAdapterSecrets(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	path := filepath.Join(t.TempDir(), "leaking-adapter")
+	secret := "private-canary-credential-765"
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '"+secret+"\\n' >&2\nprintf '{bad}\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.run("queue", "adapter", "check", "--executable", path, "--adapter-config", `{"credential":"`+secret+`"}`, "--json")
+	if err == nil || strings.Contains(string(result), secret) || !strings.Contains(string(result), `"reason":"adapter-conformance-failed"`) {
+		t.Fatalf("adapter output leaked or passed: %v %s", err, result)
+	}
+}
+
+func TestQueueAdapterCheckSampleHelper(t *testing.T) {
+	for index, arg := range os.Args {
+		if arg == "--" && index+1 < len(os.Args) && os.Args[index+1] == "sample" {
+			if err := sampleadapter.Run(os.Stdin, os.Stdout); err != nil {
+				os.Exit(1)
+			}
+			return
+		}
+	}
 }
 
 func TestQueueAdapterApprovalRequiresExplicitSourceAndConfirmation(t *testing.T) {

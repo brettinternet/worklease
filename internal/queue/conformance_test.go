@@ -100,6 +100,16 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			result = map[string]any{"context": conformanceContext(source.ID, "complete"), "capabilities": caps}
 		case "list":
+			var query struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(request.Params["query"], &query)
+			if query.Text == "__worklease_conformance_cancel__" && cancelMarker != "" {
+				_ = os.WriteFile(cancelMarker+".request", []byte("started"), 0600)
+				<-ctx.Done()
+				_ = os.WriteFile(cancelMarker+".done", []byte("cancelled"), 0600)
+				return
+			}
 			var cursor *string
 			_ = json.Unmarshal(request.Params["cursor"], &cursor)
 			page := ""
@@ -298,6 +308,11 @@ func TestAdapterConformance(t *testing.T) {
 			_, paths := testkit.Home(t)
 			env := externalTestEnvironment(paths)
 			fixture := map[string]any{}
+			cancelMarker := ""
+			if kind != "sample" {
+				cancelMarker = filepath.Join(t.TempDir(), "cancel-fixture")
+				fixture["cancelMarker"] = cancelMarker
+			}
 			itemID := "TASK-2"
 			if kind == "sample" {
 				itemID = "sample-1"
@@ -341,6 +356,22 @@ func TestAdapterConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			sourceConfig := config.QueueSource{ID: "conformance", Adapter: "external", Executable: executable, ExpectedAdapterID: adapterID, ExpectedVersion: "1.0.0", Config: fixture}
+			// Exercise the same production-host checks used by the shipped CLI.
+			check, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: fixture, CancelMarker: cancelMarker})
+			if err != nil || check.Verdict != "pass" {
+				t.Fatalf("shared conformance checks: %+v %v", check, err)
+			}
+			for _, id := range []string{"initialize", "resolve", "capabilities", "list-budget", "read-items", "dependencies", "host-output-guards"} {
+				found := false
+				for _, entry := range check.Checks {
+					if entry.ID == id && entry.Status == "pass" {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("required shared check %s did not pass: %+v", id, check.Checks)
+				}
+			}
 			if err := config.ApproveQueueAdapter(context.Background(), env, sourceConfig); err != nil {
 				t.Fatal(err)
 			}
@@ -404,5 +435,261 @@ func TestAdapterConformance(t *testing.T) {
 				t.Fatalf("resource derivation: %+v %v", policy, err)
 			}
 		})
+	}
+}
+
+func TestAdapterConformanceMutationFixtureHelper(t *testing.T) {
+	for i, arg := range os.Args {
+		if arg != "--" || i+1 >= len(os.Args) || os.Args[i+1] != "mutation" {
+			continue
+		}
+		runConformanceMutationFixture()
+		return
+	}
+}
+
+func runConformanceMutationFixture() {
+	reader := bufio.NewScanner(os.Stdin)
+	reader.Buffer(make([]byte, 4096), externalFrameLimit)
+	var logPath, cancelMarker, claimSource string
+	progressAllowed, largeSource := true, false
+	for reader.Scan() {
+		var request struct {
+			ID     string                     `json:"id"`
+			Method string                     `json:"method"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(reader.Bytes(), &request) != nil {
+			return
+		}
+		id := "adapter-check"
+		ref := Ref{SourceID: id, ItemID: "fixture-1"}
+		item := conformanceItem(Summary{Ref: ref, Title: "Disposable item", RawStatus: "Open", State: StateOpen, CanonicalID: "fixture-1"}, "")
+		context := conformanceContext(id, "complete")
+		var result any
+		switch request.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": 1, "manifest": map[string]any{"id": "fixture.mutation", "version": "1.0.0", "protocol": map[string]int{"minMajor": 1, "maxMajor": 1}, "configSchema": map[string]any{"type": "object"}, "authentication": []string{}, "resourcePolicy": "generic", "capabilities": []string{"identity", "discovery", "dependencies", "state", "mutation", "progress"}, "requiredFeatures": []string{}}}
+		case "resolve":
+			var cfg struct {
+				FixtureLog   string `json:"fixtureLog"`
+				CancelMarker string `json:"cancelMarker"`
+				DenyProgress bool   `json:"denyProgress"`
+				LargeSource  bool   `json:"largeSource"`
+				ClaimSource  string `json:"claimSource"`
+			}
+			_ = json.Unmarshal(request.Params["config"], &cfg)
+			logPath, cancelMarker, progressAllowed, largeSource, claimSource = cfg.FixtureLog, cfg.CancelMarker, !cfg.DenyProgress, cfg.LargeSource, cfg.ClaimSource
+			result = map[string]any{"context": context, "source": map[string]string{"id": id, "name": "Fixture", "locator": "fixture://local"}}
+		case "capabilities":
+			progress := map[string]string{"support": "supported", "permission": "allowed", "availability": "available"}
+			if !progressAllowed {
+				progress = map[string]string{"support": "unsupported", "permission": "denied", "availability": "unavailable"}
+			}
+			result = map[string]any{"context": context, "capabilities": map[string]any{"mutation": map[string]string{"support": "supported", "permission": "allowed", "availability": "available"}, "progress": progress}}
+		case "list":
+			var query struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(request.Params["query"], &query)
+			if query.Text == "__worklease_conformance_cancel__" && cancelMarker != "" {
+				_ = os.WriteFile(cancelMarker+".request", []byte("started"), 0600)
+				<-make(chan struct{}) // deliberately ignores the cancellation notification
+			}
+			if largeSource {
+				var cursor string
+				_ = json.Unmarshal(request.Params["cursor"], &cursor)
+				page, _ := strconv.Atoi(cursor)
+				pageRef := Ref{SourceID: id, ItemID: fmt.Sprintf("fixture-%d", page+1)}
+				pageItem := conformanceItem(Summary{Ref: pageRef, Title: "Disposable item", RawStatus: "Open", State: StateOpen, CanonicalID: pageRef.ItemID}, "")
+				var next any
+				if page < 101 {
+					next = strconv.Itoa(page + 1)
+				}
+				state := "complete"
+				if next != nil {
+					state = "partial"
+				}
+				result = map[string]any{"context": conformanceContext(id, state), "items": []any{pageItem}, "nextCursor": next, "total": map[string]any{"value": 102, "accuracy": "exact"}}
+			} else {
+				result = map[string]any{"context": context, "items": []any{item}, "nextCursor": nil, "total": map[string]any{"value": 1, "accuracy": "exact"}}
+			}
+		case "readItems":
+			result = map[string]any{"context": context, "outcomes": []any{map[string]any{"ref": ref, "status": "found", "item": item}}}
+		case "readDependencies":
+			result = map[string]any{"context": context, "edges": []any{}, "nextCursor": nil, "completeness": "complete"}
+		case "readItem":
+			result = map[string]any{"context": context, "outcome": map[string]any{"ref": ref, "status": "found", "item": item}}
+		case "resourcePolicy":
+			policySource := id
+			if claimSource != "" {
+				policySource = claimSource
+			}
+			result = map[string]any{"context": context, "policy": "generic", "source": policySource, "item": ref.ItemID, "scope": "item"}
+		case "recordProgress":
+			var operationID string
+			_ = json.Unmarshal(request.Params["operationId"], &operationID)
+			file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+			if err != nil {
+				return
+			}
+			_, _ = fmt.Fprintln(file, operationID)
+			_ = file.Close()
+			result = map[string]any{"context": context, "receipt": map[string]any{"sourceId": id, "ref": ref, "operation": "recordProgress", "providerVersion": nil, "durableLocation": "fixture://receipt", "observedState": map[string]any{}, "conditionalWrite": false, "fencingEvidence": nil}}
+		case "readReceipt":
+			var operationID string
+			_ = json.Unmarshal(request.Params["operationId"], &operationID)
+			logged, _ := os.ReadFile(logPath)
+			verification, count := "unknown", 0
+			for _, line := range strings.Split(string(logged), "\n") {
+				if line == operationID {
+					count++
+				}
+			}
+			if count == 1 {
+				verification = "verified"
+			}
+			result = map[string]any{"context": context, "verification": verification, "evidence": map[string]any{"sourceId": id, "itemId": ref.ItemID, "operationId": operationID, "markerCount": count, "appendProof": count == 1, "appendContent": "Adapter conformance fixture"}}
+		default:
+			return
+		}
+		wire, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		if err != nil {
+			return
+		}
+		_, _ = os.Stdout.Write(append(wire, '\n'))
+	}
+}
+
+func TestAdapterConformanceDetectsIgnoredCancellation(t *testing.T) {
+	t.Parallel()
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "ignores-cancel")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestAdapterConformanceMutationFixtureHelper$' -- mutation\n", shellQuote(binary))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "cancel")
+	report, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: map[string]any{"cancelMarker": marker}, CancelMarker: marker})
+	if err != nil || report.Verdict != "fail" {
+		t.Fatalf("ignored cancellation was accepted: %+v %v", report, err)
+	}
+	for _, check := range report.Checks {
+		if check.ID == "cancel-notification" && check.Status == "fail" && check.Reason == "cancel-not-observed" {
+			return
+		}
+	}
+	t.Fatalf("missing cancellation failure: %+v", report.Checks)
+}
+
+func TestAdapterConformanceLargeSourceAndIndependentClaimSource(t *testing.T) {
+	t.Parallel()
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "large-source")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestAdapterConformanceMutationFixtureHelper$' -- mutation\n", shellQuote(binary))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: map[string]any{"largeSource": true, "claimSource": "acme/planning"}})
+	if err != nil || report.Verdict != "pass" {
+		t.Fatalf("large source check: %+v %v", report, err)
+	}
+	for _, check := range report.Checks {
+		if check.ID == "continuation" && (check.Status != "skip" || check.Reason != "probe-limit") {
+			t.Errorf("bounded pagination: %+v", check)
+		}
+		if check.ID == "resource-policy" && check.Status != "pass" {
+			t.Errorf("independent claim source: %+v", check)
+		}
+	}
+}
+
+func TestAdapterConformanceSkipsUnauthorizedProgress(t *testing.T) {
+	t.Parallel()
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "no-progress")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestAdapterConformanceMutationFixtureHelper$' -- mutation\n", shellQuote(binary))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "writes")
+	report, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: map[string]any{"fixtureLog": logPath, "denyProgress": true}, Target: "fixture-1"})
+	if err != nil || report.Verdict != "pass" {
+		t.Fatalf("unsupported progress: %+v %v", report, err)
+	}
+	for _, check := range report.Checks {
+		if check.ID == "mutation-receipt" && check.Status != "skip" {
+			t.Fatalf("dispatched unauthorized progress: %+v", check)
+		}
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("unauthorized write dispatched: %v", err)
+	}
+}
+
+func TestAdapterConformanceMutationRequiresExplicitDisposableTarget(t *testing.T) {
+	t.Parallel()
+	logPath := filepath.Join(t.TempDir(), "mutations")
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "mutation-fixture")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestAdapterConformanceMutationFixtureHelper$' -- mutation\n", shellQuote(binary))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := AdapterCheckOptions{Executable: executable, Config: map[string]any{"fixtureLog": logPath}}
+	without, err := CheckExternalAdapter(context.Background(), options)
+	if err != nil || without.Verdict != "pass" {
+		t.Fatalf("read-only check: %+v %v", without, err)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("unexpected write without target: %v", err)
+	}
+	options.Target = "fixture-1"
+	with, err := CheckExternalAdapter(context.Background(), options)
+	if err != nil || with.Verdict != "pass" {
+		t.Fatalf("mutation check: %+v %v", with, err)
+	}
+	for _, id := range []string{"mutation-receipt", "lost-response", "unknown-outcome"} {
+		found := false
+		for _, check := range with.Checks {
+			if check.ID == id && check.Status == "pass" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s did not pass: %+v", id, with.Checks)
+		}
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil || len(strings.Split(strings.TrimSpace(string(data)), "\n")) != 1 {
+		t.Fatalf("write dispatched more than once: %q %v", data, err)
 	}
 }

@@ -11,6 +11,7 @@ const (
 	ExitOwnership    = 2
 	ExitLedger       = 3
 	ExitInvalid      = 64
+	ExitConformance  = 65
 	ExitAuthority    = 75
 	ExitChildTimeout = 124
 	ExitInterrupted  = 130
@@ -38,6 +39,7 @@ const (
 	ReasonOperationNotFound              = "operation-not-found"
 	ReasonReplayExpired                  = "replay-expired"
 	ReasonInvalidArgument                = "invalid-argument"
+	ReasonAdapterConformanceFailed       = "adapter-conformance-failed"
 	ReasonConfigInvalid                  = "config-invalid"
 	ReasonConfigMissing                  = "config-missing"
 	ReasonNoSourcesConfigured            = "no-sources-configured"
@@ -155,8 +157,9 @@ var registry = map[string]int{
 	ReasonOperationInProgress: ExitOwnership, ReasonUnknownOutcomePending: ExitOwnership,
 	ReasonOperationRequestMismatch: ExitLedger, ReasonUnknownOutcome: ExitLedger, ReasonExpectedHashMismatch: ExitLedger,
 	ReasonReconciliationConflict: ExitLedger, ReasonOperationAmbiguous: ExitLedger, ReasonOperationNotFound: ExitLedger,
-	ReasonReplayExpired:   ExitLedger,
-	ReasonInvalidArgument: ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid, ReasonMeRequired: ExitInvalid, ReasonBindingMigrationRequired: ExitInvalid,
+	ReasonReplayExpired:            ExitLedger,
+	ReasonAdapterConformanceFailed: ExitConformance,
+	ReasonInvalidArgument:          ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid, ReasonMeRequired: ExitInvalid, ReasonBindingMigrationRequired: ExitInvalid,
 	ReasonClaimSelectionMissing: ExitInvalid, ReasonResourceInputConflict: ExitInvalid, ReasonInvalidResource: ExitInvalid,
 	ReasonUnknownPolicy: ExitInvalid, ReasonInvalidPath: ExitInvalid, ReasonHandleUnsafe: ExitInvalid,
 	ReasonHandleMalformed: ExitInvalid, ReasonCredentialUnsafe: ExitInvalid, ReasonCredentialMalformed: ExitInvalid,
