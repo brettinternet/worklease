@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 16:44'
-updated_date: '2026-09-24 13:51'
+updated_date: '2026-09-25 14:53'
 labels:
   - work-queue
   - mcp
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130.5
@@ -57,6 +58,8 @@ Some agent loops talk to Worklease only through the MCP stdio server, not the CL
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation adf0856 merged locally to main. MCP queue_next reuses CLI selection and fresh identity checks with MCP lease acquisition; runtime profile drift and candidate resource redaction corrected after one review. Tests: TestMCPQueueNextLazyConfigAndLifecycle (schema, lazy invalid config, CLI/MCP key parity and contention, lease lifecycle), TestMCPQueueNextEightMixedContenders (8 concurrent mixed workers), TestMCPQueueNextRejectsRemoteProfileDrift, TestMCPDoesNotImportTUI, unchanged MCP suite. mise run lint, format-check, test, typecheck, hooks all passed. D8/D28 proposal already describes MCP core exception and queue_next; no refinement needed.
+
+Post-completion review (merge 71f5f54): MCP queue_next acquire now re-checks the pinned authority ID inside the acquiring open; invalid queue.yaml is classified config-invalid instead of internal (LoadQueue). Regression tests added; no follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

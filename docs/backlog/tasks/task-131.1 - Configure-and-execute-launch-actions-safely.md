@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 14:19'
+updated_date: '2026-09-25 14:53'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130
@@ -59,6 +60,8 @@ The child environment is built from scratch. It holds the fixed allowlist (PATH,
 Implemented strict launch config parsing, an exec-only handoff with exact resource/authority environment and default-deny ambient variables, and hostile-ID/option-like subprocess tests. Focused config/queue tests plus lint, format-check, full test, typecheck, and staged hooks passed; review and integration pending.
 
 Review found an overbroad passEnv SESSION filter; corrected it to reserve only worker session identifiers and tested explicit AWS_SESSION_TOKEN. GitHub identity vector and exec-only child tests cover exact resources, hostile title/body and option-like IDs; newline IDs fail identity validation. Full lint/format-check/test/typecheck and staged hooks passed; source commits ddb7a1f and de591f0 merged to main at a34432f and 00de99f. D10 and plan section 12 remain consistent; no decision refinement required.
+
+Post-completion review: no defects found in exec-only launch, argv substitution, allowlisted environment, passEnv, or unresolved-placeholder handling. No follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

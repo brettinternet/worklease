@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 12:54'
+updated_date: '2026-09-25 14:53'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-129
@@ -65,6 +66,8 @@ Implemented complete-snapshot next/wave selection, explicit item ordering, no-wo
 Commit 5be7027 contains implementation. Reviewer found exact generic resource redaction, explicit-assignment override, and terminal-only classification defects; all fixed with regression tests. Final full gates and staged hooks passed. Integrating into main next.
 
 Verification on merged main 3088613: TestSelectWaveOrderingResumeAndResourceConflict, TestSelectWaveNoWorkReasonsAndIncomplete, TestQueueNextUsesEntireScopeAndNeverAcquires, TestQueueNextIncompleteScopeDoesNotSelectReadyItem pass. Exact generic key comparison, deliberate assignment override with/without view filter, terminal-only scope, source/selector order, shared-key exclusion, partial graph and no-acquire assertions covered. mise run lint, format-check, test, typecheck, hooks passed; reviewer defects fixed. Code commit 5be7027; merge 3088613. No remaining blocker; next step TASK-130.5 only under separate claim.
+
+Post-completion review (merge 71f5f54): fixed source IDs containing ':' making --item selectors ambiguous (now rejected in queue.yaml) and unknown claim/resource observations on blocked items masking the blocked no-work reason. Regression tests added; no follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

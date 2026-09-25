@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 16:43'
-updated_date: '2026-09-24 13:27'
+updated_date: '2026-09-25 14:53'
 labels:
   - work-queue
   - authority
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-130.4
@@ -61,6 +62,8 @@ This is a worker-owned claim, not the queue-owned human Claim for me (TASK-130.1
 
 <!-- SECTION:NOTES:BEGIN -->
 Code commit f9e6d03; merged into main as b014362. Verified on merged main: go test ./internal/cli -run TestQueueNext|TestPreAcquireIdentity -count=1 and go test ./internal/instructions -count=1 passed. On branch: mise run lint, format-check, test, typecheck, hooks-install, hooks all passed; commit hook re-ran full go test. Concurrency tests exercise eight simultaneous local and remote claims with distinct items; lifecycle, contention/holder, incomplete, read-only, assignment drift, profile drift, and uncertain-handle recovery are covered. One reviewer pass found four concrete issues (profile identity drift, local profile environment, assignment drift, unselected skip entries); all fixed and tests rerun. D28 and proposal section 13 already describe behavior; no decision or plan refinement required.
+
+Post-completion review (merge 71f5f54): a pending remote acquire handle could be replayed for a different --session; now refused with recovery-required. Eight-worker concurrency test now asserts each worker holds its own acquired claim. Reviewed and declined: keeping resource-overlapping refs as claim fallbacks (shared key is the same claimable work; caller re-queries). No follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
