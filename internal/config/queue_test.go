@@ -93,6 +93,33 @@ func TestQueueSchema(t *testing.T) {
 	}
 }
 
+func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, adapter := range []string{"linear", "jira-cloud"} {
+		t.Run(adapter, func(t *testing.T) {
+			t.Parallel()
+			base := "version: 1\nme: {}\nsources:\n  - id: remote\n    adapter: " + adapter + "\n    account: alice\n    credentialHelper: [/usr/bin/credential-helper, --token]\nviews:\n  - name: Ready\n    authority: local\n    sources: [remote]\n    filter: {}\n"
+			cfg, err := parseQueue([]byte(base), nil, nil)
+			if err != nil || len(cfg.Sources) != 1 || len(cfg.Sources[0].CredentialHelper) != 2 {
+				t.Fatalf("valid helper: %+v %v", cfg, err)
+			}
+			for _, tc := range []struct{ replace, with, want string }{
+				{"[/usr/bin/credential-helper, --token]", "[credential-helper]", "credentialHelper"},
+				{"[/usr/bin/credential-helper, --token]", "[]", "credentialHelper"},
+				{"[/usr/bin/credential-helper, --token]", "plain-token", "queue.yaml"},
+				{"    credentialHelper: [/usr/bin/credential-helper, --token]\n", "", "credentialHelper"},
+				{"    account: alice\n", "", "account"},
+				{"    account: alice\n", "    account: alice\n    claims: {policy: linear, source: org}\n", "claims and writes"},
+			} {
+				_, err := parseQueue([]byte(strings.Replace(base, tc.replace, tc.with, 1)), nil, nil)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("invalid helper configuration: expected %q, got %v", tc.want, err)
+				}
+			}
+		})
+	}
+}
+
 func TestQueueExternalAdapterConfiguration(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

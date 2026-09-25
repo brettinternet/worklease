@@ -69,6 +69,7 @@ type QueueSource struct {
 	ExpectedVersion   string            `yaml:"expectedVersion"`
 	Config            map[string]any    `yaml:"config"`
 	CredentialRef     string            `yaml:"credentialRef"`
+	CredentialHelper  []string          `yaml:"credentialHelper"`
 }
 
 type QueueClaims struct {
@@ -165,7 +166,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true},
+		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true},
 		"claims": {"policy": true, "source": true},
 		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
 		"filter": {"readiness": true, "claim": true, "assigned": true},
@@ -238,7 +239,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					if nested["checkout"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "github":
@@ -247,10 +248,20 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 							return QueueConfig{}, fmt.Errorf("%s.%s: required", label, key)
 						}
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper"); err != nil {
 						return QueueConfig{}, err
 					}
+				case "linear", "jira-cloud":
+					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "repository", "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+						return QueueConfig{}, err
+					}
+					if nested["account"] == nil || nested["credentialHelper"] == nil {
+						return QueueConfig{}, fmt.Errorf("%s: account and credentialHelper required", label)
+					}
 				case "external":
+					if err := rejectQueueFields(nested, label, "credentialHelper"); err != nil {
+						return QueueConfig{}, err
+					}
 					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "host", "repository"); err != nil {
 						return QueueConfig{}, err
 					}
@@ -343,6 +354,21 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			}
 			if s.Checkout != "" || s.Claims != nil || s.AllowGitNetwork {
 				return QueueConfig{}, fmt.Errorf("%s: backlog-md fields are not valid for github", label)
+			}
+		case "linear", "jira-cloud":
+			if strings.TrimSpace(s.Account) == "" || strings.ContainsAny(s.Account, "\r\n\x00") {
+				return QueueConfig{}, fmt.Errorf("%s.account: safe principal required", label)
+			}
+			if s.Claims != nil || s.Workflow != nil {
+				return QueueConfig{}, fmt.Errorf("%s: claims and writes are unavailable until the adapter is implemented", label)
+			}
+			if len(s.CredentialHelper) == 0 || len(s.CredentialHelper) > 32 || !filepath.IsAbs(s.CredentialHelper[0]) || filepath.Clean(s.CredentialHelper[0]) != s.CredentialHelper[0] {
+				return QueueConfig{}, fmt.Errorf("%s.credentialHelper: absolute executable and at most 32 arguments required", label)
+			}
+			for j, arg := range s.CredentialHelper {
+				if len(arg) > 4096 || strings.ContainsRune(arg, '\x00') || (j == 0 && arg == "") {
+					return QueueConfig{}, fmt.Errorf("%s.credentialHelper[%d]: invalid argument", label, j)
+				}
 			}
 		case "external":
 			// The source-specific external fields were checked against their YAML nodes above.
