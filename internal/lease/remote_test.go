@@ -37,7 +37,7 @@ func TestRemoteAdmissionForSharedKeyVectors(t *testing.T) {
 		t.Run(vector.Name, func(t *testing.T) {
 			// Admission is prefix-only; local path placeholders cannot make a
 			// host-local resource portable, even with its prefix allowlisted.
-			wantDefault := vector.Provider == "generic"
+			wantDefault := vector.Provider == "generic" || vector.Provider == "linear"
 			if got := ResourceAdmitted([]string{"coordination:"}, vector.Resource); got != wantDefault {
 				t.Fatalf("default admission = %v, want %v", got, wantDefault)
 			}
