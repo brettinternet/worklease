@@ -139,7 +139,7 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 			uncertain                  bool
 		}{
 			{"missing-mapping", "", "not attempted", false},
-			{"invalid-transition", "start: Missing", "rejected", false},
+			{"invalid-transition", "start: Missing", "not attempted", false},
 			{"unknown-readback", "start: In Progress", "unknown", true},
 		} {
 			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
@@ -223,7 +223,7 @@ func TestQueueNextStartPlainReportsBothSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := Run(context.Background(), []string{"worklease", "--home", home, "queue", "next", "--view", "Ready", "--claim", "--start", "--session", "worker"}, "", "", "", &output, &output); err != nil || !strings.Contains(output.String(), "Claim acquired; status unchanged") || !strings.Contains(output.String(), "claim: applied; transition: rejected") {
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "queue", "next", "--view", "Ready", "--claim", "--start", "--session", "worker"}, "", "", "", &output, &output); err != nil || !strings.Contains(output.String(), "Claim acquired; transition not attempted") || !strings.Contains(output.String(), "claim: applied; transition: not attempted") {
 		t.Fatalf("plain result: %v %s", err, output.String())
 	}
 }
@@ -255,7 +255,7 @@ func TestQueueNextStartRejectsChangedActorAfterClaim(t *testing.T) {
 	}
 	auth, _ := controller.claim.current()
 	got := queueNextStart(ctx, cfg, item, controller.claim.registry, []queue.Source{controller.claim.sources[item.Ref.SourceID]}, controller.claim.backend, auth, controller.claim.queueSession, plan.handle)
-	if got["outcome"] != "rejected" || !strings.Contains(got["reason"].(string), "actor changed") {
+	if got["outcome"] != "not attempted" || !strings.Contains(got["reason"].(string), "actor changed") {
 		t.Fatalf("stale provider actor wrote: %#v", got)
 	}
 	view := exec.Command("backlog", "task", "view", "TASK-1", "--json")
@@ -263,6 +263,16 @@ func TestQueueNextStartRejectsChangedActorAfterClaim(t *testing.T) {
 	read, err := view.Output()
 	if err != nil || !strings.Contains(string(read), `"status": "To Do"`) {
 		t.Fatalf("provider changed: %v %s", err, read)
+	}
+}
+
+func TestQueueNextStartRefreshFailureIsNotARejection(t *testing.T) {
+	t.Parallel()
+	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "tasks", Adapter: "backlog-md", Workflow: map[string]string{"start": "In Progress"}}}}
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "tasks", ItemID: "TASK-1"}}}
+	got := queueNextStart(context.Background(), cfg, item, queue.NewRegistry(), nil, nil, queue.ClaimAuthority{}, "worker", "private-handle")
+	if got["outcome"] != "not attempted" || got["message"] != "Claim acquired; transition not attempted" || got["reason"] != "claim source unavailable" {
+		t.Fatalf("unavailable provider was treated as a rejection: %#v", got)
 	}
 }
 

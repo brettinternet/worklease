@@ -117,6 +117,31 @@ func TestQueueRecoveryReadbackFailureKeepsHeldClaimVisible(t *testing.T) {
 		if !strings.Contains(output, "unknown") {
 			t.Fatalf("failed read-back hid outcome: %s", output)
 		}
+		if jsonOutput && !strings.Contains(out.String(), `"commitState":"unknown"`) {
+			t.Fatalf("failed read-back claimed no commit: %s", out.String())
+		}
+	}
+}
+
+func TestQueueRecoveryRetryMissingOperation(t *testing.T) {
+	_, env := testkit.Home(t)
+	t.Setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
+	t.Setenv("XDG_CACHE_HOME", env["XDG_CACHE_HOME"])
+	var out, errs bytes.Buffer
+	err := Run(context.Background(), []string{"worklease", "--json", "queue", "recovery", "retry", "--operation-id", strings.Repeat("a", 32), "--handle", filepath.Join(t.TempDir(), "handle")}, "test", "unknown", "unknown", &out, &errs)
+	if err == nil || !JSONErrorHandled(err) || errs.Len() != 0 {
+		t.Fatalf("missing operation: %v, stdout=%q stderr=%q", err, out.String(), errs.String())
+	}
+	var result struct {
+		Error struct {
+			Reason  string `json:"reason"`
+			Details struct {
+				CommitState string `json:"commitState"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil || result.Error.Reason != "operation-not-found" || result.Error.Details.CommitState != "unknown" {
+		t.Fatalf("missing operation envelope: %v %s", decodeErr, out.String())
 	}
 }
 

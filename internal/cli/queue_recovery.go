@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -160,6 +161,9 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 				return s.handle(cmd, err)
 			}
 			record, err := journal.Read(cmd.String("operation-id"))
+			if errors.Is(err, os.ErrNotExist) {
+				return s.handle(cmd, reason.New(reason.ReasonOperationNotFound, "recovery operation not found; check the operation ID with queue recovery").With("commitState", "unknown"))
+			}
 			if err != nil {
 				return s.handle(cmd, err)
 			}
@@ -188,7 +192,7 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 				result, err = pipeline.Recover(ctx, record.Intent.OperationID)
 			}
 			if err != nil {
-				return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, fmt.Sprintf("read-back %s; claim held %t; operation %s: %v", result.Outcome, result.ClaimHeld, record.Intent.OperationID, err)).With("result", result).With("operationId", record.Intent.OperationID))
+				return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, fmt.Sprintf("read-back %s; claim held %t; operation %s: %v", result.Outcome, result.ClaimHeld, record.Intent.OperationID, err)).With("result", result).With("operationId", record.Intent.OperationID).With("commitState", "unknown"))
 			}
 			if cmd.Bool("json") {
 				return output.WriteSuccess(s.writer, "queue-recovery-retry", map[string]any{"result": result, "operationId": record.Intent.OperationID})

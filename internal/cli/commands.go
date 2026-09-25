@@ -572,6 +572,7 @@ func configureCompletionCommand(s *boundary) urfavecli.ConfigureShellCompletionC
 		}
 		command.Commands = commands
 		setShellCompletionHandlers(command)
+		setDefaultUsageErrors(command, s) // urfave creates completion commands after NewRootCommand returns.
 		command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
 			if cmd.Args().Len() > 0 {
 				return s.handle(cmd, reason.Invalid(fmt.Sprintf("unsupported shell %q; supported shells: bash, zsh, fish", cmd.Args().First())))

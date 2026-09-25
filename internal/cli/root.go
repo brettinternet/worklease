@@ -119,6 +119,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 	}
 	state.root = root
 	setShellCompletionHandlers(root)
+	setDefaultUsageErrors(root, state)
 	if err := validateCLICommandTree(root); err != nil {
 		panic(err)
 	}
@@ -234,6 +235,24 @@ func hasJSON(args []string) bool {
 		}
 	}
 	return false
+}
+
+// Every command needs a classified usage error; otherwise the framework
+// writes help and returns an unclassified internal error (including in JSON mode).
+func setDefaultUsageErrors(root *urfavecli.Command, s *boundary) {
+	var visit func(*urfavecli.Command)
+	visit = func(cmd *urfavecli.Command) {
+		if cmd.OnUsageError == nil {
+			cmd.OnUsageError = func(_ context.Context, current *urfavecli.Command, _ error, _ bool) error {
+				// Parser errors can contain argv values, so do not echo them.
+				return s.handle(current, reason.Invalid("invalid command-line arguments"))
+			}
+		}
+		for _, child := range cmd.Commands {
+			visit(child)
+		}
+	}
+	visit(root)
 }
 
 func validateCLICommandTree(root *urfavecli.Command) error {
