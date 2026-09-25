@@ -133,9 +133,10 @@ func queueAdapterApprovalForDigest(source QueueSource, path, digest string) (que
 		configuration = map[string]any{}
 	}
 	binding, err := json.Marshal(struct {
-		Config        map[string]any `json:"config"`
-		CredentialRef string         `json:"credentialRef"`
-	}{configuration, source.CredentialRef})
+		Config           map[string]any `json:"config"`
+		CredentialRef    string         `json:"credentialRef"`
+		CredentialHelper []string       `json:"credentialHelper,omitempty"`
+	}{configuration, source.CredentialRef, source.CredentialHelper})
 	if err != nil {
 		return queueAdapterApproval{}, fmt.Errorf("external adapter configuration cannot be encoded")
 	}
