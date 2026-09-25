@@ -129,7 +129,10 @@ func TestLinearRelationsBothDirectionsAndUnknownScope(t *testing.T) {
 		field := "relations"
 		if query == linearInverseQuery {
 			field = "inverseRelations"
-			relations["nodes"] = []any{map[string]any{"type": "blocks", "issue": map[string]any{"id": linearTestBlocker, "team": map[string]any{"id": linearTestTeam}, "state": map[string]any{"type": "completed"}}}, map[string]any{"type": "related", "issue": map[string]any{"id": linearTestBlocker, "team": map[string]any{"id": linearTestTeam}}}}
+			for _, kind := range []string{"blocks", "related", "duplicate", "similar"} {
+				relation := map[string]any{"type": kind, "issue": map[string]any{"id": linearTestBlocker, "team": map[string]any{"id": linearTestTeam}, "state": map[string]any{"type": "completed"}}}
+				relations["nodes"] = append(relations["nodes"].([]any), relation)
+			}
 		}
 		return map[string]any{"issue": map[string]any{"id": linearTestIssue, "team": map[string]any{"id": linearTestTeam}, field: relations}}
 	})
@@ -139,7 +142,7 @@ func TestLinearRelationsBothDirectionsAndUnknownScope(t *testing.T) {
 		t.Fatalf("outgoing: %+v %v", first, err)
 	}
 	second, err := adapter.ReadDependencies(context.Background(), source, ref, first.NextCursor, 50)
-	if err != nil || second.NextCursor != "" || second.Completeness != CoverageComplete || len(second.Edges) != 2 || second.Edges[0].Type != HardPrerequisite || second.Edges[0].To.ItemID != linearTestBlocker || second.Edges[0].Condition != "terminal" || second.Edges[1].Type != Related {
+	if err != nil || second.NextCursor != "" || second.Completeness != CoverageComplete || len(second.Edges) != 4 || second.Edges[0].Type != HardPrerequisite || second.Edges[0].To.ItemID != linearTestBlocker || second.Edges[0].Condition != "terminal" || second.Edges[1].Type != Related || second.Edges[2].Type != Related || second.Edges[3].Type != Related {
 		t.Fatalf("incoming: %+v %v", second, err)
 	}
 	if _, err = adapter.ReadDependencies(context.Background(), source, Ref{source.ID, linearTestBlocker}, first.NextCursor, 1); err == nil {
