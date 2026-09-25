@@ -361,6 +361,10 @@ func TestPendingRemoteAcquireRefusesChangedAndInvalidAcquisitionInputs(t *testin
 	if strings.Contains(out, strings.Repeat("d", 64)) {
 		t.Fatalf("credential leaked: %s", out)
 	}
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:staged", "--session", "other-session", "--json")
+	if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonRecoveryRequired || !strings.Contains(out, claimID) {
+		t.Fatalf("another session adopted the pending acquire: err=%v output=%s", err, out)
+	}
 
 	// Mixed and malformed resource input must be rejected as invalid input
 	// rather than dispatching the retained request.

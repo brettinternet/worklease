@@ -295,7 +295,8 @@ func testQueueNextConcurrentWorkers(t *testing.T, remote bool) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			data, err := h.run("queue", "next", "--view", "Ready", "--json", "--claim", "--ttl", "30s", "--session", fmt.Sprintf("worker-%d", i))
+			session := fmt.Sprintf("worker-%d", i)
+			data, err := h.run("queue", "next", "--view", "Ready", "--json", "--claim", "--ttl", "30s", "--session", session)
 			if err != nil {
 				results <- fmt.Sprintf("error: %v: %s", err, data)
 				return
@@ -303,14 +304,22 @@ func testQueueNextConcurrentWorkers(t *testing.T, remote bool) {
 			var response struct {
 				Next struct {
 					Result     string `json:"result"`
+					Acquired   bool   `json:"acquired"`
 					Candidates []struct {
 						Ref struct {
 							ItemID string `json:"itemId"`
 						} `json:"ref"`
+						Resources []string `json:"resources"`
 					} `json:"candidates"`
+					Claim struct {
+						ClaimID   string   `json:"claimId"`
+						SessionID string   `json:"sessionId"`
+						Resources []string `json:"resources"`
+					} `json:"claim"`
 				} `json:"next"`
 			}
-			if err := json.Unmarshal(data, &response); err != nil || response.Next.Result != "ready" || len(response.Next.Candidates) != 1 {
+			// Each worker must hold exactly the claim for the item it reports.
+			if err := json.Unmarshal(data, &response); err != nil || response.Next.Result != "ready" || !response.Next.Acquired || len(response.Next.Candidates) != 1 || response.Next.Claim.ClaimID == "" || response.Next.Claim.SessionID != session || len(response.Next.Claim.Resources) != len(response.Next.Candidates[0].Resources) {
 				results <- fmt.Sprintf("bad: %v: %s", err, data)
 				return
 			}

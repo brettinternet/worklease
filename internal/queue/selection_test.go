@@ -52,6 +52,10 @@ func TestSelectWaveNoWorkReasonsAndIncomplete(t *testing.T) {
 	unknown.Readiness = Readiness{Status: ReadinessUnknown, Reasons: []string{"incomplete-closure"}}
 	terminal := base
 	terminal.Terminal, terminal.State = true, StateComplete
+	blockedUnknownClaim := blocked
+	blockedUnknownClaim.Claim = ClaimObservation{Reason: "unavailable"}
+	unknownClaim := base
+	unknownClaim.Claim = ClaimObservation{Reason: "unavailable"}
 	for _, tc := range []struct {
 		name     string
 		items    []Item
@@ -61,6 +65,8 @@ func TestSelectWaveNoWorkReasonsAndIncomplete(t *testing.T) {
 		{"empty", nil, true, "complete-and-empty"},
 		{"all terminal", []Item{terminal}, true, "complete-and-empty"},
 		{"blocked", []Item{blocked}, true, "blocked"},
+		{"blocked with unknown claim", []Item{blockedUnknownClaim}, true, "blocked"},
+		{"ready with unknown claim", []Item{unknownClaim}, true, "incomplete"},
 		{"claimed", []Item{claimed}, true, "active-claims"},
 		{"assigned elsewhere", []Item{elsewhere}, true, "assigned-elsewhere"},
 		{"incomplete scope", []Item{base}, false, "incomplete"},

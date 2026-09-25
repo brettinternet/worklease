@@ -132,7 +132,11 @@ func LoadQueue(env func(string) string) (QueueConfig, error) {
 	if err != nil {
 		return QueueConfig{}, fmt.Errorf("queue authority profiles: %w", err)
 	}
-	return parseQueue(data, env, profiles)
+	cfg, err := parseQueue(data, env, profiles)
+	if err != nil && reason.As(err) == nil {
+		return QueueConfig{}, reason.New(reason.ReasonConfigInvalid, err.Error())
+	}
+	return cfg, err
 }
 
 func parseQueue(data []byte, env func(string) string, profiles map[string]Profile) (QueueConfig, error) {
@@ -298,6 +302,10 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		label := fmt.Sprintf("sources[%d]", i)
 		if s.ID == "" || seen[s.ID] {
 			return QueueConfig{}, fmt.Errorf("%s.id: empty or duplicate id %q", label, s.ID)
+		}
+		// Refs are written SOURCE:ITEM, so a colon would make selectors ambiguous.
+		if strings.Contains(s.ID, ":") {
+			return QueueConfig{}, fmt.Errorf("%s.id: must not contain ':'", label)
 		}
 		seen[s.ID] = true
 		switch s.Adapter {

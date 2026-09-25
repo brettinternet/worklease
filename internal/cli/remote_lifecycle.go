@@ -97,6 +97,10 @@ func replayPendingRemoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Co
 		return true, s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending request requires recovery"))
 	}
 	if len(resources) > 0 {
+		// A fresh acquire for another session must not adopt this handle's request.
+		if backend.Config.SessionID != "" && backend.Config.SessionID != existing.SessionID {
+			return true, s.handle(cmd, pendingAcquireRecovery(&existing, path))
+		}
 		var retained struct {
 			Resources []string `json:"resources"`
 		}

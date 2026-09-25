@@ -68,7 +68,7 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 				acquire[key] = value
 			}
 		}
-		value, err := s.acquire(ctx, acquire)
+		value, err := s.acquire(ctx, acquire, authorityID)
 		if err != nil {
 			return nil, err
 		}
