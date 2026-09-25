@@ -269,6 +269,9 @@ func externalControllerContext(sourceID string, principal *string) map[string]an
 }
 
 func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	binary, err := exec.LookPath("backlog")
 	if err != nil {
 		t.Skip("backlog CLI unavailable")

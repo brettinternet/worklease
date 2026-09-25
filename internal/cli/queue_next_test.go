@@ -243,8 +243,18 @@ func TestQueueNextRejectsChangedRemoteProfileBeforeAcquire(t *testing.T) {
 	}
 }
 
-func TestQueueNextEightConcurrentLocalWorkers(t *testing.T)  { testQueueNextConcurrentWorkers(t, false) }
-func TestQueueNextEightConcurrentRemoteWorkers(t *testing.T) { testQueueNextConcurrentWorkers(t, true) }
+func TestQueueNextEightConcurrentLocalWorkers(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	testQueueNextConcurrentWorkers(t, false)
+}
+func TestQueueNextEightConcurrentRemoteWorkers(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	testQueueNextConcurrentWorkers(t, true)
+}
 
 func testQueueNextConcurrentWorkers(t *testing.T, remote bool) {
 	h := newQueueQueryHarness(t)

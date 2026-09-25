@@ -100,6 +100,9 @@ func TestMCPQueueNextLazyConfigAndLifecycle(t *testing.T) {
 }
 
 func TestMCPQueueNextEightMixedContenders(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	var tasks strings.Builder

@@ -78,6 +78,9 @@ func queueStartFixture(t *testing.T) (queueStartController, queue.Item, string) 
 }
 
 func TestQueueStartWorkComposesClaimAndProviderTransition(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	ctx := context.Background()
 	controller, item, root := queueStartFixture(t)
 	preview := controller.Preview(ctx, item)().(queueui.StartPreviewMsg)
@@ -100,6 +103,9 @@ func TestQueueStartWorkComposesClaimAndProviderTransition(t *testing.T) {
 }
 
 func TestQueueStartWorkRevalidatesBeforeClaimAndStopsOnCLIContention(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	ctx := context.Background()
 	controller, item, _ := queueStartFixture(t)
 	preview := controller.Preview(ctx, item)().(queueui.StartPreviewMsg)
@@ -146,6 +152,9 @@ func TestQueueStartWorkRequiresSupportedMapping(t *testing.T) {
 }
 
 func TestQueueStartWorkPreviewsCommitAndHookEffects(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	controller, item, root := queueStartFixture(t)
 	path := filepath.Join(root, "backlog.config.yml")
 	data, err := os.ReadFile(path)
@@ -162,6 +171,9 @@ func TestQueueStartWorkPreviewsCommitAndHookEffects(t *testing.T) {
 }
 
 func TestQueueStartWorkRevalidatesMappingBeforeClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	ctx := context.Background()
 	controller, item, _ := queueStartFixture(t)
 	preview := controller.Preview(ctx, item)().(queueui.StartPreviewMsg)
@@ -187,6 +199,9 @@ func TestQueueStartWorkRevalidatesMappingBeforeClaim(t *testing.T) {
 }
 
 func TestQueueStartWorkRevalidatesPrerequisitesBeforeClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	ctx := context.Background()
 	controller, item, root := queueStartFixture(t)
 	for _, args := range [][]string{{"task", "create", "Prerequisite", "--no-dod-defaults"}, {"task", "edit", "TASK-2", "--status", "Done"}, {"task", "edit", "TASK-1", "--depends-on", "TASK-2"}} {
