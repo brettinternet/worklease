@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -451,6 +453,222 @@ func testQueueNextConcurrentWorkers(t *testing.T, remote bool) {
 	}
 	if len(seen) != 8 {
 		t.Fatalf("claimed %d distinct items, want 8", len(seen))
+	}
+}
+
+// linearQueueFixture routes the built-in adapter's fixed HTTPS endpoint to a
+// local GraphQL server while leaving every other HTTP request untouched.
+type linearQueueTransport struct {
+	base http.RoundTripper
+	url  string
+}
+
+func (r linearQueueTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.URL.Host != "api.linear.app" {
+		return r.base.RoundTrip(request)
+	}
+	redirected := request.Clone(request.Context())
+	redirected.URL.Scheme = "http"
+	redirected.URL.Host = r.url
+	redirected.Host = r.url
+	return r.base.RoundTrip(redirected)
+}
+
+const (
+	linearQueueOrg     = "0bfebf80-70af-4eca-9e39-2029a01f5b77"
+	linearQueueTeam    = "d19193f6-0501-485b-93af-65e829c2039d"
+	linearQueueAccount = "72088203-6bc7-4a63-a71b-22048b88da64"
+	linearQueueFirst   = "075a1740-eeda-4b85-be0b-39755abf4c8c"
+	linearQueueSecond  = "9f3b2707-b6d8-456d-9079-32f60cd33474"
+	linearQueueThird   = "432032b3-d574-4147-ae02-278d03f99c9e"
+)
+
+func linearQueueFixture(t *testing.T) (*queueQueryHarness, *bool) {
+	t.Helper()
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	blocked := new(bool)
+	issue := func(id string) map[string]any {
+		identifier := "TEST-3"
+		if id == linearQueueFirst {
+			identifier = "TEST-1"
+		} else if id == linearQueueSecond {
+			identifier = "TEST-2"
+		}
+		return map[string]any{"id": id, "identifier": identifier, "title": "Linear task", "updatedAt": "2026-09-25T12:00:00Z", "team": map[string]any{"id": linearQueueTeam}, "state": map[string]any{"id": "open", "name": "Todo", "type": "unstarted"}}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Query     string                     `json:"query"`
+			Variables map[string]json.RawMessage `json:"variables"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("GraphQL request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var data any
+		switch {
+		case strings.Contains(body.Query, "viewer {"):
+			data = map[string]any{"viewer": map[string]any{"id": linearQueueAccount, "organization": map[string]any{"id": linearQueueOrg}}, "team": map[string]any{"id": linearQueueTeam, "name": "TEST"}}
+		case strings.Contains(body.Query, "team(id:"):
+			data = map[string]any{"team": map[string]any{"id": linearQueueTeam, "issues": map[string]any{"nodes": []any{issue(linearQueueFirst), issue(linearQueueSecond), issue(linearQueueThird)}, "pageInfo": map[string]any{"hasNextPage": false}}}}
+		case strings.Contains(body.Query, "inverseRelations(") || strings.Contains(body.Query, "relations("):
+			var id string
+			_ = json.Unmarshal(body.Variables["id"], &id)
+			field := "relations"
+			if strings.Contains(body.Query, "inverseRelations(") {
+				field = "inverseRelations"
+			}
+			nodes := []any{}
+			if *blocked && id == linearQueueThird && field == "inverseRelations" {
+				nodes = append(nodes, map[string]any{"type": "blocks", "issue": map[string]any{"id": linearQueueSecond, "team": map[string]any{"id": linearQueueTeam}, "state": map[string]any{"type": "unstarted"}}})
+			}
+			data = map[string]any{"issue": map[string]any{"id": id, "team": map[string]any{"id": linearQueueTeam}, field: map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}}
+		case strings.Contains(body.Query, "issue(id:"):
+			var id string
+			_ = json.Unmarshal(body.Variables["id"], &id)
+			data = map[string]any{"issue": issue(id)}
+		default:
+			t.Errorf("unexpected Linear query: %s", body.Query)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(server.Close)
+	base := http.DefaultTransport
+	http.DefaultTransport = linearQueueTransport{base: base, url: strings.TrimPrefix(server.URL, "http://")}
+	t.Cleanup(func() { http.DefaultTransport = base })
+	h.writeQueueConfig(fmt.Sprintf("version: 1\nme: {}\nsources:\n  - id: linear-test\n    adapter: linear\n    organization: %s\n    team: %s\n    account: %s\n    credentialHelper: [/bin/echo, fixture-token]\nviews:\n  - name: Ready\n    authority: local\n    sources: [linear-test]\n    filter: {readiness: ready}\n", linearQueueOrg, linearQueueTeam, linearQueueAccount))
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "linear-test", "--acknowledge"); err != nil {
+		t.Fatalf("confirm Linear claim domain: %v: %s", err, data)
+	}
+	return h, blocked
+}
+
+func TestLinearQueueClaimNextAndMCPShareStableResource(t *testing.T) {
+	h, blocked := linearQueueFixture(t)
+	first := nextResult(t, h, "--claim", "--session", "linear-cli")
+	if first["result"] != "ready" || first["acquired"] != true {
+		t.Fatalf("CLI Linear claim: %#v", first)
+	}
+	candidate := first["candidates"].([]any)[0].(map[string]any)
+	if candidate["ref"].(map[string]any)["itemId"] != linearQueueFirst {
+		t.Fatalf("unexpected first issue: %#v", candidate)
+	}
+	key, err := resource.Resolve(resource.Input{Provider: "linear", Source: linearQueueOrg, Item: linearQueueFirst})
+	if err != nil || candidate["resources"].([]any)[0] != key.Resource {
+		t.Fatalf("CLI resource differs from stable organization/issue key: %#v %v", candidate, err)
+	}
+	server := queueMCPServer(t, h)
+	response, err := server.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "sessionId": "linear-mcp", "autoHeartbeat": false})
+	if err != nil || response["isError"] == true {
+		t.Fatalf("MCP Linear claim: %v %#v", err, response)
+	}
+	second := response["structuredContent"].(map[string]any)["next"].(map[string]any)
+	if second["result"] != "ready" || second["acquired"] != true || second["candidates"].([]any)[0].(map[string]any)["ref"].(map[string]any)["itemId"] != linearQueueSecond {
+		t.Fatalf("MCP must skip CLI holder and claim next issue: %#v", second)
+	}
+	secondKey, _ := resource.Resolve(resource.Input{Provider: "linear", Source: linearQueueOrg, Item: linearQueueSecond})
+	if second["candidates"].([]any)[0].(map[string]any)["resources"].([]any)[0] != secondKey.Resource {
+		t.Fatalf("MCP acquired wrong claim domain: %#v", second)
+	}
+	registry := queue.NewRegistry()
+	adapter, _ := registry.Get("linear")
+	source, err := adapter.Resolve(context.Background(), map[string]string{"id": "linear-test", "organization": linearQueueOrg, "team": linearQueueTeam, "account": linearQueueAccount, "credentialHelper": `["/bin/echo","fixture-token"]`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, authority, err := queueAuthorityForClaim(context.Background(), &urfave.Command{}, config.LocalProfileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: source.ID, Adapter: "linear", Organization: linearQueueOrg, Team: linearQueueTeam, Account: linearQueueAccount}}}
+	claimSources := queue.ClaimSources(cfg, []queue.Source{source})
+	controller := &queueClaimController{backend: backend, registry: registry, sources: map[string]queue.Source{source.ID: source}, claimSources: claimSources, queueSession: strings.Repeat("f", 32), paths: config.UserProfilePaths(os.Getenv), current: func() (queue.ClaimAuthority, uint64) { return authority, 1 }, profileName: config.LocalProfileName, home: backend.Config.Home}
+	third := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: source.ID, ItemID: linearQueueThird}}}
+	identities, err := config.LoadQueueIdentities(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := identities.Sources[source.ID]
+	changed := original
+	changed.Source = linearQueueTeam // a team locator is not the organization claim domain
+	identities.Sources[source.ID] = changed
+	if err := config.SaveQueueIdentities(os.Getenv, identities); err != nil {
+		t.Fatal(err)
+	}
+	if preview := controller.Preview(context.Background(), third)().(queueui.ClaimPreviewMsg); preview.Err == nil {
+		t.Fatal("Linear claim accepted an unconfirmed key migration")
+	}
+	identities.Sources[source.ID] = original
+	if err := config.SaveQueueIdentities(os.Getenv, identities); err != nil {
+		t.Fatal(err)
+	}
+	*blocked = true
+	if preview := controller.Preview(context.Background(), third)().(queueui.ClaimPreviewMsg); preview.Err == nil {
+		t.Fatal("TUI preview admitted Linear issue blocked by an uncompleted issue")
+	}
+	if got := nextResult(t, h, "--claim", "--session", "linear-blocked", "--item", "linear-test:"+linearQueueThird); got["acquired"] != false {
+		t.Fatalf("queue next claimed blocked Linear issue: %#v", got)
+	}
+	*blocked = false
+	preview := controller.Preview(context.Background(), third)().(queueui.ClaimPreviewMsg)
+	if preview.Err != nil || preview.Preview == nil {
+		t.Fatalf("TUI Linear preview: %+v", preview)
+	}
+	acquired := controller.AcquireClaim(context.Background(), third, *preview.Preview)().(queueui.ClaimResultMsg)
+	thirdKey, _ := resource.Resolve(resource.Input{Provider: "linear", Source: linearQueueOrg, Item: linearQueueThird})
+	if acquired.Err != nil || !acquired.Claim.Active || len(acquired.Resources) != 1 || acquired.Resources[0] != thirdKey.Resource {
+		t.Fatalf("TUI Linear Claim for me: %+v", acquired)
+	}
+}
+
+func TestLinearQueueNextUncertainAcquireStopsBeforeAnotherIssue(t *testing.T) {
+	h, _ := linearQueueFixture(t)
+	writeHandleFile = func(path string, value handle.Handle) error {
+		if value.State == "ready" {
+			return errors.New("injected handle write failure")
+		}
+		return handle.Write(path, value)
+	}
+	defer func() { writeHandleFile = nil }()
+	data, err := h.run("queue", "next", "--view", "Ready", "--claim", "--session", "linear-uncertain", "--json")
+	if err == nil || !strings.Contains(string(data), "pendingPath") {
+		t.Fatalf("uncertain Linear acquire did not preserve recovery path: %v: %s", err, data)
+	}
+	writeHandleFile = nil
+	claims, err := h.run("list", "--json")
+	var listed struct {
+		Claims []json.RawMessage `json:"claims"`
+	}
+	if err != nil || json.Unmarshal(claims, &listed) != nil || len(listed.Claims) != 1 {
+		t.Fatalf("uncertain Linear acquire tried another issue: %v: %s", err, claims)
+	}
+}
+
+func TestLinearKnownItemSelectionRejectsInterruptedOrMixedScopes(t *testing.T) {
+	t.Parallel()
+	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "linear-test", Adapter: "linear"}, {ID: "other", Adapter: "github"}}}
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "linear-test", ItemID: linearQueueFirst}, Fresh: true}, DependenciesKnown: true, Closure: queue.CoverageComplete}
+	row := queueSourceJSON{ID: "linear-test", Coverage: queue.Coverage{State: queue.CoveragePartial, Reason: "reconciliation-incomplete"}, Freshness: "unknown"}
+	if !linearKnownItemSelection(cfg, []queueSourceJSON{row}, []queue.Item{item}) {
+		t.Fatal("finished Linear traversal with complete item closure should be selectable")
+	}
+	for _, changed := range []queueSourceJSON{
+		{ID: row.ID, Coverage: queue.Coverage{State: queue.CoveragePartial, Reason: "linear-page-budget-reached"}, Freshness: "unknown"},
+		{ID: row.ID, Coverage: row.Coverage, Freshness: "stale"},
+		{ID: "other", Coverage: row.Coverage, Freshness: "unknown"},
+	} {
+		if linearKnownItemSelection(cfg, []queueSourceJSON{changed}, []queue.Item{item}) {
+			t.Fatalf("unsafe partial source accepted: %+v", changed)
+		}
+	}
+	item.Closure = queue.CoverageUnknown
+	if linearKnownItemSelection(cfg, []queueSourceJSON{row}, []queue.Item{item}) {
+		t.Fatal("incomplete item closure accepted")
 	}
 }
 

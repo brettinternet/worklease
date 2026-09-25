@@ -464,7 +464,7 @@ func refreshQueueActionClosure(ctx context.Context, registry *queue.Registry, so
 		seen := map[string]bool{}
 		for {
 			page, err := adapter.ReadDependencies(ctx, source, ref, cursor, 100)
-			if err != nil || page.Completeness != queue.CoverageComplete {
+			if err != nil || page.Completeness != queue.CoverageComplete && (source.Adapter != "linear" || page.Completeness != queue.CoveragePartial || page.NextCursor == "") {
 				if err == nil {
 					err = fmt.Errorf("dependency coverage is incomplete")
 				}

@@ -59,9 +59,8 @@ func TestAdapterConformanceIdentityVectors(t *testing.T) {
 	if linear.resource == "" {
 		t.Fatal("Linear identity vector missing")
 	}
-	// No Linear adapter exists yet. Exercise the common queue derivation and
-	// pre-acquisition gate with probe-backed organization/UUID inputs; the
-	// adapter must provide these inputs (not the mutable team/identifier).
+	// Exercise the common queue derivation and remote pre-acquisition gate
+	// with probe-backed organization/UUID inputs, not team or issue aliases.
 	source := ClaimSource{Source: Source{ID: "linear-team", Adapter: "linear", Locator: "TEST"}, Policy: "linear", ClaimSource: linear.source}
 	item := Item{Summary: Summary{Ref: Ref{SourceID: source.Source.ID, ItemID: linear.item}}, ReadOutcome: "found", Readiness: Readiness{Status: Ready}}
 	prefixes := []string{"coordination:"}

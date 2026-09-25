@@ -73,7 +73,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 
 // The selector runs over the same unpaginated, overlaid snapshot as query.
 // It runs before any query cursor or page limit can hide part of the scope.
-type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, *queue.Registry, []queue.Source, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
+type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, *queue.Registry, []queue.Source, map[string]queue.ClaimSource, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
 
 func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader, selector queueSnapshotSelector) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -392,7 +392,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			}
 		}
 		if selector != nil {
-			return selector(ctx, cmd, cfg, view, registry, sources, selected, auth, cursorItems, items, sourceRows, incomplete)
+			return selector(ctx, cmd, cfg, view, registry, sources, claimSources, selected, auth, cursorItems, items, sourceRows, incomplete)
 		}
 		if incomplete && cmd.Bool("require-complete") {
 			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
