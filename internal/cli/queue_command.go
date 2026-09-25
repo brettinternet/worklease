@@ -150,6 +150,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	defer index.Close()
 	loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
+	loader.LinearSync = queueindex.LinearSyncStore{Index: index, Registry: registry}
 	cachePartitions, err := seedQueueIndex(ctx, index, registry, sources, loader)
 	if err != nil {
 		return err

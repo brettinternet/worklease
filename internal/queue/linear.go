@@ -38,6 +38,16 @@ func NewLinearAdapter() *LinearAdapter {
 func (a *LinearAdapter) QueueCacheIdentity(Source) (string, string, string, bool) {
 	return "", "", "", false
 }
+
+// LinearSyncIdentity is metadata-only: cached payloads are not seeded without
+// a live access check. The partition changes with principal, scope or token.
+func (a *LinearAdapter) LinearSyncIdentity(source Source) (string, string, string, bool) {
+	b, err := a.binding(source)
+	if err != nil {
+		return "", "", "", false
+	}
+	return b.account, b.organization + ":" + b.team + ":" + b.project, b.generation, true
+}
 func (a *LinearAdapter) ConfigurationGeneration(source Source) string {
 	b, err := a.binding(source)
 	if err != nil {
@@ -69,6 +79,7 @@ func (a *LinearAdapter) client() *http.Client {
 
 const linearIdentityQuery = `query($team:String!) { viewer { id organization { id } } team(id:$team) { id name } }`
 const linearListQuery = `query($team:String!,$after:String,$count:Int!) { team(id:$team) { id issues(first:$count,after:$after,includeArchived:true,orderBy:updatedAt) { nodes { id identifier title updatedAt archivedAt trashed team { id } project { id } state { id name type } assignee { id } } pageInfo { hasNextPage endCursor } } } }`
+const linearIncrementalQuery = `query($team:String!,$after:String,$count:Int!,$since:DateTime!) { team(id:$team) { id issues(first:$count,after:$after,includeArchived:true,orderBy:updatedAt,filter:{updatedAt:{gte:$since}}) { nodes { id identifier title updatedAt archivedAt trashed team { id } project { id } state { id name type } assignee { id } } pageInfo { hasNextPage endCursor } } } }`
 const linearDetailQuery = `query($id:String!) { issue(id:$id) { id identifier title description updatedAt archivedAt trashed team { id } project { id } state { id name type } assignee { id } } }`
 const linearRelationsQuery = `query($id:String!,$after:String,$count:Int!) { issue(id:$id) { id team { id } project { id } parent { id team { id } project { id } } relations(first:$count,after:$after) { nodes { type relatedIssue { id team { id } project { id } state { type } } } pageInfo { hasNextPage endCursor } } } }`
 const linearInverseQuery = `query($id:String!,$after:String,$count:Int!) { issue(id:$id) { id team { id } project { id } inverseRelations(first:$count,after:$after) { nodes { type issue { id team { id } project { id } state { type } } } pageInfo { hasNextPage endCursor } } } }`
@@ -100,7 +111,7 @@ func linearTokenGeneration(token string) string {
 }
 func (a *LinearAdapter) query(ctx context.Context, b linearBinding, operation string, variables any, out any) error {
 	switch operation {
-	case linearIdentityQuery, linearListQuery, linearDetailQuery, linearRelationsQuery, linearInverseQuery:
+	case linearIdentityQuery, linearListQuery, linearIncrementalQuery, linearDetailQuery, linearRelationsQuery, linearInverseQuery:
 	default:
 		return LinearDiagnostic{"read-only", "unapproved provider query"}
 	}
@@ -111,7 +122,11 @@ func (a *LinearAdapter) query(ctx context.Context, b linearBinding, operation st
 	// The quota scheduler serializes requests for the same account and organization
 	// in this client. Sync's cross-page quota reconciliation is handled separately.
 	gate := quotaScheduler("linear:"+b.organization+":"+b.account+":"+a.endpoint(), 1)
-	value, err := gate.schedule(ctx, PriorityDetail, linearTokenGeneration(b.token)+":"+string(payload), "", true, func(workCtx context.Context) (any, error) {
+	priority := PriorityDetail
+	if operation == linearListQuery || operation == linearIncrementalQuery {
+		priority = PriorityBackground
+	}
+	value, err := gate.schedule(ctx, priority, linearTokenGeneration(b.token)+":"+string(payload), "", true, func(workCtx context.Context) (any, error) {
 		if err := gate.waitQuota(workCtx); err != nil {
 			return nil, err
 		}
@@ -238,7 +253,7 @@ func (a *LinearAdapter) Capabilities(_ context.Context, source Source, _ string,
 	}
 	read := Capability{Support: Supported, Permission: Allowed, Availability: Available}
 	disabled := Capability{Support: Supported, Permission: Denied, Availability: Available, Reason: "Linear claims and writes require later adapter stages"}
-	return CapabilitySet{"identity": read, "discovery": read, "dependencies": read, "state": read, "assignment": read, "authentication": read, "effects": {Support: SupportUnknown, Permission: PermissionUnknown, Availability: Available}, "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": disabled, "progress": disabled, "synchronization": {Support: Unsupported, Permission: Denied, Availability: Available}}, nil
+	return CapabilitySet{"identity": read, "discovery": read, "dependencies": read, "state": read, "assignment": read, "authentication": read, "effects": {Support: SupportUnknown, Permission: PermissionUnknown, Availability: Available}, "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": disabled, "progress": disabled, "synchronization": read}, nil
 }
 
 type linearIssue struct {
@@ -319,6 +334,20 @@ func encodeLinearCursor(c linearCursor) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 func (a *LinearAdapter) List(ctx context.Context, source Source, query Query, cursor string) (SummaryPage, error) {
+	return a.list(ctx, source, query, cursor, time.Time{})
+}
+
+// ListIncremental overlaps the previous finished window. A moved row ahead of
+// the current cursor is revisited by the next window; this is not an absence
+// proof for unseen rows or a complete-source watermark.
+func (a *LinearAdapter) ListIncremental(ctx context.Context, source Source, query Query, cursor string, committed, scan time.Time) (SummaryPage, error) {
+	if committed.IsZero() || scan.IsZero() {
+		return SummaryPage{}, LinearDiagnostic{"invalid-cursor", "incremental window requires fixed boundaries"}
+	}
+	return a.list(ctx, source, query, cursor, committed.Add(-30*24*time.Hour))
+}
+
+func (a *LinearAdapter) list(ctx context.Context, source Source, query Query, cursor string, since time.Time) (SummaryPage, error) {
 	b, err := a.binding(source)
 	if err != nil {
 		return SummaryPage{}, err
@@ -343,7 +372,13 @@ func (a *LinearAdapter) List(ctx context.Context, source Source, query Query, cu
 	if cursor != "" {
 		after = c.After
 	}
-	if err := a.query(ctx, b, linearListQuery, map[string]any{"team": b.team, "after": after, "count": linearCount(query.Budget)}, &result); err != nil {
+	operation := linearListQuery
+	variables := map[string]any{"team": b.team, "after": after, "count": linearCount(query.Budget)}
+	if !since.IsZero() {
+		operation = linearIncrementalQuery
+		variables["since"] = since.UTC().Format(time.RFC3339Nano)
+	}
+	if err := a.query(ctx, b, operation, variables, &result); err != nil {
 		return SummaryPage{}, err
 	}
 	if result.Team == nil || result.Team.ID != b.team {
@@ -373,6 +408,8 @@ func (a *LinearAdapter) List(ctx context.Context, source Source, query Query, cu
 	coverage.Reason = "visibility and moving-cursor scan require reconciliation"
 	page.Coverage = coverage
 	page.Observation = linearObservation(b, coverage)
+	page.Incremental = !since.IsZero()
+	page.TraversalComplete = page.NextCursor == ""
 	return page, nil
 }
 func (a *LinearAdapter) ReadItems(ctx context.Context, source Source, refs []Ref, _ []string, budget int) []ItemOutcome {
