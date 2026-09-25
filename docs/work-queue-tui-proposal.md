@@ -1,6 +1,6 @@
 # Plan: provider-backed work queue
 
-**Status:** Accepted direction for backlog decomposition. Nothing described here is implemented. Existing claim guarantees, CLI defaults, authority wire protocol, resource policy version, and MCP tools remain unchanged. Performance numbers are acceptance targets unless marked as evidence. Command names, configuration keys, and interfaces are illustrative until the slice that ships them freezes them.
+**Status:** Accepted direction for backlog decomposition. This plan contains implemented slices and unimplemented proposals; see their task states for delivery. Existing claim guarantees, CLI defaults, authority wire protocol, resource policy version, and MCP tools remain unchanged. Performance numbers are acceptance targets unless marked as evidence. Command names, configuration keys, and interfaces are illustrative until the slice that ships them freezes them.
 
 ## 1. Goal
 
@@ -236,7 +236,7 @@ Unknown never means allowed. Read-only discovery never probes a capability by at
 | Effects | Side effects beyond the item, such as Git fetches, commits, hooks, or notifications to watchers. |
 | Authentication | Local, CLI helper, OAuth, or app options; hosts; scopes; principal identity; expiry and refresh. |
 
-Initial declarations, from §3 evidence:
+Initial declarations from §3 evidence; S8 columns are unprobed proposals, not shipped capabilities:
 
 | Group | Backlog.md 1.52 | GitHub Issues (github.com) | Linear (S8, pending probe) | Beads (S8, pending probe) |
 | --- | --- | --- | --- | --- |
