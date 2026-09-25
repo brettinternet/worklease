@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,7 @@ type ExternalProcess struct {
 	initializeMu sync.Mutex
 	secrets      []string
 	beforeStart  func()
+	checkMode    bool // explicit conformance probe; never used by configured sources
 }
 
 // NewExternalProcess verifies owner approval against a private executable snapshot before starting it.
@@ -129,6 +131,10 @@ func NewExternalProcess(source config.QueueSource, env func(string) string) (*Ex
 }
 
 func newExternalProcess(source config.QueueSource, env func(string) string, beforeStart func()) (*ExternalProcess, error) {
+	return newExternalProcessMode(source, env, beforeStart, false)
+}
+
+func newExternalProcessMode(source config.QueueSource, env func(string) string, beforeStart func(), checkMode bool) (*ExternalProcess, error) {
 	if env == nil {
 		env = os.Getenv
 	}
@@ -152,7 +158,21 @@ func newExternalProcess(source config.QueueSource, env func(string) string, befo
 		beforeStart: beforeStart,
 	}
 	client.secrets = externalSecretValues(source, env)
+	client.checkMode = checkMode
 	if _, err := client.startProcess(); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// NewExternalProcessForCheck exercises the production host with an explicit,
+// unapproved executable. It never reads or writes queue approval state.
+func NewExternalProcessForCheck(source config.QueueSource) (*ExternalProcess, error) {
+	if source.Adapter != "external" || source.ID == "" || source.ExpectedAdapterID != "" || source.ExpectedVersion != "" || !filepath.IsAbs(source.Executable) || filepath.Clean(source.Executable) != source.Executable {
+		return nil, fmt.Errorf("invalid conformance source")
+	}
+	client, err := newExternalProcessMode(source, os.Getenv, nil, true)
+	if err != nil {
 		return nil, err
 	}
 	return client, nil
@@ -383,7 +403,12 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 		stdoutW.Close()
 		return nil, fmt.Errorf("external adapter process could not start")
 	}
-	snapshot, err := config.PrepareQueueAdapterLaunch(p.env, p.source)
+	var snapshot *config.QueueAdapterLaunchSnapshot
+	if p.checkMode {
+		snapshot, err = config.PrepareQueueAdapterCheckLaunch(p.source.Executable)
+	} else {
+		snapshot, err = config.PrepareQueueAdapterLaunch(p.env, p.source)
+	}
 	if err != nil {
 		closeExternalFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
 		return nil, err
@@ -1017,7 +1042,9 @@ func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (E
 	}
 	var manifest ExternalAdapterManifest
 	if json.Unmarshal(fields["manifest"], &manifest) != nil ||
-		manifest.ID != source.ExpectedAdapterID || manifest.Version != source.ExpectedVersion ||
+		(source.ExpectedAdapterID != "" && manifest.ID != source.ExpectedAdapterID) ||
+		(source.ExpectedVersion != "" && manifest.Version != source.ExpectedVersion) ||
+		!config.ValidQueueAdapterManifestIdentity(manifest.ID, manifest.Version) ||
 		manifest.Protocol.MinMajor > 1 || manifest.Protocol.MaxMajor < 1 ||
 		manifest.Protocol.MinMajor < 1 || manifest.Protocol.MaxMajor < manifest.Protocol.MinMajor ||
 		manifest.ResourcePolicy != "generic" || len(manifest.RequiredFeatures) != 0 {

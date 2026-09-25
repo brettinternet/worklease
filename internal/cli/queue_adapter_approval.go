@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -37,7 +38,7 @@ func queueAdapterApprovalCommand(s *boundary) *urfavecli.Command {
 	return &urfavecli.Command{
 		Name:  "adapter",
 		Usage: "inspect and explicitly approve external queue adapters",
-		Commands: []*urfavecli.Command{{
+		Commands: []*urfavecli.Command{queueAdapterCheckCommand(s), {
 			Name:  "approve",
 			Usage: "approve the configured executable for one external queue source",
 			Flags: []urfavecli.Flag{
@@ -101,6 +102,85 @@ func queueAdapterApprovalCommand(s *boundary) *urfavecli.Command {
 			},
 		}},
 	}
+}
+
+// check is deliberately separate from approve: it neither loads queue.yaml nor
+// records executable approval. It exercises an explicitly selected binary only.
+func queueAdapterCheckCommand(s *boundary) *urfavecli.Command {
+	return &urfavecli.Command{
+		Name: "check", Usage: "check an external adapter through the production host",
+		UsageText: "worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]",
+		OnUsageError: func(_ context.Context, cmd *urfavecli.Command, err error, _ bool) error {
+			return adapterCheckError(s, cmd, reason.Invalid(err.Error()))
+		},
+		Flags: []urfavecli.Flag{
+			&urfavecli.StringFlag{Name: "executable", Usage: "absolute path to an adapter executable"},
+			&urfavecli.StringFlag{Name: "adapter-config", Usage: "adapter source configuration as JSON object"},
+			&urfavecli.StringFlag{Name: "adapter-config-file", Usage: "path to a JSON configuration object"},
+			&urfavecli.StringFlag{Name: "disposable-target", Usage: "explicit disposable provider item ID for mutation probes"},
+			&urfavecli.StringFlag{Name: "cancel-marker", Usage: "fresh fixture marker path; adapter writes .request on start and .done on cancellation"},
+		},
+		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+			if cmd.String("executable") == "" || cmd.IsSet("adapter-config") && cmd.IsSet("adapter-config-file") || cmd.Args().Len() != 0 {
+				return adapterCheckError(s, cmd, reason.Invalid("--executable is required; choose only one of --adapter-config and --adapter-config-file"))
+			}
+			var data []byte
+			if file := cmd.String("adapter-config-file"); file != "" {
+				info, err := os.Stat(file)
+				if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+					return adapterCheckError(s, cmd, reason.Invalid("adapter configuration file must be a readable JSON file under 1 MiB"))
+				}
+				data, err = os.ReadFile(file)
+				if err != nil {
+					return adapterCheckError(s, cmd, reason.Invalid("adapter configuration file cannot be read"))
+				}
+			} else {
+				data = []byte(cmd.String("adapter-config"))
+			}
+			configuration := map[string]any{}
+			if len(data) > 0 && (len(data) > 1<<20 || json.Unmarshal(data, &configuration) != nil || configuration == nil) {
+				return adapterCheckError(s, cmd, reason.Invalid("adapter configuration must be a JSON object under 1 MiB"))
+			}
+			report, err := queue.CheckExternalAdapter(ctx, queue.AdapterCheckOptions{Executable: cmd.String("executable"), Config: configuration, Target: cmd.String("disposable-target"), CancelMarker: cmd.String("cancel-marker")})
+			if err != nil {
+				return adapterCheckError(s, cmd, reason.Invalid("adapter check could not start the executable"))
+			}
+			if report.Verdict == "fail" {
+				failure := reason.New(reason.ReasonAdapterConformanceFailed, "adapter conformance checks failed").With("verdict", report.Verdict).With("checks", report.Checks)
+				if s.jsonRequested(cmd) {
+					return adapterCheckError(s, cmd, failure)
+				}
+				writeAdapterCheckText(s.writer, report)
+				return failure
+			}
+			if s.jsonRequested(cmd) {
+				return output.WriteSuccess(s.writer, "queue-adapter-check", map[string]any{"verdict": report.Verdict, "manifest": report.Manifest, "checks": report.Checks})
+			}
+			return writeAdapterCheckText(s.writer, report)
+		},
+	}
+}
+
+func adapterCheckError(s *boundary, cmd *urfavecli.Command, err error) error {
+	if !s.jsonRequested(cmd) {
+		return err
+	}
+	if writeErr := output.WriteError(s.writer, "queue-adapter-check", err); writeErr != nil {
+		return writeErr
+	}
+	return &handledError{cause: err}
+}
+
+func writeAdapterCheckText(writer io.Writer, report queue.AdapterCheckReport) error {
+	if _, err := fmt.Fprintf(writer, "Adapter conformance: %s\n", report.Verdict); err != nil {
+		return err
+	}
+	for _, check := range report.Checks {
+		if _, err := fmt.Fprintf(writer, "%s: %s (%s) — %s\n", check.ID, check.Status, check.Reason, check.Detail); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeQueueAdapterApprovalPreview(writer io.Writer, preview queueAdapterApprovalPreview) error {

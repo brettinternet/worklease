@@ -555,6 +555,12 @@ func checkQueueConfigKeys(node *yaml.Node, path string) error {
 	return nil
 }
 
+// ValidQueueAdapterManifestIdentity applies the same identity and version rules
+// to an unapproved conformance manifest as to a configured source.
+func ValidQueueAdapterManifestIdentity(id, version string) bool {
+	return validExternalAdapterID(id) && validExternalAdapterVersion(version)
+}
+
 func validExternalAdapterID(value string) bool {
 	return value != "" && len(value) <= 128 && utf8.ValidString(value) && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n")
 }
