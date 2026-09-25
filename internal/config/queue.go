@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -64,6 +65,9 @@ type QueueSource struct {
 	Host              string            `yaml:"host"`
 	Repository        string            `yaml:"repository"`
 	Account           string            `yaml:"account"`
+	Organization      string            `yaml:"organization"`
+	Team              string            `yaml:"team"`
+	Project           string            `yaml:"project"`
 	Executable        string            `yaml:"executable"`
 	ExpectedAdapterID string            `yaml:"expectedAdapterId"`
 	ExpectedVersion   string            `yaml:"expectedVersion"`
@@ -71,6 +75,10 @@ type QueueSource struct {
 	CredentialRef     string            `yaml:"credentialRef"`
 	CredentialHelper  []string          `yaml:"credentialHelper"`
 }
+
+var queueUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func queueUUID(value string) bool { return queueUUIDPattern.MatchString(value) }
 
 type QueueClaims struct {
 	Policy string `yaml:"policy" json:"policy"`
@@ -166,7 +174,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true},
+		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true},
 		"claims": {"policy": true, "source": true},
 		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
 		"filter": {"readiness": true, "claim": true, "assigned": true},
@@ -239,7 +247,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					if nested["checkout"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "github":
@@ -248,12 +256,17 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 							return QueueConfig{}, fmt.Errorf("%s.%s: required", label, key)
 						}
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper"); err != nil {
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "linear", "jira-cloud":
 					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "repository", "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
 						return QueueConfig{}, err
+					}
+					if adapter.Value == "jira-cloud" {
+						if err := rejectQueueFields(nested, label, "organization", "team", "project"); err != nil {
+							return QueueConfig{}, err
+						}
 					}
 					if nested["account"] == nil || nested["credentialHelper"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s: account and credentialHelper required", label)
@@ -361,6 +374,11 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				return QueueConfig{}, fmt.Errorf("%s: backlog-md fields are not valid for github", label)
 			}
 		case "linear", "jira-cloud":
+			if s.Adapter == "linear" {
+				if !queueUUID(s.Organization) || !queueUUID(s.Team) || !queueUUID(s.Account) || (s.Project != "" && !queueUUID(s.Project)) || s.Host != "" {
+					return QueueConfig{}, fmt.Errorf("%s: Linear requires organization, team, and account UUIDs, optional project UUID, and no host", label)
+				}
+			}
 			if strings.TrimSpace(s.Account) == "" || strings.ContainsAny(s.Account, "\r\n\x00") {
 				return QueueConfig{}, fmt.Errorf("%s.account: safe principal required", label)
 			}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +64,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 		var diagnostic string
 		switch request.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": 1, "manifest": map[string]any{"id": "conformance.shim", "version": "1.0.0", "protocol": map[string]int{"minMajor": 1, "maxMajor": 1}, "configSchema": map[string]any{"type": "object"}, "authentication": []string{}, "resourcePolicy": "generic", "capabilities": []string{"identity", "discovery", "dependencies", "state", "mutation"}, "requiredFeatures": []string{}}}
+			capabilities := []string{"identity", "discovery", "dependencies", "state", "mutation"}
+			if kind == "linear" {
+				capabilities = capabilities[:4]
+			} // no writes in this stage
+			result = map[string]any{"protocolVersion": 1, "manifest": map[string]any{"id": "conformance.shim", "version": "1.0.0", "protocol": map[string]int{"minMajor": 1, "maxMajor": 1}, "configSchema": map[string]any{"type": "object"}, "authentication": []string{}, "resourcePolicy": "generic", "capabilities": capabilities, "requiredFeatures": []string{}}}
 		case "resolve":
 			var cfg map[string]string
 			if json.Unmarshal(request.Params["config"], &cfg) != nil {
@@ -87,6 +92,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				built.APIBase = cfg["apiBase"]
 				adapter = built
 				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "host": "github.com", "repository": "org/repo", "account": "tester"})
+			case "linear":
+				built := NewLinearAdapter()
+				built.APIBase = cfg["apiBase"]
+				adapter = built
+				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "organization": linearTestOrg, "team": linearTestTeam, "account": linearTestViewer, "credentialHelper": `["/bin/echo","fixture-token"]`})
 			}
 			if source.ID == "" {
 				diagnostic = "unavailable-source"
@@ -317,7 +327,7 @@ func conformanceItem(item Summary, body string) map[string]any {
 
 func TestAdapterConformance(t *testing.T) {
 	t.Parallel()
-	kinds := []string{"backlog-md", "github", "sample"}
+	kinds := []string{"backlog-md", "github", "linear", "sample"}
 	if binary, err := exec.LookPath("bd"); err == nil {
 		if version, err := exec.Command(binary, "version").Output(); err == nil && strings.HasPrefix(string(version), "bd version 1.3.0 (") {
 			kinds = append(kinds, "beads")
@@ -345,6 +355,40 @@ func TestAdapterConformance(t *testing.T) {
 				fixture["checkout"], fixture["binary"] = source.Locator, binary
 				itemID = beadsCommand(t, binary, source.Locator, "create", "First", "--silent")
 				beadsCommand(t, binary, source.Locator, "create", "Second", "--silent")
+			} else if kind == "linear" {
+				itemID = linearTestIssue
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						Query     string
+						Variables map[string]json.RawMessage
+					}
+					_ = json.NewDecoder(r.Body).Decode(&req)
+					var data any
+					switch req.Query {
+					case linearIdentityQuery:
+						data = linearIdentityFixture(req.Query)
+					case linearListQuery:
+						first := string(req.Variables["after"]) == "null"
+						id := linearTestBlocker
+						if first {
+							id = linearTestIssue
+						}
+						data = map[string]any{"team": map[string]any{"id": linearTestTeam, "issues": map[string]any{"nodes": []any{linearIssueFixture(id, "unstarted")}, "pageInfo": map[string]any{"hasNextPage": first, "endCursor": "next"}}}}
+					case linearDetailQuery:
+						data = map[string]any{"issue": linearIssueFixture(linearTestIssue, "unstarted")}
+					case linearRelationsQuery:
+						data = map[string]any{"issue": map[string]any{"id": linearTestIssue, "team": map[string]any{"id": linearTestTeam}, "relations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}}}
+					case linearInverseQuery:
+						data = map[string]any{"issue": map[string]any{"id": linearTestIssue, "team": map[string]any{"id": linearTestTeam}, "inverseRelations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}}}
+					}
+					if data == nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+				}))
+				t.Cleanup(server.Close)
+				fixture["apiBase"] = server.URL
 			} else {
 				itemID = "1"
 				built, server := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +430,19 @@ func TestAdapterConformance(t *testing.T) {
 			check, err := CheckExternalAdapter(context.Background(), AdapterCheckOptions{Executable: executable, Config: fixture, CancelMarker: cancelMarker})
 			if err != nil || check.Verdict != "pass" {
 				t.Fatalf("shared conformance checks: %+v %v", check, err)
+			}
+			// The Beads fixture exercises the shared host above and the shipped
+			// queue CLI separately; duplicating its Dolt subprocesses here can
+			// exceed the external CLI's fixed process budget.
+			if kind != "beads" {
+				configJSON, err := json.Marshal(fixture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				command, err := testkit.RunTestProcess("adapter-cli", 15*time.Second, executable, string(configJSON))
+				if err != nil || !strings.Contains(string(command.Stdout), `"verdict":"pass"`) {
+					t.Fatalf("%s fixture did not pass the shipped CLI: %v: %s %s", kind, err, command.Stdout, command.Stderr)
+				}
 			}
 			for _, id := range []string{"initialize", "resolve", "capabilities", "list-budget", "read-items", "dependencies", "host-output-guards"} {
 				found := false
@@ -439,6 +496,9 @@ func TestAdapterConformance(t *testing.T) {
 			if _, err := adapter.ReadDependencies(context.Background(), source, ref, "", 100); err != nil {
 				t.Fatal(err)
 			}
+			if kind == "linear" {
+				return
+			} // read-only stage: no mutation/receipt contract until TASK-142.7
 			process, err := adapter.validatedProcess(source)
 			if err != nil {
 				t.Fatal(err)
