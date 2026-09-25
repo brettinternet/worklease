@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -53,20 +55,25 @@ func ValidateLaunchTemplate(value string) error {
 }
 
 type QueueSource struct {
-	ID              string            `yaml:"id"`
-	Adapter         string            `yaml:"adapter"`
-	Checkout        string            `yaml:"checkout"`
-	Claims          *QueueClaims      `yaml:"claims"`
-	Workflow        map[string]string `yaml:"workflow"`
-	AllowGitNetwork bool              `yaml:"allowGitNetwork"`
-	Host            string            `yaml:"host"`
-	Repository      string            `yaml:"repository"`
-	Account         string            `yaml:"account"`
+	ID                string            `yaml:"id"`
+	Adapter           string            `yaml:"adapter"`
+	Checkout          string            `yaml:"checkout"`
+	Claims            *QueueClaims      `yaml:"claims"`
+	Workflow          map[string]string `yaml:"workflow"`
+	AllowGitNetwork   bool              `yaml:"allowGitNetwork"`
+	Host              string            `yaml:"host"`
+	Repository        string            `yaml:"repository"`
+	Account           string            `yaml:"account"`
+	Executable        string            `yaml:"executable"`
+	ExpectedAdapterID string            `yaml:"expectedAdapterId"`
+	ExpectedVersion   string            `yaml:"expectedVersion"`
+	Config            map[string]any    `yaml:"config"`
+	CredentialRef     string            `yaml:"credentialRef"`
 }
 
 type QueueClaims struct {
-	Policy string `yaml:"policy"`
-	Source string `yaml:"source"`
+	Policy string `yaml:"policy" json:"policy"`
+	Source string `yaml:"source" json:"source"`
 }
 
 type QueueView struct {
@@ -144,7 +151,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":  {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch": {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true},
+		"source": {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true},
 		"claims": {"policy": true, "source": true},
 		"view":   {"name": true, "authority": true, "sources": true, "filter": true},
 		"filter": {"readiness": true, "claim": true, "assigned": true},
@@ -209,15 +216,35 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				if adapter == nil {
 					return QueueConfig{}, fmt.Errorf("%s.adapter: required", label)
 				}
-				if adapter.Value == "backlog-md" && nested["checkout"] == nil {
-					return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
+				if adapter.Kind != yaml.ScalarNode || adapter.Tag != "!!str" || strings.TrimSpace(adapter.Value) == "" {
+					return QueueConfig{}, fmt.Errorf("%s.adapter: expected adapter name", label)
 				}
-				if adapter.Value == "github" {
+				switch adapter.Value {
+				case "backlog-md":
+					if nested["checkout"] == nil {
+						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
+					}
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+						return QueueConfig{}, err
+					}
+				case "github":
 					for _, key := range []string{"host", "repository", "account"} {
 						if nested[key] == nil {
 							return QueueConfig{}, fmt.Errorf("%s.%s: required", label, key)
 						}
 					}
+					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef"); err != nil {
+						return QueueConfig{}, err
+					}
+				case "external":
+					if err := rejectQueueFields(nested, label, "checkout", "allowGitNetwork", "host", "repository"); err != nil {
+						return QueueConfig{}, err
+					}
+					if err := validateExternalQueueSource(label, nested); err != nil {
+						return QueueConfig{}, err
+					}
+				default:
+					return QueueConfig{}, fmt.Errorf("%s.adapter: unknown adapter %q", label, adapter.Value)
 				}
 			} else if nested["filter"] == nil {
 				return QueueConfig{}, fmt.Errorf("%s.filter: required", label)
@@ -299,6 +326,8 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if s.Checkout != "" || s.Claims != nil || s.AllowGitNetwork {
 				return QueueConfig{}, fmt.Errorf("%s: backlog-md fields are not valid for github", label)
 			}
+		case "external":
+			// The source-specific external fields were checked against their YAML nodes above.
 		default:
 			return QueueConfig{}, fmt.Errorf("%s.adapter: unknown adapter %q", label, s.Adapter)
 		}
@@ -349,6 +378,214 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		}
 	}
 	return cfg, nil
+}
+
+func rejectQueueFields(fields map[string]*yaml.Node, label string, keys ...string) error {
+	for _, key := range keys {
+		if fields[key] != nil {
+			return fmt.Errorf("%s.%s: not valid for this adapter", label, key)
+		}
+	}
+	return nil
+}
+
+func validateExternalQueueSource(label string, fields map[string]*yaml.Node) error {
+	sourceID, err := queueStringField(fields["id"], label+".id")
+	if err != nil {
+		return err
+	}
+	if !validExternalAdapterID(sourceID) {
+		return fmt.Errorf("%s.id: invalid external source ID", label)
+	}
+	for _, key := range []string{"executable", "expectedAdapterId", "expectedVersion", "config"} {
+		if fields[key] == nil {
+			return fmt.Errorf("%s.%s: required for external adapter", label, key)
+		}
+	}
+	path, err := queueStringField(fields["executable"], label+".executable")
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, '\x00') {
+		return fmt.Errorf("%s.executable: absolute canonical path required", label)
+	}
+	adapterID, err := queueStringField(fields["expectedAdapterId"], label+".expectedAdapterId")
+	if err != nil {
+		return err
+	}
+	if !validExternalAdapterID(adapterID) {
+		return fmt.Errorf("%s.expectedAdapterId: invalid adapter ID", label)
+	}
+	version, err := queueStringField(fields["expectedVersion"], label+".expectedVersion")
+	if err != nil {
+		return err
+	}
+	if !validExternalAdapterVersion(version) {
+		return fmt.Errorf("%s.expectedVersion: expected semantic version", label)
+	}
+	if config := fields["config"]; config.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s.config: expected an object", label)
+	} else if err := checkQueueConfigKeys(config, label+".config"); err != nil {
+		return err
+	}
+	if claims := fields["claims"]; claims != nil {
+		if claims.Kind != yaml.MappingNode {
+			return fmt.Errorf("%s.claims: expected an object", label)
+		}
+		claimFields := nodeFields(claims)
+		policy, err := queueStringField(claimFields["policy"], label+".claims.policy")
+		if err != nil {
+			return err
+		}
+		source, err := queueStringField(claimFields["source"], label+".claims.source")
+		if err != nil {
+			return err
+		}
+		if policy != "generic" {
+			return fmt.Errorf("%s.claims.policy: external adapters require generic", label)
+		}
+		if err := validateQueueClaimSource(source); err != nil {
+			return fmt.Errorf("%s.claims.source: %w", label, err)
+		}
+	}
+	if account := fields["account"]; account != nil {
+		value, err := queueStringField(account, label+".account")
+		if err != nil {
+			return err
+		}
+		if !validExternalQueueText(value) {
+			return fmt.Errorf("%s.account: expected a non-empty safe principal", label)
+		}
+	}
+	if workflow := fields["workflow"]; workflow != nil {
+		for intent, transition := range nodeFields(workflow) {
+			if !validExternalQueueText(transition.Value) {
+				return fmt.Errorf("%s.workflow.%s: expected a non-empty safe provider transition", label, intent)
+			}
+		}
+	}
+	if credential := fields["credentialRef"]; credential != nil {
+		value, err := queueStringField(credential, label+".credentialRef")
+		if err != nil {
+			return err
+		}
+		if !validExternalAdapterID(value) {
+			return fmt.Errorf("%s.credentialRef: invalid credential reference", label)
+		}
+	}
+	return nil
+}
+
+func validExternalQueueText(value string) bool {
+	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateQueueClaimSource(source string) error {
+	if !utf8.ValidString(source) || source == "" || strings.TrimSpace(source) != source || len([]byte(source)) > 1024 {
+		return fmt.Errorf("expected stable non-empty identity without surrounding whitespace (maximum 1024 bytes)")
+	}
+	for _, char := range source {
+		if char < 0x20 || char == 0x7f {
+			return fmt.Errorf("identity must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func queueStringField(node *yaml.Node, path string) (string, error) {
+	if node == nil || node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return "", fmt.Errorf("%s: expected a string", path)
+	}
+	return node.Value, nil
+}
+
+func checkQueueConfigKeys(node *yaml.Node, path string) error {
+	if node.Kind == yaml.AliasNode {
+		return fmt.Errorf("%s: YAML aliases are not supported", path)
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		if len(node.Content)%2 != 0 {
+			return fmt.Errorf("%s: invalid object", path)
+		}
+		seen := map[string]bool{}
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || seen[key.Value] {
+				return fmt.Errorf("%s.%s: unknown or duplicate key", path, key.Value)
+			}
+			seen[key.Value] = true
+			if err := checkQueueConfigKeys(node.Content[i+1], path+"."+key.Value); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode:
+		for i, child := range node.Content {
+			if err := checkQueueConfigKeys(child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validExternalAdapterID(value string) bool {
+	return value != "" && len(value) <= 128 && utf8.ValidString(value) && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+// Protocol v1's manifest schema accepts semantic versions without build metadata.
+func validExternalAdapterVersion(value string) bool {
+	core, prerelease, hasPrerelease := strings.Cut(value, "-")
+	if strings.ContainsAny(core, "+-") || hasPrerelease && prerelease == "" {
+		return false
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > 1 && part[0] == '0' || !decimalDigits(part) {
+			return false
+		}
+	}
+	if !hasPrerelease {
+		return true
+	}
+	for _, identifier := range strings.Split(prerelease, ".") {
+		if identifier == "" {
+			return false
+		}
+		numeric := true
+		for _, char := range identifier {
+			if !(char >= '0' && char <= '9' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char == '-') {
+				return false
+			}
+			if char < '0' || char > '9' {
+				numeric = false
+			}
+		}
+		if numeric && len(identifier) > 1 && identifier[0] == '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func decimalDigits(value string) bool {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func validLaunchEnvName(name string) bool {

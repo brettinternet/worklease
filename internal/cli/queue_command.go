@@ -33,6 +33,33 @@ func queueCommand(s *boundary) *urfave.Command {
 	}
 	return c
 }
+func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string {
+	if source.Adapter == "external" {
+		if source.Account != "" {
+			return []string{source.Account}
+		}
+		return nil
+	}
+	identityKey := "backlog-md"
+	if source.Adapter == "github" {
+		identityKey = source.Host
+	}
+	identity, ok := cfg.Me[identityKey]
+	if !ok {
+		return nil
+	}
+	if source.Adapter == "github" {
+		var account string
+		if identity.Decode(&account) == nil && account != "" {
+			return []string{account}
+		}
+		return nil
+	}
+	var names []string
+	_ = identity.Decode(&names)
+	return names
+}
+
 func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	cfg, err := config.LoadQueue(os.Getenv)
 	if err != nil {
@@ -67,6 +94,11 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	defer backend.Close()
 	registry := queue.NewRegistry()
+	cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
+	if err != nil {
+		return err
+	}
+	defer cleanupExternal()
 	sources := make([]queue.Source, 0, len(selected.Sources))
 	shownSources := make([]queue.Source, 0, len(selected.Sources))
 	sourceErrors := make(map[string]string)
@@ -79,20 +111,33 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		if !ok {
 			return reason.Invalid("unknown queue source: " + id)
 		}
-		adapter, ok := registry.Get(src.Adapter)
+		adapterKey := queueAdapterRegistryKey(src)
+		adapter, ok := registry.Get(adapterKey)
 		if !ok {
-			return reason.Invalid("unknown adapter: " + src.Adapter)
+			shownSources = append(shownSources, queue.Source{ID: src.ID, Name: src.ID, Adapter: adapterKey})
+			sourceErrors[src.ID] = "adapter-unavailable"
+			continue
 		}
-		options := map[string]string{"id": src.ID, "checkout": src.Checkout, "host": src.Host, "repository": src.Repository, "account": src.Account}
-		if src.AllowGitNetwork {
-			options["allowGitNetwork"] = "true"
+		options := map[string]string{"id": src.ID}
+		if src.Adapter != "external" {
+			options["checkout"] = src.Checkout
+			options["host"] = src.Host
+			options["repository"] = src.Repository
+			options["account"] = src.Account
+			if src.AllowGitNetwork {
+				options["allowGitNetwork"] = "true"
+			}
 		}
 		resolved, err := adapter.Resolve(ctx, options)
 		if err != nil {
-			shownSources = append(shownSources, queue.Source{ID: src.ID, Name: src.ID, Adapter: src.Adapter})
+			shownSources = append(shownSources, queue.Source{ID: src.ID, Name: src.ID, Adapter: adapterKey})
 			sourceErrors[src.ID] = queueSourceFailure(err)
+			if src.Adapter == "external" {
+				sourceErrors[src.ID] = err.Error() // ExternalProcess bounds and redacts stderr.
+			}
 			continue
 		}
+		resolved.ID, resolved.Adapter = src.ID, adapterKey
 		sources = append(sources, resolved)
 		shownSources = append(shownSources, resolved)
 	}
@@ -141,23 +186,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	}
 	model.MeBySource = make(map[string][]string)
 	for _, src := range selected.Sources {
-		configured := sourceByID[src]
-		identityKey := "backlog-md"
-		if configured.Adapter == "github" {
-			identityKey = configured.Host
-		}
-		if identity, ok := cfg.Me[identityKey]; ok {
-			var names []string
-			if configured.Adapter == "github" {
-				var name string
-				if identity.Decode(&name) == nil && name != "" {
-					names = []string{name}
-				}
-			} else {
-				_ = identity.Decode(&names)
-			}
-			model.MeBySource[src] = names
-		}
+		model.MeBySource[src] = queueMeBySource(cfg, sourceByID[src])
 	}
 	model.Authority = authorityView.Profile
 	model.Scope = "local"
@@ -175,6 +204,14 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		for _, v := range cfg.Me {
 			model.Me = v.Value
 			break
+		}
+	}
+	if model.Me == "" {
+		for _, id := range selected.Sources {
+			if source := sourceByID[id]; source.Adapter == "external" && source.Account != "" {
+				model.Me = source.Account
+				break
+			}
 		}
 	}
 	paths := config.UserProfilePaths(os.Getenv)

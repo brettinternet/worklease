@@ -95,6 +95,11 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			return s.handle(cmd, reason.Invalid("unknown queue view"))
 		}
 		registry := newRegistry()
+		cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		defer cleanupExternal()
 		sources := make([]queue.Source, 0, len(view.Sources))
 		resolveErrors := make(map[string]string)
 		for _, configured := range cfg.Sources {
@@ -108,17 +113,29 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			if !included {
 				continue
 			}
-			adapter, ok := registry.Get(configured.Adapter)
+			adapterKey := queueAdapterRegistryKey(configured)
+			adapter, ok := registry.Get(adapterKey)
 			if !ok {
-				return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "queue adapter unavailable"))
+				resolveErrors[configured.ID] = "source-adapter-unavailable"
+				continue
 			}
-			opts := map[string]string{"id": configured.ID, "checkout": configured.Checkout, "host": configured.Host, "repository": configured.Repository, "account": configured.Account, "allowGitNetwork": fmt.Sprint(configured.AllowGitNetwork)}
+			opts := map[string]string{"id": configured.ID}
+			if configured.Adapter != "external" {
+				opts["checkout"] = configured.Checkout
+				opts["host"] = configured.Host
+				opts["repository"] = configured.Repository
+				opts["account"] = configured.Account
+				opts["allowGitNetwork"] = fmt.Sprint(configured.AllowGitNetwork)
+			}
 			source, e := adapter.Resolve(ctx, opts)
 			if e != nil {
 				resolveErrors[configured.ID] = "source-resolve-failed"
+				if configured.Adapter == "external" {
+					resolveErrors[configured.ID] = e.Error() // ExternalProcess bounds and redacts stderr.
+				}
 				continue
 			}
-			source.ID, source.Adapter = configured.ID, configured.Adapter
+			source.ID, source.Adapter = configured.ID, adapterKey
 			sources = append(sources, source)
 		}
 		loader := newLoader(registry)
@@ -546,6 +563,9 @@ func isQueueMe(cfg config.QueueConfig, item queue.Item, owner string) bool {
 			if value := cfg.Me[source.Host]; value.Decode(&account) == nil {
 				return strings.EqualFold(account, owner)
 			}
+		}
+		if source.Adapter == "external" {
+			return strings.EqualFold(source.Account, owner)
 		}
 		if source.Adapter == "backlog-md" {
 			var names []string

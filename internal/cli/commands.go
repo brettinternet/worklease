@@ -373,7 +373,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	queueNext.Action = queueNextAction(s)
 	usageText(queueNext, "worklease queue next --view NAME [--claim [--start] --session SESSION] [--json] [--group N] [--item SOURCE:ITEM ...]")
 	detail(queueNext, "Select from a complete view and dependency graph. Plain next never acquires; --claim acquires one worker-owned claim with the regular contextual handle and no wait.")
-	queueBrowse.Commands = []*urfavecli.Command{queueQuery, queueNext, queueRecoveryCommand(s), queueIdentityCommand(s), queueAuthorityIDCommand(s)}
+	queueBrowse.Commands = []*urfavecli.Command{queueQuery, queueNext, queueRecoveryCommand(s), queueIdentityCommand(s), queueAuthorityIDCommand(s), queueAdapterApprovalCommand(s)}
 	all := append(commands, queueBrowse, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)

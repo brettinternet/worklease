@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/user"
@@ -45,6 +46,15 @@ func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, 
 		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: me[0]}, nil
 	case *queue.GitHubAdapter:
 		return queue.NewGitHubWriteAdapter(a, true), nil
+	case *queue.ExternalAdapter:
+		configured, ok := c.configured[source.ID]
+		if !ok || configured.Adapter != "external" || configured.Account == "" {
+			return nil, fmt.Errorf("external provider identity not configured")
+		}
+		if err := config.CheckQueueAdapterApproval(os.Getenv, configured); err != nil {
+			return nil, err
+		}
+		return queue.NewExternalWriteAdapter(a), nil
 	default:
 		return nil, fmt.Errorf("source does not support writes")
 	}
@@ -80,6 +90,14 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		found = true
 		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
+		}
+		if configured.Adapter == "external" {
+			if !reflect.DeepEqual(current, configured) {
+				return queueui.WritePreview{}, "", fmt.Errorf("external source binding changed; reopen the write preview")
+			}
+			if err := config.CheckQueueAdapterApproval(os.Getenv, current); err != nil {
+				return queueui.WritePreview{}, "", err
+			}
 		}
 	}
 	if !found {
@@ -195,12 +213,31 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			preview.Effect += ": " + intent.Transition
 		}
 		preview.SideEffects = []string{"GitHub issue notification to watchers"}
+	case *queue.ExternalWriteAdapter:
+		var detail queue.ExternalWritePreview
+		intent, detail, err = a.Prepare(ctx, intent)
+		if err == nil {
+			err = applyExternalWritePreview(&preview, detail)
+		}
 	}
 	if err != nil {
 		return queueui.WritePreview{}, "", err
 	}
 	preview.Intent = intent
 	return preview, path, nil
+}
+
+func applyExternalWritePreview(preview *queueui.WritePreview, detail queue.ExternalWritePreview) error {
+	patch, err := json.Marshal(detail.Patch)
+	if err != nil {
+		return err
+	}
+	preview.Effect = detail.Operation + " " + string(patch)
+	preview.SideEffects = []string{"external provider side effects and notifications are adapter-defined", "configured adapter executes with owner privileges and is not sandboxed"}
+	if !detail.ConditionalWrite {
+		preview.Races = append(preview.Races, "provider does not condition the write on the previewed version")
+	}
+	return nil
 }
 
 func (c queueWriteController) Preview(ctx context.Context, item queue.Item, action queue.Action, transition, text string) tea.Cmd {
@@ -223,24 +260,36 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 			result.Err = err
 			return result
 		}
-		read, ok := c.registry.Get(record.Intent.Source.Adapter)
-		if !ok {
-			result.Err = fmt.Errorf("write adapter unavailable")
-			return result
-		}
 		var adapter queue.WriteAdapter
-		switch a := read.(type) {
-		case *queue.BacklogAdapter:
-			adapter = &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: record.Intent.Principal}
-		case *queue.GitHubAdapter:
-			adapter = queue.NewGitHubWriteAdapter(a, true)
-		default:
-			result.Err = fmt.Errorf("write adapter unavailable")
-			return result
+		var workflow map[string]string
+		cleanup := func() {}
+		if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
+			var err error
+			adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+		} else {
+			read, ok := c.registry.Get(record.Intent.Source.Adapter)
+			if !ok {
+				result.Err = fmt.Errorf("write adapter unavailable")
+				return result
+			}
+			switch a := read.(type) {
+			case *queue.BacklogAdapter:
+				adapter = &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: record.Intent.Principal}
+			case *queue.GitHubAdapter:
+				adapter = queue.NewGitHubWriteAdapter(a, true)
+			default:
+				result.Err = fmt.Errorf("write adapter unavailable")
+				return result
+			}
 		}
+		defer cleanup()
 		recoverCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 		defer stop()
-		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal}
+		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal, Workflow: workflow}
 		result.Result, result.Err = pipeline.Recover(recoverCtx, entry.OperationID)
 		return result
 	}

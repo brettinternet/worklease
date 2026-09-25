@@ -410,6 +410,8 @@ Partition caches by source instance, tenant, principal/access scope, and configu
 - Source-scoped credential references or a narrow helper channel. Never send Worklease bearer credentials. Minimize inherited environment and configuration.
 - A fake provider, golden fixtures, identity vectors, and tests for pagination, stale writes, capability denials, cancellation, quota handling, malformed output, uncertain outcomes, and secret leakage. The same suite runs against the built-ins.
 
+The first host implementation restricts external sources to the built-in `generic` resource policy. Read-only sources need no claim binding; claiming and writing require an explicit, agreed `claims: {policy: generic, source: ...}` in `queue.yaml`, confirmed through the existing identity gate. `worklease queue adapter approve --source ID --acknowledge` records the executable digest, expected identity/version, principal, workflow, claim binding, and source-config/credential-reference hash in owner-private state. A changed binding or executable requires reapproval; the host executes a private copy of the approved bytes, not the configured pathname. Each configured source has one lazily started supervised process; protocol failures affect that source alone, and journaled writes use `readReceipt` for recovery rather than redispatch. Other static policies and credential helpers remain protocol capabilities, not implicit host support.
+
 Process isolation is not a sandbox. An installed adapter runs with the user's privileges. Document that trust instead of promising credential isolation that stdio cannot enforce.
 
 ## 12. Configuration

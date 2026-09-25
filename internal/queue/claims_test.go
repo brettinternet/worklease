@@ -105,6 +105,34 @@ func TestClaimOverlayStatesAndOutage(t *testing.T) {
 		}
 	}
 }
+func TestExternalClaimsRequireExplicitGenericBinding(t *testing.T) {
+	t.Parallel()
+	configured := config.QueueSource{ID: "planning", Adapter: "external"}
+	resolved := Source{ID: "planning", Adapter: ExternalSourceAdapterKey("planning"), Locator: "Display Name"}
+	cfg := config.QueueConfig{Sources: []config.QueueSource{configured}}
+	sources := ClaimSources(cfg, []Source{resolved})
+	if sources["planning"].BlockReason != "claim-binding-required" {
+		t.Fatalf("unbound external source was not blocked: %+v", sources["planning"])
+	}
+	items := []Item{{Summary: Summary{Ref: Ref{SourceID: "planning", ItemID: "42"}}}}
+	authority := &statusAuthority{}
+	observed := OverlayClaims(context.Background(), items, sources, ClaimAuthority{API: authority, ID: "authority"}, config.ProfilePaths{}, nil)
+	if observed[0].Claim.Reason != "claim-binding-required" || len(observed[0].Resources) != 0 || observed[0].KeyInputs != nil || len(authority.calls) != 0 {
+		t.Fatalf("unbound external identity was resolved: %+v calls=%v", observed[0], authority.calls)
+	}
+
+	cfg.Sources[0].Claims = &config.QueueClaims{Policy: "generic", Source: "acme/planning"}
+	sources = ClaimSources(cfg, []Source{resolved})
+	if source := sources["planning"]; source.BlockReason != "" || source.Policy != "generic" || source.ClaimSource != "acme/planning" {
+		t.Fatalf("explicit external binding was not preserved: %+v", source)
+	}
+	observed = OverlayClaims(context.Background(), items, sources, ClaimAuthority{API: authority, ID: "authority"}, config.ProfilePaths{}, nil)
+	want, err := resource.Resolve(resource.Input{Provider: "generic", Source: "acme/planning", Item: "42"})
+	if err != nil || len(observed[0].Resources) != 1 || observed[0].Resources[0] != want.Resource || observed[0].KeyInputs == nil || observed[0].KeyInputs.Provider != "generic" || observed[0].KeyInputs.Source != "acme/planning" || len(authority.calls) != 1 {
+		t.Fatalf("explicit generic claim key was not used: %+v calls=%v err=%v", observed[0], authority.calls, err)
+	}
+}
+
 func TestConfiguredSourcesPreserveKeyInputsAndNativeClaim(t *testing.T) {
 	cfg := config.QueueConfig{Sources: []config.QueueSource{
 		{ID: "github", Adapter: "github", Host: "github.com", Repository: "Owner/Repository"},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"slices"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -12,8 +13,87 @@ import (
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueindex"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/resource"
 	urfave "github.com/urfave/cli/v3"
 )
+
+func queueExternalRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) (*queue.ExternalWriteAdapter, map[string]string, func(), error) {
+	if intent.Source.ID == "" || intent.Source.ID != intent.Ref.SourceID || intent.Source.Adapter != queue.ExternalSourceAdapterKey(intent.Source.ID) {
+		return nil, nil, nil, fmt.Errorf("journaled external source identity is invalid")
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var configured *config.QueueSource
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ID == intent.Source.ID {
+			configured = &cfg.Sources[i]
+			break
+		}
+	}
+	if configured == nil || configured.Adapter != "external" {
+		return nil, nil, nil, fmt.Errorf("journaled external source is no longer configured")
+	}
+	if err := config.CheckQueueAdapterApproval(os.Getenv, *configured); err != nil {
+		return nil, nil, nil, err
+	}
+	if configured.Account == "" || configured.Account != intent.Principal {
+		return nil, nil, nil, fmt.Errorf("external provider identity changed since the journaled write")
+	}
+	if configured.Claims == nil || configured.Claims.Policy != "generic" {
+		return nil, nil, nil, fmt.Errorf("external claim binding is unavailable")
+	}
+	key, err := resource.Resolve(resource.Input{Provider: configured.Claims.Policy, Source: configured.Claims.Source, Item: intent.Ref.ItemID})
+	if err != nil || !slices.Contains(intent.Resources, key.Resource) {
+		return nil, nil, nil, fmt.Errorf("external claim binding changed since the journaled write")
+	}
+	if mapping := externalRecoveryWorkflowKey(intent.Action); mapping != "" && (configured.Workflow[mapping] == "" || configured.Workflow[mapping] != intent.Transition) {
+		return nil, nil, nil, fmt.Errorf("external workflow mapping changed since the journaled write")
+	}
+	registry := queue.NewRegistry()
+	cleanup, err := queue.RegisterExternalSources(registry, []config.QueueSource{*configured}, os.Getenv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	read, ok := registry.Get(queue.ExternalSourceAdapterKey(configured.ID))
+	if !ok {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("external adapter unavailable")
+	}
+	resolved, err := read.Resolve(ctx, map[string]string{"id": configured.ID})
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, err
+	}
+	if resolved != intent.Source {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("external source resolution drifted from journaled source")
+	}
+	adapter, ok := read.(*queue.ExternalAdapter)
+	if !ok {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("external write adapter unavailable")
+	}
+	return queue.NewExternalWriteAdapter(adapter), configured.Workflow, cleanup, nil
+}
+
+func externalRecoveryWorkflowKey(action queue.Action) string {
+	switch action {
+	case queue.ActionStart, queue.ActionResume:
+		return "start"
+	case queue.ActionReportBlocked:
+		return "blocked"
+	case queue.ActionRequestReview:
+		return "review"
+	case queue.ActionComplete:
+		return "complete"
+	case queue.ActionReopen:
+		return "reopen"
+	default:
+		return ""
+	}
+}
 
 func queueRecoveryJournal() (queue.WriteJournal, error) {
 	cacheDir, err := queueindex.CacheDir(os.Getenv, "")
@@ -48,21 +128,32 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 			if backend.AuthorityID() != record.Intent.AuthorityID {
 				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "selected authority differs from recovery intent"))
 			}
-			registry := queue.NewRegistry()
-			read, ok := registry.Get(record.Intent.Source.Adapter)
-			if !ok {
-				return s.handle(cmd, reason.Invalid("write adapter unavailable"))
-			}
 			var adapter queue.WriteAdapter
-			switch source := read.(type) {
-			case *queue.BacklogAdapter:
-				adapter = &queue.BacklogWriteAdapter{BacklogAdapter: source, Me: record.Intent.Principal}
-			case *queue.GitHubAdapter:
-				adapter = queue.NewGitHubWriteAdapter(source, true)
-			default:
-				return s.handle(cmd, reason.Invalid("write adapter unavailable"))
+			var workflow map[string]string
+			cleanup := func() {}
+			if record.Intent.Source.Adapter == queue.ExternalSourceAdapterKey(record.Intent.Source.ID) {
+				var err error
+				adapter, workflow, cleanup, err = queueExternalRecoveryAdapter(ctx, record.Intent)
+				if err != nil {
+					return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, "external recovery source is unavailable: "+err.Error()))
+				}
+			} else {
+				registry := queue.NewRegistry()
+				read, ok := registry.Get(record.Intent.Source.Adapter)
+				if !ok {
+					return s.handle(cmd, reason.Invalid("write adapter unavailable"))
+				}
+				switch source := read.(type) {
+				case *queue.BacklogAdapter:
+					adapter = &queue.BacklogWriteAdapter{BacklogAdapter: source, Me: record.Intent.Principal}
+				case *queue.GitHubAdapter:
+					adapter = queue.NewGitHubWriteAdapter(source, true)
+				default:
+					return s.handle(cmd, reason.Invalid("write adapter unavailable"))
+				}
 			}
-			pipeline := queue.WritePipeline{Journal: journal, Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: cmd.String("handle")}}
+			defer cleanup()
+			pipeline := queue.WritePipeline{Journal: journal, Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: cmd.String("handle")}, Workflow: workflow}
 			result, err := pipeline.Recover(ctx, record.Intent.OperationID)
 			if err != nil {
 				return s.handle(cmd, reason.New(reason.ReasonRecoveryRequired, fmt.Sprintf("read-back %s; claim held %t; operation %s: %v", result.Outcome, result.ClaimHeld, record.Intent.OperationID, err)).With("result", result).With("operationId", record.Intent.OperationID))
