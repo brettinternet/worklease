@@ -31,6 +31,62 @@ func TestQueueAdapterApprovalProcessHelper(t *testing.T) {
 	runQueueAdapterApprovalProcessHelper(os.Args[separator+1])
 }
 
+func TestQueueAdapterProtocolReportsStaticCompatibility(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte(`{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":2}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := h.run("queue", "adapter", "protocol", "--manifest-file", path, "--json")
+	if err != nil {
+		t.Fatalf("protocol: %v: %s", err, data)
+	}
+	var result struct {
+		SchemaVersion      int    `json:"schemaVersion"`
+		OK                 bool   `json:"ok"`
+		Operation          string `json:"operation"`
+		HostProtocolMajors []int  `json:"hostProtocolMajors"`
+		Manifest           struct {
+			ID       string `json:"id"`
+			Protocol struct {
+				MinMajor int `json:"minMajor"`
+				MaxMajor int `json:"maxMajor"`
+			} `json:"protocol"`
+		} `json:"manifest"`
+		ProtocolMajorsOverlap bool `json:"protocolMajorsOverlap"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || result.SchemaVersion != 2 || !result.OK || result.Operation != "queue-adapter-protocol" || len(result.HostProtocolMajors) != 1 || result.HostProtocolMajors[0] != 1 || result.Manifest.ID != "example.adapter" || result.Manifest.Protocol.MaxMajor != 2 || !result.ProtocolMajorsOverlap {
+		t.Fatalf("result: %+v %v %s", result, err, data)
+	}
+	if host, err := h.run("queue", "adapter", "protocol", "--json"); err != nil || strings.Contains(string(host), `"manifest"`) {
+		t.Fatalf("host only: %v %s", err, host)
+	}
+	if err := os.WriteFile(path, []byte(`{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":2,"maxMajor":3}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if incompatible, err := h.run("queue", "adapter", "protocol", "--manifest-file", path, "--json"); err != nil || !strings.Contains(string(incompatible), `"protocolMajorsOverlap":false`) {
+		t.Fatalf("incompatible: %v %s", err, incompatible)
+	}
+	if err := os.WriteFile(path, []byte(`{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":1},"requiredFeatures":["unknown-feature"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if overlap, err := h.run("queue", "adapter", "protocol", "--manifest-file", path, "--json"); err != nil || !strings.Contains(string(overlap), `"protocolMajorsOverlap":true`) || strings.Contains(string(overlap), `"compatible"`) {
+		t.Fatalf("feature mismatch is not a negotiation verdict: %v %s", err, overlap)
+	}
+	if err := os.WriteFile(path, []byte(`{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":0,"maxMajor":1}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if invalid, err := h.run("queue", "adapter", "protocol", "--manifest-file", path, "--json"); err == nil || !strings.Contains(string(invalid), `"reason":"invalid-argument"`) || !strings.Contains(string(invalid), `"exitCode":64`) {
+		t.Fatalf("invalid: %v %s", err, invalid)
+	}
+	if missing, err := h.run("queue", "adapter", "protocol", "--manifest-file", path+"-missing", "--json"); err == nil || !strings.Contains(string(missing), `"exitCode":64`) {
+		t.Fatalf("missing: %v %s", err, missing)
+	}
+	if usage, err := h.run("queue", "adapter", "protocol", "--secret-ghp_Example123", "--json"); err == nil || !strings.Contains(string(usage), `"operation":"queue-adapter-protocol"`) || !strings.Contains(string(usage), `"reason":"invalid-argument"`) || !strings.Contains(string(usage), `"exitCode":64`) || strings.Contains(string(usage), "secret-ghp_Example123") {
+		t.Fatalf("usage: %v %s", err, usage)
+	}
+}
+
 func TestQueueAdapterCheckSampleWithoutApprovalOrQueueState(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	before, err := os.ReadFile(config.QueuePath(os.Getenv))

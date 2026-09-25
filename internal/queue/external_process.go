@@ -25,6 +25,7 @@ import (
 )
 
 const (
+	externalProtocolMajor    = 1
 	externalFrameLimit       = 1 << 20
 	externalStderrLimit      = 64 << 10
 	externalDiagnosticLimit  = 4 << 10
@@ -419,7 +420,7 @@ func (p *ExternalProcess) ensureInitializedLocked(ctx context.Context) (*externa
 		return run, nil
 	}
 	var raw json.RawMessage
-	params := map[string]any{"protocolMajors": []int{1}, "hostFeatures": []string{"host-credential-v1"}}
+	params := map[string]any{"protocolMajors": SupportedExternalProtocolMajors(), "hostFeatures": []string{"host-credential-v1"}}
 	_, dispatched, err := p.callRun(ctx, run, "initialize", params, &raw)
 	if err != nil {
 		if dispatched {
@@ -1172,6 +1173,9 @@ func validateExternalBudget(raw json.RawMessage) error {
 	return nil
 }
 
+// SupportedExternalProtocolMajors reports the same majors sent during initialization.
+func SupportedExternalProtocolMajors() []int { return []int{externalProtocolMajor} }
+
 func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (ExternalAdapterManifest, error) {
 	if len(raw) == 0 || len(raw) > externalResultLimit {
 		return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
@@ -1186,7 +1190,7 @@ func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (E
 		}
 	}
 	var protocolVersion int
-	if json.Unmarshal(fields["protocolVersion"], &protocolVersion) != nil || protocolVersion != 1 {
+	if json.Unmarshal(fields["protocolVersion"], &protocolVersion) != nil || protocolVersion != externalProtocolMajor {
 		return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")
 	}
 	var manifestFields map[string]json.RawMessage
@@ -1203,7 +1207,7 @@ func validateExternalManifest(raw json.RawMessage, source config.QueueSource) (E
 		(source.ExpectedAdapterID != "" && manifest.ID != source.ExpectedAdapterID) ||
 		(source.ExpectedVersion != "" && manifest.Version != source.ExpectedVersion) ||
 		!config.ValidQueueAdapterManifestIdentity(manifest.ID, manifest.Version) ||
-		manifest.Protocol.MinMajor > 1 || manifest.Protocol.MaxMajor < 1 ||
+		manifest.Protocol.MinMajor > externalProtocolMajor || manifest.Protocol.MaxMajor < externalProtocolMajor ||
 		manifest.Protocol.MinMajor < 1 || manifest.Protocol.MaxMajor < manifest.Protocol.MinMajor ||
 		manifest.ResourcePolicy != "generic" {
 		return ExternalAdapterManifest{}, fmt.Errorf("invalid manifest")

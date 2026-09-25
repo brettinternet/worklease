@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/external-adapter-protocol.schema.json",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/external-adapter/v1/schema.json",
   "title": "Worklease external source adapter protocol v1 messages",
   "description": "Each LF-delimited JSON-RPC object validates against exactly one envelope. Method-specific parameter and result schemas are in $defs; response IDs are correlated with outstanding requests by the host.",
   "oneOf": [

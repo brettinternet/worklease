@@ -29,6 +29,7 @@ local default, or reports the missing required input without guessing.
 | `queue recovery retry` | Reject missing operation ID or original handle | Reads the provider result without dispatching another write |
 | `queue adapter approve` | Reject missing explicit source | Previews approval only; records it only with `--acknowledge` |
 | `queue adapter check` | Reject missing explicit executable | Runs only the named executable; writes a disposable provider item only with `--disposable-target` |
+| `queue adapter protocol` | Report the host's supported majors without starting an adapter | `--manifest-file FILE` also reports the saved manifest's range and compatibility; never approves or starts it |
 | `queue recovery reconcile` | Reject missing operation ID, evidence, or attestations | Requires proof the provider write did not commit and the executor ceased; claim remains held |
 | `queue recovery checkpoint-missing` | Reject missing operation ID, original handle, evidence, or attestations | Requires verified provider effect, absent expired checkpoint, and ceased executor; claim remains held |
 | `queue authority-id` | Show the invoking worker's selected authority ID | Read-only; launchers compare it to the queue handoff before acquiring |
