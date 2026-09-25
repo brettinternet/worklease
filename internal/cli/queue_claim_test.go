@@ -132,6 +132,29 @@ func newRemoteQueueClaimController(t *testing.T, ttl time.Duration, items ...que
 	return controller, backend, adapter
 }
 
+type unresolvedPagedClaimAdapter struct{ *queueClaimFixtureAdapter }
+
+func (a *unresolvedPagedClaimAdapter) ReadDependencies(_ context.Context, source queue.Source, ref queue.Ref, cursor string, _ int) (queue.DependencyPage, error) {
+	if cursor == "" {
+		return queue.DependencyPage{Completeness: queue.CoveragePartial, NextCursor: "more"}, nil
+	}
+	return queue.DependencyPage{Completeness: queue.CoverageComplete}, nil
+}
+
+func TestQueueClaimRejectsNonLinearPartialDependencyPage(t *testing.T) {
+	t.Parallel()
+	item := queueClaimItem("tasks", "1")
+	source := queue.Source{ID: "tasks", Adapter: "external-stub", Locator: "portable"}
+	adapter := &unresolvedPagedClaimAdapter{&queueClaimFixtureAdapter{source: source, items: map[string]queue.Item{item.Ref.Key(): item}}}
+	registry := queue.NewRegistry()
+	if err := registry.Register(source.Adapter, adapter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{source.ID: source}, item); err == nil {
+		t.Fatal("partial non-Linear dependency page with a cursor was treated as complete")
+	}
+}
+
 func TestQueueClaimAndCLIContendOnTheSameLocalResourceBothDirections(t *testing.T) {
 	ctx := context.Background()
 	item := queueClaimItem("tasks", "1")

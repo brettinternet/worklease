@@ -252,7 +252,7 @@ func (a *LinearAdapter) Capabilities(_ context.Context, source Source, _ string,
 		return nil, err
 	}
 	read := Capability{Support: Supported, Permission: Allowed, Availability: Available}
-	disabled := Capability{Support: Supported, Permission: Denied, Availability: Available, Reason: "Linear claims and writes require later adapter stages"}
+	disabled := Capability{Support: Supported, Permission: Denied, Availability: Available, Reason: "Linear provider writes require the focused write and recovery stage"}
 	return CapabilitySet{"identity": read, "discovery": read, "dependencies": read, "state": read, "assignment": read, "authentication": read, "effects": {Support: SupportUnknown, Permission: PermissionUnknown, Availability: Available}, "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": disabled, "progress": disabled, "synchronization": read}, nil
 }
 

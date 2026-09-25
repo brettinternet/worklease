@@ -2,9 +2,10 @@
 
 Use the [v1 protocol](../../../docs/external-adapter-protocol.md) and its
 [normative schema](../../../docs/external-adapter-protocol.schema.json) for the
-wire contract. This guide covers the standalone sample at
-`cmd/worklease-sample-adapter`; it is a read-only teaching fixture, not a
-provider integration or a production adapter.
+wire contract. This guide covers the standalone read-only sample at
+`cmd/worklease-sample-adapter` and the writable local fixture at
+`cmd/worklease-reference-adapter`. Both are teaching examples, not provider
+integrations or production adapters.
 
 ## Manifest and protocol
 
@@ -34,6 +35,71 @@ applies its own static key policy to those inputs. The adapter never chooses or
 returns an arbitrary claim key. Generic keys provide local coordination only;
 they do not establish provider identity, execute provider work, or fence remote
 writers. Keep this distinction explicit when adapting the example.
+
+## Writable local fixture
+
+`cmd/worklease-reference-adapter` reuses the sample's bounded JSON-RPC framing
+and read model, but requires an explicit `fixturePath` configuration pointing
+at a writable regular local JSON file (not a symlink). Start from
+`internal/sampleadapter/reference-fixture.json` and copy it to a disposable
+location before running write checks:
+
+```sh
+cp internal/sampleadapter/reference-fixture.json /tmp/worklease-reference-fixture.json
+
+go build -o /absolute/path/worklease-reference-adapter ./cmd/worklease-reference-adapter
+worklease queue adapter check \
+  --executable /absolute/path/worklease-reference-adapter \
+  --adapter-config '{"fixturePath":"/tmp/worklease-reference-fixture.json"}' \
+  --disposable-target reference-1 --json
+```
+
+A queue source using the same local store binds its actor, transitions, and
+generic claim identity explicitly:
+
+```yaml
+sources:
+  - id: reference
+    adapter: external
+    executable: /absolute/path/worklease-reference-adapter
+    expectedAdapterId: worklease.reference.local-fixture
+    expectedVersion: 1.0.0
+    account: alice
+    config: {fixturePath: /absolute/path/worklease-reference-fixture.json}
+    workflow: {start: Doing, blocked: Blocked, review: Review, complete: Done, reopen: Open}
+    claims: {policy: generic, source: fixture/planning}
+```
+
+The store contains the configured fixture principal, an initial provider
+version, allowed transition labels, items, and a durable write journal. Configure
+the adapter's source workflow with those exact labels. Use `account` equal to
+the store's `principal` so observations, action-scoped capabilities, and receipts
+identify the same actor.
+
+The adapter supports three writes. `writeState` accepts only a status present
+among the fixture's configured `transitions` values. `recordProgress` appends a
+comment record containing the exact `worklease-op:<operationId>` marker, content,
+author, and provider receipt location. `assign` adds the configured principal
+to the item's assignees. Each writes the JSON store and returns its source,
+reference, operation, actor, incremented provider version, and durable fixture
+location. Reusing the same operation ID with the same intent returns the
+original receipt without applying the effect again; a different intent with an
+already-used ID conflicts.
+
+`readReceipt` never dispatches a write. For a progress append it uses the
+journaled intent and the uniquely matching comment marker plus stored append
+provenance to verify recovery without a receipt. A missing marker, duplicate
+marker, mismatched content, or ambiguous attribution remains `unknown`. State
+and assignment read-back require their provider receipt and current matching
+state; matching state alone cannot attribute a lost response.
+
+The receipt truthfully reports `conditionalWrite: false` and
+`fencingEvidence: null`. The version check is only a pre-write fixture check;
+it is not an atomic provider compare-and-swap. Atomic local file replacement
+is not cross-process locking, provider fencing, or protection against another
+actor editing the JSON concurrently. The adapter has no network access,
+provider authentication, or provider-side guarantees. Use only a disposable
+copy: the conformance check mutates its explicitly named target.
 
 ## Approval and trust
 
@@ -85,8 +151,9 @@ data rather than instructions.
 
 ## Add host-managed credentials to your adapter
 
-The sample above remains read-only and unauthenticated. For a provider adapter,
-configure a private helper and approved scope (not a literal token):
+The sample above remains read-only and unauthenticated; the local fixture also
+has no provider credentials. For a provider adapter, configure a private helper
+and approved scope (not a literal token):
 
 ```yaml
 sources:
@@ -125,6 +192,9 @@ From the repository root:
 go build -o /absolute/path/worklease-sample-adapter ./cmd/worklease-sample-adapter
 go test ./internal/sampleadapter
 worklease queue adapter check --executable /absolute/path/worklease-sample-adapter --json
+
+go build -o /absolute/path/worklease-reference-adapter ./cmd/worklease-reference-adapter
+go test ./internal/queue -run TestReferenceAdapter
 # In-repo fixtures exercise the same check implementation:
 go test ./internal/queue -run TestAdapterConformance
 ```

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,23 +31,28 @@ const (
 var fixtureFS embed.FS
 
 type fixture struct {
-	Items               []fixtureItem `json:"items"`
-	InaccessibleItemIDs []string      `json:"inaccessibleItemIds"`
-	Dependencies        []fixtureEdge `json:"dependencies"`
+	Items               []fixtureItem     `json:"items"`
+	InaccessibleItemIDs []string          `json:"inaccessibleItemIds"`
+	Dependencies        []fixtureEdge     `json:"dependencies"`
+	Principal           string            `json:"principal,omitempty"`
+	Version             int64             `json:"version,omitempty"`
+	Transitions         map[string]string `json:"transitions,omitempty"`
+	Writes              []fixtureWrite    `json:"writes,omitempty"`
 }
 
 type fixtureItem struct {
-	ID            string   `json:"id"`
-	Title         string   `json:"title"`
-	RawStatus     string   `json:"rawStatus"`
-	State         string   `json:"state"`
-	Order         string   `json:"order"`
-	Priority      int      `json:"priority"`
-	ProviderReady bool     `json:"providerReady"`
-	AssignedTo    []string `json:"assignedTo"`
-	NativeClaim   string   `json:"nativeClaim"`
-	UpdatedAt     string   `json:"updatedAt"`
-	Body          string   `json:"body"`
+	ID            string           `json:"id"`
+	Title         string           `json:"title"`
+	RawStatus     string           `json:"rawStatus"`
+	State         string           `json:"state"`
+	Order         string           `json:"order"`
+	Priority      int              `json:"priority"`
+	ProviderReady bool             `json:"providerReady"`
+	AssignedTo    []string         `json:"assignedTo"`
+	NativeClaim   string           `json:"nativeClaim"`
+	UpdatedAt     string           `json:"updatedAt"`
+	Body          string           `json:"body"`
+	Comments      []fixtureComment `json:"comments,omitempty"`
 }
 
 type fixtureEdge struct {
@@ -93,11 +100,14 @@ func unavailable() *rpcError {
 type server struct {
 	mu          sync.Mutex
 	writeMu     sync.Mutex
+	fixtureMu   sync.RWMutex
 	initialized bool
 	resolvedID  string
 	seen        map[string]struct{}
 	pending     map[string]context.CancelFunc
 	fixture     fixture
+	fixturePath string
+	writable    bool
 	output      io.Writer
 	workers     sync.WaitGroup
 }
@@ -274,10 +284,26 @@ func (s *server) dispatch(parent context.Context, method string, raw json.RawMes
 		return s.initialize(params)
 	}
 	if method == "changes" || method == "readReceipt" || method == "resolveReviewBoundary" || method == "archive" || method == "writeState" || method == "recordProgress" || method == "assign" {
-		if _, _, err := common(params); err != nil {
+		deadline, limits, err := common(params)
+		if err != nil {
 			return nil, 0, err
 		}
-		return nil, 0, unsupported()
+		if !s.isInitialized() {
+			return nil, limits.MaxBytes, invalidParams()
+		}
+		if !s.writable || method == "changes" || method == "resolveReviewBoundary" || method == "archive" {
+			return nil, 0, unsupported()
+		}
+		ctx, cancel := context.WithDeadline(parent, deadline)
+		defer cancel()
+		if ctx.Err() != nil {
+			return nil, limits.MaxBytes, unavailable()
+		}
+		result, callErr := s.dispatchReferenceWrite(ctx, method, params, limits)
+		if ctx.Err() != nil {
+			return nil, limits.MaxBytes, unavailable()
+		}
+		return result, limits.MaxBytes, callErr
 	}
 	if method != "resolve" && method != "capabilities" && method != "list" && method != "readItems" && method != "readDependencies" && method != "readItem" && method != "resourcePolicy" {
 		return nil, 0, rpcErr(-32601, "method-not-found", "Method not found")
@@ -294,7 +320,15 @@ func (s *server) dispatch(parent context.Context, method string, raw json.RawMes
 	if !s.isInitialized() {
 		return nil, limits.MaxBytes, invalidParams()
 	}
-	result, callErr := s.dispatchRead(ctx, method, params, limits)
+	var result any
+	var callErr *rpcError
+	if method == "resolve" {
+		result, callErr = s.dispatchRead(ctx, method, params, limits)
+	} else {
+		s.fixtureMu.RLock()
+		result, callErr = s.dispatchRead(ctx, method, params, limits)
+		s.fixtureMu.RUnlock()
+	}
 	if ctx.Err() != nil {
 		return nil, limits.MaxBytes, unavailable()
 	}
@@ -367,6 +401,20 @@ func (s *server) initialize(params map[string]json.RawMessage) (any, int, *rpcEr
 		"capabilities":     []string{"identity", "discovery", "dependencies", "state", "progress", "assignment", "native-claims", "mutation", "synchronization", "effects", "authentication"},
 		"requiredFeatures": []string{},
 	}
+	if s.writable {
+		manifest = map[string]any{
+			"id": "worklease.reference.local-fixture", "version": "1.0.0",
+			"protocol": map[string]int{"minMajor": 1, "maxMajor": 1},
+			"configSchema": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{"fixturePath": map[string]any{"type": "string", "minLength": 1}},
+				"required":   []string{"fixturePath"},
+			},
+			"authentication": []string{}, "resourcePolicy": "generic",
+			"capabilities":     []string{"identity", "discovery", "dependencies", "state", "progress", "assignment", "mutation"},
+			"requiredFeatures": []string{},
+		}
+	}
 	return map[string]any{"protocolVersion": 1, "manifest": manifest}, 0, nil
 }
 
@@ -386,6 +434,9 @@ func (s *server) dispatchRead(ctx context.Context, method string, params map[str
 		id, err := s.requireSource(params)
 		if err != nil {
 			return nil, err
+		}
+		if s.writable {
+			return map[string]any{"context": s.context(id, "complete", nil), "capabilities": referenceCapabilities()}, nil
 		}
 		return map[string]any{"context": wireContext(id, "complete", nil), "capabilities": sampleCapabilities()}, nil
 	case "list":
@@ -410,19 +461,54 @@ func (s *server) resolve(params map[string]json.RawMessage) (any, *rpcError) {
 	}
 	configValue, ok := params["config"]
 	var config map[string]json.RawMessage
-	if !ok || json.Unmarshal(configValue, &config) != nil || config == nil || len(config) != 0 {
+	if !ok || json.Unmarshal(configValue, &config) != nil || config == nil {
 		return nil, invalidParams()
 	}
+	fixturePath := ""
+	if s.writable {
+		var request struct {
+			FixturePath string `json:"fixturePath"`
+		}
+		if json.Unmarshal(configValue, &request) != nil || len(config) != 1 || request.FixturePath == "" || !filepath.IsAbs(request.FixturePath) {
+			return nil, invalidParams()
+		}
+		fixturePath = filepath.Clean(request.FixturePath)
+	} else if len(config) != 0 {
+		return nil, invalidParams()
+	}
+	s.fixtureMu.Lock()
+	defer s.fixtureMu.Unlock()
 	s.mu.Lock()
-	if s.resolvedID != "" && s.resolvedID != id {
+	if s.resolvedID != "" && (s.resolvedID != id || s.writable && s.fixturePath != fixturePath) {
 		s.mu.Unlock()
 		return nil, invalidParams()
 	}
+	s.mu.Unlock()
+	if s.writable {
+		info, err := os.Lstat(fixturePath)
+		if err != nil {
+			return nil, unavailable()
+		}
+		if !info.Mode().IsRegular() {
+			return nil, invalidParams()
+		}
+		loaded, err := readReferenceFixture(fixturePath)
+		if err != nil {
+			return nil, unavailable()
+		}
+		s.fixture, s.fixturePath = loaded, fixturePath
+	}
+	contextValue := s.context(id, "complete", nil)
+	s.mu.Lock()
 	s.resolvedID = id
 	s.mu.Unlock()
+	name, locator := "Sample adapter fixture", "memory://sample-fixture"
+	if s.writable {
+		name, locator = "Reference local fixture", "fixture://"+id
+	}
 	return map[string]any{
-		"context": wireContext(id, "complete", nil),
-		"source":  map[string]string{"id": id, "name": "Sample adapter fixture", "locator": "memory://sample-fixture"},
+		"context": contextValue,
+		"source":  map[string]string{"id": id, "name": name, "locator": locator},
 	}, nil
 }
 
@@ -484,7 +570,7 @@ func (s *server) list(params map[string]json.RawMessage, limits requestBudget) (
 			contextState = "partial"
 		}
 		result := map[string]any{
-			"context": wireContext(id, contextState, next), "items": page, "nextCursor": next,
+			"context": s.context(id, contextState, next), "items": page, "nextCursor": next,
 			"total": map[string]any{"value": len(items), "accuracy": "exact"},
 		}
 		if resultFits(result, limits.MaxBytes) {
@@ -518,7 +604,7 @@ func (s *server) readItems(params map[string]json.RawMessage, limits requestBudg
 		}
 		outcomes = append(outcomes, s.wireOutcome(id, ref.ItemID))
 	}
-	result := map[string]any{"context": wireContext(id, "complete", nil), "outcomes": outcomes}
+	result := map[string]any{"context": s.context(id, "complete", nil), "outcomes": outcomes}
 	for index := len(outcomes) - 1; !resultFits(result, limits.MaxBytes) && index >= 0; index-- {
 		outcome := outcomes[index].(map[string]any)
 		if outcome["status"] == "found" {
@@ -571,7 +657,7 @@ func (s *server) readDependencies(params map[string]json.RawMessage, limits requ
 			completeness = "partial"
 		}
 		result := map[string]any{
-			"context": wireContext(id, completeness, next), "edges": page,
+			"context": s.context(id, completeness, next), "edges": page,
 			"nextCursor": next, "completeness": completeness,
 		}
 		if resultFits(result, limits.MaxBytes) {
@@ -590,7 +676,7 @@ func (s *server) readItem(params map[string]json.RawMessage, limits requestBudge
 		return nil, err
 	}
 	outcome := s.wireOutcome(id, ref.ItemID)
-	result := map[string]any{"context": wireContext(id, "complete", nil), "outcome": outcome}
+	result := map[string]any{"context": s.context(id, "complete", nil), "outcome": outcome}
 	if !resultFits(result, limits.MaxBytes) && outcome["status"] == "found" {
 		result["outcome"] = map[string]any{"ref": refValue(id, ref.ItemID), "status": "failed", "diagnostic": "item exceeds requested byte budget"}
 	}
@@ -610,7 +696,7 @@ func (s *server) resourcePolicy(params map[string]json.RawMessage) (any, *rpcErr
 		return nil, invalidParams()
 	}
 	return map[string]any{
-		"context": wireContext(id, "complete", nil), "policy": "generic",
+		"context": s.context(id, "complete", nil), "policy": "generic",
 		"source": id, "item": ref.ItemID, "scope": "item",
 	}, nil
 }
@@ -680,7 +766,7 @@ func (s *server) wireOutcome(sourceID, itemID string) map[string]any {
 func (s *server) wireItem(sourceID string, item fixtureItem) map[string]any {
 	terminal := item.State == "complete"
 	blocked := item.State == "blocked"
-	return map[string]any{
+	result := map[string]any{
 		"ref": refValue(sourceID, item.ID), "title": item.Title, "rawStatus": item.RawStatus,
 		"state": item.State, "order": item.Order, "priority": item.Priority,
 		"canonicalId": sourceID + ":" + item.ID, "providerReady": item.ProviderReady,
@@ -688,6 +774,10 @@ func (s *server) wireItem(sourceID string, item fixtureItem) map[string]any {
 		"updatedAt": item.UpdatedAt, "body": item.Body,
 		"terminal": terminal, "providerBlocked": blocked,
 	}
+	if s.writable {
+		result["comments"] = item.Comments
+	}
+	return result
 }
 
 func (s *server) findItem(id string) *fixtureItem {
