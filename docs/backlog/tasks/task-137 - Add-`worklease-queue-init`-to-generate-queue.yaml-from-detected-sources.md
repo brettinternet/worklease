@@ -1,9 +1,10 @@
 ---
 id: TASK-137
 title: Add `worklease queue init` to generate queue.yaml from detected sources
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 15:40'
+updated_date: '2026-09-25 16:37'
 labels:
   - work-queue
 milestone: m-1
@@ -62,24 +63,47 @@ External adapters (keep `queue adapter approve`), launch actions, custom filters
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With no queue.yaml, `worklease queue init` in a Backlog.md git checkout prints the resolved queue.yaml path, each detected fact with its origin, and the exact YAML it would write, and creates no directory, file, or identity record
-- [ ] #2 `--apply` creates the config directory 0700 when absent and writes queue.yaml 0600 atomically. The result loads through `config.LoadQueue` unchanged, and generated content that fails the loader validation is never written
-- [ ] #3 Backlog.md source: ID defaults to the checkout basename with `:` removed, suffixed `-2`, `-3`... for uniqueness (overridable with `--source-id`). Workflow maps start to `In Progress`, complete to `Done`, and reopen to the Backlog.md default status, each only when that exact status is configured. Unmapped intents are listed in the preview, and blocked/review are never mapped
-- [ ] #4 `me.backlog-md` comes from the Backlog.md default assignee when it has exactly one value, otherwise from `--me @name`. Without either, the preview reports `me-required` and `--apply` exits non-zero without writing. Existing `me` entries are never changed; a conflicting `--me` is an invalid-argument error
-- [ ] #5 GitHub source: host and owner/repo come from the `origin` remote and the account from the `gh` login for that host. `me[host]` is set to the account, and workflow maps complete to `closed` and reopen to `open`. When `gh` is not authenticated, output names `gh auth login --hostname HOST` and nothing is written
-- [ ] #6 The view (default `Ready`) is created with authority `local` or the trusted profile named by `--authority`, and filter readiness ready, claim free, assigned [me, nobody]. An unknown profile is rejected. When the view already exists, the new source ID is appended to its sources, and a differing `--authority` is an error
-- [ ] #7 Re-running on an existing valid queue.yaml adds only the new source and its view/`me` entries, keeping existing sources, views, launch entries, and comments. Re-running for an already-configured checkout (same checkout path, or same host and repository) reports the existing source ID, writes nothing, and exits 0. An invalid existing queue.yaml is reported with the loader error and left unmodified
-- [ ] #8 Claims default to host-local (no `claims` key). `--portable-claims SOURCE` writes `claims: {policy: generic, source: SOURCE}`, subject to the loader rules for claim sources. `allowGitNetwork` is always written as `false`
-- [ ] #9 After a successful `--apply` of a new host-local source on the `local` authority with no existing identity record, the initial identity confirmation runs through the same code path as `queue identity confirm`. For portable claims, a remote authority, or an existing record, it is skipped, and output gives the exact `worklease queue --view NAME identity confirm --source ID --acknowledge` command and the migration checklist. If automatic confirmation fails, queue.yaml stays written, the command exits with the confirmation reason code, and output includes the manual command
-- [ ] #10 `--json` emits one schema-version 2 envelope with the path, outcome (created, merged, or unchanged), detected facts with origins, rendered YAML, an applied flag, the identity outcome, and next commands. Text output ends with the next command to run
-- [ ] #11 The `no-sources-configured` message tells the user to run `worklease queue init` and keeps the docs link
-- [ ] #12 In-process tests (`testkit.RunCLI`, `testkit.Home`, `testkit.GitCommand`, fake binaries) cover: preview writes nothing; fresh apply round-trips through `LoadQueue` with 0700/0600 modes; merge keeps comments and launch entries; idempotent re-run; `me-required` refusal; unconfigured statuses omitted; GitHub detection including the unauthenticated case; portable claims skip auto-confirm; local host-local auto-confirm makes claim actions available
-- [ ] #13 docs/queue.md opens with `queue init` as the setup path, before the hand-written YAML reference. docs/cli-reference.md lists the synopsis. docs/cli-zero-flag-audit.md has a `queue init` row (preview detected config; writes only with `--apply`). Command help includes examples. CHANGELOG.md Unreleased has an Added entry. D10 in docs/work-queue-tui-proposal.md notes that init generates the owner-private file from detected provider facts
+- [x] #1 With no queue.yaml, `worklease queue init` in a Backlog.md git checkout prints the resolved queue.yaml path, each detected fact with its origin, and the exact YAML it would write, and creates no directory, file, or identity record
+- [x] #2 `--apply` creates the config directory 0700 when absent and writes queue.yaml 0600 atomically. The result loads through `config.LoadQueue` unchanged, and generated content that fails the loader validation is never written
+- [x] #3 Backlog.md source: ID defaults to the checkout basename with `:` removed, suffixed `-2`, `-3`... for uniqueness (overridable with `--source-id`). Workflow maps start to `In Progress`, complete to `Done`, and reopen to the Backlog.md default status, each only when that exact status is configured. Unmapped intents are listed in the preview, and blocked/review are never mapped
+- [x] #4 `me.backlog-md` comes from the Backlog.md default assignee when it has exactly one value, otherwise from `--me @name`. Without either, the preview reports `me-required` and `--apply` exits non-zero without writing. Existing `me` entries are never changed; a conflicting `--me` is an invalid-argument error
+- [x] #5 GitHub source: host and owner/repo come from the `origin` remote and the account from the `gh` login for that host. `me[host]` is set to the account, and workflow maps complete to `closed` and reopen to `open`. When `gh` is not authenticated, output names `gh auth login --hostname HOST` and nothing is written
+- [x] #6 The view (default `Ready`) is created with authority `local` or the trusted profile named by `--authority`, and filter readiness ready, claim free, assigned [me, nobody]. An unknown profile is rejected. When the view already exists, the new source ID is appended to its sources, and a differing `--authority` is an error
+- [x] #7 Re-running on an existing valid queue.yaml adds only the new source and its view/`me` entries, keeping existing sources, views, launch entries, and comments. Re-running for an already-configured checkout (same checkout path, or same host and repository) reports the existing source ID, writes nothing, and exits 0. An invalid existing queue.yaml is reported with the loader error and left unmodified
+- [x] #8 Claims default to host-local (no `claims` key). `--portable-claims SOURCE` writes `claims: {policy: generic, source: SOURCE}`, subject to the loader rules for claim sources. `allowGitNetwork` is always written as `false`
+- [x] #9 After a successful `--apply` of a new host-local source on the `local` authority with no existing identity record, the initial identity confirmation runs through the same code path as `queue identity confirm`. For portable claims, a remote authority, or an existing record, it is skipped, and output gives the exact `worklease queue --view NAME identity confirm --source ID --acknowledge` command and the migration checklist. If automatic confirmation fails, queue.yaml stays written, the command exits with the confirmation reason code, and output includes the manual command
+- [x] #10 `--json` emits one schema-version 2 envelope with the path, outcome (created, merged, or unchanged), detected facts with origins, rendered YAML, an applied flag, the identity outcome, and next commands. Text output ends with the next command to run
+- [x] #11 The `no-sources-configured` message tells the user to run `worklease queue init` and keeps the docs link
+- [x] #12 In-process tests (`testkit.RunCLI`, `testkit.Home`, `testkit.GitCommand`, fake binaries) cover: preview writes nothing; fresh apply round-trips through `LoadQueue` with 0700/0600 modes; merge keeps comments and launch entries; idempotent re-run; `me-required` refusal; unconfigured statuses omitted; GitHub detection including the unauthenticated case; portable claims skip auto-confirm; local host-local auto-confirm makes claim actions available
+- [x] #13 docs/queue.md opens with `queue init` as the setup path, before the hand-written YAML reference. docs/cli-reference.md lists the synopsis. docs/cli-zero-flag-audit.md has a `queue init` row (preview detected config; writes only with `--apply`). Command help includes examples. CHANGELOG.md Unreleased has an Added entry. D10 in docs/work-queue-tui-proposal.md notes that init generates the owner-private file from detected provider facts
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 mise run lint, format-check, test, typecheck, and doc-test pass
-- [ ] #2 New tests pass `go test -race -count=3 -run TESTNAME ./PACKAGE` for each changed package
-- [ ] #3 Changes staged, `mise run hooks` passes, and committed with a concise message (no co-author trailer)
+- [x] #1 mise run lint, format-check, test, typecheck, and doc-test pass
+- [x] #2 New tests pass `go test -race -count=3 -run TESTNAME ./PACKAGE` for each changed package
+- [x] #3 Changes staged, `mise run hooks` passes, and committed with a concise message (no co-author trailer)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Inspect queue config, command, provider/identity conventions and tests.
+2. Implement preview/apply generation and merge with strict validation, provider detection, identity handling, and JSON/text output.
+3. Add focused in-process coverage and documentation; run race and project gates; review once.
+4. Commit, merge to main, finalize task, and clean up owned worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented queue init preview/apply, provider detection, strict YAML validation and comment-preserving merge, local identity confirmation, and docs. Verification in task worktree: mise run lint, format-check, test, typecheck, doc-test; go test -race -count=3 -run TestQueueInit ./internal/cli; handle race test. One general review found preview command/env, writer race, identity-entry and mixed-case host defects; corrected and reran checks.
+
+Merged to main as 443299b (implementation 7dca9c9, focused tests 2c254c4). Verified after integration on main: mise run lint, format-check, test, typecheck, doc-test; race -count=3 TestQueueInit in internal/cli and TestHandleAtomicPrivateRoundTripAndRejectsUnsafe in internal/handle; staged files passed mise run hooks; review resolved all concrete findings. Next step: none.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added preview-first queue init with strict owner-private YAML generation/merge, detected Backlog.md and GitHub facts, safe identity handling and docs. In-process acceptance and race tests, five project gates, and pre-commit hooks passed; committed and merged to main (443299b).
+<!-- SECTION:FINAL_SUMMARY:END -->
