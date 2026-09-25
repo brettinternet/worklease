@@ -422,12 +422,19 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				if !queueUUID(s.Organization) || !queueUUID(s.Team) || !queueUUID(s.Account) || (s.Project != "" && !queueUUID(s.Project)) || s.Host != "" {
 					return QueueConfig{}, fmt.Errorf("%s: Linear requires organization, team, and account UUIDs, optional project UUID, and no host", label)
 				}
+				if s.Claims != nil {
+					return QueueConfig{}, fmt.Errorf("%s.claims: Linear identity is bound to its configured organization and issue UUIDs", label)
+				}
+				for action, stateID := range s.Workflow {
+					if !queueUUID(stateID) {
+						return QueueConfig{}, fmt.Errorf("%s.workflow.%s: Linear transitions must be explicit workflow-state UUIDs", label, action)
+					}
+				}
+			} else if s.Claims != nil || s.Workflow != nil {
+				return QueueConfig{}, fmt.Errorf("%s: claims and writes are unavailable until the adapter is implemented", label)
 			}
 			if strings.TrimSpace(s.Account) == "" || strings.ContainsAny(s.Account, "\r\n\x00") {
 				return QueueConfig{}, fmt.Errorf("%s.account: safe principal required", label)
-			}
-			if s.Claims != nil || s.Workflow != nil {
-				return QueueConfig{}, fmt.Errorf("%s: claims and writes are unavailable until the adapter is implemented", label)
 			}
 			if len(s.CredentialHelper) == 0 || len(s.CredentialHelper) > 32 || !filepath.IsAbs(s.CredentialHelper[0]) || filepath.Clean(s.CredentialHelper[0]) != s.CredentialHelper[0] {
 				return QueueConfig{}, fmt.Errorf("%s.credentialHelper: absolute executable and at most 32 arguments required", label)

@@ -39,6 +39,11 @@ type WriteIntent struct {
 	Append             string            `json:"append,omitempty"`
 	Marker             string            `json:"marker,omitempty"`
 	Effects            []string          `json:"effects,omitempty"`
+	// SourceGeneration binds a provider intent to its non-secret source scope
+	// and credential-helper configuration so recovery fails closed after rebinding.
+	SourceGeneration             string `json:"sourceGeneration,omitempty"`
+	ExpectedAssignee             string `json:"expectedAssignee,omitempty"`
+	AssigneeReplacementConfirmed bool   `json:"assigneeReplacementConfirmed,omitempty"`
 }
 
 // ProviderReceipt is evidence returned by the provider write, not a Worklease receipt.

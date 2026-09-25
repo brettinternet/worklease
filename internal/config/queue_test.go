@@ -178,6 +178,13 @@ func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
 				if _, err := parseQueue([]byte(validProject), nil, nil); err != nil {
 					t.Fatalf("valid project scope: %v", err)
 				}
+				withWorkflow := strings.Replace(base, "    credentialHelper:", "    workflow: {start: 075a1740-eeda-4b85-be0b-39755abf4c8c, complete: 9f3b2707-b6d8-456d-9079-32f60cd33474}\n    credentialHelper:", 1)
+				if _, err := parseQueue([]byte(withWorkflow), nil, nil); err != nil {
+					t.Fatalf("valid explicit Linear state UUID mapping: %v", err)
+				}
+				if _, err := parseQueue([]byte(strings.Replace(withWorkflow, "start: 075a1740-eeda-4b85-be0b-39755abf4c8c", "start: In Progress", 1)), nil, nil); err == nil || !strings.Contains(err.Error(), "workflow.start: Linear transitions must be explicit workflow-state UUIDs") {
+					t.Fatalf("accepted display-name Linear mapping: %v", err)
+				}
 				for _, invalid := range []string{strings.Replace(base, "    organization: "+"0bfebf80-70af-4eca-9e39-2029a01f5b77\n", "", 1), strings.Replace(base, "    team: d19193f6-0501-485b-93af-65e829c2039d", "    team: TEST", 1)} {
 					if _, err := parseQueue([]byte(invalid), nil, nil); err == nil {
 						t.Fatal("accepted missing or mutable Linear identity")
@@ -190,7 +197,7 @@ func TestQueueRemoteCredentialHelperConfiguration(t *testing.T) {
 				{"[/usr/bin/credential-helper, --token]", "plain-token", "queue.yaml"},
 				{"    credentialHelper: [/usr/bin/credential-helper, --token]\n", "", "credentialHelper"},
 				{"    account: " + account + "\n", "", "account"},
-				{"    account: " + account + "\n", "    account: " + account + "\n    claims: {policy: linear, source: org}\n", "claims and writes"},
+				{"    account: " + account + "\n", "    account: " + account + "\n    claims: {policy: linear, source: org}\n", "claims"},
 			} {
 				_, err := parseQueue([]byte(strings.Replace(base, tc.replace, tc.with, 1)), nil, nil)
 				if err == nil || !strings.Contains(err.Error(), tc.want) {

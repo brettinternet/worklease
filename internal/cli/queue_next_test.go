@@ -481,6 +481,7 @@ const (
 	linearQueueFirst   = "075a1740-eeda-4b85-be0b-39755abf4c8c"
 	linearQueueSecond  = "9f3b2707-b6d8-456d-9079-32f60cd33474"
 	linearQueueThird   = "432032b3-d574-4147-ae02-278d03f99c9e"
+	linearQueueStart   = "77777777-7777-4777-8777-777777777777"
 )
 
 func linearQueueFixture(t *testing.T) (*queueQueryHarness, *bool) {
@@ -488,6 +489,7 @@ func linearQueueFixture(t *testing.T) (*queueQueryHarness, *bool) {
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	blocked := new(bool)
+	issueStates := make(map[string]map[string]string)
 	issue := func(id string) map[string]any {
 		identifier := "TEST-3"
 		if id == linearQueueFirst {
@@ -495,7 +497,11 @@ func linearQueueFixture(t *testing.T) (*queueQueryHarness, *bool) {
 		} else if id == linearQueueSecond {
 			identifier = "TEST-2"
 		}
-		return map[string]any{"id": id, "identifier": identifier, "title": "Linear task", "updatedAt": "2026-09-25T12:00:00Z", "team": map[string]any{"id": linearQueueTeam}, "state": map[string]any{"id": "open", "name": "Todo", "type": "unstarted"}}
+		state := map[string]string{"id": "open", "name": "Todo", "type": "unstarted"}
+		if configured, ok := issueStates[id]; ok {
+			state = configured
+		}
+		return map[string]any{"id": id, "identifier": identifier, "title": "Linear task", "updatedAt": "2026-09-25T12:00:00Z", "team": map[string]any{"id": linearQueueTeam}, "state": state}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		var body struct {
@@ -511,6 +517,14 @@ func linearQueueFixture(t *testing.T) (*queueQueryHarness, *bool) {
 		switch {
 		case strings.Contains(body.Query, "viewer {"):
 			data = map[string]any{"viewer": map[string]any{"id": linearQueueAccount, "organization": map[string]any{"id": linearQueueOrg}}, "team": map[string]any{"id": linearQueueTeam, "name": "TEST"}}
+		case strings.Contains(body.Query, "states { nodes"):
+			data = map[string]any{"team": map[string]any{"id": linearQueueTeam, "states": map[string]any{"nodes": []any{map[string]any{"id": linearQueueStart, "name": "In Progress", "type": "started"}}}}}
+		case strings.Contains(body.Query, "issueUpdate(id:$id,input:"):
+			var id, stateID string
+			_ = json.Unmarshal(body.Variables["id"], &id)
+			_ = json.Unmarshal(body.Variables["stateId"], &stateID)
+			issueStates[id] = map[string]string{"id": stateID, "name": "In Progress", "type": "started"}
+			data = map[string]any{"issueUpdate": map[string]any{"success": true, "issue": map[string]any{"id": id}}}
 		case strings.Contains(body.Query, "team(id:"):
 			data = map[string]any{"team": map[string]any{"id": linearQueueTeam, "issues": map[string]any{"nodes": []any{issue(linearQueueFirst), issue(linearQueueSecond), issue(linearQueueThird)}, "pageInfo": map[string]any{"hasNextPage": false}}}}
 		case strings.Contains(body.Query, "inverseRelations(") || strings.Contains(body.Query, "relations("):
@@ -623,6 +637,16 @@ func TestLinearQueueClaimNextAndMCPShareStableResource(t *testing.T) {
 	thirdKey, _ := resource.Resolve(resource.Input{Provider: "linear", Source: linearQueueOrg, Item: linearQueueThird})
 	if acquired.Err != nil || !acquired.Claim.Active || len(acquired.Resources) != 1 || acquired.Resources[0] != thirdKey.Resource {
 		t.Fatalf("TUI Linear Claim for me: %+v", acquired)
+	}
+}
+
+func TestLinearQueueNextStartUsesConfiguredLinearStateUUID(t *testing.T) {
+	h, _ := linearQueueFixture(t)
+	h.writeQueueConfig(fmt.Sprintf("version: 1\nme: {}\nsources:\n  - id: linear-test\n    adapter: linear\n    organization: %s\n    team: %s\n    account: %s\n    credentialHelper: [/bin/echo, fixture-token]\n    workflow: {start: %s}\nviews:\n  - name: Ready\n    authority: local\n    sources: [linear-test]\n    filter: {readiness: ready}\n", linearQueueOrg, linearQueueTeam, linearQueueAccount, linearQueueStart))
+	result := nextResult(t, h, "--claim", "--start", "--session", "linear-start")
+	transition, ok := result["transition"].(map[string]any)
+	if !ok || result["acquired"] != true || transition["outcome"] != "applied" {
+		t.Fatalf("Linear --start did not separately apply the configured transition: %#v", result)
 	}
 }
 

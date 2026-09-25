@@ -24,7 +24,8 @@ type queueStartController struct {
 func (c queueStartController) prepare(ctx context.Context, item queue.Item) (queueui.StartPreview, queueClaimPlan, error) {
 	cfg, ok := c.write.configured[item.Ref.SourceID]
 	projectStart := cfg.Adapter == "github" && cfg.GitHubProject != nil && cfg.GitHubProject.AllowWrites
-	if !ok || cfg.Workflow["start"] == "" || cfg.Adapter != "backlog-md" && !projectStart {
+	linearStart := cfg.Adapter == "linear"
+	if !ok || cfg.Workflow["start"] == "" || cfg.Adapter != "backlog-md" && !projectStart && !linearStart {
 		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work has no supported provider mapping; Claim only")
 	}
 	plan, err := c.claim.prepare(ctx, item)
@@ -41,6 +42,9 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 			current = source.Adapter == cfg.Adapter && source.Checkout == cfg.Checkout && source.Repository == cfg.Repository && source.Host == cfg.Host && source.Account == cfg.Account && source.Workflow["start"] == cfg.Workflow["start"]
 			if projectStart {
 				current = current && reflect.DeepEqual(source.GitHubProject, cfg.GitHubProject) && reflect.DeepEqual(source.Workflow, cfg.Workflow)
+			}
+			if linearStart {
+				current = current && source.Organization == cfg.Organization && source.Team == cfg.Team && source.Project == cfg.Project && slices.Equal(source.CredentialHelper, cfg.CredentialHelper) && reflect.DeepEqual(source.Workflow, cfg.Workflow)
 			}
 			break
 		}
@@ -84,6 +88,21 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 			effects = append(effects, "Git hooks")
 		}
 		return queueui.StartPreview{Claim: plan.preview, Source: plan.source.Source.ID + " (" + plan.source.Source.Locator + ")", Actor: actor[0], Transition: transition, TransitionValue: transition, RequiredFields: "status=" + transition, Effect: strings.Join(detail.Argv, " "), SideEffects: effects}, plan, nil
+	}
+	if writer, ok := adapter.(*queue.LinearWriteAdapter); ok && linearStart {
+		actor := cfg.Account
+		intent, detail, err := writer.Prepare(ctx, queue.WriteIntent{OperationID: strings.Repeat("0", 32), Source: plan.source.Source, Ref: plan.item.Ref, Principal: actor, Action: queue.ActionStart, Transition: transition, Patch: map[string]string{"stateId": transition}})
+		if err != nil {
+			return queueui.StartPreview{}, queueClaimPlan{}, err
+		}
+		preflight, err := writer.Inspect(ctx, intent)
+		if err != nil {
+			return queueui.StartPreview{}, queueClaimPlan{}, err
+		}
+		if !preflight.Capability || !preflight.Authorized || !preflight.InScope || !preflight.Fresh || !preflight.NativeAvailable || !preflight.Ready || preflight.Precondition != intent.Precondition {
+			return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work provider permission or readiness unavailable")
+		}
+		return queueui.StartPreview{Claim: plan.preview, Source: plan.source.Source.ID + " (" + plan.source.Source.Locator + ")", Actor: actor, Transition: detail.Operation, TransitionValue: transition, RequiredFields: "stateId=" + transition, Effect: detail.Operation, SideEffects: []string{"Linear issue workflow state update"}}, plan, nil
 	}
 	if writer, ok := adapter.(*queue.GitHubWriteAdapter); ok && projectStart {
 		actor := cfg.Account
