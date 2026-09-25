@@ -390,12 +390,6 @@ func inviteInputFromCommand(cmd *urfave.Command) (string, *authority.InviteArtif
 	return value, nil, nil
 }
 
-// Kept for focused CLI tests and legacy callers.
-func inviteFromCommand(cmd *urfave.Command) (string, error) {
-	value, _, err := inviteInputFromCommand(cmd)
-	return value, err
-}
-
 func enrollAction(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
 		if cmd.Bool("local") {

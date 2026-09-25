@@ -5,9 +5,39 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
+
+func (s *Store) Subscribe(buffer int) (<-chan Snapshot, func()) {
+	if buffer < 1 {
+		buffer = 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subNext++
+	id := s.subNext
+	ch := make(chan Snapshot, buffer)
+	ch <- s.current.Clone()
+	s.subs[id] = ch
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if c, ok := s.subs[id]; ok {
+				delete(s.subs, id)
+				close(c)
+			}
+		})
+	}
+}
+
+func (s *Store) publish(update func(*Snapshot)) Snapshot {
+	result, _ := s.publishComputed(update, false, nil)
+	return result
+}
 
 type fixture struct {
 	SchemaVersion int `json:"schemaVersion"`

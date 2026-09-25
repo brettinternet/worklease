@@ -74,10 +74,3 @@ func ResolveResourceInput(cmd *urfave.Command) (ResourceInput, error) {
 	}
 	return ResourceInput{Keys: []resource.Key{key}}, nil
 }
-
-// ValidateResourceInput is retained as a cheap validation entry point for
-// callers that only need to reject malformed input before mutation.
-func ValidateResourceInput(cmd *urfave.Command) error {
-	_, err := ResolveResourceInput(cmd)
-	return err
-}

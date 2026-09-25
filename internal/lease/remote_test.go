@@ -190,7 +190,7 @@ func TestRemoteAcquireBindsActorIncarnationAdmissionAndPersistedLimits(t *testin
 	if grant.InstallationID != actor.InstallationID || grant.RestoreID != st.RestoreID() {
 		t.Fatalf("grant provenance=%+v", grant)
 	}
-	wrapped := WrapRemoteResponse(svc, grant)
+	wrapped := RemoteResponse[Grant]{ResponseContext: svc.ResponseContext(), Result: grant}
 	if wrapped.AuthorityID != st.AuthorityID() || wrapped.RestoreID != st.RestoreID() || !wrapped.AuthorityTime.Equal(clock.Now()) || wrapped.Result.ClaimID != grant.ClaimID {
 		t.Fatalf("response envelope=%+v", wrapped)
 	}

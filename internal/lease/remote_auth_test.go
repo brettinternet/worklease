@@ -10,6 +10,8 @@ import (
 	"github.com/brettinternet/worklease/internal/store"
 )
 
+func GenerateInstallationCredential() (string, error) { return GenerateSecret() }
+
 func TestRemoteAuthSecretsAndEnrollmentReplay(t *testing.T) {
 	svc, st, clock, actor := openRemoteLeaseTest(t)
 	invite, err := GenerateInviteCode()

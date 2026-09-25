@@ -9,7 +9,7 @@ import (
 func TestRegisteredReasonsCoverEveryExitFamily(t *testing.T) {
 	t.Parallel()
 	families := map[int]bool{}
-	for _, name := range Names() {
+	for name := range registry {
 		item := New(name, name)
 		if !Registered(name) || item.Code != CodeFor(name) {
 			t.Fatalf("reason %q is not stable", name)

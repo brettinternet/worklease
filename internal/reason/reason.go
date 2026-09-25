@@ -3,7 +3,6 @@ package reason
 
 import (
 	"errors"
-	"sort"
 )
 
 const (
@@ -136,15 +135,6 @@ func CodeFor(name string) int {
 
 func Registered(name string) bool { _, ok := registry[name]; return ok }
 
-func Names() []string {
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 func As(err error) *Error {
 	var classified *Error
 	if errors.As(err, &classified) {
@@ -154,13 +144,6 @@ func As(err error) *Error {
 }
 
 func Invalid(message string) *Error { return New(ReasonInvalidArgument, message) }
-
-func Wrap(name string, err error) *Error {
-	if err == nil {
-		return nil
-	}
-	return New(name, err.Error())
-}
 
 var registry = map[string]int{
 	ReasonInternal:       ExitInternal,

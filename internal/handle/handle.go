@@ -1243,15 +1243,6 @@ func readCredential(r io.Reader) (string, error) {
 	}
 	return v, nil
 }
-func ResolveCredential(path string, fd *int) (string, error) {
-	if (path != "") == (fd != nil) {
-		return "", newHandleError(reason.ReasonCredentialSourceConflict, "exactly one credential source is required")
-	}
-	if fd != nil {
-		return ReadCredentialFD(*fd)
-	}
-	return ReadCredential(path)
-}
 
 // StoreCredential durably creates an owner-private credential file. The
 // plaintext is accepted only in memory and is never part of a profile or

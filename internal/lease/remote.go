@@ -112,10 +112,6 @@ func (s *Service) ResponseContext() ResponseContext {
 	return ResponseContext{AuthorityID: s.st.AuthorityID(), RestoreID: s.st.RestoreID(), AuthorityTime: s.clock.Now().UTC()}
 }
 
-func WrapRemoteResponse[T any](s *Service, result T) RemoteResponse[T] {
-	return RemoteResponse[T]{ResponseContext: s.ResponseContext(), Result: result}
-}
-
 func roleAllows(actual, required string) bool {
 	rank := map[string]int{"read": 1, "write": 2, "admin": 3}
 	return rank[actual] >= rank[required]
