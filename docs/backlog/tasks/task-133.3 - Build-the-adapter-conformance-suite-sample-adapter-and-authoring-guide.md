@@ -1,10 +1,11 @@
 ---
 id: TASK-133.3
 title: 'Build the adapter conformance suite, sample adapter, and authoring guide'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-23 04:30'
+updated_date: '2026-09-25 05:19'
 labels:
   - work-queue
 milestone: m-1
@@ -29,15 +30,37 @@ One conformance suite must run against both the built-in adapters and external o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A conformance suite covers pagination, stale writes, capability denials, cancellation, quota handling, malformed output, uncertain outcomes, identity vectors, and secret leakage
-- [ ] #2 The Backlog.md and GitHub built-in adapters pass the suite through a shim that runs them behind the protocol boundary
-- [ ] #3 A sample external adapter (for example, over a static JSON file) lives in the repository, passes the suite, and runs under the TASK-133.2 host
-- [ ] #4 An authoring guide under skills/worklease-workflow/references/ explains the manifest, protocol, resource policy selection, trust model, and how to run the suite, and it links the source-provider authoring checklist
-- [ ] #5 The suite runs in `mise run test`
+- [x] #1 A conformance suite covers pagination, stale writes, capability denials, cancellation, quota handling, malformed output, uncertain outcomes, identity vectors, and secret leakage
+- [x] #2 The Backlog.md and GitHub built-in adapters pass the suite through a shim that runs them behind the protocol boundary
+- [x] #3 A sample external adapter (for example, over a static JSON file) lives in the repository, passes the suite, and runs under the TASK-133.2 host
+- [x] #4 An authoring guide under skills/worklease-workflow/references/ explains the manifest, protocol, resource policy selection, trust model, and how to run the suite, and it links the source-provider authoring checklist
+- [x] #5 The suite runs in `mise run test`
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
-- [ ] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
+- [x] #1 `mise run lint`, `mise run format-check`, `mise run test`, `mise run typecheck`, and `mise run hooks` pass
+- [x] #2 Any decision (D1-D27) or plan section this work contradicts or refines is updated in docs/work-queue-tui-proposal.md in the same commit
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a shared protocol-facing conformance harness with fixtures and identity vectors; exercise sample and built-in adapters through narrow shims.
+2. Ship a deterministic external adapter executable and document approval, manifest, wire behavior, resource policy, trust, and suite usage.
+3. Run focused race tests and all project gates, review item-scoped risks, commit in the worktree, merge to main, record evidence, and release claim.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented shared host-backed conformance tests for Backlog.md, GitHub, and static sample; added identity vectors, cancellation and stale-write readback cases. Sample and guide are committed on task-133-3-conformance (b7d6ffe) and merged into task-133-3-suite. Focused race checks pass; full gates and final integration pending.
+
+Evidence: on main c68c22b, TestAdapterConformance exercises all three via ExternalAdapter/ExternalProcess; TestAdapterConformanceBuiltInCancellation reaches both built-in providers; stale writer preflight/readback, quota, malformed output, unknown outcomes, secret redaction and shared identity vectors run under the conformance prefix. Sample host test passes; guide links checklist. go test -race -count=3 for TestAdapterConformance* (internal/queue) and TestSampleAdapter* (internal/sampleadapter) passed. mise run lint, format-check, typecheck, test, hooks passed on the suite head merged unchanged to main; focused conformance tests passed again on main. One general review found three actionable gaps (pagination bound, stale-write shim, built-in cancellation), all fixed and retested. Proposal section 11/D16 already matches the implementation; no design amendment needed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a shared supervised-protocol conformance suite for built-in and sample adapters, static sample executable and authoring guide; validated race tests and all project gates, merged to main at c68c22b.
+<!-- SECTION:FINAL_SUMMARY:END -->
