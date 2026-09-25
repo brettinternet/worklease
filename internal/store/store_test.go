@@ -17,6 +17,19 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+// db exposes the pool only to store-package tests that inspect schema internals.
+func (s *Store) db() *sql.DB {
+	if s.driver == nil {
+		return nil
+	}
+	return s.driver.DB()
+}
+
+// execContext lets tests seed deliberately invalid state past write validation.
+func (t *Tx) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
+}
+
 func TestOpenBootstrapsNormativeSchemaAndStableAuthority(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "nested", "home")
 	st := openStore(t, home, false)

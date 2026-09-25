@@ -35,9 +35,6 @@ func GenerateSecret() (string, error) {
 // client-side helper; authorities receive only HashSecret(code).
 func GenerateInviteCode() (string, error) { return GenerateSecret() }
 
-// GenerateInstallationCredential creates the client installation bearer.
-func GenerateInstallationCredential() (string, error) { return GenerateSecret() }
-
 // HashSecret is the stable storage representation for invite and installation
 // bearers. Plaintext secrets must never be stored in an authority database.
 func HashSecret(secret string) string {

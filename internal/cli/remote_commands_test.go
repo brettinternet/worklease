@@ -29,6 +29,11 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+func inviteFromCommand(cmd *urfave.Command) (string, error) {
+	value, _, err := inviteInputFromCommand(cmd)
+	return value, err
+}
+
 type cliRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f cliRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

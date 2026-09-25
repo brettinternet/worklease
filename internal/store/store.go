@@ -318,15 +318,6 @@ func (s *Store) Close() error {
 	return first
 }
 
-// db returns the pool only to store package implementation and tests. Other
-// packages use Read and typed store operations so writable SQL cannot bypass
-// event validation and watermark updates.
-func (s *Store) db() *sql.DB {
-	if s.driver == nil {
-		return nil
-	}
-	return s.driver.DB()
-}
 func (s *Store) Path() string        { return filepath.Join(s.homePath, DatabaseFileName) }
 func (s *Store) Home() string        { return s.homePath }
 func (s *Store) AuthorityID() string { return s.authority }
@@ -422,10 +413,6 @@ func (s *Store) Read(ctx context.Context, fn func(*Tx) error) error {
 type Tx struct {
 	tx    *sql.Tx
 	write bool
-}
-
-func (t *Tx) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return t.tx.ExecContext(ctx, query, args...)
 }
 
 // ExecContext is the typed write-side SQL escape hatch used by domain

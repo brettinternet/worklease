@@ -17,10 +17,16 @@ import (
 )
 
 type statusAuthority struct {
-	authority.FakeAuthority
-	calls [][]string
-	fail  bool
-	split bool
+	authority.Authority // Only Status and List may be called by the overlay.
+	calls               [][]string
+	listCalls           int
+	fail                bool
+	split               bool
+}
+
+func (a *statusAuthority) List(context.Context, string, *lease.RemoteActor) ([]lease.ClaimView, error) {
+	a.listCalls++
+	return nil, nil
 }
 
 func (a *statusAuthority) Status(_ context.Context, sel lease.Selector) (lease.Status, error) {
@@ -79,8 +85,8 @@ func TestClaimOverlayBatchesAndSplitsWithoutList(t *testing.T) {
 			t.Fatalf("item %d key: %+v %v", i, item, err)
 		}
 	}
-	if len(a.FakeAuthority.Calls) != 0 {
-		t.Fatalf("unexpected API calls: %v", a.FakeAuthority.Calls)
+	if a.listCalls != 0 {
+		t.Fatalf("unexpected List calls: %d", a.listCalls)
 	}
 }
 func TestClaimOverlayStatesAndOutage(t *testing.T) {

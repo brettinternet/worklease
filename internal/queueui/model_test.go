@@ -12,6 +12,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// PrepareSnapshot keeps test and benchmark fixtures independent of producer mutations.
+func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotMsg {
+	return prepareSnapshot(snapshot, true, sources...)
+}
+
 func fixture() queue.Snapshot {
 	a := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "a", ItemID: "1"}, CanonicalID: "stable-1", Title: "first", RawStatus: "open", Fresh: true}, Body: "\x1b]8;;https://evil.invalid\aCLICK\x1b]8;;\a \x1b[31mred\x1b[0m", Resources: []string{"resource:1"}, Claim: queue.ClaimObservation{Known: true, Active: true, AgentID: "whole-agent", SessionID: "full-session-identity"}}
 	b := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "a", ItemID: "2"}, CanonicalID: "stable-2", Title: "second", RawStatus: "open", Fresh: true}}

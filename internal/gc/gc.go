@@ -168,9 +168,6 @@ func (s *Service) Collect(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-// Run is an alias retained for callers that name the operation after the CLI.
-func (s *Service) Run(ctx context.Context, req Request) (Result, error) { return s.Collect(ctx, req) }
-
 func resolveCutoff(now, cutoff time.Time, days float64) (time.Time, *float64, error) {
 	if !cutoff.IsZero() && days != 0 {
 		return time.Time{}, nil, reason.Invalid("retention-days and cutoff are mutually exclusive")

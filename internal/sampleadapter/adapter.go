@@ -74,8 +74,6 @@ type rpcError struct {
 	failure rpcFailure
 }
 
-func (e *rpcError) Error() string { return e.failure.Message }
-
 func rpcErr(code int, diagnostic, message string) *rpcError {
 	return &rpcError{failure: rpcFailure{Code: code, Message: message, Data: rpcFailureData{Diagnostic: diagnostic}}}
 }

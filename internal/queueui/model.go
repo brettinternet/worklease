@@ -45,12 +45,6 @@ type snapshotProjection struct {
 	MeBySource  map[string][]string
 }
 
-// PrepareSnapshot copies producer-owned state before handing it to Bubble Tea.
-// The producer must not mutate the returned message after sending it.
-func PrepareSnapshot(snapshot queue.Snapshot, sources ...queue.Source) SnapshotMsg {
-	return prepareSnapshot(snapshot, true, sources...)
-}
-
 func prepareSnapshot(snapshot queue.Snapshot, prepareAllRows bool, sources ...queue.Source) SnapshotMsg {
 	prepared := snapshot.Clone()
 	message := SnapshotMsg{Snapshot: prepared, prepared: true}

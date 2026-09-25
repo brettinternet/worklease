@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +26,45 @@ import (
 	"github.com/brettinternet/worklease/internal/ledger"
 	"golang.org/x/term"
 )
+
+func writeCertificate(certPath, keyPath string, sanValues ...any) error {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	ipAddresses := []net.IP{net.ParseIP("127.0.0.1")}
+	dnsNames := []string{"localhost"}
+	for _, value := range sanValues {
+		switch san := value.(type) {
+		case net.IP:
+			if san != nil && !san.IsLoopback() {
+				ipAddresses = append(ipAddresses, san)
+			}
+		case string:
+			if san != "" && net.ParseIP(san) == nil {
+				dnsNames = append(dnsNames, san)
+			}
+		}
+	}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "worklease acceptance"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, IsCA: true, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IPAddresses: ipAddresses, DNSNames: dnsNames, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
+}
 
 // TestHiddenInviteChild is re-executed as a fake PTY child; it must not run in
 // the ordinary test process.
