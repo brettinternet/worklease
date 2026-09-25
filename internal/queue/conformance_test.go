@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,8 +32,8 @@ func TestAdapterConformanceSampleProcessHelper(t *testing.T) {
 	}
 }
 
-// TestAdapterConformanceProcessHelper is a test-only wire shim for the two built-in
-// adapters. Both are exercised by ExternalAdapter and its production process host.
+// TestAdapterConformanceProcessHelper is a test-only wire shim for built-in
+// adapters exercised through ExternalAdapter and its production process host.
 func TestAdapterConformanceProcessHelper(t *testing.T) {
 	separator := -1
 	for i, arg := range os.Args {
@@ -72,6 +73,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			switch kind {
 			case "backlog-md":
 				built := NewBacklogAdapter("Done")
+				built.Binary = cfg["binary"]
+				adapter = built
+				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "checkout": cfg["checkout"]})
+			case "beads":
+				built := NewBeadsAdapter()
 				built.Binary = cfg["binary"]
 				adapter = built
 				source, _ = adapter.Resolve(context.Background(), map[string]string{"id": requestSourceID(request.Params), "checkout": cfg["checkout"]})
@@ -118,7 +124,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			providerCursor := page
 			start := 0
-			if kind == "backlog-md" {
+			if kind == "backlog-md" || kind == "beads" {
 				providerCursor = ""
 				if page != "" {
 					start, _ = strconv.Atoi(page)
@@ -133,7 +139,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				break
 			}
 			end := len(items.Items)
-			if kind == "backlog-md" && end > start+1 {
+			if (kind == "backlog-md" || kind == "beads") && end > start+1 {
 				end = start + 1
 			}
 			wire := make([]any, 0, end-start)
@@ -142,7 +148,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			state := "complete"
 			var next any
-			if kind == "backlog-md" && end < len(items.Items) {
+			if (kind == "backlog-md" || kind == "beads") && end < len(items.Items) {
 				state, next = "partial", strconv.Itoa(end)
 			} else if items.NextCursor != "" {
 				state, next = "partial", items.NextCursor
@@ -178,6 +184,15 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 					return
 				} // A stale precondition must never dispatch a mutation.
 				if diagnostic, ok := err.(BacklogDiagnostic); !ok || diagnostic.Code != "conflict" {
+					return
+				}
+			case *BeadsAdapter:
+				intent.Effects = []string{"dolt-commit:deliberately-stale"}
+				_, err := (&BeadsWriteAdapter{BeadsAdapter: built, Me: "tester"}).Write(context.Background(), intent)
+				if err == nil {
+					return
+				}
+				if diagnostic, ok := err.(BeadsDiagnostic); !ok || diagnostic.Code != "conflict" {
 					return
 				}
 			case *GitHubAdapter:
@@ -302,7 +317,13 @@ func conformanceItem(item Summary, body string) map[string]any {
 
 func TestAdapterConformance(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"backlog-md", "github", "sample"} {
+	kinds := []string{"backlog-md", "github", "sample"}
+	if binary, err := exec.LookPath("bd"); err == nil {
+		if version, err := exec.Command(binary, "version").Output(); err == nil && strings.HasPrefix(string(version), "bd version 1.3.0 (") {
+			kinds = append(kinds, "beads")
+		}
+	}
+	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			_, paths := testkit.Home(t)
@@ -319,6 +340,11 @@ func TestAdapterConformance(t *testing.T) {
 			} else if kind == "backlog-md" {
 				root, binary := fakeBacklog(t)
 				fixture["checkout"], fixture["binary"] = root, binary
+			} else if kind == "beads" {
+				binary, _, source := beadsFixture(t)
+				fixture["checkout"], fixture["binary"] = source.Locator, binary
+				itemID = beadsCommand(t, binary, source.Locator, "create", "First", "--silent")
+				beadsCommand(t, binary, source.Locator, "create", "Second", "--silent")
 			} else {
 				itemID = "1"
 				built, server := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
