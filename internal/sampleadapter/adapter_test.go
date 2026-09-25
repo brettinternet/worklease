@@ -97,6 +97,15 @@ func TestSampleAdapterReadOnlyProtocol(t *testing.T) {
 	if len(thirdPage["items"].([]any)) != 1 || thirdPage["nextCursor"] != nil || thirdPage["context"].(map[string]any)["coverage"].(map[string]any)["state"] != "complete" {
 		t.Fatalf("third page = %#v", thirdPage)
 	}
+	mismatchedListCursor := call("10", "list", params(map[string]any{
+		"sourceId": "sample", "query": map[string]any{"states": []string{"complete"}, "text": ""},
+		"cursor": firstPage["nextCursor"], "fields": []string{},
+	}))
+	listError, ok := mismatchedListCursor["error"].(map[string]any)
+	listErrorData, dataOK := listError["data"].(map[string]any)
+	if !ok || !dataOK || listErrorData["diagnostic"] != "invalid-params" {
+		t.Fatalf("list cursor was accepted with different filters: %#v", mismatchedListCursor)
+	}
 
 	refs := []any{
 		map[string]string{"sourceId": "sample", "itemId": "sample-1"},
@@ -113,6 +122,14 @@ func TestSampleAdapterReadOnlyProtocol(t *testing.T) {
 	firstDeps := result(call("7", "readDependencies", firstDepsParams))
 	if len(firstDeps["edges"].([]any)) != 1 || firstDeps["completeness"] != "partial" || firstDeps["nextCursor"] == nil {
 		t.Fatalf("first dependency page = %#v", firstDeps)
+	}
+	mismatchedDependencyCursor := call("11", "readDependencies", params(map[string]any{
+		"ref": map[string]string{"sourceId": "sample", "itemId": "sample-2"}, "cursor": firstDeps["nextCursor"],
+	}))
+	dependencyError, ok := mismatchedDependencyCursor["error"].(map[string]any)
+	dependencyErrorData, dataOK := dependencyError["data"].(map[string]any)
+	if !ok || !dataOK || dependencyErrorData["diagnostic"] != "invalid-params" {
+		t.Fatalf("dependency cursor was accepted for a different ref: %#v", mismatchedDependencyCursor)
 	}
 	policy := result(call("8", "resourcePolicy", params(map[string]any{
 		"ref": map[string]string{"sourceId": "sample", "itemId": "sample-1"}, "workKey": "example-work",

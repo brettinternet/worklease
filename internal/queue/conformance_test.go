@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +54,8 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 	var adapter Adapter
 	var source Source
 	var cancelMarker string
+	var writeDoneAtEntry bool
+	var staleWriteEvidence map[string]any
 	var outputMu, pendingMu sync.Mutex
 	pending := make(map[string]context.CancelFunc)
 	type wireRequest struct {
@@ -62,6 +66,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 	respond := func(request wireRequest, ctx context.Context) {
 		var result any
 		var diagnostic string
+		var retryAt string
 		switch request.Method {
 		case "initialize":
 			capabilities := []string{"identity", "discovery", "dependencies", "state", "mutation"}
@@ -75,6 +80,7 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				return
 			}
 			cancelMarker = cfg["cancelMarker"]
+			writeDoneAtEntry = cfg["doneAtEntry"] == "true"
 			switch kind {
 			case "backlog-md":
 				built := NewBacklogAdapter("Done")
@@ -122,6 +128,9 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			_ = json.Unmarshal(request.Params["query"], &query)
 			if query.Text == "__worklease_conformance_cancel__" && cancelMarker != "" {
 				_ = os.WriteFile(cancelMarker+".request", []byte("started"), 0600)
+				if writeDoneAtEntry {
+					_ = os.WriteFile(cancelMarker+".done", []byte("too early"), 0600)
+				}
 				<-ctx.Done()
 				_ = os.WriteFile(cancelMarker+".done", []byte("cancelled"), 0600)
 				return
@@ -144,7 +153,17 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			if ctx.Err() != nil && cancelMarker != "" {
 				_ = os.WriteFile(cancelMarker+".done", []byte("cancelled"), 0600)
 			}
-			if err != nil || start < 0 || start > len(items.Items) {
+			if err != nil {
+				var rate GitHubRateDiagnostic
+				if errors.As(err, &rate) {
+					diagnostic = "rate-limited"
+					retryAt = rate.RetryAt.UTC().Format(time.RFC3339Nano)
+				} else {
+					diagnostic = "unavailable-source"
+				}
+				break
+			}
+			if start < 0 || start > len(items.Items) {
 				diagnostic = "unavailable-source"
 				break
 			}
@@ -186,35 +205,70 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			intent := WriteIntent{OperationID: strings.Repeat("a", 32), Source: source, Ref: ref,
 				Action: ActionRecordProgress, Append: "fixture progress", Marker: "worklease-op:" + strings.Repeat("a", 32),
 				Patch: map[string]string{"append": "comment"}, Precondition: "deliberately-stale-version", Principal: "tester"}
+			var writer WriteAdapter
+			var isConflict func(error) bool
 			switch built := adapter.(type) {
 			case *BacklogAdapter:
 				intent.Patch["append"] = "notes"
-				_, err := (&BacklogWriteAdapter{BacklogAdapter: built, Me: "@tester"}).Write(context.Background(), intent)
-				if err == nil {
-					return
-				} // A stale precondition must never dispatch a mutation.
-				if diagnostic, ok := err.(BacklogDiagnostic); !ok || diagnostic.Code != "conflict" {
-					return
+				writer = &BacklogWriteAdapter{BacklogAdapter: built, Me: "@tester"}
+				isConflict = func(err error) bool {
+					var diagnostic BacklogDiagnostic
+					return errors.As(err, &diagnostic) && diagnostic.Code == "conflict"
 				}
 			case *BeadsAdapter:
 				intent.Effects = []string{"dolt-commit:deliberately-stale"}
-				_, err := (&BeadsWriteAdapter{BeadsAdapter: built, Me: "tester"}).Write(context.Background(), intent)
-				if err == nil {
-					return
-				}
-				if diagnostic, ok := err.(BeadsDiagnostic); !ok || diagnostic.Code != "conflict" {
-					return
+				writer = &BeadsWriteAdapter{BeadsAdapter: built, Me: "tester"}
+				isConflict = func(err error) bool {
+					var diagnostic BeadsDiagnostic
+					return errors.As(err, &diagnostic) && diagnostic.Code == "conflict"
 				}
 			case *GitHubAdapter:
-				_, err := NewGitHubWriteAdapter(built, true).Write(context.Background(), intent)
-				if err == nil {
-					return
-				}
-				if diagnostic, ok := err.(GitHubDiagnostic); !ok || diagnostic.Code != "conflict" {
-					return
+				writer = NewGitHubWriteAdapter(built, true)
+				isConflict = func(err error) bool {
+					var diagnostic GitHubDiagnostic
+					return errors.As(err, &diagnostic) && diagnostic.Code == "conflict"
 				}
 			default:
-				return
+				diagnostic = "unsupported-capability"
+			}
+			if writer == nil {
+				break
+			}
+			beforeOutcomes := adapter.ReadItems(context.Background(), source, []Ref{ref}, nil, 1)
+			if len(beforeOutcomes) != 1 || beforeOutcomes[0].Kind != "found" || beforeOutcomes[0].Item == nil {
+				diagnostic = "unknown-outcome"
+				break
+			}
+			beforeEvidence, err := writer.ReadReceipt(context.Background(), intent, nil)
+			if err != nil {
+				diagnostic = "unknown-outcome"
+				break
+			}
+			_, writeErr := writer.Write(context.Background(), intent)
+			if !isConflict(writeErr) {
+				diagnostic = "unknown-outcome"
+				break
+			}
+			// A stale write is a conflict only when authoritative state and append
+			// evidence are unchanged around the rejected write.
+			beforeItem := *beforeOutcomes[0].Item
+			afterOutcomes := adapter.ReadItems(context.Background(), source, []Ref{ref}, nil, 1)
+			if len(afterOutcomes) != 1 || afterOutcomes[0].Kind != "found" || afterOutcomes[0].Item == nil {
+				diagnostic = "unknown-outcome"
+				break
+			}
+			afterEvidence, err := writer.ReadReceipt(context.Background(), intent, nil)
+			if err != nil || !sameStaleWriteState(beforeItem, *afterOutcomes[0].Item, beforeEvidence, afterEvidence) {
+				diagnostic = "unknown-outcome"
+				break
+			}
+			staleWriteEvidence = map[string]any{
+				"sourceId": afterEvidence.SourceID, "itemId": afterEvidence.ItemID,
+				"precondition": afterEvidence.Precondition, "patch": afterEvidence.Patch,
+				"markerCount": afterEvidence.MarkerCount, "appendContent": afterEvidence.AppendContent,
+				"appendProof": afterEvidence.AppendProof, "operationId": intent.OperationID,
+				"receiptId": afterEvidence.ReceiptID, "durableLocation": afterEvidence.ReceiptID,
+				"actor": afterEvidence.Actor, "effects": afterEvidence.Effects,
 			}
 			diagnostic = "conflict"
 		case "readReceipt":
@@ -222,14 +276,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 				Ref Ref `json:"ref"`
 			}
 			_ = json.Unmarshal(request.Params["target"], &target)
-			// An unsuccessful stale preflight has no mutation receipt. Read the
-			// authoritative provider rather than inferring absence from the RPC error.
-			outcomes := adapter.ReadItems(context.Background(), source, []Ref{target.Ref}, nil, 1)
-			if len(outcomes) != 1 || outcomes[0].Kind != "found" {
+			if staleWriteEvidence == nil || target.Ref.SourceID != source.ID || target.Ref.ItemID != staleWriteEvidence["itemId"] {
 				diagnostic = "unknown-outcome"
 				break
 			}
-			result = map[string]any{"context": conformanceContext(source.ID, "complete"), "verification": "conflict", "evidence": map[string]any{"item": target.Ref, "status": outcomes[0].Item.RawStatus}}
+			result = map[string]any{"context": conformanceContext(source.ID, "complete"), "verification": "conflict", "evidence": staleWriteEvidence}
 		case "readDependencies":
 			ref := requestRef(request.Params)
 			var cursor *string
@@ -269,7 +320,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 		}
 		var response any
 		if diagnostic != "" {
-			response = map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": externalDiagnosticCode(diagnostic), "message": "unsupported fixture operation", "data": map[string]string{"diagnostic": diagnostic}}}
+			data := map[string]any{"diagnostic": diagnostic}
+			if retryAt != "" {
+				data["retryAt"] = retryAt
+			}
+			response = map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": externalDiagnosticCode(diagnostic), "message": "unsupported fixture operation", "data": data}}
 		} else {
 			response = map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result}
 		}
@@ -321,8 +376,117 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 func conformanceContext(sourceID, state string) map[string]any {
 	return map[string]any{"principal": "tester", "configurationGeneration": "fixture-v1", "observedAt": time.Now().UTC().Format(time.RFC3339Nano), "providerVersion": nil, "coverage": map[string]any{"state": state, "scope": sourceID, "cursor": nil}}
 }
+func sameStaleWriteState(before, after Item, beforeEvidence, afterEvidence ReceiptObservation) bool {
+	return reflect.DeepEqual(before.Summary, after.Summary) && before.Body == after.Body &&
+		beforeEvidence.SourceID == afterEvidence.SourceID && beforeEvidence.ItemID == afterEvidence.ItemID &&
+		beforeEvidence.Precondition == afterEvidence.Precondition && reflect.DeepEqual(beforeEvidence.Patch, afterEvidence.Patch) &&
+		beforeEvidence.MarkerCount == afterEvidence.MarkerCount && beforeEvidence.AppendContent == afterEvidence.AppendContent &&
+		beforeEvidence.AppendProof == afterEvidence.AppendProof && beforeEvidence.ReceiptID == afterEvidence.ReceiptID &&
+		beforeEvidence.OperationID == afterEvidence.OperationID && beforeEvidence.Actor == afterEvidence.Actor &&
+		reflect.DeepEqual(beforeEvidence.Effects, afterEvidence.Effects)
+}
 func conformanceItem(item Summary, body string) map[string]any {
 	return map[string]any{"ref": item.Ref, "title": item.Title, "rawStatus": item.RawStatus, "state": item.State, "order": item.Order, "priority": item.Priority, "canonicalId": item.CanonicalID, "body": body, "terminal": item.Terminal}
+}
+
+func TestAdapterConformancePreservesGitHubRateLimit(t *testing.T) {
+	t.Parallel()
+	built, server := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		query, _ := githubRequest(t, r)
+		if strings.Contains(query, "viewer") {
+			_, _ = fmt.Fprint(w, `{"data":{"viewer":{"login":"tester"}}}`)
+			return
+		}
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAdapterConformanceProcessHelper$", "--", "github")
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = command.Wait()
+	}()
+	reader := bufio.NewReader(stdout)
+	call := func(id, method string, params map[string]any) map[string]json.RawMessage {
+		t.Helper()
+		frame, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stdin.Write(append(frame, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response map[string]json.RawMessage
+		if err := json.Unmarshal(line, &response); err != nil {
+			t.Fatalf("decode shim response %q: %v", line, err)
+		}
+		return response
+	}
+	call("1", "initialize", map[string]any{"protocolMajors": []int{1}, "hostFeatures": []string{}})
+	call("2", "resolve", map[string]any{
+		"sourceId": "rate-fixture", "config": map[string]string{"binary": built.Binary, "apiBase": server.URL},
+	})
+	response := call("3", "list", map[string]any{"sourceId": "rate-fixture", "query": map[string]any{"text": ""}, "cursor": nil})
+	var envelope struct {
+		Error struct {
+			Code int `json:"code"`
+			Data struct {
+				Diagnostic string `json:"diagnostic"`
+				RetryAt    string `json:"retryAt"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(responseBytes, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	retryAt, err := time.Parse(time.RFC3339Nano, envelope.Error.Data.RetryAt)
+	if envelope.Error.Code != externalDiagnosticCode("rate-limited") || envelope.Error.Data.Diagnostic != "rate-limited" || err != nil || retryAt.Before(time.Now().Add(30*time.Second)) {
+		t.Fatalf("shim lost GitHub rate limit details: %+v (parse error %v)", envelope.Error, err)
+	}
+}
+
+func TestConformanceStaleWriteRequiresUnchangedStateAndProgressEvidence(t *testing.T) {
+	t.Parallel()
+	before := Item{Summary: Summary{Ref: Ref{SourceID: "source", ItemID: "item"}, RawStatus: "Open"}, Body: "unchanged"}
+	beforeEvidence := ReceiptObservation{SourceID: "source", ItemID: "item", Precondition: "stale", Patch: map[string]string{"append": "comment"}}
+	tests := []struct {
+		name          string
+		after         Item
+		afterEvidence ReceiptObservation
+		wantUnchanged bool
+	}{
+		{name: "unchanged", after: before, afterEvidence: beforeEvidence, wantUnchanged: true},
+		{name: "provider-state-changed", after: Item{Summary: Summary{Ref: before.Ref, RawStatus: "Done"}, Body: before.Body}, afterEvidence: beforeEvidence},
+		{name: "progress-marker-added", after: before, afterEvidence: ReceiptObservation{SourceID: "source", ItemID: "item", Precondition: "stale", Patch: map[string]string{"append": "comment"}, MarkerCount: 1, AppendContent: "unexpected", AppendProof: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sameStaleWriteState(before, test.after, beforeEvidence, test.afterEvidence); got != test.wantUnchanged {
+				t.Fatalf("unchanged state = %t, want %t", got, test.wantUnchanged)
+			}
+		})
+	}
 }
 
 func TestAdapterConformance(t *testing.T) {
@@ -624,7 +788,12 @@ func runConformanceMutationFixture() {
 			result = map[string]any{"context": context, "receipt": map[string]any{"sourceId": id, "ref": ref, "operation": "recordProgress", "providerVersion": nil, "durableLocation": "fixture://receipt", "observedState": map[string]any{}, "conditionalWrite": false, "fencingEvidence": nil}}
 		case "readReceipt":
 			var operationID string
+			var intent struct {
+				Payload         map[string]string `json:"payload"`
+				ExpectedVersion *string           `json:"expectedVersion"`
+			}
 			_ = json.Unmarshal(request.Params["operationId"], &operationID)
+			_ = json.Unmarshal(request.Params["intent"], &intent)
 			logged, _ := os.ReadFile(logPath)
 			verification, count := "unknown", 0
 			for _, line := range strings.Split(string(logged), "\n") {
@@ -635,7 +804,15 @@ func runConformanceMutationFixture() {
 			if count == 1 {
 				verification = "verified"
 			}
-			result = map[string]any{"context": context, "verification": verification, "evidence": map[string]any{"sourceId": id, "itemId": ref.ItemID, "operationId": operationID, "markerCount": count, "appendProof": count == 1, "appendContent": "Adapter conformance fixture"}}
+			var precondition any
+			if intent.ExpectedVersion != nil {
+				precondition = *intent.ExpectedVersion
+			}
+			result = map[string]any{"context": context, "verification": verification, "evidence": map[string]any{
+				"sourceId": id, "itemId": ref.ItemID, "precondition": precondition, "patch": intent.Payload,
+				"operationId": operationID, "markerCount": count, "appendProof": count == 1,
+				"appendContent": "Adapter conformance fixture",
+			}}
 		default:
 			return
 		}

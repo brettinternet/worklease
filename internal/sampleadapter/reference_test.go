@@ -46,7 +46,10 @@ func TestReferenceAdapterWritesReceiptsAndRecoversMarkedAppend(t *testing.T) {
 		t.Fatalf("marker recovery = %#v", readback)
 	}
 	evidence := readback["evidence"].(map[string]any)
-	if evidence["operationId"] != operationID || evidence["markerCount"] != float64(1) || evidence["appendProof"] != true || evidence["appendContent"] != "fixture progress" || evidence["receiptId"] != progressReceipt["durableLocation"] {
+	if evidence["sourceId"] != "reference" || evidence["itemId"] != "reference-1" || evidence["precondition"] != "fixture-v2" ||
+		evidence["patch"].(map[string]any)["append"] != "comment" || evidence["operationId"] != operationID ||
+		evidence["markerCount"] != float64(1) || evidence["appendProof"] != true || evidence["appendContent"] != "fixture progress" ||
+		evidence["receiptId"] != progressReceipt["durableLocation"] {
 		t.Fatalf("marker evidence = %#v", evidence)
 	}
 
