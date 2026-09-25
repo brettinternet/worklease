@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 17:20'
+updated_date: '2026-09-25 15:45'
 labels:
   - work-queue
   - github
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.1
@@ -59,6 +60,8 @@ Plan section 10 requires verifying `viewer.login` against the configured account
 
 <!-- SECTION:NOTES:BEGIN -->
 d1d1201 fast-forward merged to main. Fake GitHub tests verify close/reopen reasons and NOT_PLANNED refusal; unmapped intents/body edits; comment marker/author and lagging lost-response recovery without redispatch; add-assignees preserves others; credential rotation/principal mismatch refuses mutation; rate-limited write honors Retry-After and is not retried. Scheduler fake-clock test verifies >=1 s account mutation slots. Focused race test: go test -race -count=3 -run TestGitHub(Write|NotPlanned|Lost|Writes) ./internal/queue passed. mise run lint, format-check, test, typecheck, hooks and commit hook passed. One general review surfaced mutation spacing, lagging state/assignment read-back, and read-only recovery gaps; all corrected and rerun, final reviewer PASS. Initial suite attempt hit known queueindex TestLockIsSingleFlightAcrossProcesses flake (TASK-136.1); subsequent full suite and hooks passed. Decision: defer Projects v2; choose future explicit GitHub App installation identity; unattended writes remain disabled. Worktree task-132-3-github-writes removed with branch after merge; no remaining blocker.
+
+Review 2026-09-25 (c5a29ab): same CLI recovery resolution fix as TASK-132.2 applies to GitHub. Issue summaries now keep a non-success close reason in rawStatus (CLOSED:NOT_PLANNED) beside the terminal category (TestGitHubSummaryDisclosesNonSuccessCloseReason).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
