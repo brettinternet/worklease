@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-24 20:26'
-labels: []
+updated_date: '2026-09-25 21:46'
+labels:
+  - reviewed
 dependencies: []
 parent_task_id: TASK-136
 priority: high
@@ -61,6 +62,8 @@ CI 36052100809 failed before e2e: internal/queue/backlog_write_test.go scratch p
 Fixed authorized CI fixture blocker: scratch Backlog project now configures local Git identity before auto-commits. Focused queue tests pass under -race -count=3; lint/format-check/test/typecheck and staged hooks pass. Merged df51cab6a3b4896d71f92379655d6049dfab5c19 to main, cleaned Worktrunk checkout, pushed; awaiting linux-x64 e2e CI.
 
 CI run 36053786416 at df51cab: Quality (linux-x64) succeeded, including hooks, mise run ci, race, e2e, remote smoke groups 1-5 and documentation examples; the remote development smoke passed at 20:20:16 UTC. Local macOS arm64 mise run e2e passed. Overall workflow red for independent macOS arm64 internal/store TestConcurrentOldV2AdminReplaySchemaCompletion (authority home is unsafe); not a TASK-136.2 criterion and unrelated code is owned by another worker.
+
+Post-completion review (merge e8b178d, fix de5d5ea): hidden-invite timeout killed only the PTY leader, so a SIGHUP-immune descendant could survive on Linux; now kills the PTY process group (TestHiddenInviteCancellationKillsDescendants). Ctrl-C/SIGTERM previously bypassed cleanup of the separate-group serve child; the harness context now cancels on those signals and reports the interrupted step. The macOS internal/store CI failure noted earlier has not recurred in recent main runs. No follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

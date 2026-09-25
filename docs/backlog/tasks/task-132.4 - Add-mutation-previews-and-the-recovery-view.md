@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 20:28'
+updated_date: '2026-09-25 21:46'
 labels:
   - work-queue
   - tui
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.1
@@ -60,6 +61,8 @@ Verified: three-action Backlog preview and gated dispatch in TestQueueWriteContr
 Implementation commit: 309dcd8 (local task-132-4-recovery branch; not pushed). Review outcome: one general pass identified and resolved exact-checkpoint identity, failed read-back held-claim reporting, and Recovery view name collision; focused checks repeated after fixes. No remaining blocker.
 
 Integrated the completed task branch into main at 7f863c3 after preserving the earlier primary-checkout plan at 23baa11. Focused race tests (count=3) and lint, format-check, test, typecheck, and staged hooks passed against the merged tree. No push requested.
+
+Post-completion review (merge e8b178d, fix de5d5ea): (1) TUI evidence prompt now binds to the operation selected at 'e', so a recovery refresh cannot redirect typed evidence to another record (TestRecoveryEvidenceStaysBoundToSelectedOperation). (2) A failed post-journal claim verification reported ClaimHeld=false and hid the journaled intent; it now reports held/unverified (TestWritePipelineUnverifiedClaimAfterJournalStaysHeld). (3) Checkpoint-only recovery (CLI retry and TUI) no longer resolves the provider source, so a removed source cannot block it (TestQueueRecoveryRetryCheckpointWithoutConfiguredSource). (4) Checkpoint-missing attestation is offered only after CheckpointNotAfter. No follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

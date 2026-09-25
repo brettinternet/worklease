@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-24 18:12'
-labels: []
+updated_date: '2026-09-25 21:46'
+labels:
+  - reviewed
 dependencies: []
 parent_task_id: TASK-136
 priority: high
@@ -54,6 +55,8 @@ Commit hook uncovered a separate queueindex cross-process lock flake (2 failures
 Diagnosed queueindex flake: 8 helpers concurrently initialize the brand-new SQLite index, and some fail Open with SQLITE_BUSY before testing the lock (captured child stdout). Initialize the disposable index once in the lock test fixture, then exercise the same 8-process lock contention; count=20 and race count=3 pass. Simultaneous first-time index Open remains a separate product concern; no production behavior changed.
 
 Review: one diff review, no remaining item-scoped defect. Validation after queueindex fixture correction: mise run lint, format-check, test, typecheck, hooks passed; doctor count=20 and delayed diagnosis, remote lease race count=20, scratch CLI simulated broken shim SKIP and real binary PASS, queueindex count=20 and race count=3. Code commit fc0072e fast-forward merged to main; worktree and branch removed, associated Herdr workspace closed.
+
+Post-completion review: clock injection, lease fixture WriteAt, and backlog probe verified. The noted concurrent first-time index Open concern was since fixed in queueindex migrate (BEGIN IMMEDIATE). No defects and no follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 21:37'
+updated_date: '2026-09-25 21:46'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.2
@@ -58,6 +59,8 @@ The steps: preview; revalidate prerequisites, eligibility, and permissions, then
 Implemented Start work in 694c63820ae5e26c3346bc9596ce4e5432a424de, fast-forward integrated into main. TUI palette/detail preview shows actor, source, mapping, required status, exact claim resources, commit/hook effects; c remains claim only. Confirmation revalidates dependency closure, live binding/actor/mapping and provider eligibility before acquisition; post-claim refresh and handle verification precede journaled write. Separate outcomes retain claim on rejection/unknown; recovery and heartbeat use existing paths. Reviewer found binding drift and misleading effects; both corrected. Verification: TestQueueStartWork* (including contending CLI claim, mapping drift, prerequisite reopen, GitHub unsupported mapping, real Backlog write), TestStartWork* (preview and applied/rejected/unknown results); focused go test -race -count=3; mise run lint, format-check, test, typecheck, hooks passed; focused checks passed on integrated main. No D26 or proposal section 8 change needed.
 
 Follow-up preclaim adapter Inspect added in 77b93f587cc7b82484b18e7e48787517b3bc6029 (rebased from 24c3fa1), integrated on main. A short-lived test claim expired under a loaded full suite; the existing write-controller fixture now moves its single private handle and runs the normal renewal lifecycle. Reverified focused go test -race -count=3 for Start work and write-controller behavior, all four mise gates plus staged hooks, and integrated-main focused tests. Both Worktrunk worktrees and their exact Herdr workspaces were removed. GitHub Issues still has no start mapping: real adapter rejects it and queue offers Claim only; Backlog exercises the mapped transition. Rejected/unknown transition reporting is exercised at the TUI model; the journal/recovery behavior is covered by the existing write pipeline tests.
+
+Post-completion review (merge e8b178d, fix de5d5ea): (1) Start work checkpoints cleared the queue-owned local handle's HoldUntil, so the next lifecycle renewal failed with 'local hold deadline missing'; queue write checkpoints now preserve any admitted hold (renewal asserted in TestQueueStartWorkComposesClaimAndProviderTransition). (2) GitHub Projects Start work preview passed the invalid operation ID 'start-preview' and always failed; now uses a real ID (TestQueueStartWorkPreviewsGitHubProjectStatusBinding). Also fixed a load-sensitive 30s TTL in TestQueueNextStartOutcomes. No follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

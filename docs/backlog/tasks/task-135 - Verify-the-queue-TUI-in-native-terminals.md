@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 21:10'
-updated_date: '2026-09-23 23:48'
+updated_date: '2026-09-25 21:46'
 labels:
   - work-queue
   - tui
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -47,6 +48,8 @@ Attempted on D22 Apple M1 Max / 32 GiB. Generated 10,000-row fixture at /private
 Resolved fresh-cache source-resolve-failed: the fixture checkout is outside the repo, so its mise backlog shim had no selected version. The disposable launcher now prepends the installed Backlog.md 1.52.0 bin directory; the fresh index populated 10,000 rows. tmux 3.7c captures at 120x35 and 80x25 showed the sanitized 仕事 🙂 BAD row and detail/list resize; NO_COLOR=1 capture had no styling escapes, and q closed the session. User explicitly confirmed the 10,000-row, 100-column resize, CJK/emoji/CSI/OSC, NO_COLOR and post-q prompt checks in Terminal.app 2.15, iTerm2 3.7.2, Ghostty 1.3.1 and Herdr 0.9.1. No product defect observed; results documented in plan section 3. mise run lint, format-check, test, typecheck passed.
 
 Verification documentation and task completion committed on main as 8cbe670 (no product source change).
+
+Post-completion review: documentation-only verification task; plan section 3 record matches ticket evidence. No defects and no follow-up needed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
