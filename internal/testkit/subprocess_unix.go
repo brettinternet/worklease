@@ -5,15 +5,19 @@ package testkit
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 )
 
 const helperEnvironment = "WORKLEASE_TEST_HELPER"
+const isolatedTestEnvironment = "TESTKIT_ISOLATED_TEST"
 
 // ProcessResult contains bounded test-binary subprocess output and status.
 type ProcessResult struct {
@@ -45,13 +49,59 @@ func RunTestProcess(helper string, timeout time.Duration, args ...string) (Proce
 		return result, fmt.Errorf("test helper %q timeout must be positive", helper)
 	}
 	commandArgs := append([]string{"-test.run=^TestProcessHelper$", "--"}, args...)
+	return runTestBinary(result, timeout, commandArgs, map[string]string{helperEnvironment: helper})
+}
+
+// RunIsolatedTest runs one environment-mutating top-level test in a private
+// test process. The parent can be scheduled in parallel without changing its
+// process environment; the child runs the original test body, including its
+// usual TestMain setup. A bound and process-group cleanup cover descendants.
+// It returns true in the parent, which must return immediately.
+func RunIsolatedTest(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(isolatedTestEnvironment) == t.Name() {
+		return false
+	}
+	t.Parallel()
+	name := t.Name()
+	// Preserve Go's slash-separated subtest filter, but restrict the child to
+	// exactly this top-level test instead of re-running other selected tests.
+	selector := "^" + regexp.QuoteMeta(name) + "$"
+	if selected := flag.Lookup("test.run"); selected != nil {
+		if _, suffix, ok := strings.Cut(selected.Value.String(), "/"); ok {
+			selector += "/" + suffix
+		}
+	}
+	timeout := 8 * time.Minute
+	if deadline, ok := t.Deadline(); ok {
+		remaining := time.Until(deadline) - 10*time.Second
+		if remaining <= 0 {
+			t.Fatal("insufficient test timeout to clean up isolated process")
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	result, err := runTestBinary(ProcessResult{Helper: name, ExitCode: -1}, timeout,
+		[]string{"-test.run=" + selector, "-test.v"},
+		map[string]string{isolatedTestEnvironment: name})
+	if err != nil {
+		t.Fatalf("isolated test %s: %v\n%s%s", name, err, result.Stdout, result.Stderr)
+	}
+	if strings.Contains(string(result.Stdout), "--- SKIP: "+name+" (") {
+		t.Skip("isolated child skipped: " + name)
+	}
+	return true
+}
+
+func runTestBinary(result ProcessResult, timeout time.Duration, commandArgs []string, overrides map[string]string) (ProcessResult, error) {
 	cmd := exec.Command(os.Args[0], commandArgs...)
-	cmd.Env = Environment(os.Environ(), map[string]string{helperEnvironment: helper})
+	cmd.Env = Environment(os.Environ(), overrides)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
-		return result, fmt.Errorf("start test helper %q: %w", helper, err)
+		return result, fmt.Errorf("start test helper %q: %w", result.Helper, err)
 	}
 	result.PID = cmd.Process.Pid
 	done := make(chan error, 1)
@@ -66,7 +116,7 @@ func RunTestProcess(helper string, timeout time.Duration, args ...string) (Proce
 		result.Stdout, result.Stderr = stdout.Bytes(), stderr.Bytes()
 		result.ExitCode = cmd.ProcessState.ExitCode()
 		if err != nil {
-			return result, fmt.Errorf("test helper %q exited with status %d: %w", helper, result.ExitCode, err)
+			return result, fmt.Errorf("test helper %q exited with status %d: %w", result.Helper, result.ExitCode, err)
 		}
 		return result, nil
 	case <-timer.C:
@@ -75,6 +125,6 @@ func RunTestProcess(helper string, timeout time.Duration, args ...string) (Proce
 		<-done
 		result.Stdout, result.Stderr = stdout.Bytes(), stderr.Bytes()
 		result.ExitCode = cmd.ProcessState.ExitCode()
-		return result, &TimeoutError{Helper: helper, Timeout: timeout}
+		return result, &TimeoutError{Helper: result.Helper, Timeout: timeout}
 	}
 }

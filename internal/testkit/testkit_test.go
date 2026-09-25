@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,6 +143,85 @@ func TestRunCLIParsesInjectedVersionResult(t *testing.T) {
 	}
 }
 
+func TestRunIsolatedTestKeepsEnvironmentPrivate(t *testing.T) {
+	before := os.Getenv("TESTKIT_LOCAL_VALUE")
+	if RunIsolatedTest(t) {
+		if os.Getenv("TESTKIT_LOCAL_VALUE") != before {
+			t.Fatal("isolated test mutated parent environment")
+		}
+		return
+	}
+	if os.Getenv("TESTKIT_FORCE_SKIP") == "1" {
+		t.Skip("requested child skip")
+	}
+	if path := os.Getenv("TESTKIT_SLOW_ISOLATED_TEST"); path != "" {
+		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		_, _ = listener.Accept() // Wait for the parent to enforce its process deadline.
+	}
+	t.Setenv("TESTKIT_LOCAL_VALUE", "child")
+	if os.Getenv("TESTKIT_LOCAL_VALUE") != "child" {
+		t.Fatal("isolated child did not run test body")
+	}
+	for _, scenario := range []string{"chosen", "other"} {
+		t.Run(scenario, func(t *testing.T) {
+			if path := os.Getenv("TESTKIT_SELECTION_RESULT"); path != "" {
+				if err := os.WriteFile(filepath.Join(path, scenario), []byte(scenario), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestRunIsolatedTestPreservesSelectionAndSkip(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	selector := "^TestRunIsolatedTestKeepsEnvironmentPrivate$/^chosen$"
+	selected, err := runTestBinary(ProcessResult{Helper: "subtest selection", ExitCode: -1}, 10*time.Second,
+		[]string{"-test.run=" + selector, "-test.v"}, map[string]string{"TESTKIT_SELECTION_RESULT": root})
+	if err != nil {
+		t.Fatalf("selected test: %v %s", err, selected.Stdout)
+	}
+	if _, err := os.Stat(filepath.Join(root, "chosen")); err != nil {
+		t.Fatalf("selected subtest did not run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "other")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unselected subtest ran: %v", err)
+	}
+	skipped, err := runTestBinary(ProcessResult{Helper: "child skip", ExitCode: -1}, 10*time.Second,
+		[]string{"-test.run=^TestRunIsolatedTestKeepsEnvironmentPrivate$", "-test.v"}, map[string]string{"TESTKIT_FORCE_SKIP": "1"})
+	if err != nil || !strings.Contains(string(skipped.Stdout), "--- SKIP: TestRunIsolatedTestKeepsEnvironmentPrivate (") {
+		t.Fatalf("child skip not propagated: %v %s", err, skipped.Stdout)
+	}
+}
+
+func TestRunIsolatedTestStopsBeforeParentDeadline(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(t.TempDir(), "child-pid")
+	result, err := runTestBinary(ProcessResult{Helper: "short parent deadline", ExitCode: -1}, 12*time.Second,
+		[]string{"-test.run=^TestRunIsolatedTestKeepsEnvironmentPrivate$", "-test.timeout=14s", "-test.v"},
+		map[string]string{"TESTKIT_SLOW_ISOLATED_TEST": pidFile})
+	if err == nil || !strings.Contains(string(result.Stdout), "timed out after") {
+		t.Fatalf("isolated child did not stop before parent deadline: %v %s", err, result.Stdout)
+	}
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pid, parseErr := strconv.Atoi(string(data))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	assertProcessGone(t, pid)
+}
+
 func TestRunTestProcessSuccessAndBoundedCleanup(t *testing.T) {
 	result, err := RunTestProcess("echo", 10*time.Second, "one", "two")
 	if err != nil {
@@ -160,6 +240,11 @@ func TestRunTestProcessSuccessAndBoundedCleanup(t *testing.T) {
 		t.Fatalf("spawned child PID %q: %v", spawned.Stdout, parseErr)
 	}
 	assertProcessGone(t, childPID)
+
+	failed, err := RunTestProcess("fail", 10*time.Second)
+	if err == nil || failed.ExitCode == 0 || !strings.Contains(string(failed.Stdout), "intentional helper failure") {
+		t.Fatalf("helper failure not propagated: result=%+v err=%v", failed, err)
+	}
 
 	timeout := 2 * time.Second
 	result, err = RunTestProcess("hang", timeout)
@@ -191,6 +276,8 @@ func TestProcessHelper(t *testing.T) {
 		}
 		fmt.Println(child.Process.Pid)
 		os.Exit(0)
+	case "fail":
+		t.Fatal("intentional helper failure")
 	case "hang":
 		for {
 			time.Sleep(time.Hour)

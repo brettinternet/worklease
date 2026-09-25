@@ -70,6 +70,9 @@ func nextStartCLI(t *testing.T, home string, args ...string) map[string]any {
 }
 
 func TestQueueNextStartAppliesBacklogTransition(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	home, root := nextStartFixture(t)
 	result := nextStartCLI(t, home, "--claim", "--start", "--session", "cli-worker")
 	if result["claimOutcome"] != "applied" || result["transition"].(map[string]any)["outcome"] != "applied" {
@@ -88,6 +91,9 @@ func TestQueueNextStartAppliesBacklogTransition(t *testing.T) {
 }
 
 func TestMCPQueueNextStartAppliesBacklogTransition(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	home, _ := nextStartFixture(t)
 	s, err := mcp.NewServer(mcp.Options{Home: home, ProfileName: config.LocalProfileName, TTL: 30 * time.Second, QueueNext: mcpQueueNext(home, config.LocalProfileName)})
 	if err != nil {
@@ -124,6 +130,9 @@ func TestMCPQueueNextStartAppliesBacklogTransition(t *testing.T) {
 }
 
 func TestQueueNextStartOutcomes(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	for _, mode := range []string{"cli", "mcp"} {
 		for _, scenario := range []struct {
 			name, replacement, outcome string
@@ -201,6 +210,9 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 }
 
 func TestQueueNextStartPlainReportsBothSteps(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	home, _ := nextStartFixture(t)
 	path := config.QueuePath(os.Getenv)
 	data, err := os.ReadFile(path)
@@ -217,6 +229,9 @@ func TestQueueNextStartPlainReportsBothSteps(t *testing.T) {
 }
 
 func TestQueueNextStartRejectsChangedActorAfterClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	controller, item, root := queueStartFixture(t)
 	ctx := context.Background()
 	plan, err := controller.claim.prepare(ctx, item)
@@ -261,6 +276,9 @@ func TestQueueNextStartGitHubHasNoStatusMapping(t *testing.T) {
 }
 
 func TestQueueNextStartRequiresClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	home, _ := nextStartFixture(t)
 	var output bytes.Buffer
 	if err := Run(context.Background(), []string{"worklease", "--home", home, "queue", "next", "--view", "Ready", "--start", "--json"}, "", "", "", &output, &output); err == nil || !strings.Contains(output.String(), "--start requires --claim") {
