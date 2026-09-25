@@ -90,7 +90,7 @@ func TestLinearReadOnlyAdapterCoverageAndIdentity(t *testing.T) {
 		return nil
 	})
 	caps, err := adapter.Capabilities(context.Background(), source, "", nil)
-	if err != nil || caps["mutation"].Permission != Denied || caps["native-claims"].Support != Unsupported || caps["dependencies"].Permission != Allowed {
+	if err != nil || caps["mutation"].Permission != Allowed || caps["progress"].Permission != Allowed || caps["assignment"].Permission != Allowed || caps["native-claims"].Support != Unsupported || caps["dependencies"].Permission != Allowed {
 		t.Fatalf("unsafe capabilities: %v %v", caps, err)
 	}
 	first, err := adapter.List(context.Background(), source, Query{Budget: 300}, "")

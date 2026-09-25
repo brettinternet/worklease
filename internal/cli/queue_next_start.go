@@ -23,7 +23,7 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 		// GitHub writes are interactive-only; this path runs unattended.
 		return map[string]any{"outcome": "not attempted", "reason": "GitHub writes are interactive-only; use Start work in the queue TUI"}
 	}
-	if mapping.Workflow["start"] == "" || mapping.Adapter != "backlog-md" {
+	if mapping.Workflow["start"] == "" || mapping.Adapter != "backlog-md" && mapping.Adapter != "linear" {
 		return map[string]any{"outcome": "not attempted", "reason": "no supported Start work mapping for source"}
 	}
 	if path == "" {

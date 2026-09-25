@@ -4,7 +4,7 @@ This is the **source-provider** boundary for a supervised, long-lived external
 process, not a claim authority, resource-policy plugin, scheduler, or MCP tool.
 The host owns source selection, Worklease claim lifecycle, dependency scheduling,
 write recovery, and provider checkpoints. The adapter owns provider reads, scoped
-provider writes, and read-back evidence. The normative [source provider contract](../skills/worklease-workflow/references/source-provider-contract.md), [workflow contract](../skills/worklease-workflow/references/contract.md), and [queue proposal](work-queue-tui-proposal.md) define their semantics; this document defines the wire format for TASK-133.2/133.3. The [v1 message schema](external-adapter-protocol.schema.json) is normative for message shapes. JSON examples below omit only optional fields.
+provider writes, and read-back evidence. The normative [source provider contract](../skills/worklease-workflow/references/source-provider-contract.md), [workflow contract](../skills/worklease-workflow/references/contract.md), and [queue proposal](work-queue-tui-proposal.md) define their semantics; this document is the **stable v1 wire contract for outside authors**. The canonical [v1 message schema](external-adapter/v1/schema.json) is normative for message shapes; its versioned path and `$id` remain stable throughout v1. JSON examples below omit only optional fields.
 
 ## Process, framing, and negotiation
 
@@ -78,5 +78,7 @@ Only this private stdin request may carry a raw provider token: no token, Workle
 Process isolation is **not a sandbox**: an installed adapter executes with the user's privileges and can read accessible files or make network requests. Approval and provenance of the executable, minimal environment, endpoint validation, and source-scoped references reduce accidental disclosure but do not isolate a malicious adapter. Untrusted provider titles and bodies are data, never executable instructions.
 
 ## Compatibility
+
+V1 is stable for third-party adapters. The following compatibility policy governs additive changes, unknown features, and deprecation; a manifest's semver is independent of the negotiated protocol major.
 
 Protocol major 1 fixes framing, methods, required meanings, diagnostics, and limits. A minor-compatible adapter may add optional fields or capabilities without changing existing interpretations. Hosts ignore unknown optional fields but must reject required features they do not implement; adapters reject unknown requested operations, required config semantics, or mutation fields rather than guessing. Removing/renaming a field, changing an error's meaning, or relaxing an authorization rule requires a new major version. Support overlapping majors during a migration; publish a deprecation notice and conformance fixtures before removing an old major. A manifest version change alone never silently migrates configured identity, credential scope, or resource policy; explicit user reapproval and rebind are required. Host and adapter retain the negotiated major for the process lifetime.

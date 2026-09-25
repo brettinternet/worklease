@@ -36,6 +36,7 @@ func main() {
 		runExample(binary, required, body)
 	}
 	validateCurrentDocs()
+	validateExternalAdapterSchema()
 	validateRemoteDocs()
 	validateOnboardingDocs()
 	validateDocumentedExitFamilies()
@@ -43,6 +44,32 @@ func main() {
 	testContention(binary)
 	testMCPTwoLoops(binary)
 	fmt.Println("worklease documentation examples passed")
+}
+
+func validateExternalAdapterSchema() {
+	const path = "docs/external-adapter/v1/schema.json"
+	const id = "https://github.com/brettinternet/worklease/blob/main/" + path
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fatal(err)
+	}
+	var schema struct {
+		ID      string `json:"$id"`
+		Version string `json:"$schema"`
+	}
+	if json.Unmarshal(data, &schema) != nil || schema.ID != id || schema.Version != "https://json-schema.org/draft/2020-12/schema" {
+		fatal(fmt.Errorf("external adapter v1 schema path and $id must match: %s", path))
+	}
+	for _, document := range []string{"docs/external-adapter-protocol.md", "docs/work-queue-tui-proposal.md", "skills/worklease-workflow/references/external-adapter-authoring.md"} {
+		content, err := os.ReadFile(document)
+		if err != nil {
+			fatal(err)
+		}
+		link, err := filepath.Rel(filepath.Dir(document), path)
+		if err != nil || !strings.Contains(string(content), filepath.ToSlash(link)) {
+			fatal(fmt.Errorf("%s does not link the versioned schema", document))
+		}
+	}
 }
 
 func runnableExamples(markdown string) map[string]string {

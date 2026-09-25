@@ -171,7 +171,9 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(s.Close)
-					result, err := s.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "start": true, "sessionId": "worker", "autoHeartbeat": false})
+					// Keep the acquired claim renewed while slow provider/fixture reads
+					// exercise an unknown transition; expiry is not the behavior under test.
+					result, err := s.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "start": true, "sessionId": "worker", "autoHeartbeat": true})
 					if err != nil || result["isError"] == true {
 						t.Fatalf("MCP start: %v %#v", err, result)
 					}

@@ -20,6 +20,38 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+func TestLinearRecoveryRejectsChangedWorkflowAndSourceBinding(t *testing.T) {
+	t.Parallel()
+	configured := config.QueueSource{
+		ID: "linear", Adapter: "linear", Organization: "0bfebf80-70af-4eca-9e39-2029a01f5b77",
+		Team: "d19193f6-0501-485b-93af-65e829c2039d", Project: "9f3b2707-b6d8-456d-9079-32f60cd33474",
+		Account: "72088203-6bc7-4a63-a71b-22048b88da64", CredentialHelper: []string{"/usr/bin/helper", "profile-a"},
+		Workflow: map[string]string{"start": "075a1740-eeda-4b85-be0b-39755abf4c8c"},
+	}
+	intent := queue.WriteIntent{
+		Source: queue.Source{ID: configured.ID, Adapter: configured.Adapter, Locator: configured.Organization},
+		Action: queue.ActionStart, Transition: configured.Workflow["start"],
+	}
+	if err := validateLinearRecoveryConfig(intent, configured); err != nil {
+		t.Fatalf("unchanged Linear recovery binding rejected: %v", err)
+	}
+	changedWorkflow := configured
+	changedWorkflow.Workflow = map[string]string{"start": "9f3b2707-b6d8-456d-9079-32f60cd33474"}
+	if err := validateLinearRecoveryConfig(intent, changedWorkflow); err == nil {
+		t.Fatal("Linear recovery accepted a changed transition mapping")
+	}
+	changedHelper := configured
+	changedHelper.CredentialHelper = []string{"/usr/bin/helper", "profile-b"}
+	if sameLinearQueueBinding(configured, changedHelper) {
+		t.Fatal("Linear recovery binding ignored changed credential-helper argv")
+	}
+	changedScope := configured
+	changedScope.Project = "432032b3-d574-4147-ae02-278d03f99c9e"
+	if sameLinearQueueBinding(configured, changedScope) {
+		t.Fatal("Linear recovery binding ignored changed project scope")
+	}
+}
+
 func TestQueueWriteControllerExternalCrashRecoveryIsReadOnly(t *testing.T) {
 	h := newQueueQueryHarness(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

@@ -54,6 +54,8 @@ func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, 
 		configured := c.configured[source.ID]
 		allowProjectWrites := configured.GitHubProject != nil && configured.GitHubProject.AllowWrites
 		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: allowProjectWrites}, nil
+	case *queue.LinearAdapter:
+		return queue.NewLinearWriteAdapter(a), nil
 	case *queue.ExternalAdapter:
 		configured, ok := c.configured[source.ID]
 		if !ok || configured.Adapter != "external" || configured.Account == "" {
@@ -107,7 +109,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			continue
 		}
 		found = true
-		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
+		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) || configured.Adapter == "linear" && (current.Organization != configured.Organization || current.Team != configured.Team || current.Project != configured.Project || !slices.Equal(current.CredentialHelper, configured.CredentialHelper) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
 		}
 		if configured.Adapter == "beads" && !reflect.DeepEqual(current.Workflow, configured.Workflow) {
@@ -124,6 +126,15 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	}
 	if !found {
 		return queueui.WritePreview{}, "", fmt.Errorf("queue source no longer configured")
+	}
+	if source.Adapter == "linear" && (action == queue.ActionStart || action == queue.ActionResume) {
+		fresh, err := refreshQueueActionClosure(ctx, c.registry, c.sources, item)
+		if err != nil {
+			return queueui.WritePreview{}, "", err
+		}
+		if eligibility := queue.EvaluateAction(fresh, action); !eligibility.Eligible {
+			return queueui.WritePreview{}, "", fmt.Errorf("linear start eligibility changed: %s", strings.Join(eligibility.Reasons, "; "))
+		}
 	}
 	claimSource, ok := queue.ClaimSources(cfg, []queue.Source{source})[source.ID]
 	if !ok {
@@ -186,7 +197,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	}
 	if action == queue.ActionRecordProgress {
 		kind := "notes"
-		if source.Adapter == "github" || source.Adapter == "beads" {
+		if source.Adapter == "github" || source.Adapter == "beads" || source.Adapter == "linear" {
 			kind = "comment"
 		}
 		intent.Patch = map[string]string{"append": kind}
@@ -194,6 +205,8 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		intent.Patch = map[string]string{"status": transition}
 	} else if configured.GitHubProject != nil && source.Adapter == "github" && (action == queue.ActionStart || action == queue.ActionResume || action == queue.ActionReportBlocked || action == queue.ActionRequestReview) {
 		intent.Patch = map[string]string{"projectOptionID": transition}
+	} else if source.Adapter == "linear" && action != queue.ActionAssignToMe {
+		intent.Patch = map[string]string{"stateId": transition}
 	}
 	claim := queueWriteClaim{backend: c.backend, path: path, session: c.session}
 	if err := claim.Verify(ctx, intent); err != nil {
@@ -250,6 +263,23 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		} else {
 			preview.SideEffects = []string{"GitHub issue notification to watchers"}
 		}
+	case *queue.LinearWriteAdapter:
+		var detail queue.LinearWritePreview
+		intent, detail, err = a.Prepare(ctx, intent)
+		preview.Effect = detail.Operation
+		if intent.Append != "" {
+			preview.Effect += ": " + intent.Append
+		}
+		if detail.Marker != "" {
+			preview.Effect += " " + detail.Marker
+		}
+		preview.SideEffects = []string{"Linear issue update; external Linear writers are not fenced"}
+		if intent.Action == queue.ActionRecordProgress {
+			preview.SideEffects = []string{"Linear comment and watcher notifications"}
+		}
+		if intent.Action == queue.ActionAssignToMe && intent.ExpectedAssignee != "" && intent.ExpectedAssignee != intent.Principal {
+			preview.Races = append(preview.Races, "Linear has one assignee slot; this confirmation replaces the current assignee")
+		}
 	case *queue.ExternalWriteAdapter:
 		var detail queue.ExternalWritePreview
 		intent, detail, err = a.Prepare(ctx, intent)
@@ -262,6 +292,24 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	}
 	preview.Intent = intent
 	return preview, path, nil
+}
+
+func sameLinearQueueBinding(left, right config.QueueSource) bool {
+	return left.ID == right.ID && left.Adapter == right.Adapter && left.Organization == right.Organization && left.Team == right.Team && left.Project == right.Project && left.Account == right.Account && slices.Equal(left.CredentialHelper, right.CredentialHelper)
+}
+
+func validateLinearRecoveryConfig(intent queue.WriteIntent, configured config.QueueSource) error {
+	if configured.Adapter != "linear" || configured.ID != intent.Source.ID || configured.Organization != intent.Source.Locator {
+		return fmt.Errorf("linear recovery source binding changed; restore the original source configuration")
+	}
+	workflowKey := map[queue.Action]string{
+		queue.ActionStart: "start", queue.ActionResume: "start", queue.ActionReportBlocked: "blocked",
+		queue.ActionRequestReview: "review", queue.ActionComplete: "complete", queue.ActionReopen: "reopen",
+	}[intent.Action]
+	if workflowKey != "" && configured.Workflow[workflowKey] != intent.Transition {
+		return fmt.Errorf("linear workflow mapping changed; recovery is blocked until the original mapping is restored")
+	}
+	return nil
 }
 
 func applyExternalWritePreview(preview *queueui.WritePreview, detail queue.ExternalWritePreview) error {
@@ -292,6 +340,28 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 			result.Err = err
 			return result
 		}
+		if record.Intent.Source.Adapter == "linear" {
+			if err := validateLinearRecoveryConfig(record.Intent, c.configured[record.Intent.Source.ID]); err != nil {
+				result.Err = err
+				return result
+			}
+			live, err := config.LoadQueue(os.Getenv)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			var current *config.QueueSource
+			for index := range live.Sources {
+				if live.Sources[index].ID == record.Intent.Source.ID {
+					current = &live.Sources[index]
+					break
+				}
+			}
+			if current == nil || !sameLinearQueueBinding(c.configured[record.Intent.Source.ID], *current) {
+				result.Err = fmt.Errorf("linear source binding or credential helper changed; recovery is blocked until the original binding is restored")
+				return result
+			}
+		}
 		path, err := queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, record.Intent.Source, record.Intent.Ref)
 		if err != nil {
 			result.Err = err
@@ -310,6 +380,25 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 			}
 		}
 		defer cleanup()
+		if record.Intent.Source.Adapter == "linear" {
+			if adapter == nil {
+				read, ok := c.registry.Get("linear")
+				if !ok {
+					result.Err = fmt.Errorf("write adapter unavailable")
+					return result
+				}
+				linearRead, ok := read.(*queue.LinearAdapter)
+				if !ok {
+					result.Err = fmt.Errorf("linear read adapter unavailable")
+					return result
+				}
+				adapter = queue.NewLinearWriteAdapter(linearRead)
+			}
+			if err := adapter.(*queue.LinearWriteAdapter).ValidateRecoveryBinding(record.Intent); err != nil {
+				result.Err = err
+				return result
+			}
+		}
 		recoverCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 		defer stop()
 		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal, Workflow: workflow}
@@ -338,6 +427,8 @@ func (c queueWriteController) recoveryAdapter(ctx context.Context, intent queue.
 	case *queue.GitHubAdapter:
 		configured := c.configured[intent.Source.ID]
 		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}, nil, func() {}, nil
+	case *queue.LinearAdapter:
+		return queue.NewLinearWriteAdapter(a), nil, func() {}, nil
 	default:
 		return nil, nil, nil, fmt.Errorf("write adapter unavailable")
 	}
@@ -404,6 +495,9 @@ func (c queueWriteController) Confirm(ctx context.Context, preview queueui.Write
 			return result
 		}
 		fresh.Intent.CheckpointNotAfter = preview.Intent.CheckpointNotAfter
+		if fresh.Intent.Source.Adapter == "linear" && fresh.Intent.Action == queue.ActionAssignToMe && fresh.Intent.ExpectedAssignee != "" && fresh.Intent.ExpectedAssignee != fresh.Intent.Principal {
+			fresh.Intent.AssigneeReplacementConfirmed = true
+		}
 		adapter, err := c.adapter(fresh.Intent.Source)
 		if err != nil {
 			result.Err = err

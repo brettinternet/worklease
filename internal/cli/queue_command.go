@@ -255,7 +255,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.StateChoices = make(map[string][]queueui.StateChoice)
 	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
-		if source.Adapter == "backlog-md" || source.Adapter == "github" && source.GitHubProject != nil && source.GitHubProject.AllowWrites {
+		if source.Adapter == "backlog-md" || source.Adapter == "linear" || source.Adapter == "github" && source.GitHubProject != nil && source.GitHubProject.AllowWrites {
 			model.StartTransitions[id] = source.Workflow["start"]
 		}
 		for _, step := range []struct {

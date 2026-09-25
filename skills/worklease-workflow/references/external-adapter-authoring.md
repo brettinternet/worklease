@@ -1,8 +1,26 @@
 # External adapter authoring
 
-Use the [v1 protocol](../../../docs/external-adapter-protocol.md) and its
-[normative schema](../../../docs/external-adapter-protocol.schema.json) for the
-wire contract. This guide covers the standalone read-only sample at
+Start with the [stable v1 protocol](../../../docs/external-adapter-protocol.md) and its
+[versioned normative schema](../../../docs/external-adapter/v1/schema.json) for the
+wire contract. Check the host's supported majors and a saved manifest's range
+without launching an adapter:
+
+```sh
+worklease queue adapter protocol --manifest-file /absolute/path/manifest.json --json
+```
+
+The manifest file is a JSON object containing the adapter's `id`, `version`, and
+`protocol` range (as returned by `initialize`). Omit `--manifest-file` to inspect
+only the host. The JSON envelope has `operation: queue-adapter-protocol`,
+`hostProtocolMajors`, and, when supplied, `manifest` and
+`protocolMajorsOverlap`. Overlap checks only major numbers: required features,
+source binding, executable identity, and authentication can still prevent
+negotiation. Success exits 0; invalid arguments or malformed/unreadable manifests exit 64 with
+`error.reason: invalid-argument`. This static compatibility check does not
+approve or validate the running executable; run conformance and approve it
+separately.
+
+This guide covers This guide covers the standalone read-only sample at
 `cmd/worklease-sample-adapter` and the writable local fixture at
 `cmd/worklease-reference-adapter`. Both are teaching examples, not provider
 integrations or production adapters.

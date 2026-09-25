@@ -26,6 +26,7 @@ type LinearAdapter struct {
 
 type linearBinding struct {
 	organization, team, project, account, token, generation string
+	configGeneration                                        string
 	argv                                                    []string
 }
 
@@ -109,64 +110,37 @@ func linearTokenGeneration(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(digest[:])
 }
+
+func linearConfigGeneration(binding linearBinding) string {
+	data, _ := json.Marshal(struct {
+		Organization string
+		Team         string
+		Project      string
+		Account      string
+		Argv         []string
+	}{binding.organization, binding.team, binding.project, binding.account, binding.argv})
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func linearBindingGeneration(configGeneration, token string) string {
+	return configGeneration + ":" + linearTokenGeneration(token)
+}
 func (a *LinearAdapter) query(ctx context.Context, b linearBinding, operation string, variables any, out any) error {
-	switch operation {
-	case linearIdentityQuery, linearListQuery, linearIncrementalQuery, linearDetailQuery, linearRelationsQuery, linearInverseQuery:
-	default:
+	if !linearReadOperation(operation) {
 		return LinearDiagnostic{"read-only", "unapproved provider query"}
 	}
 	payload, _ := json.Marshal(struct {
 		Query     string `json:"query"`
 		Variables any    `json:"variables"`
 	}{operation, variables})
-	// The quota scheduler serializes requests for the same account and organization
-	// in this client. Sync's cross-page quota reconciliation is handled separately.
-	gate := quotaScheduler("linear:"+b.organization+":"+b.account+":"+a.endpoint(), 1)
+	gate := quotaScheduler(linearQuotaIdentity(b, a.endpoint()), 1)
 	priority := PriorityDetail
 	if operation == linearListQuery || operation == linearIncrementalQuery {
 		priority = PriorityBackground
 	}
 	value, err := gate.schedule(ctx, priority, linearTokenGeneration(b.token)+":"+string(payload), "", true, func(workCtx context.Context) (any, error) {
-		if err := gate.waitQuota(workCtx); err != nil {
-			return nil, err
-		}
-		request, err := http.NewRequestWithContext(workCtx, http.MethodPost, a.endpoint(), bytes.NewReader(payload))
-		if err != nil {
-			return nil, LinearDiagnostic{"invalid-source", "invalid endpoint"}
-		}
-		request.Header.Set("Authorization", b.token)
-		request.Header.Set("Content-Type", "application/json")
-		response, err := a.client().Do(request)
-		if err != nil {
-			return nil, LinearDiagnostic{"offline", "Linear API unavailable"}
-		}
-		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
-		if err != nil || len(data) > 8<<20 {
-			return nil, LinearDiagnostic{"invalid-response", "Linear response unreadable"}
-		}
-		if response.StatusCode == 401 {
-			return nil, LinearDiagnostic{"authentication", "Linear rejected the credential"}
-		}
-		if response.StatusCode == 403 {
-			return nil, LinearDiagnostic{"permission-denied", "Linear denied access"}
-		}
-		if response.StatusCode == 429 {
-			linearLimitFromHeaders(gate, response.Header, true)
-			return nil, LinearDiagnostic{"rate-limited", "Linear quota exhausted"}
-		}
-		if response.StatusCode != 200 {
-			return nil, LinearDiagnostic{"provider-error", "Linear request failed"}
-		}
-		var envelope struct {
-			Data   json.RawMessage   `json:"data"`
-			Errors []json.RawMessage `json:"errors"`
-		}
-		if json.Unmarshal(data, &envelope) != nil || len(envelope.Errors) != 0 || len(envelope.Data) == 0 || string(envelope.Data) == "null" {
-			return nil, LinearDiagnostic{"provider-error", "Linear GraphQL request failed or access unavailable"}
-		}
-		linearLimitFromHeaders(gate, response.Header, false)
-		return envelope.Data, nil
+		return a.request(workCtx, b, operation, variables, gate)
 	})
 	if err != nil {
 		return err
@@ -175,6 +149,83 @@ func (a *LinearAdapter) query(ctx context.Context, b linearBinding, operation st
 		return LinearDiagnostic{"invalid-response", "Linear data invalid"}
 	}
 	return nil
+}
+
+func linearQuotaIdentity(binding linearBinding, endpoint string) string {
+	return "linear:" + binding.organization + ":" + binding.account + ":" + endpoint
+}
+
+func linearReadOperation(operation string) bool {
+	switch operation {
+	case linearIdentityQuery, linearListQuery, linearIncrementalQuery, linearDetailQuery, linearRelationsQuery, linearInverseQuery, linearWorkflowStatesQuery, linearIssueCommentsQuery:
+		return true
+	default:
+		return false
+	}
+}
+
+func linearApprovedOperation(operation string) bool {
+	if linearReadOperation(operation) {
+		return true
+	}
+	switch operation {
+	case linearIssueUpdateStateMutation, linearIssueUpdateAssigneeMutation, linearCommentCreateMutation:
+		return true
+	default:
+		return false
+	}
+}
+
+// request performs exactly one provider request. Mutations use the same
+// organization/account scheduler as reads and are never retried.
+func (a *LinearAdapter) request(ctx context.Context, b linearBinding, operation string, variables any, gate *quotaQueue) (json.RawMessage, error) {
+	if !linearApprovedOperation(operation) {
+		return nil, LinearDiagnostic{"read-only", "unapproved provider operation"}
+	}
+	if err := gate.waitQuota(ctx); err != nil {
+		return nil, err
+	}
+	payload, _ := json.Marshal(struct {
+		Query     string `json:"query"`
+		Variables any    `json:"variables"`
+	}{operation, variables})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(), bytes.NewReader(payload))
+	if err != nil {
+		return nil, LinearDiagnostic{"invalid-source", "invalid endpoint"}
+	}
+	request.Header.Set("Authorization", b.token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := a.client().Do(request)
+	if err != nil {
+		return nil, LinearDiagnostic{"offline", "Linear API unavailable"}
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
+	if err != nil || len(data) > 8<<20 {
+		return nil, LinearDiagnostic{"invalid-response", "Linear response unreadable"}
+	}
+	if response.StatusCode == 429 {
+		linearLimitFromHeaders(gate, response.Header, true)
+		return nil, LinearDiagnostic{"rate-limited", "Linear quota exhausted"}
+	}
+	if response.StatusCode == 401 {
+		return nil, LinearDiagnostic{"authentication", "Linear rejected the credential"}
+	}
+	if response.StatusCode == 403 {
+		return nil, LinearDiagnostic{"permission-denied", "Linear denied access"}
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, LinearDiagnostic{"provider-error", "Linear request failed"}
+	}
+	linearLimitFromHeaders(gate, response.Header, false)
+	var envelope struct {
+		Data   json.RawMessage   `json:"data"`
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal(data, &envelope) != nil || len(envelope.Errors) != 0 || len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return nil, LinearDiagnostic{"provider-error", "Linear GraphQL request failed or access unavailable"}
+	}
+	return envelope.Data, nil
 }
 
 func (a *LinearAdapter) Resolve(ctx context.Context, options map[string]string) (Source, error) {
@@ -218,9 +269,10 @@ func (a *LinearAdapter) Resolve(ctx context.Context, options map[string]string) 
 	if err != nil {
 		return Source{}, LinearDiagnostic{"authentication", "credential or scope verification failed; check helper, account, organization and team"}
 	}
-	digest := sha256.Sum256([]byte(token))
+	b.argv = append([]string(nil), argv...)
 	b.token = token
-	b.generation = organization + ":" + team + ":" + b.project + ":" + account + ":" + hex.EncodeToString(digest[:])
+	b.configGeneration = linearConfigGeneration(b)
+	b.generation = linearBindingGeneration(b.configGeneration, token)
 	source := Source{ID: id, Name: team, Locator: organization, Adapter: "linear"}
 	a.mu.Lock()
 	if a.bindings == nil {
@@ -252,8 +304,9 @@ func (a *LinearAdapter) Capabilities(_ context.Context, source Source, _ string,
 		return nil, err
 	}
 	read := Capability{Support: Supported, Permission: Allowed, Availability: Available}
-	disabled := Capability{Support: Supported, Permission: Denied, Availability: Available, Reason: "Linear provider writes require the focused write and recovery stage"}
-	return CapabilitySet{"identity": read, "discovery": read, "dependencies": read, "state": read, "assignment": read, "authentication": read, "effects": {Support: SupportUnknown, Permission: PermissionUnknown, Availability: Available}, "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": disabled, "progress": disabled, "synchronization": read}, nil
+	write := Capability{Support: Supported, Permission: Allowed, Availability: Available, Semantics: map[string]string{"authorization": "explicit confirmation and verified Worklease claim", "recovery": "journaled; unresolved writes are never redispatched"}}
+	assignment := Capability{Support: Supported, Permission: Allowed, Availability: Available, Semantics: map[string]string{"semantics": "single assignee slot; replacing another assignee requires explicit confirmation"}}
+	return CapabilitySet{"identity": read, "discovery": read, "dependencies": read, "state": read, "assignment": assignment, "authentication": read, "effects": {Support: SupportUnknown, Permission: PermissionUnknown, Availability: Available}, "native-claims": {Support: Unsupported, Permission: Denied, Availability: Available}, "mutation": write, "progress": write, "synchronization": read}, nil
 }
 
 type linearIssue struct {

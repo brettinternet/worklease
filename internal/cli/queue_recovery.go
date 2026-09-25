@@ -120,6 +120,15 @@ func queueBuiltinRecoveryAdapter(ctx context.Context, intent queue.WriteIntent) 
 		return &queue.BeadsWriteAdapter{BeadsAdapter: a, Me: intent.Principal}, nil
 	case *queue.GitHubAdapter:
 		return &queue.GitHubWriteAdapter{GitHubAdapter: a, Interactive: true, AllowProjectWrites: configured.GitHubProject != nil && configured.GitHubProject.AllowWrites}, nil
+	case *queue.LinearAdapter:
+		if err := validateLinearRecoveryConfig(intent, *configured); err != nil {
+			return nil, err
+		}
+		writer := queue.NewLinearWriteAdapter(a)
+		if err := writer.ValidateRecoveryBinding(intent); err != nil {
+			return nil, err
+		}
+		return writer, nil
 	default:
 		return nil, fmt.Errorf("write adapter unavailable")
 	}
@@ -189,6 +198,10 @@ func queueRecoveryCommand(s *boundary) *urfave.Command {
 				} else {
 					adapter, err = queueBuiltinRecoveryAdapter(ctx, record.Intent)
 				}
+			} else if record.Intent.Source.Adapter == "linear" {
+				// A Linear checkpoint is bound to the original account and scope,
+				// even after read-back has already verified the provider effect.
+				adapter, err = queueBuiltinRecoveryAdapter(ctx, record.Intent)
 			}
 			result := queue.WriteResult{Outcome: queue.WriteUnknown, ClaimHeld: true}
 			if err != nil {

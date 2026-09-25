@@ -38,7 +38,7 @@ func queueAdapterApprovalCommand(s *boundary) *urfavecli.Command {
 	return &urfavecli.Command{
 		Name:  "adapter",
 		Usage: "inspect and explicitly approve external queue adapters",
-		Commands: []*urfavecli.Command{queueAdapterCheckCommand(s), {
+		Commands: []*urfavecli.Command{queueAdapterCheckCommand(s), queueAdapterProtocolCommand(s), {
 			Name:  "approve",
 			Usage: "approve the configured executable for one external queue source",
 			Flags: []urfavecli.Flag{
@@ -102,6 +102,82 @@ func queueAdapterApprovalCommand(s *boundary) *urfavecli.Command {
 			},
 		}},
 	}
+}
+
+// protocol reads a saved manifest, not an executable or an approved queue source.
+func queueAdapterProtocolCommand(s *boundary) *urfavecli.Command {
+	return &urfavecli.Command{
+		Name: "protocol", Usage: "inspect host protocol majors and an optional saved adapter manifest without running it",
+		UsageText: "worklease queue adapter protocol [--manifest-file FILE] [--json]",
+		OnUsageError: func(_ context.Context, cmd *urfavecli.Command, _ error, _ bool) error {
+			return adapterProtocolError(s, cmd, reason.Invalid("invalid adapter protocol arguments"))
+		},
+		Flags: []urfavecli.Flag{&urfavecli.StringFlag{Name: "manifest-file", Usage: "path to a saved JSON manifest (not an executable)"}},
+		Action: func(_ context.Context, cmd *urfavecli.Command) error {
+			fail := func(err error) error { return adapterProtocolError(s, cmd, err) }
+			if cmd.Args().Len() != 0 {
+				return fail(reason.Invalid("unexpected positional arguments"))
+			}
+			majors := queue.SupportedExternalProtocolMajors()
+			result := map[string]any{"hostProtocolMajors": majors}
+			var adapterID, adapterVersion string
+			var minMajor, maxMajor int
+			if cmd.IsSet("manifest-file") {
+				path := cmd.String("manifest-file")
+				info, err := os.Stat(path)
+				if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+					return fail(reason.Invalid("manifest file must be a readable JSON file under 1 MiB"))
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return fail(reason.Invalid("manifest file cannot be read"))
+				}
+				var manifest struct {
+					ID       string `json:"id"`
+					Version  string `json:"version"`
+					Protocol struct {
+						MinMajor int `json:"minMajor"`
+						MaxMajor int `json:"maxMajor"`
+					} `json:"protocol"`
+				}
+				var fields map[string]json.RawMessage
+				if json.Unmarshal(data, &fields) != nil || fields == nil || fields["id"] == nil || fields["version"] == nil || fields["protocol"] == nil || json.Unmarshal(data, &manifest) != nil || !config.ValidQueueAdapterManifestIdentity(manifest.ID, manifest.Version) || manifest.Protocol.MinMajor < 1 || manifest.Protocol.MaxMajor < manifest.Protocol.MinMajor {
+					return fail(reason.Invalid("manifest ID, version or protocol range is invalid"))
+				}
+				result["manifest"] = map[string]any{"id": manifest.ID, "version": manifest.Version, "protocol": manifest.Protocol}
+				compatible := false
+				for _, major := range majors {
+					if major >= manifest.Protocol.MinMajor && major <= manifest.Protocol.MaxMajor {
+						compatible = true
+					}
+				}
+				result["protocolMajorsOverlap"] = compatible
+				adapterID, adapterVersion = manifest.ID, manifest.Version
+				minMajor, maxMajor = manifest.Protocol.MinMajor, manifest.Protocol.MaxMajor
+			}
+			if s.jsonRequested(cmd) {
+				return output.WriteSuccess(s.writer, "queue-adapter-protocol", result)
+			}
+			if _, err := fmt.Fprintf(s.writer, "Host protocol majors: %v\n", majors); err != nil {
+				return err
+			}
+			if adapterID != "" {
+				_, err := fmt.Fprintf(s.writer, "Adapter %s %s: majors %d–%d; protocol majors overlap: %t\n", adapterID, adapterVersion, minMajor, maxMajor, result["protocolMajorsOverlap"])
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+func adapterProtocolError(s *boundary, cmd *urfavecli.Command, err error) error {
+	if !s.jsonRequested(cmd) {
+		return err
+	}
+	if writeErr := output.WriteError(s.writer, "queue-adapter-protocol", err); writeErr != nil {
+		return writeErr
+	}
+	return &handledError{cause: err}
 }
 
 // check is deliberately separate from approve: it neither loads queue.yaml nor
