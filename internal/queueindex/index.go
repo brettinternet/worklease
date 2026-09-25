@@ -78,6 +78,10 @@ func Open(ctx context.Context, dir string) (*Index, error) {
 }
 
 func open(ctx context.Context, dir string, allowRebuild bool) (*Index, error) {
+	return openWithBusyTimeout(ctx, dir, allowRebuild, 10000)
+}
+
+func openWithBusyTimeout(ctx context.Context, dir string, allowRebuild bool, busyTimeoutMS int) (*Index, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -85,7 +89,7 @@ func open(ctx context.Context, dir string, allowRebuild bool) (*Index, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, "index.sqlite")
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)"}).String()
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: fmt.Sprintf("_pragma=journal_mode(WAL)&_pragma=busy_timeout(%d)", busyTimeoutMS)}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -107,7 +111,7 @@ func open(ctx context.Context, dir string, allowRebuild bool) (*Index, error) {
 		if err := rebuild(path); err != nil {
 			return nil, fmt.Errorf("rebuild corrupt queue index: %w", err)
 		}
-		return open(ctx, dir, false)
+		return openWithBusyTimeout(ctx, dir, false, busyTimeoutMS)
 	}
 	for _, privatePath := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(privatePath, 0600); err != nil && !os.IsNotExist(err) {

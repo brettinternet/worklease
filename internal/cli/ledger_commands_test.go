@@ -205,7 +205,12 @@ func TestLedgerCLIJSONAndPendingHandleReconciliationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
+	if err := st.Write(ctx, func(tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE claims SET expires_at=? WHERE claim_id=?`, time.Now().Add(-time.Second).UnixMicro(), oldID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	newID, newToken := strings.Repeat("3", 32), strings.Repeat("b", 64)
 	current, err := svc.Acquire(ctx, lease.AcquireRequest{AuthorityID: st.AuthorityID(), ClaimID: newID, Token: newToken, Resources: []string{"r"}, AgentID: "new", SessionID: "new", TTL: time.Minute, RequestNotAfter: time.Now().Add(time.Hour)})
 	if err != nil {

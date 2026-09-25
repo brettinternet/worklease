@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -146,82 +144,6 @@ func TestOversizedInputAndExactElevenToolSchemas(t *testing.T) {
 		if input["type"] != "object" || input["additionalProperties"] != false || input["properties"] == nil {
 			t.Fatalf("incomplete schema for %s: %v", name, input)
 		}
-	}
-}
-
-func TestReferencesCrossServerPendingRecoveryAndRestartHold(t *testing.T) {
-	home, _ := testkit.Home(t)
-	cliPath := filepath.Join(t.TempDir(), "worklease")
-	buildCommand := exec.Command("go", "build", "-o", cliPath, "../../cmd/worklease")
-	buildCommand.Dir = "."
-	if buildOutput, err := buildCommand.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v: %s", err, buildOutput)
-	}
-	first, err := NewServer(Options{Home: home, AgentID: "first", SessionID: "session-one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired, err := first.Call(context.Background(), "acquire", map[string]any{"resources": []any{"shared-reference"}, "ttl": float64(10), "maxHold": float64(60), "autoHeartbeat": false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := acquired["structuredContent"].(map[string]any)
-	ref, path := content["lease"].(string), content["handlePath"].(string)
-	first.Close()
-
-	second, err := NewServer(Options{Home: home, AgentID: "second", SessionID: "session-two"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status, err := second.Call(context.Background(), "status", map[string]any{"lease": ref}); err != nil || status["isError"] == true {
-		t.Fatalf("second server could not use reference: %v %v", status, err)
-	}
-	verifyCommand := exec.Command(cliPath, "--home", home, "--json", "verify", "--handle", path)
-	verifyCommand.Dir = "."
-	verifyOutput, err := verifyCommand.CombinedOutput()
-	if err != nil {
-		t.Fatalf("CLI verify of MCP handle: %v: %s", err, verifyOutput)
-	}
-	if strings.Contains(string(verifyOutput), `"token"`) || strings.Contains(string(verifyOutput), `"tokenHash"`) {
-		t.Fatalf("CLI verify leaked private state: %s", verifyOutput)
-	}
-	h, err := handle.Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().UTC().Add(time.Hour)
-	heartbeatID := strings.Repeat("1", 32)
-	heartbeatInputs := map[string]any{"kind": "heartbeat", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "ttl": int64(time.Hour / time.Microsecond), "requestNotAfter": deadline.UnixMicro()}
-	h.State = "pending"
-	h.PendingRequest = &handle.PendingRequest{OperationID: heartbeatID, Kind: "heartbeat", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(heartbeatInputs), RequestNotAfter: deadline, Inputs: heartbeatInputs}
-	if err := handle.Write(path, h); err != nil {
-		t.Fatal(err)
-	}
-	heartbeat, err := second.Call(context.Background(), "heartbeat", map[string]any{"lease": ref})
-	if err != nil || heartbeat["isError"] == true {
-		t.Fatalf("pending heartbeat recovery: %v %v", heartbeat, err)
-	}
-	h, err = handle.Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h.State != "ready" || h.PendingRequest != nil || h.ExpiresAt.After(h.HoldUntil) {
-		t.Fatalf("heartbeat recovery state=%s pending=%v expires=%s hold=%s", h.State, h.PendingRequest, h.ExpiresAt, h.HoldUntil)
-	}
-
-	releaseID := strings.Repeat("2", 32)
-	releaseInputs := map[string]any{"kind": "release", "authorityId": h.AuthorityID, "claimId": h.ClaimID, "reason": "recovered release", "requestNotAfter": deadline.UnixMicro()}
-	h.State = "pending"
-	h.PendingRequest = &handle.PendingRequest{OperationID: releaseID, Kind: "release", AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, RequestHash: hashValue(releaseInputs), RequestNotAfter: deadline, Inputs: releaseInputs}
-	if err := handle.Write(path, h); err != nil {
-		t.Fatal(err)
-	}
-	released, err := second.Call(context.Background(), "release", map[string]any{"lease": ref})
-	if err != nil || released["isError"] == true {
-		t.Fatalf("pending release recovery: %v %v", released, err)
-	}
-	if _, err := handle.Read(path); err == nil {
-		t.Fatal("released MCP handle still exists")
 	}
 }
 

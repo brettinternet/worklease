@@ -11,6 +11,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/brettinternet/worklease/internal/store"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
@@ -103,7 +104,23 @@ func TestDefinitiveMutationFailureClearsPendingRequest(t *testing.T) {
 	}
 	content := acquired["structuredContent"].(map[string]any)
 	ref, path := content["lease"].(string), content["handlePath"].(string)
-	time.Sleep(1200 * time.Millisecond)
+	handleBeforeExpiry, err := handle.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), home, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(context.Background(), func(tx *store.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `UPDATE claims SET expires_at=? WHERE claim_id=?`, time.Now().Add(-time.Second).UnixMicro(), handleBeforeExpiry.ClaimID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	heartbeat, err := s.Call(context.Background(), "heartbeat", map[string]any{"lease": ref})
 	if err != nil {

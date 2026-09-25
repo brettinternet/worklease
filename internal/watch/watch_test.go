@@ -88,7 +88,7 @@ func TestWaitTimeoutCursorOnlyAdvancesThroughScannedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", ledger.ResourcesFilter([]string{"wanted"}), 0)
-	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: 2 * time.Second, PollInterval: MinPoll})
+	result, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"wanted"}, Timeout: 100 * time.Millisecond, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestWaitUsesPersistedObservationTimeAfterClockRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.SetWall(base.Add(-time.Minute))
-	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "free", Timeout: 2 * time.Second, PollInterval: MinPoll, Clock: clock})
+	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "free", Timeout: 100 * time.Millisecond, PollInterval: MinPoll, Clock: clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,13 +291,13 @@ func TestWaitTimeoutContinuationDoesNotSkipLateEvent(t *testing.T) {
 	cursor := ledger.EncodeCursor(st.AuthorityID(), st.RestoreID(), "events", filter, 0)
 	writeErr := make(chan error, 1)
 	go func() {
-		time.Sleep(2750 * time.Millisecond)
+		time.Sleep(140 * time.Millisecond)
 		writeErr <- st.Write(ctx, func(tx *store.Tx) error {
 			_, err := tx.AppendEvent(store.Event{At: time.Now(), Kind: "released", Resources: []string{"r"}, ClaimID: strings.Repeat("8", 32)})
 			return err
 		})
 	}()
-	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 3 * time.Second, PollInterval: 500 * time.Millisecond})
+	first, err := Wait(ctx, st, Request{Cursor: cursor, Resources: []string{"r"}, Timeout: 180 * time.Millisecond, PollInterval: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestEmptyFeedReturnsDurableBoundCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: 2 * time.Second, PollInterval: MinPoll})
+	result, err := Wait(ctx, st, Request{Resources: []string{"r"}, Until: "change", Timeout: 100 * time.Millisecond, PollInterval: MinPoll})
 	if err != nil {
 		t.Fatal(err)
 	}

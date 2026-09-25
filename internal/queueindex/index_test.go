@@ -3,9 +3,13 @@ package queueindex
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -575,12 +579,15 @@ func TestLockProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = marker.WriteString("winner\\n")
+	_, err = marker.WriteString(strconv.Itoa(os.Getpid()) + "\n")
 	marker.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// Keep the winner alive until the parent has observed the competing helpers.
+	if _, err := io.ReadAll(os.Stdin); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
@@ -603,21 +610,53 @@ func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 		cmds[n].Stdout = &outputs[n]
 		cmds[n].Stderr = &outputs[n]
 	}
-	for _, cmd := range cmds {
+	writers := make([]*io.PipeWriter, len(cmds))
+	for n, cmd := range cmds {
+		cmd.Stdin, writers[n] = io.Pipe()
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// The winner stays alive while every losing process finishes its attempt.
+	deadline := time.After(2 * time.Second)
+	var winner int
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			winner, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		if winner != 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no helper acquired the lock")
+		default:
+			runtime.Gosched()
+		}
+	}
 	for index, cmd := range cmds {
+		if cmd.Process.Pid == winner {
+			continue
+		}
+		_ = writers[index].Close()
 		if err := cmd.Wait(); err != nil {
 			t.Fatalf("helper %d failed: %v: %s", index, err, outputs[index].String())
+		}
+	}
+	for index, cmd := range cmds {
+		_ = writers[index].Close()
+		if cmd.Process.Pid == winner {
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("winner failed: %v: %s", err, outputs[index].String())
+			}
 		}
 	}
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(data), "winner"); got != 1 {
+	if got := len(strings.Fields(string(data))); got != 1 {
 		t.Fatalf("cross-process lock winners=%d output=%q", got, data)
 	}
 }
@@ -645,8 +684,10 @@ func TestBusyOpenDoesNotRebuildLiveIndex(t *testing.T) {
 		index *Index
 		err   error
 	}, 1)
+	busyCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
 	go func() {
-		index, openErr := Open(ctx, dir)
+		index, openErr := openWithBusyTimeout(busyCtx, dir, true, 100)
 		secondOpen <- struct {
 			index *Index
 			err   error
@@ -659,9 +700,11 @@ func TestBusyOpenDoesNotRebuildLiveIndex(t *testing.T) {
 		}
 		if result.err == nil {
 			t.Error("second Open unexpectedly succeeded under write lock")
+		} else if errors.Is(result.err, context.DeadlineExceeded) {
+			t.Fatalf("second Open waited past the test's busy timeout: %v", result.err)
 		}
-	case <-time.After(11 * time.Second):
-		t.Fatal("second Open did not respect SQLite busy timeout")
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Open did not honor its context deadline")
 	}
 	committed := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "committed"}, Title: "committed"}}
 	payload, err := json.Marshal(committed)

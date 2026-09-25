@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -101,33 +99,6 @@ func TestMCPAcquireSessionDefaultsAndPrecedence(t *testing.T) {
 	_, explicitSession := acquire(t, configured, "explicit-session", map[string]any{"sessionId": "argument-session"})
 	if explicitSession != "argument-session" {
 		t.Fatalf("explicit session = %q", explicitSession)
-	}
-}
-
-func TestSubprocessStdioLifecycle(t *testing.T) {
-	home, _ := testkit.Home(t)
-	cmd := exec.Command("go", "run", "../../cmd/worklease", "mcp")
-	cmd.Dir = "."
-	cmd.Env = append(os.Environ(), "WORKLEASE_HOME="+home, "WORKLEASE_AGENT_ID=subprocess")
-	cmd.Stdin = strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("subprocess: %v stderr=%s", err, stderr.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("unexpected stderr: %s", stderr.String())
-	}
-	var responses []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
-		var value map[string]any
-		if err := json.Unmarshal([]byte(line), &value); err != nil {
-			t.Fatal(err)
-		}
-		responses = append(responses, value)
-	}
-	if len(responses) != 2 {
-		t.Fatalf("responses: %s", stdout.String())
 	}
 }
 

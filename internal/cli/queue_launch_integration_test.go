@@ -1,4 +1,4 @@
-package queue
+package cli
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/resource"
 )
 
@@ -21,10 +22,9 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 	}
 	binaryDir := t.TempDir()
 	binary := filepath.Join(binaryDir, "worklease")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/worklease")
-	build.Dir = root
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %s: %v", out, err)
+	// Re-execute the current test binary as the CLI without a compile in the test.
+	if err := os.Symlink(os.Args[0], binary); err != nil {
+		t.Fatal(err)
 	}
 	for _, provider := range []string{"github", "generic"} {
 		t.Run(provider, func(t *testing.T) {
@@ -71,12 +71,12 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 				}
 				resources = append(resources, legacy.Resource)
 			}
-			item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "42"}}, KeyInputs: &inputs, Resources: resources, Claim: ClaimObservation{AuthorityID: resolved.AuthorityID, Known: true, State: "free"}, Readiness: Readiness{Status: Ready}}
+			item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "s", ItemID: "42"}}, KeyInputs: &inputs, Resources: resources, Claim: queue.ClaimObservation{AuthorityID: resolved.AuthorityID, Known: true, State: "free"}, Readiness: queue.Readiness{Status: queue.Ready}}
 			source := config.QueueSource{ID: "s", Adapter: provider, Checkout: workDir}
 			if provider == "generic" {
 				source.Adapter = "backlog-md"
 			}
-			handoff, disabled := PrepareLaunch(config.QueueLaunch{Name: "reference", Argv: []string{"python3", filepath.Join(root, "scripts", "queue-launch-worker.py")}, Cwd: workDir, PassEnv: []string{"WORKLEASE_HOME"}}, item, source, ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
+			handoff, disabled := queue.PrepareLaunch(config.QueueLaunch{Name: "reference", Argv: []string{"python3", filepath.Join(root, "scripts", "queue-launch-worker.py")}, Cwd: workDir, PassEnv: []string{"WORKLEASE_HOME"}}, item, source, queue.ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
 			if disabled != "" {
 				t.Fatal(disabled)
 			}
@@ -114,11 +114,11 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 			}
 			// Starting a process that exits without acquiring does not create a
 			// worker claim; only the authority's later observation can do that.
-			noClaim, disabled := PrepareLaunch(config.QueueLaunch{Name: "no-claim", Argv: []string{"python3", "-c", "pass"}, Cwd: workDir}, item, source, ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
+			noClaim, disabled := queue.PrepareLaunch(config.QueueLaunch{Name: "no-claim", Argv: []string{"python3", "-c", "pass"}, Cwd: workDir}, item, source, queue.ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
 			if disabled != "" {
 				t.Fatal(disabled)
 			}
-			child, err := StartLaunch(context.Background(), noClaim)
+			child, err := queue.StartLaunch(context.Background(), noClaim)
 			if err != nil {
 				t.Fatal(err)
 			}
