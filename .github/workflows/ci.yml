@@ -17,7 +17,7 @@ jobs:
   quality:
     name: Quality (linux-x64)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,7 +84,7 @@ jobs:
           - os: macos-14
             platform: macos-arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,5 +103,6 @@ jobs:
           restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
       - name: Run platform tests and static build
         run: |
+          mise run beads-check
           go test ./...
           mise run build
