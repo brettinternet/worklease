@@ -19,8 +19,11 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 		configured[source.ID] = source
 	}
 	mapping := configured[item.Ref.SourceID]
-	projectStart := mapping.Adapter == "github" && mapping.GitHubProject != nil && mapping.GitHubProject.AllowWrites
-	if mapping.Workflow["start"] == "" || mapping.Adapter != "backlog-md" && !projectStart {
+	if mapping.Adapter == "github" && mapping.Workflow["start"] != "" {
+		// GitHub writes are interactive-only; this path runs unattended.
+		return map[string]any{"outcome": "not attempted", "reason": "GitHub writes are interactive-only; use Start work in the queue TUI"}
+	}
+	if mapping.Workflow["start"] == "" || mapping.Adapter != "backlog-md" {
 		return map[string]any{"outcome": "not attempted", "reason": "no supported Start work mapping for source"}
 	}
 	if path == "" {
@@ -64,6 +67,9 @@ func queueNextStart(ctx context.Context, cfg config.QueueConfig, item queue.Item
 	}
 	preview, _, err := controller.prepare(ctx, fresh, queue.ActionStart, mapping.Workflow["start"], "", "", "")
 	if err != nil {
+		// Preparation never dispatches, so the provider status is unchanged.
+		outcome["outcome"] = "rejected"
+		outcome["message"] = "Claim acquired; status unchanged"
 		outcome["reason"] = err.Error()
 		return outcome
 	}

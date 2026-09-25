@@ -139,7 +139,7 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 			uncertain                  bool
 		}{
 			{"missing-mapping", "", "not attempted", false},
-			{"invalid-transition", "start: Missing", "not attempted", false},
+			{"invalid-transition", "start: Missing", "rejected", false},
 			{"unknown-readback", "start: In Progress", "unknown", true},
 		} {
 			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
@@ -225,7 +225,7 @@ func TestQueueNextStartPlainReportsBothSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := Run(context.Background(), []string{"worklease", "--home", home, "queue", "next", "--view", "Ready", "--claim", "--start", "--session", "worker"}, "", "", "", &output, &output); err != nil || !strings.Contains(output.String(), "Claim acquired; transition not attempted") || !strings.Contains(output.String(), "claim: applied; transition: not attempted") {
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "queue", "next", "--view", "Ready", "--claim", "--start", "--session", "worker"}, "", "", "", &output, &output); err != nil || !strings.Contains(output.String(), "Claim acquired; status unchanged") || !strings.Contains(output.String(), "claim: applied; transition: rejected") {
 		t.Fatalf("plain result: %v %s", err, output.String())
 	}
 }
@@ -257,7 +257,7 @@ func TestQueueNextStartRejectsChangedActorAfterClaim(t *testing.T) {
 	}
 	auth, _ := controller.claim.current()
 	got := queueNextStart(ctx, cfg, item, controller.claim.registry, []queue.Source{controller.claim.sources[item.Ref.SourceID]}, controller.claim.backend, auth, controller.claim.queueSession, plan.handle)
-	if got["outcome"] != "not attempted" || !strings.Contains(got["reason"].(string), "actor changed") {
+	if got["outcome"] != "rejected" || !strings.Contains(got["reason"].(string), "actor changed") {
 		t.Fatalf("stale provider actor wrote: %#v", got)
 	}
 	view := exec.Command("backlog", "task", "view", "TASK-1", "--json")
@@ -278,12 +278,18 @@ func TestQueueNextStartRefreshFailureIsNotARejection(t *testing.T) {
 	}
 }
 
-func TestQueueNextStartGitHubHasNoStatusMapping(t *testing.T) {
-	cfg := config.QueueConfig{Sources: []config.QueueSource{{ID: "issues", Adapter: "github", Workflow: map[string]string{"start": "in-progress"}}}}
+func TestQueueNextStartNeverWritesGitHub(t *testing.T) {
+	t.Parallel()
 	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "issues", ItemID: "1"}}}
-	got := queueNextStart(context.Background(), cfg, item, nil, nil, nil, queue.ClaimAuthority{}, "worker", "private-handle")
-	if got["outcome"] != "not attempted" || !strings.Contains(got["reason"].(string), "mapping") {
-		t.Fatalf("GitHub issue state was invented: %#v", got)
+	for _, source := range []config.QueueSource{
+		{ID: "issues", Adapter: "github"},
+		{ID: "issues", Adapter: "github", Workflow: map[string]string{"start": "option-progress"}, GitHubProject: &config.QueueProject{AllowWrites: true}},
+	} {
+		cfg := config.QueueConfig{Sources: []config.QueueSource{source}}
+		got := queueNextStart(context.Background(), cfg, item, nil, nil, nil, queue.ClaimAuthority{}, "worker", "private-handle")
+		if got["outcome"] != "not attempted" || got["reason"] == "" {
+			t.Fatalf("unattended GitHub start must not write: %#v", got)
+		}
 	}
 }
 
