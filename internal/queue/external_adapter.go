@@ -302,6 +302,10 @@ func (a *ExternalAdapter) List(ctx context.Context, source Source, query Query, 
 	if err := a.updateListCursor(cursor, page.NextCursor, binding); err != nil {
 		return SummaryPage{}, err
 	}
+	if diagnostic := process.takeFailureDiagnostic(); diagnostic != "" {
+		page.Coverage.Reason = diagnostic
+		page.Observation.Coverage.Reason = diagnostic
+	}
 	return page, nil
 }
 
@@ -530,8 +534,13 @@ func (a *ExternalAdapter) validatedProcess(source Source) (*ExternalProcess, err
 }
 
 func (a *ExternalAdapter) validatedProcessContext(ctx context.Context, source Source) (*ExternalProcess, error) {
+	process, _, err := a.validatedProcessGeneration(ctx, source)
+	return process, err
+}
+
+func (a *ExternalAdapter) validatedProcessGeneration(ctx context.Context, source Source) (*ExternalProcess, uint64, error) {
 	if source.ID != a.source.ID || source.Adapter != ExternalSourceAdapterKey(a.source.ID) {
-		return nil, fmt.Errorf("external adapter source identity does not match its configured source")
+		return nil, 0, fmt.Errorf("external adapter source identity does not match its configured source")
 	}
 	a.resolveMu.Lock()
 	defer a.resolveMu.Unlock()
@@ -539,38 +548,39 @@ func (a *ExternalAdapter) validatedProcessContext(ctx context.Context, source So
 	process := a.process
 	if process == nil || a.resolved == nil {
 		a.mu.Unlock()
-		return nil, fmt.Errorf("external adapter source must be resolved first")
+		return nil, 0, fmt.Errorf("external adapter source must be resolved first")
 	}
 	resolved := *a.resolved
 	resolvedGeneration := a.resolvedGeneration
 	a.mu.Unlock()
 	if source != resolved {
-		return nil, fmt.Errorf("external adapter source identity changed")
+		return nil, 0, fmt.Errorf("external adapter source identity changed")
 	}
 	if err := contextError(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if _, err := process.Initialize(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	generation, alive := process.Generation()
 	if !alive {
-		return nil, fmt.Errorf("external adapter process is unavailable")
+		return nil, 0, fmt.Errorf("external adapter process is unavailable")
 	}
 	if generation != resolvedGeneration {
-		if _, generation, err := a.resolveProcess(ctx, process, &resolved); err != nil {
-			return nil, err
+		if _, currentGeneration, err := a.resolveProcess(ctx, process, &resolved); err != nil {
+			return nil, 0, err
 		} else {
 			a.mu.Lock()
 			if a.process != process || a.resolved == nil || *a.resolved != resolved {
 				a.mu.Unlock()
-				return nil, fmt.Errorf("external adapter source binding changed during process restart")
+				return nil, 0, fmt.Errorf("external adapter source binding changed during process restart")
 			}
-			a.resolvedGeneration = generation
+			a.resolvedGeneration = currentGeneration
 			a.mu.Unlock()
+			generation = currentGeneration
 		}
 	}
-	return process, nil
+	return process, generation, nil
 }
 
 func (a *ExternalAdapter) validRef(source Source, ref Ref) bool {
@@ -773,7 +783,7 @@ func mapExternalItem(source Source, raw json.RawMessage) (Summary, Item, error) 
 		return Summary{}, Item{}, fmt.Errorf("external adapter item is invalid")
 	}
 	var wire externalItem
-	if json.Unmarshal(raw, &wire) != nil || wire.Ref.SourceID != source.ID || !validExternalText(wire.Ref.ItemID) {
+	if json.Unmarshal(raw, &wire) != nil || wire.Ref.SourceID != source.ID || wire.Ref.ItemID == "" || !validExternalText(wire.Ref.ItemID) {
 		return Summary{}, Item{}, fmt.Errorf("external adapter item reference escaped its configured source")
 	}
 	for _, value := range []string{wire.Title, wire.RawStatus, string(wire.State), wire.Order, wire.CanonicalID, wire.NativeClaim} {
@@ -1223,7 +1233,7 @@ func validateExternalConfig(rawSchema json.RawMessage, configuration map[string]
 
 func validateExternalSchemaStructure(schema map[string]any) error {
 	allowed := map[string]bool{
-		"$schema": true, "$id": true, "$comment": true, "title": true, "description": true,
+		"$schema": true, "$id": true, "$comment": true, "title": true, "description": true, "format": true, "examples": true,
 		"type": true, "properties": true, "required": true, "additionalProperties": true, "items": true,
 		"enum": true, "const": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true,
 		"minItems": true, "maxItems": true, "minProperties": true, "maxProperties": true, "pattern": true,
@@ -1233,9 +1243,13 @@ func validateExternalSchemaStructure(schema map[string]any) error {
 			return fmt.Errorf("unknown schema keyword %q", keyword)
 		}
 		switch keyword {
-		case "$schema", "$id", "$comment", "title", "description":
+		case "$schema", "$id", "$comment", "title", "description", "format":
 			if _, ok := value.(string); !ok {
 				return fmt.Errorf("invalid %s annotation", keyword)
+			}
+		case "examples":
+			if _, ok := value.([]any); !ok {
+				return fmt.Errorf("invalid examples annotation")
 			}
 		case "type":
 			if !externalSchemaTypeDeclarationValid(value) {
@@ -1340,7 +1354,7 @@ func externalSchemaTypeDeclarationValid(value any) bool {
 
 func validateExternalSchemaValue(schema map[string]any, value any) error {
 	allowed := map[string]bool{
-		"$schema": true, "$id": true, "$comment": true, "title": true, "description": true,
+		"$schema": true, "$id": true, "$comment": true, "title": true, "description": true, "format": true, "examples": true,
 		"type": true, "properties": true, "required": true, "additionalProperties": true, "items": true,
 		"enum": true, "const": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true,
 		"minItems": true, "maxItems": true, "minProperties": true, "maxProperties": true, "pattern": true,
