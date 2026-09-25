@@ -25,6 +25,14 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+func TestQueueTUIMeBySourceUsesExternalAccount(t *testing.T) {
+	t.Parallel()
+	got := queueMeBySource(config.QueueConfig{}, config.QueueSource{ID: "planning", Adapter: "external", Account: "alice"})
+	if len(got) != 1 || got[0] != "alice" {
+		t.Fatalf("external TUI identity = %v, want configured account", got)
+	}
+}
+
 type cachedClaimStatus struct{}
 
 func (cachedClaimStatus) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {

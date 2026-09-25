@@ -346,3 +346,8 @@ func (r *Registry) Register(name string, a Adapter) error {
 	return nil
 }
 func (r *Registry) Get(name string) (Adapter, bool) { a, ok := r.adapters[name]; return a, ok }
+func (r *Registry) unregister(name string, adapter Adapter) {
+	if registered, ok := r.adapters[name]; ok && registered == adapter {
+		delete(r.adapters, name)
+	}
+}

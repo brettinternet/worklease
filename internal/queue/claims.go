@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -19,9 +20,9 @@ type ClaimSource struct {
 	BlockReason, BlockDetail string
 }
 
-// ClaimSources carries queue.yaml's exact key inputs into the overlay. Without
-// an explicit binding, keys use the same default sources CLI callers document.
-// A Backlog.md source whose directory cannot be resolved is omitted.
+// ClaimSources carries queue.yaml's exact key inputs into the overlay. Built-in
+// sources retain their documented defaults; external sources require an explicit
+// generic claim binding. A Backlog.md source whose directory cannot be resolved is omitted.
 func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSource {
 	byID := make(map[string]Source, len(resolved))
 	for _, source := range resolved {
@@ -34,7 +35,18 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 			continue
 		}
 		input := ClaimSource{Source: source}
-		if configured.Claims != nil {
+		if configured.Adapter == "external" {
+			switch {
+			case configured.Claims == nil:
+				input.BlockReason = "claim-binding-required"
+				input.BlockDetail = "external source claims require an explicit generic policy and agreed source identity"
+			case configured.Claims.Policy != "generic" || !validExternalClaimSource(configured.Claims.Source):
+				input.BlockReason = "claim-binding-required"
+				input.BlockDetail = "external source claim binding is invalid; use an explicit generic policy and agreed source identity"
+			default:
+				input.Policy, input.ClaimSource = configured.Claims.Policy, configured.Claims.Source
+			}
+		} else if configured.Claims != nil {
 			input.Policy, input.ClaimSource = configured.Claims.Policy, configured.Claims.Source
 		} else if configured.Adapter == "github" {
 			input.ClaimSource = configured.Repository
@@ -52,6 +64,18 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 		out[configured.ID] = input
 	}
 	return out
+}
+
+func isExternalClaimSource(source Source) bool {
+	return source.Adapter == "external" || strings.HasPrefix(source.Adapter, externalAdapterKeyPrefix)
+}
+
+func validExternalClaimSource(source string) bool {
+	if source == "" || strings.TrimSpace(source) != source {
+		return false
+	}
+	_, err := resource.ValidateIdentity("source", source)
+	return err == nil
 }
 
 // ClaimStatusReader is the only authority capability available to the queue core.
@@ -89,11 +113,22 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 			item.Claim.Reason, item.Claim.Detail = source.BlockReason, source.BlockDetail
 			policy := source.Policy
 			keySource := source.ClaimSource
-			if policy == "" {
-				policy = source.Source.Adapter
-			}
-			if keySource == "" {
-				keySource = source.Source.Locator
+			if isExternalClaimSource(source.Source) {
+				if policy != "generic" || !validExternalClaimSource(keySource) {
+					if item.Claim.Reason == "" {
+						item.Claim.Reason = "claim-binding-required"
+						item.Claim.Detail = "external source claims require an explicit generic policy and agreed source identity"
+					}
+					out[i] = item
+					continue
+				}
+			} else {
+				if policy == "" {
+					policy = source.Source.Adapter
+				}
+				if keySource == "" {
+					keySource = source.Source.Locator
+				}
 			}
 			key, err := resource.Resolve(resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID})
 			if err != nil {

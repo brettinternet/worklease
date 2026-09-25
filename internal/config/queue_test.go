@@ -92,6 +92,81 @@ func TestQueueSchema(t *testing.T) {
 	}
 }
 
+func TestQueueExternalAdapterConfiguration(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	env := func(key string) string {
+		if key == "HOME" {
+			return home
+		}
+		return ""
+	}
+	valid := externalQueueFixture("/opt/worklease/adapters/example")
+	cfg, err := parseQueue([]byte(valid), env, nil)
+	if err != nil {
+		t.Fatalf("valid external source: %v", err)
+	}
+	source := cfg.Sources[0]
+	if source.Adapter != "external" || source.Executable != "/opt/worklease/adapters/example" || source.ExpectedAdapterID != "example.adapter" || source.ExpectedVersion != "1.2.3-rc.1" || source.Config["tenant"] != "acme" || source.CredentialRef != "credential:github" || source.Claims != nil {
+		t.Fatalf("external read-only configuration was not preserved: %+v", source)
+	}
+	withClaims := strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    claims: {policy: generic, source: acme/planning}\n", 1)
+	cfg, err = parseQueue([]byte(withClaims), env, nil)
+	if err != nil || cfg.Sources[0].Claims == nil || *cfg.Sources[0].Claims != (QueueClaims{Policy: "generic", Source: "acme/planning"}) {
+		t.Fatalf("explicit generic claim binding: %+v, %v", cfg, err)
+	}
+	withWrites := strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    account: alice\n    workflow: {start: Doing, complete: Done}\n", 1)
+	cfg, err = parseQueue([]byte(withWrites), env, nil)
+	if err != nil || cfg.Sources[0].Account != "alice" || cfg.Sources[0].Workflow["start"] != "Doing" || cfg.Sources[0].Workflow["complete"] != "Done" {
+		t.Fatalf("external write identity and workflow mapping: %+v, %v", cfg.Sources[0], err)
+	}
+
+	cases := []struct{ name, content, want string }{
+		{"missing source ID", strings.Replace(valid, "- id: docs", "-", 1), "sources[0].id: expected a string"},
+		{"unknown field", strings.Replace(valid, "    adapter: external", "    adapter: external\n    extra: true", 1), "sources[0].extra"},
+		{"built-in checkout", strings.Replace(valid, "    adapter: external", "    adapter: external\n    checkout: /tmp", 1), "sources[0].checkout"},
+		{"built-in github locator", strings.Replace(valid, "    adapter: external", "    adapter: external\n    host: github.com", 1), "sources[0].host"},
+		{"built-in repository locator", strings.Replace(valid, "    adapter: external", "    adapter: external\n    repository: org/repo", 1), "sources[0].repository"},
+		{"relative executable", strings.Replace(valid, "/opt/worklease/adapters/example", "./adapter", 1), "sources[0].executable"},
+		{"missing expected adapter ID", strings.Replace(valid, "    expectedAdapterId: example.adapter\n", "", 1), "expectedAdapterId: required"},
+		{"invalid adapter ID", strings.Replace(valid, "example.adapter", "", 1), "expectedAdapterId"},
+		{"missing expected version", strings.Replace(valid, "    expectedVersion: 1.2.3-rc.1\n", "", 1), "expectedVersion: required"},
+		{"invalid semantic version", strings.Replace(valid, "1.2.3-rc.1", "01.2.3", 1), "expectedVersion"},
+		{"missing config", strings.Replace(valid, "    config: {tenant: acme}\n", "", 1), "config: required"},
+		{"non-object config", strings.Replace(valid, "config: {tenant: acme}", "config: [acme]", 1), "config: expected an object"},
+		{"duplicate config key", strings.Replace(valid, "config: {tenant: acme}", "config: {tenant: acme, tenant: other}", 1), "config.tenant"},
+		{"invalid claim policy", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    claims: {policy: github, source: acme/planning}\n", 1), "claims.policy: external adapters require generic"},
+		{"blank claim source", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    claims: {policy: generic, source: '  '}\n", 1), "claims.source"},
+		{"ambiguous claim source", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    claims: {policy: generic, source: ' acme/planning'}\n", 1), "claims.source"},
+		{"missing claim source", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    claims: {policy: generic}\n", 1), "claims.source: expected a string"},
+		{"empty account", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    account: '  '\n", 1), "account: expected a non-empty safe principal"},
+		{"unsafe account", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    account: \"alice\\nbob\"\n", 1), "account: expected a non-empty safe principal"},
+		{"unsafe workflow transition", strings.Replace(valid, "    config: {tenant: acme}\n", "    config: {tenant: acme}\n    workflow: {start: \"Doing\\nNow\"}\n", 1), "workflow.start: expected a non-empty safe provider transition"},
+		{"unknown credential type", strings.Replace(valid, "credential:github", "true", 1), "credentialRef: expected a string"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseQueue([]byte(tc.content), env, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	withoutCredential := strings.Replace(valid, "    credentialRef: credential:github\n", "", 1)
+	if _, err := parseQueue([]byte(withoutCredential), env, nil); err != nil {
+		t.Fatalf("optional credential reference: %v", err)
+	}
+	builtInWithExternalField := strings.Replace(queueFixture(home), "    adapter: backlog-md", "    adapter: backlog-md\n    executable: /opt/adapter", 1)
+	if _, err := parseQueue([]byte(builtInWithExternalField), env, nil); err == nil || !strings.Contains(err.Error(), "sources[0].executable") {
+		t.Fatalf("built-in accepted external-only field: %v", err)
+	}
+}
+
+func externalQueueFixture(executable string) string {
+	return "version: 1\nme: {}\nsources:\n  - id: docs\n    adapter: external\n    executable: " + executable + "\n    expectedAdapterId: example.adapter\n    expectedVersion: 1.2.3-rc.1\n    config: {tenant: acme}\n    credentialRef: credential:github\nviews:\n  - name: Ready\n    authority: local\n    sources: [docs]\n    filter: {}\n"
+}
+
 func TestQueueRecoveryDir(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
