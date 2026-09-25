@@ -136,7 +136,7 @@ func taskCommentText(task backlogWriteTask) string {
 	return strings.Join(texts, " ")
 }
 
-func TestBacklogWriteAssignmentConflictAndCriterionUnavailable(t *testing.T) {
+func TestAdapterConformanceBacklogStaleWriteAndCapabilityDenial(t *testing.T) {
 	t.Parallel()
 	writer, source, pipeline, claim := backlogWriteProject(t, false, false)
 	intent, preview, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, ActionAssignToMe, nil, ""))

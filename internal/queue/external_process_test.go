@@ -88,7 +88,7 @@ func TestExternalProcessManifestRejectsUnexpectedBindingAndPolicy(t *testing.T) 
 	}
 }
 
-func TestExternalProcessRestartsAfterCrashWithoutReplayingCall(t *testing.T) {
+func TestAdapterConformanceUncertainMutationAfterCrash(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	client, source, _ := newExternalProcessTestClient(t, "crash-once", marker)
 	defer client.Close()
@@ -111,7 +111,7 @@ func TestExternalProcessRestartsAfterCrashWithoutReplayingCall(t *testing.T) {
 	}
 }
 
-func TestExternalProcessRejectsMalformedAndOversizedResponses(t *testing.T) {
+func TestAdapterConformanceRejectsMalformedAndOversizedResponses(t *testing.T) {
 	for _, mode := range []string{"malformed", "oversized"} {
 		t.Run(mode, func(t *testing.T) {
 			client, source, _ := newExternalProcessTestClient(t, mode, "")
@@ -133,7 +133,7 @@ func TestExternalProcessRejectsMalformedAndOversizedResponses(t *testing.T) {
 	}
 }
 
-func TestExternalProcessCancellationNotifiesAdapter(t *testing.T) {
+func TestAdapterConformanceCancellationNotifiesAdapter(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "cancel-received")
 	client, source, _ := newExternalProcessTestClient(t, "cancel", marker)
 	defer client.Close()
@@ -161,7 +161,7 @@ func TestExternalProcessCancellationNotifiesAdapter(t *testing.T) {
 	hanging.Close()
 }
 
-func TestExternalProcessCancellationGraceRestartsAndReclaimsSlots(t *testing.T) {
+func TestAdapterConformanceCancellationGraceRestartsAndReclaimsSlots(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ignored-cancellations")
 	client, source, _ := newExternalProcessTestClient(t, "ignore-cancel", marker)
 	if _, err := client.Initialize(context.Background()); err != nil {
@@ -306,7 +306,7 @@ func TestExternalProcessDescendantHelper(t *testing.T) {
 	_ = os.WriteFile(marker, []byte("escaped"), 0o600)
 }
 
-func TestExternalProcessApprovalEnvironmentAndStderrRedaction(t *testing.T) {
+func TestAdapterConformanceSecretRedaction(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ambient-gh-bearer-canary")
 	t.Setenv("GITHUB_TOKEN", "ambient-github-bearer-canary")
 	t.Setenv("PI_API_KEY", "ambient-pi-canary")
@@ -424,7 +424,7 @@ func TestExternalProcessLaunchUsesApprovedSnapshotAfterPathReplacement(t *testin
 	}
 }
 
-func TestExternalProcessBudgetAndResolveCredentialReference(t *testing.T) {
+func TestAdapterConformanceBudgetAndCredentialScope(t *testing.T) {
 	client, source, _ := newExternalProcessTestClient(t, "normal", "")
 	defer client.Close()
 	var result map[string]any

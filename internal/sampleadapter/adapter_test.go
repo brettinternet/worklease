@@ -191,6 +191,11 @@ func TestSampleAdapterLaunchedByExternalHost(t *testing.T) {
 	if err != nil || len(dependencies.Edges) != 2 || dependencies.Completeness != queue.CoverageComplete {
 		t.Fatalf("host dependencies = %+v, error=%v", dependencies, err)
 	}
+	prerequisite := queue.Ref{SourceID: source.ID, ItemID: "sample-3"}
+	prerequisiteDeps, err := adapter.ReadDependencies(context.Background(), resolved, prerequisite, "", 2)
+	if err != nil || len(prerequisiteDeps.Edges) != 0 {
+		t.Fatalf("prerequisite must not emit the dependent's hard edge: %+v, error=%v", prerequisiteDeps, err)
+	}
 	if _, err := adapter.Capabilities(context.Background(), resolved, "", &ref); err != nil {
 		t.Fatalf("host capabilities: %v", err)
 	}

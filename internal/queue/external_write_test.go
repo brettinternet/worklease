@@ -110,7 +110,7 @@ func TestExternalWritePrepareDispatchAndReadback(t *testing.T) {
 	}
 }
 
-func TestExternalWriteRejectsUnapprovedGenericClaimsAndPermission(t *testing.T) {
+func TestAdapterConformanceCapabilityDenials(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -166,7 +166,7 @@ func TestExternalWriteRefreshesDependencyConditions(t *testing.T) {
 	}
 }
 
-func TestExternalWriteCrashLeavesJournalUnknownWithoutRedispatch(t *testing.T) {
+func TestAdapterConformanceJournalUnknownWithoutRedispatch(t *testing.T) {
 	t.Parallel()
 	writer, source, logPath := newExternalWriteTestAdapter(t, "crash-write", "")
 	_, paths := testkit.Home(t)

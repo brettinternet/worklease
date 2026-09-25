@@ -467,7 +467,7 @@ func TestGitHubWritesRequireInteractiveModeAndMappedOperations(t *testing.T) {
 	}
 }
 
-func TestGitHubWriteRateLimitIsNotRetried(t *testing.T) {
+func TestAdapterConformanceGitHubWriteQuota(t *testing.T) {
 	t.Parallel()
 	state := &fakeGitHubWriteState{viewer: "tester", issueState: "OPEN", rateLimitWrites: true}
 	pipeline, _, writer, _, intent := githubWriteSetup(t, state)

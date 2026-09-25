@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestGitHubRateLimitRetryTime(t *testing.T) {
+func TestAdapterConformanceGitHubRateLimitRetryTime(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		query, _ := githubRequest(t, r)
 		if strings.Contains(query, "viewer") {

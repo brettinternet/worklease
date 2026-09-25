@@ -72,8 +72,9 @@ From the repository root:
 
 ```sh
 go build -o /absolute/path/worklease-sample-adapter ./cmd/worklease-sample-adapter
-go test ./cmd/worklease-sample-adapter
-# Run after the sample has been built and explicitly approved:
+go test ./internal/sampleadapter
+# The conformance tests approve their isolated fixture executables; they do
+# not approve or run the binary you built above.
 go test ./internal/queue -run TestAdapterConformance
 ```
 

@@ -546,7 +546,7 @@ func (s *server) readDependencies(params map[string]json.RawMessage, limits requ
 	}
 	edges := make([]fixtureEdge, 0, len(s.fixture.Dependencies))
 	for _, edge := range s.fixture.Dependencies {
-		if edge.FromID == ref.ItemID || edge.ToID == ref.ItemID {
+		if edge.FromID == ref.ItemID || edge.RelationshipType != "dependency" && edge.ToID == ref.ItemID {
 			edges = append(edges, edge)
 		}
 	}
