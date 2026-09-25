@@ -12,6 +12,7 @@ import (
 )
 
 func TestKeyTextUsesDeterministicSafeFieldsWithoutBanner(t *testing.T) {
+	t.Parallel()
 	value := resource.Key{Provider: "path", Source: "repo\x1b", Item: "TASK-99", Resource: "path:/tmp/file", Capability: "path-mutation", Scope: "host", IdentityScope: "path", LocalReplaceAllowed: true}
 	var first, second bytes.Buffer
 	if err := writeKeyText(&first, value); err != nil {
@@ -27,6 +28,7 @@ func TestKeyTextUsesDeterministicSafeFieldsWithoutBanner(t *testing.T) {
 }
 
 func TestOpaqueTextWidthAndShortening(t *testing.T) {
+	t.Parallel()
 	if displayWidth("a界e\u0301") != 4 || displayWidth("𠀀") != 2 {
 		t.Fatalf("widths=%d,%d", displayWidth("a界e\u0301"), displayWidth("𠀀"))
 	}
@@ -37,6 +39,7 @@ func TestOpaqueTextWidthAndShortening(t *testing.T) {
 }
 
 func TestReceiptTextSummarizesHeartbeatAndRelease(t *testing.T) {
+	t.Parallel()
 	claimID := strings.Repeat("a", 32)
 	cases := []struct {
 		name    string
@@ -60,6 +63,7 @@ func TestReceiptTextSummarizesHeartbeatAndRelease(t *testing.T) {
 }
 
 func TestStatusTextColorsSemanticStates(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	status := lease.Status{Resources: []lease.ResourceStatus{{Resource: "available", State: "free"}, {Resource: "held", State: "claimed"}}}
 	if err := writeStatusText(&out, status, false, true); err != nil {
@@ -73,6 +77,7 @@ func TestStatusTextColorsSemanticStates(t *testing.T) {
 }
 
 func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
+	t.Parallel()
 	claimID, operationID := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	hash := strings.Repeat("c", 64)
 	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
@@ -130,6 +135,7 @@ func TestStatusHistoryAndEventsFullTextExpandsMetadata(t *testing.T) {
 }
 
 func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
 	claimID, other := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	long := "backlog-md:%2FUsers%2Fbrett%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-101"
@@ -198,6 +204,7 @@ func TestCompactTimelineTextIsOperationallyInformative(t *testing.T) {
 }
 
 func TestFullResourceStatusOmitsSyntheticRowNumbers(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	status := lease.Status{Resources: []lease.ResourceStatus{{Resource: "first", State: "free"}, {Resource: "second", State: "claimed"}}}
 	if err := writeStatusText(&out, status, true, false); err != nil {
@@ -210,6 +217,7 @@ func TestFullResourceStatusOmitsSyntheticRowNumbers(t *testing.T) {
 }
 
 func TestListTextExplicitEmptyState(t *testing.T) {
+	t.Parallel()
 	for _, full := range []bool{false, true} {
 		var out bytes.Buffer
 		if err := writeListTextAt(&out, nil, full, true, time.Now()); err != nil {
@@ -222,6 +230,7 @@ func TestListTextExplicitEmptyState(t *testing.T) {
 }
 
 func TestHistoryAndEventsColorOnlySemanticValues(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
 	claimID := strings.Repeat("a", 32)
 	var out bytes.Buffer
@@ -243,6 +252,7 @@ func TestHistoryAndEventsColorOnlySemanticValues(t *testing.T) {
 }
 
 func TestPayloadBlocksEscapeTerminalControls(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	if err := writeTextBlock(&out, "stdout", "safe\u009b2J\x1b[2J"); err != nil {
 		t.Fatal(err)
@@ -253,6 +263,7 @@ func TestPayloadBlocksEscapeTerminalControls(t *testing.T) {
 }
 
 func TestRemainingStructuredTextSummariesAvoidGoValueDumps(t *testing.T) {
+	t.Parallel()
 	claimID, operationID := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	now := time.Date(2026, 9, 13, 2, 13, 9, 0, time.UTC)
 	assert := func(name string, write func(*bytes.Buffer) error, wants ...string) {
@@ -298,6 +309,7 @@ func TestRemainingStructuredTextSummariesAvoidGoValueDumps(t *testing.T) {
 }
 
 func TestListTextCompactAndFull(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	resource := "backlog-md:%2FUsers%2Fbrett%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-68"
 	values := []lease.ClaimView{{ClaimID: strings.Repeat("a", 32), Resources: []string{resource}, AgentID: "agent", Active: true, ExpiresAt: now.Add(62 * time.Minute)}}
@@ -322,6 +334,7 @@ func TestListTextCompactAndFull(t *testing.T) {
 }
 
 func TestListTextAlignsByTerminalCellsAndColorsState(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	values := []lease.ClaimView{{Resources: []string{"短"}, Active: true, ExpiresAt: now.Add(time.Minute)}, {Resources: []string{"long-resource"}, Active: false, ExpiresAt: now.Add(-time.Minute)}}
 	var out bytes.Buffer
@@ -349,6 +362,7 @@ func TestListTextAlignsByTerminalCellsAndColorsState(t *testing.T) {
 }
 
 func TestSummarizeResource(t *testing.T) {
+	t.Parallel()
 	digest := strings.Repeat("ab", 32)
 	coordination := summarizeResource("coordination:generic:" + digest)
 	if !strings.HasPrefix(coordination, "generic:#") || len(coordination) != len("generic:#")+8 || strings.Contains(coordination, digest[:12]) {

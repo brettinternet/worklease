@@ -16,6 +16,7 @@ import (
 )
 
 func TestMCPRedactsTypedPublicMetadata(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home})
 	if err != nil {
@@ -57,6 +58,7 @@ func TestMCPRedactsTypedPublicMetadata(t *testing.T) {
 }
 
 func TestMCPProjectionPreservesExactNumbersAndPublicHashes(t *testing.T) {
+	t.Parallel()
 	type projection struct {
 		Revision    int64          `json:"revision"`
 		RequestHash string         `json:"requestSha256"`
@@ -92,6 +94,7 @@ func toolError(t *testing.T, result map[string]any) map[string]any {
 // the fix an expired lease stayed pending forever and every later release or
 // checkpoint failed operation-request-mismatch.
 func TestDefinitiveMutationFailureClearsPendingRequest(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "expiry"})
 	if err != nil {
@@ -152,6 +155,7 @@ func TestDefinitiveMutationFailureClearsPendingRequest(t *testing.T) {
 // A contended acquire provably did not commit: it must remove its pending
 // grant instead of leaving an orphan handle, and report not-committed.
 func TestContendedAcquireRemovesPendingGrant(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "contender"})
 	if err != nil {
@@ -192,6 +196,7 @@ func TestContendedAcquireRemovesPendingGrant(t *testing.T) {
 // definitive failure restores the ready handle and the runtime reports the
 // renewer as stopped rather than active.
 func TestAutomaticRenewalDefinitiveFailureClearsPendingAndStops(t *testing.T) {
+	t.Parallel()
 	home, _ := testkit.Home(t)
 	s, err := NewServer(Options{Home: home, AgentID: "auto-renew"})
 	if err != nil {
