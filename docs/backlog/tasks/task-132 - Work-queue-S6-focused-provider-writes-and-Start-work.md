@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 23:26'
+updated_date: '2026-09-25 22:55'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.1
@@ -52,6 +53,8 @@ This parent is an integration checklist, not an implementation lane. It depends 
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified on main HEAD 49314b2: all six children Done (all 45 child criteria checked). Focused race tests: go test -race -count=3 -run Test(WritePipeline|WriteJournal|BacklogWrite|GitHubWrite|GitHubLost|QueueStartWork|QueueLifecycleCancel) ./internal/queue ./internal/cli; and go test -race -count=3 -run Test(QueueNextStart|MCPQueueNextStart|StartWorkPreviewAndSeparateOutcomes|StartWorkMissingMappingLeavesClaimOnly|ScriptedKeyboardAndDisabledActions) ./internal/cli ./internal/queueui. Tests cover crash/lost-response/lagging read-back with no redispatch, state/append marker provenance, contention and mapping, blocked-owner maintenance, no-effect cancellation, and unsupported provider writes. mise run lint, format-check, test, typecheck passed. General integration review found no item-scoped defects.
+
+Post-completion review: criterion #3 outcome reporting corrected via TASK-132.6 fix (6800074). Other criteria re-checked; no follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

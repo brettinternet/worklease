@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 16:44'
-updated_date: '2026-09-24 23:07'
+updated_date: '2026-09-25 22:55'
 labels:
   - work-queue
   - mcp
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132.5
@@ -59,6 +60,8 @@ Single review identified MCP hold ceiling loss through CLI checkpoint and stale 
 User clarified AC #6: GitHub Issues has no Start mapping, so unsupported mapping is its required coverage; Backlog.md exercises all provider-write outcomes through CLI and MCP. No GitHub status mapping is added.
 
 Integrated fe11eb4 into main by fast-forward. Post-rebase lint, format-check, full test, typecheck passed; staged hooks and targeted race count=3 passed. Reviewer found two concrete defects (MCP hold and actor drift), both fixed and directly retested. Worktree and associated idle Herdr workspace cleaned after same-commit verification. D28 and proposal §8 already specify this composition and unsupported mappings; no proposal decision or plan section was contradicted or refined.
+
+Post-completion review (6800074 on main): queue next --start no longer writes GitHub (Projects allowWrites had made it an unattended write, contrary to the interactive-only GitHub decision); preparation failures (invalid status, actor drift) now report rejected / 'Claim acquired; status unchanged', and the CLI/MCP invalid-transition scenario exercises that path. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
