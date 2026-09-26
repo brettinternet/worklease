@@ -2,10 +2,9 @@
 id: TASK-143
 title: Make external source adapters practical for third-party authors
 status: Done
-assignee:
-  - '@brett'
+assignee: []
 created_date: '2026-09-25 16:38'
-updated_date: '2026-09-26 01:31'
+updated_date: '2026-09-26 01:32'
 labels:
   - work-queue
   - external-adapter
