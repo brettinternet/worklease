@@ -112,7 +112,7 @@ func matches(i Item, f Filters) bool {
 		}
 	}
 	if f.Text != "" {
-		if !containsFold(i.Title, f.Text) && !containsFold(i.Body, f.Text) {
+		if !containsFold(i.Ref.ItemID, f.Text) && !containsFold(i.Title, f.Text) && !containsFold(i.Body, f.Text) {
 			return false
 		}
 	}

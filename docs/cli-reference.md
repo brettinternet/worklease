@@ -109,8 +109,10 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 
 ## Work queue
 
-`worklease queue [--view NAME]` (or `worklease q [-v NAME]`) opens the
-configured view from the owner's private `queue.yaml` in a Bubble Tea terminal.
+`worklease queue [--view NAME] [--high-contrast]` (or `worklease q [-v NAME]`)
+opens the configured view from the owner's private `queue.yaml` in a Bubble Tea
+terminal. `--high-contrast` replaces faint text and color with bold, underline,
+and reverse video; `NO_COLOR` removes styling entirely.
 Root-level `worklease -v` still shows the version. The queue shows source
 coverage, readiness, assignment, native occupancy, authority-scoped Worklease
 claims, and lazy claim history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters

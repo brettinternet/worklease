@@ -11,6 +11,7 @@ import (
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // PrepareSnapshot keeps test and benchmark fixtures independent of producer mutations.
@@ -23,6 +24,20 @@ func fixture() queue.Snapshot {
 	b := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "a", ItemID: "2"}, CanonicalID: "stable-2", Title: "second", RawStatus: "open", Fresh: true}}
 	return queue.Snapshot{Items: map[string]queue.Item{a.Ref.Key(): a, b.Ref.Key(): b}, Sources: map[string]queue.Coverage{"a": {State: queue.CoverageComplete, Total: 2, TotalAccuracy: queue.TotalExact}}}
 }
+
+// screenText flattens a rendered screen to single-spaced words, dropping
+// styling and box borders, so assertions do not depend on where text wraps.
+func screenText(view string) string {
+	view = ansi.Strip(view)
+	view = strings.Map(func(r rune) rune {
+		if strings.ContainsRune("│╭╮╰╯─", r) {
+			return ' '
+		}
+		return r
+	}, view)
+	return strings.Join(strings.Fields(view), " ")
+}
+
 func press(m Model, key string) (Model, tea.Cmd) {
 	type msg = tea.KeyMsg
 	var k msg
@@ -222,7 +237,7 @@ func TestProviderWritePreviewDisplaysConsentBoundary(t *testing.T) {
 		m := New(fixture())
 		m.Width = 240
 		m.WritePreview = &WritePreview{AuthorityProfile: "local", Scope: "portable", Intent: queue.WriteIntent{Action: action, Ref: queue.Ref{SourceID: "a", ItemID: "1"}, AuthorityID: "authority-1", ClaimID: "claim-1", Resources: []string{"resource-1"}, Marker: "worklease-op:example"}, Effect: "provider mutation", SideEffects: []string{"watcher notification"}, Races: []string{"external writers"}}
-		view := m.View()
+		view := screenText(m.View())
 		for _, expected := range []string{"authority-1", "claim claim-1", "Resource resource-1", "Provider effect provider mutation", "Side effects watcher notification", "Declared races external writers", "Marker worklease-op:example", "lost response requires read-back", "claim remains held"} {
 			if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
 				t.Fatalf("%s preview missing %q: %s", action, expected, view)

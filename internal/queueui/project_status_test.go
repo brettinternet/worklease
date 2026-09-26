@@ -13,7 +13,7 @@ func TestProjectStatusRawMappingAndConflictAreVisible(t *testing.T) {
 	if got := projectStatusDisplay(item); got != "Recently renamed → review" {
 		t.Fatalf("project raw option and mapping not displayed: %q", got)
 	}
-	details := strings.Join(renderDetail(detail(Model{Width: 120}, item), 80), "\n")
+	details := strings.Join(standardPalette.renderDetail(detail(Model{Width: 120}, item), 80), "\n")
 	for _, want := range []string{"Issue state    OPEN", "Project status Recently renamed → review", "CONFLICT: issue and project status disagree"} {
 		if !strings.Contains(details, want) {
 			t.Fatalf("detail does not show %q: %s", want, details)

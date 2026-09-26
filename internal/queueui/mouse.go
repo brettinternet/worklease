@@ -6,9 +6,7 @@ import tea "github.com/charmbracelet/bubbletea"
 const wheelStep = 3
 
 // overlay reports whether a dialog or prompt owns input.
-func (m Model) overlay() bool {
-	return m.WritePreview != nil || m.WriteChoices != nil || m.WriteInput || m.RecoveryEvidence || m.LaunchOptions != nil || m.ClaimPreview != nil || m.StartPreview != nil || m.Quitting || m.CancelPreview != "" || m.Filtering || m.Palette
-}
+func (m Model) overlay() bool { return m.mode() >= modeFilter }
 
 // mouse handles clicks and the wheel. Hit-testing uses the same frame and
 // pane widths as View, so a click maps to the row or tab under the pointer.
@@ -67,7 +65,7 @@ func (m Model) mouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 				if listWidth > 0 {
 					start = listWidth + 2
 				}
-				_, spans := detailTabs(m.Tab, detailWidth-1)
+				_, spans := m.detailTabs(m.Tab, detailWidth-1)
 				if tab, ok := hit(spans, v.X-start); ok {
 					m.Tab, m.DetailOffset = tab, 0
 				}

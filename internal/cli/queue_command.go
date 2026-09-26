@@ -24,7 +24,7 @@ import (
 )
 
 func queueCommand(s *boundary) *urfave.Command {
-	c := &urfave.Command{Name: "queue", Aliases: []string{"q"}, Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease q -v Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Aliases: []string{"v"}, Usage: "configured queue view `NAME`"}}}
+	c := &urfave.Command{Name: "queue", Aliases: []string{"q"}, Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME] [--high-contrast]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease q -v Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Aliases: []string{"v"}, Usage: "configured queue view `NAME`"}, &urfave.BoolFlag{Name: "high-contrast", Usage: "render without faint text or color, using bold, underline and reverse video"}}}
 	c.Action = func(ctx context.Context, cmd *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return s.handle(cmd, reason.Invalid("queue TUI is text-only; use queue query --json when available"))
@@ -159,6 +159,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.Sources = shownSources
 	model.SourceErrors = sourceErrors
 	model.ViewName = selected.Name
+	model.HighContrast = cmd.Bool("high-contrast")
 	model.Views = nil
 	model.ViewFilters = make(map[string]queue.Filters)
 	model.ViewRules = make(map[string]queueui.ViewRule)

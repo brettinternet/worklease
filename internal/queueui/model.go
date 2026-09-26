@@ -260,22 +260,25 @@ type ViewRule struct {
 	Assigned         []string
 }
 type Model struct {
-	Snapshot                           queue.Snapshot
-	Views                              []string
-	ViewFilters                        map[string]queue.Filters
-	ViewRules                          map[string]ViewRule
-	ViewName, Authority, Scope, Me     string
-	MeBySource                         map[string][]string
-	Sources                            []queue.Source
-	SourceErrors                       map[string]string
-	Width, Height                      int
-	Selected                           string
-	Index, Offset                      int
-	DetailOffset                       int
-	Detail                             bool
-	Tab                                int
-	Filter, Input, Notice              string
-	Filtering, Palette, Help           bool
+	Snapshot                       queue.Snapshot
+	Views                          []string
+	ViewFilters                    map[string]queue.Filters
+	ViewRules                      map[string]ViewRule
+	ViewName, Authority, Scope, Me string
+	MeBySource                     map[string][]string
+	Sources                        []queue.Source
+	SourceErrors                   map[string]string
+	Width, Height                  int
+	Selected                       string
+	Index, Offset                  int
+	DetailOffset                   int
+	Detail                         bool
+	Tab                            int
+	Filter, Input, Notice          string
+	Filtering, Palette, Help       bool
+	// HighContrast renders without faint text or color, using bold,
+	// underline and reverse video in the terminal's own colors.
+	HighContrast                       bool
 	History                            ledger.HistoryPage
 	HistoryError                       string
 	HistoryLoading                     bool
@@ -336,6 +339,67 @@ type Model struct {
 	orderedKeys                           []string
 	// pendingG records a first g so a second g jumps to the top.
 	pendingG bool
+}
+
+// mode is the layer that owns input and the screen. It is derived from the
+// preview and prompt fields, which carry each layer's data, so there is one
+// precedence order for key handling, rendering, and the key bar.
+type mode int
+
+const (
+	modeList mode = iota
+	modeRecovery
+	modeHelp
+	modeFilter
+	modePalette
+	modeClaimPreview
+	modeLaunch
+	modeQuit
+	modeCancel
+	modeWriteInput
+	modeRecoveryEvidence
+	modeWriteChoices
+	modeWritePreview
+	modeStartPreview
+)
+
+func (m Model) mode() mode {
+	switch {
+	case m.StartPreview != nil:
+		return modeStartPreview
+	case m.WritePreview != nil:
+		return modeWritePreview
+	case m.WriteChoices != nil:
+		return modeWriteChoices
+	case m.RecoveryEvidence:
+		return modeRecoveryEvidence
+	case m.WriteInput:
+		return modeWriteInput
+	case m.CancelPreview != "":
+		return modeCancel
+	case m.Quitting:
+		return modeQuit
+	case m.LaunchOptions != nil:
+		return modeLaunch
+	case m.ClaimPreview != nil:
+		return modeClaimPreview
+	case m.Palette:
+		return modePalette
+	case m.Filtering:
+		return modeFilter
+	}
+	return m.baseMode()
+}
+
+// baseMode is the screen drawn beneath any prompt or dialog.
+func (m Model) baseMode() mode {
+	switch {
+	case m.Help:
+		return modeHelp
+	case m.ViewName == RecoveryViewID:
+		return modeRecovery
+	}
+	return modeList
 }
 
 type rowCache struct {
@@ -972,7 +1036,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := v.String()
-		if m.StartPreview != nil {
+		switch m.mode() {
+		case modeStartPreview:
 			switch key {
 			case "enter", "y":
 				preview := *m.StartPreview
@@ -988,8 +1053,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Start work cancelled before claiming"
 			}
 			return m, nil
-		}
-		if m.WritePreview != nil {
+		case modeWritePreview:
 			switch key {
 			case "enter", "y":
 				preview := *m.WritePreview
@@ -1005,8 +1069,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Provider write cancelled before dispatch"
 			}
 			return m, nil
-		}
-		if m.WriteChoices != nil {
+		case modeWriteChoices:
 			switch key {
 			case "j", "down":
 				m.WriteChoiceIndex = min(m.WriteChoiceIndex+1, len(m.WriteChoices)-1)
@@ -1023,8 +1086,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.WriteChoices = nil
 			}
 			return m, nil
-		}
-		if m.RecoveryEvidence {
+		case modeRecoveryEvidence:
 			switch key {
 			case "esc":
 				m.RecoveryEvidence = false
@@ -1054,8 +1116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editInput(v)
 			}
 			return m, nil
-		}
-		if m.WriteInput {
+		case modeWriteInput:
 			switch key {
 			case "esc":
 				m.WriteInput = false
@@ -1072,8 +1133,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editInput(v)
 			}
 			return m, nil
-		}
-		if m.CancelPreview != "" {
+		case modeCancel:
 			path := m.CancelPreview
 			switch key {
 			case "enter", "y":
@@ -1087,8 +1147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Cancellation dismissed"
 			}
 			return m, nil
-		}
-		if m.Quitting {
+		case modeQuit:
 			switch key {
 			case "enter", "y", "q":
 				return m, tea.Quit
@@ -1097,8 +1156,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Exit cancelled"
 			}
 			return m, nil
-		}
-		if m.Filtering || m.Palette {
+		case modeFilter, modePalette:
 			switch key {
 			case "esc":
 				m.Filtering = false
@@ -1122,8 +1180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editInput(v)
 			}
 			return m, nil
-		}
-		if m.Help {
+		case modeHelp:
 			// Help covers the body, so other keys would act on hidden state.
 			switch key {
 			case "?", "esc", "q", "h", "left":
@@ -1132,8 +1189,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.requestQuit()
 			}
 			return m, nil
-		}
-		if m.ViewName == RecoveryViewID {
+		case modeRecovery:
 			if cmd, ok := m.viewKey(key); ok {
 				return m, cmd
 			}
@@ -1165,10 +1221,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.requestQuit()
 			}
 			return m, nil
-		}
-		rows := m.rows()
-		previous := m.Selected
-		if m.LaunchOptions != nil {
+		case modeLaunch:
+			rows := m.rows()
 			switch key {
 			case "j", "down":
 				m.LaunchIndex = min(m.LaunchIndex+1, len(m.LaunchOptions)-1)
@@ -1192,8 +1246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Launch dismissed"
 			}
 			return m, nil
-		}
-		if m.ClaimPreview != nil {
+		case modeClaimPreview:
+			rows := m.rows()
 			switch key {
 			case "enter", "y":
 				if m.AcquireClaim == nil {
@@ -1219,6 +1273,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		rows := m.rows()
+		previous := m.Selected
 		pendingG := m.pendingG
 		m.pendingG = false
 		if cmd, ok := m.viewKey(key); ok {
@@ -1702,6 +1758,10 @@ func (m Model) displayState(i queue.Item) string {
 	}
 	if !i.Fresh {
 		return "stale"
+	}
+	// Finished work is never selectable; its readiness would only add noise.
+	if i.Terminal && i.TerminalKnown && !i.Claim.Active {
+		return "done"
 	}
 	if i.ProviderBlocked {
 		return "blocked"
