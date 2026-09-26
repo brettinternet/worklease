@@ -356,12 +356,20 @@ func (m Model) headerLine() string {
 		left = append(left, seg{"  me ", m.s().faint}, seg{clean(m.Me), lipgloss.NewStyle()})
 	}
 	var right []seg
-	if healthyCount := healthy(m.Snapshot.Sources); healthyCount < len(m.Sources) {
+	if healthyCount := healthy(m.Snapshot.Sources); healthyCount < len(m.Sources) && !m.Loading {
 		right = append(right, seg{fmt.Sprintf("sources %d/%d", healthyCount, len(m.Sources)), m.s().warnBold}, seg{"  ", lipgloss.NewStyle()})
 	}
 	switch {
 	case m.ViewName == ClaimsViewID && !m.Claims.LastUpdated.IsZero():
 		right = append(right, seg{"updated " + ago(m.claimsNow().Sub(m.Claims.LastUpdated)), m.s().faint})
+	case m.ViewName != ClaimsViewID && m.Loading:
+		text := "syncing"
+		if m.rowCache != nil && !m.rowCache.observed.IsZero() {
+			if last := ago(time.Since(m.rowCache.observed)); last != "now" {
+				text += " · last " + last
+			}
+		}
+		right = append(right, seg{m.spinner() + " ", m.s().accent}, seg{text, m.s().faint})
 	case m.ViewName != ClaimsViewID && m.rowCache != nil && !m.rowCache.observed.IsZero():
 		right = append(right, seg{"synced " + ago(time.Since(m.rowCache.observed)), m.s().faint})
 	case len(m.Sources) > 0:
@@ -442,6 +450,9 @@ func (m Model) viewTabs() (string, []span) {
 		if name == ClaimsViewID && m.Claims.LastUpdated.IsZero() && len(m.Claims.Items) == 0 {
 			suffix = "" // not read yet; 0 would claim there are none
 		}
+		if m.Loading && count == 0 && name != ClaimsViewID && name != RecoveryViewID {
+			suffix = m.spinner() // still reading; 0 would claim there are none
+		}
 		items = append(items, tabItem{label: clip(viewLabel(name), 20), suffix: suffix, suffixStyle: style})
 		if name == m.ViewName {
 			active = n
@@ -489,6 +500,11 @@ func (m Model) banners() []string {
 			status = problem
 		}
 		if resolved && problem == "" && coverage.State == queue.CoverageComplete && coverage.Reason == "" {
+			continue
+		}
+		// Unread and cached sources are expected while a refresh runs; the
+		// header spinner already says so.
+		if m.Loading && problem == "" && (!resolved || coverage.Reason == "cached-index") {
 			continue
 		}
 		if hint := sourceHints[status]; hint != "" {
@@ -583,7 +599,8 @@ func (m Model) queueStatus(rows []queue.Item) (left, right []seg) {
 		left = append(left, seg{sep(left) + fmt.Sprintf("%d done hidden", hidden), m.s().faint})
 	}
 	for _, fact := range []struct{ label, value string }{{"provider ", sourceFreshness(m.Snapshot)}, {"claims ", freshnessLabel(m.ClaimFreshness)}} {
-		if fact.value == "fresh" {
+		// The header spinner covers provider staleness during a refresh.
+		if fact.value == "fresh" || fact.label == "provider " && m.Loading {
 			continue
 		}
 		if len(right) > 0 {
@@ -934,6 +951,11 @@ func (m Model) readyState(i queue.Item) (string, lipgloss.Style) {
 	if i.Claim.Active && m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}
+	// A row being reread shows its last readiness with a spinner while the
+	// refresh runs, and marks it stale only once nothing is rereading it.
+	if i.Readiness.LastKnown != "" && m.Loading && !isDone(i) {
+		return string(i.Readiness.LastKnown) + " " + m.spinner(), m.s().warn
+	}
 	state := m.displayState(i)
 	if state == "ready" && (!i.Claim.Known || i.Claim.Stale || i.Claim.Reason != "") {
 		return "claim unknown", m.s().warn
@@ -1031,6 +1053,13 @@ func (m Model) listLines(rows []queue.Item, width, height int) []string {
 
 // emptyLines explains why a view has no rows instead of showing a blank list.
 func (m Model) emptyLines(width int) []string {
+	if m.Loading {
+		lines := []string{"", "  " + m.s().accent.Render(m.spinner()) + " " + m.s().bold.Render("Loading "+clip(viewLabel(m.ViewName), 24)+"…")}
+		if m.Filter != "" {
+			lines = append(lines, "  "+m.s().accent.Render(clip(fmt.Sprintf("Filter %q is active; esc clears it.", m.Filter), width-2)))
+		}
+		return lines
+	}
 	lines := []string{"", "  " + m.s().bold.Render("No items in "+clip(viewLabel(m.ViewName), 24)+".")}
 	if len(m.Snapshot.Items) == 0 {
 		lines = append(lines, "  "+m.s().faint.Render("Nothing loaded yet; source status is shown above."))

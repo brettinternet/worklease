@@ -22,8 +22,12 @@ worklease queue  authority local 1cc38a84…  me @brett                         
 | `agent@host` | Another session holds the claim |
 | `blocked` | A prerequisite is open |
 | `elsewhere` | Assigned to someone else |
+| `ready ⠋` | Last known state from the cache; being reread now |
+| `ready (stale)` | Last known state; the reread failed, so `r` retries |
 | `deps unknown`, `claim unknown`, `stale` | Not known yet; `r` refreshes |
 | `done` | Finished; shown only after `d` |
+
+The queue opens with the rows cached from the last run, even after a branch switch or a new commit, and rereads them in the background. `⠋ syncing` replaces `synced` in the header until the reread finishes.
 
 The footer shows only what needs attention, such as hidden done items, a filter, partial loading, or stale data.
 

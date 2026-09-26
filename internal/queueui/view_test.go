@@ -82,6 +82,39 @@ func TestSelectionStaysVisibleWhileScrolling(t *testing.T) {
 	}
 }
 
+func TestLoadingShowsSpinnerUntilRefreshEnds(t *testing.T) {
+	t.Parallel()
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Ready"
+	next, tick := m.Update(LoadingMsg{Active: true})
+	m = next.(Model)
+	if tick == nil || !strings.Contains(screenText(m.View()), spinnerFrames[0]+" Loading Ready…") {
+		t.Fatalf("empty view while loading did not animate a loading line:\n%s", screenText(m.View()))
+	}
+	next, _ = m.Update(spinnerTickMsg{})
+	m = next.(Model)
+	snapshot := fixture()
+	for key, item := range snapshot.Items {
+		item.Claim = queue.ClaimObservation{Known: true}
+		item.Readiness = queue.Readiness{Status: queue.ReadinessUnknown, LastKnown: queue.Ready}
+		snapshot.Items[key] = item
+	}
+	next, _ = m.Update(PrepareSnapshotForModel(snapshot, m))
+	m = next.(Model)
+	if text := screenText(m.View()); !strings.Contains(text, "ready "+spinnerFrames[1]) || strings.Contains(text, "(stale)") {
+		t.Fatalf("row being reread did not show the spinner:\n%s", text)
+	}
+	next, _ = m.Update(LoadingMsg{Active: false})
+	m = next.(Model)
+	if _, stop := m.Update(spinnerTickMsg{}); stop != nil {
+		t.Fatal("spinner kept ticking after the refresh ended")
+	}
+	if text := screenText(m.View()); !strings.Contains(text, "ready (stale)") {
+		t.Fatalf("row left unread after the refresh was not marked stale:\n%s", text)
+	}
+}
+
 func TestFooterOmitsKeyBindings(t *testing.T) {
 	t.Parallel()
 	m := layoutModel(160, 24)

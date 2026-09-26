@@ -170,6 +170,17 @@ type CommentsMsg struct {
 	Err        error
 }
 type RefreshedMsg struct{ Err error }
+
+// LoadingMsg reports whether a source refresh is running. While it is, the
+// queue animates a spinner in place of stale markers.
+type LoadingMsg struct{ Active bool }
+
+type spinnerTickMsg struct{}
+
+const spinnerInterval = 80 * time.Millisecond
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 type RecoveryMsg struct {
 	Entries []queue.RecoveryEntry
 	Err     error
@@ -305,6 +316,9 @@ type Model struct {
 	CommentsError                      string
 	ClaimFreshness                     string
 	RebuildingClaims                   bool
+	Loading                            bool
+	spinnerFrame                       int
+	spinnerTicking                     bool
 	ClaimLoading, Claiming, Cancelling bool
 	ClaimPreview                       *ClaimPreview
 	StartPreview                       *StartPreview
@@ -1106,6 +1120,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Claims.Loading = true
 			return m, m.Claims.Refresh(m.Claims.Cursor)
 		}
+	case LoadingMsg:
+		m.Loading = v.Active
+		if m.Loading && !m.spinnerTicking {
+			m.spinnerTicking = true
+			return m, spinnerTick()
+		}
+	case spinnerTickMsg:
+		if !m.Loading {
+			m.spinnerTicking = false
+			return m, nil
+		}
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		return m, spinnerTick()
 	case RefreshedMsg:
 		if v.Err != nil {
 			m.Notice = "Refresh failed: " + v.Err.Error()
@@ -2136,6 +2163,12 @@ func (m Model) displayState(i queue.Item) string {
 	}
 	return readiness(i)
 }
+func spinnerTick() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+func (m Model) spinner() string { return spinnerFrames[m.spinnerFrame] }
+
 func claimState(i queue.Item) string {
 	state := i.Claim.State
 	if i.Claim.Reason != "" {

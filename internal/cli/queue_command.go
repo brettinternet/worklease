@@ -456,6 +456,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}(liveDone)
 	}
 	refresh := &queueRefreshRunner{workers: &workers, run: func() error {
+		program.Send(queueui.LoadingMsg{Active: true})
+		defer program.Send(queueui.LoadingMsg{Active: false})
 		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
 	}, report: func(err error) {
 		if ctx.Err() == nil {
@@ -591,6 +593,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	// The model is handed to Bubble Tea before background producers start.
 	// The queue owns the terminal: alternate screen keeps the list out of
 	// scrollback, and mouse reporting enables click and wheel navigation.
+	model.Loading = true // the first refresh starts with the program
 	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	workers.Add(1)
 	go func() {
