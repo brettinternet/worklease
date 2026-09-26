@@ -31,21 +31,20 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "G":
 		m.selectClaimIndex(rows, len(rows)-1, capacity)
-	case "pgdown", "ctrl+d", "ctrl+f":
+	case "pgdown", "ctrl+d", "ctrl+f", "pgup", "ctrl+u", "ctrl+b", "ctrl+e", "ctrl+y":
 		if m.Claims.Detail {
 			if claim, ok := m.selectedClaim(rows); ok {
-				m.Claims.DetailOffset = min(m.Claims.DetailOffset+max(1, m.Height/2), m.claimDetailMaxOffset(claim))
+				step := max(1, m.Height/2)
+				if key == "ctrl+e" || key == "ctrl+y" {
+					step = 1
+				}
+				if key == "pgup" || key == "ctrl+u" || key == "ctrl+b" || key == "ctrl+y" {
+					step = -step
+				}
+				m.Claims.DetailOffset = max(0, min(m.Claims.DetailOffset+step, m.claimDetailMaxOffset(claim)))
 			}
 		} else {
-			m.selectClaimIndex(rows, m.Claims.Index+capacity, capacity)
-		}
-	case "pgup", "ctrl+u", "ctrl+b":
-		if m.Claims.Detail {
-			if claim, ok := m.selectedClaim(rows); ok {
-				m.Claims.DetailOffset = max(0, min(m.Claims.DetailOffset, m.claimDetailMaxOffset(claim))-max(1, m.Height/2))
-			}
-		} else {
-			m.selectClaimIndex(rows, m.Claims.Index-capacity, capacity)
+			m.scrollClaims(rows, scrollStep(key, capacity), capacity)
 		}
 	case "enter", "l", "right":
 		if len(rows) > 0 {
@@ -106,6 +105,17 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.loadSelectedClaimHistory(m.claimRows())
 	}
 	return m, nil
+}
+
+// scrollClaims moves the viewport, selecting an edge row only if the selection leaves view.
+func (m *Model) scrollClaims(rows []lease.ClaimView, delta, capacity int) {
+	if len(rows) == 0 {
+		return
+	}
+	m.Claims.Offset = max(0, min(m.Claims.Offset+delta, len(rows)-capacity))
+	if m.Claims.Index < m.Claims.Offset || m.Claims.Index >= m.Claims.Offset+capacity {
+		m.selectClaimIndex(rows, max(m.Claims.Offset, min(m.Claims.Index, m.Claims.Offset+capacity-1)), capacity)
+	}
 }
 
 func (m *Model) selectClaimIndex(rows []lease.ClaimView, index, capacity int) {

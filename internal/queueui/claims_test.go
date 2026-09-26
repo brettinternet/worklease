@@ -2,6 +2,7 @@ package queueui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,43 @@ import (
 	"github.com/brettinternet/worklease/internal/queue"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestClaimsListScrollKeepsVisibleSelection(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"ctrl+d", "ctrl+u", "ctrl+f", "ctrl+b", "pgdown", "pgup", "ctrl+e", "ctrl+y"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+			m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+			m.Width, m.Height = 120, 20
+			for index := range 60 {
+				m.Claims.Items = append(m.Claims.Items, lease.ClaimView{ClaimID: fmt.Sprintf("claim-%02d", index)})
+			}
+			rows := m.claimRows()
+			capacity := max(1, m.frame(m.rows()).bodyHeight-1)
+			m.Claims.Offset = capacity * 2
+			m.selectClaimIndex(rows, m.Claims.Offset+capacity/2, capacity)
+			original := m.Claims.Index
+			step := scrollStep(key, capacity)
+			for move := range 2 {
+				wantOffset := max(0, min(m.Claims.Offset+step, len(rows)-capacity))
+				wantIndex := max(wantOffset, min(m.Claims.Index, wantOffset+capacity-1))
+				m, _ = press(m, key)
+				if m.Claims.Offset != wantOffset || m.Claims.Index != wantIndex || m.Claims.Selected != rows[wantIndex].ClaimID {
+					t.Fatalf("offset=%d index=%d selected=%q, want offset=%d index=%d selected=%q", m.Claims.Offset, m.Claims.Index, m.Claims.Selected, wantOffset, wantIndex, rows[wantIndex].ClaimID)
+				}
+				if key == "ctrl+d" || key == "ctrl+u" {
+					if move == 0 && m.Claims.Index != original {
+						t.Fatal("first half-page scroll moved a visible selection")
+					}
+					if move == 1 && m.Claims.Index == original {
+						t.Fatal("selection did not follow viewport after leaving view")
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestClaimsTabSwitchingPreservesPerViewSelection(t *testing.T) {
 	t.Parallel()
