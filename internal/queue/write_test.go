@@ -19,6 +19,7 @@ type writeFixture struct {
 	checkpointCalls  int
 	checkpointEffect bool
 	checkpointRef    string
+	authorityNow     time.Time
 	commitThenLose   bool
 	staleAfterCommit bool
 	pre              WritePreflight
@@ -71,6 +72,9 @@ func (f *writeFixture) CheckpointStatus(_ context.Context, intent WriteIntent, _
 		return WriteVerified, nil
 	}
 	return WriteUnknown, nil
+}
+func (f *writeFixture) CheckpointAuthorityTime() (time.Time, error) {
+	return f.authorityNow, nil
 }
 func (f *writeFixture) Checkpoint(_ context.Context, intent WriteIntent, _ ProviderReceipt) error {
 	f.checkpointCalls++
@@ -232,6 +236,7 @@ func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
 			}
 			before := f.checkpointCalls
 			clock = intent.CheckpointNotAfter.Add(time.Second)
+			f.authorityNow = intent.CheckpointNotAfter.Add(-time.Second)
 			f.verifyErr = errors.New("claim expired")
 			result, err := p.Recover(context.Background(), intent.OperationID)
 			if err != nil || result.Outcome != WriteUnknown || f.calls != 1 || f.checkpointCalls != before {
@@ -249,6 +254,10 @@ func TestWritePipelineExpiredCheckpointRecovery(t *testing.T) {
 				t.Fatal("accepted unavailable authority")
 			}
 			f.statusErr = nil
+			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
+				t.Fatal("accepted client clock past deadline while original authority clock had not passed it")
+			}
+			f.authorityNow = clock
 			f.checkpointEffect = true
 			if err := p.AttestCheckpointMissing(context.Background(), intent.OperationID, "brett", "provider and authority audited", true); err == nil {
 				t.Fatal("accepted committed checkpoint")

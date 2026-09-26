@@ -72,6 +72,18 @@ func queueCheckpointData(intent queue.WriteIntent, receipt queue.ProviderReceipt
 	return string(data), nil
 }
 
+// CheckpointAuthorityTime is a conservative lower bound for the original
+// authority, never the queue client's wall clock.
+func (c queueWriteClaim) CheckpointAuthorityTime() (time.Time, error) {
+	if c.backend.HTTP != nil {
+		return c.backend.HTTP.Clock().LowerBound()
+	}
+	if c.backend.Local != nil {
+		return c.backend.Local.AuthorityNow(), nil
+	}
+	return time.Time{}, fmt.Errorf("original authority time unavailable")
+}
+
 func (c queueWriteClaim) CheckpointStatus(ctx context.Context, intent queue.WriteIntent, receipt queue.ProviderReceipt) (queue.WriteVerification, error) {
 	h, err := c.read(intent)
 	if err != nil {

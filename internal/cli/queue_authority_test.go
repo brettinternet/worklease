@@ -8,8 +8,17 @@ import (
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/queue"
 	urfave "github.com/urfave/cli/v3"
 )
+
+func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
+	return queueAuthorityForViewWithMetadata(ctx, cmd, name, true)
+}
+
+func queueAuthorityForViewWithMetadata(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata bool) (*authorityContext, queue.ClaimAuthority, error) {
+	return queueAuthorityForViewMode(ctx, cmd, name, fetchMetadata, false)
+}
 
 func TestQueueUnavailableRemoteNeverFallsBackToLocal(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

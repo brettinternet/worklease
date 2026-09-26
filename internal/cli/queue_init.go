@@ -462,6 +462,19 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 			if id := cmd.String("source-id"); id != "" && id != source.ID {
 				return result, reason.Invalid("checkout already configured as source " + source.ID)
 			}
+			if cmd.IsSet("authority") {
+				for _, configuredView := range cfg.Views {
+					if configuredView.Name == view && configuredView.Authority != authority {
+						return result, reason.Invalid("view authority differs from --authority")
+					}
+				}
+			}
+			if claims := cmd.String("portable-claims"); claims != "" && (source.Claims == nil || source.Claims.Policy != "generic" || source.Claims.Source != claims) {
+				return result, reason.Invalid("source claim domain differs from --portable-claims")
+			}
+			if cmd.IsSet("allow-git-network") && cmd.Bool("allow-git-network") != source.AllowGitNetwork {
+				return result, reason.Invalid("source allowGitNetwork differs from --allow-git-network")
+			}
 			if err := queueInitPreflight(ctx, source); err != nil {
 				return result, err
 			}
@@ -514,6 +527,16 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 			}
 			if result.Outcome == "unchanged" {
 				result.YAML = string(data)
+				identities, err := config.LoadQueueIdentities(os.Getenv)
+				if err != nil {
+					return result, err
+				}
+				if _, confirmed := identities.Sources[source.ID]; !confirmed {
+					result.Identity = "confirmation-required"
+					result.Checklist = queue.MigrationChecklist
+					result.NextCommands = append(result.NextCommands, fmt.Sprintf("worklease queue --view %s identity confirm --source %s --acknowledge", queueInitQuote(view), queueInitQuote(source.ID)))
+					return result, nil
+				}
 				result.NextCommands = append(result.NextCommands, queueInitQueueCommand(view, result.DefaultView))
 				return result, nil
 			}
