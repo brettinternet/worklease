@@ -142,14 +142,54 @@ func coordinationDescriptor(name string) Descriptor {
 
 type staticPolicy struct {
 	descriptor Descriptor
-	derive     func(Input) (Key, error)
+	derive     func(*Resolver, Input) (Key, error)
 }
 
 func (p staticPolicy) Name() string              { return p.descriptor.Name }
 func (p staticPolicy) Describe() Descriptor      { return p.descriptor }
-func (p staticPolicy) Key(in Input) (Key, error) { return p.derive(in) }
+func (p staticPolicy) Key(in Input) (Key, error) { return p.derive(&Resolver{}, in) }
 
-func localKey(provider, source, item, capability, scope string, coordination bool, cwd string) (Key, error) {
+// Resolver derives a batch of keys, probing each local source's Git identity
+// once. Scope one to a batch: a checkout can be moved or recreated, so a
+// long-lived Resolver could keep a stale identity.
+type Resolver struct {
+	identities map[string][2]string // source -> common, locator
+}
+
+// Resolve derives a key from one provider policy input.
+func (r *Resolver) Resolve(in Input) (Key, error) {
+	if in.Path != "" {
+		return pathKey(in)
+	}
+	provider := strings.ToLower(strings.TrimSpace(in.Provider))
+	if provider == "" {
+		return Key{}, invalid("provider must not be blank")
+	}
+	p, e := Lookup(provider)
+	if e != nil {
+		return Key{}, e
+	}
+	if static, ok := p.(staticPolicy); ok {
+		return static.derive(r, in)
+	}
+	return p.Key(in)
+}
+
+func (r *Resolver) gitIdentity(source string) (common, locator string, err error) {
+	if cached, ok := r.identities[source]; ok {
+		return cached[0], cached[1], nil
+	}
+	common, locator, err = gitIdentity(source)
+	if err == nil {
+		if r.identities == nil {
+			r.identities = make(map[string][2]string)
+		}
+		r.identities[source] = [2]string{common, locator}
+	}
+	return common, locator, err
+}
+
+func (r *Resolver) localKey(provider, source, item, capability, scope string, coordination bool, cwd string) (Key, error) {
 	source, err := canonicalSource(source, cwd)
 	if err != nil {
 		return Key{}, err
@@ -158,7 +198,7 @@ func localKey(provider, source, item, capability, scope string, coordination boo
 	if err != nil {
 		return Key{}, err
 	}
-	common, locator, err := gitIdentity(source)
+	common, locator, err := r.gitIdentity(source)
 	if err != nil {
 		return Key{}, err
 	}
@@ -418,13 +458,13 @@ func pathKey(in Input) (Key, error) {
 }
 
 var policies = map[string]Policy{
-	"backlog-md": staticPolicy{localDescriptor("backlog-md", "item-claim", "item"), func(in Input) (Key, error) {
-		return localKey("backlog-md", in.Source, in.Item, "item-claim", "item", in.CoordinationOnly, in.WorkingDir)
+	"backlog-md": staticPolicy{localDescriptor("backlog-md", "item-claim", "item"), func(r *Resolver, in Input) (Key, error) {
+		return r.localKey("backlog-md", in.Source, in.Item, "item-claim", "item", in.CoordinationOnly, in.WorkingDir)
 	}},
-	"markdown": staticPolicy{Descriptor{Name: "markdown", Resource: "markdown:<common>:<locator>:__source__", Capability: "source-claim", Scope: "source", IdentityScope: "host-local", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, func(in Input) (Key, error) {
-		return localKey("markdown", in.Source, in.Item, "source-claim", "source", in.CoordinationOnly, in.WorkingDir)
+	"markdown": staticPolicy{Descriptor{Name: "markdown", Resource: "markdown:<common>:<locator>:__source__", Capability: "source-claim", Scope: "source", IdentityScope: "host-local", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, func(r *Resolver, in Input) (Key, error) {
+		return r.localKey("markdown", in.Source, in.Item, "source-claim", "source", in.CoordinationOnly, in.WorkingDir)
 	}},
-	"github": staticPolicy{Descriptor{Name: "github", Resource: "github:<source>#<item>", Capability: "item-claim", Scope: "item", IdentityScope: "portable", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, func(in Input) (Key, error) {
+	"github": staticPolicy{Descriptor{Name: "github", Resource: "github:<source>#<item>", Capability: "item-claim", Scope: "item", IdentityScope: "portable", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, func(_ *Resolver, in Input) (Key, error) {
 		source, e := ValidateIdentity("source", in.Source)
 		if e != nil {
 			return Key{}, e
@@ -443,11 +483,11 @@ var policies = map[string]Policy{
 		}
 		return Key{Provider: "github", Source: source, Item: item, Resource: resource, Capability: chooseCapability("item-claim", in.CoordinationOnly), Scope: "item", IdentityScope: "portable", LocalReplaceAllowed: !in.CoordinationOnly, ProviderFencing: false}, nil
 	}},
-	"linear": staticPolicy{coordinationDescriptor("linear"), func(in Input) (Key, error) { return coordinationKey("linear", in.Source, in.Item) }},
-	"generic": staticPolicy{coordinationDescriptor("generic"), func(in Input) (Key, error) {
+	"linear": staticPolicy{coordinationDescriptor("linear"), func(_ *Resolver, in Input) (Key, error) { return coordinationKey("linear", in.Source, in.Item) }},
+	"generic": staticPolicy{coordinationDescriptor("generic"), func(_ *Resolver, in Input) (Key, error) {
 		return coordinationKey("generic", in.Source, in.Item)
 	}},
-	"path": staticPolicy{Descriptor{Name: "path", Resource: "path:<common>:<repo-relative>", Capability: "item-claim", Scope: "path", IdentityScope: "host-local", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, pathKey},
+	"path": staticPolicy{Descriptor{Name: "path", Resource: "path:<common>:<repo-relative>", Capability: "item-claim", Scope: "path", IdentityScope: "host-local", LocalReplaceAllowed: true, ContractVersion: ContractVersion, KeyPolicyVersion: KeyPolicyVersion}, func(_ *Resolver, in Input) (Key, error) { return pathKey(in) }},
 }
 
 func Lookup(name string) (Policy, error) {
@@ -481,20 +521,7 @@ func (d Descriptor) Map() map[string]any {
 }
 
 // Resolve derives a key from one provider policy input.
-func Resolve(in Input) (Key, error) {
-	if in.Path != "" {
-		return pathKey(in)
-	}
-	provider := strings.ToLower(strings.TrimSpace(in.Provider))
-	if provider == "" {
-		return Key{}, invalid("provider must not be blank")
-	}
-	p, e := Lookup(provider)
-	if e != nil {
-		return Key{}, e
-	}
-	return p.Key(in)
-}
+func Resolve(in Input) (Key, error) { return (&Resolver{}).Resolve(in) }
 
 // Direct creates a key for an already-derived opaque resource.
 func Direct(value string, coordinationOnly bool) (Key, error) {

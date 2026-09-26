@@ -171,6 +171,7 @@ func TestStaticPolicyGoldenDerivations(t *testing.T) {
 		{"generic", Input{Provider: "generic", Source: "Team/One", Item: "ITEM:1"}, "coordination:generic:dc0294c2ce98dc5b852df6f629dc7d314906783f84b3563f163311ed54f9b985"},
 		{"path", Input{Path: file}, "path:" + common + ":docs%2Fsource.md"},
 	}
+	var batch Resolver // a batch reuses one Git probe per source and must derive the same keys
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := Resolve(test.in)
@@ -179,6 +180,11 @@ func TestStaticPolicyGoldenDerivations(t *testing.T) {
 			}
 			if got.Resource != test.want {
 				t.Fatalf("resource = %q, want %q", got.Resource, test.want)
+			}
+			for range 2 {
+				if batched, err := batch.Resolve(test.in); err != nil || batched != got {
+					t.Fatalf("batch resolve = %+v, %v; want %+v", batched, err, got)
+				}
 			}
 		})
 	}

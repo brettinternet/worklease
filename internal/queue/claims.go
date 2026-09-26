@@ -105,6 +105,9 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 	out := make([]Item, len(items))
 	resources := make([]string, 0, len(items))
 	indexes := make(map[string][]int)
+	// The checkout's identity and authority are one Git probe per source, not per item.
+	checkoutMatches := make(map[string]bool)
+	var resolver resource.Resolver
 	for i, input := range items {
 		item := cloneItem(input)
 		item.NativeClaim = "not-exposed"
@@ -133,7 +136,7 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 					keySource = source.Source.Locator
 				}
 			}
-			key, err := resource.Resolve(resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID})
+			key, err := resolver.Resolve(resource.Input{Provider: policy, Source: keySource, Item: item.Ref.ItemID})
 			if err != nil {
 				item.Claim.Reason = "invalid-resource"
 			} else {
@@ -147,8 +150,15 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):
 					item.Claim.Reason = "resource-not-admitted"
 				default:
-					if (source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads") && !matchingCheckoutAuthority(source.Source.Locator, selected, paths, env) {
-						item.Claim.Reason = "authority-mismatch"
+					if source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads" {
+						matches, known := checkoutMatches[source.Source.Locator]
+						if !known {
+							matches = matchingCheckoutAuthority(source.Source.Locator, selected, paths, env)
+							checkoutMatches[source.Source.Locator] = matches
+						}
+						if !matches {
+							item.Claim.Reason = "authority-mismatch"
+						}
 					}
 					indexes[key.Resource] = append(indexes[key.Resource], i)
 					if len(indexes[key.Resource]) == 1 {
