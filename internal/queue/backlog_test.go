@@ -188,6 +188,53 @@ func TestBacklogGoldenAndDiagnostics(t *testing.T) {
 		t.Fatal(ids)
 	}
 }
+func TestBacklogReadSettingsCheckedOncePerListRevision(t *testing.T) {
+	t.Parallel()
+	root, binary := fakeBacklog(t)
+	script, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := strings.Replace(string(script), "#!/bin/sh\n", "#!/bin/sh\necho \"$*\" >> calls.log\n", 1)
+	if err := os.WriteFile(binary, []byte(logged), 0700); err != nil {
+		t.Fatal(err)
+	}
+	checks := func() int {
+		t.Helper()
+		calls, err := os.ReadFile(filepath.Join(root, "calls.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(calls), "config get remoteOperations")
+	}
+	a := NewBacklogAdapter()
+	a.Binary = binary
+	ctx := context.Background()
+	source, err := a.Resolve(ctx, map[string]string{"id": "s", "checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(ctx, source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{SourceID: source.ID, ItemID: "TASK-2"}
+	a.ReadItems(ctx, source, []Ref{ref}, nil, 0)
+	before := checks()
+	if outcome := a.ReadItems(ctx, source, []Ref{ref}, nil, 0); outcome[0].Err != nil {
+		t.Fatal(outcome[0].Err)
+	}
+	if after := checks(); after != before {
+		t.Fatalf("a view of the same list revision rechecked read settings: %d -> %d", before, after)
+	}
+	enabled := strings.Replace(logged, "'config get remoteOperations'|", "'config get remoteOperations') echo true;;\n  ", 1)
+	if err := os.WriteFile(binary, []byte(enabled), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(ctx, source, Query{}, ""); !diag(err, "git-network-consent") {
+		t.Fatalf("a new list did not recheck changed read settings: %v", err)
+	}
+}
+
 func TestBacklogEffectsVersionAndBounds(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	a := NewBacklogAdapter()

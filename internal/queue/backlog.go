@@ -149,6 +149,9 @@ type BacklogAdapter struct {
 	edges      map[string]backlogEdges
 	partitions map[string]string
 	revisions  map[string]uint64
+	// authorized records the revision whose read settings were last checked,
+	// so one list and its views share one check.
+	authorized map[string]uint64
 }
 
 func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
@@ -156,7 +159,7 @@ func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
 	for _, s := range terminalStatuses {
 		statuses[s] = true
 	}
-	return &BacklogAdapter{TerminalStatuses: statuses, terminal: map[string]string{}, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}, watcherFactory: newNativeBacklogWatcher, tickerFactory: newNativeBacklogWatchTicker}
+	return &BacklogAdapter{TerminalStatuses: statuses, terminal: map[string]string{}, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}, authorized: map[string]uint64{}, watcherFactory: newNativeBacklogWatcher, tickerFactory: newNativeBacklogWatchTicker}
 }
 
 // OnDemandDetails prevents the loader from scanning every task with a view subprocess.
@@ -332,7 +335,28 @@ func (a *BacklogAdapter) Resolve(ctx context.Context, options map[string]string)
 	if err != nil {
 		return Source{}, BacklogDiagnostic{"cli-missing", "backlog CLI unavailable"}
 	}
-	version, err := a.run(ctx, checkout, binary, "--version")
+	// The version and effect settings are independent reads; run them
+	// together and check them in order, so startup waits for one process.
+	settings := []struct {
+		key  string
+		flag *bool
+	}{{"remoteOperations", nil}, {"checkActiveBranches", nil}, {"autoCommit", nil}, {"bypassGitHooks", nil}}
+	outputs := make([][]byte, len(settings)+1)
+	errs := make([]error, len(settings)+1)
+	var probes sync.WaitGroup
+	for i := range outputs {
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			if i == 0 {
+				outputs[i], errs[i] = a.run(ctx, checkout, binary, "--version")
+			} else {
+				outputs[i], errs[i] = a.run(ctx, checkout, binary, "config", "get", settings[i-1].key)
+			}
+		}()
+	}
+	probes.Wait()
+	version, err := outputs[0], errs[0]
 	if err != nil {
 		return Source{}, err
 	}
@@ -345,11 +369,9 @@ func (a *BacklogAdapter) Resolve(ctx context.Context, options map[string]string)
 		return Source{}, BacklogDiagnostic{"unsupported-version", "Backlog.md 1.52.x required"}
 	}
 	effects := BacklogSourceDiagnostics{}
-	for _, setting := range []struct {
-		key  string
-		flag *bool
-	}{{"remoteOperations", &effects.NetworkEffects}, {"checkActiveBranches", &effects.NetworkEffects}, {"autoCommit", &effects.CommitEffects}, {"bypassGitHooks", &effects.HookEffects}} {
-		value, err := a.run(ctx, checkout, binary, "config", "get", setting.key)
+	settings[0].flag, settings[1].flag, settings[2].flag, settings[3].flag = &effects.NetworkEffects, &effects.NetworkEffects, &effects.CommitEffects, &effects.HookEffects
+	for i, setting := range settings {
+		value, err := outputs[i+1], errs[i+1]
 		if err != nil {
 			return Source{}, err
 		}
@@ -382,6 +404,27 @@ func (a *BacklogAdapter) Resolve(ctx context.Context, options map[string]string)
 	a.terminal[source.ID] = options["completeStatus"]
 	a.mu.Unlock()
 	return source, nil
+}
+
+// authorizeView lets the views that follow a list share the list's settings
+// check. A watch event advances the revision, and action checks always
+// reread the settings.
+func (a *BacklogAdapter) authorizeView(ctx context.Context, source Source) error {
+	a.mu.Lock()
+	revision := a.revisions[source.ID]
+	checked, wasChecked := a.authorized[source.ID]
+	a.mu.Unlock()
+	requested, prioritized := ctx.Value(backlogPriorityKey{}).(RequestPriority)
+	if wasChecked && checked == revision && !(prioritized && requested == PriorityAction) {
+		return nil
+	}
+	if err := a.authorizeRead(ctx, source); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.authorized[source.ID] = revision
+	a.mu.Unlock()
+	return nil
 }
 
 // Check settings again before task reads: project configuration can change after Resolve.
@@ -673,7 +716,10 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 		a.mu.Unlock()
 		return SummaryPage{}, BacklogDiagnostic{"observation-invalidated", "provider changed during task list"}
 	}
-	a.revisions[source.ID]++ // list may race a view even when its metadata tuple is unchanged
+	// A list may race a view even when its metadata tuple is unchanged. This
+	// list just checked the read settings, so its views need not.
+	a.revisions[source.ID]++
+	a.authorized[source.ID] = a.revisions[source.ID]
 	if partition == "" || a.partitions[source.ID] != partition {
 		for key := range a.edges {
 			if strings.HasPrefix(key, source.ID+"\x00") {
@@ -728,7 +774,7 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	return page, nil
 }
 func (a *BacklogAdapter) view(ctx context.Context, source Source, ref Ref, retain bool) (backlogTask, error) {
-	if err := a.authorizeRead(ctx, source); err != nil {
+	if err := a.authorizeView(ctx, source); err != nil {
 		return backlogTask{}, err
 	}
 	if ref.SourceID != source.ID || ref.ItemID == "" || strings.HasPrefix(ref.ItemID, "-") {
