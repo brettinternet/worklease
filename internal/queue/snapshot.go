@@ -394,6 +394,11 @@ func (l *Loader) failSourceError(ctx context.Context, source string, generation 
 		l.failSourceDiagnostic(ctx, source, generation, diagnostic.Code, time.Time{}, out)
 		return
 	}
+	var backlog BacklogDiagnostic
+	if errors.As(err, &backlog) {
+		l.failSource(ctx, source, generation, backlog.Code, out)
+		return
+	}
 	l.failSource(ctx, source, generation, "source-read-failed", out)
 }
 func (l *Loader) failSourceDiagnostic(ctx context.Context, source string, generation uint64, reason string, retryAt time.Time, out chan<- Snapshot) {

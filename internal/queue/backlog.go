@@ -221,11 +221,18 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 			return nil, BacklogDiagnostic{"overloaded", "provider request capacity unavailable"}
 		}
 		if ctx.Err() != nil {
-			return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+			return nil, backlogReadInterruption(ctx.Err())
 		}
 		return nil, err
 	}
 	return result.([]byte), nil
+}
+
+func backlogReadInterruption(err error) BacklogDiagnostic {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return BacklogDiagnostic{"timed-out", "provider read timed out"}
+	}
+	return BacklogDiagnostic{"cancelled", "provider read cancelled"}
 }
 
 func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, args ...string) ([]byte, error) {
@@ -255,7 +262,7 @@ func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, arg
 		return nil, BacklogDiagnostic{"output-limit", "provider output exceeded limit"}
 	}
 	if ctx.Err() != nil {
-		return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+		return nil, backlogReadInterruption(ctx.Err())
 	}
 	if err != nil {
 		return nil, BacklogDiagnostic{"provider-failed", "provider command failed"}

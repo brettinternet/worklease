@@ -710,6 +710,9 @@ func queueSourceFailure(err error) string {
 	if diagnostic, ok := err.(queue.BeadsDiagnostic); ok {
 		return diagnostic.Code
 	}
+	if diagnostic, ok := err.(queue.BacklogDiagnostic); ok {
+		return diagnostic.Code
+	}
 	message := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(message, "rate"):
@@ -899,8 +902,12 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 	current := loader.Store.Current()
 	for _, source := range refreshSources {
 		coverage := current.Sources[source.ID]
-		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" && refreshErr == nil {
-			refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" {
+			// Diagnostics are best-effort and must not change queue availability.
+			_ = recordQueueRefreshFailure(source.ID, coverage.Reason, time.Since(refreshStarted))
+			if refreshErr == nil {
+				refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+			}
 		}
 	}
 	if refreshErr != nil {

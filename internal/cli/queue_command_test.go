@@ -25,6 +25,13 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+func TestQueueSourceFailureShowsBacklogDiagnosticCode(t *testing.T) {
+	t.Parallel()
+	if got := queueSourceFailure(queue.BacklogDiagnostic{Code: "provider-failed", Detail: "provider command failed"}); got != "provider-failed" {
+		t.Fatalf("source failure = %q", got)
+	}
+}
+
 func TestQueueTUIMeBySourceUsesExternalAccount(t *testing.T) {
 	t.Parallel()
 	for _, adapter := range []string{"external", "linear"} {

@@ -206,7 +206,7 @@ func TestBacklogEffectsVersionAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Timeout = 20 * time.Millisecond
-	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "cancelled") {
+	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "timed-out") {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

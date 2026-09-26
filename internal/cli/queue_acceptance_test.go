@@ -107,7 +107,7 @@ func assertQueueFixtureParity(t *testing.T, h *queueQueryHarness, missing bool) 
 			t.Fatalf("TUI hid JSON observation for %s: %s", row.Ref.ItemID, view)
 		}
 	}
-	if !strings.Contains(view, response.Query.Authority.ID) || missing && !strings.Contains(view, "offline/unavailable") {
+	if !strings.Contains(view, response.Query.Authority.ID) || missing && !strings.Contains(view, "not-backlog") {
 		t.Fatalf("TUI hid authority/source failure: %s", view)
 	}
 	if missing && !strings.Contains(view, "of 2 (unknown)") {
