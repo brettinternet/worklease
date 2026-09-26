@@ -62,7 +62,17 @@ writers. Keep this distinction explicit when adapting the example.
 and read model, but requires an explicit `fixturePath` configuration pointing
 at a writable regular local JSON file (not a symlink). Start from
 `internal/sampleadapter/reference-fixture.json` and copy it to a disposable
-location before running write checks:
+location before running write checks. Outside the repository, create the
+same minimal private (`0600`) fixture from this JSON instead:
+
+```json
+{"items":[{"id":"reference-1","title":"Disposable item","rawStatus":"Open","state":"open","order":"1","priority":1,"providerReady":true,"assignedTo":[],"nativeClaim":"","updatedAt":"2026-01-01T00:00:00Z","body":"Disposable fixture"}],"inaccessibleItemIds":[],"dependencies":[],"principal":"alice","version":1,"transitions":{"start":"Doing","blocked":"Blocked","review":"Review","complete":"Done","reopen":"Open"},"writes":[]}
+```
+
+The `worklease` host binary needs no Go checkout. The adapter executable is
+supplied by its author; building this particular reference executable from
+its example source is optional when exercising the host against a third-party
+binary. For the in-repository reference example:
 
 ```sh
 cp internal/sampleadapter/reference-fixture.json /tmp/worklease-reference-fixture.json
