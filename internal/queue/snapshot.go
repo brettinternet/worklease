@@ -280,9 +280,12 @@ func (l *Loader) HydrateDetail(ctx context.Context, source Source, ref Ref) <-ch
 }
 
 // HydrateEdges fills a Backlog source after summary publication. The selected
-// closure runs first, followed by visible rows and then remaining summaries.
-// Every provider view is scheduled by quotaScheduler, never by an unbounded
-// subprocess fan-out. The returned stream must be drained until closed.
+// closure runs first, followed by visible rows and, in the background, every
+// open item; then the prerequisites those reveal, wave by wave. A done item
+// outside every open closure cannot change what is ready, so it is read only
+// when selected. Every provider view is scheduled by quotaScheduler, never by
+// an unbounded subprocess fan-out. The returned stream must be drained until
+// closed.
 func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visible []Ref, background bool) <-chan Snapshot {
 	out := make(chan Snapshot, 8)
 	a, ok := l.Registry.Get(source.Adapter)
@@ -323,62 +326,88 @@ func (l *Loader) HydrateEdges(ctx context.Context, source Source, selected, visi
 		if ctx.Err() != nil || !l.current(source.ID, generation) {
 			return
 		}
-		type request struct {
-			ref      Ref
-			priority RequestPriority
-		}
-		requests := make([]request, 0)
-		appendRef := func(ref Ref, priority RequestPriority) {
+		var wave []hydrationRequest
+		enqueue := func(ref Ref, priority RequestPriority) {
 			if ref.SourceID != source.ID || seen[ref.Key()] {
 				return
 			}
 			seen[ref.Key()] = true
-			if item, ok := l.Store.Item(ref); ok && (!item.DependenciesKnown || item.Closure != CoverageComplete || !item.Fresh) {
-				requests = append(requests, request{ref, priority})
-			}
+			wave = append(wave, hydrationRequest{ref, priority})
 		}
 		for _, ref := range visible {
-			appendRef(ref, PriorityVisible)
+			enqueue(ref, PriorityVisible)
 		}
 		if background {
-			for _, item := range l.Store.Current().Items {
-				appendRef(item.Ref, PriorityBackground)
+			for _, item := range EvaluateView(l.Store.Current().Items, View{SourceOrder: []string{source.ID}}) {
+				if !item.Terminal || !item.TerminalKnown {
+					enqueue(item.Ref, PriorityBackground)
+				}
 			}
 		}
 		limit := l.HydrationLimit
 		if limit < 1 {
 			limit = 1
 		}
-		jobs := make(chan request)
-		var workers sync.WaitGroup
-		for range limit {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				for job := range jobs {
-					item, ok := l.Store.Item(job.ref)
-					if ok && ctx.Err() == nil && l.current(source.ID, generation) {
-						l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, job.priority), a, source, generation, job.ref, item, out)
-					}
-				}
-			}()
-		}
-		for _, job := range requests {
-			if !l.current(source.ID, generation) {
-				break
-			}
-			select {
-			case jobs <- job:
-			case <-ctx.Done():
-				close(jobs)
-				workers.Wait()
+		for len(wave) > 0 {
+			current := wave
+			wave = nil
+			if !l.hydrateWave(ctx, a, source, generation, current, limit, out) {
 				return
 			}
+			for _, job := range current {
+				item, _ := l.Store.Item(job.ref)
+				for _, edge := range item.Relationships {
+					if edge.From == job.ref && edge.Type == HardPrerequisite {
+						enqueue(edge.To, job.priority)
+					}
+				}
+			}
 		}
+	}()
+	return out
+}
+
+type hydrationRequest struct {
+	ref      Ref
+	priority RequestPriority
+}
+
+// hydrateWave reads the refs in one wave that lack fresh, complete edges,
+// using at most limit concurrent views. It reports false when the refresh
+// ended or was superseded.
+func (l *Loader) hydrateWave(ctx context.Context, a Adapter, source Source, generation uint64, wave []hydrationRequest, limit int, out chan<- Snapshot) bool {
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range limit {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				item, ok := l.Store.Item(wave[i].ref)
+				if ok && ctx.Err() == nil && l.current(source.ID, generation) {
+					l.hydrateItem(context.WithValue(ctx, backlogPriorityKey{}, wave[i].priority), a, source, generation, wave[i].ref, item, out)
+				}
+			}
+		}()
+	}
+	defer func() {
 		close(jobs)
 		workers.Wait()
 	}()
-	return out
+	for i, job := range wave {
+		if !l.current(source.ID, generation) {
+			return false
+		}
+		if item, ok := l.Store.Item(job.ref); !ok || item.DependenciesKnown && item.Closure == CoverageComplete && item.Fresh {
+			continue
+		}
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 func (l *Loader) current(sourceID string, generation uint64) bool {

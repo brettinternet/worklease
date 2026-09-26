@@ -237,8 +237,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	defer index.Close()
 	loader.GitHubSync = queueindex.GitHubSyncStore{Index: index, Registry: registry}
 	loader.LinearSync = queueindex.LinearSyncStore{Index: index, Registry: registry}
-	cachePartitions, err := seedQueueIndex(ctx, index, registry, sources, loader)
-	if err != nil {
+	if err := seedQueueIndex(ctx, index, queueIndexPartitions(registry, sources), sources, loader); err != nil {
 		return err
 	}
 	// The frame and tabs are already on screen; hand over the cached rows.
@@ -495,7 +494,9 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	refresh := &queueRefreshRunner{workers: &workers, run: func() error {
 		program.Send(queueui.LoadingMsg{Active: true})
 		defer program.Send(queueui.LoadingMsg{Active: false})
-		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
+		// The cache key follows the checkout's branch and commit, so a queue
+		// left open saves under the commit it is showing, not the one it opened on.
+		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, queueIndexPartitions(registry, sources), &claimOverlay, restartOverlay)
 	}, report: func(err error) {
 		if ctx.Err() == nil {
 			program.Send(queueui.RefreshedMsg{Err: err})
@@ -730,19 +731,16 @@ func replaceQueueIndexSnapshot(ctx context.Context, index *queueindex.Index, par
 	return index.ReplaceWithDeletes(ctx, partition, items, deleted, snapshot.Sources[sourceID].State == queue.CoverageComplete)
 }
 
-func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queue.Registry, sources []queue.Source, loader *queue.Loader) (map[string]queueindex.Partition, error) {
-	partitions := make(map[string]queueindex.Partition)
+func seedQueueIndex(ctx context.Context, index *queueindex.Index, partitions map[string]queueindex.Partition, sources []queue.Source, loader *queue.Loader) error {
 	cached := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
 	for _, source := range sources {
-		adapter, _ := registry.Get(source.Adapter)
-		partition, ok := queueindex.ForSource(adapter, source)
+		partition, ok := partitions[source.ID]
 		if !ok {
 			continue
 		}
-		partitions[source.ID] = partition
 		snapshot, err := index.ReadForDisplay(ctx, partition)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for key, item := range snapshot.Items {
 			cached.Items[key] = item
@@ -752,7 +750,19 @@ func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queu
 		}
 	}
 	loader.Store.SeedSnapshot(cached)
-	return partitions, nil
+	return nil
+}
+
+// queueIndexPartitions derives each cacheable source's current cache key.
+func queueIndexPartitions(registry *queue.Registry, sources []queue.Source) map[string]queueindex.Partition {
+	partitions := make(map[string]queueindex.Partition)
+	for _, source := range sources {
+		adapter, _ := registry.Get(source.Adapter)
+		if partition, ok := queueindex.ForSource(adapter, source); ok {
+			partitions[source.ID] = partition
+		}
+	}
+	return partitions
 }
 
 func queueSourceFailure(err error) string {
@@ -948,10 +958,15 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		if ctx.Err() != nil {
 			continue
 		}
-		ordered := queue.EvaluateView(loader.Store.Current().Items, queue.View{SourceOrder: []string{source.ID}})
-		visible := make([]queue.Ref, 0, min(35, len(ordered)))
-		for _, item := range ordered[:min(35, len(ordered))] {
-			visible = append(visible, item.Ref)
+		// Done rows are hidden by default and read when opened.
+		visible := make([]queue.Ref, 0, 35)
+		for _, item := range queue.EvaluateView(loader.Store.Current().Items, queue.View{SourceOrder: []string{source.ID}}) {
+			if len(visible) == cap(visible) {
+				break
+			}
+			if !item.Terminal || !item.TerminalKnown {
+				visible = append(visible, item.Ref)
+			}
 		}
 		var updates <-chan queue.Snapshot
 		switch source.Adapter {

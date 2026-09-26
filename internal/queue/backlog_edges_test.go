@@ -627,7 +627,7 @@ func TestEdgeHydrationOrdersSelectedClosureBeforeVisibleAndBackground(t *testing
 	loader.HydrationLimit = 1
 	items := map[string]Item{}
 	for _, ref := range refs {
-		item := Item{Summary: Summary{Ref: ref, Fresh: true, Terminal: true}, TerminalKnown: true, DependenciesKnown: false, Closure: CoverageUnknown}
+		item := Item{Summary: Summary{Ref: ref, Fresh: true, Terminal: ref.ItemID != "background"}, TerminalKnown: true, DependenciesKnown: false, Closure: CoverageUnknown}
 		items[ref.Key()] = item
 		adapter.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Kind: "found", Item: &item}}
 	}
@@ -639,6 +639,36 @@ func TestEdgeHydrationOrdersSelectedClosureBeforeVisibleAndBackground(t *testing
 	defer adapter.mu.Unlock()
 	if strings.Join(adapter.calls, ",") != "selected,prerequisite,visible,background" {
 		t.Fatalf("hydration order: %v", adapter.calls)
+	}
+}
+
+func TestBackgroundHydrationReadsOpenClosuresButNotUnrelatedDoneItems(t *testing.T) {
+	t.Parallel()
+	source := Source{ID: "s", Adapter: "recorded"}
+	open, donePrerequisite, done := Ref{"s", "open"}, Ref{"s", "done-prerequisite"}, Ref{"s", "done"}
+	adapter := &recordingHydration{fakeAdapter: newFake()}
+	registry := NewRegistry()
+	if err := registry.Register("recorded", adapter); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	items := map[string]Item{}
+	for _, ref := range []Ref{open, donePrerequisite, done} {
+		item := Item{Summary: Summary{Ref: ref, Fresh: true, Terminal: ref != open}, TerminalKnown: true, Closure: CoverageUnknown}
+		items[ref.Key()] = item
+		adapter.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Kind: "found", Item: &item}}
+	}
+	adapter.edges[open.Key()] = []DependencyPage{{Edges: []Relationship{{Type: HardPrerequisite, From: open, To: donePrerequisite, Condition: "terminal", Fresh: true, Support: Supported}}, Completeness: CoverageComplete}}
+	loader.Store.SeedSnapshot(Snapshot{Items: items, Sources: map[string]Coverage{"s": {State: CoverageComplete, Total: 3}}})
+	for range loader.HydrateEdges(context.Background(), source, nil, nil, true) {
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if strings.Join(adapter.calls, ",") != "open,done-prerequisite" {
+		t.Fatalf("background hydration: %v", adapter.calls)
+	}
+	if got := loader.Store.Current().Items[open.Key()].Readiness.Status; got != Ready {
+		t.Fatalf("open item with a hydrated done prerequisite: %s", got)
 	}
 }
 

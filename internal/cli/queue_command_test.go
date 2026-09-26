@@ -273,7 +273,7 @@ func TestQueueFirstFrameUsesIndexBeforeProviderRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	loader := queue.NewLoader(registry)
-	if _, err := seedQueueIndex(ctx, index, registry, []queue.Source{source}, loader); err != nil {
+	if err := seedQueueIndex(ctx, index, queueIndexPartitions(registry, []queue.Source{source}), []queue.Source{source}, loader); err != nil {
 		t.Fatal(err)
 	}
 	model := queueui.New(loader.Store.Current())
@@ -341,7 +341,7 @@ func TestQueueFirstFrameDoesNotWaitForRemoteMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	loader := queue.NewLoader(registry)
-	if _, err := seedQueueIndex(ctx, index, registry, []queue.Source{source}, loader); err != nil {
+	if err := seedQueueIndex(ctx, index, queueIndexPartitions(registry, []queue.Source{source}), []queue.Source{source}, loader); err != nil {
 		t.Fatal(err)
 	}
 	metadataDone := make(chan error, 1)
