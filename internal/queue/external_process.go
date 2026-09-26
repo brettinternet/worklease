@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -592,13 +593,13 @@ func (p *ExternalProcess) startProcess() (*externalProcessRun, error) {
 func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("external adapter process could not start")
+		return nil, externalProcessStartError("stdin pipe", err)
 	}
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		stdinR.Close()
 		stdinW.Close()
-		return nil, fmt.Errorf("external adapter process could not start")
+		return nil, externalProcessStartError("stdout pipe", err)
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
@@ -606,7 +607,7 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 		stdinW.Close()
 		stdoutR.Close()
 		stdoutW.Close()
-		return nil, fmt.Errorf("external adapter process could not start")
+		return nil, externalProcessStartError("stderr pipe", err)
 	}
 	var snapshot *config.QueueAdapterLaunchSnapshot
 	if p.checkMode {
@@ -628,7 +629,7 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 	if err := cmd.Start(); err != nil {
 		_ = snapshot.Close()
 		closeExternalFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
-		return nil, fmt.Errorf("external adapter process could not start")
+		return nil, externalProcessStartError("exec", err)
 	}
 	_ = stdinR.Close()
 	_ = stdoutW.Close()
@@ -654,6 +655,15 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 		close(run.waitDone)
 	}()
 	return run, nil
+}
+
+// Report only the startup stage and errno; exec errors may include private paths.
+func externalProcessStartError(stage string, err error) error {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return fmt.Errorf("external adapter process could not start (%s errno %d)", stage, errno)
+	}
+	return fmt.Errorf("external adapter process could not start (%s)", stage)
 }
 
 func (p *ExternalProcess) callRun(ctx context.Context, run *externalProcessRun, method string, params any, result ...any) (json.RawMessage, bool, error) {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,6 +47,14 @@ func TestProcessHelper(t *testing.T) {
 		os.Exit(23)
 	case "external-hang":
 		blockExternalProcess()
+	}
+}
+
+func TestExternalProcessStartErrorReportsErrnoWithoutPath(t *testing.T) {
+	t.Parallel()
+	err := externalProcessStartError("exec", &os.PathError{Op: "fork/exec", Path: "provider-secret-canary", Err: syscall.EAGAIN})
+	if got := err.Error(); !strings.Contains(got, fmt.Sprintf("exec errno %d", syscall.EAGAIN)) || strings.Contains(got, "provider-secret-canary") {
+		t.Fatalf("unsafe or missing startup diagnostic: %q", got)
 	}
 }
 
