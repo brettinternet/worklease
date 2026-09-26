@@ -30,4 +30,6 @@ e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
 race = { run = "go test -race -p 1 -parallel 2 ./...", depends = ["beads-check"] }
 vuln = "govulncheck ./..."
-ci = { depends = ["format-check", "lint", "typecheck", "test", "race", "vuln", "e2e", "man"] }
+# Keep full and race suites separate on small CI runners; concurrent Go builds
+# and subprocess-heavy tests compete for the same process/CPU budget.
+ci = "mise run format-check && mise run lint && mise run typecheck && mise run test && mise run race && mise run vuln && mise run e2e && mise run man"
