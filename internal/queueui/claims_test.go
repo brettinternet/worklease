@@ -140,6 +140,38 @@ func TestClaimsCorrelationJumpAndRemotePublicRendering(t *testing.T) {
 	}
 }
 
+func TestClaimsDisplayDecodesResourcesWithoutChangingKeys(t *testing.T) {
+	t.Parallel()
+	resource := "github:owner%2Frepo#issue%3A1"
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Width, m.Height = 160, 30
+	m.Claims.Items = []lease.ClaimView{{ClaimID: "claim-1", Resources: []string{resource}, Active: true}}
+	m.Claims.Selected = "claim-1"
+	if screen := screenText(m.View()); !strings.Contains(screen, "github:owner/repo#issue:1") || strings.Contains(screen, "%2F") {
+		t.Fatalf("claims list resource not decoded: %s", screen)
+	}
+	m.Claims.ResourcePrefix = "github:owner%2F"
+	if len(m.claimRows()) != 1 {
+		t.Fatal("claim filtering must still use the exact resource key")
+	}
+	m.Claims.ResourcePrefix = ""
+	m.Claims.LoadHistory = func(claimID, requested, cursor string) tea.Cmd {
+		if claimID != "claim-1" || requested != resource || cursor != "" {
+			t.Errorf("history requested with decoded key: %q, %q, %q", claimID, requested, cursor)
+		}
+		return func() tea.Msg { return ClaimHistoryMsg{ClaimID: claimID, Resource: requested} }
+	}
+	m, command := press(m, "enter")
+	if command == nil || m.Claims.HistoryResource != resource {
+		t.Fatalf("history key=%q, command=%t", m.Claims.HistoryResource, command != nil)
+	}
+	if screen := screenText(m.View()); !strings.Contains(screen, "github:owner/repo#issue:1") || strings.Contains(screen, "%2F") {
+		t.Fatalf("claim detail resource not decoded: %s", screen)
+	}
+	command()
+}
+
 func TestClaimsRefreshReplacesPendingHistoryOnClaimChange(t *testing.T) {
 	t.Parallel()
 	m := New(queue.Snapshot{Items: map[string]queue.Item{}})

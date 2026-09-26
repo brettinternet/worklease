@@ -3,12 +3,14 @@ package queueui
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
@@ -1724,6 +1726,24 @@ func (m Model) startWorkPreview() (tea.Model, tea.Cmd) {
 	}
 	m.Notice = "Start work unavailable: no supported provider mapping; Claim only"
 	return m, nil
+}
+
+// displayResource decodes canonical resource escapes only for rendering. Keep
+// the original key for filtering, claim matching, and authority requests.
+func displayResource(resource string) string {
+	decoded, err := url.PathUnescape(resource)
+	if err != nil || !utf8.ValidString(decoded) || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
+		return clean(resource)
+	}
+	return clean(decoded)
+}
+
+func displayResources(resources []string) string {
+	labels := make([]string, len(resources))
+	for i, resource := range resources {
+		labels[i] = displayResource(resource)
+	}
+	return strings.Join(labels, ", ")
 }
 
 func clean(s string) string {

@@ -1231,7 +1231,7 @@ func detail(m Model, i queue.Item) []dline {
 		}
 	case 3:
 		add("Authority", fmt.Sprintf("%s (%s)", m.Authority, m.Scope), plainStyle)
-		add("Resource", strings.Join(i.Resources, ", "), plainStyle)
+		add("Resource", displayResources(i.Resources), plainStyle)
 		claim, claimStyle := m.claimCell(i)
 		add("Current", claim, claimStyle)
 		add("Agent", valueOr(i.Claim.AgentID, "—"), plainStyle)
@@ -1297,7 +1297,7 @@ func detail(m Model, i queue.Item) []dline {
 			}
 			found = true
 			add("", fmt.Sprintf("%s · %s · %s · claim held %s", entry.OperationID, entry.Action, entry.Status, entry.ClaimID), m.s().warnBold)
-			add("Resources", fmt.Sprintf("%s · actor %s · effect %s", strings.Join(entry.Resources, ", "), entry.Principal, entry.Effect), plainStyle)
+			add("Resources", fmt.Sprintf("%s · actor %s · effect %s", displayResources(entry.Resources), entry.Principal, entry.Effect), plainStyle)
 			add("Marker", fmt.Sprintf("%s · required effects %s", entry.Marker, strings.Join(entry.Effects, ", ")), plainStyle)
 			add("Dispatched", fmt.Sprintf("%s · read-back %s", recoveryTime(entry.Dispatched), entry.Readback), plainStyle)
 			add("Next", strings.Join(entry.Next, "; "), m.s().accent)
@@ -1330,7 +1330,7 @@ func (m Model) recoveryLines(height int) []string {
 		}
 		block := []string{first}
 		for _, detail := range []string{
-			fmt.Sprintf("resources %s · actor %s · effect %s", strings.Join(entry.Resources, ", "), entry.Principal, entry.Effect),
+			fmt.Sprintf("resources %s · actor %s · effect %s", displayResources(entry.Resources), entry.Principal, entry.Effect),
 			fmt.Sprintf("marker %s · required effects %s", entry.Marker, strings.Join(entry.Effects, ", ")),
 			fmt.Sprintf("dispatched %s · read-back %s", recoveryTime(entry.Dispatched), entry.Readback),
 		} {
@@ -1443,7 +1443,7 @@ func (m Model) dialogView() (dialogBox, bool) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Confirm %s on %s\nAuthority %s %s (%s) · claim %s (remains held)\n", clean(string(p.Intent.Action)), clean(p.Intent.Ref.String()), clean(p.AuthorityProfile), clean(p.Intent.AuthorityID), clean(p.Scope), clean(p.Intent.ClaimID))
 		for _, resource := range p.Intent.Resources {
-			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
+			fmt.Fprintf(&b, "Resource %s\n", displayResource(resource))
 		}
 		marker := p.Intent.Marker
 		if marker == "" {
@@ -1479,7 +1479,7 @@ func (m Model) dialogView() (dialogBox, bool) {
 		fmt.Fprintf(&b, "Start work on %s (%s)\nProvider actor %s · transition %s · required %s\nEffect %s\nSide effects %s\n", clean(p.Source), clean(p.Claim.Title), clean(p.Actor), clean(p.Transition), clean(p.RequiredFields), clean(p.Effect), clean(strings.Join(p.SideEffects, "; ")))
 		fmt.Fprintf(&b, "Authority %s %s (%s)\n", clean(p.Claim.AuthorityProfile), clean(p.Claim.AuthorityID), clean(p.Claim.Scope))
 		for _, resource := range p.Claim.Resources {
-			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
+			fmt.Fprintf(&b, "Resource %s\n", displayResource(resource))
 		}
 		fmt.Fprintf(&b, "Session %s · TTL %s · hold %s\nLimits %s\n", clean(p.Claim.SessionID), p.Claim.TTL, p.Claim.Hold, clean(p.Claim.CoordinationLimits))
 		b.WriteString("Claim and provider transition are separate outcomes; no assignment or cross-system atomicity.")
@@ -1540,7 +1540,7 @@ func (m Model) claimPreviewView(preview ClaimPreview) dialogBox {
 	fmt.Fprintf(&b, "Claim %s for me\n", clip(preview.Title, m.Width-10))
 	fmt.Fprintf(&b, "  Authority  %s %s (%s)\n", clip(preview.AuthorityProfile, 24), clip(preview.AuthorityID, 40), clean(preview.Scope))
 	for _, key := range preview.Resources {
-		fmt.Fprintf(&b, "  Resource   %s\n", clean(key))
+		fmt.Fprintf(&b, "  Resource   %s\n", displayResource(key))
 	}
 	fmt.Fprintf(&b, "  Session    %s, TTL %s, hold %s\n", clean(preview.SessionID), preview.TTL, preview.Hold)
 	b.WriteString("  Provider   unchanged (no assignment or state change)\n")

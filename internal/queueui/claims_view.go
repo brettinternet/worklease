@@ -42,7 +42,7 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 	end := min(len(rows), start+capacity)
 	now := m.claimsNow()
 	for index, claim := range rows[start:end] {
-		text := strings.Join(claim.Resources, ", ")
+		text := displayResources(claim.Resources)
 		if item, ok := m.claimItem(claim); ok {
 			text += " · " + item.Title
 		}
@@ -133,7 +133,7 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 	var lines []dline
 	add := func(label, text string, style lipgloss.Style) { lines = append(lines, dline{label, text, style}) }
 	if m.Claims.DetailTab == 0 {
-		add("Resources", strings.Join(claim.Resources, ", "), plainStyle)
+		add("Resources", displayResources(claim.Resources), plainStyle)
 		add("Holder", valueOr(claim.AgentID, "unknown"), plainStyle)
 		add("Session", valueOr(claim.SessionID, "unknown"), plainStyle)
 		add("Work key", valueOr(claim.WorkKey, "—"), plainStyle)
