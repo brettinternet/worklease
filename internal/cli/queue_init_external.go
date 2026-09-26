@@ -119,28 +119,8 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 	if existing {
 		result.Outcome = "merged"
 	}
-	var selected *yaml.Node
-	for i, configuredView := range cfg.Views {
-		if configuredView.Name == view {
-			if configuredView.Authority != authority {
-				return result, reason.Invalid("view authority differs from --authority")
-			}
-			selected = initField(initField(mapping, "views").Content[i], "sources")
-			break
-		}
-	}
-	if selected == nil {
-		viewNode, err := initNode(config.QueueView{Name: view, Authority: authority, Sources: []string{id}, Filter: config.QueueFilter{Readiness: "ready", Claim: "free", Assigned: []string{"me", "nobody"}}})
-		if err != nil {
-			return result, err
-		}
-		views := initField(mapping, "views")
-		views.Content = append(views.Content, viewNode)
-		views.Style &^= yaml.FlowStyle
-	} else {
-		item, _ := initNode(id)
-		selected.Content = append(selected.Content, item)
-		selected.Style &^= yaml.FlowStyle
+	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
+		return result, err
 	}
 	source := config.QueueSource{ID: id, Adapter: "external", Executable: path, ExpectedAdapterID: manifest.ID, ExpectedVersion: manifest.Version, Config: configuration}
 	if claim := cmd.String("portable-claims"); claim != "" {

@@ -583,28 +583,8 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	if existing {
 		result.Outcome = "merged"
 	}
-	var selected *yaml.Node
-	for i, v := range cfg.Views {
-		if v.Name == view {
-			selected = initField(initField(mapping, "views").Content[i], "sources")
-			if v.Authority != authority {
-				return result, reason.Invalid("view authority differs from --authority")
-			}
-			break
-		}
-	}
-	if selected == nil {
-		viewNode, err := initNode(config.QueueView{Name: view, Authority: authority, Sources: []string{id}, Filter: config.QueueFilter{Readiness: "ready", Claim: "free", Assigned: []string{"me", "nobody"}}})
-		if err != nil {
-			return result, err
-		}
-		viewsNode := initField(mapping, "views")
-		viewsNode.Content = append(viewsNode.Content, viewNode)
-		viewsNode.Style &^= yaml.FlowStyle
-	} else {
-		item, _ := initNode(id)
-		selected.Content = append(selected.Content, item)
-		selected.Style &^= yaml.FlowStyle
+	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
+		return result, err
 	}
 	source := config.QueueSource{ID: id, Adapter: adapter, AllowGitNetwork: cmd.Bool("allow-git-network")}
 	networkOrigin := "default"
@@ -785,6 +765,50 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		result.NextCommands = append(result.NextCommands, queueInitApplyCommand(ctx, cmd, checkout, adapter, detectedAdapter, id, defaultID, me, defaultMe))
 	}
 	return result, nil
+}
+
+// queueInitViews mirrors the TUI's built-in tabs. Configuring any view hides
+// those tabs, so init writes all of them rather than only Ready.
+var queueInitViews = []config.QueueView{
+	{Name: "Ready", Filter: config.QueueFilter{Readiness: "ready", Claim: "free", Assigned: []string{"me", "nobody"}}},
+	{Name: "Mine", Filter: config.QueueFilter{Assigned: []string{"me"}}},
+	{Name: "Claimed", Filter: config.QueueFilter{Claim: "held"}},
+	{Name: "All", Filter: config.QueueFilter{Readiness: "all"}},
+}
+
+// queueInitAddViews adds source id to the named view, creating it with the
+// Ready filter when missing. Without --view, a new file gets every default
+// view, and an existing file adds the source to the defaults it still has.
+func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool, view, authority, id string) error {
+	wanted := []config.QueueView{{Name: view, Filter: queueInitViews[0].Filter}}
+	if view == "" {
+		wanted = queueInitViews
+	}
+	viewsNode := initField(mapping, "views")
+	for n, want := range wanted {
+		primary := n == 0
+		index := slices.IndexFunc(cfg.Views, func(v config.QueueView) bool { return v.Name == want.Name })
+		switch {
+		case index >= 0 && cfg.Views[index].Authority != authority:
+			if primary {
+				return reason.Invalid("view authority differs from --authority")
+			}
+		case index >= 0:
+			sources := initField(viewsNode.Content[index], "sources")
+			item, _ := initNode(id)
+			sources.Content = append(sources.Content, item)
+			sources.Style &^= yaml.FlowStyle
+		case primary || !existing:
+			want.Authority, want.Sources = authority, []string{id}
+			viewNode, err := initNode(want)
+			if err != nil {
+				return err
+			}
+			viewsNode.Content = append(viewsNode.Content, viewNode)
+			viewsNode.Style &^= yaml.FlowStyle
+		}
+	}
+	return nil
 }
 
 func queueInitValidMe(me string) bool {

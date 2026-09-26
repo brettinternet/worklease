@@ -132,6 +132,13 @@ func TestQueueInitDirectWriteDryRunAndIdempotence(t *testing.T) {
 	if err != nil || len(cfg.Sources) != 1 || cfg.Sources[0].Workflow["start"] != "In Progress" {
 		t.Fatalf("load: %+v %v", cfg, err)
 	}
+	var views []string
+	for _, v := range cfg.Views {
+		views = append(views, v.Name)
+	}
+	if strings.Join(views, ",") != "Ready,Mine,Claimed,All" || cfg.Views[2].Filter.Claim != "held" || cfg.Views[3].Filter.Readiness != "all" {
+		t.Fatalf("default views: %+v", cfg.Views)
+	}
 	ids, err := config.LoadQueueIdentities(os.Getenv)
 	if err != nil || ids.Sources[payload.SourceID].Adapter != "backlog-md" {
 		t.Fatalf("identity: %+v %v", ids, err)
@@ -159,7 +166,7 @@ func TestQueueInitDirectWriteDryRunAndIdempotence(t *testing.T) {
 
 func TestQueueInitMergeAndUnmapped(t *testing.T) {
 	h := newInitHarness(t)
-	original := "# retained\nversion: 1\nme:\n  backlog-md: ['@tester']\nsources:\n  - id: project\n    adapter: backlog-md\n    checkout: " + h.checkout + "\nviews:\n  - name: Ready # retained view\n    authority: local\n    sources: [project]\n    filter: {assigned: [me]}\nlaunch:\n  - name: terminal\n    argv: [echo, hello]\n"
+	original := "# retained\nversion: 1\nme:\n  backlog-md: ['@tester']\nsources:\n  - id: project\n    adapter: backlog-md\n    checkout: " + h.checkout + "\nviews:\n  - name: Ready # retained view\n    authority: local\n    sources: [project]\n    filter: {assigned: [me]}\n  - name: All\n    authority: local\n    sources: [project]\n    filter: {readiness: all}\nlaunch:\n  - name: terminal\n    argv: [echo, hello]\n"
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -191,8 +198,8 @@ func TestQueueInitMergeAndUnmapped(t *testing.T) {
 		t.Fatalf("merge lost comments/launch: %s %v", data, err)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
-	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 2 || cfg.Sources[1].Workflow["start"] != "" {
-		t.Fatalf("merge: %+v %v", cfg, err)
+	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views) != 2 || len(cfg.Views[0].Sources) != 2 || len(cfg.Views[1].Sources) != 2 || cfg.Sources[1].Workflow["start"] != "" {
+		t.Fatalf("merge must extend existing default views without adding others: %+v %v", cfg, err)
 	}
 	dryAdd := h.invoke("--me", "@another", "--dry-run", "--json")
 	if dryAdd.Err != nil || !strings.Contains(string(dryAdd.Stdout), `"applied":false`) || !strings.Contains(string(dryAdd.Stdout), "init --checkout") {

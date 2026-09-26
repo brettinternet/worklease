@@ -106,9 +106,9 @@ type QueueView struct {
 }
 
 type QueueFilter struct {
-	Readiness string   `yaml:"readiness"`
-	Claim     string   `yaml:"claim"`
-	Assigned  []string `yaml:"assigned"`
+	Readiness string   `yaml:"readiness,omitempty"`
+	Claim     string   `yaml:"claim,omitempty"`
+	Assigned  []string `yaml:"assigned,omitempty"`
 }
 
 // QueuePath does not consult checkout, working directory, or Worklease-specific environment variables.
