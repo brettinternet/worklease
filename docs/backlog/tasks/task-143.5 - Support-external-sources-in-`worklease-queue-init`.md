@@ -2,10 +2,9 @@
 id: TASK-143.5
 title: Support external sources in `worklease queue init`
 status: Done
-assignee:
-  - '@brett'
+assignee: []
 created_date: '2026-09-25 16:38'
-updated_date: '2026-09-26 00:33'
+updated_date: '2026-09-26 00:34'
 labels:
   - work-queue
   - external-adapter
