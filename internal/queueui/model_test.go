@@ -50,6 +50,22 @@ func press(m Model, key string) (Model, tea.Cmd) {
 		k.Type = tea.KeyEsc
 	case "down":
 		k.Type = tea.KeyDown
+	case "pgdown":
+		k.Type = tea.KeyPgDown
+	case "pgup":
+		k.Type = tea.KeyPgUp
+	case "ctrl+f":
+		k.Type = tea.KeyCtrlF
+	case "ctrl+b":
+		k.Type = tea.KeyCtrlB
+	case "ctrl+d":
+		k.Type = tea.KeyCtrlD
+	case "ctrl+u":
+		k.Type = tea.KeyCtrlU
+	case "ctrl+e":
+		k.Type = tea.KeyCtrlE
+	case "ctrl+y":
+		k.Type = tea.KeyCtrlY
 	default:
 		k.Type = tea.KeyRunes
 		k.Runes = []rune(key)
@@ -653,6 +669,112 @@ func TestSourceReadFailureLabelsIncludeRateLimitDeadline(t *testing.T) {
 	}
 }
 
+func TestReadyViewKeepsRowsDuringRecheckWithoutAllowingActions(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	for key, item := range initial.Items {
+		item.Claim = queue.ClaimObservation{}
+		item.Readiness.Status = queue.Ready
+		initial.Items[key] = item
+	}
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Ready"
+	m.ViewRules = map[string]ViewRule{"Ready": {Readiness: string(queue.Ready)}}
+	m.anchor(m.rows())
+	selected := m.Selected
+
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	for key, item := range refresh.Items {
+		item.ReadOutcome = "summary-only"
+		item.Readiness.Status = queue.ReadinessUnknown
+		refresh.Items[key] = item
+	}
+	msg := PrepareSnapshotForModel(refresh, m)
+	if len(msg.preparedRows) != 0 {
+		t.Fatal("fixture must reproduce the empty worker projection")
+	}
+	next, _ := m.Update(msg)
+	m = next.(Model)
+	if rows := m.rows(); len(rows) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
+		t.Fatalf("refresh displaced previously ready rows: rows=%d selected=%q count=%d", len(rows), m.Selected, m.viewCountFor("Ready"))
+	}
+	if !strings.Contains(screenText(m.View()), "rechecking") {
+		t.Fatal("unverified rows were not visibly marked")
+	}
+	for _, item := range m.rows() {
+		if queue.EvaluateAction(item, queue.ActionStart).Eligible {
+			t.Fatalf("rechecking item became actionable: %+v", item)
+		}
+	}
+
+	// Rows return to verified readiness independently without displacing
+	// still-rechecking rows or changing the selected item.
+	firstRef := queue.Ref{SourceID: "a", ItemID: "1"}
+	first := refresh.Items[firstRef.Key()]
+	first.ReadOutcome = "found"
+	first.Readiness.Status = queue.Ready
+	refresh.Items[firstRef.Key()] = first
+	refresh.Revision = 3
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
+		t.Fatalf("partial recheck displaced rows: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
+	}
+
+	// A detail read can report missing while retaining a stale diagnostic
+	// item in the snapshot. That is not an in-progress recheck.
+	first = refresh.Items[firstRef.Key()]
+	first.ReadOutcome = "missing"
+	first.Fresh = false
+	first.Readiness.Status = queue.ReadinessUnknown
+	refresh.Items[firstRef.Key()] = first
+	refresh.Revision = 4
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 1 || m.Selected != "stable-2" {
+		t.Fatalf("missing item remained visible: selected=%q count=%d", m.Selected, len(m.rows()))
+	}
+
+	// A deleted item is removed immediately. A fully read item with unknown
+	// readiness also leaves the Ready view rather than lingering indefinitely.
+	delete(refresh.Items, firstRef.Key())
+	other := refresh.Items[(queue.Ref{SourceID: "a", ItemID: "2"}).Key()]
+	other.ReadOutcome = "found"
+	refresh.Items[other.Ref.Key()] = other
+	refresh.Revision = 5
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 0 || m.Selected != "" || m.viewCountFor("Ready") != 0 {
+		t.Fatalf("removed or verified-ineligible rows lingered: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
+	}
+}
+
+func TestDefaultReadyViewCountsRecheckingRows(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	first := initial.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()]
+	first.Readiness.Status = queue.Ready
+	initial.Items[first.Ref.Key()] = first
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Ready"
+
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	first.ReadOutcome = "summary-only"
+	first.Readiness.Status = queue.ReadinessUnknown
+	refresh.Items[first.Ref.Key()] = first
+	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 1 || m.viewCountFor("Ready") != 1 {
+		t.Fatalf("default Ready view count disagrees with rechecking row: shown=%d tab=%d", len(m.rows()), m.viewCountFor("Ready"))
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
@@ -944,6 +1066,167 @@ func TestDetailScrollUsesScriptedKeys(t *testing.T) {
 		t.Fatal("header lost on scroll")
 	}
 }
+func TestVimScrollKeysMoveVisibleContent(t *testing.T) {
+	t.Parallel()
+	for _, detail := range []bool{false, true} {
+		for _, tc := range []struct {
+			key  string
+			step func(int) int
+		}{
+			{"ctrl+f", func(n int) int { return max(1, n-1) }},
+			{"pgdown", func(n int) int { return max(1, n-1) }},
+			{"ctrl+b", func(n int) int { return -max(1, n-1) }},
+			{"pgup", func(n int) int { return -max(1, n-1) }},
+			{"ctrl+d", func(n int) int { return max(1, n/2) }},
+			{"ctrl+u", func(n int) int { return -max(1, n/2) }},
+			{"ctrl+e", func(int) int { return 1 }},
+			{"ctrl+y", func(int) int { return -1 }},
+		} {
+			t.Run(fmt.Sprintf("detail=%v/%s", detail, tc.key), func(t *testing.T) {
+				m := layoutModel(80, 20)
+				m.Detail = detail
+				visible := m.listCapacity(m.rows())
+				if detail {
+					item := m.Snapshot.Items[m.rows()[0].Ref.Key()]
+					item.Body = strings.Repeat("A long detail line for scrolling.\n", 120)
+					m.Snapshot.Items[item.Ref.Key()] = item
+					m.rowCache = nil
+					m.anchor(m.rows())
+					m.DetailOffset = 50
+					visible = max(1, m.frame(m.rows()).bodyHeight-2)
+					if m.maxDetailOffset() < 75 {
+						t.Fatal("detail fixture is not long enough to scroll")
+					}
+				} else {
+					m.selectIndex(m.rows(), 55)
+					m.Offset = 50
+				}
+				before := m.Offset
+				if detail {
+					before = m.DetailOffset
+				}
+				selected := m.Selected
+				m, _ = press(m, tc.key)
+				got := m.Offset
+				if detail {
+					got = m.DetailOffset
+				} else if m.Index < m.Offset || m.Index >= m.Offset+visible || m.Selected == "" {
+					t.Fatalf("list selection left viewport: index=%d offset=%d", m.Index, m.Offset)
+				}
+				if want := before + tc.step(visible); got != want {
+					t.Fatalf("%s: offset=%d want %d", tc.key, got, want)
+				}
+				if detail && m.Selected != selected {
+					t.Fatal("scroll changed detail item")
+				}
+			})
+		}
+	}
+}
+
+func TestVimVisibleRowAndAlignmentKeys(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key      string
+		position func(int) int
+	}{
+		{"H", func(int) int { return 0 }},
+		{"M", func(n int) int { return n / 2 }},
+		{"L", func(n int) int { return n - 1 }},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			m := layoutModel(80, 20)
+			m.selectIndex(m.rows(), 55)
+			m.Offset = 50
+			visible := m.listCapacity(m.rows())
+			m, _ = press(m, tc.key)
+			if want := 50 + tc.position(visible); m.Index != want {
+				t.Fatalf("selected %d, want %d", m.Index, want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		key      string
+		position func(int) int
+	}{
+		{"zz", func(n int) int { return n / 2 }},
+		{"zt", func(int) int { return 0 }},
+		{"zb", func(n int) int { return n - 1 }},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			m := layoutModel(80, 20)
+			m.selectIndex(m.rows(), 75)
+			visible := m.listCapacity(m.rows())
+			selected := m.Selected
+			for _, key := range tc.key {
+				m, _ = press(m, string(key))
+			}
+			if m.Offset != 75-tc.position(visible) || m.Selected != selected {
+				t.Fatalf("alignment offset=%d selection=%s", m.Offset, m.Selected)
+			}
+		})
+	}
+	m := layoutModel(80, 20)
+	m, _ = press(m, "z")
+	m, _ = press(m, "j")
+	m, _ = press(m, "z")
+	if !m.pendingZ {
+		t.Fatal("unrelated key completed stale z prefix")
+	}
+	m.Filtering, m.Input = true, "input"
+	m, _ = press(m, "ctrl+u")
+	if m.Input != "" || m.Offset != 0 {
+		t.Fatal("input clear scrolled the list")
+	}
+	m = layoutModel(160, 20)
+	m.Detail = true // the list is still visible in the split layout
+	m.selectIndex(m.rows(), 55)
+	m.Offset = 50
+	m, _ = press(m, "H")
+	if m.Index != 50 {
+		t.Fatal("H did not select the visible list's top row in split view")
+	}
+	m = layoutModel(80, 20)
+	m.Detail = true // the narrow layout has no visible list
+	selected := m.Selected
+	m, _ = press(m, "L")
+	if m.Selected != selected {
+		t.Fatal("L changed a selection in a hidden list")
+	}
+}
+
+func TestVimScrollHelpAndBoundaries(t *testing.T) {
+	t.Parallel()
+	m := layoutModel(80, 20)
+	m, _ = press(m, "?")
+	if !strings.Contains(m.View(), "Navigate") {
+		t.Fatal("help did not open at the top")
+	}
+	m, _ = press(m, "ctrl+f")
+	if m.HelpOffset == 0 || strings.Contains(m.View(), "Navigate") {
+		t.Fatal("help did not page to the hidden shortcuts")
+	}
+	m, _ = press(m, "ctrl+b")
+	if m.HelpOffset != 0 {
+		t.Fatal("help did not page back")
+	}
+	m, _ = press(m, "ctrl+y")
+	if m.HelpOffset != 0 {
+		t.Fatal("help scrolled past the top")
+	}
+	for range 10 {
+		m, _ = press(m, "pgdown")
+	}
+	if want := max(0, len(m.helpLines())-m.frame(m.rows()).bodyHeight); m.HelpOffset != want {
+		t.Fatalf("help scrolled past bottom: %d want %d", m.HelpOffset, want)
+	}
+	m, _ = press(m, "esc")
+	m, _ = press(m, "?")
+	if m.HelpOffset != 0 {
+		t.Fatal("help did not reopen at the top")
+	}
+}
+
 func TestRenderStripsTerminalControlsAndNarrowSwitch(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	m := New(fixture())

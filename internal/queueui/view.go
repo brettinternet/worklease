@@ -321,7 +321,8 @@ func (m Model) screen() []string {
 	var body []string
 	switch m.baseMode() {
 	case modeHelp:
-		body = m.helpLines()
+		lines := m.helpLines()
+		body = lines[max(0, min(m.HelpOffset, len(lines)-f.bodyHeight)):]
 	case modeRecovery:
 		body = m.recoveryLines(f.bodyHeight)
 	case modeClaims:
@@ -498,6 +499,9 @@ func (m Model) banners() []string {
 	if len(problems) > 0 {
 		out = append(out, m.s().warnBold.Render("Sources ")+m.s().warn.Render(strings.Join(problems, " · ")))
 	}
+	if len(m.recheckingReady) > 0 && (m.ViewName == "Ready" || m.ViewRules[m.ViewName].Readiness == string(queue.Ready)) {
+		out = append(out, m.s().warn.Render("Previously ready rows are rechecking; actions require current readiness."))
+	}
 	return out
 }
 
@@ -618,7 +622,7 @@ func (m Model) bindings() []binding {
 	case modePalette:
 		bindings = []binding{{"start work", "command"}, {"enter", "run"}, {"esc", "cancel"}}
 	case modeHelp:
-		bindings = []binding{{"esc/?", "close help"}}
+		bindings = []binding{{"^f/b d/u e/y", "scroll help"}, {"esc/?", "close help"}}
 	case modeRecovery:
 		bindings = []binding{{"j/k", "select"}, {"r", "retry read-back"}, {"e", "attest"}, {"u", "reload"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
 	case modeClaims:
@@ -629,9 +633,9 @@ func (m Model) bindings() []binding {
 		}
 	case modeList:
 		if m.Detail {
-			return []binding{{"tab", "section"}, {"pgup/pgdn", "scroll"}, {"c", "claim"}, {"S", "start"}, {"s", "state"}, {"p", "progress"}, {"a", "assign"}, {"o", "open"}, {"esc", "back"}, {"?", "help"}}
+			return []binding{{"tab", "section"}, {"^f/b d/u e/y", "scroll text"}, {"c", "claim"}, {"S", "start"}, {"s", "state"}, {"p", "progress"}, {"a", "assign"}, {"o", "open"}, {"esc", "back"}, {"?", "help"}}
 		}
-		bindings = []binding{{"j/k", "move"}, {"enter", "open"}, {"/", "filter"}, {"v/1-9", "view"}, {"c", "claim"}, {"x", "launch"}, {"r", "refresh"}, {"q", "quit"}, {"?", "help"}}
+		bindings = []binding{{"j/k", "move"}, {"^f/b d/u e/y", "scroll list"}, {"enter", "open"}, {"/", "filter"}, {"v/1-9", "view"}, {"c", "claim"}, {"x", "launch"}, {"r", "refresh"}, {"q", "quit"}, {"?", "help"}}
 		if m.Filter != "" {
 			bindings = slices.Insert(bindings, 3, binding{"esc", "clear filter"})
 		}
@@ -646,7 +650,7 @@ var helpGroups = []struct {
 	title    string
 	bindings []binding
 }{
-	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous match"}, {"gg / G", "top / bottom"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}, {"pgdn pgup", "scroll detail"}}},
+	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous row"}, {"gg / G", "first / last row"}, {"H / M / L", "top / middle / bottom visible row"}, {"zz / zt / zb", "center / top / bottom selected row"}, {"^f / ^b", "scroll one page forward / back"}, {"^d / ^u", "scroll half page down / up"}, {"^e / ^y", "scroll one line down / up"}, {"pgdn / pgup", "scroll one page"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}}},
 	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows or Claims resource prefix"}, {"Claims", "authority-wide; Claimed filters items"}, {"esc", "clear filter"}}},
 	{"Item actions (preview first)", []binding{{"c", "claim for me"}, {"S", "start work: claim + transition (detail)"}, {"s", "change provider state"}, {"p", "record progress note"}, {"a", "assign to me"}, {"R", "release verified no-effect claim"}, {"x", "launch worker"}, {"o", "open provider URL"}, {"m", "load more comments / claim history"}}},
 	{"Queue", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
@@ -838,6 +842,9 @@ func (p *palette) stateStyle(state queue.StateCategory) lipgloss.Style {
 var readyAliases = map[string]string{"assigned elsewhere": "elsewhere", "unknown dependencies": "deps unknown"}
 
 func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
+	if m.readyDuringRecheck(i) {
+		return "rechecking", m.s().warn
+	}
 	if i.Claim.Active && m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}

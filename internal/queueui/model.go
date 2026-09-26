@@ -86,6 +86,9 @@ func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
 	preparedModel.Snapshot = message.Snapshot
 	preparedModel.orderedKeys = message.orderedKeys
 	preparedModel.rowCache = nil
+	// Visibility during recheck is reconciled against the live model in Update.
+	// Worker projections contain only rows proved by this snapshot.
+	preparedModel.recheckingReady = nil
 	message.preparedRows = preparedModel.rows()
 	message.preparedRowIndexes = make(map[string]int, len(message.preparedRows))
 	for index, item := range message.preparedRows {
@@ -347,8 +350,13 @@ type Model struct {
 	Launch                                func(queue.Item, string) tea.Cmd
 	rowCache                              *rowCache
 	orderedKeys                           []string
-	// pendingG records a first g so a second g jumps to the top.
-	pendingG bool
+	// recheckingReady keeps previously verified rows visible in Ready views
+	// while their replacement summaries are awaiting validation. It never
+	// changes the item's current readiness or action eligibility.
+	recheckingReady map[string]bool
+	HelpOffset      int
+	// pendingG and pendingZ record the first key of a two-key navigation command.
+	pendingG, pendingZ bool
 }
 
 // mode is the layer that owns input and the screen. It is derived from the
@@ -533,7 +541,7 @@ func (m Model) rows() []queue.Item {
 	out := rows[:0]
 	rule := m.ViewRules[m.ViewName]
 	for _, i := range rows {
-		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
+		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(i)) {
 			continue
 		}
 		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
@@ -570,7 +578,7 @@ func (m Model) rows() []queue.Item {
 		if _, configured := m.ViewRules[m.ViewName]; !configured {
 			switch m.ViewName {
 			case "Ready":
-				if i.Readiness.Status != queue.Ready {
+				if i.Readiness.Status != queue.Ready && !m.readyDuringRecheck(i) {
 					continue
 				}
 			case "Mine":
@@ -613,7 +621,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		for _, item := range m.Snapshot.Items {
 			if standard {
 				m.rowCache.counts["All"]++
-				if item.Readiness.Status == queue.Ready {
+				if item.Readiness.Status == queue.Ready || m.readyDuringRecheck(item) {
 					m.rowCache.counts["Ready"]++
 				}
 				if item.Claim.Active {
@@ -709,6 +717,53 @@ func (m *Model) selectIndex(rows []queue.Item, index int) {
 	}
 }
 
+// scrollStep returns a signed page, half-page, or line movement.
+func scrollStep(key string, visible int) int {
+	step := max(1, visible-1)
+	switch key {
+	case "ctrl+d", "ctrl+u":
+		step = max(1, visible/2)
+	case "ctrl+e", "ctrl+y":
+		step = 1
+	}
+	if key == "pgup" || key == "ctrl+b" || key == "ctrl+u" || key == "ctrl+y" {
+		return -step
+	}
+	return step
+}
+
+// scrollList moves the viewport, moving the selection only if it leaves view.
+func (m *Model) scrollList(delta int) {
+	rows := m.rows()
+	m.anchor(rows)
+	if len(rows) == 0 {
+		return
+	}
+	capacity := m.listCapacity(rows)
+	m.Offset = max(0, min(m.listOffset(len(rows), capacity)+delta, len(rows)-capacity))
+	if m.Index < m.Offset || m.Index >= m.Offset+capacity {
+		m.selectIndex(rows, max(m.Offset, min(m.Index, m.Offset+capacity-1)))
+	}
+}
+
+// alignList places the selected row at the top, center, or bottom of the viewport.
+func (m *Model) alignList(key string) {
+	rows := m.rows()
+	m.anchor(rows)
+	if len(rows) == 0 {
+		return
+	}
+	capacity := m.listCapacity(rows)
+	position := 0
+	switch key {
+	case "zz":
+		position = capacity / 2
+	case "zb":
+		position = capacity - 1
+	}
+	m.Offset = max(0, min(m.Index-position, len(rows)-capacity))
+}
+
 // editInput applies a text-editing key to Input. Multi-rune events (paste,
 // fast typing, IME) and non-ASCII runes are kept; controls are sanitized.
 func (m *Model) editInput(key tea.KeyMsg) {
@@ -791,8 +846,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !v.prepared {
 			updated = v.Snapshot.Clone()
 		}
+		// A fresh summary is not yet evidence that a formerly ready item is
+		// ready. Keep it on screen as rechecking, but use the new item for all
+		// actions. Missing or definitively re-evaluated items leave the view.
+		rechecking := make(map[string]bool)
+		for key, item := range updated.Items {
+			if item.Readiness.Status != queue.ReadinessUnknown {
+				continue
+			}
+			switch item.ReadOutcome {
+			case "summary-only": // listed, not yet revalidated
+			case "stale", "failed", "found":
+				if item.Fresh {
+					continue
+				}
+			default: // missing, denied, or otherwise definitive
+				continue
+			}
+			prior, present := m.Snapshot.Items[key]
+			if m.recheckingReady[key] || present && prior.Ref == item.Ref && prior.Readiness.Status == queue.Ready {
+				rechecking[key] = true
+			}
+		}
+		m.recheckingReady = rechecking
 		projectionUsable := v.hasProjection && reflect.DeepEqual(v.projection, projectionForModel(m)) && sameSourceOrder(m.Sources, v.sourceIDs)
-		preparedRowsUsable := projectionUsable
+		preparedRowsUsable := projectionUsable && len(m.recheckingReady) == 0
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
 				beforeItem := item
@@ -1255,6 +1333,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "?", "esc", "q", "h", "left":
 				m.Help = false
+			case "pgdown", "ctrl+f", "pgup", "ctrl+b", "ctrl+d", "ctrl+u", "ctrl+e", "ctrl+y":
+				visible := max(1, m.frame(m.rows()).bodyHeight)
+				m.HelpOffset = max(0, min(m.HelpOffset+scrollStep(key, visible), len(m.helpLines())-visible))
 			case "ctrl+c":
 				return m.requestQuit()
 			}
@@ -1347,8 +1428,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.rows()
 		previous := m.Selected
-		pendingG := m.pendingG
-		m.pendingG = false
+		pendingG, pendingZ := m.pendingG, m.pendingZ
+		m.pendingG, m.pendingZ = false, false
 		if cmd, ok := m.viewKey(key); ok {
 			if cmd != nil {
 				return m, cmd
@@ -1362,10 +1443,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(1)
 		case "k", "up":
 			m.move(-1)
-		case "pgdown", "ctrl+d":
-			m.DetailOffset = min(m.DetailOffset+max(1, m.Height/2), m.maxDetailOffset())
-		case "pgup", "ctrl+u":
-			m.DetailOffset = max(0, min(m.DetailOffset, m.maxDetailOffset())-max(1, m.Height/2))
+		case "pgdown", "ctrl+f", "pgup", "ctrl+b", "ctrl+d", "ctrl+u", "ctrl+e", "ctrl+y":
+			visible := m.listCapacity(rows)
+			if m.Detail {
+				// Detail has a fixed title and tab bar above the scrollable content.
+				visible = max(1, m.frame(rows).bodyHeight-2)
+			}
+			step := scrollStep(key, visible)
+			if m.Detail {
+				m.DetailOffset = max(0, min(m.DetailOffset+step, m.maxDetailOffset()))
+			} else {
+				m.scrollList(step)
+			}
+		case "H", "M", "L":
+			if !m.Detail || m.split() {
+				m.anchor(rows)
+				if len(rows) > 0 {
+					capacity := m.listCapacity(rows)
+					position := 0
+					switch key {
+					case "M":
+						position = capacity / 2
+					case "L":
+						position = capacity - 1
+					}
+					m.selectIndex(rows, min(len(rows)-1, m.listOffset(len(rows), capacity)+position))
+				}
+			}
+		case "z":
+			if !m.Detail || m.split() {
+				if pendingZ {
+					m.alignList("zz")
+				} else {
+					m.pendingZ = true
+				}
+			}
+		case "t", "b":
+			if pendingZ && (!m.Detail || m.split()) {
+				m.alignList("z" + key)
+			}
 		case "g":
 			if pendingG {
 				m.move(-len(rows))
@@ -1427,6 +1543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input = ""
 		case "?":
 			m.Help = !m.Help
+			m.HelpOffset = 0
 		case "r":
 			if m.ViewName == RecoveryViewID && m.LoadRecovery != nil {
 				return m, m.LoadRecovery()
@@ -1663,6 +1780,10 @@ func healthy(s map[string]queue.Coverage) int {
 	}
 	return n
 }
+func (m Model) readyDuringRecheck(item queue.Item) bool {
+	return m.recheckingReady[item.Ref.Key()] && item.Readiness.Status == queue.ReadinessUnknown
+}
+
 func (m Model) viewCount(name string) int {
 	if name == RecoveryViewID {
 		return len(m.Recovery)
@@ -1694,7 +1815,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 			return false
 		}
 	}
-	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness {
+	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(item)) {
 		return false
 	}
 	if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(item, rule.Claim) {
@@ -1719,7 +1840,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 	if _, configured := m.ViewRules[name]; !configured {
 		switch name {
 		case "Ready":
-			if item.Readiness.Status != queue.Ready {
+			if item.Readiness.Status != queue.Ready && !m.readyDuringRecheck(item) {
 				return false
 			}
 		case "Mine":
