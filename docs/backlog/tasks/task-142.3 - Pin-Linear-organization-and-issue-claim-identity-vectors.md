@@ -4,9 +4,10 @@ title: Pin Linear organization and issue claim identity vectors
 status: Done
 assignee: []
 created_date: '2026-09-25 16:30'
-updated_date: '2026-09-25 17:49'
+updated_date: '2026-09-26 04:41'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-142.1
@@ -41,6 +42,16 @@ Linear claim keys must not change with the human-readable issue identifier or te
 <!-- SECTION:NOTES:BEGIN -->
 Commit fb3ac0b merged to main as fa74c6d. Probe-backed organization/UUID v1 vectors pin TEST-1→PDEV-5 stability and organization/issue isolation; empty identities fail resource derivation. Queue overlay/pre-acquisition and CLI JSON match the shared key; remote coordination admission accepts it and unknown admission or identity drift blocks action. Focused race -count=3 passed in resource, cli, queue and lease both before/after merge; lint, format-check, test, typecheck, staged hooks passed. One diff review found the lease fixture expectation for linear needed updating; corrected and reran checks. Next TASK-142.4 should supply verified UUID/organization inputs from the real adapter, not aliases.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @pi
+created: 2026-09-26 04:41
+---
+Post-completion review confirmed the Linear organization/issue UUID vectors, queue/CLI resource derivation and remote admission agree; no additional item-scoped defect or follow-up identified.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

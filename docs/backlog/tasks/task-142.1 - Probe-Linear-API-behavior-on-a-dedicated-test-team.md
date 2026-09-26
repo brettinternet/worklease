@@ -4,9 +4,10 @@ title: Probe Linear API behavior on a dedicated test team
 status: Done
 assignee: []
 created_date: '2026-09-25 16:30'
-updated_date: '2026-09-25 17:11'
+updated_date: '2026-09-26 04:41'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -42,6 +43,16 @@ D29 and the Linear declarations are hypotheses. Use only the user-approved dedic
 <!-- SECTION:NOTES:BEGIN -->
 Live TEST/PDEV probe 2026-09-25: viewer 72088203-6bc7-4a63-a71b-22048b88da64, org 0bfebf80-70af-4eca-9e39-2029a01f5b77. Two synthetic issues only: UUID stable across TEST→PDEV→TEST; first<=250, updatedAt.gte and descending Relay cursor work, but updated-order page transition skipped a moved row. blocks add bumped inverse endpoint only; removal bumped both. Archived/trash entries require includeArchived and do not bump updatedAt; permanent deletion confirmed by empty team list. Single assignee field, workflow types, rate/complexity headers and separate comment marker read-back confirmed. Query/Mutation schema exposed no per-issue claim/lease/lock; no native §9 authority admitted. Permission loss intentionally untested: no restricted principal and no approved membership mutation; inaccessible/missing remains unknown (not deletion). Both synthetic issues permanently deleted; no existing issue mutated. Review: one general pass corrected stale table heading and clarified edge timestamp safety; no open item-scoped defect. Checks: git diff --check; mise run lint, format-check, test, typecheck, hooks all passed. Docs commit 5ac3b8f; merge 9372c09 on main. Next: TASK-142.2 credential helper, independent of the probe; TASK-142.3 can now pin vectors. No secret placed in task or repo.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @pi
+created: 2026-09-26 04:41
+---
+Post-completion review of the Linear probe evidence found no additional item-scoped defect; permission-loss visibility remains explicitly unprobed and fails closed. No follow-up required for this completed spike.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

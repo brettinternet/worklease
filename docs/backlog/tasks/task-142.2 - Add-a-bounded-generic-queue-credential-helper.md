@@ -4,9 +4,10 @@ title: Add a bounded generic queue credential helper
 status: Done
 assignee: []
 created_date: '2026-09-25 16:30'
-updated_date: '2026-09-25 17:35'
+updated_date: '2026-09-26 04:41'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -45,6 +46,16 @@ Merged code commit 4a7add4 via 9c84d53. Config test validates Linear/Jira Cloud 
 
 Finalized on main in fb19977; verified session-owned worktree/branch removed by Worktrunk and its idle Herdr workspace closed. No blocker for this subtask; next eligible Linear child is TASK-142.3 (identity vectors).
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @pi
+created: 2026-09-26 04:41
+---
+Post-completion review fixed per-credential serialization across Linear and external adapters in merge 00903bc. Merged repository gates and focused race checks passed; no further item-scoped action identified.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 
