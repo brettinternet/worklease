@@ -653,6 +653,112 @@ func TestSourceReadFailureLabelsIncludeRateLimitDeadline(t *testing.T) {
 	}
 }
 
+func TestReadyViewKeepsRowsDuringRecheckWithoutAllowingActions(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	for key, item := range initial.Items {
+		item.Claim = queue.ClaimObservation{}
+		item.Readiness.Status = queue.Ready
+		initial.Items[key] = item
+	}
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Ready"
+	m.ViewRules = map[string]ViewRule{"Ready": {Readiness: string(queue.Ready)}}
+	m.anchor(m.rows())
+	selected := m.Selected
+
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	for key, item := range refresh.Items {
+		item.ReadOutcome = "summary-only"
+		item.Readiness.Status = queue.ReadinessUnknown
+		refresh.Items[key] = item
+	}
+	msg := PrepareSnapshotForModel(refresh, m)
+	if len(msg.preparedRows) != 0 {
+		t.Fatal("fixture must reproduce the empty worker projection")
+	}
+	next, _ := m.Update(msg)
+	m = next.(Model)
+	if rows := m.rows(); len(rows) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
+		t.Fatalf("refresh displaced previously ready rows: rows=%d selected=%q count=%d", len(rows), m.Selected, m.viewCountFor("Ready"))
+	}
+	if !strings.Contains(screenText(m.View()), "rechecking") {
+		t.Fatal("unverified rows were not visibly marked")
+	}
+	for _, item := range m.rows() {
+		if queue.EvaluateAction(item, queue.ActionStart).Eligible {
+			t.Fatalf("rechecking item became actionable: %+v", item)
+		}
+	}
+
+	// Rows return to verified readiness independently without displacing
+	// still-rechecking rows or changing the selected item.
+	firstRef := queue.Ref{SourceID: "a", ItemID: "1"}
+	first := refresh.Items[firstRef.Key()]
+	first.ReadOutcome = "found"
+	first.Readiness.Status = queue.Ready
+	refresh.Items[firstRef.Key()] = first
+	refresh.Revision = 3
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
+		t.Fatalf("partial recheck displaced rows: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
+	}
+
+	// A detail read can report missing while retaining a stale diagnostic
+	// item in the snapshot. That is not an in-progress recheck.
+	first = refresh.Items[firstRef.Key()]
+	first.ReadOutcome = "missing"
+	first.Fresh = false
+	first.Readiness.Status = queue.ReadinessUnknown
+	refresh.Items[firstRef.Key()] = first
+	refresh.Revision = 4
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 1 || m.Selected != "stable-2" {
+		t.Fatalf("missing item remained visible: selected=%q count=%d", m.Selected, len(m.rows()))
+	}
+
+	// A deleted item is removed immediately. A fully read item with unknown
+	// readiness also leaves the Ready view rather than lingering indefinitely.
+	delete(refresh.Items, firstRef.Key())
+	other := refresh.Items[(queue.Ref{SourceID: "a", ItemID: "2"}).Key()]
+	other.ReadOutcome = "found"
+	refresh.Items[other.Ref.Key()] = other
+	refresh.Revision = 5
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 0 || m.Selected != "" || m.viewCountFor("Ready") != 0 {
+		t.Fatalf("removed or verified-ineligible rows lingered: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
+	}
+}
+
+func TestDefaultReadyViewCountsRecheckingRows(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	first := initial.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()]
+	first.Readiness.Status = queue.Ready
+	initial.Items[first.Ref.Key()] = first
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.ViewName = "Ready"
+
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	first.ReadOutcome = "summary-only"
+	first.Readiness.Status = queue.ReadinessUnknown
+	refresh.Items[first.Ref.Key()] = first
+	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.rows()) != 1 || m.viewCountFor("Ready") != 1 {
+		t.Fatalf("default Ready view count disagrees with rechecking row: shown=%d tab=%d", len(m.rows()), m.viewCountFor("Ready"))
+	}
+}
+
 func TestNavigationRefreshAnchorAndLateHistory(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

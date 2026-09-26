@@ -466,6 +466,9 @@ func (m Model) banners() []string {
 	if len(problems) > 0 {
 		out = append(out, m.s().warnBold.Render("Sources ")+m.s().warn.Render(strings.Join(problems, " · ")))
 	}
+	if len(m.recheckingReady) > 0 && (m.ViewName == "Ready" || m.ViewRules[m.ViewName].Readiness == string(queue.Ready)) {
+		out = append(out, m.s().warn.Render("Previously ready rows are rechecking; actions require current readiness."))
+	}
 	return out
 }
 
@@ -783,6 +786,9 @@ func (p *palette) stateStyle(state queue.StateCategory) lipgloss.Style {
 var readyAliases = map[string]string{"assigned elsewhere": "elsewhere", "unknown dependencies": "deps unknown"}
 
 func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
+	if m.readyDuringRecheck(i) {
+		return "rechecking", m.s().warn
+	}
 	if i.Claim.Active && m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}

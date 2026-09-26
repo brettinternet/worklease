@@ -86,6 +86,9 @@ func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
 	preparedModel.Snapshot = message.Snapshot
 	preparedModel.orderedKeys = message.orderedKeys
 	preparedModel.rowCache = nil
+	// Visibility during recheck is reconciled against the live model in Update.
+	// Worker projections contain only rows proved by this snapshot.
+	preparedModel.recheckingReady = nil
 	message.preparedRows = preparedModel.rows()
 	message.preparedRowIndexes = make(map[string]int, len(message.preparedRows))
 	for index, item := range message.preparedRows {
@@ -337,6 +340,10 @@ type Model struct {
 	Launch                                func(queue.Item, string) tea.Cmd
 	rowCache                              *rowCache
 	orderedKeys                           []string
+	// recheckingReady keeps previously verified rows visible in Ready views
+	// while their replacement summaries are awaiting validation. It never
+	// changes the item's current readiness or action eligibility.
+	recheckingReady map[string]bool
 	// pendingG records a first g so a second g jumps to the top.
 	pendingG bool
 }
@@ -508,7 +515,7 @@ func (m Model) rows() []queue.Item {
 	out := rows[:0]
 	rule := m.ViewRules[m.ViewName]
 	for _, i := range rows {
-		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness {
+		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(i)) {
 			continue
 		}
 		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
@@ -545,7 +552,7 @@ func (m Model) rows() []queue.Item {
 		if _, configured := m.ViewRules[m.ViewName]; !configured {
 			switch m.ViewName {
 			case "Ready":
-				if i.Readiness.Status != queue.Ready {
+				if i.Readiness.Status != queue.Ready && !m.readyDuringRecheck(i) {
 					continue
 				}
 			case "Mine":
@@ -588,7 +595,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		for _, item := range m.Snapshot.Items {
 			if standard {
 				m.rowCache.counts["All"]++
-				if item.Readiness.Status == queue.Ready {
+				if item.Readiness.Status == queue.Ready || m.readyDuringRecheck(item) {
 					m.rowCache.counts["Ready"]++
 				}
 				if item.Claim.Active {
@@ -747,8 +754,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !v.prepared {
 			updated = v.Snapshot.Clone()
 		}
+		// A fresh summary is not yet evidence that a formerly ready item is
+		// ready. Keep it on screen as rechecking, but use the new item for all
+		// actions. Missing or definitively re-evaluated items leave the view.
+		rechecking := make(map[string]bool)
+		for key, item := range updated.Items {
+			if item.Readiness.Status != queue.ReadinessUnknown {
+				continue
+			}
+			switch item.ReadOutcome {
+			case "summary-only": // listed, not yet revalidated
+			case "stale", "failed", "found":
+				if item.Fresh {
+					continue
+				}
+			default: // missing, denied, or otherwise definitive
+				continue
+			}
+			prior, present := m.Snapshot.Items[key]
+			if m.recheckingReady[key] || present && prior.Ref == item.Ref && prior.Readiness.Status == queue.Ready {
+				rechecking[key] = true
+			}
+		}
+		m.recheckingReady = rechecking
 		projectionUsable := v.hasProjection && reflect.DeepEqual(v.projection, projectionForModel(m)) && sameSourceOrder(m.Sources, v.sourceIDs)
-		preparedRowsUsable := projectionUsable
+		preparedRowsUsable := projectionUsable && len(m.recheckingReady) == 0
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
 				beforeItem := item
@@ -1591,6 +1621,10 @@ func healthy(s map[string]queue.Coverage) int {
 	}
 	return n
 }
+func (m Model) readyDuringRecheck(item queue.Item) bool {
+	return m.recheckingReady[item.Ref.Key()] && item.Readiness.Status == queue.ReadinessUnknown
+}
+
 func (m Model) viewCount(name string) int {
 	if name == RecoveryViewID {
 		return len(m.Recovery)
@@ -1619,7 +1653,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 			return false
 		}
 	}
-	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness {
+	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(item)) {
 		return false
 	}
 	if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(item, rule.Claim) {
@@ -1644,7 +1678,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 	if _, configured := m.ViewRules[name]; !configured {
 		switch name {
 		case "Ready":
-			if item.Readiness.Status != queue.Ready {
+			if item.Readiness.Status != queue.Ready && !m.readyDuringRecheck(item) {
 				return false
 			}
 		case "Mine":
