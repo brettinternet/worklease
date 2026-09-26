@@ -175,7 +175,12 @@ type RefreshedMsg struct{ Err error }
 // queue animates a spinner in place of stale markers.
 type LoadingMsg struct{ Active bool }
 
-type spinnerTickMsg struct{}
+// spinnerTickMsg advances the spinner chain gen; a newer chain retires it.
+type spinnerTickMsg struct{ gen int }
+
+// StartedMsg hands over from the frame drawn at launch to the model built
+// once sources resolve. The screen size, open view, and spinner carry over.
+type StartedMsg struct{ Model Model }
 
 const spinnerInterval = 80 * time.Millisecond
 
@@ -317,7 +322,7 @@ type Model struct {
 	ClaimFreshness                     string
 	RebuildingClaims                   bool
 	Loading                            bool
-	spinnerFrame                       int
+	spinnerFrame, spinnerGen           int
 	spinnerTicking                     bool
 	ClaimLoading, Claiming, Cancelling bool
 	ClaimPreview                       *ClaimPreview
@@ -486,10 +491,14 @@ func New(snapshot queue.Snapshot) Model {
 // polling continues only while the Claims tab is open. Callers that set
 // Claims.Refresh also mark Claims.Loading.
 func (m Model) Init() tea.Cmd {
+	var cmds []tea.Cmd
 	if m.Claims.Refresh != nil {
-		return m.Claims.Refresh(m.Claims.Cursor)
+		cmds = append(cmds, m.Claims.Refresh(m.Claims.Cursor))
 	}
-	return nil
+	if m.Loading && !m.spinnerTicking {
+		cmds = append(cmds, spinnerTick(m.spinnerGen))
+	}
+	return tea.Batch(cmds...)
 }
 func identity(i queue.Item) string {
 	if i.CanonicalID != "" {
@@ -1120,19 +1129,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Claims.Loading = true
 			return m, m.Claims.Refresh(m.Claims.Cursor)
 		}
+	case StartedMsg:
+		next := v.Model
+		next.Width, next.Height = m.Width, m.Height
+		// Init starts a fresh spinner chain; the new generation retires the old one.
+		next.spinnerFrame, next.spinnerGen, next.spinnerTicking = m.spinnerFrame, m.spinnerGen+1, false
+		if slices.Contains(next.Views, m.ViewName) {
+			next.ViewName = m.ViewName
+		}
+		next.rowCache = &rowCache{}
+		next.anchor(next.rows())
+		return next, next.Init()
 	case LoadingMsg:
 		m.Loading = v.Active
 		if m.Loading && !m.spinnerTicking {
+			m.spinnerGen++
 			m.spinnerTicking = true
-			return m, spinnerTick()
+			return m, spinnerTick(m.spinnerGen)
 		}
 	case spinnerTickMsg:
+		if v.gen != m.spinnerGen {
+			return m, nil
+		}
 		if !m.Loading {
 			m.spinnerTicking = false
 			return m, nil
 		}
+		m.spinnerTicking = true
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
-		return m, spinnerTick()
+		return m, spinnerTick(v.gen)
 	case RefreshedMsg:
 		if v.Err != nil {
 			m.Notice = "Refresh failed: " + v.Err.Error()
@@ -2163,8 +2188,8 @@ func (m Model) displayState(i queue.Item) string {
 	}
 	return readiness(i)
 }
-func spinnerTick() tea.Cmd {
-	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+func spinnerTick(gen int) tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{gen} })
 }
 
 func (m Model) spinner() string { return spinnerFrames[m.spinnerFrame] }

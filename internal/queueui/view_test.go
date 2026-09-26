@@ -92,7 +92,7 @@ func TestLoadingShowsSpinnerUntilRefreshEnds(t *testing.T) {
 	if tick == nil || !strings.Contains(screenText(m.View()), spinnerFrames[0]+" Loading Ready…") {
 		t.Fatalf("empty view while loading did not animate a loading line:\n%s", screenText(m.View()))
 	}
-	next, _ = m.Update(spinnerTickMsg{})
+	next, _ = m.Update(spinnerTickMsg{m.spinnerGen})
 	m = next.(Model)
 	snapshot := fixture()
 	for key, item := range snapshot.Items {
@@ -107,11 +107,33 @@ func TestLoadingShowsSpinnerUntilRefreshEnds(t *testing.T) {
 	}
 	next, _ = m.Update(LoadingMsg{Active: false})
 	m = next.(Model)
-	if _, stop := m.Update(spinnerTickMsg{}); stop != nil {
+	if _, stop := m.Update(spinnerTickMsg{m.spinnerGen}); stop != nil {
 		t.Fatal("spinner kept ticking after the refresh ended")
 	}
 	if text := screenText(m.View()); !strings.Contains(text, "ready (stale)") {
 		t.Fatalf("row left unread after the refresh was not marked stale:\n%s", text)
+	}
+}
+
+func TestStartedModelKeepsLaunchFrameState(t *testing.T) {
+	t.Parallel()
+	launch := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	launch.Views = []string{"Ready", "Mine", RecoveryViewID, ClaimsViewID}
+	launch.ViewName = "Ready"
+	launch.Loading = true
+	next, _ := launch.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	launch = next.(Model)
+	launch.ViewName = "Mine" // the user switched tabs before sources resolved
+	stale := launch.spinnerGen
+	started := New(fixture())
+	started.Views, started.ViewName, started.Loading = launch.Views, "Ready", true
+	next, tick := launch.Update(StartedMsg{Model: started})
+	m := next.(Model)
+	if m.ViewName != "Mine" || m.Width != 100 || m.Height != 20 || tick == nil {
+		t.Fatalf("handover lost launch state: view %q size %dx%d tick %v", m.ViewName, m.Width, m.Height, tick != nil)
+	}
+	if _, cmd := m.Update(spinnerTickMsg{stale}); cmd != nil {
+		t.Fatal("the launch frame's spinner chain kept ticking after the handover")
 	}
 }
 

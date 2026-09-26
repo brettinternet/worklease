@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -100,6 +101,91 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		return err
 	}
 	defer backend.Close()
+	sourceByID := map[string]config.QueueSource{}
+	for _, src := range cfg.Sources {
+		sourceByID[src.ID] = src
+	}
+	// Draw the frame before resolving sources, which runs provider checks.
+	model := queueui.New(queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}})
+	model.ViewName = selected.Name
+	model.HighContrast = cmd.Bool("high-contrast")
+	model.Views = nil
+	model.ViewFilters = make(map[string]queue.Filters)
+	model.ViewRules = make(map[string]queueui.ViewRule)
+	for _, v := range cfg.Views {
+		if v.Authority != selected.Authority || !sourceSubset(v.Sources, selected.Sources) {
+			continue
+		}
+		model.Views = append(model.Views, v.Name)
+		filters := queue.Filters{SourceIDs: append([]string(nil), v.Sources...)}
+		model.ViewFilters[v.Name] = filters
+		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
+	}
+	model.Views = append(model.Views, queueui.RecoveryViewID, queueui.ClaimsViewID)
+	model.MeBySource = make(map[string][]string)
+	for _, src := range selected.Sources {
+		model.MeBySource[src] = queueMeBySource(cfg, sourceByID[src])
+	}
+	model.Authority = authorityView.Profile
+	model.Scope = "local"
+	if authorityView.Remote {
+		model.Scope = "remote"
+	}
+	model.Authority = fmt.Sprintf("%s %s", authorityView.Profile, authorityView.ID)
+	if me, ok := cfg.Me["backlog-md"]; ok {
+		var names []string
+		if me.Decode(&names) == nil && len(names) > 0 {
+			model.Me = names[0]
+		}
+	}
+	if model.Me == "" {
+		for _, v := range cfg.Me {
+			model.Me = v.Value
+			break
+		}
+	}
+	if model.Me == "" {
+		for _, id := range selected.Sources {
+			if source := sourceByID[id]; source.Adapter == "external" && source.Account != "" {
+				model.Me = source.Account
+				break
+			}
+		}
+	}
+	starting := model
+	starting.Loading = true
+	for _, id := range selected.Sources {
+		starting.Sources = append(starting.Sources, queue.Source{ID: id, Name: id, Adapter: queueAdapterRegistryKey(sourceByID[id])})
+	}
+	program := tea.NewProgram(starting, tea.WithOutput(s.writer), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	quit := make(chan struct{})
+	setupDone := make(chan error, 1)
+	go func() {
+		err := runQueueSession(ctx, cancel, cfg, selected, backend, authorityView, queueSession, sourceByID, model, program, quit)
+		select {
+		case <-quit:
+			if errors.Is(err, context.Canceled) {
+				err = nil // the user quit during setup
+			}
+		default:
+			if err != nil {
+				program.Quit()
+			}
+		}
+		setupDone <- err
+	}()
+	_, err = program.Run()
+	close(quit)
+	cancel() // stop provider checks still running behind the frame
+	if setupErr := <-setupDone; setupErr != nil {
+		return setupErr
+	}
+	return err
+}
+
+// runQueueSession resolves sources and runs the queue's background work
+// behind the already drawn frame until quit closes.
+func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.QueueConfig, selected config.QueueView, backend *authorityContext, authorityView queue.ClaimAuthority, queueSession string, sourceByID map[string]config.QueueSource, model queueui.Model, program *tea.Program, quit <-chan struct{}) error {
 	registry := queue.NewRegistry()
 	cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
 	if err != nil {
@@ -109,10 +195,6 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	sources := make([]queue.Source, 0, len(selected.Sources))
 	shownSources := make([]queue.Source, 0, len(selected.Sources))
 	sourceErrors := make(map[string]string)
-	sourceByID := map[string]config.QueueSource{}
-	for _, src := range cfg.Sources {
-		sourceByID[src.ID] = src
-	}
 	for _, id := range selected.Sources {
 		src, ok := sourceByID[id]
 		if !ok {
@@ -159,24 +241,10 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	if err != nil {
 		return err
 	}
-	model := queueui.New(loader.Store.Current())
+	// The frame and tabs are already on screen; hand over the cached rows.
+	model.Snapshot = loader.Store.Current()
 	model.Sources = shownSources
 	model.SourceErrors = sourceErrors
-	model.ViewName = selected.Name
-	model.HighContrast = cmd.Bool("high-contrast")
-	model.Views = nil
-	model.ViewFilters = make(map[string]queue.Filters)
-	model.ViewRules = make(map[string]queueui.ViewRule)
-	for _, v := range cfg.Views {
-		if v.Authority != selected.Authority || !sourceSubset(v.Sources, selected.Sources) {
-			continue
-		}
-		model.Views = append(model.Views, v.Name)
-		filters := queue.Filters{SourceIDs: append([]string(nil), v.Sources...)}
-		model.ViewFilters[v.Name] = filters
-		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
-	}
-	model.Views = append(model.Views, queueui.RecoveryViewID, queueui.ClaimsViewID)
 	journal, err := queueRecoveryJournal()
 	if err != nil {
 		return err
@@ -187,37 +255,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			return queueui.RecoveryMsg{Entries: entries, Err: err}
 		}
 	}
-	model.MeBySource = make(map[string][]string)
-	for _, src := range selected.Sources {
-		model.MeBySource[src] = queueMeBySource(cfg, sourceByID[src])
-	}
-	model.Authority = authorityView.Profile
-	model.Scope = "local"
-	if authorityView.Remote {
-		model.Scope = "remote"
-	}
-	model.Authority = fmt.Sprintf("%s %s", authorityView.Profile, authorityView.ID)
 	configureClaimsTab(&model, backend, ctx, queueSession)
-	if me, ok := cfg.Me["backlog-md"]; ok {
-		var names []string
-		if me.Decode(&names) == nil && len(names) > 0 {
-			model.Me = names[0]
-		}
-	}
-	if model.Me == "" {
-		for _, v := range cfg.Me {
-			model.Me = v.Value
-			break
-		}
-	}
-	if model.Me == "" {
-		for _, id := range selected.Sources {
-			if source := sourceByID[id]; source.Adapter == "external" && source.Account != "" {
-				model.Me = source.Account
-				break
-			}
-		}
-	}
 	paths := config.UserProfilePaths(os.Getenv)
 	claimInputs := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
@@ -241,7 +279,6 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		selected, _ := currentAuthority()
 		return queue.GuardClaimSources(ctx, claimInputs, registry, selected, state, snapshot)
 	}
-	var program *tea.Program
 	var claimController *queueClaimController
 	var workers sync.WaitGroup
 	var workersMu sync.Mutex
@@ -582,6 +619,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	if err != nil {
 		return fmt.Errorf("queue-owned claim handles unavailable: %w", err)
 	}
+	model.OwnedClaims = make(map[string]queueui.OwnedClaimMsg, len(ownedPaths)) // not shared with the launch frame
 	for _, path := range ownedPaths {
 		model.OwnedClaims[path] = queueui.OwnedClaimMsg{Path: path, LastResult: "verification pending"}
 	}
@@ -593,8 +631,13 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	// The model is handed to Bubble Tea before background producers start.
 	// The queue owns the terminal: alternate screen keeps the list out of
 	// scrollback, and mouse reporting enables click and wheel navigation.
-	model.Loading = true // the first refresh starts with the program
-	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	select {
+	case <-quit:
+		return nil // quit before sources resolved; nothing started yet
+	default:
+	}
+	model.Loading = true // the first refresh starts with the handover
+	program.Send(queueui.StartedMsg{Model: model})
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
@@ -639,7 +682,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			}
 		}(source)
 	}
-	_, err = program.Run()
+	<-quit
 	refresh.stop()
 	workersMu.Lock()
 	closing = true
@@ -652,7 +695,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		<-liveDone
 	}
 	liveMu.Unlock()
-	return err
+	return nil
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
