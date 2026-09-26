@@ -84,6 +84,7 @@ func configureClaimsTab(model *queueui.Model, backend *authorityContext, ctx con
 	model.Claims.MineAgentID = backend.Config.AgentID
 	model.Claims.MineSessionID = session
 	model.Claims.PublicOnly = backend.Remote
+	model.Claims.Loading = true // Init performs the first read
 	model.Claims.Refresh = func(cursor string) tea.Cmd {
 		return queueui.ClaimsRefreshCmd(ctx, backend.API, cursor)
 	}

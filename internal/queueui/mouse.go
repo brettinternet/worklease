@@ -62,7 +62,7 @@ func (m Model) mouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if inDetail {
-			if y == 1 {
+			if y == detailTabRow {
 				// The detail pane follows the separator and a one-cell margin.
 				start := 1
 				if listWidth > 0 {
@@ -84,7 +84,7 @@ func (m Model) mouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if identity(rows[index]) == m.Selected {
-			m.Detail = true
+			m.openDetail()
 		} else {
 			m.selectIndex(rows, index)
 		}

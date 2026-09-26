@@ -14,6 +14,8 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 	capacity := max(1, m.frame(m.rows()).bodyHeight-1)
 	m.anchorClaims(rows, capacity)
 	previous := m.Claims.Selected
+	pendingG := m.pendingG
+	m.pendingG = false
 	switch key {
 	case "q", "ctrl+c":
 		return m.requestQuit()
@@ -22,10 +24,14 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 	case "k", "up", "N":
 		m.selectClaimIndex(rows, m.Claims.Index-1, capacity)
 	case "g":
-		m.selectClaimIndex(rows, 0, capacity)
+		if pendingG {
+			m.selectClaimIndex(rows, 0, capacity)
+		} else {
+			m.pendingG = true
+		}
 	case "G":
 		m.selectClaimIndex(rows, len(rows)-1, capacity)
-	case "pgdown", "ctrl+d":
+	case "pgdown", "ctrl+d", "ctrl+f":
 		if m.Claims.Detail {
 			if claim, ok := m.selectedClaim(rows); ok {
 				m.Claims.DetailOffset = min(m.Claims.DetailOffset+max(1, m.Height/2), m.claimDetailMaxOffset(claim))
@@ -33,7 +39,7 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.selectClaimIndex(rows, m.Claims.Index+capacity, capacity)
 		}
-	case "pgup", "ctrl+u":
+	case "pgup", "ctrl+u", "ctrl+b":
 		if m.Claims.Detail {
 			if claim, ok := m.selectedClaim(rows); ok {
 				m.Claims.DetailOffset = max(0, min(m.Claims.DetailOffset, m.claimDetailMaxOffset(claim))-max(1, m.Height/2))
@@ -68,6 +74,9 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 			m.Claims.DetailTab = (m.Claims.DetailTab + 1) % 2
 			m.Claims.DetailOffset = 0
 		}
+	case "?":
+		m.Help = true
+		m.HelpOffset = 0
 	case "/":
 		m.Filtering = true
 		m.Input = m.Claims.ResourcePrefix
@@ -92,8 +101,6 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.Claims.Notice = "Claims refresh unavailable"
 		}
-	case "?":
-		m.Help = true
 	}
 	if m.Claims.Selected != previous && m.Claims.Detail {
 		return m, m.loadSelectedClaimHistory(m.claimRows())

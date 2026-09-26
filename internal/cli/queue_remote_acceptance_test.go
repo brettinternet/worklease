@@ -110,7 +110,7 @@ func TestQueueRemoteViewUsesSelectedAuthorityWithoutLocalFallback(t *testing.T) 
 	model.Authority = output.Query.Authority.Profile + " " + output.Query.Authority.ID
 	model.Scope = output.Query.Authority.Scope
 	view := model.View()
-	if !strings.Contains(view, "(remote)") || !strings.Contains(view, "Remote scope") || !strings.Contains(view, output.Query.Authority.ID) {
+	if !strings.Contains(view, "(remote)") || !strings.Contains(view, "Remote scope") || !strings.Contains(view, output.Query.Authority.ID[:8]) {
 		t.Fatalf("TUI hid remote scope: %s", view)
 	}
 }

@@ -1152,7 +1152,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	m.Scope = "remote"
 	m.anchor(m.rows())
 	wide := m.View()
-	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "[All 2]", "Ready 0", "unknown dependencies", "assigned elsewhere", "Claim", "2 loaded of 2 (exact)", "edges 0/2", "provider fresh", "claims loading"} {
+	for _, s := range []string{"authority team abcdef (remote)", "[All 2]", "Ready 0", "unknown dependencies", "assigned elsewhere", "Claim", "claims loading"} {
 		if !strings.Contains(wide, s) {
 			t.Errorf("wide view missing %q: %s", s, wide)
 		}
@@ -1226,7 +1226,9 @@ func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
 	}
 }
 func TestCoverageFooterVisibleWithLongClaimHistory(t *testing.T) {
-	m := New(fixture())
+	snapshot := fixture()
+	snapshot.Sources["a"] = queue.Coverage{State: queue.CoveragePartial, Total: 5, TotalAccuracy: queue.TotalExact}
+	m := New(snapshot)
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	m.Detail = true
@@ -1236,7 +1238,7 @@ func TestCoverageFooterVisibleWithLongClaimHistory(t *testing.T) {
 		m.History.Epochs = append(m.History.Epochs, ledger.Epoch{AgentID: "worker", SessionID: "session"})
 	}
 	view := m.View()
-	if !strings.Contains(view, "2 loaded of 2 (exact)") {
+	if !strings.Contains(view, "2 of 5 loaded") {
 		t.Fatalf("coverage footer hidden by detail: %s", view)
 	}
 	if lines := len(strings.Split(strings.TrimRight(view, "\n"), "\n")); lines > m.Height {
@@ -1316,7 +1318,7 @@ func TestVimScrollKeysMoveVisibleContent(t *testing.T) {
 					m.rowCache = nil
 					m.anchor(m.rows())
 					m.DetailOffset = 50
-					visible = max(1, m.frame(m.rows()).bodyHeight-2)
+					visible = max(1, m.frame(m.rows()).bodyHeight-detailChrome)
 					if m.maxDetailOffset() < 75 {
 						t.Fatal("detail fixture is not long enough to scroll")
 					}
@@ -1951,7 +1953,7 @@ func TestStartWorkMissingMappingLeavesClaimOnly(t *testing.T) {
 		m, _ = press(m, string(ch))
 	}
 	m, cmd := press(m, "enter")
-	if cmd != nil || !strings.Contains(m.Notice, "Claim only") || m.StartPreview != nil {
+	if cmd != nil || !strings.Contains(m.Notice, "no start status mapping") || m.StartPreview != nil {
 		t.Fatalf("unsupported mapping offered Start work: %s", m.Notice)
 	}
 }
@@ -1990,5 +1992,44 @@ func TestFilterInputAcceptsPasteAndUnicode(t *testing.T) {
 	m, _ = press(m, "enter")
 	if m.Filter != "second" || len(m.rows()) != 1 {
 		t.Fatalf("filter = %q, rows = %d", m.Filter, len(m.rows()))
+	}
+}
+
+func TestClosingDetailReturnsToItemThatLeftView(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	for key, item := range snapshot.Items {
+		item.Claim = queue.ClaimObservation{Known: true, State: "free"}
+		snapshot.Items[key] = item
+	}
+	m := New(snapshot)
+	m.Views, m.ViewName = []string{"Free"}, "Free"
+	m.ViewRules = map[string]ViewRule{"Free": {Claim: "free"}}
+	m.anchor(m.rows())
+	if len(m.rows()) != 2 {
+		t.Fatalf("free view rows=%d", len(m.rows()))
+	}
+	m, _ = press(m, "j")
+	m, _ = press(m, "enter")
+	opened := m.Selected
+	newer := snapshot.Clone()
+	newer.Revision = 1
+	for key, item := range newer.Items {
+		if identity(item) == opened {
+			item.Claim = queue.ClaimObservation{Known: true, Active: true, State: "held"}
+			newer.Items[key] = item
+		}
+	}
+	next, _ := m.Update(SnapshotMsg{Snapshot: newer})
+	m = next.(Model)
+	m, _ = press(m, "h")
+	if m.Selected != opened || m.rows()[m.Index].CanonicalID != opened {
+		t.Fatalf("closing detail selected %q at %d, want %q", m.Selected, m.Index, opened)
+	}
+	m, _ = press(m, "k")
+	for _, row := range m.rows() {
+		if identity(row) == opened {
+			t.Fatal("item stayed pinned after the selection moved away")
+		}
 	}
 }

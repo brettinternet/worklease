@@ -36,7 +36,7 @@ func (m Model) claimsMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if inDetail {
-			if y == 1 {
+			if y == detailTabRow {
 				start := listWidth + 2
 				if listWidth == 0 {
 					start = 1

@@ -2,6 +2,7 @@ package queueui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	"github.com/brettinternet/worklease/internal/queue"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -31,51 +33,85 @@ func (m Model) claimsBody(height int) []string {
 	return splitBody(list, pane, listWidth, height, m.s().faint.Render("│"))
 }
 
+// claimColumns lays out the Claims table. A claim on a loaded queue item
+// reads as that item's ID and title; other claims show a short resource.
+// Expires carries the lease state: a countdown, bold when expiring soon,
+// or "expired".
+func (m Model) claimColumns(rows, visible []lease.ClaimView, items map[string]queue.Item, width int) []column[lease.ClaimView] {
+	now := m.claimsNow()
+	idWidth := 0
+	for _, claim := range rows {
+		if item, ok := items[claim.ClaimID]; ok {
+			idWidth = max(idWidth, len(item.Ref.ItemID))
+		}
+	}
+	if idWidth > 0 {
+		idWidth = max(2, min(idWidth, 16)) // at least the header's width
+	}
+	cols := []column[lease.ClaimView]{
+		{title: "ID", min: idWidth, max: idWidth, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
+			return items[c.ClaimID].Ref.ItemID, m.s().accent
+		}},
+		{title: "Claimed", min: 16, flex: true, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
+			if item, ok := items[c.ClaimID]; ok {
+				return item.Title, lipgloss.NewStyle()
+			}
+			return shortResources(c.Resources), lipgloss.NewStyle()
+		}},
+		{title: "Holder", min: 8, max: 28, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
+			if m.claimIsMine(c) {
+				return "mine", m.s().ready
+			}
+			return valueOr(clean(c.AgentID), "unknown"), lipgloss.NewStyle()
+		}},
+		{title: "Expires", min: 7, max: 9, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
+			switch {
+			case c.ExpiresAt.IsZero():
+				return "\u2014", m.s().faint
+			case !c.Active || !c.ExpiresAt.After(now):
+				return "expired", m.s().faint
+			}
+			return shortDuration(c.ExpiresAt.Sub(now)), m.claimExpiryStyle(c)
+		}},
+	}
+	if idWidth == 0 {
+		cols = cols[1:]
+	}
+	fitContent(cols, cellWidths(cols, visible))
+	return fitColumns(cols, width-2, []string{"Holder"})
+}
+
 func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []string {
 	if height <= 0 {
 		return nil
 	}
 	width = max(1, width)
-	lines := []string{"  " + m.s().faint.Render(clip("Resource · holder / session · lease", width-2))}
 	capacity := max(0, height-1)
 	start := max(0, min(m.Claims.Offset, len(rows)-capacity))
-	end := min(len(rows), start+capacity)
+	visible := rows[start:min(len(rows), start+capacity)]
+	items := m.claimItems(rows)
+	cols := m.claimColumns(rows, visible, items, width)
+	lines := []string{tableHeader(m.s(), cols)}
 	now := m.claimsNow()
-	for index, claim := range rows[start:end] {
-		text := displayResources(claim.Resources)
-		if item, ok := m.claimItem(claim); ok {
-			text += " · " + item.Title
-		}
-		text += " · " + valueOr(claim.AgentID, "unknown holder")
-		if claim.SessionID != "" {
-			text += " / " + claim.SessionID
-		}
-		text += " · " + claimExpiryLabel(claim, now)
-		text += " · " + m.claimStateLabel(claim, now)
-		if index+start == m.Claims.Index {
-			lines = append(lines, m.s().selected.Render(pad("> "+clip(text, width-2), width)))
-			continue
-		}
-		style := lipgloss.NewStyle()
-		if m.Claims.Stale {
-			style = m.s().warn
-		} else if !claim.Active {
-			style = m.s().faint
-		} else if claimExpiring(claim, now) {
-			style = m.s().warnBold
-		}
-		lines = append(lines, "  "+style.Render(clip(text, width-2)))
+	for index, claim := range visible {
+		muted := m.Claims.Stale || !claim.Active || !claim.ExpiresAt.After(now)
+		lines = append(lines, tableRow(m.s(), cols, claim, index+start == m.Claims.Index, muted, width))
 	}
 	if len(rows) == 0 {
-		message := "No authority claims match these filters."
-		if len(m.Claims.Items) == 0 && m.Claims.Loading {
-			message = "Loading current authority claims…"
-		} else if len(m.Claims.Items) == 0 && m.Claims.Error == "" {
-			message = "No current authority claims."
+		message, hints := "No claims match these filters.", []string{"esc clears filters"}
+		switch {
+		case len(m.Claims.Items) == 0 && m.Claims.Error != "":
+			message, hints = "Claims unavailable.", nil
+		case len(m.Claims.Items) == 0:
+			// First-run guidance: the footer carries no key hints.
+			message, hints = "No active claims on this authority.", []string{"Start with worklease acquire --path README.md", "Press ? for help · q to quit"}
+			if m.Claims.Loading {
+				message = "Loading authority claims…"
+			}
 		}
 		lines = append(lines, "", "  "+m.s().bold.Render(clip(message, width-2)))
-		if len(m.Claims.Items) == 0 && m.Claims.Error == "" {
-			lines = append(lines, "  "+clip("Start with worklease acquire --path README.md", width-2), "  "+clip("Press ? for help · q to quit", width-2))
+		for _, hint := range hints {
+			lines = append(lines, "  "+m.s().faint.Render(clip(hint, width-2)))
 		}
 	}
 	return lines
@@ -84,82 +120,150 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 func (m Model) claimStateLabel(claim lease.ClaimView, now time.Time) string {
 	switch {
 	case m.Claims.Stale:
-		return "STALE"
-	case !claim.Active:
-		return "EXPIRED"
+		return "stale"
+	case !claim.Active || !claim.ExpiresAt.IsZero() && !claim.ExpiresAt.After(now):
+		return "expired"
 	case claimExpiring(claim, now):
-		return "EXPIRING"
+		return "expiring"
 	default:
-		return "ACTIVE"
+		return "active"
 	}
+}
+
+// shortDuration is a compact remaining time: seconds under a minute, then
+// minutes and seconds while it matters, then coarser units.
+func shortDuration(d time.Duration) string {
+	d = max(0, d).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < 10*time.Minute:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// expiresIn describes a lease's remaining time for prose.
+func expiresIn(remaining time.Duration) string {
+	if remaining <= 0 {
+		return "expired"
+	}
+	return "expires in " + shortDuration(remaining)
 }
 
 func claimExpiryLabel(claim lease.ClaimView, now time.Time) string {
 	if claim.ExpiresAt.IsZero() {
 		return "expiry unknown"
 	}
-	remaining := claim.ExpiresAt.Sub(now)
-	if remaining <= 0 || !claim.Active {
+	if !claim.Active {
 		return "expired"
 	}
-	return "expires in " + remaining.Round(time.Second).String()
+	return expiresIn(claim.ExpiresAt.Sub(now))
+}
+
+// when renders a timestamp as relative age followed by the exact time.
+func when(at, now time.Time) string {
+	if at.IsZero() {
+		return "\u2014"
+	}
+	return ago(now.Sub(at)) + " \u00b7 " + at.UTC().Format(time.RFC3339)
+}
+
+// shortResource abbreviates a resource key for tables: a path claim shows
+// its repository-relative path and an opaque coordination key its hash
+// prefix. Details always show the full key.
+func shortResource(resource string) string {
+	parts := strings.SplitN(resource, ":", 3)
+	switch {
+	case len(parts) == 3 && parts[0] == "path":
+		return displayResource(parts[2])
+	case len(parts) == 3 && parts[0] == "coordination" && len(parts[2]) > 12:
+		return displayResource(parts[0] + ":" + parts[1] + ":" + parts[2][:8] + "…")
+	}
+	return displayResource(resource)
+}
+
+func shortResources(resources []string) string {
+	if len(resources) == 0 {
+		return "\u2014"
+	}
+	text := shortResource(resources[0])
+	if len(resources) > 1 {
+		text += fmt.Sprintf(" +%d", len(resources)-1)
+	}
+	return text
 }
 
 func (m Model) claimDetailPane(claim lease.ClaimView, width, height int) []string {
-	claimID := claim.ClaimID
-	if len(claimID) > 12 {
-		claimID = claimID[:8] + "…" + claimID[len(claimID)-3:]
+	var title string
+	var actions []binding
+	if item, ok := m.claimItem(claim); ok {
+		id := clip(item.Ref.ItemID, 30)
+		title = m.s().accent.Bold(true).Render(id) + " " + m.s().bold.Render(clip(item.Title, max(1, width-len(id)-2)))
+		actions = append(actions, binding{"i", "show item"})
+	} else {
+		title = m.s().bold.Render(clip(shortResources(claim.Resources), width-1))
 	}
-	title := m.s().accent.Bold(true).Render("Claim " + clip(claimID, 20))
-	items := []tabItem{{label: "Summary"}, {label: "History"}}
-	tabs, _ := m.s().tabBar(items, m.Claims.DetailTab, width-1)
-	content := m.claimDetailContent(claim, width)
-	lines := []string{" " + title, " " + tabs}
-	visible := max(0, height-len(lines))
-	offset := max(0, min(m.Claims.DetailOffset, len(content)-visible))
-	end := min(len(content), offset+visible)
-	shown := content[offset:end]
-	if end < len(content) && len(shown) > 0 {
-		shown = append(append([]string(nil), shown[:len(shown)-1]...), m.s().faint.Render(fmt.Sprintf("  ↓ %d more lines (pgdn)", len(content)-end+1)))
-	}
-	for _, line := range shown {
-		lines = append(lines, " "+line)
-	}
-	return lines
+	tabs, _ := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab, width-1)
+	lines := []string{" " + title, " " + m.s().actionLine(actions, width-2), " " + tabs}
+	return append(lines, m.s().scrollWindow(m.claimDetailContent(claim, width), m.Claims.DetailOffset, height-len(lines))...)
 }
+
+var claimDetailTabs = []tabItem{{label: "Summary"}, {label: "History"}}
 
 func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 	plainStyle := lipgloss.NewStyle()
+	now := m.claimsNow()
 	var lines []dline
 	add := func(label, text string, style lipgloss.Style) { lines = append(lines, dline{label, text, style}) }
 	if m.Claims.DetailTab == 0 {
-		add("Resources", displayResources(claim.Resources), plainStyle)
-		add("Holder", valueOr(claim.AgentID, "unknown"), plainStyle)
+		add("State", m.claimStateLabel(claim, now)+" \u00b7 "+claimExpiryLabel(claim, now), m.claimExpiryStyle(claim))
+		holder := valueOr(clean(claim.AgentID), "unknown")
+		if m.claimIsMine(claim) {
+			holder += " (mine)"
+		}
+		add("Holder", holder, plainStyle)
 		add("Session", valueOr(claim.SessionID, "unknown"), plainStyle)
-		add("Work key", valueOr(claim.WorkKey, "—"), plainStyle)
-		add("Acquired", claim.AcquiredAt.UTC().Format(time.RFC3339), plainStyle)
-		add("Expiry", claimExpiryLabel(claim, m.claimsNow())+" · "+claim.ExpiresAt.UTC().Format(time.RFC3339), m.claimExpiryStyle(claim))
-		checkpoint := "not present"
+		if item, ok := m.claimItem(claim); ok {
+			add("Item", item.Ref.String(), m.s().accent)
+		}
+		for n, resource := range claim.Resources {
+			label := " "
+			if n == 0 {
+				label = "Resources"
+			}
+			add(label, displayResource(resource), plainStyle)
+		}
+		add("Acquired", when(claim.AcquiredAt, now), plainStyle)
+		add("Heartbeat", when(claim.HeartbeatAt, now), plainStyle)
+		checkpoint := "none"
 		if claim.CheckpointPresent {
-			checkpoint = "present (public status only)"
+			checkpoint = "present"
 		}
 		add("Checkpoint", checkpoint, plainStyle)
 		if len(claim.UnknownOperations) > 0 {
-			add("Progress", fmt.Sprintf("%d operation(s) require read-back", len(claim.UnknownOperations)), m.s().warn)
+			add("Progress", fmt.Sprintf("%d operation(s) need read-back", len(claim.UnknownOperations)), m.s().warn)
 		}
-		if item, ok := m.claimItem(claim); ok {
-			add("Queue item", item.Title+" (press i to jump)", m.s().accent)
+		if claim.WorkKey != "" {
+			add("Work key", claim.WorkKey, plainStyle)
 		}
+		add("Claim ID", claim.ClaimID, m.s().faint)
 		if m.Claims.Stale {
-			add("Freshness", "stale · "+valueOr(m.Claims.Error, "refresh unavailable"), m.s().warnBold)
+			add("Freshness", "stale \u00b7 "+valueOr(m.Claims.Error, "refresh unavailable"), m.s().warnBold)
 		}
 	} else if m.Claims.PublicOnly {
 		// The remote list exposes timestamps, but status/list do not expose
 		// other sessions' lifecycle events or operation history.
-		add("Acquired", claim.AcquiredAt.UTC().Format(time.RFC3339), plainStyle)
-		add("Heartbeat", claim.HeartbeatAt.UTC().Format(time.RFC3339), plainStyle)
-		add("Expiry", claim.ExpiresAt.UTC().Format(time.RFC3339), plainStyle)
-		add("History", "Remote claim history is not shown", m.s().faint)
+		add("Acquired", when(claim.AcquiredAt, now), plainStyle)
+		add("Heartbeat", when(claim.HeartbeatAt, now), plainStyle)
+		add("Expires", claim.ExpiresAt.UTC().Format(time.RFC3339), plainStyle)
+		add("", "", plainStyle)
+		add("", "Remote authorities do not share claim history.", m.s().faint)
 	} else {
 		if m.Claims.Gap {
 			add("Events", "history gap · older lifecycle events may have been pruned", m.s().warn)
@@ -179,8 +283,12 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 		if len(events) == 0 {
 			add("Lifecycle", "No recent public lifecycle events for this claim.", m.s().faint)
 		}
-		for _, event := range events {
-			add("", event.At.UTC().Format(time.RFC3339)+" · "+event.Kind, plainStyle)
+		for n, event := range events {
+			label := " "
+			if n == 0 {
+				label = "Lifecycle"
+			}
+			add(label, fmt.Sprintf("%-10s %s", event.Kind, ago(now.Sub(event.At))), plainStyle)
 		}
 		if m.Claims.HistoryLoading {
 			add("History", "Loading current claim epoch…", m.s().faint)
@@ -197,7 +305,8 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 				continue
 			}
 			found = true
-			add("Epoch", epoch.Status+" · acquired "+epoch.AcquiredAt.UTC().Format(time.RFC3339), m.s().bold)
+			add("", "", plainStyle)
+			add("Epoch", epoch.Status+" · acquired "+ago(now.Sub(epoch.AcquiredAt)), m.s().bold)
 			for _, operation := range epoch.Operations {
 				add("Progress", operation.Kind+" · "+operation.State, plainStyle)
 			}
@@ -210,8 +319,11 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 }
 
 func (m Model) claimExpiryStyle(claim lease.ClaimView) lipgloss.Style {
-	if m.Claims.Stale || !claim.Active {
+	if m.Claims.Stale {
 		return m.s().warn
+	}
+	if !claim.Active {
+		return m.s().faint
 	}
 	if claimExpiring(claim, m.claimsNow()) {
 		return m.s().warnBold
@@ -219,23 +331,58 @@ func (m Model) claimExpiryStyle(claim lease.ClaimView) lipgloss.Style {
 	return lipgloss.NewStyle()
 }
 
-func (m Model) claimItem(claim lease.ClaimView) (queue.Item, bool) {
-	keys := make([]string, 0, len(m.Snapshot.Items))
-	for key := range m.Snapshot.Items {
-		keys = append(keys, key)
+// claimItems maps each claim to the loaded queue item sharing one of its
+// resources, scanning the snapshot once. Ties go to the lowest item key.
+func (m Model) claimItems(claims []lease.ClaimView) map[string]queue.Item {
+	wanted := map[string]bool{}
+	for _, claim := range claims {
+		for _, resource := range claim.Resources {
+			wanted[resource] = true
+		}
 	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		item := m.Snapshot.Items[key]
+	byResource := map[string]string{}
+	for key, item := range m.Snapshot.Items {
 		for _, resource := range item.Resources {
-			for _, claimResource := range claim.Resources {
-				if resource == claimResource {
-					return item, true
-				}
+			if current, ok := byResource[resource]; wanted[resource] && (!ok || key < current) {
+				byResource[resource] = key
 			}
 		}
 	}
-	return queue.Item{}, false
+	items := map[string]queue.Item{}
+	for _, claim := range claims {
+		var keys []string
+		for _, resource := range claim.Resources {
+			if key, ok := byResource[resource]; ok {
+				keys = append(keys, key)
+			}
+		}
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			items[claim.ClaimID] = m.Snapshot.Items[keys[0]]
+		}
+	}
+	return items
+}
+
+func (m Model) claimItem(claim lease.ClaimView) (queue.Item, bool) {
+	item, ok := m.claimItems([]lease.ClaimView{claim})[claim.ClaimID]
+	return item, ok
+}
+
+// itemClaim returns the loaded authority claim on an item's resources,
+// preferring an active one.
+func (m Model) itemClaim(item queue.Item) (lease.ClaimView, bool) {
+	var found lease.ClaimView
+	ok := false
+	for _, claim := range m.Claims.Items {
+		if !slices.ContainsFunc(claim.Resources, func(r string) bool { return slices.Contains(item.Resources, r) }) {
+			continue
+		}
+		if !ok || claim.Active && !found.Active {
+			found, ok = claim, true
+		}
+	}
+	return found, ok
 }
 
 func (m Model) claimDetailMaxOffset(claim lease.ClaimView) int {
@@ -244,12 +391,12 @@ func (m Model) claimDetailMaxOffset(claim lease.ClaimView) int {
 		width = m.Width
 	}
 	content := m.claimDetailContent(claim, width)
-	visible := max(1, m.frame(m.rows()).bodyHeight-2)
+	visible := max(1, m.frame(m.rows()).bodyHeight-detailChrome)
 	return max(0, len(content)-visible)
 }
 
 func (m Model) claimDetailTabSpans(width int) []span {
-	_, spans := m.s().tabBar([]tabItem{{label: "Summary"}, {label: "History"}}, m.Claims.DetailTab, width)
+	_, spans := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab, width)
 	return spans
 }
 
@@ -273,7 +420,8 @@ func (m Model) claimItemJump() (Model, bool) {
 		for index, row := range candidate.rows() {
 			if identity(row) == identity(item) {
 				m.setView(name)
-				m.Selected, m.Index, m.Detail = identity(row), index, true
+				m.Selected, m.Index = identity(row), index
+				m.openDetail()
 				m.anchor(m.rows())
 				return m, true
 			}
@@ -283,15 +431,44 @@ func (m Model) claimItemJump() (Model, bool) {
 	return m, false
 }
 
-func (m Model) claimFilterSummary() string {
+// itemClaimJump shows the selected item's claim in the Claims tab, the
+// reverse of i on a claim. A claim the list has not caught up with yet is
+// found by filtering on the item's resource while the tab refreshes.
+func (m Model) itemClaimJump() (tea.Model, tea.Cmd) {
+	item, ok := m.selected(m.rows())
+	if !ok || !slices.Contains(m.Views, ClaimsViewID) || len(item.Resources) == 0 {
+		m.Notice = "No claim to show"
+		return m, nil
+	}
+	claim, found := m.itemClaim(item)
+	if !found && !item.Claim.Active {
+		m.Notice = "No current claim on " + clean(item.Ref.ItemID)
+		return m, nil
+	}
+	cmd := m.setView(ClaimsViewID)
+	m.Claims.MineOnly, m.Claims.ExpiringOnly, m.Claims.StaleOnly = false, false, false
+	m.Claims.ResourcePrefix = ""
+	if !found {
+		m.Claims.ResourcePrefix = item.Resources[0]
+		m.Claims.Detail = false
+		m.anchorClaims(m.claimRows(), max(1, m.frame(m.rows()).bodyHeight-1))
+		return m, cmd
+	}
+	m.Claims.Selected = claim.ClaimID
+	m.Claims.Detail, m.Claims.DetailTab, m.Claims.DetailOffset = true, 0, 0
+	rows := m.claimRows()
+	m.anchorClaims(rows, max(1, m.frame(m.rows()).bodyHeight-1))
+	return m, tea.Batch(cmd, m.loadSelectedClaimHistory(rows))
+}
+
+// claimFilters names the active Claims filters.
+func (m Model) claimFilters() []string {
 	var filters []string
 	if m.Claims.MineOnly {
 		filters = append(filters, "mine")
-	} else {
-		filters = append(filters, "all")
 	}
 	if m.Claims.ResourcePrefix != "" {
-		filters = append(filters, "resource "+m.Claims.ResourcePrefix)
+		filters = append(filters, "resource "+shortResource(m.Claims.ResourcePrefix))
 	}
 	if m.Claims.ExpiringOnly {
 		filters = append(filters, "expiring")
@@ -299,40 +476,15 @@ func (m Model) claimFilterSummary() string {
 	if m.Claims.StaleOnly {
 		filters = append(filters, "stale")
 	}
-	return strings.Join(filters, " · ")
+	return filters
 }
 
-func (m Model) claimsFooterLines() []string {
-	shown := len(m.claimRows())
-	status := "fresh"
-	statusStyle := m.s().good
-	switch {
-	case m.Claims.Loading:
-		status, statusStyle = "loading", m.s().faint
-	case m.Claims.Stale:
-		status, statusStyle = "stale", m.s().warnBold
-	case m.Claims.Gap:
-		status, statusStyle = "history gap", m.s().warn
+func (m Model) claimsStatus() (left, right []seg) {
+	if filters := m.claimFilters(); len(filters) > 0 {
+		left = []seg{{fmt.Sprintf("%d of %d claims", len(m.claimRows()), len(m.Claims.Items)), m.s().bold}, {" · " + strings.Join(filters, " · "), m.s().faint}}
 	}
-	left := []seg{{fmt.Sprintf("%d shown / %d claims", shown, len(m.Claims.Items)), m.s().bold}, {" · " + m.claimFilterSummary(), m.s().faint}}
-	right := []seg{{"authority claims ", m.s().faint}, {status, statusStyle}}
-	gap := m.Width - segsWidth(left) - segsWidth(right)
-	line := renderSegs(left)
-	if gap >= 2 {
-		line += strings.Repeat(" ", gap) + renderSegs(right)
-	} else {
-		line = renderSegs([]seg{left[0], {" · ", m.s().faint}, right[1]})
+	if m.Claims.Gap {
+		right = []seg{{"event history gap", m.s().warn}}
 	}
-	lines := []string{line}
-	if m.Notice != "" {
-		lines = append(lines, m.s().noticeStyle(m.Notice).Render(clip(m.Notice, m.Width)))
-	}
-	if m.Filtering || m.Palette {
-		prompt := "/"
-		if m.Palette {
-			prompt = ":"
-		}
-		lines = append(lines, m.s().key.Render(prompt)+clip(m.Input, m.Width-3)+m.s().selected.Render(" "))
-	}
-	return append(lines, m.keyBar())
+	return left, right
 }

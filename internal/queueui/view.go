@@ -249,13 +249,7 @@ func (m Model) frame(rows []queue.Item) frame {
 	f.top = append(f.top, m.banners()...)
 	f.footer = m.footerLines(rows)
 	f.bodyTop = len(f.top)
-	f.bodyHeight = m.Height - len(f.top) - len(f.footer)
-	if f.bodyHeight < 3 && len(f.footer) > 1 {
-		// Keep the coverage line; the key bar is the first thing to go.
-		f.footer = f.footer[:len(f.footer)-1]
-		f.bodyHeight++
-	}
-	f.bodyHeight = max(0, f.bodyHeight)
+	f.bodyHeight = max(0, m.Height-len(f.top)-len(f.footer))
 	return f
 }
 
@@ -349,43 +343,48 @@ func (m Model) screen() []string {
 	return out
 }
 
+// headerLine names the authority and user on the left and sync state on
+// the right. Healthy sources are implied; problems get their own banner.
 func (m Model) headerLine() string {
-	authority := valueOr(clean(m.Authority), "unset")
-	scope := valueOr(clean(m.Scope), "unknown scope")
-	age := "not synced"
-	ageStyle := m.s().warn
-	if m.rowCache != nil && !m.rowCache.observed.IsZero() {
-		age, ageStyle = "synced "+ago(time.Since(m.rowCache.observed)), m.s().faint
+	authority := shortIDs(valueOr(clean(m.Authority), "unset"))
+	if scope := clean(m.Scope); scope != "" && !strings.HasPrefix(authority, scope+" ") && authority != scope {
+		authority += " (" + scope + ")"
 	}
-	healthyCount := healthy(m.Snapshot.Sources)
-	sourceStyle := m.s().good
-	if healthyCount < len(m.Sources) {
-		sourceStyle = m.s().warnBold
+	left := []seg{{"worklease queue", m.s().appTitle}, {"  authority ", m.s().faint}, {authority, lipgloss.NewStyle()}}
+	if m.Me != "" {
+		left = append(left, seg{"  me ", m.s().faint}, seg{clean(m.Me), lipgloss.NewStyle()})
 	}
-	build := func(authority string, withMe, withAge bool) []seg {
-		label := "  authority: "
-		if !withMe {
-			label = "  "
-		}
-		segs := []seg{{"worklease queue", m.s().appTitle}, {label, m.s().faint}, {authority + " (" + scope + ")", lipgloss.NewStyle()}}
-		if withMe && m.Me != "" {
-			segs = append(segs, seg{"  me: ", m.s().faint}, seg{clean(m.Me), lipgloss.NewStyle()})
-		}
-		segs = append(segs, seg{"  ", lipgloss.NewStyle()}, seg{fmt.Sprintf("sources %d/%d", healthyCount, len(m.Sources)), sourceStyle})
-		if withAge {
-			segs = append(segs, seg{"  " + age, ageStyle})
-		}
-		return segs
+	var right []seg
+	if healthyCount := healthy(m.Snapshot.Sources); healthyCount < len(m.Sources) {
+		right = append(right, seg{fmt.Sprintf("sources %d/%d", healthyCount, len(m.Sources)), m.s().warnBold}, seg{"  ", lipgloss.NewStyle()})
 	}
-	// Prefer dropping low-value facts over truncating the authority, which
-	// identifies whom claims coordinate with.
-	candidates := [][]seg{build(authority, true, true), build(shortIDs(authority), true, true), build(shortIDs(authority), true, false), build(shortIDs(authority), false, false)}
-	for _, segs := range candidates {
-		if segsWidth(segs) <= m.Width {
-			return renderSegs(segs)
+	switch {
+	case m.ViewName == ClaimsViewID && !m.Claims.LastUpdated.IsZero():
+		right = append(right, seg{"updated " + ago(m.claimsNow().Sub(m.Claims.LastUpdated)), m.s().faint})
+	case m.ViewName != ClaimsViewID && m.rowCache != nil && !m.rowCache.observed.IsZero():
+		right = append(right, seg{"synced " + ago(time.Since(m.rowCache.observed)), m.s().faint})
+	case len(m.Sources) > 0:
+		right = append(right, seg{"not synced", m.s().warn})
+	}
+	return spread(left, right, m.Width)
+}
+
+// spread renders left and right segments on one line, dropping trailing
+// left segments (then the right side) until both fit.
+func spread(left, right []seg, width int) string {
+	for len(left) > 1 && segsWidth(left)+2+segsWidth(right) > width {
+		left = left[:len(left)-1]
+		if n := len(left); n > 1 && strings.TrimSpace(left[n-1].text) != left[n-1].text {
+			left = left[:n-1] // drop the now-dangling label
 		}
 	}
-	return renderSegs(candidates[len(candidates)-1])
+	if segsWidth(left)+2+segsWidth(right) > width {
+		return renderSegs(left)
+	}
+	if len(right) == 0 {
+		return renderSegs(left)
+	}
+	return renderSegs(left) + strings.Repeat(" ", width-segsWidth(left)-segsWidth(right)) + renderSegs(right)
 }
 
 // shortIDs abbreviates long opaque tokens such as authority IDs.
@@ -438,7 +437,11 @@ func (m Model) viewTabs() (string, []span) {
 		} else if name == ClaimsViewID && m.Claims.Stale {
 			style = m.s().warnBold
 		}
-		items = append(items, tabItem{label: clip(viewLabel(name), 20), suffix: fmt.Sprint(count), suffixStyle: style})
+		suffix := fmt.Sprint(count)
+		if name == ClaimsViewID && m.Claims.LastUpdated.IsZero() && len(m.Claims.Items) == 0 {
+			suffix = "" // not read yet; 0 would claim there are none
+		}
+		items = append(items, tabItem{label: clip(viewLabel(name), 20), suffix: suffix, suffixStyle: style})
 		if name == m.ViewName {
 			active = n
 		}
@@ -502,10 +505,49 @@ func (m Model) banners() []string {
 	return out
 }
 
+// footerLines shows only what needs attention: an active filter, partial
+// coverage, freshness problems, the last notice, and an open prompt. Key
+// bindings live in help (?), not on screen.
 func (m Model) footerLines(rows []queue.Item) []string {
+	var left, right []seg
 	if m.ViewName == ClaimsViewID {
-		return m.claimsFooterLines()
+		left, right = m.claimsStatus()
+	} else {
+		left, right = m.queueStatus(rows)
 	}
+	var lines []string
+	if len(left)+len(right) > 0 {
+		lines = append(lines, spread(left, right, m.Width))
+	}
+	if m.Notice != "" {
+		lines = append(lines, m.s().noticeStyle(m.Notice).Render(clip(m.Notice, m.Width)))
+	}
+	if m.Filtering || m.Palette {
+		prompt := "/"
+		if m.Palette {
+			prompt = ":"
+		}
+		input := clip(m.Input, m.Width-3) + m.s().selected.Render(" ")
+		if m.Input == "" {
+			input += " " + m.s().faint.Render(clip(m.promptPlaceholder(), m.Width-4))
+		}
+		lines = append(lines, m.s().key.Render(prompt)+input)
+	}
+	return lines
+}
+
+// promptPlaceholder says what the open prompt accepts.
+func (m Model) promptPlaceholder() string {
+	switch {
+	case m.Palette:
+		return "command: start work"
+	case m.ViewName == ClaimsViewID:
+		return "resource prefix"
+	}
+	return "filter loaded rows"
+}
+
+func (m Model) queueStatus(rows []queue.Item) (left, right []seg) {
 	loaded := len(m.Snapshot.Items)
 	total, accuracy := 0, "exact"
 	if len(m.Snapshot.Sources) == 0 || len(m.SourceErrors) > 0 {
@@ -524,40 +566,36 @@ func (m Model) footerLines(rows []queue.Item) []string {
 			accuracy = "estimated"
 		}
 	}
-	edges := 0
-	if m.rowCache != nil {
-		edges = m.rowCache.edges
-	}
-	coverage := fmt.Sprintf("%d loaded of %d (%s)", loaded, total, accuracy)
-	if total < loaded {
-		coverage = fmt.Sprintf("%d loaded (total unknown)", loaded)
-	}
-	left := []seg{{fmt.Sprintf("%d shown", len(rows)), m.s().bold}, {" · " + coverage + fmt.Sprintf(" · edges %d/%d", edges, loaded), m.s().faint}}
 	if m.Filter != "" {
-		left = append(left, seg{" · ", m.s().faint}, seg{"filter ", m.s().accent}, seg{fmt.Sprintf("%q", clip(m.Filter, 32)), m.s().bold}, seg{" (loaded rows)", m.s().faint})
+		left = append(left, seg{"filter ", m.s().accent}, seg{fmt.Sprintf("%q", clip(m.Filter, 32)), m.s().bold}, seg{fmt.Sprintf(" \u00b7 %d match", len(rows)), m.s().faint})
 	}
-	provider, claims := sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness)
-	right := []seg{{"provider ", m.s().faint}, {provider, m.s().freshnessStyle(provider)}, {" · claims ", m.s().faint}, {claims, m.s().freshnessStyle(claims)}}
-	var status string
-	if gap := m.Width - segsWidth(left) - segsWidth(right); gap >= 2 {
-		status = renderSegs(left) + strings.Repeat(" ", gap) + renderSegs(right)
-	} else {
-		// Narrow: keep the shown count and freshness; coverage detail is in wider layouts.
-		status = renderSegs(append([]seg{left[0], {" · ", m.s().faint}}, right...))
+	switch {
+	case loaded == 0:
+	case total < loaded || accuracy == "unknown":
+		left = append(left, seg{sep(left) + fmt.Sprintf("%d loaded, total unknown", loaded), m.s().faint})
+	case accuracy == "estimated":
+		left = append(left, seg{sep(left) + fmt.Sprintf("%d of ~%d loaded", loaded, total), m.s().faint})
+	case loaded < total:
+		left = append(left, seg{sep(left) + fmt.Sprintf("%d of %d loaded", loaded, total), m.s().faint})
 	}
-	lines := []string{status}
-	if m.Notice != "" {
-		// Notices get their own line so holder, expiry, and recovery paths stay readable.
-		lines = append(lines, m.s().noticeStyle(m.Notice).Render(clip(m.Notice, m.Width)))
-	}
-	if m.Filtering || m.Palette {
-		prompt := "/"
-		if m.Palette {
-			prompt = ":"
+	for _, fact := range []struct{ label, value string }{{"provider ", sourceFreshness(m.Snapshot)}, {"claims ", freshnessLabel(m.ClaimFreshness)}} {
+		if fact.value == "fresh" {
+			continue
 		}
-		lines = append(lines, m.s().key.Render(prompt)+clip(m.Input, m.Width-3)+m.s().selected.Render(" "))
+		if len(right) > 0 {
+			right = append(right, seg{" · ", m.s().faint})
+		}
+		right = append(right, seg{fact.label, m.s().faint}, seg{fact.value, m.s().freshnessStyle(fact.value)})
 	}
-	return append(lines, m.keyBar())
+	return left, right
+}
+
+// sep returns the separator that precedes a new fact after segs.
+func sep(segs []seg) string {
+	if len(segs) == 0 {
+		return ""
+	}
+	return " · "
 }
 
 func (p *palette) freshnessStyle(value string) lipgloss.Style {
@@ -585,6 +623,25 @@ func (p *palette) noticeStyle(notice string) lipgloss.Style {
 
 type binding struct{ keys, desc string }
 
+// actionLine lists the actions available here, in priority order, as many
+// as fit in width.
+func (p *palette) actionLine(bindings []binding, width int) string {
+	var parts []string
+	used := 0
+	for _, b := range bindings {
+		cost := ansi.StringWidth(b.keys) + 1 + ansi.StringWidth(b.desc)
+		if len(parts) > 0 {
+			cost += 2
+		}
+		if used+cost > width {
+			break
+		}
+		used += cost
+		parts = append(parts, p.key.Render(b.keys)+" "+p.faint.Render(b.desc))
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (p *palette) keyHints(bindings []binding, width int) string {
 	render := func(b binding) string { return p.key.Render(b.keys) + " " + p.faint.Render(b.desc) }
 	cost := func(b binding) int { return ansi.StringWidth(b.keys) + 1 + ansi.StringWidth(b.desc) + 2 }
@@ -602,77 +659,43 @@ func (p *palette) keyHints(bindings []binding, width int) string {
 	return strings.Join(append(parts, render(last)), "  ")
 }
 
-func (m Model) keyBar() string {
-	return m.s().keyHints(m.bindings(), m.Width)
-}
-
-// bindings lists the keys that act in the current mode, most useful first.
-func (m Model) bindings() []binding {
-	var bindings []binding
-	switch m.mode() {
-	case modeFilter:
-		if m.ViewName == ClaimsViewID {
-			bindings = []binding{{"enter", "apply prefix"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}
-		} else {
-			bindings = []binding{{"enter", "apply"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}
-		}
-	case modePalette:
-		bindings = []binding{{"start work", "command"}, {"enter", "run"}, {"esc", "cancel"}}
-	case modeHelp:
-		bindings = []binding{{"^f/b d/u e/y", "scroll help"}, {"esc/?", "close help"}}
-	case modeRecovery:
-		bindings = []binding{{"j/k", "select"}, {"r", "retry read-back"}, {"e", "attest"}, {"u", "reload"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
-	case modeClaims:
-		if m.Claims.Detail {
-			bindings = []binding{{"j/k", "select"}, {"tab", "section"}, {"pgup/pgdn", "scroll"}, {"i", "open queue item"}, {"esc", "back"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
-		} else {
-			bindings = []binding{{"j/k", "select"}, {"enter", "detail"}, {"/", "resource prefix"}, {"m", "mine/all"}, {"e", "expiring"}, {"s", "stale"}, {"i", "queue item"}, {"r", "refresh"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
-		}
-	case modeList:
-		if m.Detail {
-			return []binding{{"tab", "section"}, {"^f/b d/u e/y", "scroll text"}, {"c", "claim"}, {"S", "start"}, {"s", "state"}, {"p", "progress"}, {"a", "assign"}, {"o", "open"}, {"esc", "back"}, {"?", "help"}}
-		}
-		bindings = []binding{{"j/k", "move"}, {"^f/b d/u e/y", "scroll list"}, {"enter", "open"}, {"/", "filter"}, {"v/1-9", "view"}, {"c", "claim"}, {"x", "launch"}, {"r", "refresh"}, {"q", "quit"}, {"?", "help"}}
-		if m.Filter != "" {
-			bindings = slices.Insert(bindings, 3, binding{"esc", "clear filter"})
-		}
-	default:
-		box, _ := m.dialogView()
-		bindings = box.keys
-	}
-	return bindings
-}
-
 var helpGroups = []struct {
 	title    string
 	bindings []binding
 }{
 	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous row"}, {"gg / G", "first / last row"}, {"H / M / L", "top / middle / bottom visible row"}, {"zz / zt / zb", "center / top / bottom selected row"}, {"^f / ^b", "scroll one page forward / back"}, {"^d / ^u", "scroll half page down / up"}, {"^e / ^y", "scroll one line down / up"}, {"pgdn / pgup", "scroll one page"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}}},
-	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows or Claims resource prefix"}, {"Claims", "authority-wide; Claimed filters items"}, {"esc", "clear filter"}}},
-	{"Item actions (preview first)", []binding{{"c", "claim for me"}, {"S", "start work: claim + transition (detail)"}, {"s", "change provider state"}, {"p", "record progress note"}, {"a", "assign to me"}, {"R", "release verified no-effect claim"}, {"x", "launch worker"}, {"o", "open provider URL"}, {"m", "load more comments / claim history"}}},
+	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}}},
+	{"Item actions (preview first)", []binding{{"S", "start: claim + move to started status"}, {"c", "claim for me"}, {"s", "change provider status"}, {"p", "add a progress note"}, {"a", "assign to me"}, {"R", "release a verified no-effect claim"}, {"x", "launch a worker"}, {"o", "open in provider"}, {"i", "show the item's claim"}, {"m", "load more comments / claim history"}}},
 	{"Queue", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
 }
 
+var claimsHelp = []binding{{"enter", "show holder, session, expiry, checkpoint"}, {"/", "filter by resource prefix"}, {"m", "toggle mine / all"}, {"e", "toggle expiring"}, {"s", "toggle stale"}, {"i", "show the claimed queue item"}, {"r", "refresh"}, {"esc", "close detail, then clear filters"}, {"q", "quit"}}
+
+var recoveryHelp = []binding{{"r", "retry read-back"}, {"e", "attest with audit evidence"}, {"u", "reload the journal"}, {"q", "quit"}}
+
 func (m Model) helpLines() []string {
-	var groups [][]string
-	for _, group := range helpGroups {
-		if m.ViewName == ClaimsViewID && (group.title == "Item actions (preview first)" || group.title == "Queue") {
-			continue
-		}
-		lines := []string{m.s().bold.Render(group.title)}
-		for _, b := range group.bindings {
+	group := func(title string, bindings []binding) []string {
+		lines := []string{m.s().bold.Render(title)}
+		for _, b := range bindings {
 			lines = append(lines, "  "+m.s().key.Render(fit(b.keys, 11))+" "+b.desc)
 		}
-		groups = append(groups, append(lines, ""))
+		return append(lines, "")
 	}
-	if m.ViewName == ClaimsViewID {
-		claims := []string{m.s().bold.Render("Claims tab · authority-wide, read-only")}
-		for _, b := range []binding{{"j/k", "select claim"}, {"enter", "open holder, session, expiry and checkpoint status"}, {"/", "filter by resource prefix"}, {"m", "toggle mine / all"}, {"e", "toggle expiring"}, {"s", "toggle stale"}, {"i", "jump to matching queue item"}, {"r", "refresh list and event cursor"}, {"q", "quit"}} {
-			claims = append(claims, "  "+m.s().key.Render(fit(b.keys, 11))+" "+b.desc)
+	var groups [][]string
+	switch m.ViewName {
+	case ClaimsViewID:
+		groups = append(groups, group("Claims · authority-wide, read-only", claimsHelp))
+	case RecoveryViewID:
+		groups = append(groups, group("Recovery", recoveryHelp))
+	}
+	for _, g := range helpGroups {
+		if (m.ViewName == ClaimsViewID || m.ViewName == RecoveryViewID) && g.title != "Navigate" && g.title != "Views and filter" && g.title != "Mouse" {
+			continue
 		}
-		groups = append(groups, append(claims, ""))
+		groups = append(groups, group(g.title, g.bindings))
 	}
+	groups[0] = append([]string{m.s().faint.Render("Keyboard help · ? or esc closes"), ""}, groups[0]...)
 	const columnWidth = 56
 	if m.Width < columnWidth*2 {
 		var out []string
@@ -718,72 +741,47 @@ func (m Model) helpLines() []string {
 	return out
 }
 
-// column describes one list column. Title is the flexible column.
-type column struct {
+// column describes one table column. The flex column takes the width left
+// over; the others size to their content between min and max. alias holds
+// shorter spellings used when a value does not fit.
+type column[T any] struct {
 	title    string
 	min, max int
 	width    int
-	cell     func(queue.Item) (string, lipgloss.Style)
+	flex     bool
+	alias    map[string]string
+	cell     func(T) (string, lipgloss.Style)
 }
 
-// columns fits the list columns to width. Fixed columns size to their
-// content up to a cap; when space runs out they shrink toward their minimums,
-// then low-priority columns drop, so rows never wrap.
-func (m Model) columns(rows, visible []queue.Item, width int) []column {
-	idWidth, native := 2, false
-	for _, item := range rows {
-		idWidth = max(idWidth, len(item.Ref.ItemID))
-		if !native && item.NativeClaim != "" && item.NativeClaim != "not-exposed" {
-			native = true
-		}
-	}
-	idWidth = min(idWidth, 16)
-	all := []column{
-		{title: "ID", min: idWidth, max: idWidth, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Ref.ItemID, m.s().accent }},
-		{title: "Title", min: 16, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Title, lipgloss.NewStyle() }},
-		{title: "Status", min: 6, max: 16, cell: func(i queue.Item) (string, lipgloss.Style) { return projectStatusDisplay(i), m.s().stateStyle(i.State) }},
-		{title: "Ready", min: 8, max: 20, cell: m.readyCell},
-		{title: "Assigned", min: 6, max: 14, cell: m.assignedCell},
-		{title: "Native", min: 6, max: 12, cell: func(i queue.Item) (string, lipgloss.Style) { return i.NativeClaim, m.s().faint }},
-		{title: "Claim", min: 6, max: 16, cell: m.claimCell},
-	}
-	if !native {
-		all = slices.Delete(all, 5, 6)
-	}
-	seen := m.contentWidths(all, visible)
-	for n, c := range all {
-		if c.title == "ID" || c.title == "Title" {
-			continue
-		}
-		all[n].max = min(c.max, max(len(c.title), seen[c.title]))
-		all[n].min = min(c.min, all[n].max)
-	}
-	// Drop low-priority columns before shrinking the rest; a narrow list of
-	// whole values reads better than many clipped ones. ID never shrinks.
-	available := width - 2 // selection marker
-	fixedWidth := func() int {
+// fitColumns sizes cols to available cells so rows never wrap. The titles
+// in drop go first, in order, until the flex column fits its minimum — a
+// narrow table of whole values reads better than many clipped ones — then
+// the remaining columns shrink toward their minimums from the right.
+func fitColumns[T any](cols []column[T], available int, drop []string) []column[T] {
+	flex := func() int { return slices.IndexFunc(cols, func(c column[T]) bool { return c.flex }) }
+	fixed := func() int {
 		n := 0
-		for _, c := range all {
-			if c.title != "Title" {
+		for _, c := range cols {
+			if !c.flex {
 				n += c.width + columnGap
 			}
 		}
 		return n
 	}
-	for n := range all {
-		all[n].width = all[n].max
+	for n := range cols {
+		cols[n].width = cols[n].max
 	}
-	for _, drop := range []string{"Native", "Assigned", "Status", "Claim"} {
-		if available-fixedWidth() >= all[1].min {
+	for _, title := range drop {
+		if available-fixed() >= cols[flex()].min {
 			break
 		}
-		all = slices.DeleteFunc(all, func(c column) bool { return c.title == drop })
+		cols = slices.DeleteFunc(cols, func(c column[T]) bool { return c.title == title })
 	}
-	for need := all[1].min - (available - fixedWidth()); need > 0; {
+	for need := cols[flex()].min - (available - fixed()); need > 0; {
 		shrunk := false
-		for n := len(all) - 1; n >= 0 && need > 0; n-- {
-			if c := all[n]; c.title != "Title" && c.title != "ID" && c.width > c.min {
-				all[n].width--
+		for n := len(cols) - 1; n >= 0 && need > 0; n-- {
+			if c := cols[n]; !c.flex && c.width > c.min {
+				cols[n].width--
 				need--
 				shrunk = true
 			}
@@ -792,24 +790,103 @@ func (m Model) columns(rows, visible []queue.Item, width int) []column {
 			break
 		}
 	}
-	all[1].width = max(1, available-fixedWidth())
-	return all
+	cols[flex()].width = max(1, available-fixed())
+	return cols
+}
+
+// fitContent caps each sizable column at its widest title or seen value.
+func fitContent[T any](cols []column[T], seen map[string]int) {
+	for n, c := range cols {
+		if c.flex || c.min == c.max {
+			continue
+		}
+		cols[n].max = min(c.max, max(ansi.StringWidth(c.title), seen[c.title]))
+		cols[n].min = min(c.min, cols[n].max)
+	}
+}
+
+func cellWidths[T any](cols []column[T], rows []T) map[string]int {
+	widths := map[string]int{}
+	for _, row := range rows {
+		for _, c := range cols {
+			if !c.flex {
+				text, _ := c.cell(row)
+				widths[c.title] = max(widths[c.title], ansi.StringWidth(clean(text)))
+			}
+		}
+	}
+	return widths
+}
+
+func (c column[T]) text(value string) string {
+	if alias, ok := c.alias[value]; ok && ansi.StringWidth(value) > c.width {
+		value = alias
+	}
+	return fit(value, c.width)
+}
+
+func tableHeader[T any](p *palette, cols []column[T]) string {
+	header := make([]string, 0, len(cols))
+	for _, c := range cols {
+		header = append(header, fit(c.title, c.width))
+	}
+	return p.bold.Render("  " + strings.Join(header, strings.Repeat(" ", columnGap)))
+}
+
+// tableRow renders one row. A selected row is reverse video with a textual
+// marker; a muted row renders every cell faint.
+func tableRow[T any](p *palette, cols []column[T], row T, selected, muted bool, width int) string {
+	cells := make([]string, 0, len(cols))
+	for _, c := range cols {
+		text, style := c.cell(row)
+		switch {
+		case selected:
+			cells = append(cells, c.text(text))
+		case muted:
+			cells = append(cells, p.faint.Render(c.text(text)))
+		default:
+			cells = append(cells, style.Render(c.text(text)))
+		}
+	}
+	line := strings.Join(cells, strings.Repeat(" ", columnGap))
+	if selected {
+		return p.selected.Render(pad("> "+line, width))
+	}
+	return "  " + line
+}
+
+// columns fits the queue list columns to width. Fixed columns size to their
+// content up to a cap, so values stay whole as long as space allows.
+func (m Model) columns(rows, visible []queue.Item, width int) []column[queue.Item] {
+	idWidth, native := 2, false
+	for _, item := range rows {
+		idWidth = max(idWidth, len(item.Ref.ItemID))
+		if !native && item.NativeClaim != "" && item.NativeClaim != "not-exposed" {
+			native = true
+		}
+	}
+	idWidth = min(idWidth, 16)
+	all := []column[queue.Item]{
+		{title: "ID", min: idWidth, max: idWidth, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Ref.ItemID, m.s().accent }},
+		{title: "Title", min: 24, flex: true, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Title, lipgloss.NewStyle() }},
+		{title: "Status", min: 6, max: 16, cell: func(i queue.Item) (string, lipgloss.Style) { return projectStatusDisplay(i), m.s().stateStyle(i.State) }},
+		{title: "Ready", min: 8, max: 20, alias: readyAliases, cell: m.readyCell},
+		{title: "Assigned", min: 6, max: 14, cell: m.assignedCell},
+		{title: "Native", min: 6, max: 12, cell: func(i queue.Item) (string, lipgloss.Style) { return i.NativeClaim, m.s().faint }},
+		{title: "Claim", min: 6, max: 22, cell: m.claimCell},
+	}
+	if !native {
+		all = slices.Delete(all, 5, 6)
+	}
+	fitContent(all, m.contentWidths(all, visible))
+	return fitColumns(all, width-2, []string{"Native", "Assigned", "Claim", "Status"})
 }
 
 // contentWidths returns the widest cell per fixed column among the visible
 // rows, merged with widths already seen for the same rows so columns only
 // grow while scrolling.
-func (m Model) contentWidths(cols []column, visible []queue.Item) map[string]int {
-	widths := map[string]int{}
-	for _, item := range visible {
-		for _, c := range cols {
-			if c.title == "ID" || c.title == "Title" {
-				continue
-			}
-			text, _ := c.cell(item)
-			widths[c.title] = max(widths[c.title], ansi.StringWidth(clean(text)))
-		}
-	}
+func (m Model) contentWidths(cols []column[queue.Item], visible []queue.Item) map[string]int {
+	widths := cellWidths(cols, visible)
 	if m.rowCache == nil {
 		return widths
 	}
@@ -873,18 +950,35 @@ func (m Model) assignedCell(i queue.Item) (string, lipgloss.Style) {
 	return strings.Join(i.AssignedTo, ","), lipgloss.NewStyle()
 }
 
+// claimCell names the holder of an active claim, since Ready already says
+// the item is occupied; a free item shows a dash.
 func (m Model) claimCell(i queue.Item) (string, lipgloss.Style) {
 	if m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}
-	state := claimState(i)
 	switch {
 	case i.Claim.Stale || i.Claim.Reason != "":
-		return state, m.s().warn
+		return claimState(i), m.s().warn
 	case i.Claim.Active:
-		return state, m.s().held
+		return valueOr(clean(i.Claim.AgentID), "occupied"), m.s().held
+	case i.Claim.Known && i.Claim.State == "expired":
+		return "expired", m.s().faint
+	case i.Claim.Known:
+		return "\u2014", m.s().faint
 	}
-	return state, m.s().faint
+	return "unknown", m.s().faint
+}
+
+// claimSummary is the detail-pane form of claimCell, with the expiry.
+func (m Model) claimSummary(i queue.Item) (string, lipgloss.Style) {
+	text, style := m.claimCell(i)
+	switch {
+	case text == "\u2014":
+		text = "free"
+	case i.Claim.Active && !i.Claim.ExpiresAt.IsZero():
+		text += " \u00b7 " + expiresIn(i.Claim.ExpiresAt.Sub(m.claimsNow()))
+	}
+	return text, style
 }
 
 // ownsClaim reports whether this queue holds a verified claim on the item.
@@ -900,15 +994,6 @@ func (m Model) ownsClaim(i queue.Item) bool {
 	return false
 }
 
-func (m Model) cellText(c column, text string) string {
-	if c.title == "Ready" && ansi.StringWidth(text) > c.width {
-		if alias, ok := readyAliases[text]; ok {
-			text = alias
-		}
-	}
-	return fit(text, c.width)
-}
-
 func (m Model) listLines(rows []queue.Item, width, height int) []string {
 	if height <= 0 {
 		return nil
@@ -917,35 +1002,12 @@ func (m Model) listLines(rows []queue.Item, width, height int) []string {
 	offset := m.listOffset(len(rows), capacity)
 	visible := rows[offset:min(len(rows), offset+capacity)]
 	cols := m.columns(rows, visible, width)
-	header := make([]string, 0, len(cols))
-	for _, c := range cols {
-		header = append(header, fit(c.title, c.width))
-	}
-	lines := []string{m.s().bold.Render("  " + strings.Join(header, strings.Repeat(" ", columnGap)))}
+	lines := []string{tableHeader(m.s(), cols)}
 	if len(rows) == 0 {
 		return append(lines, m.emptyLines(width)...)
 	}
-	gap := strings.Repeat(" ", columnGap)
 	for _, item := range visible {
-		selected := identity(item) == m.Selected
-		if selected {
-			cells := make([]string, 0, len(cols))
-			for _, c := range cols {
-				text, _ := c.cell(item)
-				cells = append(cells, m.cellText(c, text))
-			}
-			lines = append(lines, m.s().selected.Render(pad("> "+strings.Join(cells, gap), width)))
-			continue
-		}
-		cells := make([]string, 0, len(cols))
-		for _, c := range cols {
-			text, style := c.cell(item)
-			if item.Terminal {
-				style = m.s().faint
-			}
-			cells = append(cells, style.Render(m.cellText(c, text)))
-		}
-		lines = append(lines, "  "+strings.Join(cells, gap))
+		lines = append(lines, tableRow(m.s(), cols, item, identity(item) == m.Selected, item.Terminal, width))
 	}
 	return lines
 }
@@ -1041,22 +1103,66 @@ func (m Model) detailContent(item queue.Item, width int) []string {
 	return m.s().renderDetail(detail(m, item), max(1, width-1))
 }
 
+// detailChrome is the fixed header above scrollable detail content: the
+// title, the actions available for it, and the section tabs.
+const (
+	detailChrome = 3
+	detailTabRow = 2
+)
+
 func (m Model) detailPane(item queue.Item, width, height int) []string {
 	title := m.s().accent.Bold(true).Render(clip(item.Ref.ItemID, 30)) + " " + m.s().bold.Render(clip(item.Title, max(1, width-ansi.StringWidth(clip(item.Ref.ItemID, 30))-2)))
 	tabs, _ := m.detailTabs(m.Tab, width-1)
-	lines := []string{" " + title, " " + tabs}
-	content := m.detailContent(item, width)
-	visible := max(0, height-len(lines))
-	offset := max(0, min(m.DetailOffset, len(content)-visible))
+	lines := []string{" " + title, " " + m.s().actionLine(m.itemActions(item), width-2), " " + tabs}
+	return append(lines, m.s().scrollWindow(m.detailContent(item, width), m.DetailOffset, height-len(lines))...)
+}
+
+// scrollWindow returns the visible slice of content starting at offset,
+// replacing the last line with a count when more remains below.
+func (p *palette) scrollWindow(content []string, offset, visible int) []string {
+	visible = max(0, visible)
+	offset = max(0, min(offset, len(content)-visible))
 	end := min(len(content), offset+visible)
-	shown := content[offset:end]
+	shown := append([]string(nil), content[offset:end]...)
 	if end < len(content) && len(shown) > 0 {
-		shown = append(append([]string(nil), shown[:len(shown)-1]...), m.s().faint.Render(fmt.Sprintf("  ↓ %d more lines (pgdn)", len(content)-end+1)))
+		shown[len(shown)-1] = p.faint.Render(fmt.Sprintf("  ↓ %d more lines", len(content)-end+1))
 	}
-	for _, line := range shown {
-		lines = append(lines, " "+line)
+	for n, line := range shown {
+		shown[n] = " " + line
 	}
-	return lines
+	return shown
+}
+
+// itemActions lists the actions this queue can take on the item, most
+// common first. Claiming is offered only for unclaimed, unfinished work.
+func (m Model) itemActions(i queue.Item) []binding {
+	var actions []binding
+	claimable := !i.Claim.Active && !i.Terminal
+	if claimable && m.StartTransitions[i.Ref.SourceID] != "" && m.PreviewStart != nil {
+		actions = append(actions, binding{"S", "start"})
+	}
+	if claimable && m.PreviewClaim != nil {
+		actions = append(actions, binding{"c", "claim"})
+	}
+	if m.ownsClaim(i) && m.CancelClaim != nil {
+		actions = append(actions, binding{"R", "release"})
+	}
+	if len(m.StateChoices[i.Ref.SourceID]) > 0 {
+		actions = append(actions, binding{"s", "status"})
+	}
+	if m.PreviewWrite != nil {
+		actions = append(actions, binding{"p", "note"}, binding{"a", "assign me"})
+	}
+	if m.PreviewLaunch != nil {
+		actions = append(actions, binding{"x", "launch"})
+	}
+	if m.OpenURL != nil {
+		actions = append(actions, binding{"o", "open"})
+	}
+	if _, ok := m.itemClaim(i); ok {
+		actions = append(actions, binding{"i", "claim"})
+	}
+	return actions
 }
 
 // maxDetailOffset bounds detail scrolling to the rendered content.
@@ -1070,7 +1176,7 @@ func (m Model) maxDetailOffset() int {
 	if width == 0 {
 		width = m.Width
 	}
-	visible := max(1, m.frame(rows).bodyHeight-2)
+	visible := max(1, m.frame(rows).bodyHeight-detailChrome)
 	return max(0, len(m.detailContent(item, width))-visible)
 }
 
@@ -1134,8 +1240,10 @@ func detail(m Model, i queue.Item) []dline {
 		ready, readyStyle := m.readyCell(i)
 		add("Ready", ready, readyStyle)
 		add("Assigned", valueOr(strings.Join(i.AssignedTo, ", "), "nobody"), plainStyle)
-		add("Native", valueOr(i.NativeClaim, "—"), plainStyle)
-		claim, claimStyle := m.claimCell(i)
+		if i.NativeClaim != "" && i.NativeClaim != "not-exposed" {
+			add("Native", i.NativeClaim, plainStyle)
+		}
+		claim, claimStyle := m.claimSummary(i)
 		add("Claim", claim, claimStyle)
 		add("", "", plainStyle)
 		body := []rune(i.Body)
@@ -1153,12 +1261,6 @@ func detail(m Model, i queue.Item) []dline {
 			}
 			blank = false
 			add("", paragraph, plainStyle)
-		}
-		add("", "", plainStyle)
-		if m.StartTransitions[i.Ref.SourceID] != "" {
-			add("Actions", "S start work (claim + provider transition) · c claim only · : start work", m.s().accent)
-		} else {
-			add("Actions", "c claim only (no supported Start work mapping)", m.s().accent)
 		}
 	case 1:
 		add("Readiness", fmt.Sprintf("%s: %s", i.Readiness.Status, strings.Join(i.Readiness.Reasons, "; ")), plainStyle)
@@ -1205,7 +1307,7 @@ func detail(m Model, i queue.Item) []dline {
 	case 3:
 		add("Authority", fmt.Sprintf("%s (%s)", m.Authority, m.Scope), plainStyle)
 		add("Resource", displayResources(i.Resources), plainStyle)
-		claim, claimStyle := m.claimCell(i)
+		claim, claimStyle := m.claimSummary(i)
 		add("Current", claim, claimStyle)
 		add("Agent", valueOr(i.Claim.AgentID, "—"), plainStyle)
 		add("Session", valueOr(i.Claim.SessionID, "—"), plainStyle)
@@ -1284,7 +1386,11 @@ func (m Model) recoveryLines(height int) []string {
 	if m.RecoveryError != "" {
 		heading += " · " + m.s().bad.Render(clean(m.RecoveryError))
 	}
-	lines := []string{" " + heading, ""}
+	lines := []string{" " + heading}
+	if len(m.Recovery) > 0 {
+		lines = append(lines, " "+m.s().actionLine([]binding{{"r", "retry read-back"}, {"e", "attest"}, {"u", "reload"}}, m.Width-2))
+	}
+	lines = append(lines, "")
 	var blocks [][]string
 	for index, entry := range m.Recovery {
 		marker := "  "

@@ -30,7 +30,6 @@ type SnapshotMsg struct {
 	preparedRowIndexes map[string]int
 	preparedCounts     map[string]int
 	preparedObserved   time.Time
-	preparedEdges      int
 	projection         snapshotProjection
 	hasProjection      bool
 	prepared           bool
@@ -39,6 +38,7 @@ type SnapshotMsg struct {
 type snapshotProjection struct {
 	ViewName    string
 	Filter      string
+	Pinned      string
 	Me          string
 	Sources     []queue.Source
 	Views       []string
@@ -100,7 +100,7 @@ func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
 	if _, ok := message.preparedCounts[preparedModel.ViewName]; !ok {
 		message.preparedCounts[preparedModel.ViewName] = preparedModel.viewCount(preparedModel.ViewName)
 	}
-	message.preparedObserved, message.preparedEdges = snapshotRowMetrics(message.Snapshot)
+	message.preparedObserved = latestObservation(message.Snapshot)
 	return message
 }
 
@@ -108,6 +108,7 @@ func projectionForModel(model Model) snapshotProjection {
 	projection := snapshotProjection{
 		ViewName: model.ViewName,
 		Filter:   model.Filter,
+		Pinned:   model.pinnedIdentity(),
 		Me:       model.Me,
 		Sources:  append([]queue.Source(nil), model.Sources...),
 		Views:    append([]string(nil), model.Views...),
@@ -136,18 +137,14 @@ func projectionForModel(model Model) snapshotProjection {
 	return projection
 }
 
-func snapshotRowMetrics(snapshot queue.Snapshot) (time.Time, int) {
+func latestObservation(snapshot queue.Snapshot) time.Time {
 	var observed time.Time
-	edges := 0
 	for _, item := range snapshot.Items {
 		if item.Observation.ObservedAt.After(observed) {
 			observed = item.Observation.ObservedAt
 		}
-		if item.DependenciesKnown && item.Closure == queue.CoverageComplete && item.Fresh {
-			edges++
-		}
 	}
-	return observed, edges
+	return observed
 }
 
 type ClaimOverlayMsg struct {
@@ -353,6 +350,10 @@ type Model struct {
 	orderedKeys                           []string
 	detailGeneration                      uint64
 	HelpOffset                            int
+	// pinned is the item the user opened or acted on. While it stays
+	// selected it remains in the view even if it stops matching the view's
+	// rules, so returning from its detail lands on the same row.
+	pinned string
 	// pendingG and pendingZ record the first key of a two-key navigation command.
 	pendingG, pendingZ bool
 }
@@ -427,7 +428,6 @@ type rowCache struct {
 	rows     []queue.Item
 	counts   map[string]int
 	observed time.Time
-	edges    int
 	// widths holds the widest cell seen per list column for these rows, so
 	// columns fit their content without shifting while scrolling.
 	widths map[string]int
@@ -460,8 +460,12 @@ func viewLabel(name string) string {
 func New(snapshot queue.Snapshot) Model {
 	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed", RecoveryViewID, ClaimsViewID}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
 }
+
+// Init loads the authority claims once so the Claims tab count is real;
+// polling continues only while the Claims tab is open. Callers that set
+// Claims.Refresh also mark Claims.Loading.
 func (m Model) Init() tea.Cmd {
-	if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil {
+	if m.Claims.Refresh != nil {
 		return m.Claims.Refresh(m.Claims.Cursor)
 	}
 	return nil
@@ -491,7 +495,21 @@ func sameSourceOrder(sources []queue.Source, ids []string) bool {
 }
 
 func (m Model) rowKey() string {
-	return fmt.Sprintf("%x:%d:%s:%s:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+	return fmt.Sprintf("%x:%d:%s:%s:%q:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.pinnedIdentity(), m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+}
+
+// pinnedIdentity is the pinned item while it is still selected.
+func (m Model) pinnedIdentity() string {
+	if m.pinned != "" && m.pinned == m.Selected {
+		return m.pinned
+	}
+	return ""
+}
+
+// openDetail opens the selected item and pins it to the current view.
+func (m *Model) openDetail() {
+	m.Detail = true
+	m.pinned = m.Selected
 }
 
 func (m Model) rows() []queue.Item {
@@ -544,7 +562,12 @@ func (m Model) rows() []queue.Item {
 	}
 	out := rows[:0]
 	rule := m.ViewRules[m.ViewName]
+	pinned := m.pinnedIdentity()
 	for _, i := range rows {
+		if pinned != "" && identity(i) == pinned {
+			out = append(out, i)
+			continue
+		}
 		if rule.Readiness != "" && rule.Readiness != "all" && string(shownReadiness(i)) != rule.Readiness {
 			continue
 		}
@@ -621,7 +644,6 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 			}
 		}
 		m.rowCache.observed = time.Time{}
-		m.rowCache.edges = 0
 		for _, item := range m.Snapshot.Items {
 			if standard {
 				m.rowCache.counts["All"]++
@@ -643,21 +665,17 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 			if item.Observation.ObservedAt.After(m.rowCache.observed) {
 				m.rowCache.observed = item.Observation.ObservedAt
 			}
-			if item.DependenciesKnown && item.Closure == queue.CoverageComplete && item.Fresh {
-				m.rowCache.edges++
-			}
 		}
 	}
 }
 
-func (m Model) cachePreparedRows(key string, rows []queue.Item, counts map[string]int, observed time.Time, edges int) {
+func (m Model) cachePreparedRows(key string, rows []queue.Item, counts map[string]int, observed time.Time) {
 	if m.rowCache != nil {
 		m.rowCache.key = key
 		m.rowCache.widths = nil
 		m.rowCache.rows = rows
 		m.rowCache.counts = counts
 		m.rowCache.observed = observed
-		m.rowCache.edges = edges
 	}
 }
 func (m Model) selected(rows []queue.Item) (queue.Item, bool) {
@@ -801,6 +819,7 @@ func (m *Model) setView(name string) tea.Cmd {
 		m.viewSelections[m.ViewName] = viewSelection{Selected: m.Selected, Index: m.Index, Offset: m.Offset, Detail: m.Detail, DetailOffset: m.DetailOffset, Tab: m.Tab}
 	}
 	m.ViewName = name
+	m.pinned = ""
 	if saved, ok := m.viewSelections[name]; ok {
 		m.Selected, m.Index, m.Offset = saved.Selected, saved.Index, saved.Offset
 		m.Detail, m.DetailOffset, m.Tab = saved.Detail, saved.DetailOffset, saved.Tab
@@ -896,7 +915,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.orderedKeys = nil
 		}
 		if preparedRowsUsable {
-			m.cachePreparedRows(m.rowKey(), v.preparedRows, v.preparedCounts, v.preparedObserved, v.preparedEdges)
+			m.cachePreparedRows(m.rowKey(), v.preparedRows, v.preparedCounts, v.preparedObserved)
 		}
 		if !preparedRowsUsable && v.allRows != nil && m.ViewName == "All" && m.Filter == "" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0 && sameSourceOrder(m.Sources, v.sourceIDs) {
 			m.cacheRows(m.rowKey(), v.allRows)
@@ -1050,7 +1069,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.Identity == m.Selected {
 			if v.Err != nil || v.Preview == nil || v.Preview.Claim.Identity != v.Identity {
 				m.StartPreview = nil
-				m.Notice = "Start work unavailable; Claim only: " + fmt.Sprint(v.Err)
+				m.Notice = "Start unavailable; c claims without a status change: " + fmt.Sprint(v.Err)
 			} else {
 				m.StartPreview = v.Preview
 				m.Notice = "Review Start work preview; press Enter to confirm"
@@ -1428,8 +1447,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.afterNavigation(previous)
 		}
 		switch key {
+		case "c", "S", "s", "p", "a", "x":
+			// An item being acted on stays in place while its state changes.
+			m.pinned = m.Selected
+		}
+		switch key {
 		case "q", "ctrl+c":
 			return m.requestQuit()
+		case "i":
+			return m.itemClaimJump()
 		case "j", "down":
 			m.move(1)
 		case "k", "up":
@@ -1438,7 +1464,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			visible := m.listCapacity(rows)
 			if m.Detail {
 				// Detail has a fixed title and tab bar above the scrollable content.
-				visible = max(1, m.frame(rows).bodyHeight-2)
+				visible = max(1, m.frame(rows).bodyHeight-detailChrome)
 			}
 			step := scrollStep(key, visible)
 			if m.Detail {
@@ -1483,7 +1509,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(len(rows))
 		case "l", "right", "enter":
 			if len(rows) > 0 {
-				m.Detail = true
+				m.openDetail()
 			}
 		case "h", "left":
 			m.Detail = false
@@ -1499,8 +1525,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.Detail {
 				m.Tab = (m.Tab + 1) % len(tabNames)
 				m.DetailOffset = 0
-			} else {
-				m.Detail = true
+			} else if len(rows) > 0 {
+				m.openDetail()
 			}
 		case "shift+tab":
 			if m.Detail {
@@ -1668,7 +1694,7 @@ func (m Model) startWorkPreview() (tea.Model, tea.Cmd) {
 		m.Notice = "Checking Start work eligibility…"
 		return m, m.PreviewStart(item)
 	}
-	m.Notice = "Start work unavailable: no supported provider mapping; Claim only"
+	m.Notice = "Start unavailable: this source has no start status mapping; c claims without a status change"
 	return m, nil
 }
 

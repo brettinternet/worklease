@@ -113,11 +113,11 @@ func TestClaimsCorrelationJumpAndRemotePublicRendering(t *testing.T) {
 	m.Claims.Now = func() time.Time { return time.Unix(100, 0).UTC() }
 	m.Claims.Items = []lease.ClaimView{{ClaimID: "claim-1", Resources: []string{"resource:1"}, AgentID: "alice", SessionID: "session-1", AcquiredAt: time.Unix(50, 0), ExpiresAt: time.Unix(200, 0), Active: true, CheckpointPresent: true}}
 	m.Claims.Selected = "claim-1"
-	if screen := m.View(); !strings.Contains(screen, "first") || !strings.Contains(screen, "resource:1") {
-		t.Fatalf("correlated row does not show title and raw resource: %s", screen)
+	if screen := m.View(); !strings.Contains(screen, "first") || strings.Contains(screen, "resource:1") {
+		t.Fatalf("correlated row does not read as its queue item: %s", screen)
 	}
 	m.Claims.Detail = true
-	if screen := m.View(); !strings.Contains(screen, "alice") || !strings.Contains(screen, "session-1") || !strings.Contains(screen, "expires in") || !strings.Contains(screen, "Checkpoint") || !strings.Contains(screen, "present (public status only)") {
+	if screen := m.View(); !strings.Contains(screen, "alice") || !strings.Contains(screen, "session-1") || !strings.Contains(screen, "expires in") || !strings.Contains(screen, "Checkpoint") || !strings.Contains(screen, "present") || !strings.Contains(screen, "resource:1") {
 		t.Fatalf("claim detail lacks holder, session, countdown or checkpoint presence: %s", screen)
 	}
 	m.Claims.Events = []ledger.Event{{Sequence: "1", ClaimID: "claim-1", At: time.Unix(60, 0), Kind: "checkpointed", Detail: map[string]any{"token": "private-token", "checkpoint": "private-progress"}}}
@@ -130,7 +130,7 @@ func TestClaimsCorrelationJumpAndRemotePublicRendering(t *testing.T) {
 		t.Fatalf("history view leaked private session payload or hid lifecycle: %s", screen)
 	}
 	m.Help = true
-	if help := m.View(); !strings.Contains(help, "authority-wide") || !strings.Contains(help, "Claimed filters items") || strings.Contains(help, "release verified") {
+	if help := m.View(); !strings.Contains(help, "authority-wide") || strings.Contains(help, "release a verified") {
 		t.Fatalf("Claims help does not distinguish the read-only tab: %s", help)
 	}
 	m.Help = false
@@ -279,12 +279,12 @@ func TestClaimsFiltersMinePrefixExpiringAndStale(t *testing.T) {
 	m, _ = press(m, "file:")
 	m, _ = press(m, "enter")
 	m, _ = press(m, "e")
-	if got := m.claimRows(); len(got) != 1 || got[0].ClaimID != "mine" || m.claimStateLabel(got[0], now) != "EXPIRING" {
+	if got := m.claimRows(); len(got) != 1 || got[0].ClaimID != "mine" || m.claimStateLabel(got[0], now) != "expiring" {
 		t.Fatalf("mine/prefix/expiring keyboard filter=%v", got)
 	}
 	m.Claims.Stale = true
 	m, _ = press(m, "s")
-	if got := m.claimRows(); len(got) != 1 || got[0].ClaimID != "mine" || m.claimStateLabel(got[0], now) != "STALE" {
+	if got := m.claimRows(); len(got) != 1 || got[0].ClaimID != "mine" || m.claimStateLabel(got[0], now) != "stale" {
 		t.Fatalf("stale filter/status=%v", got)
 	}
 }

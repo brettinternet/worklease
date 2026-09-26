@@ -81,3 +81,12 @@ func TestSelectionStaysVisibleWhileScrolling(t *testing.T) {
 		}
 	}
 }
+
+func TestFooterOmitsKeyBindings(t *testing.T) {
+	t.Parallel()
+	m := layoutModel(160, 24)
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	if footer := lines[len(lines)-1]; strings.Contains(footer, "help") || strings.Contains(footer, "quit") {
+		t.Fatalf("footer lists key bindings: %q", footer)
+	}
+}

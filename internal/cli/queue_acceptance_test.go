@@ -110,7 +110,7 @@ func assertQueueFixtureParity(t *testing.T, h *queueQueryHarness, missing bool) 
 	if !strings.Contains(view, response.Query.Authority.ID) || missing && !strings.Contains(view, "not-backlog") {
 		t.Fatalf("TUI hid authority/source failure: %s", view)
 	}
-	if missing && !strings.Contains(view, "of 2 (unknown)") {
+	if missing && !strings.Contains(view, "total unknown") {
 		t.Fatalf("TUI reported an exact total despite an unresolved source: %s", view)
 	}
 }
