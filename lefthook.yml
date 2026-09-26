@@ -4,6 +4,13 @@ pre-commit:
     gofmt:
       glob: "*.go"
       run: test -z "$(gofmt -l {staged_files})"
-    test:
-      glob: ["*.go", "go.mod", "go.sum"]
+    # Vet and test only packages with staged Go files; CI runs the full suite.
+    affected:
+      glob: "*.go"
+      run: |
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+        pkgs=$(for f in {staged_files}; do dirname "$f"; done | sort -u | sed 's|^|./|')
+        mise exec -- go vet $pkgs && mise exec -- go test -p 1 -parallel 2 $pkgs
+    full:
+      glob: ["go.mod", "go.sum"]
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE mise run test

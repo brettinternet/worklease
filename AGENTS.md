@@ -48,9 +48,16 @@ Verify every acceptance criterion with objective evidence, record the evidence i
 
 ## Quality gates
 
-Before handing off or committing changes:
+The pre-commit hook runs gofmt on staged files and `go vet` plus `go test` on packages with staged Go files (the full suite when `go.mod` or `go.sum` changes). CI runs everything. Before handing off, run the checks that match what you changed, and fix every reported failure instead of bypassing or weakening a check:
 
-- Run `mise run lint`, `mise run format-check`, `mise run test`, and `mise run typecheck`; fix every reported failure instead of bypassing or weakening a check.
+| Change | Run |
+|---|---|
+| Docs, skills, or Backlog records only | Nothing; `mise run doc-test` if documented commands changed |
+| Internals of one package | The hook covers it: `go test ./<pkg>` |
+| Exported API, a shared package (`testkit`, `store`, `lease`, `queue`, `config`), or several packages | `mise run lint` and `mise run test` |
+| Concurrency, locking, or process lifecycle | Also `mise run race` |
+| Before a PR or final handoff of a multi-package change | `mise run lint`, `mise run format-check`, `mise run typecheck`, and `mise run test` |
+
 - Stage the intended files and run `mise run hooks`; fix formatting and test failures before committing.
 - Install the Git hook once with `mise run hooks-install`, and do not disable Lefthook or skip failing jobs to force a commit.
 
@@ -71,7 +78,8 @@ Write a test only when it would catch a real regression, and cover each behavior
 
 | Tier | Command | Runs in |
 |---|---|---|
-| Package tests | `mise run test` | pre-commit hook; CI on linux-x64, linux-arm64, macos-x64, and macos-arm64 |
+| Affected package tests | `mise run hooks` | pre-commit hook |
+| Package tests | `mise run test` | CI on linux-x64, linux-arm64, macos-x64, and macos-arm64 |
 | Race | `mise run race` | CI linux-x64 |
 | End-to-end | `mise run e2e` (built-binary smoke, remote smoke, doc test) | CI linux-x64 |
 | Relative queue benchmarks | `mise run queue-benchmark` | CI pull requests (base vs. head, report only) |
