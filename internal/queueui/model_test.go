@@ -1287,7 +1287,7 @@ func TestDetailScrollUsesScriptedKeys(t *testing.T) {
 		t.Fatal("detail did not scroll")
 	}
 	view := m.View()
-	if strings.Contains(view, "worklease queue") == false {
+	if strings.Contains(view, "worklease  authority") == false {
 		t.Fatal("header lost on scroll")
 	}
 }

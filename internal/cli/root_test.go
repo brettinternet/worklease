@@ -56,7 +56,7 @@ func TestBareNonterminalAndExplicitHelp(t *testing.T) {
 		if err := Run(context.Background(), args, "test", "unknown", "unknown", &stdout, &stderr); err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
-		if !strings.Contains(stdout.String(), "Bare `worklease` opens the queue TUI") || stderr.Len() != 0 {
+		if !strings.Contains(stdout.String(), "Bare `worklease` opens the TUI") || stderr.Len() != 0 {
 			t.Fatalf("%v: stdout=%q stderr=%q", args, stdout.String(), stderr.String())
 		}
 	}

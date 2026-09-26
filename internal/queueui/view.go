@@ -351,7 +351,7 @@ func (m Model) headerLine() string {
 	if scope := clean(m.Scope); scope != "" && !strings.HasPrefix(authority, scope+" ") && authority != scope {
 		authority += " (" + scope + ")"
 	}
-	left := []seg{{"worklease queue", m.s().appTitle}, {"  authority ", m.s().faint}, {authority, lipgloss.NewStyle()}}
+	left := []seg{{"worklease", m.s().appTitle}, {"  authority ", m.s().faint}, {authority, lipgloss.NewStyle()}}
 	if m.Me != "" {
 		left = append(left, seg{"  me ", m.s().faint}, seg{clean(m.Me), lipgloss.NewStyle()})
 	}
@@ -587,7 +587,7 @@ func (m Model) queueStatus(rows []queue.Item) (left, right []seg) {
 		left = append(left, seg{"filter ", m.s().accent}, seg{fmt.Sprintf("%q", clip(m.Filter, 32)), m.s().bold}, seg{fmt.Sprintf(" \u00b7 %d match", len(rows)), m.s().faint})
 	}
 	switch {
-	case loaded == 0:
+	case loaded == 0, m.Loading && accuracy == "unknown": // the header spinner covers a refresh
 	case total < loaded || accuracy == "unknown":
 		left = append(left, seg{sep(left) + fmt.Sprintf("%d loaded, total unknown", loaded), m.s().faint})
 	case accuracy == "estimated":
@@ -687,7 +687,7 @@ var helpGroups = []struct {
 	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous row"}, {"gg / G", "first / last row"}, {"H / M / L", "top / middle / bottom visible row"}, {"zz / zt / zb", "center / top / bottom selected row"}, {"^f / ^b", "scroll one page forward / back"}, {"^d / ^u", "scroll half page down / up"}, {"^e / ^y", "scroll one line down / up"}, {"pgdn / pgup", "scroll one page"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}}},
 	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}, {"d", "show / hide done items"}}},
 	{"Item actions (preview first)", []binding{{"S", "start: claim + move to started status"}, {"c", "claim for me"}, {"s", "change provider status"}, {"p", "add a progress note"}, {"a", "assign to me"}, {"R", "release a verified no-effect claim"}, {"x", "launch a worker"}, {"o", "open in provider"}, {"i", "show the item's claim"}, {"m", "load more comments / claim history"}}},
-	{"Queue", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
+	{"General", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
 }
 
@@ -1639,7 +1639,7 @@ func (m Model) exitView() dialogBox {
 		fmt.Fprintf(&b, "  recovery journal unreadable: %s\n", clean(m.RecoveryError))
 	}
 	b.WriteString("Leaving keeps leases and recovery state intact; R cancels a verified no-effect claim.")
-	return m.dialog("Quit queue?", b.String(), []binding{{"enter/y", "quit"}, {"esc/n", "keep working"}})
+	return m.dialog("Quit worklease?", b.String(), []binding{{"enter/y", "quit"}, {"esc/n", "keep working"}})
 }
 
 func (m Model) launchPickerView() dialogBox {

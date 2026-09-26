@@ -1,7 +1,7 @@
 # CLI reference
 
 Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
-example. Bare `worklease` opens the queue TUI only when both stdin and stdout
+example. Bare `worklease` opens the TUI only when both stdin and stdout
 are terminals. With a pipe or redirected output it prints root help and exits
 successfully; `worklease help` and `worklease -h` always print help. A configured
 queue opens its first view even if a source is down. Without `queue.yaml`, it

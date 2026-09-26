@@ -1,9 +1,9 @@
-# Queue TUI
+# TUI
 
-`worklease queue` opens the queue for the views in [queue.yaml](queue.md). Bare `worklease` does the same in a terminal. Press `?` for every key.
+Bare `worklease` opens the TUI in a terminal. It shows the views in [queue.yaml](queue.md) and a Claims tab, and opens on Claims when `queue.yaml` is absent. `worklease queue` opens it on the views too. Press `?` for every key.
 
 ```text
-worklease queue  authority local 1cc38a84…  me @brett                                synced now
+worklease  authority local 1cc38a84…  me @brett                                      synced now
  Ready 4   Mine 2   Claimed 2   Recovery 0   Claims 3
   ID        Title                                 Status       Ready                Assigned
   TASK-130  Add a Jira Cloud source adapter       To Do        ready                —

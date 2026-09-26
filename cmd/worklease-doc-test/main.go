@@ -127,7 +127,7 @@ func validateBareHelp(binary string) {
 	for _, args := range [][]string{nil, {"help"}, {"-h"}} {
 		command := exec.Command(binary, args...)
 		output, err := command.CombinedOutput() // No terminal on stdin or stdout.
-		if err != nil || !bytes.Contains(output, []byte("Bare `worklease` opens the queue TUI")) || !bytes.Contains(output, []byte("worklease acquire --path README.md")) {
+		if err != nil || !bytes.Contains(output, []byte("Bare `worklease` opens the TUI")) || !bytes.Contains(output, []byte("worklease acquire --path README.md")) {
 			fatal(fmt.Errorf("non-interactive worklease %v help: %v: %s", args, err, output))
 		}
 	}

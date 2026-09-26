@@ -30,9 +30,9 @@ func queueClaimsOnlyFallback(cfg config.QueueConfig, loadErr error) (string, boo
 func queueClaimsCommand(s *boundary) *urfave.Command {
 	command := &urfave.Command{
 		Name:      "claims",
-		Usage:     "browse current authority claims in the queue TUI",
+		Usage:     "browse current authority claims in the TUI",
 		UsageText: "worklease queue claims [--high-contrast]",
-		Description: "Open the queue TUI directly on the read-only, authority-wide Claims tab. " +
+		Description: "Open the TUI directly on the read-only, authority-wide Claims tab. " +
 			"This view lists claims independently of loaded queue items.\n\nExamples:\n  worklease queue claims",
 	}
 	command.Action = func(ctx context.Context, cmd *urfave.Command) error {
