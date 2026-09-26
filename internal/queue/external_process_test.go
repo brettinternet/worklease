@@ -50,6 +50,37 @@ func TestProcessHelper(t *testing.T) {
 	}
 }
 
+func TestRetryBusyExecutableOnlyBeforeDispatch(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	err := retryBusyExecutable(func() error {
+		attempts++
+		if attempts < 3 {
+			return syscall.ETXTBSY
+		}
+		return nil
+	})
+	if err != nil || attempts != 3 {
+		t.Fatalf("busy startup was not retried: attempts=%d err=%v", attempts, err)
+	}
+	attempts = 0
+	err = retryBusyExecutable(func() error {
+		attempts++
+		return syscall.EACCES
+	})
+	if !errors.Is(err, syscall.EACCES) || attempts != 1 {
+		t.Fatalf("unrelated startup error was retried: attempts=%d err=%v", attempts, err)
+	}
+	attempts = 0
+	err = retryBusyExecutable(func() error {
+		attempts++
+		return syscall.ETXTBSY
+	})
+	if !errors.Is(err, syscall.ETXTBSY) || attempts != 4 {
+		t.Fatalf("persistent busy startup exceeded bound: attempts=%d err=%v", attempts, err)
+	}
+}
+
 func TestExternalProcessStartErrorReportsErrnoWithoutPath(t *testing.T) {
 	t.Parallel()
 	err := externalProcessStartError("exec", &os.PathError{Op: "fork/exec", Path: "provider-secret-canary", Err: syscall.EAGAIN})

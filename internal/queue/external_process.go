@@ -619,14 +619,18 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 		closeExternalFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
 		return nil, err
 	}
-	cmd := exec.Command(snapshot.Path())
-	prepareExternalProcess(cmd)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, stdoutW, stderrW
-	cmd.Env = externalAdapterEnvironment(p.env)
 	if p.beforeStart != nil {
 		p.beforeStart()
 	}
-	if err := cmd.Start(); err != nil {
+	var cmd *exec.Cmd
+	err = retryBusyExecutable(func() error {
+		cmd = exec.Command(snapshot.Path())
+		prepareExternalProcess(cmd)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, stdoutW, stderrW
+		cmd.Env = externalAdapterEnvironment(p.env)
+		return cmd.Start()
+	})
+	if err != nil {
 		_ = snapshot.Close()
 		closeExternalFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
 		return nil, externalProcessStartError("exec", err)
@@ -655,6 +659,19 @@ func (p *ExternalProcess) startProcessLocked() (*externalProcessRun, error) {
 		close(run.waitDone)
 	}()
 	return run, nil
+}
+
+// A freshly written executable can briefly return ETXTBSY on Linux. Start
+// failures have not dispatched an adapter, so only this error is safe to retry.
+func retryBusyExecutable(start func() error) error {
+	for attempt := range 4 {
+		err := start()
+		if err == nil || !errors.Is(err, syscall.ETXTBSY) || attempt == 3 {
+			return err
+		}
+		time.Sleep(time.Duration(1<<attempt) * 10 * time.Millisecond)
+	}
+	return nil
 }
 
 // Report only the startup stage and errno; exec errors may include private paths.
