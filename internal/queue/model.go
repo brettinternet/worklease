@@ -187,7 +187,35 @@ type Readiness struct {
 	Status    ReadinessStatus `json:"status"`
 	Reasons   []string        `json:"reasons,omitempty"`
 	Freshness Freshness       `json:"freshness"`
+	// LastKnown is the last ready or blocked status, kept while Status is
+	// unknown only because evidence is being reread. It is display evidence;
+	// eligibility always uses Status.
+	LastKnown ReadinessStatus `json:"lastKnown,omitempty"`
 }
+
+// settled is the most recent ready or blocked status this readiness carries.
+func (r Readiness) settled() ReadinessStatus {
+	if r.Status == Ready || r.Status == Blocked {
+		return r.Status
+	}
+	return r.LastKnown
+}
+
+// Revalidating reports an item whose current observation is a listed summary
+// or an unrefreshed older read, rather than a definitive outcome.
+func (i Item) Revalidating() bool {
+	if i.ReadPermission == Denied {
+		return false
+	}
+	switch i.ReadOutcome {
+	case "summary-only":
+		return true
+	case "stale", "failed":
+		return !i.Fresh
+	}
+	return false
+}
+
 type RelationshipType string
 
 const (

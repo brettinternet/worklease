@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"sync"
@@ -163,6 +164,137 @@ func TestRecomputeUsesCurrentTransitiveGraph(t *testing.T) {
 		t.Fatalf("after prerequisite reopen readiness=%s", got)
 	}
 }
+func TestRecomputeKeepsLastKnownReadinessOnlyWhileRevalidating(t *testing.T) {
+	t.Parallel()
+	a, b := Ref{"s", "a"}, Ref{"s", "b"}
+	found := func(ref Ref, edges ...Relationship) Item {
+		return Item{Summary: Summary{Ref: ref, Fresh: true, Terminal: ref == b}, ReadOutcome: "found", ReadPermission: Allowed, TerminalKnown: true, DependenciesKnown: true, Closure: CoverageComplete, Relationships: edges}
+	}
+	items := Recompute(map[string]Item{
+		a.Key(): found(a, Relationship{Type: HardPrerequisite, From: a, To: b, Condition: "terminal", Fresh: true, Support: Supported}),
+		b.Key(): found(b),
+	}, CoverageComplete)
+	if got := items[a.Key()].Readiness; got.Status != Ready || got.LastKnown != "" {
+		t.Fatalf("initial readiness=%+v", got)
+	}
+
+	// A relisted prerequisite leaves its dependent unknown, but the dependent
+	// keeps its last known readiness until the prerequisite is reread.
+	prereq := items[b.Key()]
+	prereq.ReadOutcome = "summary-only"
+	items[b.Key()] = prereq
+	items = Recompute(items, CoverageComplete)
+	if got := items[a.Key()].Readiness; got.Status != ReadinessUnknown || got.LastKnown != Ready {
+		t.Fatalf("revalidating readiness=%+v", got)
+	}
+	items = Recompute(items, CoverageComplete)
+	if got := items[a.Key()].Readiness.LastKnown; got != Ready {
+		t.Fatalf("repeated recompute lost last known readiness: %q", got)
+	}
+
+	missing := items[b.Key()]
+	missing.ReadOutcome, missing.Fresh = "missing", false
+	definitive := cloneItems(items)
+	definitive[b.Key()] = missing
+	if got := Recompute(definitive, CoverageComplete)[a.Key()].Readiness; got.Status != ReadinessUnknown || got.LastKnown != "" {
+		t.Fatalf("definitive read kept last known readiness: %+v", got)
+	}
+
+	items[b.Key()] = found(b)
+	items = Recompute(items, CoverageComplete)
+	if got := items[a.Key()].Readiness; got.Status != Ready || got.LastKnown != "" {
+		t.Fatalf("reread readiness=%+v", got)
+	}
+}
+
+func TestStoreRetainsDetailsWhileItemIsRelisted(t *testing.T) {
+	t.Parallel()
+	ref := Ref{"s", "a"}
+	observation := Observation{Principal: "alice", AccessScope: "scope"}
+	edge := Relationship{Type: ParentChild, From: Ref{"s", "parent"}, To: ref, Fresh: true, Support: Supported}
+	updated := time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)
+	hydrated := Item{Summary: Summary{Ref: ref, CanonicalID: "node-a", Fresh: true, UpdatedAt: updated}, Body: "description", ReadOutcome: "found", ReadPermission: Allowed, TerminalKnown: true, DependenciesKnown: true, Closure: CoverageComplete, Relationships: []Relationship{edge}, Observation: observation}
+	summary := Item{Summary: hydrated.Summary, ReadOutcome: "summary-only", Observation: observation}
+	summary.Observation.AccessScope = ""
+	for _, tc := range []struct {
+		name   string
+		change func(*Item)
+		retain bool
+	}{
+		{name: "same owner", change: func(*Item) {}, retain: true},
+		{name: "principal changed", change: func(i *Item) { i.Observation.Principal = "bob" }},
+		{name: "identity changed", change: func(i *Item) { i.CanonicalID = "node-b" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := NewStore()
+			publish := func(item Item) Item {
+				snapshot, _ := store.publishComputed(func(s *Snapshot) {
+					s.Items[ref.Key()] = item
+					s.Sources["s"] = Coverage{State: CoverageComplete}
+				}, true, nil)
+				return snapshot.Items[ref.Key()]
+			}
+			if got := publish(hydrated).Readiness.Status; got != Ready {
+				t.Fatalf("hydrated readiness=%s", got)
+			}
+			relisted := summary
+			tc.change(&relisted)
+			got := publish(relisted)
+			retained := got.Body == hydrated.Body && len(got.Relationships) == 1 && got.Readiness.LastKnown == Ready
+			if retained != tc.retain || got.Readiness.Status != ReadinessUnknown || EvaluateAction(got, ActionStart).Eligible {
+				t.Fatalf("relisted item retain=%t: %+v", tc.retain, got)
+			}
+			if tc.retain && got.Relationships[0].Fresh {
+				t.Fatal("retained relationship was presented as fresh")
+			}
+		})
+	}
+
+	// A listing rebuilt from cached edges is found without a body. It keeps
+	// the previous body only while the provider update time is unchanged.
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cached edges changed=%t", changed), func(t *testing.T) {
+			t.Parallel()
+			store := NewStore()
+			cached := hydrated
+			cached.Body = ""
+			if changed {
+				cached.UpdatedAt = updated.Add(time.Minute)
+			}
+			var got Item
+			for _, item := range []Item{hydrated, cached} {
+				snapshot, _ := store.publishComputed(func(s *Snapshot) { s.Items[ref.Key()] = item }, true, nil)
+				got = snapshot.Items[ref.Key()]
+			}
+			if (got.Body == hydrated.Body) == changed || got.Readiness.Status != Ready {
+				t.Fatalf("cached-edge listing: %+v", got)
+			}
+		})
+	}
+}
+
+func TestMissingReadDropsRetainedDetails(t *testing.T) {
+	t.Parallel()
+	source := Source{ID: "s", Adapter: "fake"}
+	ref := Ref{"s", "1"}
+	adapter := newFake()
+	adapter.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Kind: "missing"}}
+	registry := NewRegistry()
+	if err := registry.Register("fake", adapter); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	relisted := Item{Summary: Summary{Ref: ref, Fresh: true}, Body: "retained description", ReadOutcome: "summary-only",
+		Relationships: []Relationship{{Type: ParentChild, From: Ref{"s", "parent"}, To: ref}}}
+	loader.Store.SeedSnapshot(Snapshot{Items: map[string]Item{ref.Key(): relisted}, Sources: map[string]Coverage{"s": {State: CoverageComplete}}})
+	for range loader.HydrateEdges(context.Background(), source, []Ref{ref}, nil, false) {
+	}
+	if item, _ := loader.Store.Item(ref); item.ReadOutcome != "missing" || item.Body != "" || item.Relationships != nil {
+		t.Fatalf("missing item kept retained details: %+v", item)
+	}
+}
+
 func TestViewOrderFilteringAndCanonicalDedup(t *testing.T) {
 	items := map[string]Item{"z": {Summary: Summary{Ref: Ref{"a", "2"}, CanonicalID: "same", Order: "1", State: StateOpen}}, "a": {Summary: Summary{Ref: Ref{"a", "1"}, CanonicalID: "same", Order: "1", State: StateOpen}}, "c": {Summary: Summary{Ref: Ref{"a", "3"}, Order: "2", State: StateBlocked}}}
 	got := EvaluateView(items, View{SourceOrder: []string{"a", "b"}, Filters: Filters{States: []StateCategory{StateOpen}}})

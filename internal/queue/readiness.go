@@ -17,7 +17,12 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		rProjectStatusUnknown
 		rProjectStatusBlocked
 		rProjectStatusConflict
+		// rRevalidating marks evidence that is being reread. It never changes
+		// Status by itself; it only lets an unknown result keep LastKnown.
+		rRevalidating
 	)
+	// Structural blockers are not cleared by rereading the same evidence.
+	const structural = rCycle | rMissing | rUnsupported | rAmbiguousProjection
 	out := cloneItems(items)
 	memo := make(map[string]uint16, len(out))
 	visiting := make(map[string]bool, len(out))
@@ -38,6 +43,9 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		var flags uint16
 		if !item.Fresh {
 			flags |= rStale
+		}
+		if item.Revalidating() {
+			flags |= rRevalidating
 		}
 		if item.ProviderBlocked && item.Fresh {
 			flags |= rProviderBlocker
@@ -142,6 +150,8 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		if item.Closure == "" && graph != CoverageComplete {
 			flags |= rIncomplete
 		}
+		revalidating := flags&rRevalidating != 0 && flags&structural == 0
+		flags &^= rRevalidating
 		status := Ready
 		if flags&(rUnsatisfied|rProviderBlocker|rProjectStatusBlocked) != 0 {
 			status = Blocked
@@ -168,7 +178,11 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 		} else if flags != 0 {
 			freshness = FreshnessUnknown
 		}
-		item.Readiness = Readiness{Status: status, Reasons: reasons, Freshness: freshness}
+		lastKnown := ReadinessStatus("")
+		if status == ReadinessUnknown && revalidating {
+			lastKnown = item.Readiness.settled()
+		}
+		item.Readiness = Readiness{Status: status, Reasons: reasons, Freshness: freshness, LastKnown: lastKnown}
 		out[key] = item
 	}
 	return out

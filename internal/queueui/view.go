@@ -499,9 +499,6 @@ func (m Model) banners() []string {
 	if len(problems) > 0 {
 		out = append(out, m.s().warnBold.Render("Sources ")+m.s().warn.Render(strings.Join(problems, " · ")))
 	}
-	if len(m.recheckingReady) > 0 && (m.ViewName == "Ready" || m.ViewRules[m.ViewName].Readiness == string(queue.Ready)) {
-		out = append(out, m.s().warn.Render("Previously ready rows are rechecking; actions require current readiness."))
-	}
 	return out
 }
 
@@ -842,9 +839,6 @@ func (p *palette) stateStyle(state queue.StateCategory) lipgloss.Style {
 var readyAliases = map[string]string{"assigned elsewhere": "elsewhere", "unknown dependencies": "deps unknown"}
 
 func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
-	if m.readyDuringRecheck(i) {
-		return "rechecking", m.s().warn
-	}
 	if i.Claim.Active && m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}
@@ -859,6 +853,9 @@ func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
 	case "assigned elsewhere":
 		return state, m.s().faint
 	case "stale", "unknown dependencies", "unknown":
+		return state, m.s().warn
+	}
+	if i.Readiness.LastKnown != "" {
 		return state, m.s().warn
 	}
 	return state, lipgloss.NewStyle()
@@ -1041,31 +1038,7 @@ func (m Model) detailTabs(active, width int) (string, []span) {
 
 // detailContent renders the scrollable part of the detail pane.
 func (m Model) detailContent(item queue.Item, width int) []string {
-	cached, rechecking := m.displayDetails[item.Ref.Key()]
-	if rechecking {
-		// Fill only the presentation copy. The snapshot item used by action
-		// handlers remains unverified and cannot borrow these older details.
-		if item.Body == "" {
-			item.Body = cached.Body
-		}
-		if len(item.Relationships) == 0 {
-			item.Relationships = append([]queue.Relationship(nil), cached.Relationships...)
-			for n := range item.Relationships {
-				item.Relationships[n].Fresh = false
-			}
-		}
-		if len(item.Resources) == 0 {
-			item.Resources = cached.Resources
-		}
-		if item.Observation.ProviderVersion == "" {
-			item.Observation.ProviderVersion = cached.Observation.ProviderVersion
-		}
-	}
-	lines := detail(m, item)
-	if rechecking {
-		lines = append([]dline{{text: "Previously observed details · rechecking; actions require current evidence", style: m.s().warn}}, lines...)
-	}
-	return m.s().renderDetail(lines, max(1, width-1))
+	return m.s().renderDetail(detail(m, item), max(1, width-1))
 }
 
 func (m Model) detailPane(item queue.Item, width, height int) []string {
@@ -1254,11 +1227,7 @@ func detail(m Model, i queue.Item) []dline {
 			case !owned.Verified:
 				add("", "Ownership unverified; actions disabled", m.s().warn)
 			default:
-				if _, rechecking := m.displayDetails[i.Ref.Key()]; rechecking {
-					add("", "Ownership rechecking; actions require current evidence", m.s().warn)
-				} else {
-					add("", "R: cancel if no operation or provider write started", m.s().accent)
-				}
+				add("", "R: cancel if no operation or provider write started", m.s().accent)
 			}
 		}
 		if m.HistoryLoading {

@@ -88,9 +88,6 @@ func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
 	preparedModel.Snapshot = message.Snapshot
 	preparedModel.orderedKeys = message.orderedKeys
 	preparedModel.rowCache = nil
-	// Visibility during recheck is reconciled against the live model in Update.
-	// Worker projections contain only rows proved by this snapshot.
-	preparedModel.recheckingReady = nil
 	message.preparedRows = preparedModel.rows()
 	message.preparedRowIndexes = make(map[string]int, len(message.preparedRows))
 	for index, item := range message.preparedRows {
@@ -354,14 +351,8 @@ type Model struct {
 	Launch                                func(queue.Item, string) tea.Cmd
 	rowCache                              *rowCache
 	orderedKeys                           []string
-	// recheckingReady keeps previously verified rows visible in Ready views
-	// while their replacement summaries are awaiting validation. It never
-	// changes the item's current readiness or action eligibility.
-	recheckingReady map[string]bool
-	// displayDetails is presentation-only; actions always receive Snapshot.Items.
-	displayDetails   map[string]queue.Item
-	detailGeneration uint64
-	HelpOffset       int
+	detailGeneration                      uint64
+	HelpOffset                            int
 	// pendingG and pendingZ record the first key of a two-key navigation command.
 	pendingG, pendingZ bool
 }
@@ -554,7 +545,7 @@ func (m Model) rows() []queue.Item {
 	out := rows[:0]
 	rule := m.ViewRules[m.ViewName]
 	for _, i := range rows {
-		if rule.Readiness != "" && rule.Readiness != "all" && string(i.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(i)) {
+		if rule.Readiness != "" && rule.Readiness != "all" && string(shownReadiness(i)) != rule.Readiness {
 			continue
 		}
 		if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(i, rule.Claim) {
@@ -591,7 +582,7 @@ func (m Model) rows() []queue.Item {
 		if _, configured := m.ViewRules[m.ViewName]; !configured {
 			switch m.ViewName {
 			case "Ready":
-				if i.Readiness.Status != queue.Ready && !m.readyDuringRecheck(i) {
+				if shownReadiness(i) != queue.Ready {
 					continue
 				}
 			case "Mine":
@@ -634,7 +625,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		for _, item := range m.Snapshot.Items {
 			if standard {
 				m.rowCache.counts["All"]++
-				if item.Readiness.Status == queue.Ready || m.readyDuringRecheck(item) {
+				if shownReadiness(item) == queue.Ready {
 					m.rowCache.counts["Ready"]++
 				}
 				if item.Claim.Active {
@@ -863,56 +854,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !v.prepared {
 			updated = v.Snapshot.Clone()
 		}
-		// A fresh summary is not yet evidence that a formerly ready item is
-		// ready. Keep it on screen as rechecking, but use the new item for all
-		// actions. Missing or definitively re-evaluated items leave the view.
 		priorSnapshot := m.Snapshot
-		rechecking := make(map[string]bool)
-		displayDetails := make(map[string]queue.Item)
-		for key, item := range updated.Items {
-			prior, present := priorSnapshot.Items[key]
-			if detailsPending(item) {
-				if saved, ok := m.displayDetails[key]; ok && sameDetailOwner(saved, item) {
-					displayDetails[key] = saved
-				} else if present && sameDetailOwner(prior, item) && (prior.Body != "" || len(prior.Relationships) > 0 || len(prior.Resources) > 0) {
-					displayDetails[key] = prior
-				}
-			}
-			if item.Readiness.Status != queue.ReadinessUnknown || !detailsAccessible(item) {
-				continue
-			}
-			switch item.ReadOutcome {
-			case "summary-only": // listed, not yet revalidated
-			case "stale", "failed", "found":
-				if item.Fresh {
-					continue
-				}
-			default: // missing, denied, or otherwise definitive
-				continue
-			}
-			if present && sameDetailOwner(prior, item) && (m.recheckingReady[key] || prior.Readiness.Status == queue.Ready) {
-				rechecking[key] = true
-			}
-		}
-		m.recheckingReady = rechecking
-		m.displayDetails = displayDetails
 		projectionUsable := v.hasProjection && reflect.DeepEqual(v.projection, projectionForModel(m)) && sameSourceOrder(m.Sources, v.sourceIDs)
 		preparedRowsUsable := projectionUsable
-		if projectionUsable && len(m.recheckingReady) > 0 {
-			baseline := m
-			baseline.recheckingReady = nil
-			for key := range m.recheckingReady {
-				item := updated.Items[key]
-				for name := range v.preparedCounts {
-					if !baseline.viewCountMatches(item, name) && m.viewCountMatches(item, name) {
-						v.preparedCounts[name]++
-						if name == m.ViewName {
-							preparedRowsUsable = false
-						}
-					}
-				}
-			}
-		}
 		for key, item := range updated.Items {
 			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && sameDetailOwner(prior, item) {
 				beforeItem := item
@@ -1857,21 +1801,6 @@ func detailsAccessible(item queue.Item) bool {
 	return true
 }
 
-// detailsPending distinguishes a provisional read from a definitive missing
-// item or a completed read with genuinely empty details.
-func detailsPending(item queue.Item) bool {
-	if !detailsAccessible(item) {
-		return false
-	}
-	switch item.ReadOutcome {
-	case "summary-only":
-		return true
-	case "stale", "failed":
-		return !item.Fresh
-	}
-	return false
-}
-
 func sameDetailOwner(before, after queue.Item) bool {
 	return before.Ref == after.Ref && before.CanonicalID == after.CanonicalID &&
 		before.Observation.Principal == after.Observation.Principal &&
@@ -1879,8 +1808,13 @@ func sameDetailOwner(before, after queue.Item) bool {
 		before.Observation.AccessScope == after.Observation.AccessScope
 }
 
-func (m Model) readyDuringRecheck(item queue.Item) bool {
-	return m.recheckingReady[item.Ref.Key()] && item.Readiness.Status == queue.ReadinessUnknown
+// shownReadiness groups a row by its last known readiness while that item is
+// being reread. Actions use Readiness.Status, never this value.
+func shownReadiness(item queue.Item) queue.ReadinessStatus {
+	if item.Readiness.LastKnown != "" {
+		return item.Readiness.LastKnown
+	}
+	return item.Readiness.Status
 }
 
 func (m Model) viewCount(name string) int {
@@ -1914,7 +1848,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 			return false
 		}
 	}
-	if rule.Readiness != "" && rule.Readiness != "all" && string(item.Readiness.Status) != rule.Readiness && !(rule.Readiness == string(queue.Ready) && m.readyDuringRecheck(item)) {
+	if rule.Readiness != "" && rule.Readiness != "all" && string(shownReadiness(item)) != rule.Readiness {
 		return false
 	}
 	if rule.Claim != "" && rule.Claim != "all" && !matchesClaim(item, rule.Claim) {
@@ -1939,7 +1873,7 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 	if _, configured := m.ViewRules[name]; !configured {
 		switch name {
 		case "Ready":
-			if item.Readiness.Status != queue.Ready && !m.readyDuringRecheck(item) {
+			if shownReadiness(item) != queue.Ready {
 				return false
 			}
 		case "Mine":
@@ -2091,11 +2025,16 @@ func (m Model) displayState(i queue.Item) string {
 	if i.ReadPermission == queue.Denied {
 		return "denied"
 	}
+	// Finished work is never selectable; its readiness would only add noise.
+	done := i.Terminal && i.TerminalKnown && !i.Claim.Active
+	// A row being reread keeps its last readiness until the reread settles.
+	if i.Readiness.LastKnown != "" && !done {
+		return string(i.Readiness.LastKnown) + " (stale)"
+	}
 	if !i.Fresh {
 		return "stale"
 	}
-	// Finished work is never selectable; its readiness would only add noise.
-	if i.Terminal && i.TerminalKnown && !i.Claim.Active {
+	if done {
 		return "done"
 	}
 	if i.ProviderBlocked {

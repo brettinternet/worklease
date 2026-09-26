@@ -669,7 +669,7 @@ func TestSourceReadFailureLabelsIncludeRateLimitDeadline(t *testing.T) {
 	}
 }
 
-func TestDetailStaysVisibleWhileSelectedItemRevalidates(t *testing.T) {
+func TestRelistedSelectedItemKeepsDetailAndSelection(t *testing.T) {
 	t.Parallel()
 	initial := fixture()
 	initial.Revision = 1
@@ -677,9 +677,7 @@ func TestDetailStaysVisibleWhileSelectedItemRevalidates(t *testing.T) {
 	item := initial.Items[ref.Key()]
 	item.Body = "Previously observed description"
 	item.ReadOutcome = "found"
-	item.Observation.ProviderVersion = "previous-version"
 	item.Readiness.Status = queue.Ready
-	item.Relationships = []queue.Relationship{{Type: queue.HardPrerequisite, To: queue.Ref{SourceID: "a", ItemID: "2"}, Fresh: true}}
 	initial.Items[ref.Key()] = item
 	m := New(initial)
 	m.Sources = []queue.Source{{ID: "a"}}
@@ -691,59 +689,27 @@ func TestDetailStaysVisibleWhileSelectedItemRevalidates(t *testing.T) {
 	hydrates := 0
 	m.HydrateSelected = func(queue.Item) tea.Cmd { hydrates++; return nil }
 
+	// The store carries the description and last readiness onto a relisted summary.
 	refresh := initial.Clone()
 	refresh.Revision = 2
-	summary := queue.Item{Summary: item.Summary, ReadOutcome: "summary-only", Readiness: queue.Readiness{Status: queue.ReadinessUnknown}, Observation: item.Observation, Claim: queue.ClaimObservation{ObservedAt: time.Now()}}
-	summary.Observation.ProviderVersion = ""
+	summary := item
+	summary.ReadOutcome = "summary-only"
+	summary.Readiness = queue.Readiness{Status: queue.ReadinessUnknown, LastKnown: queue.Ready}
+	summary.Observation.ObservedAt = time.Now()
 	refresh.Items[ref.Key()] = summary
 	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
 	m = next.(Model)
-	if m.Selected != identity(item) || m.DetailOffset != 2 || hydrates != 1 {
-		t.Fatalf("refresh interrupted selection or hydration: selected=%q offset=%d hydrates=%d", m.Selected, m.DetailOffset, hydrates)
+	if m.Selected != identity(item) || m.DetailOffset != 2 || hydrates != 1 || len(m.Comments) != 1 {
+		t.Fatalf("refresh interrupted selection, hydration or activity: selected=%q offset=%d hydrates=%d comments=%d", m.Selected, m.DetailOffset, hydrates, len(m.Comments))
 	}
-	if !strings.Contains(screenText(m.View()), item.Body) {
-		t.Fatal("open detail pane lost its description during refresh")
+	if text := screenText(m.View()); !strings.Contains(text, item.Body) || !strings.Contains(text, "ready (stale)") {
+		t.Fatalf("relisted item lost its description or stale marker: %q", text)
 	}
-	current := m.Snapshot.Items[ref.Key()]
-	if current.Body != "" || len(current.Relationships) != 0 || len(current.Resources) != 0 || queue.EvaluateAction(current, queue.ActionStart).Eligible {
-		t.Fatalf("cached details leaked into current action evidence: %+v", current)
-	}
-	for tab, want := range map[int]string{0: item.Body, 1: "a:2", 2: "previous-version", 3: "resource:1"} {
-		m.Tab = tab
-		text := screenText(strings.Join(m.detailContent(current, 70), " "))
-		if !strings.Contains(text, want) || !strings.Contains(strings.ToLower(text), "previously observed") {
-			t.Fatalf("tab %d lost cached detail: %q", tab, text)
-		}
-	}
-	if len(m.Comments) != 1 || m.Comments[0].Body != "Previously loaded comment" {
-		t.Fatal("refresh lost previously loaded activity")
-	}
-	m.Tab = 0
 	refresh.Revision = 3
 	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
 	m = next.(Model)
-	if hydrates != 1 || !strings.Contains(screenText(strings.Join(m.detailContent(m.Snapshot.Items[ref.Key()], 70), " ")), item.Body) {
-		t.Fatal("intermediate snapshot lost detail or repeated selected hydration")
-	}
-
-	verified := item
-	verified.Body = "Updated description"
-	verified.Readiness.Status = queue.Ready
-	refresh.Revision = 4
-	refresh.Items[ref.Key()] = verified
-	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	m.Tab = 0
-	text := screenText(strings.Join(m.detailContent(m.Snapshot.Items[ref.Key()], 70), " "))
-	if !strings.Contains(text, verified.Body) || strings.Contains(text, item.Body) || strings.Contains(text, "previously observed") {
-		t.Fatalf("verified details failed to replace cached presentation: %q", text)
-	}
-	delete(refresh.Items, ref.Key())
-	refresh.Revision = 5
-	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	if _, exists := m.displayDetails[ref.Key()]; exists {
-		t.Fatal("removed item retained cached detail")
+	if hydrates != 1 {
+		t.Fatal("unchanged summary repeated selected hydration")
 	}
 }
 
@@ -770,14 +736,14 @@ func TestPreviouslyObservedDetailsDisappearOnRevocation(t *testing.T) {
 			m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "private previous agent"}}}
 			refresh := initial.Clone()
 			refresh.Revision = 2
-			summary := queue.Item{Summary: item.Summary, ReadOutcome: "summary-only", Observation: item.Observation}
+			// The store carries the description onto a relisted summary and drops
+			// it once the item is gone or changes owner.
+			summary := queue.Item{Summary: item.Summary, Body: item.Body, ReadOutcome: "summary-only", Observation: item.Observation}
 			refresh.Items[ref.Key()] = summary
 			next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
 			m = next.(Model)
-			if _, ok := m.displayDetails[ref.Key()]; !ok {
-				t.Fatal("test did not cache previously observed detail")
-			}
 			refresh.Revision = 3
+			summary.Body = ""
 			switch scenario {
 			case "removed":
 				delete(refresh.Items, ref.Key())
@@ -794,7 +760,7 @@ func TestPreviouslyObservedDetailsDisappearOnRevocation(t *testing.T) {
 			}
 			next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
 			m = next.(Model)
-			if _, ok := m.displayDetails[ref.Key()]; ok || strings.Contains(screenText(m.View()), item.Body) || len(m.Comments) != 0 || len(m.History.Epochs) != 0 {
+			if strings.Contains(screenText(m.View()), item.Body) || len(m.Comments) != 0 || len(m.History.Epochs) != 0 {
 				t.Fatal("private details survived item removal or identity change")
 			}
 			if scenario == "principal-changed" {
@@ -952,75 +918,6 @@ func TestSelectedSummaryHydratesOnOwnerChangeWithSameObservation(t *testing.T) {
 	}
 }
 
-func TestReadyViewDoesNotCarryRecheckAcrossIdentity(t *testing.T) {
-	t.Parallel()
-	for _, field := range []string{"principal", "canonical"} {
-		for _, intermediate := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/intermediate=%t", field, intermediate), func(t *testing.T) {
-				initial := fixture()
-				initial.Revision = 1
-				ref := queue.Ref{SourceID: "a", ItemID: "1"}
-				item := initial.Items[ref.Key()]
-				item.Readiness.Status = queue.Ready
-				item.Observation.Principal = "alice"
-				initial.Items[ref.Key()] = item
-				m := New(initial)
-				m.Sources = []queue.Source{{ID: "a"}}
-				m.ViewName = "Ready"
-				summary := item
-				summary.ReadOutcome = "summary-only"
-				summary.Readiness.Status = queue.ReadinessUnknown
-				if intermediate {
-					pending := initial.Clone()
-					pending.Revision = 2
-					pending.Items[ref.Key()] = summary
-					next, _ := m.Update(PrepareSnapshotForModel(pending, m))
-					m = next.(Model)
-					if len(m.rows()) != 1 {
-						t.Fatal("test did not establish a rechecking row")
-					}
-				}
-				if field == "principal" {
-					summary.Observation.Principal = "bob"
-				} else {
-					summary.CanonicalID = "replacement"
-				}
-				changed := initial.Clone()
-				changed.Revision = 3
-				changed.Items[ref.Key()] = summary
-				next, _ := m.Update(PrepareSnapshotForModel(changed, m))
-				m = next.(Model)
-				if len(m.rows()) != 0 || m.viewCountFor("Ready") != 0 {
-					t.Fatalf("unverified replacement survived in Ready: %+v", m.rows())
-				}
-			})
-		}
-	}
-}
-
-func TestAllViewUsesPreparedRowsDuringReadyRecheck(t *testing.T) {
-	t.Parallel()
-	initial := fixture()
-	initial.Revision = 1
-	ref := queue.Ref{SourceID: "a", ItemID: "1"}
-	item := initial.Items[ref.Key()]
-	item.Readiness.Status = queue.Ready
-	initial.Items[ref.Key()] = item
-	m := New(initial)
-	m.Sources = []queue.Source{{ID: "a"}}
-	refresh := initial.Clone()
-	refresh.Revision = 2
-	item.ReadOutcome = "summary-only"
-	item.Readiness.Status = queue.ReadinessUnknown
-	refresh.Items[ref.Key()] = item
-	prepared := PrepareSnapshotForModel(refresh, m)
-	next, _ := m.Update(prepared)
-	m = next.(Model)
-	if len(m.rows()) != 2 || m.viewCountFor("Ready") != 1 || len(m.rowCache.rows) != len(prepared.preparedRows) || &m.rowCache.rows[0] != &prepared.preparedRows[0] {
-		t.Fatal("All view rebuilt worker-prepared rows or miscounted Ready during recheck")
-	}
-}
-
 func TestSelectedOffscreenSummaryHydratesWithListOnly(t *testing.T) {
 	t.Parallel()
 	initial := queue.Snapshot{Revision: 1, Items: make(map[string]queue.Item), Sources: map[string]queue.Coverage{"a": {State: queue.CoverageComplete}}}
@@ -1047,7 +944,6 @@ func TestSelectedOffscreenSummaryHydratesWithListOnly(t *testing.T) {
 	refresh := initial.Clone()
 	refresh.Revision = 2
 	item := refresh.Items[ref.Key()]
-	item.Body = ""
 	item.ReadOutcome = "summary-only"
 	refresh.Items[ref.Key()] = item
 	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
@@ -1062,109 +958,43 @@ func TestSelectedOffscreenSummaryHydratesWithListOnly(t *testing.T) {
 	}
 }
 
-func TestReadyViewKeepsRowsDuringRecheckWithoutAllowingActions(t *testing.T) {
+func TestReadyViewsKeepRowsWithLastKnownReadiness(t *testing.T) {
 	t.Parallel()
-	initial := fixture()
-	initial.Revision = 1
-	for key, item := range initial.Items {
-		item.Claim = queue.ClaimObservation{}
-		item.Readiness.Status = queue.Ready
-		initial.Items[key] = item
-	}
-	m := New(initial)
-	m.Sources = []queue.Source{{ID: "a"}}
-	m.ViewName = "Ready"
-	m.ViewRules = map[string]ViewRule{"Ready": {Readiness: string(queue.Ready)}}
-	m.anchor(m.rows())
-	selected := m.Selected
-
-	refresh := initial.Clone()
-	refresh.Revision = 2
-	for key, item := range refresh.Items {
-		item.ReadOutcome = "summary-only"
-		item.Readiness.Status = queue.ReadinessUnknown
-		refresh.Items[key] = item
-	}
-	msg := PrepareSnapshotForModel(refresh, m)
-	if len(msg.preparedRows) != 0 {
-		t.Fatal("fixture must reproduce the empty worker projection")
-	}
-	next, _ := m.Update(msg)
-	m = next.(Model)
-	if rows := m.rows(); len(rows) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
-		t.Fatalf("refresh displaced previously ready rows: rows=%d selected=%q count=%d", len(rows), m.Selected, m.viewCountFor("Ready"))
-	}
-	if !strings.Contains(screenText(m.View()), "rechecking") {
-		t.Fatal("unverified rows were not visibly marked")
-	}
-	for _, item := range m.rows() {
-		if queue.EvaluateAction(item, queue.ActionStart).Eligible {
-			t.Fatalf("rechecking item became actionable: %+v", item)
-		}
-	}
-
-	// Rows return to verified readiness independently without displacing
-	// still-rechecking rows or changing the selected item.
-	firstRef := queue.Ref{SourceID: "a", ItemID: "1"}
-	first := refresh.Items[firstRef.Key()]
-	first.ReadOutcome = "found"
-	first.Readiness.Status = queue.Ready
-	refresh.Items[firstRef.Key()] = first
-	refresh.Revision = 3
-	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	if len(m.rows()) != 2 || m.Selected != selected || m.viewCountFor("Ready") != 2 {
-		t.Fatalf("partial recheck displaced rows: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
-	}
-
-	// A detail read can report missing while retaining a stale diagnostic
-	// item in the snapshot. That is not an in-progress recheck.
-	first = refresh.Items[firstRef.Key()]
-	first.ReadOutcome = "missing"
-	first.Fresh = false
-	first.Readiness.Status = queue.ReadinessUnknown
-	refresh.Items[firstRef.Key()] = first
-	refresh.Revision = 4
-	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	if len(m.rows()) != 1 || m.Selected != "stable-2" {
-		t.Fatalf("missing item remained visible: selected=%q count=%d", m.Selected, len(m.rows()))
-	}
-
-	// A deleted item is removed immediately. A fully read item with unknown
-	// readiness also leaves the Ready view rather than lingering indefinitely.
-	delete(refresh.Items, firstRef.Key())
-	other := refresh.Items[(queue.Ref{SourceID: "a", ItemID: "2"}).Key()]
-	other.ReadOutcome = "found"
-	refresh.Items[other.Ref.Key()] = other
-	refresh.Revision = 5
-	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	if len(m.rows()) != 0 || m.Selected != "" || m.viewCountFor("Ready") != 0 {
-		t.Fatalf("removed or verified-ineligible rows lingered: selected=%q count=%d", m.Selected, m.viewCountFor("Ready"))
-	}
-}
-
-func TestDefaultReadyViewCountsRecheckingRows(t *testing.T) {
-	t.Parallel()
-	initial := fixture()
-	initial.Revision = 1
-	first := initial.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()]
-	first.Readiness.Status = queue.Ready
-	initial.Items[first.Ref.Key()] = first
-	m := New(initial)
-	m.Sources = []queue.Source{{ID: "a"}}
-	m.ViewName = "Ready"
-
-	refresh := initial.Clone()
-	refresh.Revision = 2
-	first.ReadOutcome = "summary-only"
-	first.Readiness.Status = queue.ReadinessUnknown
-	refresh.Items[first.Ref.Key()] = first
-	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
-	m = next.(Model)
-	if len(m.rows()) != 1 || m.viewCountFor("Ready") != 1 {
-		t.Fatalf("default Ready view count disagrees with rechecking row: shown=%d tab=%d", len(m.rows()), m.viewCountFor("Ready"))
+	for _, configured := range []bool{false, true} {
+		t.Run(fmt.Sprintf("configured=%t", configured), func(t *testing.T) {
+			t.Parallel()
+			snapshot := fixture()
+			snapshot.Revision = 1
+			for key, item := range snapshot.Items {
+				item.Claim = queue.ClaimObservation{}
+				item.ReadOutcome = "summary-only"
+				item.Readiness = queue.Readiness{Status: queue.ReadinessUnknown, LastKnown: queue.Ready}
+				snapshot.Items[key] = item
+			}
+			// A settled unknown readiness carries no last known status.
+			settled := snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "2"}).Key()]
+			settled.ReadOutcome = "found"
+			settled.Readiness = queue.Readiness{Status: queue.ReadinessUnknown}
+			snapshot.Items[settled.Ref.Key()] = settled
+			m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+			m.Sources = []queue.Source{{ID: "a"}}
+			m.ViewName = "Ready"
+			if configured {
+				m.ViewRules = map[string]ViewRule{"Ready": {Readiness: string(queue.Ready)}}
+			}
+			next, _ := m.Update(PrepareSnapshotForModel(snapshot, m))
+			m = next.(Model)
+			rows := m.rows()
+			if len(rows) != 1 || rows[0].Ref.ItemID != "1" || m.viewCountFor("Ready") != 1 {
+				t.Fatalf("Ready view rows=%+v count=%d", rows, m.viewCountFor("Ready"))
+			}
+			if !strings.Contains(screenText(m.View()), "ready (stale)") {
+				t.Fatal("row shown from last known readiness was not marked stale")
+			}
+			if queue.EvaluateAction(rows[0], queue.ActionStart).Eligible {
+				t.Fatalf("row shown from last known readiness became actionable: %+v", rows[0])
+			}
+		})
 	}
 }
 

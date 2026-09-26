@@ -58,6 +58,7 @@ func (s *Store) Item(ref Ref) (Item, bool) {
 func (s *Store) SeedSnapshot(seed Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous := maps.Clone(s.current.Items)
 	for source, coverage := range seed.Sources {
 		if coverage.State == CoverageComplete {
 			for key, item := range s.current.Items {
@@ -77,6 +78,7 @@ func (s *Store) SeedSnapshot(seed Snapshot) {
 	for key, ref := range seed.Deleted {
 		s.current.Deleted[key] = ref
 	}
+	retainPrevious(previous, s.current.Items)
 	s.current.Items = Recompute(s.current.Items, aggregateCoverage(s.current.Sources))
 	s.next++
 	s.current.Revision = s.next
@@ -104,8 +106,10 @@ func (s *Store) publishComputed(update func(*Snapshot), recompute bool, valid fu
 		base := s.current.Clone()
 		revision := s.current.Revision
 		s.mu.RUnlock()
+		previous := maps.Clone(base.Items)
 		update(&base)
 		if recompute {
+			retainPrevious(previous, base.Items)
 			for source, coverage := range base.Sources {
 				coverage.ObservedEdges = 0
 				for _, item := range base.Items {
@@ -147,6 +151,42 @@ func (s *Store) publishComputed(update func(*Snapshot), recompute bool, valid fu
 		result := base.Clone()
 		s.mu.Unlock()
 		return result, true
+	}
+}
+
+// retainPrevious carries an item's last readiness, description and edges into
+// a newer observation of the same item that has not been reread yet, so a
+// refresh does not blank rows it is still checking. Edges are marked stale and
+// Recompute exposes only LastKnown, so none of this becomes current evidence.
+func retainPrevious(previous, items map[string]Item) {
+	for key, item := range items {
+		prior, ok := previous[key]
+		if !ok || prior.Ref != item.Ref || prior.CanonicalID != item.CanonicalID || observationMismatch(prior.Observation, item.Observation) {
+			continue
+		}
+		item.Readiness = prior.Readiness
+		// A listing rebuilt from cached edges is found but carries no body;
+		// an unchanged update time means the previously read one still applies.
+		unchanged := item.ReadOutcome == "found" && !item.UpdatedAt.IsZero() && item.UpdatedAt.Equal(prior.UpdatedAt)
+		if item.Body == "" && (unchanged || item.Revalidating()) {
+			item.Body = prior.Body
+		}
+		if item.Revalidating() && item.Relationships == nil && prior.Relationships != nil {
+			item.Relationships = make([]Relationship, len(prior.Relationships))
+			for n, edge := range prior.Relationships {
+				edge.Fresh = false
+				item.Relationships[n] = edge
+			}
+		}
+		items[key] = item
+	}
+}
+
+// dropRetainedDetails removes a carried description and edges once a read
+// definitively reports the item missing or changed.
+func dropRetainedDetails(item *Item) {
+	if !item.Revalidating() {
+		item.Body, item.Relationships = "", nil
 	}
 }
 
@@ -1024,6 +1064,7 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 				summary.DependenciesKnown = false
 				summary.Closure = CoverageUnknown
 				summary.Readiness = Readiness{Status: ReadinessUnknown, Reasons: []string{"item-read-" + summary.ReadOutcome}, Freshness: FreshnessUnknown}
+				dropRetainedDetails(&summary)
 				s.Items[job.ref.Key()] = summary
 			}, out)
 			continue
@@ -1079,7 +1120,7 @@ func (l *Loader) hydrateBatch(ctx context.Context, a Adapter, source Source, gen
 			}
 			item.Relationships = append(item.Relationships, page.Edges...)
 			if page.Observation.ObservedAt.After(item.Observation.ObservedAt) {
-				item.Observation = page.Observation
+				item.Observation = newerObservation(item.Observation, page.Observation)
 			}
 			cursor = page.NextCursor
 			if cursor == "" {
@@ -1155,6 +1196,7 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			summary.DependenciesKnown = false
 			summary.Closure = CoverageUnknown
 			summary.Readiness = Readiness{Status: ReadinessUnknown, Reasons: []string{"item-read-" + summary.ReadOutcome}, Freshness: FreshnessUnknown}
+			dropRetainedDetails(&summary)
 			s.Items[ref.Key()] = summary
 		}, out)
 		return
@@ -1166,6 +1208,7 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 		summary.Fresh = false
 		summary.ReadOutcome = "identity-changed"
 		summary.DependenciesKnown = false
+		dropRetainedDetails(&summary)
 		l.publish(ctx, source.ID, generation, func(s *Snapshot) { s.Items[ref.Key()] = summary }, out)
 		return
 	}
@@ -1232,7 +1275,7 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 			item.Relationships = append(item.Relationships, deps.Edges...)
 		}
 		if deps.Observation.ObservedAt.After(item.Observation.ObservedAt) || item.Observation.ObservedAt.IsZero() {
-			item.Observation = deps.Observation
+			item.Observation = newerObservation(item.Observation, deps.Observation)
 		}
 		depCursor = deps.NextCursor
 		if depCursor == "" {
@@ -1306,6 +1349,24 @@ func githubAccessLost(err error) bool {
 		return true
 	}
 	return false
+}
+
+// newerObservation adopts a later page's observation without dropping the
+// identity an adapter reported only on the item or its listing.
+func newerObservation(current, next Observation) Observation {
+	if next.Principal == "" {
+		next.Principal = current.Principal
+	}
+	if next.AccessScope == "" {
+		next.AccessScope = current.AccessScope
+	}
+	if next.ConfigurationGeneration == "" {
+		next.ConfigurationGeneration = current.ConfigurationGeneration
+	}
+	if next.ProviderVersion == "" {
+		next.ProviderVersion = current.ProviderVersion
+	}
+	return next
 }
 
 func observationMismatch(a, b Observation) bool {

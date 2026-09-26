@@ -903,6 +903,16 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 	}
 	current := loader.Store.Current()
+	// Persist hydrated details and readiness so the next launch starts from them.
+	for _, source := range refreshSources {
+		partition, ok := partitions[source.ID]
+		if !ok || ctx.Err() != nil {
+			continue
+		}
+		if err := replaceQueueIndexSnapshot(ctx, index, partition, source.ID, current); err != nil && refreshErr == nil {
+			refreshErr = err
+		}
+	}
 	for _, source := range refreshSources {
 		coverage := current.Sources[source.ID]
 		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" {
