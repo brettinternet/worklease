@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfavecli "github.com/urfave/cli/v3"
+	"golang.org/x/term"
 )
 
 const jsonStateKey = "worklease.json.state"
@@ -86,8 +88,8 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 	}
 	state := &boundary{writer: stdout, errWriter: stderr, version: version, commit: commit, buildTime: buildTime}
 	root := &urfavecli.Command{
-		Name: "worklease", Usage: "Coordinate local work ownership", UsageText: "worklease [global options] <command>",
-		Description: "Coordinate work safely on one host. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
+		Name: "worklease", Usage: "Coordinate local work ownership", UsageText: "worklease [global options] [command]",
+		Description: "Coordinate work safely on one host. Bare `worklease` opens the queue TUI when stdin and stdout are terminals; otherwise it prints this help and exits. `worklease help` and `worklease -h` always print help. Without queue.yaml, the TUI opens on Claims; run `worklease queue init` to configure sources. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
 		Version:     version, HideVersion: true, Writer: stdout, ErrWriter: stderr,
 		EnableShellCompletion: true, ShellComplete: writeShellCompletions,
 		ConfigureShellCompletionCommand: configureCompletionCommand(state),
@@ -114,6 +116,9 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 			if cmd.Args().Len() > 0 {
 				return state.handle(cmd, reason.Invalid(fmt.Sprintf("unknown command %q", cmd.Args().First())))
 			}
+			if bareInteractive(state.invocation, os.Stdin, state.writer) {
+				return state.handle(cmd, runQueue(ctx, cmd, state))
+			}
 			return urfavecli.ShowRootCommandHelp(cmd)
 		},
 	}
@@ -124,6 +129,13 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 		panic(err)
 	}
 	return root
+}
+
+// Only the exact bare command may enter the TUI. A pipe on either side, or
+// any explicit flag (including --json), keeps the existing help behavior.
+func bareInteractive(args []string, stdin *os.File, stdout io.Writer) bool {
+	out, ok := stdout.(*os.File)
+	return len(args) == 1 && stdin != nil && ok && term.IsTerminal(int(stdin.Fd())) && term.IsTerminal(int(out.Fd()))
 }
 
 func (s *boundary) jsonRequested(cmd *urfavecli.Command) bool {

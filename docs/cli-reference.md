@@ -1,7 +1,14 @@
 # CLI reference
 
 Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
-example.
+example. Bare `worklease` opens the queue TUI only when both stdin and stdout
+are terminals. With a pipe or redirected output it prints root help and exits
+successfully; `worklease help` and `worklease -h` always print help. A configured
+queue opens its first view even if a source is down. Without `queue.yaml`, it
+opens Claims without creating authority or config state; run `worklease queue init`
+to add sources. An invalid config is reported just as with `worklease queue`.
+The empty Claims tab suggests `worklease acquire --path README.md`, `?` for help,
+and `q` to quit.
 
 `worklease help --all` prints the root help followed by every command and
 subcommand once, in tree order, without touching any state. It is the one-shot

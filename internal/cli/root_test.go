@@ -5,13 +5,62 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/reason"
+	"github.com/creack/pty"
 	urfavecli "github.com/urfave/cli/v3"
 )
+
+func TestBareInteractiveRequiresBothTerminalsAndNoFlags(t *testing.T) {
+	t.Parallel()
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	pipe, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipe.Close()
+	defer writer.Close()
+	for _, test := range []struct {
+		name   string
+		args   []string
+		input  *os.File
+		output io.Writer
+		want   bool
+	}{
+		{"terminal", []string{"worklease"}, slave, slave, true},
+		{"pipe stdin", []string{"worklease"}, pipe, slave, false},
+		{"pipe stdout", []string{"worklease"}, slave, writer, false},
+		{"injected writer", []string{"worklease"}, slave, &bytes.Buffer{}, false},
+		{"flag", []string{"worklease", "--json"}, slave, slave, false},
+		{"command", []string{"worklease", "help"}, slave, slave, false},
+	} {
+		if got := bareInteractive(test.args, test.input, test.output); got != test.want {
+			t.Errorf("%s: interactive=%t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+func TestBareNonterminalAndExplicitHelp(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"worklease"}, {"worklease", "help"}, {"worklease", "-h"}} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), args, "test", "unknown", "unknown", &stdout, &stderr); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(stdout.String(), "Bare `worklease` opens the queue TUI") || stderr.Len() != 0 {
+			t.Fatalf("%v: stdout=%q stderr=%q", args, stdout.String(), stderr.String())
+		}
+	}
+}
 
 func TestNestedUsageErrorsAreClassifiedWithoutHelpOutput(t *testing.T) {
 	t.Parallel()

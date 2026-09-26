@@ -17,7 +17,7 @@ import (
 func queueClaimsOnlyFallback(cfg config.QueueConfig, loadErr error) (string, bool, error) {
 	if loadErr != nil {
 		if classified := reason.As(loadErr); classified != nil && classified.Reason == reason.ReasonNoSourcesConfigured {
-			return "queue.yaml is not configured; showing authority-wide claims only", true, nil
+			return "queue.yaml is not configured; run worklease queue init to add sources", true, nil
 		}
 		return "", false, loadErr
 	}

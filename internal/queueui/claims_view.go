@@ -74,6 +74,9 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 			message = "No current authority claims."
 		}
 		lines = append(lines, "", "  "+m.s().bold.Render(clip(message, width-2)))
+		if len(m.Claims.Items) == 0 && m.Claims.Error == "" {
+			lines = append(lines, "  "+clip("Start with worklease acquire --path README.md", width-2), "  "+clip("Press ? for help · q to quit", width-2))
+		}
 	}
 	return lines
 }

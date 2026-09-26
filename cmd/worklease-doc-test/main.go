@@ -36,6 +36,7 @@ func main() {
 		runExample(binary, required, body)
 	}
 	validateCurrentDocs()
+	validateBareHelp(binary)
 	validateExternalAdapterSchema()
 	validateRemoteDocs()
 	validateOnboardingDocs()
@@ -119,6 +120,27 @@ func runExample(binary, name, body string) {
 	command.Env = append(os.Environ(), "PATH="+filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"), "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "WORKLEASE_HOME="+filepath.Join(root, "home"), "WORKLEASE_AGENT_ID=docs")
 	if output, err := command.CombinedOutput(); err != nil {
 		fatal(fmt.Errorf("runnable example %s: %w: %s", name, err, output))
+	}
+}
+
+func validateBareHelp(binary string) {
+	for _, args := range [][]string{nil, {"help"}, {"-h"}} {
+		command := exec.Command(binary, args...)
+		output, err := command.CombinedOutput() // No terminal on stdin or stdout.
+		if err != nil || !bytes.Contains(output, []byte("Bare `worklease` opens the queue TUI")) || !bytes.Contains(output, []byte("worklease acquire --path README.md")) {
+			fatal(fmt.Errorf("non-interactive worklease %v help: %v: %s", args, err, output))
+		}
+	}
+	for _, path := range []string{"docs/cli-reference.md"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			fatal(err)
+		}
+		for _, phrase := range []string{"both stdin and stdout", "worklease queue init", "worklease acquire --path README.md"} {
+			if !bytes.Contains(content, []byte(phrase)) {
+				fatal(fmt.Errorf("%s missing bare worklease guidance: %s", path, phrase))
+			}
+		}
 	}
 }
 
