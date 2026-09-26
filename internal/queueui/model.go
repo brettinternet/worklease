@@ -157,16 +157,18 @@ type ClaimOverlayMsg struct {
 	Err        error
 }
 type HistoryMsg struct {
-	Identity string
-	Page     ledger.HistoryPage
-	Before   bool
-	Err      error
+	Identity   string
+	Generation uint64
+	Page       ledger.HistoryPage
+	Before     bool
+	Err        error
 }
 type CommentsMsg struct {
-	Identity string
-	Comments []queue.GitHubComment
-	Cursor   string
-	Err      error
+	Identity   string
+	Generation uint64
+	Comments   []queue.GitHubComment
+	Cursor     string
+	Err        error
 }
 type RefreshedMsg struct{ Err error }
 type RecoveryMsg struct {
@@ -344,7 +346,10 @@ type Model struct {
 	// while their replacement summaries are awaiting validation. It never
 	// changes the item's current readiness or action eligibility.
 	recheckingReady map[string]bool
-	HelpOffset      int
+	// displayDetails is presentation-only; actions always receive Snapshot.Items.
+	displayDetails   map[string]queue.Item
+	detailGeneration uint64
+	HelpOffset       int
 	// pendingG and pendingZ record the first key of a two-key navigation command.
 	pendingG, pendingZ bool
 }
@@ -448,6 +453,12 @@ func identity(i queue.Item) string {
 		return i.CanonicalID
 	}
 	return i.Ref.Key()
+}
+
+// DetailRequestIdentity binds asynchronous comments and history to the
+// principal and source identity that authorized their read.
+func DetailRequestIdentity(i queue.Item) string {
+	return fmt.Sprintf("%q:%q:%q:%q:%q", i.Ref.Key(), i.CanonicalID, i.Observation.Principal, i.Observation.ConfigurationGeneration, i.Observation.AccessScope)
 }
 func sameSourceOrder(sources []queue.Source, ids []string) bool {
 	if len(sources) != len(ids) {
@@ -640,10 +651,14 @@ func (m Model) selected(rows []queue.Item) (queue.Item, bool) {
 	return queue.Item{}, false
 }
 func (m *Model) anchor(rows []queue.Item) {
+	previous := m.Selected
 	if len(rows) == 0 {
 		m.Selected = ""
 		m.Index = 0
 		m.Offset = 0
+		if previous != "" {
+			m.clearSelectedDetail()
+		}
 		return
 	}
 	found := false
@@ -661,6 +676,9 @@ func (m *Model) anchor(rows []queue.Item) {
 		m.Index = 0
 	}
 	m.Selected = identity(rows[m.Index])
+	if m.Selected != previous {
+		m.clearSelectedDetail()
+	}
 	if m.Offset > m.Index {
 		m.Offset = m.Index
 	}
@@ -669,16 +687,12 @@ func (m *Model) anchor(rows []queue.Item) {
 	}
 }
 func (m *Model) move(delta int) {
-	previous := m.Selected
 	rows := m.rows()
 	m.anchor(rows)
 	if len(rows) == 0 {
 		return
 	}
 	m.selectIndex(rows, m.Index+delta)
-	if m.Selected != previous {
-		m.clearHistory()
-	}
 }
 
 // selectIndex selects rows[index] (clamped) and scrolls it into view.
@@ -688,7 +702,7 @@ func (m *Model) selectIndex(rows []queue.Item, index int) {
 	m.Selected = identity(rows[m.Index])
 	m.Offset = m.listOffset(len(rows), m.listCapacity(rows))
 	if m.Selected != previous {
-		m.clearHistory()
+		m.clearSelectedDetail()
 	}
 }
 
@@ -798,6 +812,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.Snapshot.Revision < m.Snapshot.Revision {
 			break
 		}
+		priorSelected, hadPriorSelection := m.selected(m.rows())
 		updated := v.Snapshot
 		if !v.prepared {
 			updated = v.Snapshot.Clone()
@@ -805,9 +820,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A fresh summary is not yet evidence that a formerly ready item is
 		// ready. Keep it on screen as rechecking, but use the new item for all
 		// actions. Missing or definitively re-evaluated items leave the view.
+		priorSnapshot := m.Snapshot
 		rechecking := make(map[string]bool)
+		displayDetails := make(map[string]queue.Item)
 		for key, item := range updated.Items {
-			if item.Readiness.Status != queue.ReadinessUnknown {
+			prior, present := priorSnapshot.Items[key]
+			if detailsPending(item) {
+				if saved, ok := m.displayDetails[key]; ok && sameDetailOwner(saved, item) {
+					displayDetails[key] = saved
+				} else if present && sameDetailOwner(prior, item) && (prior.Body != "" || len(prior.Relationships) > 0 || len(prior.Resources) > 0) {
+					displayDetails[key] = prior
+				}
+			}
+			if item.Readiness.Status != queue.ReadinessUnknown || !detailsAccessible(item) {
 				continue
 			}
 			switch item.ReadOutcome {
@@ -819,16 +844,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default: // missing, denied, or otherwise definitive
 				continue
 			}
-			prior, present := m.Snapshot.Items[key]
-			if m.recheckingReady[key] || present && prior.Ref == item.Ref && prior.Readiness.Status == queue.Ready {
+			if present && sameDetailOwner(prior, item) && (m.recheckingReady[key] || prior.Readiness.Status == queue.Ready) {
 				rechecking[key] = true
 			}
 		}
 		m.recheckingReady = rechecking
+		m.displayDetails = displayDetails
 		projectionUsable := v.hasProjection && reflect.DeepEqual(v.projection, projectionForModel(m)) && sameSourceOrder(m.Sources, v.sourceIDs)
-		preparedRowsUsable := projectionUsable && len(m.recheckingReady) == 0
+		preparedRowsUsable := projectionUsable
+		if projectionUsable && len(m.recheckingReady) > 0 {
+			baseline := m
+			baseline.recheckingReady = nil
+			for key := range m.recheckingReady {
+				item := updated.Items[key]
+				for name := range v.preparedCounts {
+					if !baseline.viewCountMatches(item, name) && m.viewCountMatches(item, name) {
+						v.preparedCounts[name]++
+						if name == m.ViewName {
+							preparedRowsUsable = false
+						}
+					}
+				}
+			}
+		}
 		for key, item := range updated.Items {
-			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && item.Ref == prior.Ref {
+			if prior, ok := m.Snapshot.Items[key]; ok && len(prior.Resources) > 0 && sameDetailOwner(prior, item) {
 				beforeItem := item
 				beforeClaim := item.Claim
 				gapInvalidated := m.RebuildingClaims && prior.Claim.Stale && prior.Claim.Reason == "history-gap"
@@ -872,24 +912,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cacheRows(m.rowKey(), v.allRows)
 		}
 		m.anchor(m.rows())
-		if m.Selected != previous {
-			m.clearHistory()
+		selected, hasSelection := m.selected(m.rows())
+		ownerChanged := hadPriorSelection && hasSelection && !sameDetailOwner(priorSelected, selected)
+		if m.Selected == previous && (ownerChanged || hasSelection && !detailsAccessible(selected)) {
+			m.clearSelectedDetail()
 		}
-		if m.Detail && m.Tab == 2 && m.Selected != previous && m.LoadComments != nil {
-			if item, ok := m.selected(m.rows()); ok {
-				m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
-				m.CommentsIdentity = identity(item)
-				m.CommentsLoading = true
-				return m, m.LoadComments(item, "")
+		priorItem := priorSnapshot.Items[selected.Ref.Key()]
+		hydrateSelected := m.HydrateSelected != nil && hasSelection && detailsAccessible(selected) &&
+			(m.Selected != previous || ownerChanged || selected.ReadOutcome == "summary-only" &&
+				(priorItem.ReadOutcome != "summary-only" || !priorItem.Observation.ObservedAt.Equal(selected.Observation.ObservedAt)))
+		if m.Detail && m.Tab == 2 && (m.Selected != previous || ownerChanged) && m.LoadComments != nil && hasSelection && detailsAccessible(selected) {
+			m.CommentsIdentity = DetailRequestIdentity(selected)
+			m.CommentsLoading = true
+			comments := m.loadComments(selected, "")
+			if hydrateSelected {
+				return m, tea.Batch(comments, m.HydrateSelected(selected))
 			}
+			return m, comments
 		}
-		if m.Selected != previous && m.HydrateSelected != nil {
-			if item, ok := m.selected(m.rows()); ok {
-				return m, m.HydrateSelected(item)
-			}
+		if hydrateSelected {
+			return m, m.HydrateSelected(selected)
 		}
 	case CommentsMsg:
-		if v.Identity == m.Selected {
+		if item, ok := m.selected(m.rows()); ok && detailsAccessible(item) && v.Generation == m.detailGeneration && v.Identity == DetailRequestIdentity(item) && m.CommentsIdentity == v.Identity {
 			m.CommentsLoading = false
 			if v.Err != nil {
 				m.CommentsError = v.Err.Error()
@@ -903,7 +948,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ClaimOverlayMsg:
 		m.rowCache = &rowCache{}
 		for key, item := range v.Snapshot.Items {
-			if current, ok := m.Snapshot.Items[key]; ok && (item.Claim.Stale || item.Claim.Reason == "authority-mismatch" || !item.Claim.ObservedAt.Before(current.Claim.ObservedAt)) {
+			if current, ok := m.Snapshot.Items[key]; ok && sameDetailOwner(current, item) && (item.Claim.Stale || item.Claim.Reason == "authority-mismatch" || !item.Claim.ObservedAt.Before(current.Claim.ObservedAt)) {
 				current.Claim, current.Resources, current.KeyInputs = item.Claim, item.Resources, item.KeyInputs
 				m.Snapshot.Items[key] = current
 			}
@@ -920,7 +965,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.anchor(m.rows())
 	case HistoryMsg:
-		if v.Identity == m.Selected {
+		if item, ok := m.selected(m.rows()); ok && detailsAccessible(item) && v.Generation == m.detailGeneration && v.Identity == DetailRequestIdentity(item) && m.HistoryIdentity == v.Identity {
 			m.HistoryLoading = false
 			m.HistoryError = ""
 			if v.Err != nil {
@@ -1456,14 +1501,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.Detail && m.Tab == 2 && !m.CommentsLoading && m.CommentsCursor != "" && m.LoadComments != nil {
 				if i, ok := m.selected(rows); ok {
 					m.CommentsLoading = true
-					return m, m.LoadComments(i, m.CommentsCursor)
+					return m, m.loadComments(i, m.CommentsCursor)
 				}
 			}
 			if m.Detail && m.Tab == 3 && !m.HistoryLoading && m.History.PreviousCursor != "" && m.LoadHistory != nil {
 				if i, ok := m.selected(rows); ok && len(i.Resources) == 1 {
 					m.HistoryLoading = true
 					m.HistoryCursor = m.History.PreviousCursor
-					return m, m.LoadHistory(i, m.HistoryCursor, true)
+					return m, m.loadHistory(i, m.HistoryCursor, true)
 				}
 			}
 		case ":":
@@ -1569,23 +1614,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // afterNavigation loads lazily fetched detail for a new selection or tab.
 func (m Model) afterNavigation(previous string) (tea.Model, tea.Cmd) {
 	if m.Detail && m.Tab == 2 && m.LoadComments != nil {
-		if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
+		if i, ok := m.selected(m.rows()); ok && detailsAccessible(i) && m.CommentsIdentity != DetailRequestIdentity(i) && !m.CommentsLoading {
 			m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
-			m.CommentsIdentity = identity(i)
+			m.CommentsIdentity = DetailRequestIdentity(i)
 			m.CommentsLoading = true
-			return m, m.LoadComments(i, "")
+			return m, m.loadComments(i, "")
 		}
 	}
 	if m.Detail && m.Tab == 3 {
-		if i, ok := m.selected(m.rows()); ok && len(i.Resources) == 1 && m.HistoryIdentity != identity(i) && m.LoadHistory != nil {
+		if i, ok := m.selected(m.rows()); ok && detailsAccessible(i) && len(i.Resources) == 1 && m.HistoryIdentity != DetailRequestIdentity(i) && m.LoadHistory != nil {
 			m.HistoryLoading = true
-			m.HistoryIdentity = identity(i)
+			m.HistoryIdentity = DetailRequestIdentity(i)
 			m.HistoryCursor = ""
 			m.History = ledger.HistoryPage{}
 			if m.Selected != previous && m.HydrateSelected != nil {
-				return m, tea.Batch(m.LoadHistory(i, "", false), m.HydrateSelected(i))
+				return m, tea.Batch(m.loadHistory(i, "", false), m.HydrateSelected(i))
 			}
-			return m, m.LoadHistory(i, "", false)
+			return m, m.loadHistory(i, "", false)
 		}
 	}
 	if m.Selected != previous && m.HydrateSelected != nil {
@@ -1708,6 +1753,40 @@ func healthy(s map[string]queue.Coverage) int {
 	}
 	return n
 }
+
+func detailsAccessible(item queue.Item) bool {
+	if item.ReadPermission == queue.Denied {
+		return false
+	}
+	switch item.ReadOutcome {
+	case "missing", "denied", "inaccessible", "withheld", "identity-changed":
+		return false
+	}
+	return true
+}
+
+// detailsPending distinguishes a provisional read from a definitive missing
+// item or a completed read with genuinely empty details.
+func detailsPending(item queue.Item) bool {
+	if !detailsAccessible(item) {
+		return false
+	}
+	switch item.ReadOutcome {
+	case "summary-only":
+		return true
+	case "stale", "failed":
+		return !item.Fresh
+	}
+	return false
+}
+
+func sameDetailOwner(before, after queue.Item) bool {
+	return before.Ref == after.Ref && before.CanonicalID == after.CanonicalID &&
+		before.Observation.Principal == after.Observation.Principal &&
+		before.Observation.ConfigurationGeneration == after.Observation.ConfigurationGeneration &&
+		before.Observation.AccessScope == after.Observation.AccessScope
+}
+
 func (m Model) readyDuringRecheck(item queue.Item) bool {
 	return m.recheckingReady[item.Ref.Key()] && item.Readiness.Status == queue.ReadinessUnknown
 }
@@ -1807,6 +1886,46 @@ func matchesClaim(item queue.Item, filter string) bool {
 		return claimState(item) == filter
 	}
 }
+func (m *Model) clearSelectedDetail() {
+	m.detailGeneration++
+	m.clearHistory()
+	m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
+	m.CommentsIdentity = ""
+	m.CommentsLoading = false
+}
+
+func (m Model) loadComments(item queue.Item, cursor string) tea.Cmd {
+	cmd := m.LoadComments(item, cursor)
+	if cmd == nil {
+		return nil
+	}
+	generation := m.detailGeneration
+	return func() tea.Msg {
+		msg := cmd()
+		if response, ok := msg.(CommentsMsg); ok {
+			response.Generation = generation
+			return response
+		}
+		return msg
+	}
+}
+
+func (m Model) loadHistory(item queue.Item, cursor string, before bool) tea.Cmd {
+	cmd := m.LoadHistory(item, cursor, before)
+	if cmd == nil {
+		return nil
+	}
+	generation := m.detailGeneration
+	return func() tea.Msg {
+		msg := cmd()
+		if response, ok := msg.(HistoryMsg); ok {
+			response.Generation = generation
+			return response
+		}
+		return msg
+	}
+}
+
 func (m *Model) clearHistory() {
 	m.History = ledger.HistoryPage{}
 	m.HistoryError = ""

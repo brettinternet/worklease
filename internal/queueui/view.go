@@ -983,7 +983,31 @@ func (m Model) detailTabs(active, width int) (string, []span) {
 
 // detailContent renders the scrollable part of the detail pane.
 func (m Model) detailContent(item queue.Item, width int) []string {
-	return m.s().renderDetail(detail(m, item), max(1, width-1))
+	cached, rechecking := m.displayDetails[item.Ref.Key()]
+	if rechecking {
+		// Fill only the presentation copy. The snapshot item used by action
+		// handlers remains unverified and cannot borrow these older details.
+		if item.Body == "" {
+			item.Body = cached.Body
+		}
+		if len(item.Relationships) == 0 {
+			item.Relationships = append([]queue.Relationship(nil), cached.Relationships...)
+			for n := range item.Relationships {
+				item.Relationships[n].Fresh = false
+			}
+		}
+		if len(item.Resources) == 0 {
+			item.Resources = cached.Resources
+		}
+		if item.Observation.ProviderVersion == "" {
+			item.Observation.ProviderVersion = cached.Observation.ProviderVersion
+		}
+	}
+	lines := detail(m, item)
+	if rechecking {
+		lines = append([]dline{{text: "Previously observed details · rechecking; actions require current evidence", style: m.s().warn}}, lines...)
+	}
+	return m.s().renderDetail(lines, max(1, width-1))
 }
 
 func (m Model) detailPane(item queue.Item, width, height int) []string {
@@ -1137,10 +1161,12 @@ func detail(m Model, i queue.Item) []dline {
 		if m.CommentsError != "" {
 			add("", "Comments unavailable: "+clip(m.CommentsError, 100), m.s().warn)
 		}
-		for _, comment := range m.Comments {
-			add("", clip(comment.Author, 32)+" · "+comment.CreatedAt.Format(time.RFC3339), m.s().bold)
-			add("", clip(comment.Body, min(m.Width*4, 800)), plainStyle)
-			add("", "", plainStyle)
+		if m.CommentsIdentity == DetailRequestIdentity(i) {
+			for _, comment := range m.Comments {
+				add("", clip(comment.Author, 32)+" · "+comment.CreatedAt.Format(time.RFC3339), m.s().bold)
+				add("", clip(comment.Body, min(m.Width*4, 800)), plainStyle)
+				add("", "", plainStyle)
+			}
 		}
 		if m.CommentsCursor != "" {
 			add("", "Press m for more comments", m.s().accent)
@@ -1170,7 +1196,11 @@ func detail(m Model, i queue.Item) []dline {
 			case !owned.Verified:
 				add("", "Ownership unverified; actions disabled", m.s().warn)
 			default:
-				add("", "R: cancel if no operation or provider write started", m.s().accent)
+				if _, rechecking := m.displayDetails[i.Ref.Key()]; rechecking {
+					add("", "Ownership rechecking; actions require current evidence", m.s().warn)
+				} else {
+					add("", "R: cancel if no operation or provider write started", m.s().accent)
+				}
 			}
 		}
 		if m.HistoryLoading {
@@ -1179,7 +1209,7 @@ func detail(m Model, i queue.Item) []dline {
 		if m.HistoryError != "" {
 			add("", "History unavailable: "+clip(m.HistoryError, 100), m.s().warn)
 		}
-		if m.HistoryIdentity == identity(i) {
+		if m.HistoryIdentity == DetailRequestIdentity(i) {
 			if m.History.Gap {
 				add("", "History gap: earlier epochs pruned", m.s().warn)
 			}
