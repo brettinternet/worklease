@@ -2,6 +2,9 @@ package sampleadapter
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +47,60 @@ func RunReference(input io.Reader, output io.Writer) error {
 	}
 	adapter.writable = true
 	return adapter.serve(input)
+}
+
+// referenceCredential models a provider identity check against an owner-private
+// local fixture. It is not a network identity provider or production auth.
+func (s *server) referenceAuthorized() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resolvedOrigin == "" || s.credentialSource == s.resolvedID && s.credentialOrigin == s.resolvedOrigin
+}
+
+func (s *server) referenceCredential(params map[string]json.RawMessage) (any, *rpcError) {
+	s.mu.Lock()
+	s.credentialSource, s.credentialOrigin = "", ""
+	s.mu.Unlock()
+	var request struct {
+		SourceID   string `json:"sourceId"`
+		Origin     string `json:"origin"`
+		Credential string `json:"credential"`
+	}
+	if json.Unmarshal(mustMarshal(params), &request) != nil || request.SourceID == "" || request.Credential == "" {
+		return nil, invalidParams()
+	}
+	failure := rpcErr(-32003, "authentication-failed", "Credential not verified")
+	root := os.Getenv("XDG_CONFIG_HOME")
+	if root == "" {
+		root = filepath.Join(os.Getenv("HOME"), ".config")
+	}
+	path := filepath.Join(root, "worklease", "reference-credential.json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4096 {
+		return nil, failure
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, failure
+	}
+	var stored struct {
+		SourceID  string `json:"sourceId"`
+		Origin    string `json:"origin"`
+		Principal string `json:"principal"`
+		SHA256    string `json:"sha256"`
+	}
+	if json.Unmarshal(data, &stored) != nil || stored.SourceID != request.SourceID || stored.Origin != request.Origin || stored.Principal == "" || !validID(stored.Principal) {
+		return nil, failure
+	}
+	expected, err := hex.DecodeString(stored.SHA256)
+	actual := sha256.Sum256([]byte(request.Credential))
+	if err != nil || len(expected) != len(actual) || subtle.ConstantTimeCompare(expected, actual[:]) != 1 {
+		return nil, failure
+	}
+	s.mu.Lock()
+	s.credentialSource, s.credentialOrigin = request.SourceID, request.Origin
+	s.mu.Unlock()
+	return map[string]any{"sourceId": request.SourceID, "origin": request.Origin, "principal": stored.Principal}, nil
 }
 
 func (s *server) context(sourceID, state string, cursor *string) map[string]any {

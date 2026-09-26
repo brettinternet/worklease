@@ -3,6 +3,8 @@ package sampleadapter
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -11,6 +13,52 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReferenceAdapterHostCredentialRequiresVerifiedScope(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	if err := os.Mkdir(filepath.Join(root, "worklease"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	token := "disposable-test-token"
+	hash := sha256.Sum256([]byte(token))
+	credentialFile := filepath.Join(root, "worklease", "reference-credential.json")
+	data, _ := json.Marshal(map[string]string{"sourceId": "reference", "origin": "https://reference.invalid", "principal": "alice", "sha256": hex.EncodeToString(hash[:])})
+	if err := os.WriteFile(credentialFile, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	storePath := writeReferenceTestFixture(t, referenceTestFixture())
+	server, err := newServer(io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.writable = true
+	config := map[string]string{"fixturePath": storePath, "origin": "https://reference.invalid"}
+	params := map[string]json.RawMessage{"sourceId": mustMarshal("reference"), "config": mustMarshal(config)}
+	if _, failure := server.resolve(params); failure == nil || failure.failure.Data.Diagnostic != "authentication-failed" {
+		t.Fatalf("resolve without credential: %v", failure)
+	}
+	credential := map[string]json.RawMessage{"sourceId": mustMarshal("reference"), "origin": mustMarshal("https://reference.invalid"), "credential": mustMarshal("wrong")}
+	if _, failure := server.referenceCredential(credential); failure == nil || failure.failure.Data.Diagnostic != "authentication-failed" {
+		t.Fatalf("wrong credential: %v", failure)
+	}
+	credential["credential"] = mustMarshal(token)
+	if _, failure := server.referenceCredential(credential); failure != nil {
+		t.Fatalf("verified credential: %v", failure)
+	}
+	if _, failure := server.resolve(params); failure != nil {
+		t.Fatalf("resolved credentialed source: %v", failure)
+	}
+	if err := os.Chmod(credentialFile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, failure := server.referenceCredential(credential); failure == nil || failure.failure.Data.Diagnostic != "authentication-failed" {
+		t.Fatalf("unsafe credential store: %v", failure)
+	}
+	if server.referenceAuthorized() {
+		t.Fatal("previously accepted credential remained authorized after rejection")
+	}
+}
 
 func TestReferenceAdapterWritesReceiptsAndRecoversMarkedAppend(t *testing.T) {
 	t.Parallel()

@@ -69,12 +69,24 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	}
 	defer selected.Close()
 	registry := queue.NewRegistry()
-	adapter, _ := registry.Get(configured.Adapter)
-	resolved, err := adapter.Resolve(ctx, queueSourceOptions(*configured))
+	cleanupExternal, err := queue.RegisterExternalSources(registry, []config.QueueSource{*configured}, os.Getenv)
 	if err != nil {
 		return err
 	}
-	resolved.ID, resolved.Adapter = configured.ID, configured.Adapter
+	defer cleanupExternal()
+	adapter, ok := registry.Get(queueAdapterRegistryKey(*configured))
+	if !ok {
+		return reason.Invalid("source adapter unavailable")
+	}
+	options := queueSourceOptions(*configured)
+	if configured.Adapter == "external" {
+		options = map[string]string{"id": configured.ID}
+	}
+	resolved, err := adapter.Resolve(ctx, options)
+	if err != nil {
+		return err
+	}
+	resolved.ID, resolved.Adapter = configured.ID, queueAdapterRegistryKey(*configured)
 	source, ok := queue.ClaimSources(cfg, []queue.Source{resolved})[sourceID]
 	if !ok {
 		return reason.Invalid("source claim inputs unavailable")

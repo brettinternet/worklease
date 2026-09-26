@@ -20,7 +20,7 @@ negotiation. Success exits 0; invalid arguments or malformed/unreadable manifest
 approve or validate the running executable; run conformance and approve it
 separately.
 
-This guide covers This guide covers the standalone read-only sample at
+This guide covers the standalone read-only sample at
 `cmd/worklease-sample-adapter` and the writable local fixture at
 `cmd/worklease-reference-adapter`. Both are teaching examples, not provider
 integrations or production adapters.
@@ -74,6 +74,8 @@ worklease queue adapter check \
   --disposable-target reference-1 --json
 ```
 
+From an empty working directory, use the [external init flow](../../../docs/queue.md#external-adapter-init) with the reference executable and a disposable fixture. `queue init --adapter external --executable PATH --adapter-config '{"fixturePath":"/absolute/path/reference-fixture.json"}' --json` obtains the expected ID/version from its manifest and prints the exact approval preview command. It does not add claims, account, workflow, or credentials. Add those bindings explicitly to the owner-private source before approval.
+
 A queue source using the same local store binds its actor, transitions, and
 generic claim identity explicitly:
 
@@ -89,6 +91,21 @@ sources:
     workflow: {start: Doing, blocked: Blocked, review: Review, complete: Done, reopen: Open}
     claims: {policy: generic, source: fixture/planning}
 ```
+
+For an **optional disposable host-credential exercise**, add `origin: https://reference.invalid` to `config` and `credentialHelper: [/absolute/path/helper]` to this source before approval. The helper prints one test token from a private store. The reference adapter checks the token hash, source ID, origin and principal against an owner-private `$XDG_CONFIG_HOME/worklease/reference-credential.json` (or `$HOME/.config/worklease/reference-credential.json`) before resolve; a missing or non-private file fails closed. Example for a disposable home with private permissions:
+
+```sh
+mkdir -p "$XDG_CONFIG_HOME/worklease"
+chmod 700 "$XDG_CONFIG_HOME/worklease"
+printf '%s\n' 'disposable-local-credential-143' > "$HOME/reference-token"
+chmod 600 "$HOME/reference-token"
+# Replace SOURCE_ID if --source-id was used. sha256sum is one way to calculate SHA256.
+printf '{"sourceId":"worklease.reference.local-fixture","origin":"https://reference.invalid","principal":"alice","sha256":"%s"}\n' "$(sha256sum "$HOME/reference-token" | cut -d' ' -f1)" > "$XDG_CONFIG_HOME/worklease/reference-credential.json"
+chmod 600 "$XDG_CONFIG_HOME/worklease/reference-credential.json"
+# Create an executable helper that prints exactly the private token line.
+```
+
+Use an absolute executable helper path in queue.yaml; for example a shell script containing `#!/bin/sh` followed by `cat /absolute/path/reference-token`. Reapprove after changing source configuration or helper. The reference adapter supports `host-credential-v1` as an optional manifest authentication method; `queue adapter check --disposable-target reference-1 --json` also checks that its disposable canary is not echoed. This is a **local simulated identity check**, not remote provider authentication. For a real provider, query its authenticated identity and scope as described below; do not copy this local hash-store design into production.
 
 The store contains the configured fixture principal, an initial provider
 version, allowed transition labels, items, and a durable write journal. Configure
@@ -173,8 +190,7 @@ data rather than instructions.
 
 ## Add host-managed credentials to your adapter
 
-The sample above remains read-only and unauthenticated; the local fixture also
-has no provider credentials. For a provider adapter, configure a private helper
+The sample above remains read-only and unauthenticated; the reference fixture's optional hash-store credential is only a local demonstration. For a provider adapter, configure a private helper
 and approved scope (not a literal token):
 
 ```yaml

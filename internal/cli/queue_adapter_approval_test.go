@@ -401,8 +401,9 @@ func runQueueAdapterApprovalProcessHelper(sourceID string) {
 	reader := bufio.NewScanner(os.Stdin)
 	for reader.Scan() {
 		var request struct {
-			ID     string `json:"id"`
-			Method string `json:"method"`
+			ID     string          `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(reader.Bytes(), &request) != nil {
 			return
@@ -416,9 +417,29 @@ func runQueueAdapterApprovalProcessHelper(sourceID string) {
 			}
 			result = json.RawMessage(fmt.Sprintf(`{"protocolVersion":1,"manifest":{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":1},"configSchema":%s,"authentication":[],"resourcePolicy":"generic","capabilities":[],"requiredFeatures":[]}}`, schema))
 		case "resolve":
-			result = json.RawMessage(fmt.Sprintf(`{"context":%s,"source":{"id":%q,"name":%q,"locator":%q}}`, queueAdapterTestContext(sourceID), sourceID, sourceID, "memory://"+sourceID))
+			resolvedID := sourceID
+			if sourceID == "schema" {
+				var params struct {
+					SourceID string `json:"sourceId"`
+				}
+				if json.Unmarshal(request.Params, &params) != nil {
+					return
+				}
+				resolvedID = params.SourceID
+			}
+			result = json.RawMessage(fmt.Sprintf(`{"context":%s,"source":{"id":%q,"name":%q,"locator":%q}}`, queueAdapterTestContext(resolvedID), resolvedID, resolvedID, "memory://"+resolvedID))
 		case "list":
-			result = json.RawMessage(fmt.Sprintf(`{"context":%s,"items":[],"nextCursor":null,"total":{"value":0,"accuracy":"exact"}}`, queueAdapterTestContext(sourceID)))
+			resolvedID := sourceID
+			if sourceID == "schema" {
+				var params struct {
+					SourceID string `json:"sourceId"`
+				}
+				if json.Unmarshal(request.Params, &params) != nil {
+					return
+				}
+				resolvedID = params.SourceID
+			}
+			result = json.RawMessage(fmt.Sprintf(`{"context":%s,"items":[],"nextCursor":null,"total":{"value":0,"accuracy":"exact"}}`, queueAdapterTestContext(resolvedID)))
 		default:
 			return
 		}

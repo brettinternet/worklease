@@ -3,6 +3,7 @@ package queue
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -591,7 +592,30 @@ func (c *referencePipelineClaim) CheckpointStatus(context.Context, WriteIntent, 
 	return WriteUnknown, nil
 }
 
-func newReferenceExternalWriteAdapter(t *testing.T) (*ExternalWriteAdapter, Source, string) {
+func TestReferenceAdapterHostCredentialedWrite(t *testing.T) {
+	writer, source, storePath := newReferenceExternalWriteAdapter(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	intent := WriteIntent{OperationID: "00000000000000000000000000000001", Source: source, Ref: Ref{SourceID: source.ID, ItemID: "reference-1"}, Principal: "alice", Action: ActionStart, Transition: "Doing", Patch: map[string]string{"status": "Doing"}}
+	prepared, _, err := writer.Prepare(ctx, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := writer.Write(ctx, prepared)
+	if err != nil {
+		t.Fatalf("credentialed write: %v", err)
+	}
+	observation, err := writer.ReadReceipt(ctx, prepared, &receipt)
+	if err != nil || checkWriteEvidence(prepared, &receipt, observation) != WriteVerified {
+		t.Fatalf("credentialed receipt: %+v %v", observation, err)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil || !strings.Contains(string(data), `"rawStatus": "Doing"`) {
+		t.Fatalf("fixture was not updated: %v %s", err, data)
+	}
+}
+
+func newReferenceExternalWriteAdapter(t *testing.T, credentialed ...bool) (*ExternalWriteAdapter, Source, string) {
 	t.Helper()
 	storePath := filepath.Join(t.TempDir(), "reference-store.json")
 	store := map[string]any{
@@ -612,12 +636,20 @@ func newReferenceExternalWriteAdapter(t *testing.T) (*ExternalWriteAdapter, Sour
 	}
 	_, paths := testkit.Home(t)
 	env := externalTestEnvironment(paths)
+	if len(credentialed) > 0 && credentialed[0] {
+		for name, value := range paths {
+			t.Setenv(name, value)
+		}
+	}
 	testBinary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(t.TempDir(), "reference-adapter")
 	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestReferenceAdapterProcessHelper$' -- reference\n", shellQuote(testBinary))
+	if len(credentialed) > 0 && credentialed[0] {
+		script = fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestReferenceAdapterProcessHelper$' -- reference %s\n", shellQuote(testBinary), shellQuote(paths["XDG_CONFIG_HOME"]))
+	}
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -631,6 +663,25 @@ func newReferenceExternalWriteAdapter(t *testing.T) (*ExternalWriteAdapter, Sour
 		Claims:   &config.QueueClaims{Policy: "generic", Source: "fixture/reference"},
 		Workflow: map[string]string{"start": "Doing", "blocked": "Blocked", "review": "Review", "complete": "Done", "reopen": "Open"},
 		Config:   map[string]any{"fixturePath": storePath},
+	}
+	if len(credentialed) > 0 && credentialed[0] {
+		const token = "disposable-fixture-credential"
+		const origin = "https://reference.invalid"
+		directory := filepath.Join(paths["XDG_CONFIG_HOME"], "worklease")
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte(token))
+		data, _ := json.Marshal(map[string]string{"sourceId": configured.ID, "origin": origin, "principal": "alice", "sha256": fmt.Sprintf("%x", digest)})
+		if err := os.WriteFile(filepath.Join(directory, "reference-credential.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		helper := filepath.Join(t.TempDir(), "credential-helper")
+		if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf '%s\\n' '"+token+"'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		configured.CredentialHelper = []string{helper}
+		configured.Config["origin"] = origin
 	}
 	if err := config.ApproveQueueAdapter(context.Background(), env, configured); err != nil {
 		t.Fatalf("approve reference adapter: %v", err)
@@ -648,6 +699,9 @@ func TestReferenceAdapterProcessHelper(t *testing.T) {
 	for index, argument := range os.Args {
 		if argument != "--" || index+1 >= len(os.Args) || os.Args[index+1] != "reference" {
 			continue
+		}
+		if index+2 < len(os.Args) {
+			t.Setenv("XDG_CONFIG_HOME", os.Args[index+2])
 		}
 		if err := sampleadapter.RunReference(os.Stdin, os.Stdout); err != nil {
 			t.Fatalf("serve reference adapter: %v", err)
