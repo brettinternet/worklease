@@ -503,6 +503,116 @@ func TestQueueInitMissingGitDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestQueueInitExternalManifestApprovalAndReadOnlyDefaults(t *testing.T) {
+	_, paths := testkit.Home(t)
+	for name, value := range paths {
+		t.Setenv(name, value)
+	}
+	marker := filepath.Join(t.TempDir(), "started")
+	executable := writeQueueAdapterApprovalExecutable(t, "schema", marker)
+	invoke := func(args ...string) testkit.CLIResult {
+		argv := append([]string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "init", "--adapter", "external", "--executable", executable}, args...)
+		return testkit.RunCLI(context.Background(), argv, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+			return Run(ctx, args, "test", "unknown", "unknown", stdout, stderr)
+		})
+	}
+	configPath := config.QueuePath(os.Getenv)
+	preview := invoke("--adapter-config", `{"tenant":"acme"}`, "--dry-run", "--json")
+	if preview.Err != nil || !strings.Contains(string(preview.Stdout), `"operation":"queue-init"`) || !strings.Contains(string(preview.Stdout), `"executableSHA256":"`+queueAdapterTestDigest(t, executable)+`"`) || !strings.Contains(string(preview.Stdout), "--adapter external --executable") {
+		t.Fatalf("manifest preview: %v %s", preview.Err, preview.Stdout)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote queue.yaml: %v", err)
+	}
+	applied := invoke("--adapter-config", `{"tenant":"acme"}`, "--json")
+	if applied.Err != nil {
+		t.Fatalf("apply: %v %s", applied.Err, applied.Stdout)
+	}
+	var response struct {
+		queueInitResult
+		OK        bool   `json:"ok"`
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(applied.Stdout, &response); err != nil || !response.OK || response.Operation != "queue-init" || response.Identity != "confirmation-required" || len(response.NextCommands) != 2 || response.NextCommands[0] != "worklease queue adapter approve --source example.adapter" || response.ExecutableSHA256 != queueAdapterTestDigest(t, executable) {
+		t.Fatalf("result: %+v %v %s", response, err, applied.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 1 {
+		t.Fatalf("load: %+v %v", cfg, err)
+	}
+	source := cfg.Sources[0]
+	if source.ID != "example.adapter" || source.Executable != executable || source.ExpectedAdapterID != "example.adapter" || source.ExpectedVersion != "1.2.3" || source.Config["tenant"] != "acme" || source.Claims != nil || source.Workflow != nil || source.CredentialRef != "" || source.CredentialHelper != nil {
+		t.Fatalf("unsafe source: %+v", source)
+	}
+	if err := config.CheckQueueAdapterApproval(os.Getenv, source); err == nil {
+		t.Fatal("init approved adapter")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("manifest process was not started: %v", err)
+	}
+	before, _ := os.ReadFile(configPath)
+	for _, args := range [][]string{{"--adapter-config", `{"tenant":"acme"}`}, {"--adapter-config", `{"tenant":"acme"}`, "--source-id", "example.adapter"}} {
+		failed := invoke(append(args, "--json")...)
+		if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"reason":"source-already-configured"`) || !strings.Contains(string(failed.Stdout), `"exitCode":64`) {
+			t.Fatalf("duplicate: %v %s", failed.Err, failed.Stdout)
+		}
+	}
+	after, _ := os.ReadFile(configPath)
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed external init modified queue.yaml")
+	}
+}
+
+func TestQueueInitExternalFailureAndPortableClaims(t *testing.T) {
+	_, paths := testkit.Home(t)
+	for name, value := range paths {
+		t.Setenv(name, value)
+	}
+	marker := filepath.Join(t.TempDir(), "started")
+	executable := writeQueueAdapterApprovalExecutable(t, "schema", marker)
+	invoke := func(binary string, args ...string) testkit.CLIResult {
+		argv := append([]string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "init", "--adapter", "external", "--executable", binary}, args...)
+		return testkit.RunCLI(context.Background(), argv, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+			return Run(ctx, args, "test", "unknown", "unknown", stdout, stderr)
+		})
+	}
+	configPath := config.QueuePath(os.Getenv)
+	for _, test := range []struct {
+		binary string
+		args   []string
+		reason string
+	}{
+		{executable, nil, "adapter-config-invalid"},
+		{executable, []string{"--adapter-config", `{"tenant":123}`}, "adapter-config-invalid"},
+		{executable, []string{"--adapter-config", `{"tenant":"acme","extra":true}`}, "adapter-config-invalid"},
+		{writeQueueAdapterApprovalExecutable(t, "broken", filepath.Join(t.TempDir(), "broken")), nil, "adapter-manifest-invalid"},
+	} {
+		failed := invoke(test.binary, append(test.args, "--json")...)
+		if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"schemaVersion":2`) || !strings.Contains(string(failed.Stdout), `"operation":"queue-init"`) || !strings.Contains(string(failed.Stdout), `"reason":"`+test.reason+`"`) || !strings.Contains(string(failed.Stdout), `"exitCode":64`) {
+			t.Fatalf("%s: %v %s", test.reason, failed.Err, failed.Stdout)
+		}
+		if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+			t.Fatalf("failure wrote queue.yaml: %v", err)
+		}
+	}
+	configFile := filepath.Join(t.TempDir(), "adapter.json")
+	if err := os.WriteFile(configFile, []byte(`{"tenant":"acme"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	preview := invoke(executable, "--adapter-config-file", configFile, "--dry-run", "--json")
+	if preview.Err != nil || !strings.Contains(string(preview.Stdout), "--adapter-config-file") {
+		t.Fatalf("file preview: %v %s", preview.Err, preview.Stdout)
+	}
+	result := invoke(executable, "--adapter-config-file", configFile, "--portable-claims", "shared/team", "--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"identity":"confirmation-required"`) {
+		t.Fatalf("portable claim: %v %s", result.Err, result.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || cfg.Sources[0].Claims == nil || cfg.Sources[0].Claims.Source != "shared/team" || cfg.Sources[0].Claims.Policy != "generic" {
+		t.Fatalf("portable binding: %+v %v", cfg, err)
+	}
+}
+
 func TestQueueInitBareBacklogFolderNotDetected(t *testing.T) {
 	h := newInitHarness(t)
 	if err := os.Remove(filepath.Join(h.checkout, "backlog.config.yml")); err != nil {

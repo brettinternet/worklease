@@ -31,32 +31,39 @@ type queueInitFact struct {
 }
 
 type queueInitResult struct {
-	Path         string          `json:"path"`
-	Outcome      string          `json:"outcome"`
-	SourceID     string          `json:"sourceId"`
-	Adapter      string          `json:"-"`
-	Me           string          `json:"-"`
-	Mapped       []string        `json:"-"`
-	DefaultView  bool            `json:"-"`
-	Facts        []queueInitFact `json:"facts"`
-	YAML         string          `json:"yaml"`
-	Applied      bool            `json:"applied"`
-	Identity     string          `json:"identity"`
-	Checklist    string          `json:"checklist,omitempty"`
-	Unmapped     []string        `json:"unmapped,omitempty"`
-	NextCommands []string        `json:"nextCommands"`
+	Path             string          `json:"path"`
+	ExecutableSHA256 string          `json:"executableSHA256,omitempty"`
+	Outcome          string          `json:"outcome"`
+	SourceID         string          `json:"sourceId"`
+	Adapter          string          `json:"-"`
+	Me               string          `json:"-"`
+	Mapped           []string        `json:"-"`
+	DefaultView      bool            `json:"-"`
+	Facts            []queueInitFact `json:"facts"`
+	YAML             string          `json:"yaml"`
+	Applied          bool            `json:"applied"`
+	Identity         string          `json:"identity"`
+	Checklist        string          `json:"checklist,omitempty"`
+	Unmapped         []string        `json:"unmapped,omitempty"`
+	NextCommands     []string        `json:"nextCommands"`
 }
 
 func queueInitCommand(s *boundary) *urfave.Command {
-	return &urfave.Command{Name: "init", Usage: "create owner-private queue.yaml from a checkout",
-		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--dry-run] [--json]",
+	return &urfave.Command{Name: "init", Usage: "create owner-private queue.yaml from a checkout or external adapter manifest",
+		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--dry-run] [--json]",
 		Description: "Detect provider facts and write queue.yaml directly. Use --dry-run to preview without writing. Re-run to add another checkout.\n\nExamples:\n  worklease queue init\n  worklease queue init --dry-run\n  worklease queue --view Team init --authority shared --allow-git-network",
+		OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
+			return queueInitError(s, cmd, reason.Invalid("invalid command-line arguments"))
+		},
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "checkout", Usage: "git checkout `PATH` (default: current checkout)"},
-			&urfave.StringFlag{Name: "adapter", Usage: "source adapter: backlog-md or github"},
+			&urfave.StringFlag{Name: "adapter", Usage: "source adapter: backlog-md, github or external"},
+			&urfave.StringFlag{Name: "executable", Usage: "absolute canonical external adapter executable `PATH`"},
+			&urfave.StringFlag{Name: "adapter-config", Usage: "external adapter configuration as a JSON object"},
+			&urfave.StringFlag{Name: "adapter-config-file", Usage: "path to external adapter JSON configuration object"},
 			&urfave.StringFlag{Name: "source-id", Usage: "new source `ID`"},
 			&urfave.StringFlag{Name: "authority", Value: "local", Usage: "trusted authority `NAME`"},
-			&urfave.StringFlag{Name: "portable-claims", Usage: "generic cross-host claim source `SOURCE` (Backlog.md only)"},
+			&urfave.StringFlag{Name: "portable-claims", Usage: "explicit generic cross-host claim source `SOURCE` (Backlog.md or external)"},
 			&urfave.StringFlag{Name: "me", Usage: "provider principal `PRINCIPAL`"},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "preview detected facts and exact YAML without writing"},
 			&urfave.BoolFlag{Name: "allow-git-network", Usage: "consent to Backlog.md project Git network effects"},
@@ -64,25 +71,25 @@ func queueInitCommand(s *boundary) *urfave.Command {
 		Action: func(ctx context.Context, cmd *urfave.Command) error {
 			result, err := prepareQueueInit(ctx, cmd)
 			if err != nil {
-				return s.handle(cmd, err)
+				return queueInitError(s, cmd, err)
 			}
 			if !cmd.Bool("dry-run") && result.Outcome != "unchanged" {
 				if err := handle.EnsureOwnerPrivateDir(filepath.Dir(result.Path)); err != nil {
-					return s.handle(cmd, err)
+					return queueInitError(s, cmd, err)
 				}
 				lock, err := handle.AcquireLock(ctx, result.Path+".lock")
 				if err != nil {
-					return s.handle(cmd, err)
+					return queueInitError(s, cmd, err)
 				}
 				defer lock.Close()
 				// Re-read under the writer lock: concurrent init calls must merge, not overwrite.
 				result, err = prepareQueueInit(ctx, cmd)
 				if err != nil {
-					return s.handle(cmd, err)
+					return queueInitError(s, cmd, err)
 				}
 				if result.Outcome != "unchanged" {
 					if err := handle.WriteOwnerPrivate(result.Path, []byte(result.YAML), 1<<20); err != nil {
-						return s.handle(cmd, err)
+						return queueInitError(s, cmd, err)
 					}
 					result.Applied = true
 				}
@@ -105,7 +112,7 @@ func queueInitCommand(s *boundary) *urfave.Command {
 						if !s.jsonRequested(cmd) {
 							fmt.Fprintf(s.writer, "queue.yaml written; identity confirmation failed: %v\n%s\n", err, strings.Join(result.NextCommands, "\n"))
 						}
-						return s.handle(cmd, err)
+						return queueInitError(s, cmd, err)
 					}
 					result.Identity = "confirmed"
 					result.Checklist = ""
@@ -116,7 +123,7 @@ func queueInitCommand(s *boundary) *urfave.Command {
 				}
 			}
 			if s.jsonRequested(cmd) {
-				return output.WriteSuccess(s.writer, "queue-init", map[string]any{"path": result.Path, "outcome": result.Outcome, "sourceId": result.SourceID, "facts": result.Facts, "yaml": result.YAML, "applied": result.Applied, "identity": result.Identity, "unmapped": result.Unmapped, "checklist": result.Checklist, "nextCommands": result.NextCommands})
+				return output.WriteSuccess(s.writer, "queue-init", map[string]any{"path": result.Path, "outcome": result.Outcome, "sourceId": result.SourceID, "executableSHA256": result.ExecutableSHA256, "facts": result.Facts, "yaml": result.YAML, "applied": result.Applied, "identity": result.Identity, "unmapped": result.Unmapped, "checklist": result.Checklist, "nextCommands": result.NextCommands})
 			}
 			if cmd.Bool("dry-run") {
 				for _, fact := range result.Facts {
@@ -125,6 +132,9 @@ func queueInitCommand(s *boundary) *urfave.Command {
 				fmt.Fprintf(s.writer, "YAML:\n%s", result.YAML)
 			} else {
 				fmt.Fprintf(s.writer, "Path: %s\nOutcome: %s\nSource: %s (%s)\nMe: %s\nMapped intents: %s\nUnmapped intents: %s\nIdentity: %s\n", result.Path, result.Outcome, result.SourceID, result.Adapter, result.Me, strings.Join(result.Mapped, ", "), strings.Join(result.Unmapped, ", "), result.Identity)
+				if result.ExecutableSHA256 != "" {
+					fmt.Fprintf(s.writer, "Executable SHA-256: %s\n", result.ExecutableSHA256)
+				}
 			}
 			if result.Checklist != "" {
 				fmt.Fprintf(s.writer, "Migration checklist: %s\n", result.Checklist)
@@ -133,6 +143,16 @@ func queueInitCommand(s *boundary) *urfave.Command {
 			return nil
 		},
 	}
+}
+
+func queueInitError(s *boundary, cmd *urfave.Command, err error) error {
+	if !s.jsonRequested(cmd) {
+		return err
+	}
+	if writeErr := output.WriteError(s.writer, "queue-init", err); writeErr != nil {
+		return writeErr
+	}
+	return &handledError{cause: err}
 }
 
 func queueInitCommandOutput(ctx context.Context, checkout string, args ...string) (string, error) {
@@ -308,6 +328,12 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	result := queueInitResult{Path: config.QueuePath(os.Getenv), Facts: []queueInitFact{}}
 	if !filepath.IsAbs(result.Path) {
 		return result, reason.Invalid("queue.yaml path must be absolute")
+	}
+	if cmd.String("adapter") == "external" {
+		return prepareQueueInitExternal(ctx, cmd, result)
+	}
+	if cmd.IsSet("executable") || cmd.IsSet("adapter-config") || cmd.IsSet("adapter-config-file") {
+		return result, reason.Invalid("--executable and --adapter-config require --adapter external")
 	}
 	checkout := cmd.String("checkout")
 	if checkout == "" {

@@ -9,6 +9,22 @@ worklease queue init --dry-run  # preview detected facts, their origins, and exa
 
 Use `--checkout PATH` for another repository, `--adapter backlog-md|github` to override detection, `--source-id ID` to choose an ID, `--portable-claims SOURCE` to opt into cross-host claims, and `--authority NAME` for a trusted remote profile. Backlog.md `me` defaults to its single `defaultAssignee`, then `@` plus the OS login; `--me @name` overrides the default or adds a name to an existing list. `--allow-git-network` explicitly consents when the Backlog.md project enables remote Git operations or active-branch checks; otherwise init refuses to write. Init checks the same adapter prerequisites as queue: Git, Backlog.md CLI 1.52.x or an authenticated `gh` account (`gh auth login --hostname HOST`). A bare `backlog/` folder is not enough to detect Backlog.md. If both Backlog.md and a GitHub origin exist, init selects Backlog.md and prints the explicit command to add GitHub. `worklease queue --view NAME init` selects a different view. Re-running adds a source to the selected view or reports an already configured checkout. Only new host-local sources on the local authority are automatically identity-confirmed; for other bindings, complete the migration checklist below and run the printed `queue identity confirm` command.
 
+## External adapter init
+
+From any directory (no Git checkout needed), use an absolute, canonical executable path. Init runs that executable **only to negotiate its manifest**; it validates the JSON object against the manifest's config schema and writes its path, manifest ID/version, and config to owner-private `queue.yaml`:
+
+```sh
+worklease queue init --adapter external --executable /opt/adapters/planning --adapter-config '{"tenant":"acme"}' --dry-run --json
+worklease queue init --adapter external --executable /opt/adapters/planning --adapter-config '{"tenant":"acme"}' --json
+worklease queue adapter approve --source example.planning --json
+# After reviewing the digest and bindings, approve explicitly:
+worklease queue adapter approve --source example.planning --acknowledge
+```
+
+Use `--adapter-config-file FILE` instead of `--adapter-config JSON` for a file under 1 MiB. Omit either flag for an empty config object. The default source ID is the manifest ID; use `--source-id ID` to distinguish multiple instances. The JSON result includes the exact executable SHA-256 in `executableSHA256`, a `nextCommands` approval preview command, and an identity confirmation command. Dry-run prints the apply command instead. Init never approves the executable or supplies credentials, `account`, or workflow transitions. It does not enable claims by default; `--portable-claims SOURCE` explicitly adds only a generic claim binding (identity confirmation is still required). Configure credential delivery and provider writes separately per the [external adapter protocol](external-adapter-protocol.md). Do not put secrets in adapter config. `--checkout`, `--me`, and `--allow-git-network` do not apply to external init.
+
+The `--json` envelope has `schemaVersion`, `ok`, and `operation: "queue-init"`. Manifest start/negotiation failures return `adapter-manifest-invalid`, schema-invalid config returns `adapter-config-invalid`, and an already configured executable or source ID returns `source-already-configured`; each uses `error.exitCode: 64` and leaves `queue.yaml` unchanged. Invalid flags also use exit 64 (`invalid-argument`). Other queue config/authority failures use the standard queue error reasons. The human output renders the same facts, digest and next commands.
+
 ## Hand-written YAML reference
 
 The read-only queue uses owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. No repository configuration is read. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.

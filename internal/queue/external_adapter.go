@@ -1195,6 +1195,11 @@ func cloneExternalQueueSource(source config.QueueSource) (config.QueueSource, er
 	return source, nil
 }
 
+// ValidateExternalAdapterConfig checks a source configuration against the negotiated manifest schema.
+func ValidateExternalAdapterConfig(manifest ExternalAdapterManifest, configuration map[string]any) error {
+	return validateExternalConfig(manifest.ConfigSchema, configuration)
+}
+
 func validateExternalConfig(rawSchema json.RawMessage, configuration map[string]any) error {
 	var schema map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(rawSchema))
