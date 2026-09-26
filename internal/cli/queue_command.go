@@ -488,7 +488,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
-			if adapter != "backlog-md" && adapter != "github" && adapter != "linear" {
+			if !queueSelectedHydrationEnabled(adapter) {
 				cancel()
 				return nil
 			}
@@ -659,6 +659,15 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
+func queueSelectedHydrationEnabled(adapter string) bool {
+	switch adapter {
+	case "backlog-md", "beads", "github", "linear":
+		return true
+	default:
+		return false
+	}
+}
+
 func refreshCompletionCmd(start func() <-chan error) tea.Cmd {
 	return func() tea.Msg {
 		return queueui.RefreshedMsg{Err: <-start()}

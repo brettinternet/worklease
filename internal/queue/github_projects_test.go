@@ -285,6 +285,29 @@ func TestGitHubProjectPaginationMappingAndIssueConflict(t *testing.T) {
 	}
 }
 
+func TestGitHubProjectReprojectionClearsStaleState(t *testing.T) {
+	t.Parallel()
+	status := Summary{ProjectStatusState: "blocked", ProjectStatusReason: "project-option-unmapped"}
+	applyGitHubProjectStatus(&status, githubProjectStatus{states: map[string]string{}}, false)
+	if status.ProjectStatusState != "unknown" || status.ProjectStatusReason != "project-item-missing" {
+		t.Fatalf("old mapping survived item removal: %+v", status)
+	}
+	applyGitHubProjectStatus(&status, githubProjectStatus{itemID: "item", optionID: "open", states: map[string]string{"open": "open"}}, false)
+	if status.ProjectStatusState != "open" || status.ProjectStatusReason != "" {
+		t.Fatalf("missing-item reason survived remapping: %+v", status)
+	}
+}
+
+func TestGitHubProjectRateDiagnosticPreservesRetry(t *testing.T) {
+	t.Parallel()
+	deadline := time.Now().Add(time.Minute)
+	got := githubProjectDiagnostic(GitHubRateDiagnostic{GitHubDiagnostic: GitHubDiagnostic{Code: "rate-limited", Detail: "retry later"}, RetryAt: deadline})
+	rate, ok := got.(GitHubRateDiagnostic)
+	if !ok || rate.Code != "rate-limited" || !rate.RetryAt.Equal(deadline) {
+		t.Fatalf("project read erased retry deadline: %#v", got)
+	}
+}
+
 func TestGitHubProjectTerminalDependencyIgnoresAdvisoryConflict(t *testing.T) {
 	t.Parallel()
 	prerequisite := Ref{SourceID: "github", ItemID: "6"}

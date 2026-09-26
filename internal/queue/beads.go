@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	osuser "os/user"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -48,15 +49,17 @@ type BeadsAdapter struct {
 	Binary     string
 	Timeout    time.Duration
 	mu         sync.Mutex
+	scanMu     sync.Mutex
 	bulk       map[string]map[string]beadsIssue
 	ready      map[string]map[string]bool
 	generation map[string]uint64
 	consent    map[string]bool
+	owners     map[string]string
 	terminal   map[string]string
 }
 
 func NewBeadsAdapter() *BeadsAdapter {
-	return &BeadsAdapter{bulk: map[string]map[string]beadsIssue{}, ready: map[string]map[string]bool{}, generation: map[string]uint64{}, consent: map[string]bool{}, terminal: map[string]string{}}
+	return &BeadsAdapter{bulk: map[string]map[string]beadsIssue{}, ready: map[string]map[string]bool{}, generation: map[string]uint64{}, consent: map[string]bool{}, owners: map[string]string{}, terminal: map[string]string{}}
 }
 func (*BeadsAdapter) OnDemandDetails() {}
 func (a *BeadsAdapter) binary() string {
@@ -170,6 +173,11 @@ func (a *BeadsAdapter) Resolve(ctx context.Context, options map[string]string) (
 		source.Name = filepath.Base(checkout)
 	}
 	a.mu.Lock()
+	if owner := a.owners[checkout]; owner != "" && owner != source.ID {
+		a.mu.Unlock()
+		return Source{}, BeadsDiagnostic{"duplicate-checkout", "one Beads checkout cannot have multiple source bindings"}
+	}
+	a.owners[checkout] = source.ID
 	a.consent[checkout] = options["allowGitNetwork"] == "true"
 	a.terminal[source.ID] = options["completeStatus"]
 	a.mu.Unlock()
@@ -322,7 +330,13 @@ func (a *BeadsAdapter) listCommit(ctx context.Context, source Source) (string, e
 	}
 	return status.Commit, nil
 }
-func (a *BeadsAdapter) List(ctx context.Context, source Source, _ Query, cursor string) (SummaryPage, error) {
+func (a *BeadsAdapter) List(ctx context.Context, source Source, query Query, cursor string) (SummaryPage, error) {
+	a.scanMu.Lock()
+	defer a.scanMu.Unlock()
+	return a.list(ctx, source, query, cursor)
+}
+
+func (a *BeadsAdapter) list(ctx context.Context, source Source, _ Query, cursor string) (SummaryPage, error) {
 	if err := a.checkVersion(ctx, source.Locator); err != nil {
 		return SummaryPage{}, err
 	}
@@ -351,6 +365,16 @@ func (a *BeadsAdapter) List(ctx context.Context, source Source, _ Query, cursor 
 	}
 	if before != after {
 		return SummaryPage{}, BeadsDiagnostic{"observation-invalidated", "Dolt commit changed during bulk read"}
+	}
+	// The commit stays fixed during another client's batch-mode writes. A
+	// second bulk observation must agree before its edges can be published.
+	checkData, err := a.run(ctx, source.Locator, false, "list", "--all", "--limit", "0", "--brief")
+	if err != nil {
+		return SummaryPage{}, err
+	}
+	var check []beadsIssue
+	if err = beadsJSON(checkData, &check); err != nil || check == nil || !reflect.DeepEqual(issues, check) {
+		return SummaryPage{}, BeadsDiagnostic{"observation-invalidated", "Beads issues changed during bulk read"}
 	}
 	var readyIssues []beadsIssue
 	if err = beadsJSON(readyData, &readyIssues); err != nil || readyIssues == nil {
@@ -486,7 +510,9 @@ func (a *BeadsAdapter) ReadDependencies(ctx context.Context, source Source, ref 
 	return DependencyPage{}, BeadsDiagnostic{"identity-changed", "issue absent from complete bulk list"}
 }
 func (a *BeadsAdapter) RefreshActionClosure(ctx context.Context, source Source, ref Ref) (map[string]Item, error) {
-	page, err := a.List(ctx, source, Query{}, "")
+	a.scanMu.Lock()
+	defer a.scanMu.Unlock()
+	page, err := a.list(ctx, source, Query{}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -494,6 +520,9 @@ func (a *BeadsAdapter) RefreshActionClosure(ctx context.Context, source Source, 
 	for _, summary := range page.Items {
 		byID[summary.Ref.ItemID] = summary
 	}
+	a.mu.Lock()
+	bulk := a.bulk[source.ID]
+	a.mu.Unlock()
 	result := make(map[string]Item)
 	visited := make(map[string]bool)
 	var walk func(Ref) error
@@ -506,7 +535,11 @@ func (a *BeadsAdapter) RefreshActionClosure(ctx context.Context, source Source, 
 		if !ok {
 			return BeadsDiagnostic{"dependency-unknown", "prerequisite absent from complete list"}
 		}
-		edges, _ := a.CachedEdges(source, current)
+		issue, ok := bulk[current.ItemID]
+		if !ok {
+			return BeadsDiagnostic{"observation-invalidated", "Beads dependency snapshot is incomplete"}
+		}
+		edges := a.dependencyPage(source, current, issue)
 		item := Item{Summary: summary, ReadOutcome: "found", TerminalKnown: true, DependenciesKnown: true, Closure: CoverageComplete, Relationships: edges.Edges, ReadPermission: Allowed, Observation: edges.Observation}
 		for _, edge := range edges.Edges {
 			if edge.Type == HardPrerequisite {
