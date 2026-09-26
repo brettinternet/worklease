@@ -1,11 +1,10 @@
 ---
 id: TASK-142
 title: Add a built-in Linear source adapter
-status: In Progress
-assignee:
-  - '@brett'
+status: Done
+assignee: []
 created_date: '2026-09-25 16:30'
-updated_date: '2026-09-26 00:26'
+updated_date: '2026-09-26 01:43'
 labels:
   - work-queue
 milestone: m-1
@@ -51,4 +50,12 @@ The user requested Linear support on 2026-09-25 for a frequently used environmen
 
 <!-- SECTION:NOTES:BEGIN -->
 Main re-verification 2026-09-26: §3 TEST/PDEV probe documents UUID stability, 250-page limit, moving-cursor skip, asymmetric relation updatedAt, archived/trash visibility, single assignee, comment marker and quota headers; D29/§7 revised and two synthetic issues deleted (TASK-142.1). Generic helper and principal/redaction tests, v1 organization/UUID key fixtures, adapter conformance/complete relation safeguards, index interrupted/reordered/relation tests, CLI/MCP known-item claims, and §8 write recovery are delivered in completed TASK-142.2–142.7. On main: mise exec -- go test -race -count=3 -run "TestLinear|TestAdapterConformance/linear$" ./internal/queue ./internal/queueindex ./internal/cli and TestVersionedKeyVectors|TestStaticPolicyGoldenDerivations ./internal/resource passed. Isolated worktree: focused Linear race tests and shared Linear adapter conformance passed; mise run lint, format-check, typecheck, test all passed; no code changes needed. One general integration review of child evidence, plan and test outcomes found no concrete item-scoped defect. Linear setup, scope and recovery limits documented in docs/queue.md. No live production writes attempted; permission loss and cross-client quota behavior remain explicitly unprobed.
+
+Parent verification committed as 15ce060 on isolated task-142-linear-integration; merged into main as 378ccd4. All seven children Done; review found no parent-scope defects. Next step: none.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed Linear integration checklist after re-verifying all seven completed children on main: Linear adapter conformance, focused race tests, key vectors, full tests and lint/format/typecheck passed. Parent evidence commit 15ce060 merged as 378ccd4; no additional code changes.
+<!-- SECTION:FINAL_SUMMARY:END -->
