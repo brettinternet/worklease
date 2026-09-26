@@ -410,7 +410,11 @@ func runQueueAdapterApprovalProcessHelper(sourceID string) {
 		var result json.RawMessage
 		switch request.Method {
 		case "initialize":
-			result = json.RawMessage(`{"protocolVersion":1,"manifest":{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":1},"configSchema":{},"authentication":[],"resourcePolicy":"generic","capabilities":[],"requiredFeatures":[]}}`)
+			schema := `{}`
+			if sourceID == "schema" {
+				schema = `{"type":"object","required":["tenant"],"properties":{"tenant":{"type":"string"}},"additionalProperties":false}`
+			}
+			result = json.RawMessage(fmt.Sprintf(`{"protocolVersion":1,"manifest":{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":1},"configSchema":%s,"authentication":[],"resourcePolicy":"generic","capabilities":[],"requiredFeatures":[]}}`, schema))
 		case "resolve":
 			result = json.RawMessage(fmt.Sprintf(`{"context":%s,"source":{"id":%q,"name":%q,"locator":%q}}`, queueAdapterTestContext(sourceID), sourceID, sourceID, "memory://"+sourceID))
 		case "list":
