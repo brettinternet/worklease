@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-25 12:10'
-labels: []
+updated_date: '2026-09-26 03:40'
+labels:
+  - reviewed
 dependencies: []
 parent_task_id: TASK-136
 priority: low
@@ -55,6 +56,8 @@ Verification on merged main 8c13a09: deadcode -test ./... prints nothing; deadco
 Production-only deadcode exceptions retained: handle.StoreCredential is used by internal/authority tests across package boundaries; mcp.Server.Call and Close are exercised by both internal/mcp and internal/cli tests; server.Server.Handler and Close are used by internal/mcp, internal/cli, and internal/queue tests; internal/testkit is a reusable test-only package used across multiple packages, so its production compilation is intentional. No other findings remain.
 
 Delivery: implementation commit 0f61d0b, local main merge 8c13a09; owned worktree and branch removed and associated Herdr workspace closed.
+
+Retrospective review on main d300eb9: moved queueAuthorityForView and queueAuthorityForViewWithMetadata into CLI test code; deadcode -test ./... is empty. NewGitHubWriteAdapter remains a production-exported cross-package test API used by internal/cli and internal/queue tests; ordinary deadcode reports it by design. Focused race, full quality gates and staged hooks passed; no remaining actionable finding.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

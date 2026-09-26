@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-25 10:49'
-updated_date: '2026-09-25 11:49'
-labels: []
+updated_date: '2026-09-26 03:40'
+labels:
+  - reviewed
 dependencies:
   - TASK-136.4
 parent_task_id: TASK-136
@@ -44,6 +45,8 @@ Profiling (top-level test durations) found TestQueueNextStartOutcomes 49.34 s, q
 Post-review validation: go test -race -count=3 -timeout 30m ./internal/cli ./internal/mcp passed (CLI 510.800 s, MCP 26.995 s). Focused testkit race count=3 passed, including parent deadline/process-group cleanup, exact subtest selection and child skip/failure propagation; CLI subtest selection and missing-backlog SKIP confirmed. mise run lint, format-check, test and typecheck all passed. Single read-only review found three concrete reexec issues (parent deadline, subtest selector, skip propagation); fixed all and reran affected checks.
 
 Code commit e2a3dbd1e23d4f96b8716791c315cfd9e7f72083 merged to main as 65b041a. Staged pre-commit hooks passed (gofmt and full test); no residual item-scoped review findings after corrections. Next resumable step: none; criteria verified and delivery integrated.
+
+Retrospective review: isolated-test runner, selected CLI test callsites, bounded cleanup, selection and skip propagation checks remain correct; testkit race count=3 and focused CLI race checks passed. No necessary follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
