@@ -329,6 +329,43 @@ func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
 	if _, err := config.LoadQueue(os.Getenv); err != nil {
 		t.Fatalf("configuration lost after confirmation failure: %v", err)
 	}
+	t.Setenv("INIT_LIST_ERROR", "")
+	retry := h.invoke("--json")
+	if retry.Err != nil || !strings.Contains(string(retry.Stdout), `"outcome":"unchanged"`) || !strings.Contains(string(retry.Stdout), `"identity":"confirmation-required"`) || !strings.Contains(string(retry.Stdout), "identity confirm --source project --acknowledge") || strings.Contains(string(retry.Stdout), `"nextCommands":["worklease queue"]`) {
+		t.Fatalf("retry must not recommend claims before confirmation: %v %s", retry.Err, retry.Stdout)
+	}
+	preview := h.invoke("--dry-run", "--json")
+	if preview.Err != nil || !strings.Contains(string(preview.Stdout), `"identity":"confirmation-required"`) || !strings.Contains(string(preview.Stdout), "identity confirm --source project --acknowledge") {
+		t.Fatalf("preview must not recommend claims before confirmation: %v %s", preview.Err, preview.Stdout)
+	}
+}
+
+func TestQueueInitExistingSourceRejectsConflictingSafetyFlags(t *testing.T) {
+	h := newInitHarness(t)
+	t.Setenv("INIT_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[]}`)
+	created := h.invoke("--json")
+	if created.Err != nil {
+		t.Fatalf("initial setup: %v %s", created.Err, created.Stdout)
+	}
+	before, err := os.ReadFile(h.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testProfile("team")
+	profile.Credential.Path = filepath.Join(t.TempDir(), "credential")
+	if err := config.SaveProfiles(config.UserProfilePaths(nil), []config.Profile{profile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--portable-claims", "shared/tasks"}, {"--authority", "team"}, {"--allow-git-network"}} {
+		result := h.invoke(args...)
+		if result.Err == nil {
+			t.Errorf("conflicting flags %v accepted: %s", args, result.Stdout)
+		}
+		after, err := os.ReadFile(h.configPath)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("conflicting flags %v changed config: %v", args, err)
+		}
+	}
 }
 
 func TestQueueInitRemoteAuthoritySkipsAutomaticConfirmation(t *testing.T) {
