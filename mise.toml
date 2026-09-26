@@ -13,7 +13,7 @@ lint = "staticcheck ./..."
 format = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
 format-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
 beads-check = "bd version | grep -Eq '^bd version 1[.]3[.]0 [(]'"
-test = { run = "go test -p 1 ./...", depends = ["beads-check"] }
+test = { run = "go test -p 1 -parallel 2 ./...", depends = ["beads-check"] }
 queue-benchmark = "python3 scripts/queue-benchmark.py"
 typecheck = "go vet ./..."
 hooks-install = "lefthook install"
@@ -28,6 +28,6 @@ authority-benchmark = { run = "python3 scripts/authority-queue-benchmark.py --bi
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
-race = { run = "go test -race -p 1 ./...", depends = ["beads-check"] }
+race = { run = "go test -race -p 1 -parallel 2 ./...", depends = ["beads-check"] }
 vuln = "govulncheck ./..."
 ci = { depends = ["format-check", "lint", "typecheck", "test", "race", "vuln", "e2e", "man"] }
