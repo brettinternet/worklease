@@ -48,7 +48,7 @@ Verify every acceptance criterion with objective evidence, record the evidence i
 
 ## Quality gates
 
-The pre-commit hook runs gofmt on staged files and `go vet` plus `go test` on packages with staged Go files (the full suite when `go.mod` or `go.sum` changes). CI runs everything. Before handing off, run the checks that match what you changed, and fix every reported failure instead of bypassing or weakening a check:
+The pre-commit hook runs gofmt on staged files and `go vet`, `staticcheck`, and `go test` on packages with staged Go files (the full suite when `go.mod` or `go.sum` changes). CI runs everything. Before handing off, run the checks that match what you changed, and fix every reported failure instead of bypassing or weakening a check:
 
 | Change | Run |
 |---|---|

@@ -33,10 +33,12 @@ jobs:
             ~/.cache/go-build
           key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
           restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
+      # Exercise the hook on one file; `mise run ci` below runs the full suite.
       - name: Install and exercise repository hooks
         run: |
           mise run hooks-install
-          mise run hooks-all
+          lefthook validate
+          lefthook run pre-commit --file cmd/worklease/main.go
       - name: Run quality gates, race tests, and end-to-end smoke
         run: mise run ci
       - name: Validate generated manual
