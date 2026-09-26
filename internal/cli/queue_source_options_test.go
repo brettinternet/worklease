@@ -20,3 +20,11 @@ func TestQueueSourceOptionsPreserveProjectBindingJSON(t *testing.T) {
 		t.Fatalf("source options dropped project binding: %+v", project)
 	}
 }
+
+func TestQueueSourceOptionsPassBacklogCompleteStatus(t *testing.T) {
+	t.Parallel()
+	source := config.QueueSource{ID: "tasks", Adapter: "backlog-md", Checkout: "/repo", Workflow: map[string]string{"complete": "Done"}}
+	if got := queueSourceOptions(source)["completeStatus"]; got != "Done" {
+		t.Fatalf("completeStatus = %q", got)
+	}
+}

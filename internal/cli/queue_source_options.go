@@ -11,7 +11,7 @@ import (
 // to the adapter. The helper executable resolves its token in the adapter.
 func queueSourceOptions(source config.QueueSource) map[string]string {
 	options := map[string]string{"id": source.ID, "checkout": source.Checkout, "host": source.Host, "repository": source.Repository, "account": source.Account, "allowGitNetwork": fmt.Sprint(source.AllowGitNetwork)}
-	if source.Adapter == "beads" {
+	if source.Adapter == "beads" || source.Adapter == "backlog-md" {
 		options["completeStatus"] = source.Workflow["complete"]
 	}
 	if source.Adapter == "linear" {

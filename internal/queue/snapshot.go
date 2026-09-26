@@ -394,7 +394,21 @@ func (l *Loader) failSourceError(ctx context.Context, source string, generation 
 		l.failSourceDiagnostic(ctx, source, generation, diagnostic.Code, time.Time{}, out)
 		return
 	}
-	l.failSource(ctx, source, generation, "source-read-failed", out)
+	// Adapter codes are fixed identifiers without provider text, so they are
+	// safe to show and tell the user why the read failed.
+	var backlog BacklogDiagnostic
+	var beads BeadsDiagnostic
+	var linear LinearDiagnostic
+	switch {
+	case errors.As(err, &backlog):
+		l.failSource(ctx, source, generation, backlog.Code, out)
+	case errors.As(err, &beads):
+		l.failSource(ctx, source, generation, beads.Code, out)
+	case errors.As(err, &linear):
+		l.failSource(ctx, source, generation, linear.Code, out)
+	default:
+		l.failSource(ctx, source, generation, "source-read-failed", out)
+	}
 }
 func (l *Loader) failSourceDiagnostic(ctx context.Context, source string, generation uint64, reason string, retryAt time.Time, out chan<- Snapshot) {
 	l.publish(ctx, source, generation, func(s *Snapshot) {
@@ -1057,6 +1071,9 @@ func (l *Loader) hydrateItem(ctx context.Context, a Adapter, source Source, gene
 				l.withholdSource(ctx, source, generation, "github-access-unverified", out)
 				return
 			}
+			if readInterrupted(outcome.Err) {
+				return
+			}
 			summary.ReadOutcome = "failed"
 			summary.Fresh = false
 		} else if outcome.Item == nil {
@@ -1209,6 +1226,16 @@ func linearItemUnavailable(err error) bool {
 	diagnostic, ok := err.(LinearDiagnostic)
 	return ok && diagnostic.Code == "not-found-or-inaccessible"
 }
+
+// readInterrupted reports a detail read that never observed the provider:
+// its caller or a higher-priority action check cancelled it, or the request
+// queue was full. The listed summary is still current, so the item keeps it
+// and a later hydration pass retries the read.
+func readInterrupted(err error) bool {
+	var backlog BacklogDiagnostic
+	return errors.Is(err, context.Canceled) || errors.As(err, &backlog) && (backlog.Code == "cancelled" || backlog.Code == "overloaded")
+}
+
 func githubSourceAccessLost(err error) bool {
 	diagnostic, ok := err.(GitHubDiagnostic)
 	if !ok {

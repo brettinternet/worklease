@@ -118,10 +118,12 @@ var backlogGitBinary = func() string {
 	return "git"
 }()
 
-// BacklogAdapter reads only the configured checkout. TerminalStatuses is the caller's
-// project status mapping; provider isReady is never used to infer generic readiness.
+// BacklogAdapter reads only the configured checkout. TerminalStatuses and each
+// source's configured completeStatus are the caller's status mapping; provider
+// isReady is never used to infer generic readiness.
 type BacklogAdapter struct {
 	TerminalStatuses  map[string]bool
+	terminal          map[string]string // source ID -> configured complete status
 	Binary            string
 	Timeout           time.Duration
 	reconcileInterval time.Duration // test-only override; production reconciles every minute
@@ -143,7 +145,7 @@ func NewBacklogAdapter(terminalStatuses ...string) *BacklogAdapter {
 	for _, s := range terminalStatuses {
 		statuses[s] = true
 	}
-	return &BacklogAdapter{TerminalStatuses: statuses, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}, watcherFactory: newNativeBacklogWatcher, tickerFactory: newNativeBacklogWatchTicker}
+	return &BacklogAdapter{TerminalStatuses: statuses, terminal: map[string]string{}, diagnostics: map[string]BacklogSourceDiagnostics{}, consent: map[string]bool{}, details: map[string]backlogTask{}, edges: map[string]backlogEdges{}, partitions: map[string]string{}, revisions: map[string]uint64{}, watcherFactory: newNativeBacklogWatcher, tickerFactory: newNativeBacklogWatchTicker}
 }
 
 // OnDemandDetails prevents the loader from scanning every task with a view subprocess.
@@ -192,8 +194,6 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	if !backlogReadCommand(binary, args) {
 		return nil, BacklogDiagnostic{"read-only", "queue provider command is not a permitted read"}
 	}
-	ctx, cancel := context.WithTimeout(ctx, a.timeout())
-	defer cancel()
 	priority := PriorityBackground
 	if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok && requested == PriorityAction {
 		priority = PriorityAction
@@ -214,6 +214,10 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	}
 	coalesce := priority != PriorityAction
 	result, err := gate.schedule(ctx, priority, key, "", coalesce, func(workCtx context.Context) (any, error) {
+		// The deadline bounds the provider command, not time queued behind
+		// other reads; the caller's context bounds the wait.
+		workCtx, cancel := context.WithTimeout(workCtx, a.timeout())
+		defer cancel()
 		return a.runCommand(workCtx, cwd, binary, args...)
 	})
 	if err != nil {
@@ -221,7 +225,7 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 			return nil, BacklogDiagnostic{"overloaded", "provider request capacity unavailable"}
 		}
 		if ctx.Err() != nil {
-			return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+			return nil, BacklogDiagnostic{"cancelled", "provider read cancelled"}
 		}
 		return nil, err
 	}
@@ -254,8 +258,11 @@ func (a *BacklogAdapter) runCommand(ctx context.Context, cwd, binary string, arg
 	if stdout.exceeded || stderr.exceeded {
 		return nil, BacklogDiagnostic{"output-limit", "provider output exceeded limit"}
 	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, BacklogDiagnostic{"timeout", "provider read timed out"}
+	}
 	if ctx.Err() != nil {
-		return nil, BacklogDiagnostic{"cancelled", "provider read cancelled or timed out"}
+		return nil, BacklogDiagnostic{"cancelled", "provider read cancelled"}
 	}
 	if err != nil {
 		return nil, BacklogDiagnostic{"provider-failed", "provider command failed"}
@@ -354,6 +361,7 @@ func (a *BacklogAdapter) Resolve(ctx context.Context, options map[string]string)
 	a.mu.Lock()
 	a.diagnostics[source.ID] = effects
 	a.consent[source.ID] = options["allowGitNetwork"] == "true"
+	a.terminal[source.ID] = options["completeStatus"]
 	a.mu.Unlock()
 	return source, nil
 }
@@ -553,7 +561,10 @@ func decodeBacklog(data []byte, kind string, dest any) error {
 }
 func (a *BacklogAdapter) summary(source Source, task backlogTask) Summary {
 	state := StateOpen
-	if a.TerminalStatuses[task.Status] {
+	a.mu.Lock()
+	complete := a.terminal[source.ID]
+	a.mu.Unlock()
+	if a.TerminalStatuses[task.Status] || complete != "" && task.Status == complete {
 		state = StateComplete
 	} else if task.Status == "In Progress" {
 		state = StateInProgress

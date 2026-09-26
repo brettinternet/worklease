@@ -170,6 +170,17 @@ func TestViewOrderFilteringAndCanonicalDedup(t *testing.T) {
 		t.Fatalf("unexpected view: %+v", got)
 	}
 }
+func TestViewTextFilterMatchesItemID(t *testing.T) {
+	t.Parallel()
+	items := map[string]Item{
+		"a": {Summary: Summary{Ref: Ref{"a", "TASK-128"}, Title: "Read-only slice", Order: "1"}},
+		"b": {Summary: Summary{Ref: Ref{"a", "TASK-7"}, Title: "Other", Order: "2"}},
+	}
+	got := EvaluateView(items, View{SourceOrder: []string{"a"}, Filters: Filters{Text: "task-128"}})
+	if len(got) != 1 || got[0].Ref.ItemID != "TASK-128" {
+		t.Fatalf("ID filter: %+v", got)
+	}
+}
 func TestSnapshotImmutability(t *testing.T) {
 	store := NewStore()
 	item := Item{Summary: Summary{Ref: Ref{"s", "i"}, AssignedTo: []string{"one"}}, Readiness: Readiness{Reasons: []string{"x"}}}
@@ -266,3 +277,39 @@ func TestReadinessProviderReadyIsNotProofAndReadinessIndependentOfClaim(t *testi
 	}
 }
 func boolPtr(v bool) *bool { return &v }
+
+func TestInterruptedDetailReadKeepsListedSummary(t *testing.T) {
+	t.Parallel()
+	source := Source{ID: "s", Adapter: "fake"}
+	ref := Ref{"s", "1"}
+	adapter := newFake()
+	adapter.outcomes[ref.Key()] = []ItemOutcome{{Ref: ref, Err: BacklogDiagnostic{"cancelled", "provider read cancelled"}}}
+	registry := NewRegistry()
+	if err := registry.Register("fake", adapter); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	listed := Item{Summary: Summary{Ref: ref, Fresh: true}, TerminalKnown: true, ReadOutcome: "summary-only"}
+	loader.Store.SeedSnapshot(Snapshot{Items: map[string]Item{ref.Key(): listed}, Sources: map[string]Coverage{"s": {State: CoverageComplete, Total: 1}}})
+	for range loader.HydrateEdges(context.Background(), source, []Ref{ref}, nil, false) {
+	}
+	if item, _ := loader.Store.Item(ref); !item.Fresh || item.ReadOutcome != "summary-only" {
+		t.Fatalf("interrupted read changed listed item: fresh %v outcome %q", item.Fresh, item.ReadOutcome)
+	}
+}
+
+func TestSourceFailureKeepsAdapterDiagnosticCode(t *testing.T) {
+	t.Parallel()
+	adapter := newFake()
+	adapter.errors["s"] = BacklogDiagnostic{"observation-invalidated", "provider changed during task list"}
+	registry := NewRegistry()
+	if err := registry.Register("fake", adapter); err != nil {
+		t.Fatal(err)
+	}
+	loader := NewLoader(registry)
+	for range loader.Refresh(context.Background(), []Source{{ID: "s", Adapter: "fake"}}) {
+	}
+	if got := loader.Store.Current().Sources["s"].Reason; got != "observation-invalidated" {
+		t.Fatalf("source reason = %q", got)
+	}
+}

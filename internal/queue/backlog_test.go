@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -206,7 +207,7 @@ func TestBacklogEffectsVersionAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Timeout = 20 * time.Millisecond
-	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "cancelled") {
+	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "timeout") {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -233,6 +234,75 @@ func scratchGit(root string, args ...string) *exec.Cmd {
 	cmd := testkit.GitCommand(args...)
 	cmd.Dir = root
 	return cmd
+}
+
+func TestBacklogReadTimeoutExcludesQueueWait(t *testing.T) {
+	t.Parallel()
+	root, script := fakeBacklog(t)
+	// Four reads fill the source's request slots until their own timeout kills
+	// them; TASK-E waits for a slot, then needs most of a full timeout.
+	content := "#!/bin/sh\ncase \"$*\" in\n  '--version') echo 1.52.0;;\n  'config get '*) echo false;;\n  'task view TASK-E --json') sleep 0.2; /bin/cat view-e.json;;\n  'task view '*) : > \"started-$3\"; exec sleep 5;;\n  *) exit 1;;\nesac\n"
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "view-e.json"), []byte(`{"kind":"task-view","schemaVersion":1,"task":{"id":"TASK-E","status":"To Do","dependencies":[]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBacklogAdapter()
+	a.Binary = script
+	a.Timeout = 500 * time.Millisecond
+	source, err := a.Resolve(context.Background(), map[string]string{"checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockers := []string{"TASK-A", "TASK-B", "TASK-C", "TASK-D"}
+	done := make(chan error, len(blockers))
+	for _, id := range blockers {
+		go func() {
+			_, err := a.view(context.Background(), source, Ref{SourceID: source.ID, ItemID: id}, false)
+			done <- err
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for _, id := range blockers {
+		for {
+			if _, err := os.Stat(filepath.Join(root, "started-"+id)); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not start", id)
+			}
+			runtime.Gosched()
+		}
+	}
+	if _, err := a.view(context.Background(), source, Ref{SourceID: source.ID, ItemID: "TASK-E"}, false); err != nil {
+		t.Fatalf("queued read: %v", err)
+	}
+	for range blockers {
+		if err := <-done; !diag(err, "timeout") {
+			t.Fatalf("blocking read: %v", err)
+		}
+	}
+}
+
+func TestBacklogConfiguredCompleteStatusIsTerminal(t *testing.T) {
+	t.Parallel()
+	root, binary := fakeBacklog(t)
+	a := NewBacklogAdapter()
+	a.Binary = binary
+	source, err := a.Resolve(context.Background(), map[string]string{"checkout": root, "completeStatus": "Done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := a.List(context.Background(), source, Query{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if done := item.RawStatus == "Done"; item.Terminal != done || (item.State == StateComplete) != done {
+			t.Fatalf("%s status %q: terminal %v state %s", item.Ref.ItemID, item.RawStatus, item.Terminal, item.State)
+		}
+	}
 }
 
 func TestBacklogGitFreshness(t *testing.T) {
