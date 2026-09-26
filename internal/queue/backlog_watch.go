@@ -188,6 +188,9 @@ func (a *BacklogAdapter) WatchChanges(ctx context.Context, source Source, notify
 					}
 				}
 			}
+			if ignoredBacklogEvent(event) {
+				continue
+			}
 			if strings.HasSuffix(event.Name, ".md") || strings.HasSuffix(event.Name, ".yml") || filepath.Base(event.Name) == "HEAD" || event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 				a.InvalidateEdges(source)
 				if debounce == nil {
@@ -217,4 +220,14 @@ func (a *BacklogAdapter) WatchChanges(ctx context.Context, source Source, notify
 			refresh()
 		}
 	}
+}
+
+// ignoredBacklogEvent reports events that cannot change provider state.
+// Metadata-only changes (macOS reports reads that set extended attributes as
+// Chmod) and Git's transient index.lock (created and removed by every
+// status, including the Backlog.md CLI's own) would otherwise invalidate each
+// in-flight list, so no read could ever complete. A real index or HEAD
+// change still arrives as its own event.
+func ignoredBacklogEvent(event fsnotify.Event) bool {
+	return event.Op == fsnotify.Chmod || filepath.Base(event.Name) == "index.lock"
 }

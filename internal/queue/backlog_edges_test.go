@@ -713,3 +713,62 @@ func TestBacklogBulkEdgesAndPartialCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type scriptedBacklogWatcher struct {
+	events chan fsnotify.Event
+	errors chan error
+}
+
+func (w scriptedBacklogWatcher) Add(string) error              { return nil }
+func (w scriptedBacklogWatcher) Close() error                  { return nil }
+func (w scriptedBacklogWatcher) Events() <-chan fsnotify.Event { return w.events }
+func (w scriptedBacklogWatcher) Errors() <-chan error          { return w.errors }
+
+func TestBacklogWatchIgnoresMetadataAndGitLockEvents(t *testing.T) {
+	t.Parallel()
+	root, binary := fakeBacklog(t)
+	bulk := []byte(`{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-2","dependencies":["TASK-1"],"readiness":{"missingDependencies":[]}}]}`)
+	if err := os.WriteFile(filepath.Join(root, "backlog-list.json"), bulk, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBacklogAdapter("Done")
+	a.Binary = binary
+	source, err := a.Resolve(context.Background(), map[string]string{"checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{SourceID: source.ID, ItemID: "TASK-2"}
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	watcher := scriptedBacklogWatcher{events: make(chan fsnotify.Event), errors: make(chan error)}
+	a.watcherFactory = func() (backlogWatcher, error) { return watcher, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { finished <- a.WatchChanges(ctx, source, func() {}) }()
+	// Each unbuffered send returns only after the previous event was handled.
+	send := func(event fsnotify.Event) {
+		t.Helper()
+		select {
+		case watcher.events <- event:
+		case err := <-finished:
+			t.Fatalf("watch stopped: %v", err)
+		case <-time.After(3 * time.Second):
+			t.Fatal("watch did not receive event")
+		}
+	}
+	task := filepath.Join(root, "backlog", "tasks", "task-2.md")
+	lock := fsnotify.Event{Name: filepath.Join(root, ".git", "index.lock"), Op: fsnotify.Remove}
+	send(fsnotify.Event{Name: task, Op: fsnotify.Chmod})
+	send(lock)
+	send(lock)
+	if _, ok := a.CachedEdges(source, ref); !ok {
+		t.Fatal("metadata or Git lock event invalidated cached edges")
+	}
+	send(fsnotify.Event{Name: task, Op: fsnotify.Write})
+	send(lock)
+	if _, ok := a.CachedEdges(source, ref); ok {
+		t.Fatal("task write did not invalidate cached edges")
+	}
+}

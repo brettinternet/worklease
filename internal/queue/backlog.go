@@ -175,7 +175,7 @@ func backlogReadCommand(binary string, args []string) bool {
 	if binary == "git" {
 		return len(args) == 2 && args[0] == "rev-parse" && (args[1] == "HEAD" || args[1] == "--is-inside-work-tree") ||
 			len(args) == 3 && args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" ||
-			len(args) == 5 && args[0] == "-c" && args[1] == "core.fsmonitor=false" && args[2] == "status" && args[3] == "--porcelain" && args[4] == "--untracked-files=normal"
+			len(args) == 6 && args[0] == "--no-optional-locks" && args[1] == "-c" && args[2] == "core.fsmonitor=false" && args[3] == "status" && args[4] == "--porcelain" && args[5] == "--untracked-files=normal"
 	}
 	if filepath.Base(binary) != "backlog" {
 		return false
@@ -393,7 +393,9 @@ func (a *BacklogAdapter) gitFreshness(ctx context.Context, checkout string, d *B
 	if b, err := a.run(ctx, checkout, "git", "rev-parse", "HEAD"); err == nil {
 		d.Head = strings.TrimSpace(string(b))
 	}
-	if b, err := a.run(ctx, checkout, "git", "-c", "core.fsmonitor=false", "status", "--porcelain", "--untracked-files=normal"); err == nil {
+	// --no-optional-locks keeps status from refreshing the index: the write
+	// would fire the source watch and invalidate this very read.
+	if b, err := a.run(ctx, checkout, "git", "--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain", "--untracked-files=normal"); err == nil {
 		d.Dirty = len(b) > 0
 	}
 }
