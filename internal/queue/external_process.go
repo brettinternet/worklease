@@ -25,16 +25,17 @@ import (
 )
 
 const (
-	externalProtocolMajor    = 1
-	externalFrameLimit       = 1 << 20
-	externalStderrLimit      = 64 << 10
-	externalDiagnosticLimit  = 4 << 10
-	externalResultLimit      = 786432
-	externalMaxItems         = 100
-	externalMaxInFlight      = 16
-	externalRequestTimeout   = 30 * time.Second
-	externalCancelWriteLimit = 100 * time.Millisecond
-	externalCancelGrace      = 250 * time.Millisecond
+	externalProtocolMajor                = 1
+	externalFrameLimit                   = 1 << 20
+	externalStderrLimit                  = 64 << 10
+	externalDiagnosticLimit              = 4 << 10
+	externalResultLimit                  = 786432
+	externalMaxItems                     = 100
+	externalMaxInFlight                  = 16
+	externalRequestTimeout               = 30 * time.Second
+	externalCancelWriteLimit             = 100 * time.Millisecond
+	externalCancelGrace                  = 250 * time.Millisecond
+	externalMaxRetainedCredentialSecrets = 256
 )
 
 var externalMethods = map[string]bool{
@@ -107,28 +108,33 @@ type ExternalProcess struct {
 	source config.QueueSource
 	env    func(string) string
 
-	mu            sync.Mutex
-	run           *externalProcessRun
-	closed        bool
-	pending       map[string]*externalPending
-	answeredIDs   map[string]bool
-	nextID        uint64
-	slots         chan struct{}
-	restartAt     time.Time
-	restartFail   int
-	terminalErr   string
-	manifest      *ExternalAdapterManifest
-	runGeneration uint64
+	mu                sync.Mutex
+	run               *externalProcessRun
+	closed            bool
+	pending           map[string]*externalPending
+	answeredIDs       map[string]bool
+	nextID            uint64
+	slots             chan struct{}
+	restartAt         time.Time
+	restartFail       int
+	rateLimitUntil    time.Time
+	terminalErr       string
+	failureDiagnostic string
+	manifest          *ExternalAdapterManifest
+	runGeneration     uint64
 
-	initializeMu sync.Mutex
-	credentialMu sync.Mutex
-	credentials  *CredentialHelper
-	secretsMu    sync.Mutex
-	secrets      []string
-	beforeStart  func()
-	checkMode    bool // explicit conformance probe; never used by configured sources
-	probeSecret  atomic.Pointer[string]
-	probeLeak    atomic.Bool
+	initializeMu      sync.Mutex
+	credentialMu      sync.Mutex
+	credentials       *CredentialHelper
+	secretsMu         sync.Mutex
+	secrets           []string
+	credentialSecrets []string
+	secretSet         map[string]struct{}
+	beforeStart       func()
+	checkMode         bool // explicit conformance probe; never used by configured sources
+	probeSecret       atomic.Pointer[string]
+	probeLeak         atomic.Bool
+	now               func() time.Time
 }
 
 // NewExternalProcess verifies owner approval against a private executable snapshot before starting it.
@@ -164,8 +170,13 @@ func newExternalProcessMode(source config.QueueSource, env func(string) string, 
 		slots:       make(chan struct{}, externalMaxInFlight),
 		beforeStart: beforeStart,
 		credentials: new(CredentialHelper),
+		now:         time.Now,
 	}
 	client.secrets = externalSecretValues(source, env)
+	client.secretSet = make(map[string]struct{}, len(client.secrets))
+	for _, secret := range client.secrets {
+		client.secretSet[secret] = struct{}{}
+	}
 	client.checkMode = checkMode
 	if _, err := client.startProcess(); err != nil {
 		return nil, err
@@ -226,6 +237,18 @@ func (p *ExternalProcess) Generation() (uint64, bool) {
 
 // Call makes one source-scoped protocol request. initialize is reserved for Initialize.
 func (p *ExternalProcess) Call(ctx context.Context, method string, params any, result any) error {
+	return p.callAtGeneration(ctx, 0, method, params, result)
+}
+
+// CallAtGeneration refuses dispatch if the process changed since the caller validated it.
+func (p *ExternalProcess) CallAtGeneration(ctx context.Context, generation uint64, method string, params any, result any) error {
+	if generation == 0 {
+		return fmt.Errorf("external adapter process generation is invalid")
+	}
+	return p.callAtGeneration(ctx, generation, method, params, result)
+}
+
+func (p *ExternalProcess) callAtGeneration(ctx context.Context, expectedGeneration uint64, method string, params any, result any) error {
 	if !externalMethods[method] {
 		return fmt.Errorf("external adapter method is not supported")
 	}
@@ -241,6 +264,12 @@ func (p *ExternalProcess) Call(ctx context.Context, method string, params any, r
 	if _, err := p.ensureInitialized(ctx); err != nil {
 		return externalContextError(method, err, false)
 	}
+	if expectedGeneration != 0 {
+		generation, alive := p.Generation()
+		if !alive || generation != expectedGeneration {
+			return fmt.Errorf("external adapter process changed after source validation")
+		}
+	}
 	if len(p.source.CredentialHelper) != 0 && method != "credential" {
 		if err := p.refreshCredential(ctx); err != nil {
 			return err
@@ -251,6 +280,9 @@ func (p *ExternalProcess) Call(ctx context.Context, method string, params any, r
 	p.initializeMu.Unlock()
 	if err != nil {
 		return externalContextError(method, err, false)
+	}
+	if expectedGeneration != 0 && run.generation != expectedGeneration {
+		return fmt.Errorf("external adapter process changed after source validation")
 	}
 	wireParams, requestDeadline, err := p.normalizeParams(method, params, ctx)
 	if err != nil {
@@ -367,19 +399,52 @@ func (p *ExternalProcess) DeliverCredential(ctx context.Context, token, origin s
 }
 
 func (p *ExternalProcess) rememberSecret(token string) {
+	if token == "" {
+		return
+	}
+	variants := []string{token}
+	if encoded, err := json.Marshal(token); err == nil && len(encoded) > 2 {
+		variants = append(variants, string(encoded[1:len(encoded)-1]))
+	}
+	variants = append(variants, url.QueryEscape(token), url.PathEscape(token))
+
 	p.secretsMu.Lock()
 	defer p.secretsMu.Unlock()
-	p.secrets = append(p.secrets, token)
-	if encoded, err := json.Marshal(token); err == nil && len(encoded) > 2 {
-		p.secrets = append(p.secrets, string(encoded[1:len(encoded)-1]))
+	if p.secretSet == nil {
+		p.secretSet = make(map[string]struct{}, len(p.secrets))
+		for _, secret := range p.secrets {
+			p.secretSet[secret] = struct{}{}
+		}
 	}
-	p.secrets = append(p.secrets, url.QueryEscape(token), url.PathEscape(token))
+	unique := make([]string, 0, len(variants))
+	seen := make(map[string]bool, len(variants))
+	for _, variant := range variants {
+		if variant == "" || seen[variant] {
+			continue
+		}
+		seen[variant] = true
+		if _, exists := p.secretSet[variant]; !exists {
+			unique = append(unique, variant)
+		}
+	}
+	for len(p.credentialSecrets)+len(unique) > externalMaxRetainedCredentialSecrets {
+		oldest := p.credentialSecrets[0]
+		p.credentialSecrets = p.credentialSecrets[1:]
+		delete(p.secretSet, oldest)
+	}
+	p.credentialSecrets = append(p.credentialSecrets, unique...)
+	for _, secret := range unique {
+		p.secretSet[secret] = struct{}{}
+	}
 }
 
 func (p *ExternalProcess) secretValues() []string {
 	p.secretsMu.Lock()
 	defer p.secretsMu.Unlock()
-	return append([]string(nil), p.secrets...)
+	values := make([]string, 0, len(p.secrets)+len(p.credentialSecrets))
+	values = append(values, p.secrets...)
+	values = append(values, p.credentialSecrets...)
+	return values
 }
 
 // Close terminates the source's process and fails any outstanding calls.
@@ -454,6 +519,12 @@ func (p *ExternalProcess) ensureInitializedLocked(ctx context.Context) (*externa
 
 func (p *ExternalProcess) ensureRunning(ctx context.Context) (*externalProcessRun, error) {
 	p.mu.Lock()
+	if p.rateLimitUntil.After(p.now()) {
+		retryAt := p.rateLimitUntil
+		p.mu.Unlock()
+		return nil, fmt.Errorf("external adapter is rate-limited until %s", retryAt.UTC().Format(time.RFC3339Nano))
+	}
+	p.rateLimitUntil = time.Time{}
 	if p.closed {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("external adapter client is closed")
@@ -800,6 +871,10 @@ func (p *ExternalProcess) readResponses(run *externalProcessRun) {
 			p.failProcess(run, "adapter protocol response is invalid", false)
 			return
 		}
+		retryAt := time.Time{}
+		if diagnostic == "rate-limited" {
+			retryAt = externalDiagnosticRetryAt(frame)
+		}
 		p.mu.Lock()
 		pending := p.pending[id]
 		if pending == nil {
@@ -821,6 +896,9 @@ func (p *ExternalProcess) readResponses(run *externalProcessRun) {
 			p.mu.Unlock()
 			p.failProcess(run, "adapter result escaped its configured source", false)
 			return
+		}
+		if diagnostic == "rate-limited" && retryAt.After(p.now()) && retryAt.After(p.rateLimitUntil) {
+			p.rateLimitUntil = retryAt
 		}
 		delete(p.pending, id)
 		p.answeredIDs[id] = true
@@ -895,6 +973,7 @@ func (p *ExternalProcess) failProcess(run *externalProcessRun, message string, r
 				pending = append(pending, call)
 			}
 		}
+		idleRestartableFailure := restartable && len(pending) == 0 && p.run == run && !p.closed
 		p.mu.Unlock()
 
 		_ = run.stdin.Close()
@@ -905,6 +984,12 @@ func (p *ExternalProcess) failProcess(run *externalProcessRun, message string, r
 		select {
 		case <-run.stderrDone:
 		case <-time.After(time.Second):
+		}
+		if idleRestartableFailure {
+			diagnostic := p.errorWithStderr(run, message).Error()
+			p.mu.Lock()
+			p.failureDiagnostic = diagnostic
+			p.mu.Unlock()
 		}
 		_ = run.stdout.Close()
 		_ = run.stderr.Close()
@@ -935,6 +1020,14 @@ func (p *ExternalProcess) errorWithStderr(run *externalProcessRun, message strin
 		return fmt.Errorf("%s", message)
 	}
 	return fmt.Errorf("%s (adapter stderr: %s)", message, diagnostic)
+}
+
+func (p *ExternalProcess) takeFailureDiagnostic() string {
+	p.mu.Lock()
+	diagnostic := p.failureDiagnostic
+	p.failureDiagnostic = ""
+	p.mu.Unlock()
+	return redactExternalText(diagnostic, nil)
 }
 
 func (p *ExternalProcess) allocateID() string {
@@ -1089,21 +1182,94 @@ func externalResultSourceScoped(raw json.RawMessage, method, sourceID string) bo
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	if decoder.Decode(&value) != nil {
+	if decoder.Decode(&value) != nil || !externalResultTextValid(value) {
 		return false
 	}
+	field := func(object json.RawMessage, key string) json.RawMessage {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(object, &fields) != nil {
+			return nil
+		}
+		return fields[key]
+	}
+	sourceFieldMatches := func(object json.RawMessage, key string) bool {
+		child := field(object, key)
+		if child == nil {
+			return true
+		}
+		var id string
+		return json.Unmarshal(child, &id) == nil && id == sourceID
+	}
+	refMatches := func(object json.RawMessage, key string) bool {
+		child := field(object, key)
+		return child == nil || bytes.Equal(bytes.TrimSpace(child), []byte("null")) || externalRefIsScoped(child, sourceID)
+	}
+	refsInArray := func(object json.RawMessage, key string, fields ...string) bool {
+		arrayRaw := field(object, key)
+		if arrayRaw == nil {
+			return true
+		}
+		var entries []json.RawMessage
+		if json.Unmarshal(arrayRaw, &entries) != nil {
+			return false
+		}
+		for _, entry := range entries {
+			for _, referenceField := range fields {
+				if !refMatches(entry, referenceField) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	outcomeMatches := func(outcome json.RawMessage) bool {
+		return refMatches(outcome, "ref") && refMatches(field(outcome, "item"), "ref")
+	}
+
+	switch method {
+	case "resolve":
+		return sourceFieldMatches(field(raw, "source"), "id")
+	case "credential":
+		return sourceFieldMatches(raw, "sourceId")
+	case "list":
+		return refsInArray(raw, "items", "ref")
+	case "readItems":
+		arrayRaw := field(raw, "outcomes")
+		if arrayRaw == nil {
+			return true
+		}
+		var outcomes []json.RawMessage
+		if json.Unmarshal(arrayRaw, &outcomes) != nil {
+			return false
+		}
+		for _, outcome := range outcomes {
+			if !outcomeMatches(outcome) {
+				return false
+			}
+		}
+	case "readItem":
+		return outcomeMatches(field(raw, "outcome"))
+	case "readDependencies":
+		return refsInArray(raw, "edges", "from", "to")
+	case "resolveReviewBoundary":
+		return refsInArray(field(raw, "boundary"), "itemRefs")
+	case "writeState", "recordProgress", "assign", "archive":
+		receipt := field(raw, "receipt")
+		return sourceFieldMatches(receipt, "sourceId") && refMatches(receipt, "ref")
+	case "readReceipt":
+		evidence := field(raw, "evidence")
+		return sourceFieldMatches(evidence, "sourceId") && refMatches(evidence, "ref")
+	}
+	return true
+}
+
+func externalResultTextValid(value any) bool {
 	valid := true
 	var walk func(any)
 	walk = func(node any) {
 		switch typed := node.(type) {
 		case map[string]any:
 			for key, child := range typed {
-				if key == "sourceId" {
-					id, ok := child.(string)
-					if !ok || id != sourceID {
-						valid = false
-					}
-				}
 				if key == "itemId" || key == "cursor" || key == "title" || key == "diagnostic" {
 					text, ok := child.(string)
 					if ok && (len(text) > 4096 || !utf8.ValidString(text)) {
@@ -1119,18 +1285,7 @@ func externalResultSourceScoped(raw json.RawMessage, method, sourceID string) bo
 		}
 	}
 	walk(value)
-	if !valid {
-		return false
-	}
-	if method == "resolve" {
-		var result struct {
-			Source struct {
-				ID string `json:"id"`
-			} `json:"source"`
-		}
-		return json.Unmarshal(raw, &result) == nil && result.Source.ID == sourceID
-	}
-	return true
+	return valid
 }
 
 func externalRefIsScoped(raw json.RawMessage, sourceID string) bool {
@@ -1332,6 +1487,24 @@ func parseExternalDiagnostic(raw json.RawMessage) (string, error) {
 		}
 	}
 	return diagnostic, nil
+}
+
+func externalDiagnosticRetryAt(frame []byte) time.Time {
+	var response struct {
+		Error struct {
+			Data struct {
+				RetryAt string `json:"retryAt"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(frame, &response) != nil || response.Error.Data.RetryAt == "" {
+		return time.Time{}
+	}
+	retryAt, err := time.Parse(time.RFC3339Nano, response.Error.Data.RetryAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return retryAt
 }
 
 func externalDiagnosticCode(diagnostic string) int {

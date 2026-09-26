@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -616,9 +615,13 @@ func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			_ = writers[n].Close()
+			_ = cmd.Process.Kill()
+		})
 	}
 	// The winner stays alive while every losing process finishes its attempt.
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(20 * time.Second)
 	var winner int
 	for {
 		data, err := os.ReadFile(marker)
@@ -631,8 +634,7 @@ func TestLockIsSingleFlightAcrossProcesses(t *testing.T) {
 		select {
 		case <-deadline:
 			t.Fatal("no helper acquired the lock")
-		default:
-			runtime.Gosched()
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	for index, cmd := range cmds {

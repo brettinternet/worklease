@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-25 05:20'
+updated_date: '2026-09-25 22:55'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-133.1
@@ -59,6 +60,8 @@ Implemented shared host-backed conformance tests for Backlog.md, GitHub, and sta
 Evidence: on main c68c22b, TestAdapterConformance exercises all three via ExternalAdapter/ExternalProcess; TestAdapterConformanceBuiltInCancellation reaches both built-in providers; stale writer preflight/readback, quota, malformed output, unknown outcomes, secret redaction and shared identity vectors run under the conformance prefix. Sample host test passes; guide links checklist. go test -race -count=3 for TestAdapterConformance* (internal/queue) and TestSampleAdapter* (internal/sampleadapter) passed. mise run lint, format-check, typecheck, test, hooks passed on the suite head merged unchanged to main; focused conformance tests passed again on main. One general review found three actionable gaps (pagination bound, stale-write shim, built-in cancellation), all fixed and retested. Proposal section 11/D16 already matches the implementation; no design amendment needed.
 
 Delivery commits: b7d6ffe (sample), c68c22b (suite integrated on main), bfcbde1 (task finalization). No remaining blocker. Next independent step: TASK-133 parent integration checklist; verify its criteria on main before closing it. Both session-owned worktrees and their Herdr workspaces were removed.
+
+Post-completion review (6800074): sample adapter cursors bound to filters/ref; stale-write shim compares authoritative state and append evidence before/after; shim preserves GitHub rate-limited diagnostic and retryAt; cancellation check rejects premature .done. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

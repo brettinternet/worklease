@@ -357,6 +357,15 @@ func checkAdapterCancellation(ctx context.Context, adapter *ExternalAdapter, sou
 		add("cancel-notification", "fail", "fixture-not-blocking", "The adapter fixture did not start a blocking cancellation request")
 		return
 	}
+	if _, err := os.Stat(marker + ".done"); err == nil {
+		cancel()
+		add("cancel-notification", "fail", "done-before-cancellation", "The adapter marked cancellation complete before the host sent cancellation")
+		return
+	} else if !os.IsNotExist(err) {
+		cancel()
+		add("cancel-notification", "fail", "marker-unreadable", "The cancellation completion marker could not be checked")
+		return
+	}
 	cancel()
 	select {
 	case err := <-result:

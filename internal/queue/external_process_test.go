@@ -49,6 +49,38 @@ func TestProcessHelper(t *testing.T) {
 	}
 }
 
+func TestRememberSecretDeduplicatesAndBoundsCredentialVariants(t *testing.T) {
+	t.Parallel()
+	process := &ExternalProcess{}
+	for range 1000 {
+		process.rememberSecret("same-token")
+	}
+	if got := len(process.secretValues()); got != 1 {
+		t.Fatalf("repeated token retained %d variants, want 1 unique variant", got)
+	}
+	for i := range 1000 {
+		process.rememberSecret(fmt.Sprintf("rotated-token-%d", i))
+	}
+	if got := len(process.secretValues()); got > 256 {
+		t.Fatalf("retained %d credential variants, over limit 256", got)
+	}
+	if !strings.Contains(redactExternalText("rotated-token-999", process.secretValues()), "[redacted]") {
+		t.Fatal("latest credential was not retained for redaction")
+	}
+}
+
+func TestExternalResultScopeIgnoresOpaqueNestedSourceID(t *testing.T) {
+	t.Parallel()
+	result := json.RawMessage(`{"edges":[{"from":{"sourceId":"source-a","itemId":"1"},"to":{"sourceId":"source-a","itemId":"2"},"rawOutcome":{"sourceId":"provider-specific-id"}}]}`)
+	if !externalResultSourceScoped(result, "readDependencies", "source-a") {
+		t.Fatal("opaque nested sourceId was treated as a Worklease reference")
+	}
+	foreignReference := json.RawMessage(`{"edges":[{"from":{"sourceId":"other-source","itemId":"1"},"to":{"sourceId":"source-a","itemId":"2"}}]}`)
+	if externalResultSourceScoped(foreignReference, "readDependencies", "source-a") {
+		t.Fatal("foreign source-qualified reference was accepted")
+	}
+}
+
 func TestExternalProcessNegotiatesAndScopesCalls(t *testing.T) {
 	client, source, _ := newExternalProcessTestClient(t, "normal", "")
 	manifest, err := client.Initialize(context.Background())
@@ -85,6 +117,69 @@ func TestExternalProcessManifestRejectsUnexpectedBindingAndPolicy(t *testing.T) 
 				t.Fatalf("invalid %s manifest was accepted", mode)
 			}
 		})
+	}
+}
+
+func TestExternalProcessCallDoesNotDispatchAcrossValidatedGeneration(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "methods")
+	client, source, _ := newExternalProcessTestClient(t, "record-methods", marker)
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	generation, alive := client.Generation()
+	if !alive {
+		t.Fatal("initial process is not running")
+	}
+	client.mu.Lock()
+	run := client.run
+	client.mu.Unlock()
+	client.failProcess(run, "simulated idle crash", true)
+	client.mu.Lock()
+	client.restartAt = time.Time{}
+	client.mu.Unlock()
+	params := map[string]any{
+		"ref": Ref{SourceID: source.ID, ItemID: "item-1"}, "operationId": "operation-1",
+		"patch": map[string]any{}, "authority": map[string]string{"authorizationRef": "operation-1", "scope": source.ID},
+	}
+	var result map[string]any
+	if err := client.CallAtGeneration(context.Background(), generation, "writeState", params, &result); err == nil {
+		t.Fatal("write was dispatched after the validated process generation changed")
+	}
+	methods, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(methods), "writeState") {
+		t.Fatalf("write reached replacement process: %q", methods)
+	}
+}
+
+func TestExternalProcessRateLimitRetryAtBlocksSourceUntilDeadline(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "list-calls")
+	client, source, _ := newExternalProcessTestClient(t, "rate-limited-once", marker)
+	clock := testkit.NewClock(time.Date(2099, time.January, 1, 0, 0, 0, 0, time.UTC))
+	client.now = clock.Now
+	params := map[string]any{"sourceId": source.ID}
+	var result map[string]any
+	if err := client.Call(context.Background(), "list", params, &result); err == nil || !strings.Contains(err.Error(), "rate-limited") {
+		t.Fatalf("rate-limited response error = %v", err)
+	}
+	if err := client.Call(context.Background(), "list", params, &result); err == nil || !strings.Contains(err.Error(), "rate-limited") {
+		t.Fatalf("call before retryAt was not refused: %v", err)
+	}
+	calls, err := os.ReadFile(marker)
+	if err != nil || strings.Count(string(calls), "list\n") != 1 {
+		t.Fatalf("host dispatched before retryAt: calls=%q err=%v", calls, err)
+	}
+	clock.Advance(366 * 24 * time.Hour)
+	if err := client.Call(context.Background(), "list", params, &result); err != nil {
+		t.Fatalf("call after retryAt failed: %v", err)
+	}
+	calls, err = os.ReadFile(marker)
+	if err != nil || strings.Count(string(calls), "list\n") != 2 {
+		t.Fatalf("expected one dispatch after retryAt: calls=%q err=%v", calls, err)
 	}
 }
 
@@ -535,6 +630,14 @@ func runExternalProcessHelper(mode, marker string) {
 		var method, id string
 		_ = json.Unmarshal(request["method"], &method)
 		_ = json.Unmarshal(request["id"], &id)
+		if mode == "record-methods" && marker != "" {
+			file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				os.Exit(32)
+			}
+			_, _ = fmt.Fprintln(file, method)
+			_ = file.Close()
+		}
 		if method == "$/cancelRequest" {
 			if mode == "ignore-cancel" {
 				continue
@@ -586,6 +689,21 @@ func runExternalProcessHelper(mode, marker string) {
 			continue
 		}
 		switch mode {
+		case "rate-limited-once":
+			if method == "list" {
+				file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					os.Exit(33)
+				}
+				_, _ = fmt.Fprintln(file, method)
+				_ = file.Close()
+				calls, _ := os.ReadFile(marker)
+				if strings.Count(string(calls), "list\n") == 1 {
+					_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%q,"error":{"code":-32006,"message":"rate limited","data":{"diagnostic":"rate-limited","retryAt":"2099-12-31T00:00:00Z"}}}`+"\n", id)
+					continue
+				}
+			}
+			writeExternalHelperResponse(id, `{"ok":true}`)
 		case "crash-once":
 			file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err == nil {

@@ -40,10 +40,12 @@ The fixture is embedded from `internal/sampleadapter/fixture.json` and
 contains three fixed items and two typed relationships. Requests after
 initialization must include a future UTC deadline and a budget within the v1
 limits. The sample bounds frames and in-flight work, paginates list and
-relationship reads, checks source-qualified references, and accepts
-`$/cancelRequest` to stop outstanding work. Standard output is reserved for
-one compact JSON-RPC response per line; diagnostics do not include request
-contents or secrets.
+relationship reads, binds list cursors to their original filters and
+relationship cursors to their requested reference, checks source-qualified
+references, and accepts `$/cancelRequest` to stop outstanding work. Capability
+`semantics` values are strings; `limits` values are nonnegative integers.
+Standard output is reserved for one compact JSON-RPC response per line;
+diagnostics do not include request contents or secrets.
 
 ## Static resource policy
 
@@ -104,12 +106,14 @@ location. Reusing the same operation ID with the same intent returns the
 original receipt without applying the effect again; a different intent with an
 already-used ID conflicts.
 
-`readReceipt` never dispatches a write. For a progress append it uses the
-journaled intent and the uniquely matching comment marker plus stored append
-provenance to verify recovery without a receipt. A missing marker, duplicate
-marker, mismatched content, or ambiguous attribution remains `unknown`. State
-and assignment read-back require their provider receipt and current matching
-state; matching state alone cannot attribute a lost response.
+`readReceipt` never dispatches a write. For `verification: "verified"`, its
+evidence includes the source and item IDs, precondition, patch, marker count,
+append content, and append proof. For a progress append it uses the journaled
+intent and the uniquely matching comment marker plus stored append provenance
+to verify recovery without a receipt. A missing marker, duplicate marker,
+mismatched content, or ambiguous attribution remains `unknown`. State and
+assignment read-back require their provider receipt and current matching state;
+matching state alone cannot attribute a lost response.
 
 The receipt truthfully reports `conditionalWrite: false` and
 `fencingEvidence: null`. The version check is only a pre-write fixture check;
@@ -142,7 +146,7 @@ worklease queue adapter check --executable /absolute/path/worklease-sample-adapt
 
 The checker reports one pass/fail/skip entry per check. Skipped probes are not
 passes: a normal read-only sample cannot demonstrate write recovery, and
-blocking cancellation fixtures must be tested separately. For adapters declaring `host-credential-v1`, the checker sends a disposable secret canary and fails if the adapter echoes it on stdout, stderr, or in diagnostics. To exercise cancellation, configure a fixture that blocks the `__worklease_conformance_cancel__` list query, writes `PATH.request` when entered and `PATH.done` after handling `$/cancelRequest`, and pass a fresh `--cancel-marker PATH`. An ignored cancellation fails the check; without a marker it is skipped. The result
+blocking cancellation fixtures must be tested separately. For adapters declaring `host-credential-v1`, the checker sends a disposable secret canary and fails if the adapter echoes it on stdout, stderr, or in diagnostics. To exercise cancellation, configure a fixture that blocks the `__worklease_conformance_cancel__` list query, writes `PATH.request` when entered and `PATH.done` only after observing `$/cancelRequest`, and pass a fresh `--cancel-marker PATH`. An ignored or prematurely completed cancellation fails the check; without a marker it is skipped. The result
 uses the CLI schema-version 2 envelope, `queue-adapter-check` operation, and
 `verdict`, `manifest`, and `checks` fields. A failed check exits 65 with
 `adapter-conformance-failed` and the checks in `error.details`; invalid inputs

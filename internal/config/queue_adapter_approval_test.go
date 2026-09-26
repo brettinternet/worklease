@@ -14,6 +14,41 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+func TestQueueAdapterLaunchSnapshotUsesOwnerPrivateDirectory(t *testing.T) {
+	t.Parallel()
+	source, baseEnv, home := queueAdapterApprovalFixture(t)
+	sharedTemp := filepath.Join(home, "shared-temp")
+	if err := os.Mkdir(sharedTemp, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sharedTemp, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	env := func(key string) string {
+		if key == "TMPDIR" {
+			return sharedTemp
+		}
+		return baseEnv(key)
+	}
+	if err := ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := PrepareQueueAdapterLaunch(env, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	privateParent := filepath.Dir(QueuePath(env))
+	relative, err := filepath.Rel(privateParent, snapshot.Path())
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		t.Fatalf("snapshot escaped owner-private parent: path=%q parent=%q err=%v", snapshot.Path(), privateParent, err)
+	}
+	directory, err := os.Stat(filepath.Dir(snapshot.Path()))
+	if err != nil || directory.Mode().Perm() != 0o700 {
+		t.Fatalf("snapshot directory is not owner-private: mode=%v err=%v", directory, err)
+	}
+}
+
 func TestQueueAdapterApprovalIsExplicitDurableAndSourceBound(t *testing.T) {
 	t.Parallel()
 	source, env, _ := queueAdapterApprovalFixture(t)

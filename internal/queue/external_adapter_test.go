@@ -33,6 +33,26 @@ func TestExternalAdapterProcessHelper(t *testing.T) {
 	runExternalAdapterHelper(os.Args[separator+1], os.Args[separator+2], mode)
 }
 
+func TestExternalConfigSchemaSupportsAnnotationsAndRejectsUnsupportedKeywords(t *testing.T) {
+	t.Parallel()
+	annotated := json.RawMessage(`{"type":"object","properties":{"endpoint":{"type":"string","format":"uri","title":"Endpoint","description":"Provider URI","examples":["https://provider.example"]}},"required":["endpoint"]}`)
+	if err := validateExternalConfig(annotated, map[string]any{"endpoint": "https://provider.example"}); err != nil {
+		t.Fatalf("ordinary JSON Schema annotations were rejected: %v", err)
+	}
+	unsupported := json.RawMessage(`{"$ref":"https://schema.example/config"}`)
+	if err := validateExternalConfig(unsupported, map[string]any{}); err == nil || !strings.Contains(err.Error(), "$ref") {
+		t.Fatalf("unsupported reference keyword lacked a clear error: %v", err)
+	}
+}
+
+func TestMapExternalItemRejectsEmptyItemID(t *testing.T) {
+	t.Parallel()
+	_, _, err := mapExternalItem(Source{ID: "source-a"}, json.RawMessage(`{"ref":{"sourceId":"source-a","itemId":""}}`))
+	if err == nil {
+		t.Fatal("external adapter item with empty itemId was accepted")
+	}
+}
+
 func TestExternalAdapterRegistrationIsLazyAndReadsAreSourceScoped(t *testing.T) {
 	t.Parallel()
 	_, paths := testkit.Home(t)
@@ -192,6 +212,49 @@ func TestExternalAdapterReResolvesAfterProcessRestart(t *testing.T) {
 	}
 	if strings.Join(events, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("per-process protocol sequence = %q, want %q", events, want)
+	}
+}
+
+func TestExternalAdapterSurfacesIdleCrashDiagnosticOnNextList(t *testing.T) {
+	t.Parallel()
+	_, paths := testkit.Home(t)
+	env := externalTestEnvironment(paths)
+	marker := filepath.Join(t.TempDir(), "idle-crash.events")
+	source := externalAdapterTestSource(t, env, "idle-crash", marker)
+	source.Executable = writeScopedExternalAdapterScriptMode(t, source.ID, marker, "idle-crash")
+	if err := config.ApproveQueueAdapter(context.Background(), env, source); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &ExternalAdapter{source: source, env: env}
+	t.Cleanup(adapter.Close)
+	resolved, err := adapter.Resolve(context.Background(), map[string]string{"id": source.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.List(context.Background(), resolved, Query{}, ""); err != nil {
+		t.Fatalf("first list: %v", err)
+	}
+	process, err := adapter.getProcess()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.mu.Lock()
+	run := process.run
+	process.mu.Unlock()
+	if err := run.cmd.Process.Kill(); err != nil {
+		t.Fatalf("simulate idle process crash: %v", err)
+	}
+	select {
+	case <-run.waitDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("idle adapter crash was not observed")
+	}
+	page, err := adapter.List(context.Background(), resolved, Query{}, "")
+	if err != nil {
+		t.Fatalf("list after restart: %v", err)
+	}
+	if !strings.Contains(page.Coverage.Reason, "idle adapter diagnostic") {
+		t.Fatalf("source observation omitted the idle crash diagnostic: %+v", page.Coverage)
 	}
 }
 
@@ -686,6 +749,15 @@ func runExternalAdapterHelper(expectedSource, marker, mode string) {
 			}
 		case "list":
 			id := requestSourceID(request.Params)
+			if mode == "idle-crash" && processNumber == 1 {
+				_, _ = fmt.Fprintln(os.Stderr, "idle adapter diagnostic")
+				result = map[string]any{
+					"context": wireContext(id, "complete", nil),
+					"items":   []any{wireItem(id, "item-one", "open")}, "nextCursor": nil,
+					"total": map[string]any{"value": 1, "accuracy": "exact"},
+				}
+				break
+			}
 			var cursor *string
 			_ = json.Unmarshal(request.Params["cursor"], &cursor)
 			if cursor == nil {

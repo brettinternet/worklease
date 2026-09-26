@@ -79,7 +79,7 @@ func (a *ExternalWriteAdapter) Inspect(ctx context.Context, intent WriteIntent) 
 func (a *ExternalWriteAdapter) inspect(ctx context.Context, intent WriteIntent, checkVersion bool) (WritePreflight, Item, ExternalAdapterManifest, error) {
 	var pre WritePreflight
 	var root Item
-	process, manifest, err := a.writeProcess(intent.Source)
+	process, manifest, _, err := a.writeProcess(intent.Source)
 	if err != nil {
 		return pre, root, ExternalAdapterManifest{}, err
 	}
@@ -177,7 +177,7 @@ func (a *ExternalWriteAdapter) Write(ctx context.Context, intent WriteIntent) (P
 	if !pre.Capability || !pre.Authorized || !pre.InScope || !pre.Fresh || !pre.NativeAvailable || !actionWriteEligible(prepared.Action, pre) {
 		return empty, fmt.Errorf("external provider write preflight rejected")
 	}
-	process, _, err := a.writeProcess(prepared.Source)
+	process, _, generation, err := a.writeProcess(prepared.Source)
 	if err != nil {
 		return empty, err
 	}
@@ -197,7 +197,7 @@ func (a *ExternalWriteAdapter) Write(ctx context.Context, intent WriteIntent) (P
 		"budget": externalBudget(1),
 	}
 	var result externalMutationResult
-	if err := process.Call(ctx, method, params, &result); err != nil {
+	if err := process.CallAtGeneration(ctx, generation, method, params, &result); err != nil {
 		return empty, err
 	}
 	observation, err := result.Context.observation()
@@ -356,22 +356,22 @@ func (a *ExternalWriteAdapter) validateReadSource(source Source) error {
 	return nil
 }
 
-func (a *ExternalWriteAdapter) writeProcess(source Source) (*ExternalProcess, ExternalAdapterManifest, error) {
+func (a *ExternalWriteAdapter) writeProcess(source Source) (*ExternalProcess, ExternalAdapterManifest, uint64, error) {
 	if err := a.validateReadSource(source); err != nil {
-		return nil, ExternalAdapterManifest{}, err
+		return nil, ExternalAdapterManifest{}, 0, err
 	}
 	if a.source.Claims == nil || a.source.Claims.Policy != "generic" || !validExternalClaimSource(a.source.Claims.Source) {
-		return nil, ExternalAdapterManifest{}, fmt.Errorf("external writes require an explicit generic claim binding")
+		return nil, ExternalAdapterManifest{}, 0, fmt.Errorf("external writes require an explicit generic claim binding")
 	}
-	process, err := a.validatedProcess(source)
+	process, generation, err := a.validatedProcessGeneration(context.Background(), source)
 	if err != nil {
-		return nil, ExternalAdapterManifest{}, err
+		return nil, ExternalAdapterManifest{}, 0, err
 	}
 	manifest, ok := process.Manifest()
 	if !ok || manifest.ResourcePolicy != "generic" || !externalWriteContains(manifest.Capabilities, "mutation") {
-		return nil, ExternalAdapterManifest{}, fmt.Errorf("external adapter manifest does not declare generic mutation capability")
+		return nil, ExternalAdapterManifest{}, 0, fmt.Errorf("external adapter manifest does not declare generic mutation capability")
 	}
-	return process, manifest, nil
+	return process, manifest, generation, nil
 }
 
 func (a *ExternalWriteAdapter) readAuthoritativeItem(ctx context.Context, process *ExternalProcess, source Source, ref Ref) (Item, Observation, error) {

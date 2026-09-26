@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-25 04:24'
+updated_date: '2026-09-25 22:55'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-133.1
@@ -63,6 +64,8 @@ S6 external WriteAdapter added with operation-ID-scoped authorization, readRecei
 One risk-focused review found actionable approval/exec race, mutable source binding, process descendants, unanswered cancellation slots, restart resolve, pagination generation, and suppressed stderr diagnostic paths. Non-generic host policy is an explicit v1 restriction in proposal, not an unintended compatibility promise. Corrections in progress.
 
 Verified on main after merge: mise run lint, format-check, test, typecheck, doc-test; staged pre-commit mise run hooks passed. Focused new/changed tests passed go test -race -count=3 for config/queue/cli. Scripted fake process covers approval refusal, crash/restart, cancellation/hang, malformed/oversized output, source-scoped environment canaries, stderr redaction, and S6 unknown crash recovery. One general review found seven concrete defects, all fixed and rerun; generic-only external claim policy is documented host restriction. Implementation 8c380c9; merged to main 877828b. Next step: TASK-133.3 can build conformance suite against this host.
+
+Post-completion review (6800074): launch snapshots moved under owner-private config dir (not TMPDIR); writes pinned to the validated process generation; idle crash stderr surfaced on next list; rate-limited retryAt gates the source; empty item IDs rejected; source-scope check limited to wire ref fields; credential variants deduped and bounded; configSchema accepts format/examples. Regression tests added. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -195,7 +195,7 @@ func PrepareQueueAdapterLaunch(env func(string) string, source QueueSource) (*Qu
 	if _, err := queueAdapterBinding(source); err != nil {
 		return nil, err
 	}
-	snapshot, digest, err := copyQueueAdapterExecutable(source.Executable)
+	snapshot, digest, err := copyQueueAdapterExecutable(source.Executable, env)
 	if err != nil {
 		return nil, err
 	}
@@ -226,11 +226,11 @@ func PrepareQueueAdapterLaunch(env func(string) string, source QueueSource) (*Qu
 // recording or requiring approval. Only the conformance command may use this path;
 // normal source launches must continue to require PrepareQueueAdapterLaunch.
 func PrepareQueueAdapterCheckLaunch(path string) (*QueueAdapterLaunchSnapshot, error) {
-	snapshot, _, err := copyQueueAdapterExecutable(path)
+	snapshot, _, err := copyQueueAdapterExecutable(path, os.Getenv)
 	return snapshot, err
 }
 
-func copyQueueAdapterExecutable(path string) (*QueueAdapterLaunchSnapshot, string, error) {
+func copyQueueAdapterExecutable(path string, env func(string) string) (*QueueAdapterLaunchSnapshot, string, error) {
 	source, err := openQueueAdapterExecutableNoSymlinks(path)
 	if err != nil {
 		return nil, "", err
@@ -243,7 +243,11 @@ func copyQueueAdapterExecutable(path string) (*QueueAdapterLaunchSnapshot, strin
 	if before.Size() > maxQueueAdapterExecutableSize {
 		return nil, "", fmt.Errorf("external adapter executable exceeds the %d-byte size limit", maxQueueAdapterExecutableSize)
 	}
-	directory, err := os.MkdirTemp("", "worklease-queue-adapter-")
+	parent := filepath.Dir(QueuePath(env))
+	if err := handle.EnsureOwnerPrivateDir(parent); err != nil {
+		return nil, "", fmt.Errorf("external adapter launch snapshot parent is unsafe: %w", err)
+	}
+	directory, err := os.MkdirTemp(parent, "worklease-queue-adapter-")
 	if err != nil {
 		return nil, "", fmt.Errorf("external adapter launch snapshot cannot be created safely: %w", err)
 	}

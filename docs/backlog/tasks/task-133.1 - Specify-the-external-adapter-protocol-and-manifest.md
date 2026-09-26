@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-24 23:43'
+updated_date: '2026-09-25 22:55'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-132
@@ -57,6 +58,8 @@ Specified v1 JSON-RPC stdio protocol and shared message schemas; review found an
 Committed protocol and schema at cb496686ee925f42fc5f13d1f2b8fa6d5a76eb29. Merge to main deferred while unrelated staged edits in internal/cli/queue_write_claim*.go prevent Git merge; preserving those edits. Awaiting staged index to clear, then integrate and finalize.
 
 Integrated cb496686ee925f42fc5f13d1f2b8fa6d5a76eb29 into main at 6941b36; doc-test passed again after merge. Single review pass resolved five concrete schema/recovery issues. Next step: TASK-133.2 may implement supervision against the committed contract.
+
+Post-completion review (6800074): schema now requires host-checked readReceipt verified evidence, string semantics / integer limits for capabilities; doc specifies configSchema subset, cursor scope binding, and host retryAt gating. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
