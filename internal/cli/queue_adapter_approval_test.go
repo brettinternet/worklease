@@ -178,8 +178,17 @@ func TestQueueAdapterCheckDoesNotEchoAdapterSecrets(t *testing.T) {
 
 func TestQueueAdapterCheckSampleHelper(t *testing.T) {
 	for index, arg := range os.Args {
-		if arg == "--" && index+1 < len(os.Args) && os.Args[index+1] == "sample" {
-			if err := sampleadapter.Run(os.Stdin, os.Stdout); err != nil {
+		if arg == "--" && index+1 < len(os.Args) {
+			var err error
+			switch os.Args[index+1] {
+			case "sample":
+				err = sampleadapter.Run(os.Stdin, os.Stdout)
+			case "reference":
+				err = sampleadapter.RunReference(os.Stdin, os.Stdout)
+			default:
+				return
+			}
+			if err != nil {
 				os.Exit(1)
 			}
 			return

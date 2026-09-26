@@ -107,6 +107,8 @@ chmod 600 "$XDG_CONFIG_HOME/worklease/reference-credential.json"
 
 Use an absolute executable helper path in queue.yaml; for example a shell script containing `#!/bin/sh` followed by `cat /absolute/path/reference-token`. Reapprove after changing source configuration or helper. The reference adapter supports `host-credential-v1` as an optional manifest authentication method; `queue adapter check --disposable-target reference-1 --json` also checks that its disposable canary is not echoed. This is a **local simulated identity check**, not remote provider authentication. For a real provider, query its authenticated identity and scope as described below; do not copy this local hash-store design into production.
 
+Once the source is configured, run the printed `queue adapter approve --source ID` preview and then `--acknowledge`. Confirm its claim identity using the `queue --view Ready identity confirm --source ID --acknowledge` command printed by init. After checking that `queue query --view Ready --json` reports complete, eligible work, `queue next --view Ready --claim --start --session AUTHOR --json` applies the explicitly mapped `start` transition through the guarded write pipeline. Check `next.transition.outcome: "applied"`, the disposable fixture's `rawStatus: "Doing"` and write journal, and `queue recovery --json` for any unresolved write. Release the claim with `worklease release --session AUTHOR`. Do not point this walkthrough at live provider work: conformance and Start work mutate the disposable item.
+
 The store contains the configured fixture principal, an initial provider
 version, allowed transition labels, items, and a durable write journal. Configure
 the adapter's source workflow with those exact labels. Use `account` equal to
