@@ -127,10 +127,11 @@ func TestAdapterConformanceProcessHelper(t *testing.T) {
 			}
 			_ = json.Unmarshal(request.Params["query"], &query)
 			if query.Text == "__worklease_conformance_cancel__" && cancelMarker != "" {
-				_ = os.WriteFile(cancelMarker+".request", []byte("started"), 0600)
 				if writeDoneAtEntry {
 					_ = os.WriteFile(cancelMarker+".done", []byte("too early"), 0600)
 				}
+				// The request marker means all entry effects are observable.
+				_ = os.WriteFile(cancelMarker+".request", []byte("started"), 0600)
 				<-ctx.Done()
 				_ = os.WriteFile(cancelMarker+".done", []byte("cancelled"), 0600)
 				return

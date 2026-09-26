@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-24 15:05'
-updated_date: '2026-09-24 23:23'
-labels: []
+updated_date: '2026-09-26 03:40'
+labels:
+  - reviewed
 dependencies: []
 parent_task_id: TASK-136
 priority: medium
@@ -57,6 +58,8 @@ The policy should cover these points in about 40 lines or fewer:
 
 <!-- SECTION:NOTES:BEGIN -->
 AGENTS.md testing policy and tier table were committed in 6194a1b; managed Backlog.md block remained intact. Redundant named Go test reruns were removed from scripts/test-e2e.sh in 12bc608 and merged to main. Earlier macOS arm64 lint, format-check, test, typecheck and staged hooks passed; Linux arm64 built-binary smoke passed. Emulated Linux amd64 attempts crashed during compilation and did not provide acceptance evidence. Native GitHub Actions CI run 36053786416, Quality (linux-x64) job 107815610349 at df51cab (descendant of 12bc608), passed mise run ci: e2e ran scripts/test-e2e.sh, remote smoke group 5 passed, documentation examples passed, and e2e finished in 65.12s. The current script has no named Go test reruns. Current macOS arm64 lint, format-check, test and typecheck passed. All three acceptance criteria are checked.
+
+Retrospective review: testing guidance, tier table and managed Backlog block remain intact; e2e script does not duplicate named Go tests. Existing native linux-x64 CI evidence supports the e2e criterion. No necessary follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

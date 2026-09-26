@@ -94,18 +94,8 @@ func authorityFor(ctx context.Context, cmd *urfave.Command, write bool) (*author
 	return authorityForSelection(ctx, cmd, write, selected)
 }
 
-// queueAuthorityForView resolves a view's named authority, independently of
-// the invoking checkout's profile flags. The caller closes the returned context.
-func queueAuthorityForView(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
-	return queueAuthorityForViewWithMetadata(ctx, cmd, name, true)
-}
-
 func queueAuthorityForClaim(ctx context.Context, cmd *urfave.Command, name string) (*authorityContext, queue.ClaimAuthority, error) {
 	return queueAuthorityForViewMode(ctx, cmd, name, true, true)
-}
-
-func queueAuthorityForViewWithMetadata(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata bool) (*authorityContext, queue.ClaimAuthority, error) {
-	return queueAuthorityForViewMode(ctx, cmd, name, fetchMetadata, false)
 }
 
 func queueAuthorityForViewMode(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata, write bool) (*authorityContext, queue.ClaimAuthority, error) {

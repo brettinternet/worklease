@@ -432,6 +432,7 @@ func refreshQueueActionClosure(ctx context.Context, registry *queue.Registry, so
 	}
 	closure := make(map[string]queue.Item)
 	visiting := make(map[string]bool)
+	refreshedProjects := make(map[string]bool)
 	var visit func(queue.Ref) error
 	visit = func(ref queue.Ref) error {
 		if _, exists := closure[ref.Key()]; exists || visiting[ref.Key()] {
@@ -444,6 +445,15 @@ func refreshQueueActionClosure(ctx context.Context, registry *queue.Registry, so
 		adapter, exists := registry.Get(source.Adapter)
 		if !exists {
 			return fmt.Errorf("fresh prerequisite adapter is unavailable")
+		}
+		if project, ok := adapter.(interface {
+			ProjectStatusBound(queue.Source) bool
+			RefreshProjectStatus(context.Context, queue.Source) error
+		}); ok && project.ProjectStatusBound(source) && !refreshedProjects[source.ID] {
+			if err := project.RefreshProjectStatus(ctx, source); err != nil {
+				return fmt.Errorf("fresh project status unavailable: %w", err)
+			}
+			refreshedProjects[source.ID] = true
 		}
 		outcomes := adapter.ReadItems(ctx, source, []queue.Ref{ref}, nil, 100)
 		var item *queue.Item

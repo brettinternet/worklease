@@ -54,6 +54,8 @@ func validGitHubProjectBinding(project githubProjectBinding) bool {
 func applyGitHubProjectStatus(summary *Summary, project githubProjectStatus, terminal bool) {
 	summary.ProjectStatusBound = true
 	summary.ProjectStatusKnown = true
+	summary.ProjectStatusState = ""
+	summary.ProjectStatusReason = ""
 	summary.ProjectFieldID = project.fieldID
 	summary.ProjectItemID = project.itemID
 	summary.ProjectOptionID = project.optionID
@@ -347,6 +349,10 @@ func (a *GitHubAdapter) readProjectItems(ctx context.Context, binding *githubBin
 }
 
 func githubProjectDiagnostic(err error) error {
+	var rate GitHubRateDiagnostic
+	if errors.As(err, &rate) {
+		return rate
+	}
 	var diagnostic GitHubDiagnostic
 	if errors.As(err, &diagnostic) {
 		switch diagnostic.Code {

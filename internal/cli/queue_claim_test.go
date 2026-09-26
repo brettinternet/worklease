@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,57 @@ func (a *unresolvedPagedClaimAdapter) ReadDependencies(_ context.Context, source
 		return queue.DependencyPage{Completeness: queue.CoveragePartial, NextCursor: "more"}, nil
 	}
 	return queue.DependencyPage{Completeness: queue.CoverageComplete}, nil
+}
+
+type changingProjectClaimAdapter struct {
+	*queueClaimFixtureAdapter
+	blocked        bool
+	pendingBlocked bool
+	refreshes      int
+	fail           bool
+}
+
+func (*changingProjectClaimAdapter) ProjectStatusBound(queue.Source) bool { return true }
+func (a *changingProjectClaimAdapter) RefreshProjectStatus(context.Context, queue.Source) error {
+	a.refreshes++
+	if a.fail {
+		return fmt.Errorf("project access lost")
+	}
+	a.blocked = a.pendingBlocked
+	return nil
+}
+func (a *changingProjectClaimAdapter) ReadItems(ctx context.Context, source queue.Source, refs []queue.Ref, fields []string, limit int) []queue.ItemOutcome {
+	outcomes := a.queueClaimFixtureAdapter.ReadItems(ctx, source, refs, fields, limit)
+	for i := range outcomes {
+		if outcomes[i].Item != nil {
+			outcomes[i].Item.ProjectStatusBound = true
+			outcomes[i].Item.ProjectStatusKnown = true
+			outcomes[i].Item.ProjectStatusState = "open"
+			if a.blocked {
+				outcomes[i].Item.ProjectStatusState = "blocked"
+			}
+		}
+	}
+	return outcomes
+}
+
+func TestQueueClaimRefreshesBoundProjectBeforeAction(t *testing.T) {
+	t.Parallel()
+	item := queueClaimItem("issues", "1")
+	source := queue.Source{ID: "issues", Adapter: "project-fixture", Locator: "org/repo"}
+	adapter := &changingProjectClaimAdapter{queueClaimFixtureAdapter: &queueClaimFixtureAdapter{source: source, items: map[string]queue.Item{item.Ref.Key(): item}}, pendingBlocked: true}
+	registry := queue.NewRegistry()
+	if err := registry.Register(source.Adapter, adapter); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{source.ID: source}, item)
+	if err != nil || adapter.refreshes != 1 || fresh.Readiness.Status != queue.Blocked {
+		t.Fatalf("claim used stale project status: item=%+v refreshes=%d err=%v", fresh.Readiness, adapter.refreshes, err)
+	}
+	adapter.fail = true
+	if _, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{source.ID: source}, item); err == nil {
+		t.Fatal("claim proceeded after project access loss")
+	}
 }
 
 func TestQueueClaimRejectsNonLinearPartialDependencyPage(t *testing.T) {

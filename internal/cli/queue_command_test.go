@@ -25,6 +25,13 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+func TestQueueSourceFailureShowsBacklogDiagnosticCode(t *testing.T) {
+	t.Parallel()
+	if got := queueSourceFailure(queue.BacklogDiagnostic{Code: "provider-failed", Detail: "provider command failed"}); got != "provider-failed" {
+		t.Fatalf("source failure = %q", got)
+	}
+}
+
 func TestQueueTUIMeBySourceUsesExternalAccount(t *testing.T) {
 	t.Parallel()
 	for _, adapter := range []string{"external", "linear"} {
@@ -362,6 +369,13 @@ func TestQueueFirstFrameDoesNotWaitForRemoteMetadata(t *testing.T) {
 	case <-metadataDone:
 	case <-time.After(time.Second):
 		t.Fatal("stalled metadata request did not cancel")
+	}
+}
+
+func TestBeadsSelectedDetailCanHydrate(t *testing.T) {
+	t.Parallel()
+	if !queueSelectedHydrationEnabled("beads") || queueSelectedHydrationEnabled("unknown") {
+		t.Fatal("selected Beads detail was rejected before HydrateDetail")
 	}
 }
 

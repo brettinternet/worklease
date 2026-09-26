@@ -4,9 +4,10 @@ title: Map GitHub Projects v2 status into the GitHub source
 status: Done
 assignee: []
 created_date: '2026-09-25 16:26'
-updated_date: '2026-09-25 20:24'
+updated_date: '2026-09-26 04:40'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -60,6 +61,22 @@ Branch 7d0c5e3 implements optional Projects status; full gates, focused race, do
 
 Verification on merged main 3ce36d7: mise run lint, format-check, GOFLAGS=-p=1 -parallel=2 mise run test, mise run typecheck, and mise run doc-test passed. Focused new/changed tests passed go test -race -count=3 in internal/queue (TestGitHubProject*), internal/cli (source options/Start work), internal/config (binding validation), and internal/queueui (raw/conflict display); resource TestVersionedKeyVectors and TestStaticPolicyGoldenDerivations passed. Staged mise run hooks and commit hooks passed in worktree. Scope rediscovery tested using X-OAuth-Scopes and read-only/write tokens; GraphQL fieldValueByName confirmed by live schema introspection. Review: one general pass identified four item-scoped defects and a TUI resolve omission, all corrected with tests; no further general pass. Branch implementation 7d0c5e3 merged through 714b592 to main 3ce36d7; main later pinned Beads tool separately. Verified owned clean worktree/ancestor via wt list and creation receipt, then wt remove deleted worktree and branch; synthetic projects and issue were cleaned earlier. No push/PR. GHES and large-scale multi-client project quota remain unprobed, explicitly documented limitations, not acceptance blockers.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @pi
+created: 2026-09-26 04:40
+---
+Post-completion review: corrected project status freshness before claims, stale reprojection fields, and project rate retry diagnostics in merge 82?; merged lint, format, tests, typecheck and focused race checks passed.
+---
+
+author: @pi
+created: 2026-09-26 04:40
+---
+Correction to review note: merge commit is 00903bc (worktree fix commit 69dc54e).
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

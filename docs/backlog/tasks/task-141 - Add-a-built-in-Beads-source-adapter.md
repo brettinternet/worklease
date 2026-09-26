@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi-task-141'
 created_date: '2026-09-25 16:26'
-updated_date: '2026-09-25 19:36'
+updated_date: '2026-09-26 04:41'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 documentation:
@@ -60,6 +61,16 @@ No `beads` resource policy is built in. Portable coordination uses the existing 
 <!-- SECTION:NOTES:BEGIN -->
 Pinned and probed bd 1.3.0 on disposable embedded-Dolt fixtures: 102/1000/10000 bulk list/show measurements, JSON schema, Git/Dolt/hook/remote behavior, and cross-clone ID collision (docs/work-queue-tui-proposal.md). Implemented bulk Beads reads, typed edges, portable generic claim binding, guarded recoverable writes, queue CLI/MCP/TUI routing, and docs. Verified focused TestBeads*, TestQueueBeadsConfiguration, TestBeadsQueueNextClaimAndMCP (TUI claim controller/D11), and TestAdapterConformance/beads with go test -race -count=3 and bd 1.3.0 on PATH. Reviewer findings for unsupported Start work advertisement and missing selected description were fixed. After merge to main (265e600), mise run lint, format-check, test, typecheck passed with a dedicated Go cache and serialized test parallelism; mise run hooks passed before commits. No Definition of Done checklist was configured.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @pi
+created: 2026-09-26 04:41
+---
+Post-completion review fixed checkout consent isolation, concurrent bulk closure consistency, uncommitted batch-mode changes, and selected Beads detail hydration in merge 00903bc. Merged repository gates and focused race checks passed; no further item-scoped action identified.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

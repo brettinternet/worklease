@@ -197,6 +197,17 @@ func TestSnapshotImmutability(t *testing.T) {
 		t.Fatalf("snapshot mutated: %+v", got)
 	}
 }
+func TestBacklogReadFailureKeepsSafeDiagnosticCode(t *testing.T) {
+	t.Parallel()
+	loader := NewLoader(NewRegistry())
+	updates := make(chan Snapshot, 1)
+	generation := loader.begin("tasks")
+	loader.failSourceError(context.Background(), "tasks", generation, BacklogDiagnostic{Code: "provider-failed", Detail: "provider command failed"}, updates)
+	if got := (<-updates).Sources["tasks"]; got.State != CoverageUnknown || got.Reason != "provider-failed" {
+		t.Fatalf("Backlog failure lost its diagnostic code: %+v", got)
+	}
+}
+
 func TestIndependentSourceRefreshPublishesHealthyBeforeSlowSource(t *testing.T) {
 	fake := newFake()
 	fake.pages["healthy"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"healthy", "a"}, Title: "A", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}

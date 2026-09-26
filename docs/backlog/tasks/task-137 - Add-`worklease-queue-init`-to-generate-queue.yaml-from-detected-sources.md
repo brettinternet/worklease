@@ -4,9 +4,10 @@ title: Add `worklease queue init` to generate queue.yaml from detected sources
 status: Done
 assignee: []
 created_date: '2026-09-25 15:40'
-updated_date: '2026-09-25 16:37'
+updated_date: '2026-09-26 03:40'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -100,6 +101,8 @@ External adapters (keep `queue adapter approve`), launch actions, custom filters
 Implemented queue init preview/apply, provider detection, strict YAML validation and comment-preserving merge, local identity confirmation, and docs. Verification in task worktree: mise run lint, format-check, test, typecheck, doc-test; go test -race -count=3 -run TestQueueInit ./internal/cli; handle race test. One general review found preview command/env, writer race, identity-entry and mixed-case host defects; corrected and reran checks.
 
 Merged to main as 443299b (implementation 7dca9c9, focused tests 2c254c4). Verified after integration on main: mise run lint, format-check, test, typecheck, doc-test; race -count=3 TestQueueInit in internal/cli and TestHandleAtomicPrivateRoundTripAndRejectsUnsafe in internal/handle; staged files passed mise run hooks; review resolved all concrete findings. Next step: none.
+
+Retrospective review found missing identity guidance on unchanged retry and ignored explicit safety flags; fixed in 42b30cd (merged to main d300eb9). Idempotent init now reports required manual confirmation if identity record is absent and refuses conflicting claim domain, authority and Git-network flags. In-process/race tests, full lint, format-check, test, typecheck and hooks passed on merged main. TASK-144 intentionally superseded the original preview-first interface. No necessary follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

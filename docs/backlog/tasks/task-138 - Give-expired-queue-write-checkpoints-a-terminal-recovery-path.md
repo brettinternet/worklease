@@ -4,9 +4,10 @@ title: Give expired queue write checkpoints a terminal recovery path
 status: Done
 assignee: []
 created_date: '2026-09-25 15:45'
-updated_date: '2026-09-25 16:30'
+updated_date: '2026-09-26 03:40'
 labels:
   - work-queue
+  - reviewed
 milestone: m-1
 dependencies: []
 references:
@@ -48,6 +49,8 @@ Found reviewing TASK-132.1. When a provider write is verified but its Worklease 
 Initial automatic closure failed review: client clock and unknown authority status cannot prove absence of in-flight commit; changing to explicit operator attestation. Full test gate exposed intermittent pre-existing external adapter stderr diagnostic failure; isolated rerun passed; checking full gate after correction.
 
 Evidence: TestWritePipelineExpiredCheckpointRecovery verifies expired clock, verified provider receipt and lost append with expired claim, authority outage/committed checkpoint refusal, no redispatch/replay, terminal journal removal from Recovery, uncancellable effectful claim, and fresh item dispatch. TestRecoveryCheckpointMissingAttestationAndTerminalNotice exercises TUI attestation and terminal notice. CLI help and zero-flag audit verify the checkpoint-missing command. Merged implementation 6554ef2 into main; post-merge mise run lint, format-check, test, typecheck and focused race count=3 all passed. Single general review found unsafe automatic closure, expired claim guard and TUI stale warning; all addressed by operator attestation, reordering claim verification, and terminal UI handling. Initial full test run intermittently failed in unrelated external adapter stderr diagnostic, isolated rerun and later full suites passed.
+
+Retrospective review found client-clock-only expiry could permit early checkpoint-missing attestation. Fixed in 42b30cd (merged d300eb9): sample original authority, require conservative authority-time lower bound past deadline, then recheck checkpoint status. Fake authority/client clock divergence regression, focused race, full gates and staged hooks passed. No necessary follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

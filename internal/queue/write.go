@@ -595,6 +595,24 @@ func (p WritePipeline) AttestCheckpointMissing(ctx context.Context, id, operator
 	if record.Status != "checkpoint-pending" || record.LastReadback != string(WriteVerified) || record.Receipt == nil || record.Intent.CheckpointNotAfter.IsZero() || p.now().Before(record.Intent.CheckpointNotAfter) {
 		return fmt.Errorf("verified provider effect with expired pending checkpoint required")
 	}
+	// The client clock can be ahead of the original authority. First seed an
+	// authority-time sample, then require its conservative lower bound to pass
+	// the deadline before reading checkpoint status again. The final read must
+	// happen after expiry, or an in-flight commit could be missed.
+	if _, err := p.Claim.CheckpointStatus(ctx, record.Intent, *record.Receipt); err != nil {
+		return err
+	}
+	clock, ok := p.Claim.(interface{ CheckpointAuthorityTime() (time.Time, error) })
+	if !ok {
+		return fmt.Errorf("original authority time unavailable for checkpoint attestation")
+	}
+	authorityNow, err := clock.CheckpointAuthorityTime()
+	if err != nil {
+		return err
+	}
+	if authorityNow.Before(record.Intent.CheckpointNotAfter) {
+		return fmt.Errorf("original authority has not passed the checkpoint deadline")
+	}
 	status, err := p.Claim.CheckpointStatus(ctx, record.Intent, *record.Receipt)
 	if err != nil {
 		return err

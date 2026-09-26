@@ -207,7 +207,7 @@ func TestBacklogEffectsVersionAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Timeout = 20 * time.Millisecond
-	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "timeout") {
+	if _, err := a.List(context.Background(), source, Query{}, ""); !diag(err, "timed-out") {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -279,7 +279,7 @@ func TestBacklogReadTimeoutExcludesQueueWait(t *testing.T) {
 		t.Fatalf("queued read: %v", err)
 	}
 	for range blockers {
-		if err := <-done; !diag(err, "timeout") {
+		if err := <-done; !diag(err, "timed-out") {
 			t.Fatalf("blocking read: %v", err)
 		}
 	}

@@ -450,28 +450,13 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			})
 		}(liveDone)
 	}
-	start := func(notifyFailure bool) <-chan error {
-		done := make(chan error, 1)
-		workersMu.Lock()
-		if closing {
-			workersMu.Unlock()
-			done <- context.Canceled
-			close(done)
-			return done
+	refresh := &queueRefreshRunner{workers: &workers, run: func() error {
+		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
+	}, report: func(err error) {
+		if ctx.Err() == nil {
+			program.Send(queueui.RefreshedMsg{Err: err})
 		}
-		workers.Add(1)
-		workersMu.Unlock()
-		go func() {
-			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
-			if notifyFailure && err != nil && ctx.Err() == nil {
-				program.Send(queueui.RefreshedMsg{Err: err})
-			}
-			done <- err
-			close(done)
-		}()
-		return done
-	}
+	}}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
 		// Supersede on selection (Update runs synchronously), not when the command
 		// executes: Bubble Tea may run an older selection's command after a newer one.
@@ -489,7 +474,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		workersMu.Unlock()
 		return func() tea.Msg {
 			adapter := sourceByID[item.Ref.SourceID].Adapter
-			if adapter != "backlog-md" && adapter != "github" && adapter != "linear" {
+			if !queueSelectedHydrationEnabled(adapter) {
 				cancel()
 				return nil
 			}
@@ -532,7 +517,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 	}
 	model.Refresh = func() tea.Cmd {
-		return refreshCompletionCmd(func() <-chan error { return start(false) })
+		return refreshCompletionCmd(refresh.start)
 	}
 	model.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
 		return func() tea.Msg {
@@ -607,7 +592,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		defer workers.Done()
 		lifecycle.run(ctx, func(msg queueui.OwnedClaimMsg) { program.Send(msg) })
 	}()
-	start(true)
+	refresh.trigger()
 	if backend.HTTP != nil {
 		workers.Add(1)
 		go func() {
@@ -620,7 +605,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
 			authorityVersion++
 			authorityMu.Unlock()
-			start(true)
+			refresh.trigger()
 		}()
 	}
 	for _, source := range sources {
@@ -635,7 +620,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		go func(source queue.Source) {
 			defer workers.Done()
 			for ctx.Err() == nil {
-				if watchErr := watcher.WatchChanges(ctx, source, func() { start(true) }); watchErr != nil && ctx.Err() == nil {
+				if watchErr := watcher.WatchChanges(ctx, source, refresh.trigger); watchErr != nil && ctx.Err() == nil {
 					program.Send(queueui.RefreshedMsg{Err: watchErr})
 				}
 				select {
@@ -647,6 +632,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}(source)
 	}
 	_, err = program.Run()
+	refresh.stop()
 	workersMu.Lock()
 	closing = true
 	cancel()
@@ -662,6 +648,15 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 }
 
 // seedQueueIndex publishes the cached first frame before refresh starts.
+func queueSelectedHydrationEnabled(adapter string) bool {
+	switch adapter {
+	case "backlog-md", "beads", "github", "linear":
+		return true
+	default:
+		return false
+	}
+}
+
 func refreshCompletionCmd(start func() <-chan error) tea.Cmd {
 	return func() tea.Msg {
 		return queueui.RefreshedMsg{Err: <-start()}
@@ -711,6 +706,9 @@ func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queu
 
 func queueSourceFailure(err error) string {
 	if diagnostic, ok := err.(queue.BeadsDiagnostic); ok {
+		return diagnostic.Code
+	}
+	if diagnostic, ok := err.(queue.BacklogDiagnostic); ok {
 		return diagnostic.Code
 	}
 	message := strings.ToLower(err.Error())
@@ -902,8 +900,12 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 	current := loader.Store.Current()
 	for _, source := range refreshSources {
 		coverage := current.Sources[source.ID]
-		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" && refreshErr == nil {
-			refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+		if coverage.State == queue.CoverageUnknown && coverage.Reason != "" {
+			// Diagnostics are best-effort and must not change queue availability.
+			_ = recordQueueRefreshFailure(source.ID, coverage.Reason, time.Since(refreshStarted))
+			if refreshErr == nil {
+				refreshErr = fmt.Errorf("%s: %s", source.ID, coverage.Reason)
+			}
 		}
 	}
 	if refreshErr != nil {
