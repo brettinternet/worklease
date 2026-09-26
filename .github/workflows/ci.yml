@@ -104,5 +104,8 @@ jobs:
       - name: Run platform tests and static build
         run: |
           mise run beads-check
-          go test -p 1 -parallel 2 ./...
+          # Keep the CLI package below Go's per-invocation deadline on macOS Intel.
+          # Both invocations together still run every test on every platform.
+          go test -p 1 -parallel 2 -skip '^TestQueue' ./...
+          go test -p 1 -parallel 2 -run '^TestQueue' ./...
           mise run build
