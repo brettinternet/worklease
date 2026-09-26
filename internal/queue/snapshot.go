@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -447,6 +448,25 @@ func (l *Loader) withholdSource(ctx context.Context, source Source, generation u
 		s.Sources[source.ID] = Coverage{State: CoverageUnknown, Reason: reason, TotalAccuracy: TotalUnknown}
 	}, out)
 }
+
+// Backlog's list can report complete coverage during a transient file-set
+// change. Confirm omissions before retiring previously visible task rows.
+func missingBacklogRefs(items map[string]Item, sourceID string, listed []Summary) map[string]bool {
+	present := make(map[string]bool, len(listed))
+	for _, summary := range listed {
+		if summary.Ref.SourceID == sourceID && validRef(summary.Ref) {
+			present[summary.Ref.Key()] = true
+		}
+	}
+	missing := make(map[string]bool)
+	for key, item := range items {
+		if item.Ref.SourceID == sourceID && !present[key] {
+			missing[key] = true
+		}
+	}
+	return missing
+}
+
 func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, generation uint64, out chan<- Snapshot) {
 	if source.Adapter == "linear" && l.LinearSync != nil {
 		release, err := l.LinearSync.LockLinearSync(ctx, source)
@@ -643,6 +663,34 @@ func (l *Loader) loadSource(ctx context.Context, a Adapter, source Source, gener
 				l.failSourceError(ctx, source.ID, generation, err, out)
 			}
 			break
+		}
+		if source.Adapter == "backlog-md" && page.NextCursor == "" && page.Coverage.State == CoverageComplete {
+			previous := l.Store.Current().Items
+			missing := missingBacklogRefs(previous, source.ID, page.Items)
+			if len(missing) > 0 {
+				confirmer, ok := a.(interface {
+					ConfirmBacklogList(context.Context, Source) (SummaryPage, error)
+				})
+				if !l.current(source.ID, generation) {
+					break
+				}
+				if !ok {
+					l.failSource(ctx, source.ID, generation, "observation-invalidated", out)
+					break
+				}
+				// Verification must not commit a second list revision: an in-flight
+				// detail read or newer refresh may rely on the first one.
+				confirmed, confirmErr := confirmer.ConfirmBacklogList(ctx, source)
+				if confirmErr != nil {
+					l.failSourceError(ctx, source.ID, generation, confirmErr, out)
+					break
+				}
+				if confirmed.NextCursor != "" || confirmed.Coverage.State != CoverageComplete ||
+					!maps.Equal(missing, missingBacklogRefs(previous, source.ID, confirmed.Items)) {
+					l.failSource(ctx, source.ID, generation, "observation-invalidated", out)
+					break
+				}
+			}
 		}
 		pagesRead++
 		if page.Coverage.State == CoverageUnknown {
@@ -1227,13 +1275,13 @@ func linearItemUnavailable(err error) bool {
 	return ok && diagnostic.Code == "not-found-or-inaccessible"
 }
 
-// readInterrupted reports a detail read that never observed the provider:
-// its caller or a higher-priority action check cancelled it, or the request
-// queue was full. The listed summary is still current, so the item keeps it
-// and a later hydration pass retries the read.
+// readInterrupted reports a detail read without usable current evidence:
+// its caller cancelled it, the request queue was full, or a Backlog list
+// invalidated its observation. Leave the listed summary intact for retry.
 func readInterrupted(err error) bool {
 	var backlog BacklogDiagnostic
-	return errors.Is(err, context.Canceled) || errors.As(err, &backlog) && (backlog.Code == "cancelled" || backlog.Code == "overloaded")
+	return errors.Is(err, context.Canceled) || errors.As(err, &backlog) &&
+		(backlog.Code == "cancelled" || backlog.Code == "overloaded" || backlog.Code == "observation-invalidated")
 }
 
 func githubSourceAccessLost(err error) bool {

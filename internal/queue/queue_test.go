@@ -208,6 +208,105 @@ func TestBacklogReadFailureKeepsSafeDiagnosticCode(t *testing.T) {
 	}
 }
 
+type changingBacklogList struct {
+	*fakeAdapter
+	pages []SummaryPage
+	calls int
+	errAt int
+}
+
+func (a *changingBacklogList) OnDemandDetails() {}
+func (a *changingBacklogList) List(_ context.Context, _ Source, _ Query, _ string) (SummaryPage, error) {
+	return a.nextPage()
+}
+func (a *changingBacklogList) ConfirmBacklogList(_ context.Context, _ Source) (SummaryPage, error) {
+	return a.nextPage()
+}
+func (a *changingBacklogList) nextPage() (SummaryPage, error) {
+	a.calls++
+	if a.calls == a.errAt {
+		return SummaryPage{}, BacklogDiagnostic{Code: "observation-invalidated"}
+	}
+	return a.pages[min(a.calls-1, len(a.pages)-1)], nil
+}
+
+func TestBacklogRefreshConfirmsMissingTasksBeforeRetiring(t *testing.T) {
+	t.Parallel()
+	one := Ref{SourceID: "tasks", ItemID: "TASK-1"}
+	two := Ref{SourceID: "tasks", ItemID: "TASK-2"}
+	page := func(refs ...Ref) SummaryPage {
+		items := make([]Summary, 0, len(refs))
+		for _, ref := range refs {
+			items = append(items, Summary{Ref: ref, Fresh: true})
+		}
+		return SummaryPage{Items: items, Coverage: Coverage{State: CoverageComplete, Total: len(refs), TotalAccuracy: TotalExact}}
+	}
+	for _, tc := range []struct {
+		name    string
+		second  SummaryPage
+		errAt   int
+		wantMin int
+	}{
+		{name: "transient gap", second: page(one, two), wantMin: 2},
+		{name: "confirmed removal", second: page(one), wantMin: 1},
+		{name: "changing omissions", second: page(two), wantMin: 2},
+		{name: "failed confirmation", errAt: 2, wantMin: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &changingBacklogList{fakeAdapter: newFake(), pages: []SummaryPage{page(one), tc.second}, errAt: tc.errAt}
+			registry := NewRegistry()
+			registry.adapters["backlog-md"] = adapter
+			loader := NewLoader(registry)
+			loader.DeferDetails = true
+			loader.Store.SeedSnapshot(Snapshot{Items: map[string]Item{
+				one.Key(): {Summary: Summary{Ref: one, Fresh: true}, DependenciesKnown: true, Closure: CoverageComplete},
+				two.Key(): {Summary: Summary{Ref: two, Fresh: true}, DependenciesKnown: true, Closure: CoverageComplete},
+			}, Sources: map[string]Coverage{"tasks": {State: CoverageComplete, Total: 2}}})
+			minItems := 2
+			for snapshot := range loader.Refresh(context.Background(), []Source{{ID: "tasks", Adapter: "backlog-md"}}) {
+				minItems = min(minItems, len(snapshot.Items))
+			}
+			final := loader.Store.Current()
+			if adapter.calls != 2 || minItems != tc.wantMin || len(final.Items) != tc.wantMin {
+				t.Fatalf("list calls=%d minimum rows=%d final rows=%d, want 2 calls and %d rows", adapter.calls, minItems, len(final.Items), tc.wantMin)
+			}
+			want := CoverageUnknown
+			if tc.name == "confirmed removal" {
+				want = CoverageComplete
+				if _, present := final.Items[two.Key()]; present {
+					t.Fatal("confirmed removal retained old task")
+				}
+			}
+			if got := final.Sources["tasks"].State; got != want {
+				t.Fatalf("coverage = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+type interruptedBacklogDetail struct{ *changingBacklogList }
+
+func (a *interruptedBacklogDetail) ReadItems(_ context.Context, _ Source, refs []Ref, _ []string, _ int) []ItemOutcome {
+	return []ItemOutcome{{Ref: refs[0], Kind: "failed", Err: BacklogDiagnostic{Code: "observation-invalidated"}}}
+}
+
+func TestBacklogInterruptedDetailKeepsListedSummary(t *testing.T) {
+	t.Parallel()
+	ref := Ref{SourceID: "tasks", ItemID: "TASK-1"}
+	registry := NewRegistry()
+	registry.adapters["backlog-md"] = &interruptedBacklogDetail{&changingBacklogList{fakeAdapter: newFake()}}
+	loader := NewLoader(registry)
+	loader.Store.SeedSnapshot(Snapshot{Items: map[string]Item{
+		ref.Key(): {Summary: Summary{Ref: ref, Fresh: true}, ReadOutcome: "summary-only"},
+	}, Sources: map[string]Coverage{"tasks": {State: CoverageComplete}}})
+	for range loader.HydrateDetail(context.Background(), Source{ID: "tasks", Adapter: "backlog-md"}, ref) {
+	}
+	item, _ := loader.Store.Item(ref)
+	if !item.Fresh || item.ReadOutcome != "summary-only" {
+		t.Fatalf("interrupted detail overwrote listed summary: %+v", item)
+	}
+}
+
 func TestIndependentSourceRefreshPublishesHealthyBeforeSlowSource(t *testing.T) {
 	fake := newFake()
 	fake.pages["healthy"] = []SummaryPage{{Items: []Summary{{Ref: Ref{"healthy", "a"}, Title: "A", Fresh: true}}, Coverage: Coverage{State: CoverageComplete, TotalAccuracy: TotalExact}}}

@@ -88,6 +88,40 @@ func TestBacklogCacheIdentityChangesWithCheckoutInstanceAndConfig(t *testing.T) 
 	}
 }
 
+func TestBacklogConfirmationDoesNotInvalidateViews(t *testing.T) {
+	t.Parallel()
+	root, binary := fakeBacklog(t)
+	a := NewBacklogAdapter("Done")
+	a.Binary = binary
+	ctx := context.Background()
+	source, err := a.Resolve(ctx, map[string]string{"id": "fixture", "checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.List(ctx, source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{SourceID: source.ID, ItemID: "TASK-2"}
+	if result := a.ReadItems(ctx, source, []Ref{ref}, nil, 0); len(result) != 1 || result[0].Err != nil {
+		t.Fatalf("detail read: %+v", result)
+	}
+	a.mu.Lock()
+	revision := a.revisions[source.ID]
+	_, hadDetail := a.details[ref.Key()]
+	a.mu.Unlock()
+	confirmed, err := a.ConfirmBacklogList(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	unchanged := a.revisions[source.ID] == revision
+	_, stillHasDetail := a.details[ref.Key()]
+	a.mu.Unlock()
+	if len(confirmed.Items) != 2 || !hadDetail || !stillHasDetail || !unchanged {
+		t.Fatalf("confirmation invalidated detail: items=%d hadDetail=%v stillHasDetail=%v unchanged=%v", len(confirmed.Items), hadDetail, stillHasDetail, unchanged)
+	}
+}
+
 func TestBacklogGoldenAndDiagnostics(t *testing.T) {
 	root, binary := fakeBacklog(t)
 	a := NewBacklogAdapter("Done")

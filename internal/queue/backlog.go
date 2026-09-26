@@ -577,6 +577,45 @@ func (a *BacklogAdapter) summary(source Source, task backlogTask) Summary {
 	ready := task.IsReady
 	return Summary{Ref: Ref{SourceID: source.ID, ItemID: task.ID}, Title: task.Title, RawStatus: task.Status, State: state, Order: fmt.Sprintf("%012d", task.Ordinal), Priority: map[string]int{"high": 1, "medium": 2, "low": 3}[task.Priority], CanonicalID: source.ID + "\x00" + task.ID, ProviderReady: &ready, AssignedTo: task.Assignees, UpdatedAt: task.UpdatedAt, Fresh: true, Terminal: state == StateComplete}
 }
+func (a *BacklogAdapter) readTaskList(ctx context.Context, source Source) ([]backlogTask, error) {
+	data, err := a.run(ctx, source.Locator, a.binary(), "task", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Tasks []backlogTask `json:"tasks"`
+	}
+	if err := decodeBacklog(data, "task-list", &payload); err != nil {
+		return nil, err
+	}
+	if payload.Tasks == nil {
+		return nil, BacklogDiagnostic{"schema-mismatch", "missing tasks array"}
+	}
+	return payload.Tasks, nil
+}
+
+// ConfirmBacklogList checks task membership without changing adapter revisions
+// or edge caches. It can overlap a newer refresh without invalidating it.
+func (a *BacklogAdapter) ConfirmBacklogList(ctx context.Context, source Source) (SummaryPage, error) {
+	if err := a.authorizeRead(ctx, source); err != nil {
+		return SummaryPage{}, err
+	}
+	tasks, err := a.readTaskList(ctx, source)
+	if err != nil {
+		return SummaryPage{}, err
+	}
+	page := SummaryPage{Items: make([]Summary, 0, len(tasks)), Coverage: Coverage{State: CoverageComplete}}
+	seen := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if task.ID == "" || seen[task.ID] {
+			return SummaryPage{}, BacklogDiagnostic{"schema-mismatch", "invalid task IDs in confirmation"}
+		}
+		seen[task.ID] = true
+		page.Items = append(page.Items, Summary{Ref: Ref{SourceID: source.ID, ItemID: task.ID}})
+	}
+	return page, nil
+}
+
 func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, cursor string) (SummaryPage, error) {
 	if err := a.authorizeRead(ctx, source); err != nil {
 		return SummaryPage{}, err
@@ -588,24 +627,15 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 	revision := a.revisions[source.ID]
 	a.mu.Unlock()
 	listCtx := context.WithValue(ctx, backlogListRevisionKey{}, backlogListRevision{sourceID: source.ID, revision: revision})
-	data, err := a.run(listCtx, source.Locator, a.binary(), "task", "list", "--json")
+	tasks, err := a.readTaskList(listCtx, source)
 	if err != nil {
 		return SummaryPage{}, err
 	}
-	var payload struct {
-		Tasks []backlogTask `json:"tasks"`
-	}
-	if err := decodeBacklog(data, "task-list", &payload); err != nil {
-		return SummaryPage{}, err
-	}
-	if payload.Tasks == nil {
-		return SummaryPage{}, BacklogDiagnostic{"schema-mismatch", "missing tasks array"}
-	}
-	page := SummaryPage{Items: make([]Summary, 0, len(payload.Tasks)), Coverage: Coverage{State: CoverageComplete, Scope: source.ID, Total: len(payload.Tasks), TotalAccuracy: TotalExact}}
+	page := SummaryPage{Items: make([]Summary, 0, len(tasks)), Coverage: Coverage{State: CoverageComplete, Scope: source.ID, Total: len(tasks), TotalAccuracy: TotalExact}}
 	page.Observation = Observation{AccessScope: source.Locator, ObservedAt: time.Now(), Coverage: page.Coverage, ConfigurationGeneration: source.Locator}
 	seen := map[string]bool{}
 	duplicates := map[string]bool{}
-	for _, task := range payload.Tasks {
+	for _, task := range tasks {
 		if task.ID == "" {
 			return SummaryPage{}, BacklogDiagnostic{"schema-mismatch", "task without ID"}
 		}
@@ -644,7 +674,7 @@ func (a *BacklogAdapter) List(ctx context.Context, source Source, _ Query, curso
 			delete(a.details, key)
 		}
 	}
-	for _, task := range payload.Tasks {
+	for _, task := range tasks {
 		key := (Ref{SourceID: source.ID, ItemID: task.ID}).Key()
 		if task.Dependencies != nil { // A newer Backlog version can supply bulk edges.
 			if task.Readiness == nil {
