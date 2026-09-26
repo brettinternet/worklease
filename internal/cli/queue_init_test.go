@@ -570,6 +570,10 @@ func TestQueueInitExternalFailureAndPortableClaims(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "started")
 	executable := writeQueueAdapterApprovalExecutable(t, "schema", marker)
+	t.Chdir(t.TempDir()) // External init must not require a repository or source tree.
+	if entries, err := os.ReadDir("."); err != nil || len(entries) != 0 {
+		t.Fatalf("not an empty working directory: %v %v", entries, err)
+	}
 	invoke := func(binary string, args ...string) testkit.CLIResult {
 		argv := append([]string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "init", "--adapter", "external", "--executable", binary}, args...)
 		return testkit.RunCLI(context.Background(), argv, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
