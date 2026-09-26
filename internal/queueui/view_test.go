@@ -100,17 +100,21 @@ func TestLoadingShowsSpinnerUntilRefreshEnds(t *testing.T) {
 		item.Readiness = queue.Readiness{Status: queue.ReadinessUnknown, LastKnown: queue.Ready}
 		snapshot.Items[key] = item
 	}
+	for id, coverage := range snapshot.Sources {
+		coverage.TotalAccuracy = queue.TotalUnknown
+		snapshot.Sources[id] = coverage
+	}
 	next, _ = m.Update(PrepareSnapshotForModel(snapshot, m))
 	m = next.(Model)
-	if text := screenText(m.View()); !strings.Contains(text, "ready "+spinnerFrames[1]) || strings.Contains(text, "(stale)") {
-		t.Fatalf("row being reread did not show the spinner:\n%s", text)
+	if text := screenText(m.View()); !strings.Contains(text, "ready "+spinnerFrames[1]) || strings.Contains(text, "(stale)") || strings.Contains(text, "total unknown") {
+		t.Fatalf("row being reread did not show the spinner alone:\n%s", text)
 	}
 	next, _ = m.Update(LoadingMsg{Active: false})
 	m = next.(Model)
 	if _, stop := m.Update(spinnerTickMsg{m.spinnerGen}); stop != nil {
 		t.Fatal("spinner kept ticking after the refresh ended")
 	}
-	if text := screenText(m.View()); !strings.Contains(text, "ready (stale)") {
+	if text := screenText(m.View()); !strings.Contains(text, "ready (stale)") || !strings.Contains(text, "total unknown") {
 		t.Fatalf("row left unread after the refresh was not marked stale:\n%s", text)
 	}
 }
