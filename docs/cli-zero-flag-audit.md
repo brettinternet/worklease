@@ -24,6 +24,7 @@ local default, or reports the missing required input without guessing.
 | `gc` | Preview retention | Never applies without `--apply` |
 | `doctor` | Run read-only diagnostics | No state mutation |
 | `queue init` | Preflight the detected adapter and write owner-private queue configuration | `--dry-run` previews without writing; Backlog.md `me` falls back to OS login and network effects require `--allow-git-network` |
+| `queue claims` | Open the authority-wide Claims TUI | Read-only public claim list and event feed; independent of `queue.yaml`; no renew or release actions |
 | `queue query` | Report missing required view | Requires a configured view; read-only |
 | `queue next` | Report missing required view | Requires a configured view and complete scope; selects without acquiring |
 | `queue recovery retry` | Reject missing operation ID or original handle | Reads the provider result without dispatching another write |
