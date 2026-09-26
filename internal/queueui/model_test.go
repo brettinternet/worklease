@@ -669,6 +669,399 @@ func TestSourceReadFailureLabelsIncludeRateLimitDeadline(t *testing.T) {
 	}
 }
 
+func TestDetailStaysVisibleWhileSelectedItemRevalidates(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	item := initial.Items[ref.Key()]
+	item.Body = "Previously observed description"
+	item.ReadOutcome = "found"
+	item.Observation.ProviderVersion = "previous-version"
+	item.Readiness.Status = queue.Ready
+	item.Relationships = []queue.Relationship{{Type: queue.HardPrerequisite, To: queue.Ref{SourceID: "a", ItemID: "2"}, Fresh: true}}
+	initial.Items[ref.Key()] = item
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail = true
+	m.DetailOffset = 2
+	m.Comments = []queue.GitHubComment{{Body: "Previously loaded comment"}}
+	m.CommentsIdentity = DetailRequestIdentity(item)
+	hydrates := 0
+	m.HydrateSelected = func(queue.Item) tea.Cmd { hydrates++; return nil }
+
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	summary := queue.Item{Summary: item.Summary, ReadOutcome: "summary-only", Readiness: queue.Readiness{Status: queue.ReadinessUnknown}, Observation: item.Observation, Claim: queue.ClaimObservation{ObservedAt: time.Now()}}
+	summary.Observation.ProviderVersion = ""
+	refresh.Items[ref.Key()] = summary
+	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if m.Selected != identity(item) || m.DetailOffset != 2 || hydrates != 1 {
+		t.Fatalf("refresh interrupted selection or hydration: selected=%q offset=%d hydrates=%d", m.Selected, m.DetailOffset, hydrates)
+	}
+	if !strings.Contains(screenText(m.View()), item.Body) {
+		t.Fatal("open detail pane lost its description during refresh")
+	}
+	current := m.Snapshot.Items[ref.Key()]
+	if current.Body != "" || len(current.Relationships) != 0 || len(current.Resources) != 0 || queue.EvaluateAction(current, queue.ActionStart).Eligible {
+		t.Fatalf("cached details leaked into current action evidence: %+v", current)
+	}
+	for tab, want := range map[int]string{0: item.Body, 1: "a:2", 2: "previous-version", 3: "resource:1"} {
+		m.Tab = tab
+		text := screenText(strings.Join(m.detailContent(current, 70), " "))
+		if !strings.Contains(text, want) || !strings.Contains(strings.ToLower(text), "previously observed") {
+			t.Fatalf("tab %d lost cached detail: %q", tab, text)
+		}
+	}
+	if len(m.Comments) != 1 || m.Comments[0].Body != "Previously loaded comment" {
+		t.Fatal("refresh lost previously loaded activity")
+	}
+	m.Tab = 0
+	refresh.Revision = 3
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if hydrates != 1 || !strings.Contains(screenText(strings.Join(m.detailContent(m.Snapshot.Items[ref.Key()], 70), " ")), item.Body) {
+		t.Fatal("intermediate snapshot lost detail or repeated selected hydration")
+	}
+
+	verified := item
+	verified.Body = "Updated description"
+	verified.Readiness.Status = queue.Ready
+	refresh.Revision = 4
+	refresh.Items[ref.Key()] = verified
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	m.Tab = 0
+	text := screenText(strings.Join(m.detailContent(m.Snapshot.Items[ref.Key()], 70), " "))
+	if !strings.Contains(text, verified.Body) || strings.Contains(text, item.Body) || strings.Contains(text, "previously observed") {
+		t.Fatalf("verified details failed to replace cached presentation: %q", text)
+	}
+	delete(refresh.Items, ref.Key())
+	refresh.Revision = 5
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if _, exists := m.displayDetails[ref.Key()]; exists {
+		t.Fatal("removed item retained cached detail")
+	}
+}
+
+func TestPreviouslyObservedDetailsDisappearOnRevocation(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"removed", "missing", "principal-changed", "identity-changed"} {
+		t.Run(scenario, func(t *testing.T) {
+			initial := fixture()
+			initial.Revision = 1
+			ref := queue.Ref{SourceID: "a", ItemID: "1"}
+			item := initial.Items[ref.Key()]
+			item.Body = "private previous description"
+			item.Observation.Principal = "alice"
+			item.ReadOutcome = "found"
+			initial.Items[ref.Key()] = item
+			m := New(initial)
+			m.Sources = []queue.Source{{ID: "a"}}
+			m.anchor(m.rows())
+			m.Detail = true
+			oldRequest := DetailRequestIdentity(item)
+			m.CommentsIdentity = oldRequest
+			m.Comments = []queue.GitHubComment{{Body: "private previous comment"}}
+			m.HistoryIdentity = oldRequest
+			m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "private previous agent"}}}
+			refresh := initial.Clone()
+			refresh.Revision = 2
+			summary := queue.Item{Summary: item.Summary, ReadOutcome: "summary-only", Observation: item.Observation}
+			refresh.Items[ref.Key()] = summary
+			next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+			m = next.(Model)
+			if _, ok := m.displayDetails[ref.Key()]; !ok {
+				t.Fatal("test did not cache previously observed detail")
+			}
+			refresh.Revision = 3
+			switch scenario {
+			case "removed":
+				delete(refresh.Items, ref.Key())
+			case "missing":
+				summary.ReadOutcome = "missing"
+				summary.Fresh = false
+				refresh.Items[ref.Key()] = summary
+			case "principal-changed":
+				summary.Observation.Principal = "bob"
+				refresh.Items[ref.Key()] = summary
+			case "identity-changed":
+				summary.CanonicalID = "replacement"
+				refresh.Items[ref.Key()] = summary
+			}
+			next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+			m = next.(Model)
+			if _, ok := m.displayDetails[ref.Key()]; ok || strings.Contains(screenText(m.View()), item.Body) || len(m.Comments) != 0 || len(m.History.Epochs) != 0 {
+				t.Fatal("private details survived item removal or identity change")
+			}
+			if scenario == "principal-changed" {
+				oldOverlay := initial.Clone()
+				stale := oldOverlay.Items[ref.Key()]
+				stale.Claim.Stale = true
+				oldOverlay.Items[ref.Key()] = stale
+				next, _ = m.Update(ClaimOverlayMsg{Snapshot: oldOverlay})
+				m = next.(Model)
+				if len(m.Snapshot.Items[ref.Key()].Resources) != 0 {
+					t.Fatal("late prior-principal claim overlay restored old resources")
+				}
+			}
+			next, _ = m.Update(CommentsMsg{Identity: oldRequest, Comments: []queue.GitHubComment{{Body: "late private comment"}}})
+			m = next.(Model)
+			next, _ = m.Update(HistoryMsg{Identity: oldRequest, Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "late private agent"}}}})
+			m = next.(Model)
+			m.Tab = 2
+			activity := screenText(m.View())
+			m.Tab = 3
+			claims := screenText(m.View())
+			if len(m.Comments) != 0 || len(m.History.Epochs) != 0 || strings.Contains(activity, "private") || strings.Contains(claims, "private") {
+				t.Fatal("late response repopulated prior-principal activity or history")
+			}
+		})
+	}
+}
+
+func TestLateDetailResponsesCannotReturnAfterOwnerCycle(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	item := initial.Items[ref.Key()]
+	item.Observation.Principal = "alice"
+	item.ReadOutcome = "found"
+	initial.Items[ref.Key()] = item
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.anchor(m.rows())
+	m.Detail, m.Tab = true, 1
+	commentsCalls, historyCalls := 0, 0
+	m.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
+		commentsCalls++
+		call := commentsCalls
+		return func() tea.Msg {
+			return CommentsMsg{Identity: DetailRequestIdentity(item), Comments: []queue.GitHubComment{{Body: fmt.Sprintf("comment-%d", call)}}}
+		}
+	}
+	m.LoadHistory = func(item queue.Item, cursor string, before bool) tea.Cmd {
+		historyCalls++
+		call := historyCalls
+		return func() tea.Msg {
+			return HistoryMsg{Identity: DetailRequestIdentity(item), Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: fmt.Sprintf("agent-%d", call)}}}}
+		}
+	}
+	m, oldComments := press(m, "tab")
+	m, oldHistory := press(m, "tab")
+	if oldComments == nil || oldHistory == nil {
+		t.Fatal("initial requests not dispatched")
+	}
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	summary := queue.Item{Summary: item.Summary, Observation: item.Observation, ReadOutcome: "summary-only"}
+	summary.Observation.Principal = "bob"
+	refresh.Items[ref.Key()] = summary
+	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if len(m.Comments) != 0 || len(m.History.Epochs) != 0 || len(m.Snapshot.Items[ref.Key()].Resources) != 0 {
+		t.Fatal("prior-principal details survived owner change")
+	}
+	refresh.Revision = 3
+	summary.Observation.Principal = "alice"
+	refresh.Items[ref.Key()] = summary
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	m.Tab = 1
+	m, newComments := press(m, "tab")
+	if newComments == nil {
+		t.Fatal("returning principal did not request fresh comments")
+	}
+	oldCommentMsg := oldComments().(CommentsMsg)
+	newCommentMsg := newComments().(CommentsMsg)
+	if oldCommentMsg.Identity != newCommentMsg.Identity || oldCommentMsg.Generation == newCommentMsg.Generation {
+		t.Fatal("request generations did not distinguish A→B→A")
+	}
+	next, _ = m.Update(oldCommentMsg)
+	m = next.(Model)
+	if len(m.Comments) != 0 {
+		t.Fatal("old comments response returned after owner cycle")
+	}
+	next, _ = m.Update(newCommentMsg)
+	m = next.(Model)
+	if len(m.Comments) != 1 || m.Comments[0].Body != "comment-2" {
+		t.Fatal("new owner's response was not accepted")
+	}
+	refresh.Revision = 4
+	refresh.Items[ref.Key()] = item
+	next, _ = m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	m, newHistory := press(m, "tab")
+	if newHistory == nil {
+		t.Fatal("returning principal did not request fresh history")
+	}
+	oldHistoryMsg := oldHistory().(HistoryMsg)
+	newHistoryMsg := newHistory().(HistoryMsg)
+	if oldHistoryMsg.Identity != newHistoryMsg.Identity || oldHistoryMsg.Generation == newHistoryMsg.Generation {
+		t.Fatal("history request generations did not distinguish A→B→A")
+	}
+	next, _ = m.Update(oldHistoryMsg)
+	m = next.(Model)
+	if len(m.History.Epochs) != 0 {
+		t.Fatal("old history response returned after owner cycle")
+	}
+	next, _ = m.Update(newHistoryMsg)
+	m = next.(Model)
+	if len(m.History.Epochs) != 1 || m.History.Epochs[0].AgentID != "agent-2" {
+		t.Fatal("new owner's history response was not accepted")
+	}
+}
+
+func TestSelectedSummaryHydratesOnOwnerChangeWithSameObservation(t *testing.T) {
+	t.Parallel()
+	for _, tab := range []int{0, 2} {
+		t.Run(fmt.Sprint(tab), func(t *testing.T) {
+			initial := fixture()
+			initial.Revision = 1
+			ref := queue.Ref{SourceID: "a", ItemID: "1"}
+			item := initial.Items[ref.Key()]
+			item.ReadOutcome = "summary-only"
+			item.Observation.Principal = "alice"
+			initial.Items[ref.Key()] = item
+			m := New(initial)
+			m.Sources = []queue.Source{{ID: "a"}}
+			m.anchor(m.rows())
+			m.Detail, m.Tab = true, tab
+			hydrates, comments := 0, 0
+			m.HydrateSelected = func(queue.Item) tea.Cmd { hydrates++; return func() tea.Msg { return nil } }
+			m.LoadComments = func(item queue.Item, _ string) tea.Cmd {
+				comments++
+				return func() tea.Msg { return CommentsMsg{Identity: DetailRequestIdentity(item)} }
+			}
+			refresh := initial.Clone()
+			refresh.Revision = 2
+			item.Observation.Principal = "bob" // same timestamp, still summary-only
+			item.Resources = nil
+			item.KeyInputs = nil
+			refresh.Items[ref.Key()] = item
+			next, cmd := m.Update(PrepareSnapshotForModel(refresh, m))
+			m = next.(Model)
+			if hydrates != 1 || cmd == nil || comments != map[int]int{0: 0, 2: 1}[tab] || len(m.Snapshot.Items[ref.Key()].Resources) != 0 {
+				t.Fatalf("owner change skipped hydration or retained stale claim inputs: hydrates=%d comments=%d", hydrates, comments)
+			}
+		})
+	}
+}
+
+func TestReadyViewDoesNotCarryRecheckAcrossIdentity(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"principal", "canonical"} {
+		for _, intermediate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/intermediate=%t", field, intermediate), func(t *testing.T) {
+				initial := fixture()
+				initial.Revision = 1
+				ref := queue.Ref{SourceID: "a", ItemID: "1"}
+				item := initial.Items[ref.Key()]
+				item.Readiness.Status = queue.Ready
+				item.Observation.Principal = "alice"
+				initial.Items[ref.Key()] = item
+				m := New(initial)
+				m.Sources = []queue.Source{{ID: "a"}}
+				m.ViewName = "Ready"
+				summary := item
+				summary.ReadOutcome = "summary-only"
+				summary.Readiness.Status = queue.ReadinessUnknown
+				if intermediate {
+					pending := initial.Clone()
+					pending.Revision = 2
+					pending.Items[ref.Key()] = summary
+					next, _ := m.Update(PrepareSnapshotForModel(pending, m))
+					m = next.(Model)
+					if len(m.rows()) != 1 {
+						t.Fatal("test did not establish a rechecking row")
+					}
+				}
+				if field == "principal" {
+					summary.Observation.Principal = "bob"
+				} else {
+					summary.CanonicalID = "replacement"
+				}
+				changed := initial.Clone()
+				changed.Revision = 3
+				changed.Items[ref.Key()] = summary
+				next, _ := m.Update(PrepareSnapshotForModel(changed, m))
+				m = next.(Model)
+				if len(m.rows()) != 0 || m.viewCountFor("Ready") != 0 {
+					t.Fatalf("unverified replacement survived in Ready: %+v", m.rows())
+				}
+			})
+		}
+	}
+}
+
+func TestAllViewUsesPreparedRowsDuringReadyRecheck(t *testing.T) {
+	t.Parallel()
+	initial := fixture()
+	initial.Revision = 1
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	item := initial.Items[ref.Key()]
+	item.Readiness.Status = queue.Ready
+	initial.Items[ref.Key()] = item
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	item.ReadOutcome = "summary-only"
+	item.Readiness.Status = queue.ReadinessUnknown
+	refresh.Items[ref.Key()] = item
+	prepared := PrepareSnapshotForModel(refresh, m)
+	next, _ := m.Update(prepared)
+	m = next.(Model)
+	if len(m.rows()) != 2 || m.viewCountFor("Ready") != 1 || len(m.rowCache.rows) != len(prepared.preparedRows) || &m.rowCache.rows[0] != &prepared.preparedRows[0] {
+		t.Fatal("All view rebuilt worker-prepared rows or miscounted Ready during recheck")
+	}
+}
+
+func TestSelectedOffscreenSummaryHydratesWithListOnly(t *testing.T) {
+	t.Parallel()
+	initial := queue.Snapshot{Revision: 1, Items: make(map[string]queue.Item), Sources: map[string]queue.Coverage{"a": {State: queue.CoverageComplete}}}
+	for n := range 40 {
+		ref := queue.Ref{SourceID: "a", ItemID: fmt.Sprintf("%03d", n)}
+		initial.Items[ref.Key()] = queue.Item{Summary: queue.Summary{Ref: ref, Title: ref.ItemID, Fresh: true}, Body: "loaded detail", ReadOutcome: "found"}
+	}
+	m := New(initial)
+	m.Sources = []queue.Source{{ID: "a"}}
+	m.Height = 10
+	m.selectIndex(m.rows(), 39)
+	ref := queue.Ref{SourceID: "a", ItemID: "039"}
+	if m.Selected != ref.Key() || m.Detail {
+		t.Fatal("test did not select an offscreen row in list mode")
+	}
+	hydrates := 0
+	m.HydrateSelected = func(item queue.Item) tea.Cmd {
+		if item.Ref != ref {
+			t.Fatalf("hydrated wrong row: %+v", item.Ref)
+		}
+		hydrates++
+		return nil
+	}
+	refresh := initial.Clone()
+	refresh.Revision = 2
+	item := refresh.Items[ref.Key()]
+	item.Body = ""
+	item.ReadOutcome = "summary-only"
+	refresh.Items[ref.Key()] = item
+	next, _ := m.Update(PrepareSnapshotForModel(refresh, m))
+	m = next.(Model)
+	if hydrates != 1 || m.Selected != ref.Key() {
+		t.Fatalf("list-only refresh lost selected hydration: calls=%d selected=%q", hydrates, m.Selected)
+	}
+	m.Height = 35
+	m, _ = press(m, "enter")
+	if !strings.Contains(screenText(m.View()), "loaded detail") || hydrates != 1 {
+		t.Fatal("opening selected offscreen item lost cached description or repeated hydration")
+	}
+}
+
 func TestReadyViewKeepsRowsDuringRecheckWithoutAllowingActions(t *testing.T) {
 	t.Parallel()
 	initial := fixture()
@@ -818,7 +1211,7 @@ func TestActivityLoadsCommentsOnDemandAndIgnoresLatePages(t *testing.T) {
 			t.Fatalf("unexpected comments cursor: %q", cursor)
 		}
 		return func() tea.Msg {
-			return CommentsMsg{Identity: "stable-1", Comments: []queue.GitHubComment{{Author: "alice", Body: "hello\x1b[31m world"}}, Cursor: map[bool]string{true: "next", false: ""}[calls == 1]}
+			return CommentsMsg{Identity: DetailRequestIdentity(item), Comments: []queue.GitHubComment{{Author: "alice", Body: "hello\x1b[31m world"}}, Cursor: map[bool]string{true: "next", false: ""}[calls == 1]}
 		}
 	}
 	if calls != 0 {
@@ -884,7 +1277,7 @@ func TestClaimsLazyHistoryAndFullIdentity(t *testing.T) {
 			t.Fatal(i.Ref, cursor)
 		}
 		return func() tea.Msg {
-			return HistoryMsg{Identity: "stable-1", Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "past-agent", SessionID: "past-full-session", AcquiredAt: time.Now()}}}}
+			return HistoryMsg{Identity: DetailRequestIdentity(i), Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "past-agent", SessionID: "past-full-session", AcquiredAt: time.Now()}}}}
 		}
 	}
 	m, _ = press(m, "enter")
@@ -1026,14 +1419,14 @@ func TestClaimHistoryPagination(t *testing.T) {
 	m.anchor(m.rows())
 	m.Detail = true
 	m.Tab = 3
-	m.HistoryIdentity = m.Selected
+	m.HistoryIdentity = DetailRequestIdentity(m.Snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()])
 	m.History = ledger.HistoryPage{NextCursor: "newer-page", PreviousCursor: "older-page", Epochs: []ledger.Epoch{{AgentID: "first"}}}
 	m.LoadHistory = func(i queue.Item, cursor string, before bool) tea.Cmd {
 		if len(i.Resources) != 1 || cursor != "older-page" || !before {
 			t.Fatal(i.Resources, cursor, before)
 		}
 		return func() tea.Msg {
-			return HistoryMsg{Identity: "stable-1", Before: true, Page: ledger.HistoryPage{PreviousCursor: "older-page-2", Epochs: []ledger.Epoch{{AgentID: "second"}}}}
+			return HistoryMsg{Identity: DetailRequestIdentity(i), Before: true, Page: ledger.HistoryPage{PreviousCursor: "older-page-2", Epochs: []ledger.Epoch{{AgentID: "second"}}}}
 		}
 	}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
@@ -1270,7 +1663,7 @@ func TestHistoryClearsWhenSelectionChangesAndDoesNotRenderForOtherIdentity(t *te
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	m.Detail, m.Tab = true, 3
-	m.HistoryIdentity = m.Selected
+	m.HistoryIdentity = DetailRequestIdentity(m.Snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()])
 	m.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{AgentID: "first-agent"}}}
 	m, _ = press(m, "j")
 	if len(m.History.Epochs) != 0 || m.HistoryIdentity != "" {
@@ -1318,7 +1711,7 @@ func TestClaimsPaginationDoesNotTakeNavigationKeyAndSuppressesDuplicate(t *testi
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
 	m.Detail, m.Tab = true, 3
-	m.HistoryIdentity = m.Selected
+	m.HistoryIdentity = DetailRequestIdentity(m.Snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()])
 	m.History = ledger.HistoryPage{PreviousCursor: "page-2"}
 	m.LoadHistory = func(queue.Item, string, bool) tea.Cmd { return func() tea.Msg { return nil } }
 	m, _ = press(m, "n")
@@ -1326,7 +1719,7 @@ func TestClaimsPaginationDoesNotTakeNavigationKeyAndSuppressesDuplicate(t *testi
 		t.Fatalf("n did not navigate to next item: %s", m.Selected)
 	}
 	m.Selected = "stable-1"
-	m.HistoryIdentity = m.Selected
+	m.HistoryIdentity = DetailRequestIdentity(m.Snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()])
 	m.History.PreviousCursor = "page-2"
 	m, cmd := press(m, "m")
 	if cmd == nil || !m.HistoryLoading {
