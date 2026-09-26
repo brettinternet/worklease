@@ -1,9 +1,10 @@
 ---
 id: TASK-145
 title: Add an authority-wide Claims tab to the queue TUI
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-26 06:03'
+updated_date: '2026-09-26 08:00'
 labels: []
 dependencies: []
 references:
@@ -30,15 +31,40 @@ Keep claims state and rendering in their own files inside `internal/queueui` rat
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The queue TUI tab bar includes a built-in Claims tab that lists current claims from the selected authority, including claims whose resources match no queue item
-- [ ] #2 Switching between the Claims tab and queue views uses the existing `v`/`V`, digit, and tab-click bindings, and each view keeps its selection when the user returns to it
-- [ ] #3 The Claims tab reuses the queue TUI header, tab bar, palette (normal and high contrast), list and detail layout, footer bindings, and help overlay; help text distinguishes Claims from the Claimed view
-- [ ] #4 Claim detail shows resources, holder and session, expiry countdown, checkpoints or progress, and recent lifecycle history
-- [ ] #5 The claims list updates live from the ledger cursor without restarting, and marks stale or expiring claims
-- [ ] #6 The list can be filtered to mine vs all, by resource prefix, and to expiring or stale claims
-- [ ] #7 When claim resources match a loaded queue item, the row shows the item title and a key jumps to that item in a queue view; otherwise raw resource keys are shown
-- [ ] #8 A dedicated entry point opens the TUI directly on the Claims tab, and with no `queue.yaml` the TUI runs claims-only with a visible notice instead of failing; malformed queue config still fails
-- [ ] #9 Against a remote authority, the tab shows no more about other sessions than `worklease status` and `worklease list` already expose to the caller
-- [ ] #10 The first version is read-only; renew and release actions are out of scope
-- [ ] #11 Tests cover tab switching, claims-only startup, live updates, item correlation, and remote visibility, each at the lowest layer that reproduces it
+- [x] #1 The queue TUI tab bar includes a built-in Claims tab that lists current claims from the selected authority, including claims whose resources match no queue item
+- [x] #2 Switching between the Claims tab and queue views uses the existing `v`/`V`, digit, and tab-click bindings, and each view keeps its selection when the user returns to it
+- [x] #3 The Claims tab reuses the queue TUI header, tab bar, palette (normal and high contrast), list and detail layout, footer bindings, and help overlay; help text distinguishes Claims from the Claimed view
+- [x] #4 Claim detail shows resources, holder and session, expiry countdown, checkpoints or progress, and recent lifecycle history
+- [x] #5 The claims list updates live from the ledger cursor without restarting, and marks stale or expiring claims
+- [x] #6 The list can be filtered to mine vs all, by resource prefix, and to expiring or stale claims
+- [x] #7 When claim resources match a loaded queue item, the row shows the item title and a key jumps to that item in a queue view; otherwise raw resource keys are shown
+- [x] #8 A dedicated entry point opens the TUI directly on the Claims tab, and with no `queue.yaml` the TUI runs claims-only with a visible notice instead of failing; malformed queue config still fails
+- [x] #9 Against a remote authority, the tab shows no more about other sessions than `worklease status` and `worklease list` already expose to the caller
+- [x] #10 The first version is read-only; renew and release actions are out of scope
+- [x] #11 Tests cover tab switching, claims-only startup, live updates, item correlation, and remote visibility, each at the lowest layer that reproduces it
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Trace existing queue tabs, ledger watch/status/list semantics and CLI startup; isolate implementation in a Worktrunk checkout to preserve staged main changes.
+2. Add an authority-wide read-only Claims tab with filtered live claims, detail/history and item correlation, preserving queue tab state and shared UI primitives.
+3. Wire a dedicated Claims entry point and claims-only startup for absent config, preserving malformed-config errors and remote visibility.
+4. Add focused tests, run required quality gates, review one pass, commit the scoped implementation and record verified acceptance.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented Claims tab and claims-only entry in isolated worktree task-145-claims-tab. Focused queueui/CLI race tests, lint, format-check, full test and typecheck passed before review fixes. One general review identified four scoped defects (remote history visibility, pending-history replacement, hidden-item jump, mine filter); corrections and focused race tests are complete. Final verification and commit pending.
+
+Verification: queueui Claims model tests cover independent tab selection, rendering/help/detail/history, filters, live cursor gap/reset, item jump and remote public-only rendering; CLI tests cover claims-only startup, dedicated command, malformed config. go test -race -count=3 focused Claims/queue Claims suites passed. mise run lint, format-check, test, typecheck and staged hooks passed after merging with concurrent main updates. One unrelated queue invalidation test timed out once during main integration, passed isolated race x3 and full hook rerun. Review found four concrete issues; all fixed and focused checks rerun. Implementation commit 7e2b0ff; main integration f6cbd89.
+
+All 11 acceptance criteria checked from focused model/CLI tests and full quality gates. No remaining blocker; next step TASK-146 may proceed. Claim released after finalization.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added read-only authority-wide Claims tab and `worklease queue claims`, with live cursor refresh, filters, public-only remote detail, claims-only startup and item jump. Verified with focused race tests, full lint/format/test/typecheck and hooks; reviewed and fixed four scoped defects. Committed 7e2b0ff and integrated on main at f6cbd89.
+<!-- SECTION:FINAL_SUMMARY:END -->
