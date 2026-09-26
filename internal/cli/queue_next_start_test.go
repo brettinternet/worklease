@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,6 +278,51 @@ func TestQueueNextStartRefreshFailureIsNotARejection(t *testing.T) {
 	got := queueNextStart(context.Background(), cfg, item, queue.NewRegistry(), nil, nil, queue.ClaimAuthority{}, "worker", "private-handle")
 	if got["outcome"] != "not attempted" || got["message"] != "Claim acquired; transition not attempted" || got["reason"] != "claim source unavailable" {
 		t.Fatalf("unavailable provider was treated as a rejection: %#v", got)
+	}
+}
+
+func TestQueueNextStartExternalWritesThroughRecovery(t *testing.T) {
+	h := newQueueQueryHarness(t)
+	fixture, err := os.ReadFile("../../internal/sampleadapter/reference-fixture.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(t.TempDir(), "reference.json")
+	if err := os.WriteFile(storePath, fixture, 0600); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "reference-adapter")
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run='^TestQueueAdapterCheckSampleHelper$' -- reference\n", shellQuote(binary))
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := fmt.Sprintf("version: 1\nme: {}\nsources:\n  - id: reference\n    adapter: external\n    executable: %q\n    expectedAdapterId: worklease.reference.local-fixture\n    expectedVersion: 1.0.0\n    account: alice\n    config: {fixturePath: %q}\n    workflow: {start: Doing}\n    claims: {policy: generic, source: fixture/author}\nviews:\n  - name: Ready\n    authority: local\n    sources: [reference]\n    filter: {readiness: ready, claim: free, assigned: [me, nobody]}\n", executable, storePath)
+	h.writeQueueConfig(configText)
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ApproveQueueAdapter(context.Background(), os.Getenv, cfg.Sources[0]); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "reference", "--acknowledge"); err != nil {
+		t.Fatalf("identity: %v %s", err, output)
+	}
+	output, err := h.run("queue", "next", "--view", "Ready", "--claim", "--start", "--session", "writer", "--agent", "writer", "--json")
+	if err != nil || !strings.Contains(string(output), `"outcome":"applied"`) || !strings.Contains(string(output), `"acquired":true`) {
+		t.Fatalf("external start: %v %s", err, output)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil || !strings.Contains(string(data), `"rawStatus": "Doing"`) {
+		t.Fatalf("start did not update fixture: %v %s", err, data)
 	}
 }
 
