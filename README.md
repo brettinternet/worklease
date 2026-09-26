@@ -266,7 +266,8 @@ See:
 - [Container deployment](docs/container.md)
 - [Remote authority](docs/remote-claim-authority.md)
 - [Work queue configuration](docs/queue.md)
-- [Provider-backed work queue proposal](docs/work-queue-tui-proposal.md)
+- [Queue TUI](docs/queue-tui.md)
+- [Work queue design record](docs/work-queue-tui-proposal.md)
 
 ## Development
 

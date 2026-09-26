@@ -326,3 +326,17 @@ func TestClaimsFiltersMinePrefixExpiringAndStale(t *testing.T) {
 		t.Fatalf("stale filter/status=%v", got)
 	}
 }
+
+func TestShortResourceNamesHostLocalItems(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ key, want string }{
+		{"backlog-md:%2FUsers%2Fme%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-126", "worklease TASK-126"},
+		{"backlog-md:/srv/repos/policyd.git:backlog:PD-066", "policyd PD-066"},
+		{"markdown:/home/me/notes/.git:README.md:__source__", "notes README.md"},
+		{"path:/home/me/repo:src%2Fmain.go", "src/main.go"},
+	} {
+		if got := shortResource(test.key); got != test.want {
+			t.Errorf("shortResource(%q)=%q, want %q", test.key, got, test.want)
+		}
+	}
+}

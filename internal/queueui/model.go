@@ -29,6 +29,7 @@ type SnapshotMsg struct {
 	preparedRows       []queue.Item
 	preparedRowIndexes map[string]int
 	preparedCounts     map[string]int
+	preparedHidden     int
 	preparedObserved   time.Time
 	projection         snapshotProjection
 	hasProjection      bool
@@ -39,6 +40,7 @@ type snapshotProjection struct {
 	ViewName    string
 	Filter      string
 	Pinned      string
+	ShowDone    bool
 	Me          string
 	Sources     []queue.Source
 	Views       []string
@@ -88,7 +90,7 @@ func PrepareSnapshotForModel(snapshot queue.Snapshot, model Model) SnapshotMsg {
 	preparedModel.Snapshot = message.Snapshot
 	preparedModel.orderedKeys = message.orderedKeys
 	preparedModel.rowCache = nil
-	message.preparedRows = preparedModel.rows()
+	message.preparedRows, message.preparedHidden = preparedModel.project()
 	message.preparedRowIndexes = make(map[string]int, len(message.preparedRows))
 	for index, item := range message.preparedRows {
 		message.preparedRowIndexes[item.Ref.Key()] = index
@@ -109,6 +111,7 @@ func projectionForModel(model Model) snapshotProjection {
 		ViewName: model.ViewName,
 		Filter:   model.Filter,
 		Pinned:   model.pinnedIdentity(),
+		ShowDone: model.ShowDone,
 		Me:       model.Me,
 		Sources:  append([]queue.Source(nil), model.Sources...),
 		Views:    append([]string(nil), model.Views...),
@@ -350,6 +353,8 @@ type Model struct {
 	orderedKeys                           []string
 	detailGeneration                      uint64
 	HelpOffset                            int
+	// ShowDone lists finished items; by default they are hidden.
+	ShowDone bool
 	// pinned is the item the user opened or acted on. While it stays
 	// selected it remains in the view even if it stops matching the view's
 	// rules, so returning from its detail lands on the same row.
@@ -428,6 +433,8 @@ type rowCache struct {
 	rows     []queue.Item
 	counts   map[string]int
 	observed time.Time
+	// hidden counts finished rows the current view omits.
+	hidden int
 	// widths holds the widest cell seen per list column for these rows, so
 	// columns fit their content without shifting while scrolling.
 	widths map[string]int
@@ -495,7 +502,7 @@ func sameSourceOrder(sources []queue.Source, ids []string) bool {
 }
 
 func (m Model) rowKey() string {
-	return fmt.Sprintf("%x:%d:%s:%s:%q:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.pinnedIdentity(), m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
+	return fmt.Sprintf("%x:%d:%s:%s:%q:%t:%s:%v:%v:%v:%v", reflect.ValueOf(m.Snapshot.Items).Pointer(), m.Snapshot.Revision, m.ViewName, m.Filter, m.pinnedIdentity(), m.ShowDone, m.Me, m.Sources, m.Views, m.ViewFilters, m.ViewRules)
 }
 
 // pinnedIdentity is the pinned item while it is still selected.
@@ -523,6 +530,32 @@ func (m Model) rows() []queue.Item {
 			return m.rowCache.rows
 		}
 	}
+	out, hidden := m.project()
+	m.cacheRows(key, out, hidden)
+	return out
+}
+
+// hiddenDone counts finished rows the current view omits.
+func (m Model) hiddenDone() int {
+	m.rows()
+	if m.rowCache == nil {
+		_, hidden := m.project()
+		return hidden
+	}
+	m.rowCache.mu.Lock()
+	defer m.rowCache.mu.Unlock()
+	return m.rowCache.hidden
+}
+
+// isDone reports finished work. A finished item that is still claimed
+// needs attention, so it does not count as done.
+func isDone(i queue.Item) bool {
+	return i.Terminal && i.TerminalKnown && !i.Claim.Active
+}
+
+// project filters and orders the current view's rows and counts the
+// finished rows it hides.
+func (m Model) project() ([]queue.Item, int) {
 	order := make([]string, 0, len(m.Sources))
 	for _, s := range m.Sources {
 		order = append(order, s.ID)
@@ -561,6 +594,7 @@ func (m Model) rows() []queue.Item {
 		rows = queue.EvaluateView(m.Snapshot.Items, queue.View{SourceOrder: order, Filters: filters})
 	}
 	out := rows[:0]
+	hidden := 0
 	rule := m.ViewRules[m.ViewName]
 	pinned := m.pinnedIdentity()
 	for _, i := range rows {
@@ -624,15 +658,18 @@ func (m Model) rows() []queue.Item {
 				}
 			}
 		}
+		if !m.ShowDone && isDone(i) {
+			hidden++
+			continue
+		}
 		out = append(out, i)
 	}
-	m.cacheRows(key, out)
-	return out
+	return out, hidden
 }
 
-func (m Model) cacheRows(key string, out []queue.Item) {
+func (m Model) cacheRows(key string, out []queue.Item, hidden int) {
 	if m.rowCache != nil {
-		m.rowCache.key, m.rowCache.rows = key, out
+		m.rowCache.key, m.rowCache.rows, m.rowCache.hidden = key, out, hidden
 		m.rowCache.widths = nil
 		m.rowCache.counts = make(map[string]int, len(m.Views))
 		// The standard views share one scan with freshness and edge counts.
@@ -645,7 +682,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		}
 		m.rowCache.observed = time.Time{}
 		for _, item := range m.Snapshot.Items {
-			if standard {
+			if standard && (m.ShowDone || !isDone(item)) {
 				m.rowCache.counts["All"]++
 				if shownReadiness(item) == queue.Ready {
 					m.rowCache.counts["Ready"]++
@@ -669,9 +706,9 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 	}
 }
 
-func (m Model) cachePreparedRows(key string, rows []queue.Item, counts map[string]int, observed time.Time) {
+func (m Model) cachePreparedRows(key string, rows []queue.Item, hidden int, counts map[string]int, observed time.Time) {
 	if m.rowCache != nil {
-		m.rowCache.key = key
+		m.rowCache.key, m.rowCache.hidden = key, hidden
 		m.rowCache.widths = nil
 		m.rowCache.rows = rows
 		m.rowCache.counts = counts
@@ -915,10 +952,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.orderedKeys = nil
 		}
 		if preparedRowsUsable {
-			m.cachePreparedRows(m.rowKey(), v.preparedRows, v.preparedCounts, v.preparedObserved)
+			m.cachePreparedRows(m.rowKey(), v.preparedRows, v.preparedHidden, v.preparedCounts, v.preparedObserved)
 		}
 		if !preparedRowsUsable && v.allRows != nil && m.ViewName == "All" && m.Filter == "" && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0 && sameSourceOrder(m.Sources, v.sourceIDs) {
-			m.cacheRows(m.rowKey(), v.allRows)
+			rows, hidden := v.allRows, 0
+			if !m.ShowDone {
+				rows = make([]queue.Item, 0, len(v.allRows))
+				for _, item := range v.allRows {
+					if isDone(item) && identity(item) != m.pinnedIdentity() {
+						hidden++
+						continue
+					}
+					rows = append(rows, item)
+				}
+			}
+			m.cacheRows(m.rowKey(), rows, hidden)
 		}
 		m.anchor(m.rows())
 		selected, hasSelection := m.selected(m.rows())
@@ -1456,6 +1504,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.requestQuit()
 		case "i":
 			return m.itemClaimJump()
+		case "d":
+			m.ShowDone = !m.ShowDone
+			m.Notice = "Done items hidden"
+			if m.ShowDone {
+				m.Notice = "Done items shown"
+			}
+			m.anchor(m.rows())
 		case "j", "down":
 			m.move(1)
 		case "k", "up":
@@ -1860,6 +1915,9 @@ func (m Model) viewCount(name string) int {
 }
 
 func (m Model) viewCountMatches(item queue.Item, name string) bool {
+	if !m.ShowDone && isDone(item) {
+		return false
+	}
 	rule := m.ViewRules[name]
 	filters := m.ViewFilters[name]
 	if len(filters.SourceIDs) > 0 {
@@ -2052,7 +2110,7 @@ func (m Model) displayState(i queue.Item) string {
 		return "denied"
 	}
 	// Finished work is never selectable; its readiness would only add noise.
-	done := i.Terminal && i.TerminalKnown && !i.Claim.Active
+	done := isDone(i)
 	// A row being reread keeps its last readiness until the reread settles.
 	if i.Readiness.LastKnown != "" && !done {
 		return string(i.Readiness.LastKnown) + " (stale)"
@@ -2067,7 +2125,7 @@ func (m Model) displayState(i queue.Item) string {
 		return "blocked"
 	}
 	if i.Claim.Active {
-		return "occupied"
+		return "claimed"
 	}
 	if m.Me != "" || len(m.MeBySource[i.Ref.SourceID]) > 0 {
 		for _, name := range i.AssignedTo {

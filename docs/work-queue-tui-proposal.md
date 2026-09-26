@@ -516,24 +516,19 @@ Project-suggested sources are deferred. When added, a repository file may only p
 
 ## 13. TUI and agent experience
 
-Default to a dense list/detail layout. A board hides dependencies, authority, freshness, and partial loading; it can come later as another view of the same model.
+Default to a dense list/detail layout. A board hides dependencies, authority, freshness, and partial loading; it can come later as another view of the same model. [Queue TUI](queue-tui.md) shows the shipped screens and keys.
 
 ```text
-worklease queue  view: All  authority: team (remote 3f9c…)  me: brett  sources 2/2  refresh 8s ago
- Views         ID        Title                    State  Ready    Assigned  Claim      | acme/api#184
-   Ready    3  TASK-42   Cache provider pages     To Do  ready    -         free       | Retry backoff for sync
-   Mine     5  #184      Retry backoff for sync   Open   ready    brett     me 4m      | Open, by alice (outside)
-   Claimed  1  #190      Split queue index        Open   unknown  -         -          | Ready     2/2 prereqs closed
-   Recovery 0                                                                          | Assigned  brett
- > All    214                                                                          | Claim     me, queue-7f3c, 4m
- Sources                                                                               |           renews 1m12s, ok
-   backlog  ok                                                                         | Native    not exposed
-   github   stale 3m                                                                   | Resource  github:acme%2Fapi#184
-               3 of 214  total exact  edges 214/214                                    | [Summary] Deps Activity Claims
- j/k move  / filter  enter open  c claim  a assign  p progress  x launch  : command  ? help
+worklease queue  authority local 1cc38a84…  me @brett                                synced now
+ Ready 4   Mine 2   Claimed 2   Recovery 0   Claims 3
+  ID        Title                                 Status       Ready               │ TASK-131 Retry busy adapter…
+  TASK-130  Add a Jira Cloud source adapter       To Do        ready               │ s status  p note  i view claim
+> TASK-131  Retry busy adapter snapshot startup   In Progress  mine                │  Summary   Dependencies   …
+  TASK-132  Decode resource keys in TUI displays  To Do        pi-agent@brett-mbp  │ Claim    mine · expires in 9m
+12 done hidden
 ```
 
-The mockup is illustrative; not every provider supplies every column. Assignment, native occupancy, and Worklease ownership remain independent facts. A claim badge's detail always includes authority and scope. `Mine` distinguishes assigned to my account from held by my session. Session labels are shortened for display only; stored session identities remain full UUIDs.
+Not every provider supplies every column. Ready answers one question, whether the item can be picked up, and names the holder when a claim prevents it. Assignment, native occupancy, and Worklease ownership remain independent facts. A claim's detail always includes authority and scope. `Mine` distinguishes assigned to my account from held by my session. Session labels are shortened for display only; stored session identities remain full UUIDs. Key bindings live in help (`?`), not on screen; the footer shows only state that needs attention.
 
 Every user-initiated claim/provider action opens a preview first. Heartbeats follow the already authorized session policy without repeated prompts:
 
@@ -547,24 +542,14 @@ Every user-initiated claim/provider action opens a preview first. Heartbeats fol
                                              enter confirm   esc cancel
 ```
 
-| Keys | Action |
-| --- | --- |
-| `j`/`k`, arrows, `gg`/`G` | Move, top, bottom |
-| `h`/`l`, Tab, Enter, Esc | Pane focus, open, back |
-| `/`, `n`/`N` | Filter; next or previous match |
-| `c`, `R` | Claim for me; release (capital to avoid accidents) |
-| `a`, `s`, `p` | Assign to me, change state, record progress |
-| `x`, `o` | Launch action picker; open provider URL |
-| `r`, `:`, `?` | Refresh, command palette, help |
-
-Keymaps are remappable (D17). Start work appears in the command palette and detail actions with its separate claim/transition preview; `c` continues to mean Claim only. Dependency details show relationship type, required outcome, observed evidence, coverage/freshness, and the exact reason for ready, blocked, or unknown.
+Keymaps are remappable (D17). `S` starts work with its separate claim/transition preview; `c` claims without a provider write. Dependency details show relationship type, required outcome, observed evidence, coverage/freshness, and the exact reason for ready, blocked, or unknown.
 
 - Search states whether it covers loaded rows, the local index, or the remote source.
 - Selection stays anchored by canonical identity during refresh. Never reorder beneath an open preview or steal focus when a late detail response arrives. Preserve scroll position and signal new rows instead of jumping.
 - Detail tabs: Summary, Dependencies, Activity, Claims, and Recovery. The Recovery view shows unresolved records across sources; its item tab filters those same records. Read-back retries never redispatch provider writes. An operator can reconcile an unknown no-commit result only after attesting that the executor has ceased and supplying typed provider audit evidence; reconciliation leaves the claim held. Long bodies and comments load lazily. Show raw workflow state and why an action is unavailable.
-- Distinguish blocked, occupied, assigned elsewhere, unknown dependencies, stale, permission denied, offline, rate-limited, and recovery-required. Never collapse them into "no work".
+- Distinguish blocked, claimed, assigned elsewhere, unknown dependencies, stale, permission denied, offline, rate-limited, and recovery-required. Never collapse them into "no work".
 - No partial-success toast may conceal a held claim or uncertain write.
-- Below about 100 columns, switch between list and detail instead of squeezing columns. Support no-color and high-contrast modes, resize, Unicode width, and text labels rather than color-only state. Test Terminal.app, iTerm2, Ghostty, tmux, and Herdr panes.
+- Below 120 columns, switch between list and detail instead of squeezing columns. Support no-color and high-contrast modes, resize, Unicode width, and text labels rather than color-only state. Test Terminal.app, iTerm2, Ghostty, tmux, and Herdr panes.
 - Strip terminal control and OSC sequences from provider content, render bodies as bounded, sanitized text with minimal Markdown styling, and never execute embedded commands. Opening a URL or editor requires an explicit action with safe argument passing. The queue never opens raw Backlog.md files for editing, because writes go through the CLI.
 
 **JSON path.** `worklease queue recovery --json` reads the owner-private journal without loading a provider or view and exposes the same operation, effect, dispatch, read-back, claim, and allowed-step fields as the Recovery view. `worklease queue recovery retry --operation-id ID --handle PRIVATE_HANDLE` performs read-back and exact checkpoint replay; `reconcile` requires no-commit and executor-cessation attestations plus typed evidence and records the OS operator identity. `worklease queue query --view NAME --json` returns the same items, coverage, freshness, authority, capability denials, and action availability as the TUI, with a stable schema version and bounded pagination. Each item carries its exact claim `resources` and `keyInputs` so CLI callers derive identical keys. `--max-age DURATION` serves the index when it is fresh enough and otherwise joins or starts a single-flight refresh. `--require-complete` fails with a structured `incomplete` result instead of returning partial coverage. `worklease queue next --view NAME --json` runs the contract's `selectNext` over a complete scope (or the explicitly labeled known-item Linear exception below) and returns one candidate or a structured no-work reason. Without flags it does not acquire; the caller claims, and on contention it queries again. For agent loops, `--claim --session ID` selects and acquires in one step (D28). Every candidate it tries is revalidated (prerequisite closure, eligibility, and the identity gate) and acquired with no wait. A contended candidate is recorded with its holder and expiry, and the next one is tried. The first success returns the candidate plus the claim receipt. If contention exhausts the snapshot's ready candidates, the result is the structured `active-claims` outcome. An uncertain acquire stops and is surfaced for pending-request recovery; the command never tries another candidate while a claim might be held. `--start` then runs the Start work transition (§8) and reports claim and transition outcomes separately. MCP `queue_next` exposes the same result schema. No workflow requires screen scraping, and none is safer in the TUI than in automation.

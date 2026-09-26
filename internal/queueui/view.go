@@ -73,7 +73,7 @@ func (m Model) s() *palette {
 }
 
 // splitWidth is the narrowest terminal that shows list and detail side by side.
-const splitWidth = 100
+const splitWidth = 120
 
 const columnGap = 2
 
@@ -291,7 +291,8 @@ func (m Model) paneWidths() (int, int) {
 	if !m.split() {
 		return 0, m.Width
 	}
-	detail := max(40, min(80, m.Width*2/5))
+	// Detail text reads best at 48-72 columns; the list gets the rest.
+	detail := max(48, min(72, m.Width*2/5))
 	return m.Width - detail - 1, detail
 }
 
@@ -578,6 +579,9 @@ func (m Model) queueStatus(rows []queue.Item) (left, right []seg) {
 	case loaded < total:
 		left = append(left, seg{sep(left) + fmt.Sprintf("%d of %d loaded", loaded, total), m.s().faint})
 	}
+	if hidden := m.hiddenDone(); hidden > 0 {
+		left = append(left, seg{sep(left) + fmt.Sprintf("%d done hidden", hidden), m.s().faint})
+	}
 	for _, fact := range []struct{ label, value string }{{"provider ", sourceFreshness(m.Snapshot)}, {"claims ", freshnessLabel(m.ClaimFreshness)}} {
 		if fact.value == "fresh" {
 			continue
@@ -664,7 +668,7 @@ var helpGroups = []struct {
 	bindings []binding
 }{
 	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous row"}, {"gg / G", "first / last row"}, {"H / M / L", "top / middle / bottom visible row"}, {"zz / zt / zb", "center / top / bottom selected row"}, {"^f / ^b", "scroll one page forward / back"}, {"^d / ^u", "scroll half page down / up"}, {"^e / ^y", "scroll one line down / up"}, {"pgdn / pgup", "scroll one page"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}}},
-	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}}},
+	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}, {"d", "show / hide done items"}}},
 	{"Item actions (preview first)", []binding{{"S", "start: claim + move to started status"}, {"c", "claim for me"}, {"s", "change provider status"}, {"p", "add a progress note"}, {"a", "assign to me"}, {"R", "release a verified no-effect claim"}, {"x", "launch a worker"}, {"o", "open in provider"}, {"i", "show the item's claim"}, {"m", "load more comments / claim history"}}},
 	{"Queue", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
@@ -870,16 +874,15 @@ func (m Model) columns(rows, visible []queue.Item, width int) []column[queue.Ite
 		{title: "ID", min: idWidth, max: idWidth, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Ref.ItemID, m.s().accent }},
 		{title: "Title", min: 24, flex: true, cell: func(i queue.Item) (string, lipgloss.Style) { return i.Title, lipgloss.NewStyle() }},
 		{title: "Status", min: 6, max: 16, cell: func(i queue.Item) (string, lipgloss.Style) { return projectStatusDisplay(i), m.s().stateStyle(i.State) }},
-		{title: "Ready", min: 8, max: 20, alias: readyAliases, cell: m.readyCell},
+		{title: "Ready", min: 8, max: 22, alias: readyAliases, cell: m.readyCell},
 		{title: "Assigned", min: 6, max: 14, cell: m.assignedCell},
 		{title: "Native", min: 6, max: 12, cell: func(i queue.Item) (string, lipgloss.Style) { return i.NativeClaim, m.s().faint }},
-		{title: "Claim", min: 6, max: 22, cell: m.claimCell},
 	}
 	if !native {
 		all = slices.Delete(all, 5, 6)
 	}
 	fitContent(all, m.contentWidths(all, visible))
-	return fitColumns(all, width-2, []string{"Native", "Assigned", "Claim", "Status"})
+	return fitColumns(all, width-2, []string{"Native", "Assigned", "Status"})
 }
 
 // contentWidths returns the widest cell per fixed column among the visible
@@ -915,17 +918,32 @@ func (p *palette) stateStyle(state queue.StateCategory) lipgloss.Style {
 
 var readyAliases = map[string]string{"assigned elsewhere": "elsewhere", "unknown dependencies": "deps unknown"}
 
+// readyCell answers "can I pick this up?" in one list column: ready, or
+// why not. A claimed item names its holder.
 func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
+	text, style := m.readyState(i)
+	if text == "claimed" {
+		return valueOr(clean(i.Claim.AgentID), text), style
+	}
+	return text, style
+}
+
+// readyState is the item's readiness, including whether a claim makes it
+// unavailable. Ready requires a known, current claim observation.
+func (m Model) readyState(i queue.Item) (string, lipgloss.Style) {
 	if i.Claim.Active && m.ownsClaim(i) {
 		return "mine", m.s().ready
 	}
 	state := m.displayState(i)
+	if state == "ready" && (!i.Claim.Known || i.Claim.Stale || i.Claim.Reason != "") {
+		return "claim unknown", m.s().warn
+	}
 	switch state {
 	case "ready":
 		return state, m.s().ready
 	case "blocked", "denied":
 		return state, m.s().bad
-	case "occupied":
+	case "claimed":
 		return state, m.s().held
 	case "assigned elsewhere":
 		return state, m.s().faint
@@ -950,8 +968,7 @@ func (m Model) assignedCell(i queue.Item) (string, lipgloss.Style) {
 	return strings.Join(i.AssignedTo, ","), lipgloss.NewStyle()
 }
 
-// claimCell names the holder of an active claim, since Ready already says
-// the item is occupied; a free item shows a dash.
+// claimCell names the holder of an active claim; a free item shows a dash.
 func (m Model) claimCell(i queue.Item) (string, lipgloss.Style) {
 	if m.ownsClaim(i) {
 		return "mine", m.s().ready
@@ -1040,6 +1057,9 @@ func (m Model) emptyLines(width int) []string {
 	lines = append(lines, "  "+clip(fmt.Sprintf("Loaded %d: %s", len(m.Snapshot.Items), strings.Join(parts, ", ")), width-2))
 	if m.Filter != "" {
 		lines = append(lines, "  "+m.s().accent.Render(clip(fmt.Sprintf("Filter %q is active; esc clears it.", m.Filter), width-2)))
+	}
+	if hidden := m.hiddenDone(); hidden > 0 {
+		lines = append(lines, "  "+m.s().accent.Render(clip(fmt.Sprintf("%d done items are hidden; d shows them.", hidden), width-2)))
 	}
 	if counts["stale"] > 0 || sourceFreshness(m.Snapshot) != "fresh" {
 		lines = append(lines, "  "+m.s().warn.Render("Stale rows are never ready; r refreshes sources."))
@@ -1160,7 +1180,7 @@ func (m Model) itemActions(i queue.Item) []binding {
 		actions = append(actions, binding{"o", "open"})
 	}
 	if _, ok := m.itemClaim(i); ok {
-		actions = append(actions, binding{"i", "claim"})
+		actions = append(actions, binding{"i", "view claim"})
 	}
 	return actions
 }
@@ -1237,7 +1257,7 @@ func detail(m Model, i queue.Item) []dline {
 		} else {
 			add("Status", valueOr(i.RawStatus, "unknown"), m.s().stateStyle(i.State))
 		}
-		ready, readyStyle := m.readyCell(i)
+		ready, readyStyle := m.readyState(i)
 		add("Ready", ready, readyStyle)
 		add("Assigned", valueOr(strings.Join(i.AssignedTo, ", "), "nobody"), plainStyle)
 		if i.NativeClaim != "" && i.NativeClaim != "not-exposed" {
@@ -1305,18 +1325,19 @@ func detail(m Model, i queue.Item) []dline {
 			add("", "Press m for more comments", m.s().accent)
 		}
 	case 3:
-		add("Authority", fmt.Sprintf("%s (%s)", m.Authority, m.Scope), plainStyle)
-		add("Resource", displayResources(i.Resources), plainStyle)
 		claim, claimStyle := m.claimSummary(i)
 		add("Current", claim, claimStyle)
 		add("Agent", valueOr(i.Claim.AgentID, "—"), plainStyle)
-		add("Session", valueOr(i.Claim.SessionID, "—"), plainStyle)
 		if !i.Claim.ExpiresAt.IsZero() {
 			if !i.Claim.AcquiredAt.IsZero() && i.Claim.ExpiresAt.After(i.Claim.AcquiredAt) {
 				add("Granted TTL", i.Claim.ExpiresAt.Sub(i.Claim.AcquiredAt).Round(time.Second).String(), plainStyle)
 			}
 			add("Expires", i.Claim.ExpiresAt.UTC().Format(time.RFC3339), plainStyle)
 		}
+		add("", "", plainStyle)
+		add("Session", valueOr(i.Claim.SessionID, "—"), m.s().faint)
+		add("Resource", displayResources(i.Resources), m.s().faint)
+		add("Authority", fmt.Sprintf("%s (%s)", m.Authority, m.Scope), m.s().faint)
 		for _, owned := range m.OwnedClaims {
 			if !sameResources(i.Resources, owned.Resources) {
 				continue

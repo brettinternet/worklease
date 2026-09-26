@@ -2,6 +2,7 @@ package queueui
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -160,8 +161,8 @@ func claimExpiryLabel(claim lease.ClaimView, now time.Time) string {
 	if claim.ExpiresAt.IsZero() {
 		return "expiry unknown"
 	}
-	if !claim.Active {
-		return "expired"
+	if !claim.Active || !claim.ExpiresAt.After(now) {
+		return "ended " + ago(now.Sub(claim.ExpiresAt))
 	}
 	return expiresIn(claim.ExpiresAt.Sub(now))
 }
@@ -175,17 +176,35 @@ func when(at, now time.Time) string {
 }
 
 // shortResource abbreviates a resource key for tables: a path claim shows
-// its repository-relative path and an opaque coordination key its hash
-// prefix. Details always show the full key.
+// its repository-relative path, a host-local item key its repository and
+// item, and an opaque coordination key its hash prefix. Details always
+// show the full key.
 func shortResource(resource string) string {
 	parts := strings.SplitN(resource, ":", 3)
+	fields := strings.Split(resource, ":")
 	switch {
 	case len(parts) == 3 && parts[0] == "path":
 		return displayResource(parts[2])
 	case len(parts) == 3 && parts[0] == "coordination" && len(parts[2]) > 12:
 		return displayResource(parts[0] + ":" + parts[1] + ":" + parts[2][:8] + "…")
+	case len(fields) >= 4 && (fields[0] == "backlog-md" || fields[0] == "markdown"):
+		// PROVIDER:GIT-COMMON-DIR:LOCATOR:ITEM
+		item := fields[len(fields)-1]
+		if item == "__source__" {
+			item = fields[len(fields)-2]
+		}
+		return repositoryName(strings.Join(fields[1:len(fields)-2], ":")) + " " + displayResource(item)
 	}
 	return displayResource(resource)
+}
+
+// repositoryName names a checkout by its Git common directory.
+func repositoryName(commonDir string) string {
+	commonDir = strings.TrimSuffix(displayResource(commonDir), "/")
+	if path.Base(commonDir) == ".git" {
+		commonDir = path.Dir(commonDir)
+	}
+	return strings.TrimSuffix(path.Base(commonDir), ".git")
 }
 
 func shortResources(resources []string) string {
@@ -205,7 +224,7 @@ func (m Model) claimDetailPane(claim lease.ClaimView, width, height int) []strin
 	if item, ok := m.claimItem(claim); ok {
 		id := clip(item.Ref.ItemID, 30)
 		title = m.s().accent.Bold(true).Render(id) + " " + m.s().bold.Render(clip(item.Title, max(1, width-len(id)-2)))
-		actions = append(actions, binding{"i", "show item"})
+		actions = append(actions, binding{"i", "view item"})
 	} else {
 		title = m.s().bold.Render(clip(shortResources(claim.Resources), width-1))
 	}
@@ -228,16 +247,8 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 			holder += " (mine)"
 		}
 		add("Holder", holder, plainStyle)
-		add("Session", valueOr(claim.SessionID, "unknown"), plainStyle)
 		if item, ok := m.claimItem(claim); ok {
 			add("Item", item.Ref.String(), m.s().accent)
-		}
-		for n, resource := range claim.Resources {
-			label := " "
-			if n == 0 {
-				label = "Resources"
-			}
-			add(label, displayResource(resource), plainStyle)
 		}
 		add("Acquired", when(claim.AcquiredAt, now), plainStyle)
 		add("Heartbeat", when(claim.HeartbeatAt, now), plainStyle)
@@ -249,13 +260,23 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 		if len(claim.UnknownOperations) > 0 {
 			add("Progress", fmt.Sprintf("%d operation(s) need read-back", len(claim.UnknownOperations)), m.s().warn)
 		}
-		if claim.WorkKey != "" {
-			add("Work key", claim.WorkKey, plainStyle)
-		}
-		add("Claim ID", claim.ClaimID, m.s().faint)
 		if m.Claims.Stale {
 			add("Freshness", "stale \u00b7 "+valueOr(m.Claims.Error, "refresh unavailable"), m.s().warnBold)
 		}
+		// Exact identifiers for CLI use, after the facts people scan for.
+		add("", "", plainStyle)
+		add("Session", valueOr(claim.SessionID, "unknown"), m.s().faint)
+		for n, resource := range claim.Resources {
+			label := " "
+			if n == 0 {
+				label = "Resources"
+			}
+			add(label, displayResource(resource), m.s().faint)
+		}
+		if claim.WorkKey != "" && !slices.Equal(claim.Resources, []string{claim.WorkKey}) {
+			add("Work key", claim.WorkKey, m.s().faint)
+		}
+		add("Claim ID", claim.ClaimID, m.s().faint)
 	} else if m.Claims.PublicOnly {
 		// The remote list exposes timestamps, but status/list do not expose
 		// other sessions' lifecycle events or operation history.

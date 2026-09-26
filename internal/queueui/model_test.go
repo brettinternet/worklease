@@ -2033,3 +2033,36 @@ func TestClosingDetailReturnsToItemThatLeftView(t *testing.T) {
 		}
 	}
 }
+
+func TestDoneItemsHiddenUntilToggled(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	done := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()]
+	done.Terminal, done.TerminalKnown, done.Claim = true, true, queue.ClaimObservation{Known: true}
+	snapshot.Items[done.Ref.Key()] = done
+	m := New(snapshot)
+	m.Sources = []queue.Source{{ID: "a"}}
+	next, _ := m.Update(PrepareSnapshotForModel(snapshot, m))
+	m = next.(Model)
+	if rows, view := m.rows(), screenText(m.View()); len(rows) != 1 || !strings.Contains(view, "All 1") || !strings.Contains(view, "1 done hidden") {
+		t.Fatalf("done item not hidden: rows=%d %s", len(rows), view)
+	}
+	m, _ = press(m, "d")
+	if rows, view := m.rows(), screenText(m.View()); len(rows) != 2 || !strings.Contains(view, "All 2") || strings.Contains(view, "done hidden") {
+		t.Fatalf("d did not show done items: rows=%d %s", len(rows), view)
+	}
+}
+
+func TestReadyColumnNamesClaimHolder(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	unknown := snapshot.Items[queue.Ref{SourceID: "a", ItemID: "2"}.Key()]
+	unknown.DependenciesKnown, unknown.Readiness = true, queue.Readiness{Status: queue.Ready}
+	snapshot.Items[unknown.Ref.Key()] = unknown
+	m := New(snapshot)
+	m.anchor(m.rows())
+	view := screenText(m.View())
+	if !strings.Contains(view, "open whole-agent") || !strings.Contains(view, "open claim unknown") || strings.Contains(view, "occupied") {
+		t.Fatalf("Ready column does not name the holder or unknown claim: %s", view)
+	}
+}
