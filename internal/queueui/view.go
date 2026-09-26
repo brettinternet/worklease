@@ -276,12 +276,22 @@ func (m Model) listOffset(n, capacity int) int {
 	return max(0, min(offset, n-capacity))
 }
 
-func (m Model) split() bool { return m.Detail && m.Width >= splitWidth }
+func (m Model) split() bool {
+	detail := m.Detail
+	if m.ViewName == ClaimsViewID {
+		detail = m.Claims.Detail
+	}
+	return detail && m.Width >= splitWidth
+}
 
 // paneWidths returns the list and detail widths; one separator column sits
 // between them when split.
 func (m Model) paneWidths() (int, int) {
-	if !m.Detail {
+	detailOpen := m.Detail
+	if m.ViewName == ClaimsViewID {
+		detailOpen = m.Claims.Detail
+	}
+	if !detailOpen {
 		return m.Width, 0
 	}
 	if !m.split() {
@@ -304,7 +314,9 @@ func (m Model) View() string {
 // screen renders the queue without any dialog, one string per terminal line.
 func (m Model) screen() []string {
 	rows := m.rows()
-	m.anchor(rows)
+	if m.ViewName != ClaimsViewID {
+		m.anchor(rows)
+	}
 	f := m.frame(rows)
 	var body []string
 	switch m.baseMode() {
@@ -312,6 +324,8 @@ func (m Model) screen() []string {
 		body = m.helpLines()
 	case modeRecovery:
 		body = m.recoveryLines(f.bodyHeight)
+	case modeClaims:
+		body = m.claimsBody(f.bodyHeight)
 	default:
 		body = m.mainBody(rows, f.bodyHeight)
 	}
@@ -403,6 +417,9 @@ func (m Model) viewCountFor(name string) int {
 	if name == RecoveryViewID {
 		return len(m.Recovery)
 	}
+	if name == ClaimsViewID {
+		return len(m.Claims.Items)
+	}
 	if m.rowCache == nil || m.rowCache.counts == nil {
 		return m.viewCount(name)
 	}
@@ -417,6 +434,8 @@ func (m Model) viewTabs() (string, []span) {
 		style := m.s().faint
 		if name == RecoveryViewID && count > 0 {
 			style = m.s().bad
+		} else if name == ClaimsViewID && m.Claims.Stale {
+			style = m.s().warnBold
 		}
 		items = append(items, tabItem{label: clip(viewLabel(name), 20), suffix: fmt.Sprint(count), suffixStyle: style})
 		if name == m.ViewName {
@@ -433,6 +452,19 @@ var sourceHints = map[string]string{
 
 func (m Model) banners() []string {
 	var out []string
+	if m.ViewName == ClaimsViewID && m.Claims.Notice != "" {
+		out = append(out, m.s().accent.Render(clip(m.Claims.Notice, m.Width)))
+	}
+	if m.ViewName == ClaimsViewID && m.Claims.Stale {
+		text := "Claims are stale"
+		if m.Claims.Error != "" {
+			text += ": " + m.Claims.Error
+		}
+		out = append(out, m.s().warnBold.Render(clip(text, m.Width)))
+	}
+	if m.ViewName == ClaimsViewID && m.Claims.EventsError != "" {
+		out = append(out, m.s().warn.Render(clip("Lifecycle events unavailable: "+m.Claims.EventsError, m.Width)))
+	}
 	if m.UncertainWrite || len(m.Recovery) > 0 {
 		text := fmt.Sprintf(" RECOVERY REQUIRED: %d unresolved writes; claims held (do not release until verified)", len(m.Recovery))
 		if m.UncertainWrite {
@@ -470,6 +502,9 @@ func (m Model) banners() []string {
 }
 
 func (m Model) footerLines(rows []queue.Item) []string {
+	if m.ViewName == ClaimsViewID {
+		return m.claimsFooterLines()
+	}
 	loaded := len(m.Snapshot.Items)
 	total, accuracy := 0, "exact"
 	if len(m.Snapshot.Sources) == 0 || len(m.SourceErrors) > 0 {
@@ -575,13 +610,23 @@ func (m Model) bindings() []binding {
 	var bindings []binding
 	switch m.mode() {
 	case modeFilter:
-		bindings = []binding{{"enter", "apply"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}
+		if m.ViewName == ClaimsViewID {
+			bindings = []binding{{"enter", "apply prefix"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}
+		} else {
+			bindings = []binding{{"enter", "apply"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}
+		}
 	case modePalette:
 		bindings = []binding{{"start work", "command"}, {"enter", "run"}, {"esc", "cancel"}}
 	case modeHelp:
 		bindings = []binding{{"esc/?", "close help"}}
 	case modeRecovery:
 		bindings = []binding{{"j/k", "select"}, {"r", "retry read-back"}, {"e", "attest"}, {"u", "reload"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
+	case modeClaims:
+		if m.Claims.Detail {
+			bindings = []binding{{"j/k", "select"}, {"tab", "section"}, {"pgup/pgdn", "scroll"}, {"i", "open queue item"}, {"esc", "back"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
+		} else {
+			bindings = []binding{{"j/k", "select"}, {"enter", "detail"}, {"/", "resource prefix"}, {"m", "mine/all"}, {"e", "expiring"}, {"s", "stale"}, {"i", "queue item"}, {"r", "refresh"}, {"v/1-9", "view"}, {"q", "quit"}, {"?", "help"}}
+		}
 	case modeList:
 		if m.Detail {
 			return []binding{{"tab", "section"}, {"pgup/pgdn", "scroll"}, {"c", "claim"}, {"S", "start"}, {"s", "state"}, {"p", "progress"}, {"a", "assign"}, {"o", "open"}, {"esc", "back"}, {"?", "help"}}
@@ -602,7 +647,7 @@ var helpGroups = []struct {
 	bindings []binding
 }{
 	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous match"}, {"gg / G", "top / bottom"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}, {"pgdn pgup", "scroll detail"}}},
-	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}}},
+	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows or Claims resource prefix"}, {"Claims", "authority-wide; Claimed filters items"}, {"esc", "clear filter"}}},
 	{"Item actions (preview first)", []binding{{"c", "claim for me"}, {"S", "start work: claim + transition (detail)"}, {"s", "change provider state"}, {"p", "record progress note"}, {"a", "assign to me"}, {"R", "release verified no-effect claim"}, {"x", "launch worker"}, {"o", "open provider URL"}, {"m", "load more comments / claim history"}}},
 	{"Queue", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
@@ -611,11 +656,21 @@ var helpGroups = []struct {
 func (m Model) helpLines() []string {
 	var groups [][]string
 	for _, group := range helpGroups {
+		if m.ViewName == ClaimsViewID && (group.title == "Item actions (preview first)" || group.title == "Queue") {
+			continue
+		}
 		lines := []string{m.s().bold.Render(group.title)}
 		for _, b := range group.bindings {
 			lines = append(lines, "  "+m.s().key.Render(fit(b.keys, 11))+" "+b.desc)
 		}
 		groups = append(groups, append(lines, ""))
+	}
+	if m.ViewName == ClaimsViewID {
+		claims := []string{m.s().bold.Render("Claims tab · authority-wide, read-only")}
+		for _, b := range []binding{{"j/k", "select claim"}, {"enter", "open holder, session, expiry and checkpoint status"}, {"/", "filter by resource prefix"}, {"m", "toggle mine / all"}, {"e", "toggle expiring"}, {"s", "toggle stale"}, {"i", "jump to matching queue item"}, {"r", "refresh list and event cursor"}, {"q", "quit"}} {
+			claims = append(claims, "  "+m.s().key.Render(fit(b.keys, 11))+" "+b.desc)
+		}
+		groups = append(groups, append(claims, ""))
 	}
 	const columnWidth = 56
 	if m.Width < columnWidth*2 {
@@ -937,17 +992,20 @@ func (m Model) mainBody(rows []queue.Item, height int) []string {
 		return pane
 	}
 	list := m.listLines(rows, listWidth-1, height)
-	sep := m.s().faint.Render("│")
+	return splitBody(list, pane, listWidth, height, m.s().faint.Render("│"))
+}
+
+func splitBody(list, pane []string, listWidth, height int, separator string) []string {
 	out := make([]string, height)
 	for n := range out {
-		l, d := "", ""
+		left, right := "", ""
 		if n < len(list) {
-			l = list[n]
+			left = list[n]
 		}
 		if n < len(pane) {
-			d = pane[n]
+			right = pane[n]
 		}
-		out[n] = pad(l, listWidth) + sep + d
+		out[n] = pad(left, listWidth) + separator + right
 	}
 	return out
 }

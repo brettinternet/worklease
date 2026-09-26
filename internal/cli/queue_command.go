@@ -64,12 +64,16 @@ func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string
 }
 
 func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
-	cfg, err := config.LoadQueue(os.Getenv)
+	cfg, loadErr := config.LoadQueue(os.Getenv)
+	notice, claimsOnly, err := queueClaimsOnlyFallback(cfg, loadErr)
 	if err != nil {
 		return err
 	}
-	if len(cfg.Views) == 0 {
-		return reason.Invalid("queue.yaml has no views")
+	if claimsOnly {
+		if cmd.String("view") != "" {
+			return reason.Invalid("unknown queue view: " + cmd.String("view"))
+		}
+		return runQueueClaimsOnly(ctx, cmd, s, notice)
 	}
 	selected := cfg.Views[0]
 	if name := cmd.String("view"); name != "" {
@@ -172,7 +176,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.ViewFilters[v.Name] = filters
 		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
 	}
-	model.Views = append(model.Views, queueui.RecoveryViewID)
+	model.Views = append(model.Views, queueui.RecoveryViewID, queueui.ClaimsViewID)
 	journal, err := queueRecoveryJournal()
 	if err != nil {
 		return err
@@ -193,6 +197,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.Scope = "remote"
 	}
 	model.Authority = fmt.Sprintf("%s %s", authorityView.Profile, authorityView.ID)
+	configureClaimsTab(&model, backend, ctx, queueSession)
 	if me, ok := cfg.Me["backlog-md"]; ok {
 		var names []string
 		if me.Decode(&names) == nil && len(names) > 0 {

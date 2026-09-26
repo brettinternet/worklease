@@ -20,6 +20,9 @@ func (m Model) mouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.ViewName == ClaimsViewID {
+		return m.claimsMouse(v)
+	}
 	rows := m.rows()
 	m.anchor(rows)
 	f := m.frame(rows)

@@ -259,9 +259,19 @@ type ViewRule struct {
 	Readiness, Claim string
 	Assigned         []string
 }
+type viewSelection struct {
+	Selected      string
+	Index, Offset int
+	Detail        bool
+	DetailOffset  int
+	Tab           int
+}
+
 type Model struct {
 	Snapshot                       queue.Snapshot
 	Views                          []string
+	Claims                         ClaimsState
+	viewSelections                 map[string]viewSelection
 	ViewFilters                    map[string]queue.Filters
 	ViewRules                      map[string]ViewRule
 	ViewName, Authority, Scope, Me string
@@ -349,6 +359,7 @@ type mode int
 const (
 	modeList mode = iota
 	modeRecovery
+	modeClaims
 	modeHelp
 	modeFilter
 	modePalette
@@ -398,6 +409,8 @@ func (m Model) baseMode() mode {
 		return modeHelp
 	case m.ViewName == RecoveryViewID:
 		return modeRecovery
+	case m.ViewName == ClaimsViewID:
+		return modeClaims
 	}
 	return modeList
 }
@@ -417,6 +430,9 @@ type rowCache struct {
 // RecoveryViewID cannot collide with a caller-configured view named Recovery.
 const RecoveryViewID = "\x00recovery"
 
+// ClaimsViewID cannot collide with a caller-configured view named Claims.
+const ClaimsViewID = "\x00claims"
+
 func recoveryTime(at *time.Time) string {
 	if at == nil {
 		return "not dispatched"
@@ -425,16 +441,25 @@ func recoveryTime(at *time.Time) string {
 }
 
 func viewLabel(name string) string {
-	if name == RecoveryViewID {
+	switch name {
+	case RecoveryViewID:
 		return "Recovery"
+	case ClaimsViewID:
+		return "Claims"
+	default:
+		return name
 	}
-	return name
 }
 
 func New(snapshot queue.Snapshot) Model {
-	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed", RecoveryViewID}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
+	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed", RecoveryViewID, ClaimsViewID}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
 }
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil {
+		return m.Claims.Refresh(m.Claims.Cursor)
+	}
+	return nil
+}
 func identity(i queue.Item) string {
 	if i.CanonicalID != "" {
 		return i.CanonicalID
@@ -577,7 +602,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 		m.rowCache.counts = make(map[string]int, len(m.Views))
 		// The standard views share one scan with freshness and edge counts.
 		// Configured views retain their full filtering semantics below.
-		standard := len(m.Views) == 5 && m.Views[0] == "All" && m.Views[1] == "Ready" && m.Views[2] == "Mine" && m.Views[3] == "Claimed" && m.Views[4] == RecoveryViewID && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0
+		standard := len(m.Views) == 6 && m.Views[0] == "All" && m.Views[1] == "Ready" && m.Views[2] == "Mine" && m.Views[3] == "Claimed" && m.Views[4] == RecoveryViewID && m.Views[5] == ClaimsViewID && len(m.ViewFilters) == 0 && len(m.ViewRules) == 0
 		if !standard {
 			for _, name := range m.Views {
 				m.rowCache.counts[name] = m.viewCount(name)
@@ -702,15 +727,34 @@ func (m *Model) editInput(key tea.KeyMsg) {
 	}
 }
 
-// setView switches views, loading the recovery journal when it is selected.
+// setView switches views while preserving each queue view's independent selection.
 func (m *Model) setView(name string) tea.Cmd {
 	if name == m.ViewName {
 		return nil
 	}
+	if m.ViewName != ClaimsViewID && m.ViewName != RecoveryViewID {
+		if m.viewSelections == nil {
+			m.viewSelections = make(map[string]viewSelection)
+		}
+		m.viewSelections[m.ViewName] = viewSelection{Selected: m.Selected, Index: m.Index, Offset: m.Offset, Detail: m.Detail, DetailOffset: m.DetailOffset, Tab: m.Tab}
+	}
 	m.ViewName = name
-	m.anchor(m.rows())
+	if saved, ok := m.viewSelections[name]; ok {
+		m.Selected, m.Index, m.Offset = saved.Selected, saved.Index, saved.Offset
+		m.Detail, m.DetailOffset, m.Tab = saved.Detail, saved.DetailOffset, saved.Tab
+	} else if name != ClaimsViewID && name != RecoveryViewID {
+		m.Selected, m.Index, m.Offset = "", 0, 0
+		m.Detail, m.DetailOffset, m.Tab = false, 0, 0
+	}
+	if name != ClaimsViewID {
+		m.anchor(m.rows())
+	}
 	if name == RecoveryViewID && m.LoadRecovery != nil {
 		return m.LoadRecovery()
+	}
+	if name == ClaimsViewID && m.Claims.Refresh != nil && !m.Claims.Loading {
+		m.Claims.Loading = true
+		return m.Claims.Refresh(m.Claims.Cursor)
 	}
 	return nil
 }
@@ -904,6 +948,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.RecoveryError = ""
 			m.Recovery = v.Entries
 			m.RecoveryIndex = max(0, min(m.RecoveryIndex, len(m.Recovery)-1))
+		}
+	case ClaimsRefreshMsg:
+		history := m.applyClaimsRefresh(v)
+		if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil {
+			return m, tea.Batch(history, tea.Tick(claimsPollInterval, func(time.Time) tea.Msg { return ClaimsTickMsg{} }))
+		}
+		return m, history
+	case ClaimHistoryMsg:
+		if v.ClaimID == m.Claims.Selected && v.Resource == m.Claims.HistoryResource {
+			m.Claims.HistoryLoading = false
+			if v.Err != nil {
+				m.Claims.HistoryError = v.Err.Error()
+			} else {
+				m.Claims.HistoryError = ""
+				m.Claims.History = v.Page
+			}
+		}
+	case ClaimsTickMsg:
+		if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil && !m.Claims.Loading {
+			m.Claims.Loading = true
+			return m, m.Claims.Refresh(m.Claims.Cursor)
 		}
 	case RefreshedMsg:
 		if v.Err != nil {
@@ -1164,8 +1229,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Input = ""
 			case "enter":
 				if m.Filtering {
-					m.Filter = m.Input
-					m.anchor(m.rows())
+					if m.ViewName == ClaimsViewID {
+						m.Claims.ResourcePrefix = m.Input
+						m.anchorClaims(m.claimRows(), max(1, m.frame(m.rows()).bodyHeight-1))
+					} else {
+						m.Filter = m.Input
+						m.anchor(m.rows())
+					}
 				} else if strings.EqualFold(strings.TrimSpace(m.Input), "start work") {
 					m.Palette = false
 					m.Input = ""
@@ -1221,6 +1291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.requestQuit()
 			}
 			return m, nil
+		case modeClaims:
+			return m.updateClaimsKey(key)
 		case modeLaunch:
 			rows := m.rows()
 			switch key {
@@ -1594,6 +1666,9 @@ func healthy(s map[string]queue.Coverage) int {
 func (m Model) viewCount(name string) int {
 	if name == RecoveryViewID {
 		return len(m.Recovery)
+	}
+	if name == ClaimsViewID {
+		return len(m.Claims.Items)
 	}
 	n := 0
 	for _, item := range m.Snapshot.Items {
