@@ -2,6 +2,7 @@ package queueui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -240,7 +241,7 @@ func TestConfiguredRecoveryViewIsNotShadowed(t *testing.T) {
 		t.Fatalf("configured view was shadowed: %s", view)
 	}
 	m.ViewName = RecoveryViewID
-	if view := m.View(); !strings.Contains(view, "Recovery 0 unresolved writes") {
+	if view := m.View(); !strings.Contains(view, "0 unresolved writes") {
 		t.Fatalf("built-in recovery view missing: %s", view)
 	}
 }
@@ -257,7 +258,7 @@ func TestRecoveryViewAndItemTabShowSameUnresolvedWrite(t *testing.T) {
 		t.Fatalf("recovery view missing operation: %s", view)
 	}
 	m.ViewName, m.Detail, m.Tab = "All", true, 4
-	if view := m.View(); !strings.Contains(view, "operation-1") || !strings.Contains(view, "Next: retry read-back") {
+	if view := m.View(); !strings.Contains(view, "operation-1") || !regexp.MustCompile(`Next +retry read-back`).MatchString(view) {
 		t.Fatalf("item Recovery tab missing operation: %s", view)
 	}
 }
@@ -791,7 +792,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	m.Scope = "remote"
 	m.anchor(m.rows())
 	wide := m.View()
-	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "Views:", "Sources:", "unknown dependencies", "assigned elsewhere", "Worklease", "2 loaded of 2 (exact)", "edges 0/2", "provider fresh", "claims loading"} {
+	for _, s := range []string{"authority: team abcdef (remote)", "sources 1/1", "[All 2]", "Ready 0", "unknown dependencies", "assigned elsewhere", "Claim", "2 loaded of 2 (exact)", "edges 0/2", "provider fresh", "claims loading"} {
 		if !strings.Contains(wide, s) {
 			t.Errorf("wide view missing %q: %s", s, wide)
 		}
@@ -803,7 +804,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	m = next.(Model)
 	m.Detail = true
 	narrow := m.View()
-	if strings.Contains(narrow, "ID     Title") {
+	if strings.Contains(narrow, "second") {
 		t.Fatal("narrow detail did not switch")
 	}
 	if m.Width != 80 || m.Height != 25 {
@@ -942,7 +943,7 @@ func TestRenderStripsTerminalControlsAndNarrowSwitch(t *testing.T) {
 	if !strings.Contains(view, "CLICK red") {
 		t.Fatal("sanitized body missing", view)
 	}
-	if strings.Contains(view, "ID       Title") {
+	if strings.Contains(view, "second") {
 		t.Fatal("narrow layout squeezed list and detail")
 	}
 }
@@ -1170,7 +1171,7 @@ func TestClaimPreviewRequiresExplicitConfirmationAndShowsGrant(t *testing.T) {
 		m, _ = press(m, "tab")
 	}
 	view := m.View()
-	for _, text := range []string{"Granted TTL: 4m0s", "Expires:"} {
+	for _, text := range []string{"Granted TTL 4m0s", "Expires "} {
 		if !strings.Contains(view, text) {
 			t.Errorf("grant detail missing %q: %s", text, view)
 		}
@@ -1452,5 +1453,21 @@ func TestQueueQuitWarnsOnUnreadableRecoveryJournal(t *testing.T) {
 	m, cmd := press(m, "q")
 	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "recovery journal unreadable: journal corrupt") {
 		t.Fatalf("unreadable journal did not warn on exit: %s", m.View())
+	}
+}
+
+func TestFilterInputAcceptsPasteAndUnicode(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.Sources = []queue.Source{{ID: "a"}}
+	m, _ = press(m, "/")
+	m, _ = press(m, "sec")
+	m, _ = press(m, "ö")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = next.(Model)
+	m, _ = press(m, "ond")
+	m, _ = press(m, "enter")
+	if m.Filter != "second" || len(m.rows()) != 1 {
+		t.Fatalf("filter = %q, rows = %d", m.Filter, len(m.rows()))
 	}
 }

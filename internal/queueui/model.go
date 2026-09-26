@@ -14,7 +14,6 @@ import (
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -335,6 +334,8 @@ type Model struct {
 	Launch                                func(queue.Item, string) tea.Cmd
 	rowCache                              *rowCache
 	orderedKeys                           []string
+	// pendingG records a first g so a second g jumps to the top.
+	pendingG bool
 }
 
 type rowCache struct {
@@ -344,6 +345,9 @@ type rowCache struct {
 	counts   map[string]int
 	observed time.Time
 	edges    int
+	// widths holds the widest cell seen per list column for these rows, so
+	// columns fit their content without shifting while scrolling.
+	widths map[string]int
 }
 
 // RecoveryViewID cannot collide with a caller-configured view named Recovery.
@@ -362,8 +366,6 @@ func viewLabel(name string) string {
 	}
 	return name
 }
-
-var tabs = []string{"Summary", "Dependencies", "Activity", "Claims", "Recovery"}
 
 func New(snapshot queue.Snapshot) Model {
 	return Model{Snapshot: snapshot.Clone(), Width: 120, Height: 35, Views: []string{"All", "Ready", "Mine", "Claimed", RecoveryViewID}, ViewName: "All", rowCache: &rowCache{}, OwnedClaims: map[string]OwnedClaimMsg{}}
@@ -507,6 +509,7 @@ func (m Model) rows() []queue.Item {
 func (m Model) cacheRows(key string, out []queue.Item) {
 	if m.rowCache != nil {
 		m.rowCache.key, m.rowCache.rows = key, out
+		m.rowCache.widths = nil
 		m.rowCache.counts = make(map[string]int, len(m.Views))
 		// The standard views share one scan with freshness and edge counts.
 		// Configured views retain their full filtering semantics below.
@@ -549,6 +552,7 @@ func (m Model) cacheRows(key string, out []queue.Item) {
 func (m Model) cachePreparedRows(key string, rows []queue.Item, counts map[string]int, observed time.Time, edges int) {
 	if m.rowCache != nil {
 		m.rowCache.key = key
+		m.rowCache.widths = nil
 		m.rowCache.rows = rows
 		m.rowCache.counts = counts
 		m.rowCache.observed = observed
@@ -599,27 +603,72 @@ func (m *Model) move(delta int) {
 	if len(rows) == 0 {
 		return
 	}
-	m.Index += delta
-	if m.Index < 0 {
-		m.Index = 0
-	}
-	if m.Index >= len(rows) {
-		m.Index = len(rows) - 1
-	}
-	m.Selected = identity(rows[m.Index])
-	maxRows := m.Height - 8
-	if maxRows < 1 {
-		maxRows = 1
-	}
-	if m.Index < m.Offset {
-		m.Offset = m.Index
-	}
-	if m.Index >= m.Offset+maxRows {
-		m.Offset = m.Index - maxRows + 1
-	}
+	m.selectIndex(rows, m.Index+delta)
 	if m.Selected != previous {
 		m.clearHistory()
 	}
+}
+
+// selectIndex selects rows[index] (clamped) and scrolls it into view.
+func (m *Model) selectIndex(rows []queue.Item, index int) {
+	previous := m.Selected
+	m.Index = max(0, min(index, len(rows)-1))
+	m.Selected = identity(rows[m.Index])
+	m.Offset = m.listOffset(len(rows), m.listCapacity(rows))
+	if m.Selected != previous {
+		m.clearHistory()
+	}
+}
+
+// editInput applies a text-editing key to Input. Multi-rune events (paste,
+// fast typing, IME) and non-ASCII runes are kept; controls are sanitized.
+func (m *Model) editInput(key tea.KeyMsg) {
+	switch key.Type {
+	case tea.KeyBackspace:
+		r := []rune(m.Input)
+		if len(r) > 0 {
+			m.Input = string(r[:len(r)-1])
+		}
+	case tea.KeyCtrlU:
+		m.Input = ""
+	case tea.KeyRunes, tea.KeySpace:
+		if !key.Alt {
+			m.Input += clean(string(key.Runes))
+		}
+	}
+}
+
+// setView switches views, loading the recovery journal when it is selected.
+func (m *Model) setView(name string) tea.Cmd {
+	if name == m.ViewName {
+		return nil
+	}
+	m.ViewName = name
+	m.anchor(m.rows())
+	if name == RecoveryViewID && m.LoadRecovery != nil {
+		return m.LoadRecovery()
+	}
+	return nil
+}
+
+// viewKey handles view switching keys shared by the list and Recovery view.
+func (m *Model) viewKey(key string) (tea.Cmd, bool) {
+	if len(m.Views) == 0 {
+		return nil, false
+	}
+	current := max(0, slices.Index(m.Views, m.ViewName))
+	switch {
+	case key == "v":
+		return m.setView(m.Views[(current+1)%len(m.Views)]), true
+	case key == "V":
+		return m.setView(m.Views[(current+len(m.Views)-1)%len(m.Views)]), true
+	case len(key) == 1 && key[0] >= '1' && key[0] <= '9':
+		if index := int(key[0] - '1'); index < len(m.Views) {
+			return m.setView(m.Views[index]), true
+		}
+		return nil, true
+	}
+	return nil, false
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
@@ -1001,15 +1050,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.ReconcileRecovery(entry, evidence)
 				}
 				m.Notice = "Type the matching attestations and audit evidence to reconcile"
-			case "backspace":
-				r := []rune(m.Input)
-				if len(r) > 0 {
-					m.Input = string(r[:len(r)-1])
-				}
 			default:
-				if len(key) == 1 && key != "\x1b" {
-					m.Input += key
-				}
+				m.editInput(v)
 			}
 			return m, nil
 		}
@@ -1026,15 +1068,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.PreviewWrite(item, queue.ActionRecordProgress, "", text)
 				}
 				m.Notice = "Progress empty or selection changed"
-			case "backspace":
-				r := []rune(m.Input)
-				if len(r) > 0 {
-					m.Input = string(r[:len(r)-1])
-				}
 			default:
-				if len(key) == 1 && key != "\x1b" {
-					m.Input += key
-				}
+				m.editInput(v)
 			}
 			return m, nil
 		}
@@ -1083,20 +1118,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Filtering = false
 				m.Palette = false
 				m.Input = ""
-			case "backspace":
-				r := []rune(m.Input)
-				if len(r) > 0 {
-					m.Input = string(r[:len(r)-1])
-				}
 			default:
-				if len(key) == 1 && key != "\x1b" {
-					m.Input += key
-				}
+				m.editInput(v)
+			}
+			return m, nil
+		}
+		if m.Help {
+			// Help covers the body, so other keys would act on hidden state.
+			switch key {
+			case "?", "esc", "q", "h", "left":
+				m.Help = false
+			case "ctrl+c":
+				return m.requestQuit()
 			}
 			return m, nil
 		}
 		if m.ViewName == RecoveryViewID {
+			if cmd, ok := m.viewKey(key); ok {
+				return m, cmd
+			}
 			switch key {
+			case "?":
+				m.Help = true
 			case "j", "down":
 				m.RecoveryIndex = min(len(m.Recovery)-1, m.RecoveryIndex+1)
 			case "k", "up":
@@ -1120,11 +1163,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "q", "ctrl+c":
 				return m.requestQuit()
-			case "v":
-				if len(m.Views) > 0 {
-					m.ViewName = m.Views[0]
-					m.anchor(m.rows())
-				}
 			}
 			return m, nil
 		}
@@ -1181,6 +1219,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		pendingG := m.pendingG
+		m.pendingG = false
+		if cmd, ok := m.viewKey(key); ok {
+			if cmd != nil {
+				return m, cmd
+			}
+			return m.afterNavigation(previous)
+		}
 		switch key {
 		case "q", "ctrl+c":
 			return m.requestQuit()
@@ -1189,49 +1235,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "k", "up":
 			m.move(-1)
 		case "pgdown", "ctrl+d":
-			m.DetailOffset += max(1, m.Height/2)
+			m.DetailOffset = min(m.DetailOffset+max(1, m.Height/2), m.maxDetailOffset())
 		case "pgup", "ctrl+u":
-			m.DetailOffset = max(0, m.DetailOffset-max(1, m.Height/2))
+			m.DetailOffset = max(0, min(m.DetailOffset, m.maxDetailOffset())-max(1, m.Height/2))
 		case "g":
-			if m.Notice == "g" {
+			if pendingG {
 				m.move(-len(rows))
-				m.Notice = ""
 			} else {
-				m.Notice = "g"
+				m.pendingG = true
 			}
 		case "G":
 			m.move(len(rows))
-		case "v":
-			for n, name := range m.Views {
-				if name == m.ViewName {
-					m.ViewName = m.Views[(n+1)%len(m.Views)]
-					m.anchor(m.rows())
-					if m.ViewName == RecoveryViewID && m.LoadRecovery != nil {
-						return m, m.LoadRecovery()
-					}
-					break
-				}
-			}
 		case "l", "right", "enter":
 			if len(rows) > 0 {
 				m.Detail = true
 			}
-		case "h", "left", "esc":
-			if m.Help {
-				m.Help = false
-			} else {
+		case "h", "left":
+			m.Detail = false
+		case "esc":
+			// Close one layer at a time: detail, then the applied filter.
+			if m.Detail {
 				m.Detail = false
+			} else if m.Filter != "" {
+				m.Filter, m.Notice = "", ""
+				m.anchor(m.rows())
 			}
 		case "tab":
 			if m.Detail {
-				m.Tab = (m.Tab + 1) % len(tabs)
+				m.Tab = (m.Tab + 1) % len(tabNames)
 				m.DetailOffset = 0
 			} else {
 				m.Detail = true
 			}
 		case "shift+tab":
 			if m.Detail {
-				m.Tab = (m.Tab + len(tabs) - 1) % len(tabs)
+				m.Tab = (m.Tab + len(tabNames) - 1) % len(tabNames)
 				m.DetailOffset = 0
 			}
 		case "/":
@@ -1348,30 +1386,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.PreviewWrite(item, queue.ActionAssignToMe, "", "")
 			}
 		}
-		if m.Detail && m.Tab == 2 && m.LoadComments != nil {
-			if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
-				m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
-				m.CommentsIdentity = identity(i)
-				m.CommentsLoading = true
-				return m, m.LoadComments(i, "")
-			}
+		return m.afterNavigation(previous)
+	case tea.MouseMsg:
+		return m.mouse(v)
+	}
+	return m, nil
+}
+
+// afterNavigation loads lazily fetched detail for a new selection or tab.
+func (m Model) afterNavigation(previous string) (tea.Model, tea.Cmd) {
+	if m.Detail && m.Tab == 2 && m.LoadComments != nil {
+		if i, ok := m.selected(m.rows()); ok && m.CommentsIdentity != identity(i) && !m.CommentsLoading {
+			m.Comments, m.CommentsCursor, m.CommentsError = nil, "", ""
+			m.CommentsIdentity = identity(i)
+			m.CommentsLoading = true
+			return m, m.LoadComments(i, "")
 		}
-		if m.Detail && m.Tab == 3 {
-			if i, ok := m.selected(m.rows()); ok && len(i.Resources) == 1 && m.HistoryIdentity != identity(i) && m.LoadHistory != nil {
-				m.HistoryLoading = true
-				m.HistoryIdentity = identity(i)
-				m.HistoryCursor = ""
-				m.History = ledger.HistoryPage{}
-				if m.Selected != previous && m.HydrateSelected != nil {
-					return m, tea.Batch(m.LoadHistory(i, "", false), m.HydrateSelected(i))
-				}
-				return m, m.LoadHistory(i, "", false)
+	}
+	if m.Detail && m.Tab == 3 {
+		if i, ok := m.selected(m.rows()); ok && len(i.Resources) == 1 && m.HistoryIdentity != identity(i) && m.LoadHistory != nil {
+			m.HistoryLoading = true
+			m.HistoryIdentity = identity(i)
+			m.HistoryCursor = ""
+			m.History = ledger.HistoryPage{}
+			if m.Selected != previous && m.HydrateSelected != nil {
+				return m, tea.Batch(m.LoadHistory(i, "", false), m.HydrateSelected(i))
 			}
+			return m, m.LoadHistory(i, "", false)
 		}
-		if m.Selected != previous && m.HydrateSelected != nil {
-			if item, ok := m.selected(m.rows()); ok {
-				return m, m.HydrateSelected(item)
-			}
+	}
+	if m.Selected != previous && m.HydrateSelected != nil {
+		if item, ok := m.selected(m.rows()); ok {
+			return m, m.HydrateSelected(item)
 		}
 	}
 	return m, nil
@@ -1408,202 +1454,6 @@ func clip(s string, n int) string {
 	}
 	return ansi.Truncate(clean(s), n, "…")
 }
-func (m Model) View() string {
-	if m.Width < 30 {
-		return "Resize terminal to at least 30 columns\n"
-	}
-	if m.WritePreview != nil {
-		p := m.WritePreview
-		var b strings.Builder
-		fmt.Fprintf(&b, "Confirm %s on %s\nAuthority %s %s (%s) · claim %s (remains held)\n", clean(string(p.Intent.Action)), clean(p.Intent.Ref.String()), clean(p.AuthorityProfile), clean(p.Intent.AuthorityID), clean(p.Scope), clean(p.Intent.ClaimID))
-		for _, resource := range p.Intent.Resources {
-			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
-		}
-		marker := p.Intent.Marker
-		if marker == "" {
-			marker = "none (non-append write)"
-		}
-		fmt.Fprintf(&b, "Provider effect %s\nSide effects %s\nDeclared races %s\nMarker %s\nLimits: no provider idempotency; lost response requires read-back, never redispatch. Claim remains held.\nEnter/y confirm · Esc/n cancel\n", clean(p.Effect), clean(strings.Join(p.SideEffects, "; ")), clean(strings.Join(p.Races, "; ")), clean(marker))
-		return clipLines(b.String(), m.Width)
-	}
-	if m.WriteChoices != nil {
-		var b strings.Builder
-		b.WriteString("Select configured provider transition\n")
-		for index, choice := range m.WriteChoices {
-			marker := " "
-			if index == m.WriteChoiceIndex {
-				marker = ">"
-			}
-			fmt.Fprintf(&b, "%s %s → %s\n", marker, clean(choice.Label), clean(choice.Transition))
-		}
-		b.WriteString("j/k select · Enter preview · Esc dismiss\n")
-		return clipLines(b.String(), m.Width)
-	}
-	if m.WriteInput {
-		return clipLines("Progress note (provider append; Enter previews, Esc cancels):\n"+m.Input, m.Width)
-	}
-	if m.RecoveryEvidence {
-		if m.RecoveryEvidenceEntry.Status == "checkpoint-pending" {
-			return clipLines("Type PROVIDER VERIFIED; CHECKPOINT ABSENT; EXECUTOR STOPPED: followed by provider and authority audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
-		}
-		return clipLines("Type NO COMMIT; EXECUTOR STOPPED: followed by provider audit evidence (Enter records; Esc cancels):\n"+m.Input, m.Width)
-	}
-	if m.LaunchOptions != nil {
-		return m.launchPickerView()
-	}
-	if m.ClaimPreview != nil {
-		return m.claimPreviewView(*m.ClaimPreview)
-	}
-	if m.StartPreview != nil {
-		p := m.StartPreview
-		var b strings.Builder
-		fmt.Fprintf(&b, "Start work on %s (%s)\nProvider actor %s · transition %s · required %s\nEffect %s\nSide effects %s\n", clean(p.Source), clean(p.Claim.Title), clean(p.Actor), clean(p.Transition), clean(p.RequiredFields), clean(p.Effect), clean(strings.Join(p.SideEffects, "; ")))
-		fmt.Fprintf(&b, "Authority %s %s (%s)\n", clean(p.Claim.AuthorityProfile), clean(p.Claim.AuthorityID), clean(p.Claim.Scope))
-		for _, resource := range p.Claim.Resources {
-			fmt.Fprintf(&b, "Resource %s\n", clean(resource))
-		}
-		fmt.Fprintf(&b, "Session %s · TTL %s · hold %s\nLimits %s\n", clean(p.Claim.SessionID), p.Claim.TTL, p.Claim.Hold, clean(p.Claim.CoordinationLimits))
-		b.WriteString("Claim and provider transition are separate outcomes; no assignment or cross-system atomicity.\nEnter/y confirm · Esc/n cancel\n")
-		return clipLines(b.String(), m.Width)
-	}
-	if m.Quitting {
-		return m.exitView()
-	}
-	if m.CancelPreview != "" {
-		owned := m.OwnedClaims[m.CancelPreview]
-		return clipLines(fmt.Sprintf("Cancel queue-owned claim %s?\nOnly an authority-verified no-effect epoch may be released. An unverified provider checkpoint or started operation prevents cancellation.\nHandle: %s\nEnter/y confirms · Esc/n dismisses\n", clean(owned.ClaimID), clean(m.CancelPreview)), m.Width)
-	}
-	if m.ViewName == RecoveryViewID {
-		var b strings.Builder
-		fmt.Fprintf(&b, "worklease queue · Recovery %d unresolved writes · %s\n", len(m.Recovery), clean(m.RecoveryError))
-		if m.UncertainWrite {
-			b.WriteString("RECOVERY REQUIRED: last write unverified; claim remains held even if journal cannot be read\n")
-		}
-		for index, entry := range m.Recovery {
-			marker := " "
-			if index == m.RecoveryIndex {
-				marker = ">"
-			}
-			fmt.Fprintf(&b, "%s %s %s %s · %s · claim held %s\n  resources %s · actor %s · effect %s\n  marker %s · required effects %s\n  dispatched %s · read-back %s\n  next %s\n", marker, clean(entry.OperationID), clean(entry.Ref.String()), clean(entry.Status), clean(string(entry.Action)), clean(entry.ClaimID), clean(strings.Join(entry.Resources, ", ")), clean(entry.Principal), clean(entry.Effect), clean(entry.Marker), clean(strings.Join(entry.Effects, ", ")), recoveryTime(entry.Dispatched), clean(entry.Readback), clean(strings.Join(entry.Next, "; ")))
-		}
-		b.WriteString("j/k select · r retry read-back / inspect checkpoint · e attest with evidence when offered · u reload · v switch view · q quit\n")
-		return clipLines(b.String(), m.Width)
-	}
-	rows := m.rows()
-	m.anchor(rows)
-	var b, list strings.Builder
-	age := "unknown"
-	if m.rowCache != nil && !m.rowCache.observed.IsZero() {
-		age = time.Since(m.rowCache.observed).Round(time.Second).String()
-	}
-	fmt.Fprintf(&b, "worklease queue  view: %s  authority: %s (%s)  me: %s  sources %d/%d  sync %s ago\n", clip(viewLabel(m.ViewName), 24), clip(m.Authority, 48), clip(m.Scope, 12), clip(m.Me, 24), healthy(m.Snapshot.Sources), len(m.Sources), age)
-	if m.UncertainWrite || len(m.Recovery) > 0 {
-		fmt.Fprintf(&b, "RECOVERY REQUIRED: %d unresolved writes; claims held (do not release until verified)\n", len(m.Recovery))
-	}
-	if m.Help {
-		b.WriteString("j/k/arrows move · gg/G top/bottom · h/l/Tab/Enter/Esc panes · / filter · n/N matches · PgUp/PgDn detail · r refresh · : palette · o open URL · q quit\n")
-	}
-	listWidth := m.Width
-	if m.Width >= 100 {
-		listWidth = m.Width * 2 / 3
-	}
-	if !m.Detail || m.Width >= 100 {
-		fmt.Fprintf(&list, "Views: ")
-		for _, v := range m.Views {
-			count := m.rowCache.counts[v]
-			if v == RecoveryViewID {
-				count = len(m.Recovery)
-			}
-			fmt.Fprintf(&list, "%s %d  ", clip(viewLabel(v), 16), count)
-		}
-		list.WriteByte('\n')
-		list.WriteString("Sources: ")
-		for _, s := range m.Sources {
-			c := m.Snapshot.Sources[s.ID]
-			status := sourceState(c)
-			if problem := m.SourceErrors[s.ID]; problem != "" {
-				status = problem
-			}
-			fmt.Fprintf(&list, "%s %s  ", clip(s.Name, 16), clip(status, 32))
-		}
-		list.WriteByte('\n')
-		list.WriteString(ansi.Wrap("ID     Title        State   Eligibility        Assigned Native  Worklease", listWidth, " ") + "\n")
-		maxRows := m.Height - 8
-		if maxRows < 1 {
-			maxRows = 1
-		}
-		if m.Index < m.Offset {
-			m.Offset = m.Index
-		}
-		if m.Index >= m.Offset+maxRows {
-			m.Offset = m.Index - maxRows + 1
-		}
-		for _, i := range rows[m.Offset:min(len(rows), m.Offset+maxRows)] {
-			marker := " "
-			if identity(i) == m.Selected {
-				marker = ">"
-			}
-			line := fmt.Sprintf("%s %-5s %-12s %-20s %-20s %-8s %-7s %s", marker, clip(i.Ref.ItemID, 5), clip(i.Title, 12), clip(projectStatusDisplay(i), 20), m.displayState(i), clip(strings.Join(i.AssignedTo, ","), 8), clip(i.NativeClaim, 7), claimState(i))
-			list.WriteString(ansi.Wrap(clean(line), listWidth, " "))
-			list.WriteByte('\n')
-		}
-	}
-	if m.Detail && m.Width >= 100 {
-		if i, ok := m.selected(rows); ok {
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listWidth).Render(list.String()), lipgloss.NewStyle().Width(m.Width-listWidth-1).Render(clipLines(scrollDetail(detail(m, i), m.DetailOffset), m.Width-listWidth-1))))
-		} else {
-			b.WriteString(list.String())
-		}
-	} else if m.Detail {
-		if i, ok := m.selected(rows); ok {
-			b.WriteString(clipLines(scrollDetail(detail(m, i), m.DetailOffset), m.Width))
-		} else {
-			b.WriteString("No item selected\n")
-		}
-	} else {
-		b.WriteString(list.String())
-	}
-	total, accuracy := 0, "exact"
-	edges := 0
-	if m.rowCache != nil {
-		edges = m.rowCache.edges
-	}
-	if len(m.Snapshot.Sources) == 0 || len(m.SourceErrors) > 0 {
-		accuracy = "unknown"
-	}
-	for _, source := range m.Sources {
-		if _, resolved := m.Snapshot.Sources[source.ID]; !resolved {
-			accuracy = "unknown"
-		}
-	}
-	for _, c := range m.Snapshot.Sources {
-		total += c.Total
-		if c.TotalAccuracy == queue.TotalUnknown {
-			accuracy = "unknown"
-		} else if c.TotalAccuracy == queue.TotalEstimated && accuracy == "exact" {
-			accuracy = "estimated"
-		}
-	}
-	var footer strings.Builder
-	fmt.Fprintf(&footer, "%d loaded of %d (%s) · %d shown · edges %d/%d · search: loaded rows · provider %s · claims %s", len(m.Snapshot.Items), total, accuracy, len(rows), edges, total, sourceFreshness(m.Snapshot), freshnessLabel(m.ClaimFreshness))
-	if m.Notice != "" {
-		// Notices get their own line so holder, expiry, and recovery paths stay readable.
-		fmt.Fprintf(&footer, "\n%s", clip(m.Notice, m.Width))
-	}
-	if m.Filtering {
-		fmt.Fprintf(&footer, "\n/%s", clip(m.Input, m.Width-2))
-	}
-	if m.Palette {
-		fmt.Fprintf(&footer, "\n:%s", clip(m.Input, m.Width-2))
-	}
-	footerText := lipgloss.NewStyle().MaxWidth(m.Width).Render(footer.String())
-	bodyHeight := max(0, m.Height-lipgloss.Height(footerText))
-	body := lipgloss.NewStyle().MaxWidth(m.Width).MaxHeight(bodyHeight).Render(strings.TrimRight(b.String(), "\n"))
-	if bodyHeight == 0 {
-		return footerText
-	}
-	return body + "\n" + footerText
-}
 func sameResources(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -1628,61 +1478,6 @@ func (m Model) requestQuit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Quit
-}
-
-func (m Model) exitView() string {
-	var b strings.Builder
-	b.WriteString("Quit queue? Renewal stops when this process exits. No claim is released automatically.\n")
-	for _, owned := range m.OwnedClaims {
-		claim, expiry := owned.ClaimID, "unknown"
-		if claim == "" {
-			claim = "outcome unknown"
-		}
-		if !owned.ExpiresAt.IsZero() {
-			expiry = owned.ExpiresAt.UTC().Format(time.RFC3339)
-		}
-		fmt.Fprintf(&b, "  %s expires %s · %s · private handle %s\n", clean(claim), expiry, clean(owned.LastResult), clean(owned.Path))
-	}
-	if len(m.Recovery) > 0 || m.UncertainWrite {
-		fmt.Fprintf(&b, "  %d unresolved writes remain in recovery; their claims stay held\n", len(m.Recovery))
-	}
-	if m.RecoveryError != "" {
-		fmt.Fprintf(&b, "  recovery journal unreadable: %s\n", clean(m.RecoveryError))
-	}
-	b.WriteString("Press Enter/y to leave leases and recovery state intact, Esc/n to continue (R cancels a verified no-effect claim).\n")
-	return clipLines(b.String(), m.Width)
-}
-func (m Model) launchPickerView() string {
-	var b strings.Builder
-	b.WriteString("Launch worker (process start is not a claim)\n")
-	for i, option := range m.LaunchOptions {
-		marker := " "
-		if i == m.LaunchIndex {
-			marker = ">"
-		}
-		status := "available"
-		if !option.Eligibility.Eligible {
-			status = strings.Join(option.Eligibility.Reasons, "; ")
-		}
-		fmt.Fprintf(&b, "%s %s: %s\n", marker, clean(option.Name), clean(status))
-	}
-	option := m.LaunchOptions[m.LaunchIndex]
-	fmt.Fprintf(&b, "  Authority %s\n  Cwd %s\n  Argv %q\n  Environment names %s\n", clean(option.Authority), clean(option.Cwd), option.Argv, strings.Join(option.EnvNames, ", "))
-	b.WriteString("Enter/y launch selected action · j/k select · Esc/n dismiss\n")
-	return clipLines(b.String(), m.Width)
-}
-func (m Model) claimPreviewView(preview ClaimPreview) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Claim %s for me\n", clip(preview.Title, m.Width-10))
-	fmt.Fprintf(&b, "  Authority  %s %s (%s)\n", clip(preview.AuthorityProfile, 24), clip(preview.AuthorityID, 40), clean(preview.Scope))
-	for _, key := range preview.Resources {
-		fmt.Fprintf(&b, "  Resource   %s\n", clean(key))
-	}
-	fmt.Fprintf(&b, "  Session    %s, TTL %s, hold %s\n", clean(preview.SessionID), preview.TTL, preview.Hold)
-	b.WriteString("  Provider   unchanged (no assignment or state change)\n")
-	fmt.Fprintf(&b, "  Limits     %s\n", clean(preview.CoordinationLimits))
-	b.WriteString("\nEnter/y confirm · Esc/n cancel · no request is sent until confirmation\n")
-	return clipLines(b.String(), m.Width)
 }
 
 func claimFailureNotice(err error) string {
@@ -1720,27 +1515,6 @@ func claimFailureNotice(err error) string {
 	return "Claim failed: " + err.Error()
 }
 
-func scrollDetail(s string, offset int) string {
-	lines := strings.Split(s, "\n")
-	if offset >= len(lines) {
-		offset = max(0, len(lines)-1)
-	}
-	return strings.Join(lines[offset:], "\n")
-}
-func clipLines(s string, width int) string {
-	var b strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		b.WriteString(ansi.Wrap(clean(line), width, " "))
-		b.WriteByte('\n')
-	}
-	return b.String()
-}
-func freshnessLabel(value string) string {
-	if value == "" {
-		return "loading"
-	}
-	return value
-}
 func sourceFreshness(snapshot queue.Snapshot) string {
 	if len(snapshot.Sources) == 0 {
 		return "unknown"
@@ -1957,110 +1731,4 @@ func claimState(i queue.Item) string {
 		state += " (stale)"
 	}
 	return clean(state)
-}
-func detail(m Model, i queue.Item) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n%s — %s\n", clip(i.Ref.ItemID, 30), clip(i.Title, m.Width-35))
-	for j, t := range tabs {
-		if j == m.Tab {
-			fmt.Fprintf(&b, "[%s] ", t)
-		} else {
-			fmt.Fprintf(&b, "%s ", t)
-		}
-	}
-	b.WriteByte('\n')
-	switch m.Tab {
-	case 0:
-		fmt.Fprintf(&b, "Issue state %s", clean(i.RawStatus))
-		if i.ProjectStatusBound {
-			fmt.Fprintf(&b, " · Project status %s → %s", clean(projectStatusRaw(i)), clean(projectStatusState(i)))
-			if i.ProjectStatusConflict {
-				b.WriteString(" · CONFLICT: issue and project status disagree")
-			}
-		}
-		fmt.Fprintf(&b, " · Ready %s · Assigned %s · Native %s\n", readiness(i), clip(strings.Join(i.AssignedTo, ","), 40), clip(i.NativeClaim, 30))
-		b.WriteString(clip(i.Body, min(m.Width*6, 1200)) + "\n")
-		if m.StartTransitions[i.Ref.SourceID] != "" {
-			b.WriteString("Actions: S Start work (claim + provider transition); c Claim only · : start work\n")
-		} else {
-			b.WriteString("Actions: c Claim only (no supported Start work mapping)\n")
-		}
-	case 1:
-		fmt.Fprintf(&b, "Readiness %s: %s\nClosure coverage %s · freshness %s\n", i.Readiness.Status, clean(strings.Join(i.Readiness.Reasons, "; ")), i.Closure, i.Readiness.Freshness)
-		for _, r := range i.Relationships {
-			fmt.Fprintf(&b, "%s → %s\nRequires: %s · observed: %s\nEvidence: %s · provenance: %s · fresh: %t · support: %s\n", r.Type, clean(r.To.String()), clean(r.Condition), clean(r.RawOutcome), clean(r.Interpretation), clean(r.Provenance), r.Fresh, r.Support)
-		}
-	case 2:
-		fmt.Fprintf(&b, "Observed %s · provider version %s · read %s · coverage %s\n", i.Observation.ObservedAt.Format(time.RFC3339), clip(i.Observation.ProviderVersion, 32), clip(i.ReadOutcome, 20), i.Coverage.State)
-		if m.LoadComments == nil {
-			b.WriteString("Comments: provider detail unavailable\n")
-		} else {
-			if m.CommentsLoading {
-				b.WriteString("Loading comments…\n")
-			}
-			if m.CommentsError != "" {
-				fmt.Fprintf(&b, "Comments unavailable: %s\n", clip(m.CommentsError, 100))
-			}
-			for _, comment := range m.Comments {
-				fmt.Fprintf(&b, "%s · %s\n%s\n", clip(comment.Author, 32), comment.CreatedAt.Format(time.RFC3339), clip(comment.Body, min(m.Width*4, 800)))
-			}
-			if m.CommentsCursor != "" {
-				b.WriteString("Press m for more comments\n")
-			}
-		}
-	case 3:
-		fmt.Fprintf(&b, "Authority %s (%s)\nResource: %s\n", clean(m.Authority), clean(m.Scope), clean(strings.Join(i.Resources, ",")))
-		fmt.Fprintf(&b, "Current: %s\nagentId:\n%s\nsessionId:\n%s\n", claimState(i), clean(i.Claim.AgentID), clean(i.Claim.SessionID))
-		if !i.Claim.ExpiresAt.IsZero() {
-			if !i.Claim.AcquiredAt.IsZero() && i.Claim.ExpiresAt.After(i.Claim.AcquiredAt) {
-				fmt.Fprintf(&b, "Granted TTL: %s\n", i.Claim.ExpiresAt.Sub(i.Claim.AcquiredAt).Round(time.Second))
-			}
-			fmt.Fprintf(&b, "Expires: %s\n", i.Claim.ExpiresAt.UTC().Format(time.RFC3339))
-		}
-		for _, owned := range m.OwnedClaims {
-			if !sameResources(i.Resources, owned.Resources) {
-				continue
-			}
-			fmt.Fprintf(&b, "Queue-owned: %s · next renewal %s · last result %s\n", clean(owned.ClaimID), owned.NextRenewal.UTC().Format(time.RFC3339), clip(owned.LastResult, 100))
-			if owned.Lost {
-				b.WriteString("Claim lost; actions disabled\n")
-			} else if !owned.Verified {
-				b.WriteString("Ownership unverified; actions disabled\n")
-			} else {
-				b.WriteString("R: cancel if no operation or provider write started\n")
-			}
-		}
-		if m.HistoryLoading {
-			b.WriteString("Loading claim epochs…\n")
-		}
-		if m.HistoryError != "" {
-			fmt.Fprintf(&b, "History unavailable: %s\n", clip(m.HistoryError, 100))
-		}
-		if m.HistoryIdentity == identity(i) {
-			if m.History.Gap {
-				b.WriteString("History gap: earlier epochs pruned\n")
-			}
-			for _, e := range m.History.Epochs {
-				ended := "active"
-				if e.EndedAt != nil {
-					ended = e.EndedAt.Format(time.RFC3339)
-				}
-				fmt.Fprintf(&b, "%s · %s → %s\nagentId:\n%s\nsessionId:\n%s\nReason: %s\n", clip(e.Status, 20), e.AcquiredAt.Format(time.RFC3339), ended, clean(e.AgentID), clean(e.SessionID), clip(e.EndReason, 60))
-			}
-			if m.History.PreviousCursor != "" {
-				b.WriteString("Older retained epochs available (m to load)\n")
-			}
-		}
-	case 4:
-		if m.RecoveryError != "" {
-			fmt.Fprintf(&b, "Recovery unavailable: %s\n", clip(m.RecoveryError, 100))
-		}
-		for _, entry := range m.Recovery {
-			if entry.Ref != i.Ref {
-				continue
-			}
-			fmt.Fprintf(&b, "%s · %s · %s · claim held %s\nResources %s · actor %s · effect %s\nMarker %s · required effects %s\nDispatched %s · read-back %s\nNext: %s\n", clean(entry.OperationID), clean(string(entry.Action)), clean(entry.Status), clean(entry.ClaimID), clean(strings.Join(entry.Resources, ", ")), clean(entry.Principal), clean(entry.Effect), clean(entry.Marker), clean(strings.Join(entry.Effects, ", ")), recoveryTime(entry.Dispatched), clean(entry.Readback), clean(strings.Join(entry.Next, "; ")))
-		}
-	}
-	return b.String()
 }

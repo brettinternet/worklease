@@ -73,9 +73,9 @@ func TestQueueTerminalOutputLatency(t *testing.T) {
 			awaitTerminalRow(t, chunks, "ROWZERO")
 			durations := make([]time.Duration, 0, count)
 			for i := 0; i < count; i++ {
-				key, row := "j", "> 0000… ROWONE"
+				key, row := "j", "> 000005  ROWONE"
 				if i%2 == 1 {
-					key, row = "k", "> 0000… ROWZERO"
+					key, row = "k", "> 000000  ROWZERO"
 				}
 				start := time.Now()
 				if _, err := master.Write([]byte(key)); err != nil {
@@ -88,7 +88,7 @@ func TestQueueTerminalOutputLatency(t *testing.T) {
 				if _, err := master.Write([]byte("k")); err != nil {
 					t.Fatal(err)
 				}
-				awaitTerminalRow(t, chunks, "> 0000… ROWZERO")
+				awaitTerminalRow(t, chunks, "> 000000  ROWZERO")
 			}
 			sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 			quantile := func(percent int) time.Duration {
@@ -102,9 +102,9 @@ func TestQueueTerminalOutputLatency(t *testing.T) {
 			refreshDurations := make([]time.Duration, 0, count)
 			for i := 0; i < count; i++ {
 				snapshot.Revision++
-				key, row := "j", fmt.Sprintf("> 0000… NEWONE%04d", i)
+				key, row := "j", fmt.Sprintf("> 000005  NEWONE%04d", i)
 				if i%2 == 1 {
-					key, row = "k", fmt.Sprintf("> 0000… NEWZERO%04d", i)
+					key, row = "k", fmt.Sprintf("> 000000  NEWZERO%04d", i)
 				}
 				for index, title := range []string{fmt.Sprintf("NEWZERO%04d", i), fmt.Sprintf("NEWONE%04d", i)} {
 					ref := queue.Ref{SourceID: "source-0", ItemID: fmt.Sprintf("%06d", index*5)}.Key()

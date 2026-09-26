@@ -598,7 +598,9 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.Recovery = entries
 	}
 	// The model is handed to Bubble Tea before background producers start.
-	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx))
+	// The queue owns the terminal: alternate screen keeps the list out of
+	// scrollback, and mouse reporting enables click and wheel navigation.
+	program = tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	workers.Add(1)
 	go func() {
 		defer workers.Done()

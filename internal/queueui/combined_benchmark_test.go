@@ -221,10 +221,10 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 			indexDone <- time.Since(started)
 		}()
 		snapshot.Revision++
-		selected := "NEWONE"
+		selected, selectedID := "NEWONE", "000005"
 		key := "j"
 		if i%2 == 1 {
-			selected, key = "NEWZERO", "k"
+			selected, selectedID, key = "NEWZERO", "000000", "k"
 		}
 		for index, label := range []string{"NEWZERO", "NEWONE"} {
 			ref := queue.Ref{SourceID: "source-0", ItemID: fmt.Sprintf("%06d", index*5)}.Key()
@@ -249,7 +249,7 @@ func TestQueueCombinedFaultOutputLatency(t *testing.T) {
 		if _, err := master.Write([]byte(key)); err != nil {
 			t.Fatal(err)
 		}
-		awaitTerminalRow(t, chunks, fmt.Sprintf("> 0000… %s%04d", selected, i))
+		awaitTerminalRow(t, chunks, fmt.Sprintf("> %s  %s%04d", selectedID, selected, i))
 		inputTimes = append(inputTimes, time.Since(start))
 		result := <-renewed
 		if result.err != nil {
