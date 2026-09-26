@@ -350,10 +350,16 @@ type Adapter interface {
 	ReadItems(context.Context, Source, []Ref, []string, int) []ItemOutcome
 	ReadDependencies(context.Context, Source, Ref, string, int) (DependencyPage, error)
 }
-type Registry struct{ adapters map[string]Adapter }
+type Registry struct {
+	adapters    map[string]Adapter
+	credentials *CredentialHelper
+}
 
 func NewRegistry() *Registry {
-	return &Registry{adapters: map[string]Adapter{"backlog-md": NewBacklogAdapter(), "beads": NewBeadsAdapter(), "github": NewGitHubAdapter(), "linear": NewLinearAdapter()}}
+	credentials := new(CredentialHelper)
+	linear := NewLinearAdapter()
+	linear.Helper = credentials
+	return &Registry{adapters: map[string]Adapter{"backlog-md": NewBacklogAdapter(), "beads": NewBeadsAdapter(), "github": NewGitHubAdapter(), "linear": linear}, credentials: credentials}
 }
 func (r *Registry) Register(name string, a Adapter) error {
 	if strings.TrimSpace(name) == "" || a == nil {

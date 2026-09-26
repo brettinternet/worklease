@@ -33,7 +33,10 @@ func RegisterExternalSources(registry *Registry, configured []config.QueueSource
 		adapter *ExternalAdapter
 	}
 	registrations := make([]registration, 0)
-	credentials := new(CredentialHelper)
+	credentials := registry.credentials
+	if credentials == nil {
+		credentials = new(CredentialHelper)
+	}
 	seen := make(map[string]bool)
 	for _, source := range configured {
 		if source.Adapter != "external" {

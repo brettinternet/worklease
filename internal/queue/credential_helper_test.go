@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/config"
 )
 
 func credentialFixture(t *testing.T, script string) []string {
@@ -86,6 +88,21 @@ func TestCredentialHelperEnvironment(t *testing.T) {
 	})
 	if strings.Join(vars, ",") != "PATH=/bin,HOME=/private/home" {
 		t.Fatalf("unexpected helper environment: %q", vars)
+	}
+}
+
+func TestCredentialHelperIsSharedAcrossSourceAdapters(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	cleanup, err := RegisterExternalSources(registry, []config.QueueSource{{ID: "external-one", Adapter: "external"}}, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	linear, _ := registry.Get("linear")
+	external, _ := registry.Get(ExternalSourceAdapterKey("external-one"))
+	if linear.(*LinearAdapter).Helper != external.(*ExternalAdapter).credentials || linear.(*LinearAdapter).Helper == nil {
+		t.Fatal("remote sources can refresh one helper concurrently")
 	}
 }
 

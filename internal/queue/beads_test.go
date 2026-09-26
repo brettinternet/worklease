@@ -260,8 +260,58 @@ esac
 	if err := os.WriteFile(binary, []byte(strings.Replace(script, `"value":""`, `"value":"git+ssh://example.invalid/repo"`, 1)), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = a.Resolve(context.Background(), map[string]string{"id": "remote", "checkout": root}); err == nil || !strings.Contains(err.Error(), "git-network-consent") {
+	if _, err = a.Resolve(context.Background(), map[string]string{"id": source.ID, "checkout": root}); err == nil || !strings.Contains(err.Error(), "git-network-consent") {
 		t.Fatalf("remote without consent: %v", err)
+	}
+}
+
+func TestBeadsRejectsConflictingCheckoutConsent(t *testing.T) {
+	t.Parallel()
+	testkit.Home(t)
+	_, adapter, local := beadsFixture(t)
+	if _, err := adapter.Resolve(context.Background(), map[string]string{"id": "remote", "checkout": local.Locator, "allowGitNetwork": "true"}); err == nil || !strings.Contains(err.Error(), "duplicate-checkout") {
+		t.Fatalf("second source overrode local-only consent: %v", err)
+	}
+	if _, err := adapter.List(context.Background(), local, Query{}, ""); err != nil {
+		t.Fatalf("first source stopped working: %v", err)
+	}
+}
+
+func TestBeadsBatchChangeInvalidatesBulkObservation(t *testing.T) {
+	t.Parallel()
+	testkit.Home(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".beads", "metadata.json"), []byte(`{"dolt_mode":"embedded"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "bd")
+	// The commit is unchanged, but the second bulk list gains a blocker.
+	script := `#!/bin/sh
+case " $* " in
+  *' version '*) printf '%s\n' '{"version":"1.3.0"}' ;;
+  *' sync.remote '*) printf '%s\n' '{"value":""}' ;;
+  *' vc status '*) printf '%s\n' '{"commit":"abc"}' ;;
+  *' --ready '*) printf '%s\n' '[]' ;;
+  *' list '*) if [ -f changed ]; then printf '%s\n' '[{"id":"probe-1","title":"One","status":"open","dependency_count":1,"dependencies":[{"issue_id":"probe-1","depends_on_id":"probe-2","type":"blocks"}]}]'; else touch changed; printf '%s\n' '[{"id":"probe-1","title":"One","status":"open"}]'; fi ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBeadsAdapter()
+	a.Binary = binary
+	source, err := a.Resolve(context.Background(), map[string]string{"id": "s", "checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.List(context.Background(), source, Query{}, ""); err == nil || !strings.Contains(err.Error(), "observation-invalidated") {
+		t.Fatalf("batch-mode dependency change was accepted: %v", err)
+	}
+	if _, ok := a.CachedEdges(source, Ref{SourceID: source.ID, ItemID: "probe-1"}); ok {
+		t.Fatal("inconsistent edges were published")
 	}
 }
 

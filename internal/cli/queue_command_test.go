@@ -372,6 +372,13 @@ func TestQueueFirstFrameDoesNotWaitForRemoteMetadata(t *testing.T) {
 	}
 }
 
+func TestBeadsSelectedDetailCanHydrate(t *testing.T) {
+	t.Parallel()
+	if !queueSelectedHydrationEnabled("beads") || queueSelectedHydrationEnabled("unknown") {
+		t.Fatal("selected Beads detail was rejected before HydrateDetail")
+	}
+}
+
 func TestHydratedSnapshotsReuseClaimOverlayWithoutAuthorityReads(t *testing.T) {
 	var stored sync.Map
 	ref := queue.Ref{SourceID: "s", ItemID: "a"}
