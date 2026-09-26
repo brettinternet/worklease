@@ -213,10 +213,11 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 		key += "\x00list-revision\x00" + revision.sourceID + "\x00" + strconv.FormatUint(revision.revision, 10)
 	}
 	coalesce := priority != PriorityAction
+	timeout := a.timeout()
 	result, err := gate.schedule(ctx, priority, key, "", coalesce, func(workCtx context.Context) (any, error) {
 		// The deadline bounds the provider command, not time queued behind
 		// other reads; the caller's context bounds the wait.
-		workCtx, cancel := context.WithTimeout(workCtx, a.timeout())
+		workCtx, cancel := context.WithTimeout(workCtx, timeout)
 		defer cancel()
 		return a.runCommand(workCtx, cwd, binary, args...)
 	})
