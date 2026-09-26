@@ -449,28 +449,13 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			})
 		}(liveDone)
 	}
-	start := func(notifyFailure bool) <-chan error {
-		done := make(chan error, 1)
-		workersMu.Lock()
-		if closing {
-			workersMu.Unlock()
-			done <- context.Canceled
-			close(done)
-			return done
+	refresh := &queueRefreshRunner{workers: &workers, run: func() error {
+		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
+	}, report: func(err error) {
+		if ctx.Err() == nil {
+			program.Send(queueui.RefreshedMsg{Err: err})
 		}
-		workers.Add(1)
-		workersMu.Unlock()
-		go func() {
-			defer workers.Done()
-			err := publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, cachePartitions, &claimOverlay, restartOverlay)
-			if notifyFailure && err != nil && ctx.Err() == nil {
-				program.Send(queueui.RefreshedMsg{Err: err})
-			}
-			done <- err
-			close(done)
-		}()
-		return done
-	}
+	}}
 	model.HydrateSelected = func(item queue.Item) tea.Cmd {
 		// Supersede on selection (Update runs synchronously), not when the command
 		// executes: Bubble Tea may run an older selection's command after a newer one.
@@ -531,7 +516,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 	}
 	model.Refresh = func() tea.Cmd {
-		return refreshCompletionCmd(func() <-chan error { return start(false) })
+		return refreshCompletionCmd(refresh.start)
 	}
 	model.LoadComments = func(item queue.Item, cursor string) tea.Cmd {
 		return func() tea.Msg {
@@ -604,7 +589,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		defer workers.Done()
 		lifecycle.run(ctx, func(msg queueui.OwnedClaimMsg) { program.Send(msg) })
 	}()
-	start(true)
+	refresh.trigger()
 	if backend.HTTP != nil {
 		workers.Add(1)
 		go func() {
@@ -617,7 +602,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
 			authorityVersion++
 			authorityMu.Unlock()
-			start(true)
+			refresh.trigger()
 		}()
 	}
 	for _, source := range sources {
@@ -632,7 +617,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		go func(source queue.Source) {
 			defer workers.Done()
 			for ctx.Err() == nil {
-				if watchErr := watcher.WatchChanges(ctx, source, func() { start(true) }); watchErr != nil && ctx.Err() == nil {
+				if watchErr := watcher.WatchChanges(ctx, source, refresh.trigger); watchErr != nil && ctx.Err() == nil {
 					program.Send(queueui.RefreshedMsg{Err: watchErr})
 				}
 				select {
@@ -644,6 +629,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}(source)
 	}
 	_, err = program.Run()
+	refresh.stop()
 	workersMu.Lock()
 	closing = true
 	cancel()
