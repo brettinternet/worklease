@@ -22,13 +22,24 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-const SchemaGeneration = 8
+const SchemaGeneration = 9
 const Retention = 30 * 24 * time.Hour
 
-type Partition struct{ Source, Principal, Scope, Generation string }
+// Partition names one cached projection. Lineage, when set, names the
+// checkout the projection was read from, independent of branch, commit,
+// and configuration, so a new generation can show its predecessor's rows
+// as stale while it loads. It is not part of the partition key.
+type Partition struct {
+	Source, Principal, Scope, Generation string
+	Lineage                              string `json:"-"`
+}
 
 type cacheIdentity interface {
 	QueueCacheIdentity(queue.Source) (principal, scope, generation string, available bool)
+}
+
+type cacheLineage interface {
+	QueueCacheLineage(queue.Source) (string, bool)
 }
 
 // ForSource returns a partition only when the adapter can establish a stable access boundary.
@@ -44,7 +55,13 @@ func ForSource(adapter any, source queue.Source) (Partition, bool) {
 	if !available || principal == "" || scope == "" || generation == "" {
 		return Partition{}, false
 	}
-	return Partition{Source: source.ID, Principal: principal, Scope: scope, Generation: generation}, true
+	partition := Partition{Source: source.ID, Principal: principal, Scope: scope, Generation: generation}
+	if provider, ok := adapter.(cacheLineage); ok {
+		if lineage, ok := provider.QueueCacheLineage(source); ok {
+			partition.Lineage = lineage
+		}
+	}
+	return partition, true
 }
 
 type Index struct {
@@ -170,7 +187,7 @@ func (i *Index) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != SchemaGeneration {
+	if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != SchemaGeneration {
 		return fmt.Errorf("unknown queue index schema generation %d", version)
 	}
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS body_partitions (partition TEXT PRIMARY KEY)`); err != nil {
@@ -183,6 +200,7 @@ func (i *Index) migrate(ctx context.Context) error {
 			"search":          {"partition", "ref", "title", "body"},
 			"body_partitions": {"partition"},
 			"linear_sync":     {"partition", "cursor", "committed_watermark", "scan_watermark", "relation_offset"},
+			"lineages":        {"lineage", "partition"},
 		} {
 			rows, err := conn.QueryContext(ctx, "PRAGMA table_info("+table+")")
 			if err != nil {
@@ -266,6 +284,12 @@ func (i *Index) migrate(ctx context.Context) error {
 		if _, err = conn.ExecContext(ctx, `CREATE TABLE linear_sync (partition TEXT PRIMARY KEY, cursor TEXT NOT NULL, committed_watermark INTEGER NOT NULL, scan_watermark INTEGER NOT NULL, relation_offset INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=8`); err != nil {
 			return err
 		}
+		version = 8
+	}
+	if version == 8 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS lineages (lineage TEXT PRIMARY KEY, partition TEXT NOT NULL); PRAGMA user_version=9`); err != nil {
+			return err
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
@@ -282,6 +306,71 @@ func (p Partition) key() (string, error) {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+// lineageKey identifies the checkout behind p across generations.
+func (p Partition) lineageKey() string {
+	b, _ := json.Marshal([]string{p.Source, p.Principal, p.Scope, p.Lineage})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func (i *Index) readEntries(ctx context.Context, key string) (map[string]queue.Item, error) {
+	items := map[string]queue.Item{}
+	rows, err := i.db.QueryContext(ctx, "SELECT payload FROM entries WHERE partition=?", key)
+	if err != nil {
+		return items, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b []byte
+		if err = rows.Scan(&b); err != nil {
+			return items, err
+		}
+		var item queue.Item
+		if err = json.Unmarshal(b, &item); err != nil {
+			return items, err
+		}
+		items[item.Ref.Key()] = item
+	}
+	return items, rows.Err()
+}
+
+// ReadForDisplay returns p's cached rows for a first frame. When p has none,
+// it returns the rows last cached for the same checkout under another
+// generation (another branch, commit, or configuration). Those rows are
+// always stale: they show what the checkout held, never current evidence.
+func (i *Index) ReadForDisplay(ctx context.Context, p Partition) (queue.Snapshot, error) {
+	s, _, _, err := i.Read(ctx, p, -1)
+	if err != nil || len(s.Items) > 0 || p.Lineage == "" {
+		return s, err
+	}
+	key, err := p.key()
+	if err != nil {
+		return s, err
+	}
+	var previous string
+	err = i.db.QueryRowContext(ctx, "SELECT partition FROM lineages WHERE lineage=?", p.lineageKey()).Scan(&previous)
+	if err == sql.ErrNoRows || err == nil && previous == key {
+		return s, nil
+	}
+	if err != nil {
+		return s, err
+	}
+	items, err := i.readEntries(ctx, previous)
+	if err != nil {
+		return s, err
+	}
+	for ref, item := range items {
+		item.Fresh = false
+		item.ReadOutcome = "stale"
+		s.Items[ref] = item
+	}
+	if len(s.Items) > 0 {
+		s.Sources[p.Source] = queue.Coverage{State: queue.CoveragePartial, Reason: "cached-index", TotalAccuracy: queue.TotalUnknown}
+	}
+	return s, nil
+}
+
 func (i *Index) Read(ctx context.Context, p Partition, maxAge time.Duration) (queue.Snapshot, time.Time, bool, error) {
 	if err := i.purgeExpired(ctx); err != nil {
 		return queue.Snapshot{}, time.Time{}, false, err
@@ -291,24 +380,8 @@ func (i *Index) Read(ctx context.Context, p Partition, maxAge time.Duration) (qu
 		return queue.Snapshot{}, time.Time{}, false, err
 	}
 	s := queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}}
-	rows, err := i.db.QueryContext(ctx, "SELECT payload,observed FROM entries WHERE partition=?", key)
+	s.Items, err = i.readEntries(ctx, key)
 	if err != nil {
-		return s, time.Time{}, false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var b []byte
-		var n int64
-		if err = rows.Scan(&b, &n); err != nil {
-			return s, time.Time{}, false, err
-		}
-		var item queue.Item
-		if err = json.Unmarshal(b, &item); err != nil {
-			return s, time.Time{}, false, err
-		}
-		s.Items[item.Ref.Key()] = item
-	}
-	if err = rows.Err(); err != nil {
 		return s, time.Time{}, false, err
 	}
 	var observedNS int64
@@ -410,6 +483,11 @@ func (i *Index) ReplaceWithDeletes(ctx context.Context, p Partition, items []que
 			return err
 		}
 	}
+	if p.Lineage != "" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO lineages(lineage,partition) VALUES(?,?) ON CONFLICT(lineage) DO UPDATE SET partition=excluded.partition", p.lineageKey(), key); err != nil {
+			return err
+		}
+	}
 	cutoff := time.Now().Add(-Retention).UnixNano()
 	if _, err = tx.ExecContext(ctx, "UPDATE partitions SET complete=0 WHERE partition IN (SELECT partition FROM entries WHERE observed < ?)", cutoff); err != nil {
 		return err
@@ -421,6 +499,9 @@ func (i *Index) ReplaceWithDeletes(ctx context.Context, p Partition, items []que
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.partition=search.partition AND e.ref=search.ref)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM lineages WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.partition=lineages.partition)`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -906,7 +987,7 @@ func (i *Index) Revoke(ctx context.Context, p Partition) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"search", "entries", "partitions", "body_partitions"} {
+	for _, table := range []string{"search", "entries", "partitions", "body_partitions", "lineages"} {
 		if _, err = tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE partition=?", key); err != nil {
 			return err
 		}
@@ -930,6 +1011,9 @@ func (i *Index) purgeExpired(ctx context.Context) error {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM search WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.partition=search.partition AND e.ref=search.ref)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM lineages WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.partition=lineages.partition)`); err != nil {
 		return err
 	}
 	return tx.Commit()

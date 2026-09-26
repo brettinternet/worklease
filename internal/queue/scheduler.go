@@ -145,6 +145,11 @@ func (q *quotaQueue) schedule(ctx context.Context, priority RequestPriority, key
 		q.pending = append(q.pending, j)
 	}
 	j.waiters++
+	// Coalesced work takes its most urgent waiter's priority, so a job that
+	// foreground work is waiting on is never preempted as background.
+	if priority < j.priority {
+		j.priority = priority
+	}
 	// Authoritative checks preempt cancellable background reads, never writes.
 	if priority == PriorityAction {
 		for active := range q.active {
@@ -152,10 +157,6 @@ func (q *quotaQueue) schedule(ctx context.Context, priority RequestPriority, key
 				active.cancel()
 			}
 		}
-	}
-	// Upgrade queued coalesced work if an action check joins it.
-	if !j.started && priority < j.priority {
-		j.priority = priority
 	}
 	q.start()
 	q.mu.Unlock()

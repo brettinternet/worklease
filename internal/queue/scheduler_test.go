@@ -245,3 +245,46 @@ func TestScheduleFakeClockRateAndMutationSpacing(t *testing.T) {
 		t.Fatal("uncertain write was retried")
 	}
 }
+func TestActionDoesNotPreemptBackgroundReadWithForegroundWaiter(t *testing.T) {
+	t.Parallel()
+	q := testQueue(2)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_, _ = q.schedule(context.Background(), PriorityBackground, "shared", "", true, func(ctx context.Context) (any, error) {
+			close(started)
+			select {
+			case <-release:
+				return "ok", nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+	}()
+	<-started
+	joined := make(chan error, 1)
+	go func() {
+		_, err := q.schedule(context.Background(), PriorityVisible, "shared", "", true, func(context.Context) (any, error) { return nil, nil })
+		joined <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		q.mu.Lock()
+		waiters := q.inFlight["shared"].waiters
+		q.mu.Unlock()
+		if waiters == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("visible read did not join the background read")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := q.schedule(context.Background(), PriorityAction, "action", "", false, func(context.Context) (any, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-joined; err != nil {
+		t.Fatalf("action preempted a read a visible request was waiting on: %v", err)
+	}
+}

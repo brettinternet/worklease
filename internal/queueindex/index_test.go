@@ -461,6 +461,57 @@ func TestBacklogBranchSwitchDoesNotReuseFreshCachePartition(t *testing.T) {
 	}
 }
 
+func TestNewBacklogCommitShowsPreviousRowsStale(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	commit := func() {
+		t.Helper()
+		if output, err := testkit.GitCommand("-C", checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "change").CombinedOutput(); err != nil {
+			t.Fatalf("git commit: %v: %s", err, output)
+		}
+	}
+	create := func() {
+		t.Helper()
+		if output, err := testkit.GitCommand("init", "-b", "main", checkout).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, output)
+		}
+		commit()
+	}
+	create()
+	registry := queue.NewRegistry()
+	adapter, _ := registry.Get("backlog-md")
+	source := queue.Source{ID: "backlog", Adapter: "backlog-md", Locator: checkout}
+	before, ok := ForSource(adapter, source)
+	if !ok || before.Lineage == "" {
+		t.Fatalf("checkout has no cache lineage: %+v", before)
+	}
+	idx, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: source.ID, ItemID: "TASK-1"}, Title: "cached", Fresh: true}}
+	if err := idx.Replace(ctx, before, []queue.Item{item}, true); err != nil {
+		t.Fatal(err)
+	}
+	commit()
+	after, _ := ForSource(adapter, source)
+	got, err := idx.ReadForDisplay(ctx, after)
+	shown := got.Items[item.Ref.Key()]
+	if err != nil || after.Generation == before.Generation || shown.Title != "cached" || shown.Fresh || got.Sources[source.ID].State == queue.CoverageComplete {
+		t.Fatalf("new commit did not show previous rows as stale: %+v err=%v", got, err)
+	}
+	if err := os.RemoveAll(checkout); err != nil {
+		t.Fatal(err)
+	}
+	create()
+	replaced, _ := ForSource(adapter, source)
+	if got, err := idx.ReadForDisplay(ctx, replaced); err != nil || len(got.Items) != 0 {
+		t.Fatalf("replaced checkout showed its predecessor's rows: %+v err=%v", got, err)
+	}
+}
+
 func TestRetentionInvalidatesPartitionFreshness(t *testing.T) {
 	ctx := context.Background()
 	idx, err := Open(ctx, t.TempDir())
@@ -768,7 +819,7 @@ func TestLinearSyncSchemaMigratesFromSeven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = idx.db.ExecContext(ctx, `DROP TABLE linear_sync; PRAGMA user_version=7`); err != nil {
+	if _, err = idx.db.ExecContext(ctx, `DROP TABLE linear_sync; DROP TABLE lineages; PRAGMA user_version=7`); err != nil {
 		t.Fatal(err)
 	}
 	if err := idx.Close(); err != nil {
@@ -785,6 +836,9 @@ func TestLinearSyncSchemaMigratesFromSeven(t *testing.T) {
 	}
 	if _, err = idx.db.ExecContext(ctx, `SELECT relation_offset FROM linear_sync`); err != nil {
 		t.Fatalf("missing Linear sync table: %v", err)
+	}
+	if _, err = idx.db.ExecContext(ctx, `SELECT lineage, partition FROM lineages`); err != nil {
+		t.Fatalf("missing lineages table: %v", err)
 	}
 }
 

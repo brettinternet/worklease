@@ -406,6 +406,42 @@ func TestBacklogReadConcurrency(t *testing.T) {
 		t.Fatal("bounded slots leaked")
 	}
 }
+func TestBacklogActionReadDoesNotCancelRefreshPreflight(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	script := filepath.Join(root, "backlog")
+	content := "#!/bin/sh\ncase \"$*\" in\n  '--version') : > started; while [ ! -f release ]; do sleep 0.01; done; echo 1.52.0;;\n  *) echo false;;\nesac\n"
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := NewBacklogAdapter()
+	refresh := make(chan error, 1)
+	go func() {
+		_, err := a.run(context.Background(), root, script, "--version")
+		refresh <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("refresh preflight did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	action := context.WithValue(context.Background(), backlogPriorityKey{}, PriorityAction)
+	if _, err := a.run(action, root, script, "config", "get", "autoCommit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-refresh; err != nil {
+		t.Fatalf("selected-item read cancelled the refresh preflight: %v", err)
+	}
+}
+
 func TestBacklogScratchCLI(t *testing.T) {
 	t.Parallel()
 	binary, err := exec.LookPath("backlog")

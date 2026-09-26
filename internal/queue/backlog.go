@@ -61,6 +61,17 @@ func BacklogDirectory(checkout string) (string, error) {
 	return "", BacklogDiagnostic{"not-backlog-project", "checkout has no Backlog.md project"}
 }
 
+// QueueCacheLineage names the checkout, so a cache from an earlier branch or
+// commit can be shown as stale while the current one loads. A checkout
+// replaced at the same path has a new lineage.
+func (a *BacklogAdapter) QueueCacheLineage(source Source) (string, bool) {
+	info, err := os.Stat(filepath.Join(source.Locator, ".git"))
+	if err != nil {
+		return "", false
+	}
+	return checkoutInstance(info)
+}
+
 func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
 	current, err := osuser.Current()
 	if err != nil || current.Uid == "" || source.Locator == "" {
@@ -194,9 +205,11 @@ func (a *BacklogAdapter) run(ctx context.Context, cwd, binary string, args ...st
 	if !backlogReadCommand(binary, args) {
 		return nil, BacklogDiagnostic{"read-only", "queue provider command is not a permitted read"}
 	}
-	priority := PriorityBackground
-	if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok && requested == PriorityAction {
-		priority = PriorityAction
+	// Only explicitly background reads are preemptible. A source refresh's
+	// preflight reads carry no priority; cancelling them fails the refresh.
+	priority := PriorityVisible
+	if requested, ok := ctx.Value(backlogPriorityKey{}).(RequestPriority); ok {
+		priority = requested
 	}
 	if len(args) >= 2 && args[0] == "task" {
 		priority = PriorityVisible

@@ -74,6 +74,18 @@ func (a *BeadsAdapter) timeout() time.Duration {
 	}
 	return 20 * time.Second
 }
+
+// QueueCacheLineage names the checkout, so a cache from an earlier branch or
+// commit can be shown as stale while the current one loads. A checkout
+// replaced at the same path has a new lineage.
+func (a *BeadsAdapter) QueueCacheLineage(source Source) (string, bool) {
+	info, err := os.Stat(filepath.Join(source.Locator, ".git"))
+	if err != nil {
+		return "", false
+	}
+	return checkoutInstance(info)
+}
+
 func (a *BeadsAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
 	user, err := osuser.Current()
 	if err != nil || user.Uid == "" {

@@ -694,7 +694,7 @@ func seedQueueIndex(ctx context.Context, index *queueindex.Index, registry *queu
 			continue
 		}
 		partitions[source.ID] = partition
-		snapshot, _, _, err := index.Read(ctx, partition, -1)
+		snapshot, err := index.ReadForDisplay(ctx, partition)
 		if err != nil {
 			return nil, err
 		}
@@ -780,6 +780,16 @@ func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map
 	}
 }
 
+// lacksClaims reports stale cached rows without a claim observation.
+func lacksClaims(snapshot queue.Snapshot) bool {
+	for _, item := range snapshot.Items {
+		if !item.Fresh && !item.Claim.Known {
+			return true
+		}
+	}
+	return false
+}
+
 func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
@@ -829,6 +839,18 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		seeded := loader.Store.Current()
 		program.Send(queueui.PrepareSnapshotForModel(seeded, model))
 		onSnapshot(seeded, claims)
+	} else if shown := loader.Store.Current(); lacksClaims(shown) {
+		// Rows seeded from the index at startup carry no claim observation.
+		// Overlay current claims so views that filter on claims can show
+		// those stale rows while the refresh below rereads them.
+		items := make([]queue.Item, 0, len(shown.Items))
+		for _, item := range shown.Items {
+			items = append(items, item)
+		}
+		for _, item := range overlayCurrentClaims(ctx, items, guard(shown), authority, paths) {
+			shown.Items[item.Ref.Key()] = item
+		}
+		program.Send(queueui.PrepareSnapshotForModel(shown, model))
 	}
 	defer func() {
 		for _, release := range releases {
