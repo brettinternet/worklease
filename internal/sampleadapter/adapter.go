@@ -100,18 +100,21 @@ func unavailable() *rpcError {
 }
 
 type server struct {
-	mu          sync.Mutex
-	writeMu     sync.Mutex
-	fixtureMu   sync.RWMutex
-	initialized bool
-	resolvedID  string
-	seen        map[string]struct{}
-	pending     map[string]context.CancelFunc
-	fixture     fixture
-	fixturePath string
-	writable    bool
-	output      io.Writer
-	workers     sync.WaitGroup
+	mu               sync.Mutex
+	writeMu          sync.Mutex
+	fixtureMu        sync.RWMutex
+	initialized      bool
+	resolvedID       string
+	resolvedOrigin   string
+	seen             map[string]struct{}
+	pending          map[string]context.CancelFunc
+	fixture          fixture
+	fixturePath      string
+	credentialSource string
+	credentialOrigin string
+	writable         bool
+	output           io.Writer
+	workers          sync.WaitGroup
 }
 
 func newServer(output io.Writer) (*server, error) {
@@ -285,6 +288,19 @@ func (s *server) dispatch(parent context.Context, method string, raw json.RawMes
 	if method == "initialize" {
 		return s.initialize(params)
 	}
+	if method == "credential" && s.writable {
+		if _, _, err := common(params); err != nil {
+			return nil, 0, err
+		}
+		if !s.isInitialized() {
+			return nil, 0, invalidParams()
+		}
+		result, failure := s.referenceCredential(params)
+		return result, 0, failure
+	}
+	if s.writable && method != "resolve" && !s.referenceAuthorized() {
+		return nil, 0, rpcErr(-32003, "authentication-failed", "Credential not verified")
+	}
 	if method == "changes" || method == "readReceipt" || method == "resolveReviewBoundary" || method == "archive" || method == "writeState" || method == "recordProgress" || method == "assign" {
 		deadline, limits, err := common(params)
 		if err != nil {
@@ -409,10 +425,10 @@ func (s *server) initialize(params map[string]json.RawMessage) (any, int, *rpcEr
 			"protocol": map[string]int{"minMajor": 1, "maxMajor": 1},
 			"configSchema": map[string]any{
 				"type": "object", "additionalProperties": false,
-				"properties": map[string]any{"fixturePath": map[string]any{"type": "string", "minLength": 1}},
+				"properties": map[string]any{"fixturePath": map[string]any{"type": "string", "minLength": 1}, "origin": map[string]any{"type": "string", "minLength": 1}},
 				"required":   []string{"fixturePath"},
 			},
-			"authentication": []string{}, "resourcePolicy": "generic",
+			"authentication": []string{"host-credential-v1"}, "resourcePolicy": "generic",
 			"capabilities":     []string{"identity", "discovery", "dependencies", "state", "progress", "assignment", "mutation"},
 			"requiredFeatures": []string{},
 		}
@@ -466,15 +482,24 @@ func (s *server) resolve(params map[string]json.RawMessage) (any, *rpcError) {
 	if !ok || json.Unmarshal(configValue, &config) != nil || config == nil {
 		return nil, invalidParams()
 	}
-	fixturePath := ""
+	fixturePath, origin := "", ""
 	if s.writable {
 		var request struct {
 			FixturePath string `json:"fixturePath"`
+			Origin      string `json:"origin"`
 		}
-		if json.Unmarshal(configValue, &request) != nil || len(config) != 1 || request.FixturePath == "" || !filepath.IsAbs(request.FixturePath) {
+		if json.Unmarshal(configValue, &request) != nil || len(config) < 1 || len(config) > 2 || request.FixturePath == "" || !filepath.IsAbs(request.FixturePath) || len(config) == 2 && request.Origin == "" {
 			return nil, invalidParams()
 		}
-		fixturePath = filepath.Clean(request.FixturePath)
+		fixturePath, origin = filepath.Clean(request.FixturePath), request.Origin
+		if origin != "" {
+			s.mu.Lock()
+			verified := s.credentialSource == id && s.credentialOrigin == origin
+			s.mu.Unlock()
+			if !verified {
+				return nil, rpcErr(-32003, "authentication-failed", "Credential not verified")
+			}
+		}
 	} else if len(config) != 0 {
 		return nil, invalidParams()
 	}
@@ -502,7 +527,7 @@ func (s *server) resolve(params map[string]json.RawMessage) (any, *rpcError) {
 	}
 	contextValue := s.context(id, "complete", nil)
 	s.mu.Lock()
-	s.resolvedID = id
+	s.resolvedID, s.resolvedOrigin = id, origin
 	s.mu.Unlock()
 	name, locator := "Sample adapter fixture", "memory://sample-fixture"
 	if s.writable {

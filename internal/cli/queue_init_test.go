@@ -611,6 +611,24 @@ func TestQueueInitExternalFailureAndPortableClaims(t *testing.T) {
 	if err != nil || cfg.Sources[0].Claims == nil || cfg.Sources[0].Claims.Source != "shared/team" || cfg.Sources[0].Claims.Policy != "generic" {
 		t.Fatalf("portable binding: %+v %v", cfg, err)
 	}
+	command := func(args ...string) testkit.CLIResult {
+		argv := append([]string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue"}, args...)
+		return testkit.RunCLI(context.Background(), argv, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+			return Run(ctx, args, "test", "unknown", "unknown", stdout, stderr)
+		})
+	}
+	approved := command("adapter", "approve", "--source", cfg.Sources[0].ID, "--acknowledge", "--json")
+	if approved.Err != nil {
+		t.Fatalf("approve: %v %s", approved.Err, approved.Stdout)
+	}
+	confirmed := command("--view", "Ready", "identity", "confirm", "--source", cfg.Sources[0].ID, "--acknowledge", "--json")
+	if confirmed.Err != nil {
+		t.Fatalf("external identity confirmation: %v %s", confirmed.Err, confirmed.Stdout)
+	}
+	identities, err := config.LoadQueueIdentities(os.Getenv)
+	if err != nil || identities.Sources[cfg.Sources[0].ID].Policy != "generic" {
+		t.Fatalf("external identity not saved: %+v %v", identities, err)
+	}
 }
 
 func TestQueueInitBareBacklogFolderNotDetected(t *testing.T) {
