@@ -344,8 +344,9 @@ type Model struct {
 	// while their replacement summaries are awaiting validation. It never
 	// changes the item's current readiness or action eligibility.
 	recheckingReady map[string]bool
-	// pendingG records a first g so a second g jumps to the top.
-	pendingG bool
+	HelpOffset      int
+	// pendingG and pendingZ record the first key of a two-key navigation command.
+	pendingG, pendingZ bool
 }
 
 // mode is the layer that owns input and the screen. It is derived from the
@@ -689,6 +690,53 @@ func (m *Model) selectIndex(rows []queue.Item, index int) {
 	if m.Selected != previous {
 		m.clearHistory()
 	}
+}
+
+// scrollStep returns a signed page, half-page, or line movement.
+func scrollStep(key string, visible int) int {
+	step := max(1, visible-1)
+	switch key {
+	case "ctrl+d", "ctrl+u":
+		step = max(1, visible/2)
+	case "ctrl+e", "ctrl+y":
+		step = 1
+	}
+	if key == "pgup" || key == "ctrl+b" || key == "ctrl+u" || key == "ctrl+y" {
+		return -step
+	}
+	return step
+}
+
+// scrollList moves the viewport, moving the selection only if it leaves view.
+func (m *Model) scrollList(delta int) {
+	rows := m.rows()
+	m.anchor(rows)
+	if len(rows) == 0 {
+		return
+	}
+	capacity := m.listCapacity(rows)
+	m.Offset = max(0, min(m.listOffset(len(rows), capacity)+delta, len(rows)-capacity))
+	if m.Index < m.Offset || m.Index >= m.Offset+capacity {
+		m.selectIndex(rows, max(m.Offset, min(m.Index, m.Offset+capacity-1)))
+	}
+}
+
+// alignList places the selected row at the top, center, or bottom of the viewport.
+func (m *Model) alignList(key string) {
+	rows := m.rows()
+	m.anchor(rows)
+	if len(rows) == 0 {
+		return
+	}
+	capacity := m.listCapacity(rows)
+	position := 0
+	switch key {
+	case "zz":
+		position = capacity / 2
+	case "zb":
+		position = capacity - 1
+	}
+	m.Offset = max(0, min(m.Index-position, len(rows)-capacity))
 }
 
 // editInput applies a text-editing key to Input. Multi-rune events (paste,
@@ -1215,6 +1263,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "?", "esc", "q", "h", "left":
 				m.Help = false
+			case "pgdown", "ctrl+f", "pgup", "ctrl+b", "ctrl+d", "ctrl+u", "ctrl+e", "ctrl+y":
+				visible := max(1, m.frame(m.rows()).bodyHeight)
+				m.HelpOffset = max(0, min(m.HelpOffset+scrollStep(key, visible), len(m.helpLines())-visible))
 			case "ctrl+c":
 				return m.requestQuit()
 			}
@@ -1305,8 +1356,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.rows()
 		previous := m.Selected
-		pendingG := m.pendingG
-		m.pendingG = false
+		pendingG, pendingZ := m.pendingG, m.pendingZ
+		m.pendingG, m.pendingZ = false, false
 		if cmd, ok := m.viewKey(key); ok {
 			if cmd != nil {
 				return m, cmd
@@ -1320,10 +1371,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(1)
 		case "k", "up":
 			m.move(-1)
-		case "pgdown", "ctrl+d":
-			m.DetailOffset = min(m.DetailOffset+max(1, m.Height/2), m.maxDetailOffset())
-		case "pgup", "ctrl+u":
-			m.DetailOffset = max(0, min(m.DetailOffset, m.maxDetailOffset())-max(1, m.Height/2))
+		case "pgdown", "ctrl+f", "pgup", "ctrl+b", "ctrl+d", "ctrl+u", "ctrl+e", "ctrl+y":
+			visible := m.listCapacity(rows)
+			if m.Detail {
+				// Detail has a fixed title and tab bar above the scrollable content.
+				visible = max(1, m.frame(rows).bodyHeight-2)
+			}
+			step := scrollStep(key, visible)
+			if m.Detail {
+				m.DetailOffset = max(0, min(m.DetailOffset+step, m.maxDetailOffset()))
+			} else {
+				m.scrollList(step)
+			}
+		case "H", "M", "L":
+			if !m.Detail || m.split() {
+				m.anchor(rows)
+				if len(rows) > 0 {
+					capacity := m.listCapacity(rows)
+					position := 0
+					switch key {
+					case "M":
+						position = capacity / 2
+					case "L":
+						position = capacity - 1
+					}
+					m.selectIndex(rows, min(len(rows)-1, m.listOffset(len(rows), capacity)+position))
+				}
+			}
+		case "z":
+			if !m.Detail || m.split() {
+				if pendingZ {
+					m.alignList("zz")
+				} else {
+					m.pendingZ = true
+				}
+			}
+		case "t", "b":
+			if pendingZ && (!m.Detail || m.split()) {
+				m.alignList("z" + key)
+			}
 		case "g":
 			if pendingG {
 				m.move(-len(rows))
@@ -1385,6 +1471,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input = ""
 		case "?":
 			m.Help = !m.Help
+			m.HelpOffset = 0
 		case "r":
 			if m.ViewName == RecoveryViewID && m.LoadRecovery != nil {
 				return m, m.LoadRecovery()
