@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/queue.schema.json",
+  "title": "Worklease queue.yaml (v1)",
+  "description": "Editor schema for owner-private queue configuration. The loader additionally checks paths, trusted profiles, cross-references, unique names, adapter identities and source-specific semantics.",
+  "type": "object",
+  "required": ["version", "me", "sources", "views"],
+  "properties": {
+    "version": {"const": 1},
+    "me": {
+      "type": "object",
+      "properties": {"backlog-md": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source"}},
+    "views": {"type": "array", "items": {"$ref": "#/$defs/view"}},
+    "launch": {"type": "array", "items": {"$ref": "#/$defs/launch"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["id", "adapter"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "pattern": "^[^:]+$"},
+        "adapter": {"enum": ["backlog-md", "beads", "github", "linear", "jira-cloud", "external"]},
+        "checkout": {"type": "string", "minLength": 1},
+        "claims": {"$ref": "#/$defs/claims"},
+        "workflow": {
+          "type": "object",
+          "properties": {
+            "start": {"$ref": "#/$defs/transition"},
+            "blocked": {"$ref": "#/$defs/transition"},
+            "review": {"$ref": "#/$defs/transition"},
+            "complete": {"$ref": "#/$defs/transition"},
+            "reopen": {"$ref": "#/$defs/transition"}
+          },
+          "additionalProperties": false
+        },
+        "allowGitNetwork": {"type": "boolean"},
+        "host": {"type": "string"},
+        "repository": {"type": "string"},
+        "account": {"type": "string"},
+        "organization": {"type": "string"},
+        "team": {"type": "string"},
+        "project": {"type": "string"},
+        "executable": {"type": "string"},
+        "expectedAdapterId": {"type": "string"},
+        "expectedVersion": {"type": "string"},
+        "config": {"type": "object", "description": "External adapter configuration; validated against the adapter's own manifest schema."},
+        "credentialRef": {"type": "string"},
+        "credentialHelper": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string"}},
+        "githubProject": {"$ref": "#/$defs/githubProject"}
+      },
+      "allOf": [
+        {"if": {"properties": {"adapter": {"enum": ["backlog-md", "beads"]}}, "required": ["adapter"]}, "then": {"required": ["checkout"], "not": {"anyOf": [{"required": ["githubProject"]}, {"required": ["executable"]}]} }},
+        {"if": {"properties": {"adapter": {"const": "beads"}}, "required": ["adapter"]}, "then": {"required": ["claims"]}},
+        {"if": {"properties": {"adapter": {"const": "github"}}, "required": ["adapter"]}, "then": {"required": ["host", "repository", "account"], "not": {"anyOf": [{"required": ["claims"]}, {"required": ["checkout"]}]}}},
+        {"if": {"properties": {"adapter": {"enum": ["linear", "jira-cloud"]}}, "required": ["adapter"]}, "then": {"required": ["account", "credentialHelper"]}},
+        {"if": {"properties": {"adapter": {"const": "linear"}}, "required": ["adapter"]}, "then": {"required": ["organization", "team"], "properties": {"organization": {"$ref": "#/$defs/uuid"}, "team": {"$ref": "#/$defs/uuid"}, "project": {"$ref": "#/$defs/uuid"}, "account": {"$ref": "#/$defs/uuid"}}}},
+        {"if": {"properties": {"adapter": {"const": "external"}}, "required": ["adapter"]}, "then": {"required": ["executable", "expectedAdapterId", "expectedVersion", "config"], "not": {"anyOf": [{"required": ["checkout"]}, {"required": ["host"]}, {"required": ["repository"]}]}}},
+        {"if": {"required": ["credentialHelper"]}, "then": {"not": {"required": ["credentialRef"]}}}
+      ],
+      "additionalProperties": false
+    },
+    "uuid": {"type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+    "transition": {"type": "string", "minLength": 1},
+    "claims": {
+      "type": "object",
+      "required": ["policy", "source"],
+      "properties": {"policy": {"const": "generic"}, "source": {"type": "string", "minLength": 1, "maxLength": 1024}},
+      "additionalProperties": false
+    },
+    "githubProject": {
+      "type": "object",
+      "required": ["owner", "number", "id", "fieldId", "options"],
+      "properties": {
+        "owner": {"type": "string", "minLength": 1},
+        "number": {"type": "integer", "minimum": 1},
+        "id": {"type": "string", "pattern": "^PVT_"},
+        "fieldId": {"type": "string", "pattern": "^PVTSSF_"},
+        "options": {"type": "object", "minProperties": 1, "additionalProperties": {"enum": ["open", "in-progress", "blocked", "review", "complete"]}},
+        "allowWrites": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "view": {
+      "type": "object",
+      "required": ["name", "authority", "sources", "filter"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "authority": {"type": "string"},
+        "sources": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "filter": {
+          "type": "object",
+          "properties": {
+            "readiness": {"type": "string"},
+            "claim": {"type": "string"},
+            "assigned": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "launch": {
+      "type": "object",
+      "required": ["name", "argv"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "cwd": {"type": "string"},
+        "passEnv": {"type": "array", "items": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"}}
+      },
+      "additionalProperties": false
+    }
+  }
+}

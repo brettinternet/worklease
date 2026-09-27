@@ -182,6 +182,8 @@ worklease serve
 Configuration precedence is flags, then `WORKLEASE_SERVER_CONFIG`, then
 `server.yaml`. Common flags are `--admitted-prefix`, `--tls-cert` with
 `--tls-key`, `--bootstrap-invite-file`, and `--server-config`.
+Editor schemas for all five user-authored Worklease YAML files are in
+[configuration schemas](docs/config-schemas/README.md).
 
 Cleartext requires both `--transport http` and
 `--acknowledge-cleartext-credentials`.

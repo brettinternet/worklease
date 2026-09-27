@@ -38,6 +38,7 @@ func main() {
 	validateCurrentDocs()
 	validateBareHelp(binary)
 	validateExternalAdapterSchema()
+	validateConfigSchemas()
 	validateRemoteDocs()
 	validateOnboardingDocs()
 	validateDocumentedExitFamilies()
@@ -69,6 +70,32 @@ func validateExternalAdapterSchema() {
 		link, err := filepath.Rel(filepath.Dir(document), path)
 		if err != nil || !strings.Contains(string(content), filepath.ToSlash(link)) {
 			fatal(fmt.Errorf("%s does not link the versioned schema", document))
+		}
+	}
+}
+
+func validateConfigSchemas() {
+	index, err := os.ReadFile("docs/config-schemas/README.md")
+	if err != nil {
+		fatal(err)
+	}
+	for _, name := range []string{"config", "server", "profiles", "bindings", "queue"} {
+		path := "docs/config-schemas/" + name + ".schema.json"
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fatal(err)
+		}
+		var schema struct {
+			ID      string         `json:"$id"`
+			Version string         `json:"$schema"`
+			Type    string         `json:"type"`
+			Fields  map[string]any `json:"properties"`
+		}
+		if json.Unmarshal(data, &schema) != nil || schema.ID != "https://github.com/brettinternet/worklease/blob/main/"+path || schema.Version != "https://json-schema.org/draft/2020-12/schema" || schema.Type != "object" || len(schema.Fields) == 0 {
+			fatal(fmt.Errorf("invalid Worklease configuration schema: %s", path))
+		}
+		if !strings.Contains(string(index), name+".schema.json") {
+			fatal(fmt.Errorf("configuration schema is not indexed: %s", path))
 		}
 	}
 }

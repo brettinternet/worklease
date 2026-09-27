@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/profiles.schema.json",
+  "title": "Worklease profiles.yaml",
+  "type": "object",
+  "properties": {
+    "default": {"type": "string"},
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "endpoint", "credential"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"const": "local"}},
+          "endpoint": {"type": "string", "pattern": "^https?://"},
+          "authorityId": {"type": "string", "pattern": "^([0-9a-f]{32})?$"},
+          "restoreId": {"type": "string", "pattern": "^([0-9a-f]{32})?$"},
+          "certificateSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "allowInsecureHTTP": {"type": "boolean"},
+          "credential": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {"path": {"type": "string", "minLength": 1}},
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

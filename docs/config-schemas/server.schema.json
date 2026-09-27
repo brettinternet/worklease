@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/server.schema.json",
+  "title": "Worklease server.yaml",
+  "description": "Hosted authority configuration. File permissions, endpoint consistency, duration bounds and certificates are checked by the server.",
+  "type": "object",
+  "required": ["home"],
+  "properties": {
+    "home": {"type": "string", "minLength": 1},
+    "listen": {"type": "string", "minLength": 1},
+    "listenAddress": {"type": "string", "minLength": 1},
+    "advertisedEndpoint": {"type": "string"},
+    "tlsCert": {"type": "string"},
+    "tlsCertFile": {"type": "string"},
+    "tlsKey": {"type": "string"},
+    "tlsKeyFile": {"type": "string"},
+    "admittedPrefixes": {"$ref": "#/$defs/prefixes"},
+    "prefixes": {"$ref": "#/$defs/prefixes"},
+    "maxTTL": {"type": "string", "minLength": 1},
+    "maxTTLMicros": {"type": "integer", "minimum": 1},
+    "maxHold": {"type": "string", "minLength": 1},
+    "maxHoldMicros": {"type": "integer", "minimum": 1},
+    "shutdownTimeout": {"type": "string"},
+    "healthRate": {"type": "integer", "minimum": 1},
+    "metadataRate": {"type": "integer", "minimum": 1},
+    "enrollmentRate": {"type": "integer", "minimum": 1},
+    "allowInsecureHTTP": {"type": "boolean"},
+    "rateLimits": {
+      "type": "object",
+      "properties": {
+        "health": {"type": "integer", "minimum": 1},
+        "metadata": {"type": "integer", "minimum": 1},
+        "enrollment": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"oneOf": [{"required": ["listen"]}, {"required": ["listenAddress"]}]},
+    {"oneOf": [{"required": ["admittedPrefixes"]}, {"required": ["prefixes"]}]},
+    {"anyOf": [{"required": ["maxTTL"]}, {"required": ["maxTTLMicros"]}]},
+    {"anyOf": [{"required": ["maxHold"]}, {"required": ["maxHoldMicros"]}]},
+    {"not": {"required": ["tlsCert", "tlsCertFile"]}},
+    {"not": {"required": ["tlsKey", "tlsKeyFile"]}},
+    {"anyOf": [{"required": ["healthRate"]}, {"properties": {"rateLimits": {"type": "object", "required": ["health"]}}, "required": ["rateLimits"]}]},
+    {"anyOf": [{"required": ["metadataRate"]}, {"properties": {"rateLimits": {"type": "object", "required": ["metadata"]}}, "required": ["rateLimits"]}]},
+    {"anyOf": [{"required": ["enrollmentRate"]}, {"properties": {"rateLimits": {"type": "object", "required": ["enrollment"]}}, "required": ["rateLimits"]}]}
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "prefixes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  }
+}

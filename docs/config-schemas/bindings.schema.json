@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/bindings.schema.json",
+  "title": "Worklease bindings.yaml",
+  "type": "object",
+  "properties": {
+    "bindings": {
+      "type": "object",
+      "description": "Absolute checkout root to trusted profile name (or the built-in local profile).",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    }
+  },
+  "additionalProperties": false
+}

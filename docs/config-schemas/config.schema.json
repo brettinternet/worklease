@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/config.schema.json",
+  "title": "Worklease config.yaml",
+  "description": "Local client defaults. Flags and environment variables take precedence; runtime validates paths, IDs and duration bounds.",
+  "type": "object",
+  "properties": {
+    "home": {"$ref": "#/$defs/scalar"},
+    "agent_id": {"$ref": "#/$defs/scalar"},
+    "ttl": {"$ref": "#/$defs/scalar"},
+    "max_duration": {"$ref": "#/$defs/scalar"},
+    "retention_days": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "poll_interval": {"$ref": "#/$defs/scalar"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "scalar": {"type": ["string", "integer", "null"]}
+  }
+}
