@@ -30,7 +30,9 @@ authority-benchmark = { run = "python3 scripts/authority-queue-benchmark.py --bi
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
-race = { run = "go test -race -p 1 -parallel 2 ./...", depends = ["beads-check"], env = { WORKLEASE_PROVIDER_TESTS = "1" } }
+# The race-instrumented CLI suite can exhaust Go's per-invocation deadline on
+# small runners. Split it by the same boundary as the platform test matrix.
+race = { run = "go test -race -p 1 -parallel 2 -skip '^TestQueue' ./... && go test -race -p 1 -parallel 2 -run '^TestQueue' ./...", depends = ["beads-check"], env = { WORKLEASE_PROVIDER_TESTS = "1" } }
 vuln = "govulncheck ./..."
 # Keep full and race suites separate on small CI runners; concurrent Go builds
 # and subprocess-heavy tests compete for the same process/CPU budget.
