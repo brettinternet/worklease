@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -165,7 +166,7 @@ func fakeGitHubWriteHandler(t *testing.T, state *fakeGitHubWriteState) http.Hand
 					return
 				}
 				writeGitHubFakeJSON(w, map[string]any{"id": 1, "node_id": "COMMENT_1", "body": payload.Body, "user": map[string]any{"login": "tester"}})
-			case r.Method == http.MethodPost && r.URL.Path == "/repos/org/repo/issues/1/assignees":
+			case (r.Method == http.MethodPost || r.Method == http.MethodDelete) && r.URL.Path == "/repos/org/repo/issues/1/assignees":
 				var payload struct {
 					Assignees []string `json:"assignees"`
 				}
@@ -180,13 +181,13 @@ func fakeGitHubWriteHandler(t *testing.T, state *fakeGitHubWriteState) http.Hand
 				if state.lagNextWrite {
 					state.issueReadLags = 1
 				}
-				for _, added := range payload.Assignees {
-					found := false
-					for _, existing := range state.assignees {
-						found = found || existing == added
+				for _, assignee := range payload.Assignees {
+					if r.Method == http.MethodDelete {
+						state.assignees = slices.DeleteFunc(state.assignees, func(existing string) bool { return existing == assignee })
+						continue
 					}
-					if !found {
-						state.assignees = append(state.assignees, added)
+					if !slices.Contains(state.assignees, assignee) {
+						state.assignees = append(state.assignees, assignee)
 					}
 				}
 				assignees := append([]string(nil), state.assignees...)
@@ -309,6 +310,7 @@ func TestGitHubWriteCommentMarkerAndAssigneePreservation(t *testing.T) {
 	}{
 		{"progress-comment", ActionRecordProgress, "progress update", nil},
 		{"assign-to-me", ActionAssignToMe, "", []string{"alice"}},
+		{"unassign-me", ActionUnassignMe, "", []string{"alice", "tester"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -332,10 +334,30 @@ func TestGitHubWriteCommentMarkerAndAssigneePreservation(t *testing.T) {
 				if len(state.comments) != 1 || state.comments[0].Body != test.append+"\n\n<!-- "+intent.Marker+" -->" || state.comments[0].Author != intent.Principal {
 					t.Fatalf("comment provenance: %+v", state.comments)
 				}
-			} else if strings.Join(state.assignees, ",") != "alice,tester" {
+			} else if want := "alice,tester"; test.action == ActionUnassignMe {
+				if strings.Join(state.assignees, ",") != "alice" {
+					t.Fatalf("unrelated assignee lost: %v", state.assignees)
+				}
+			} else if strings.Join(state.assignees, ",") != want {
 				t.Fatalf("unrelated assignee lost: %v", state.assignees)
 			}
 		})
+	}
+}
+
+func TestGitHubUnassignRequiresCurrentAssignment(t *testing.T) {
+	t.Parallel()
+	state := &fakeGitHubWriteState{viewer: "tester", issueState: "OPEN", assignees: []string{"alice"}}
+	_, _, writer, _, intent := githubWriteSetup(t, state)
+	intent.Action, intent.Patch = ActionUnassignMe, nil
+	if _, _, err := writer.Prepare(context.Background(), intent); !githubWriteDiag(err, "conflict") {
+		t.Fatalf("unassigned account accepted: %v", err)
+	}
+	state.mu.Lock()
+	writes := state.mutationCalls
+	state.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("dispatched %d writes", writes)
 	}
 }
 
@@ -372,10 +394,13 @@ func TestGitHubLostCommentResponseWithLaggingReadBackNeverRedispatches(t *testin
 
 func TestGitHubWriteStateAndAssignmentLagRemainRecoverable(t *testing.T) {
 	t.Parallel()
-	for _, action := range []Action{ActionComplete, ActionAssignToMe} {
+	for _, action := range []Action{ActionComplete, ActionAssignToMe, ActionUnassignMe} {
 		t.Run(string(action), func(t *testing.T) {
 			t.Parallel()
 			state := &fakeGitHubWriteState{viewer: "tester", issueState: "OPEN"}
+			if action == ActionUnassignMe {
+				state.assignees = []string{"tester"}
+			}
 			pipeline, claim, writer, _, intent := githubWriteSetup(t, state)
 			intent.Action, intent.Patch = action, nil
 			if action == ActionComplete {

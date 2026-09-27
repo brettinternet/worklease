@@ -447,4 +447,19 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	if entries, err := journal.Recovery(time.Now()); err != nil || len(entries) != 0 {
 		t.Fatalf("preview wrote without confirmation or stale intent dispatched: %+v %v", entries, err)
 	}
+	for _, action := range []queue.Action{queue.ActionAssignToMe, queue.ActionUnassignMe} {
+		preview := controller.Preview(context.Background(), item, action, "", "")().(queueui.WritePreviewMsg)
+		if preview.Err != nil {
+			t.Fatalf("%s preview: %v", action, preview.Err)
+		}
+		result := controller.Confirm(context.Background(), *preview.Preview)().(queueui.WriteResultMsg)
+		if result.Err != nil || result.Result.Outcome != queue.WriteVerified {
+			t.Fatalf("%s confirm: %+v", action, result)
+		}
+	}
+	view := exec.Command(binary, "task", "view", "TASK-1", "--json")
+	view.Dir = root
+	if output, err := view.CombinedOutput(); err != nil || strings.Contains(string(output), `"@bob"`) || !strings.Contains(string(output), `"@alice"`) {
+		t.Fatalf("unassign me must preserve @alice: %v %s", err, output)
+	}
 }

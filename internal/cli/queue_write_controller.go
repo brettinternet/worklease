@@ -44,7 +44,7 @@ func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, 
 		if len(me) == 0 {
 			return nil, fmt.Errorf("backlog.md identity not configured")
 		}
-		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: me[0]}, nil
+		return &queue.BacklogWriteAdapter{BacklogAdapter: a, Me: me[0], Mine: me}, nil
 	case *queue.BeadsAdapter:
 		me := c.me[source.ID]
 		if len(me) != 1 || me[0] == "" {
@@ -93,7 +93,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			return queueui.WritePreview{}, "", fmt.Errorf("beads actor changed; reopen the write preview")
 		}
 	}
-	if action == queue.ActionStart && source.Adapter == "backlog-md" {
+	if source.Adapter == "backlog-md" && (action == queue.ActionStart || action == queue.ActionAssignToMe || action == queue.ActionUnassignMe) {
 		var liveActor []string
 		if entry, ok := cfg.Me["backlog-md"]; ok {
 			if err := entry.Decode(&liveActor); err != nil {
@@ -101,7 +101,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			}
 		}
 		if !slices.Equal(liveActor, c.me[source.ID]) {
-			return queueui.WritePreview{}, "", fmt.Errorf("provider actor changed; reopen Start work before writing")
+			return queueui.WritePreview{}, "", fmt.Errorf("provider actor changed; reopen the write preview")
 		}
 	}
 	found := false
@@ -205,11 +205,11 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			kind = "comment"
 		}
 		intent.Patch = map[string]string{"append": kind}
-	} else if action != queue.ActionAssignToMe && (source.Adapter == "backlog-md" || source.Adapter == "beads") {
+	} else if action != queue.ActionAssignToMe && action != queue.ActionUnassignMe && (source.Adapter == "backlog-md" || source.Adapter == "beads") {
 		intent.Patch = map[string]string{"status": transition}
 	} else if configured.GitHubProject != nil && source.Adapter == "github" && (action == queue.ActionStart || action == queue.ActionResume || action == queue.ActionReportBlocked || action == queue.ActionRequestReview) {
 		intent.Patch = map[string]string{"projectOptionID": transition}
-	} else if source.Adapter == "linear" && action != queue.ActionAssignToMe {
+	} else if source.Adapter == "linear" && action != queue.ActionAssignToMe && action != queue.ActionUnassignMe {
 		intent.Patch = map[string]string{"stateId": transition}
 	}
 	claim := queueWriteClaim{backend: c.backend, path: path, session: c.session}
@@ -255,7 +255,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		if intent.Append != "" {
 			preview.Effect += ": " + intent.Append
 		}
-		if intent.Action == queue.ActionAssignToMe {
+		if intent.Action == queue.ActionAssignToMe || intent.Action == queue.ActionUnassignMe {
 			preview.Effect += ": " + intent.Principal
 		}
 		if intent.Action == queue.ActionComplete || intent.Action == queue.ActionReopen {

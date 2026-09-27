@@ -152,6 +152,16 @@ func newLinearWriteFixture(t *testing.T) (*LinearAdapter, *LinearWriteAdapter, S
 			state.updatedAt = "2026-09-25T12:01:00Z"
 			state.mu.Unlock()
 			data = map[string]any{"issueUpdate": map[string]any{"success": true, "issue": map[string]any{"id": variable("id")}}}
+		case linearIssueClearAssigneeMutation:
+			if len(request.Variables) != 1 || !strings.Contains(request.Query, "issueUpdate(id:$id,input:{assigneeId:null})") {
+				t.Error("unassignment must clear only the assignee")
+			}
+			state.mu.Lock()
+			state.mutationCalls++
+			state.assignee = ""
+			state.updatedAt = "2026-09-25T12:01:00Z"
+			state.mu.Unlock()
+			data = map[string]any{"issueUpdate": map[string]any{"success": true, "issue": map[string]any{"id": variable("id")}}}
 		case linearIssueUpdateAssigneeMutation:
 			if !strings.Contains(request.Query, "issueUpdate(id:$id,input:{assigneeId:$assigneeId})") {
 				t.Error("assignee update must pass issue id outside the update input")
@@ -307,6 +317,45 @@ func TestLinearWriteConfiguredStateAndConfirmedSingleAssignee(t *testing.T) {
 			t.Fatalf("assignee=%s writes=%d", got, writes)
 		}
 	})
+}
+
+func TestLinearUnassignMeRequiresCurrentAssignee(t *testing.T) {
+	t.Parallel()
+	_, writer, source, state := newLinearWriteFixture(t)
+	intent := linearWriteIntent(source, ActionUnassignMe, "", "")
+	if _, _, err := writer.Prepare(context.Background(), intent); err == nil {
+		t.Fatal("unassigned issue accepted")
+	}
+	state.mu.Lock()
+	state.assignee = linearTestViewer
+	state.mu.Unlock()
+	intent, preview, err := writer.Prepare(context.Background(), intent)
+	if err != nil || intent.ExpectedAssignee != linearTestViewer || intent.Patch["assigneeId"] != "" || !strings.Contains(preview.Operation, "clear") {
+		t.Fatalf("prepare: %+v %+v %v", intent, preview, err)
+	}
+	state.mu.Lock()
+	state.assignee = linearTestBlocker
+	state.mu.Unlock()
+	if _, err := writer.Write(context.Background(), intent); err == nil {
+		t.Fatal("stale unassignment accepted")
+	}
+	state.mu.Lock()
+	state.assignee = linearTestViewer
+	state.mu.Unlock()
+	receipt, err := writer.Write(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := writer.ReadReceipt(context.Background(), intent, &receipt)
+	if err != nil || checkWriteEvidence(intent, &receipt, observed) != WriteVerified {
+		t.Fatalf("unassignment evidence: %+v %v", observed, err)
+	}
+	state.mu.Lock()
+	assignee, writes := state.assignee, state.mutationCalls
+	state.mu.Unlock()
+	if assignee != "" || writes != 1 {
+		t.Fatalf("assignee=%q writes=%d", assignee, writes)
+	}
 }
 
 func linearPipeline(t *testing.T, writer *LinearWriteAdapter, source Source, intent WriteIntent) (WritePipeline, *writeFixture, WriteIntent) {

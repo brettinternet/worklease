@@ -128,6 +128,47 @@ func TestBacklogWritePipelineScratchProject(t *testing.T) {
 	}
 }
 
+func TestBacklogUnassignMePreservesOtherAssignees(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		original string
+		mine     []string
+		want     []string
+	}{
+		{"@bob", nil, nil},
+		{"@alice,@bob", nil, []string{"@alice"}},
+		{"@alice,@alias", []string{"@bob", "@alias"}, []string{"@alice"}},
+		{"@alice,@ALIAS", []string{"@bob", "@alias"}, []string{"@alice"}},
+		{"@alice,@bob,@alias", []string{"@bob", "@alias"}, []string{"@alice"}},
+	} {
+		t.Run(tc.original, func(t *testing.T) {
+			t.Parallel()
+			writer, source, pipeline, claim := backlogWriteProject(t, false, false)
+			writer.Mine = tc.mine
+			cmd := exec.Command(writer.binary(), "task", "edit", "TASK-1", "--assignee", tc.original)
+			cmd.Dir = source.Locator
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("setup assignment: %v %s", err, output)
+			}
+			intent, preview, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, ActionUnassignMe, nil, ""))
+			if err != nil || !preview.AssignmentRace {
+				t.Fatalf("prepare: %+v %v", preview, err)
+			}
+			result, err := pipeline.Start(context.Background(), intent)
+			if err != nil || result.Outcome != WriteVerified || claim.checkpointCalls != 1 {
+				t.Fatalf("write: %+v %v checkpoints=%d", result, err, claim.checkpointCalls)
+			}
+			task, err := writer.writeTask(context.Background(), intent)
+			if err != nil || !slices.Equal(task.Assignees, tc.want) {
+				t.Fatalf("assignees: %v %v", task.Assignees, err)
+			}
+			if _, _, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, ActionUnassignMe, nil, "")); !diag(err, "conflict") {
+				t.Fatalf("repeat unassignment should not dispatch: %v", err)
+			}
+		})
+	}
+}
+
 func taskCommentText(task backlogWriteTask) string {
 	var texts []string
 	for _, comment := range task.Comments {

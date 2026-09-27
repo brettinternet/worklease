@@ -15,7 +15,8 @@ import (
 // Backlog.md has no conditional edit, so these writes provide local coordination only.
 type BacklogWriteAdapter struct {
 	*BacklogAdapter
-	Me string // configured me.backlog-md identity, including the @ prefix
+	Me   string   // primary me.backlog-md identity, including the @ prefix
+	Mine []string // all configured identities that mean me for unassignment
 }
 
 type backlogWriteTask struct {
@@ -86,7 +87,7 @@ func (a *BacklogWriteAdapter) Preview(ctx context.Context, intent WriteIntent) (
 		return preview, err
 	}
 	preview.CreatesCommit, preview.RunsHooks = commit, commit && !bypass
-	preview.AssignmentRace = intent.Action == ActionAssignToMe
+	preview.AssignmentRace = intent.Action == ActionAssignToMe || intent.Action == ActionUnassignMe
 	preview.Argv, err = backlogEditArgs(intent)
 	return preview, err
 }
@@ -181,8 +182,8 @@ func (a *BacklogWriteAdapter) preparePatch(ctx context.Context, intent *WriteInt
 		if intent.Append == "" || strings.Contains(intent.Append, "worklease-op:") || len(intent.Patch) != 1 || intent.Patch["append"] != "notes" && intent.Patch["append"] != "comment" {
 			return BacklogDiagnostic{"invalid-intent", "progress requires notes or comment and nonempty content"}
 		}
-	case ActionAssignToMe:
-		if !validBacklogAssignee(a.Me) || intent.Append != "" || len(intent.Patch) != 0 {
+	case ActionAssignToMe, ActionUnassignMe:
+		if !validBacklogAssignee(a.Me) || intent.Principal != a.Me || intent.Append != "" || len(intent.Patch) != 0 {
 			return BacklogDiagnostic{"invalid-intent", "assignment requires configured me and no unrelated fields"}
 		}
 		assignees := slices.Clone(task.Assignees)
@@ -191,7 +192,21 @@ func (a *BacklogWriteAdapter) preparePatch(ctx context.Context, intent *WriteInt
 				return BacklogDiagnostic{"invalid-intent", "unsafe existing assignee"}
 			}
 		}
-		if !slices.Contains(assignees, a.Me) {
+		if intent.Action == ActionUnassignMe {
+			mine := a.mine()
+			if !slices.Contains(mine, a.Me) {
+				return BacklogDiagnostic{"invalid-intent", "configured actor missing from me identities"}
+			}
+			for _, name := range mine {
+				if !validBacklogAssignee(name) {
+					return BacklogDiagnostic{"invalid-intent", "unsafe configured assignee"}
+				}
+			}
+			if !slices.ContainsFunc(assignees, func(name string) bool { return backlogMineAssignee(mine, name) }) {
+				return BacklogDiagnostic{"conflict", "no configured identity is assigned to this task"}
+			}
+			assignees = slices.DeleteFunc(assignees, func(name string) bool { return backlogMineAssignee(mine, name) })
+		} else if !slices.Contains(assignees, a.Me) {
 			assignees = append(assignees, a.Me)
 		}
 		encoded, _ := json.Marshal(assignees)
@@ -200,6 +215,17 @@ func (a *BacklogWriteAdapter) preparePatch(ctx context.Context, intent *WriteInt
 		return BacklogDiagnostic{"unstable-criterion-target", "criterion indexes can change; check criterion is read-only"}
 	}
 	return nil
+}
+
+func (a *BacklogWriteAdapter) mine() []string {
+	if len(a.Mine) > 0 {
+		return a.Mine
+	}
+	return []string{a.Me}
+}
+
+func backlogMineAssignee(mine []string, name string) bool {
+	return slices.ContainsFunc(mine, func(configured string) bool { return strings.EqualFold(configured, name) })
 }
 
 func backlogEditArgs(intent WriteIntent) ([]string, error) {
@@ -225,12 +251,12 @@ func backlogEditArgs(intent WriteIntent) ([]string, error) {
 		default:
 			return nil, BacklogDiagnostic{"invalid-intent", "invalid append target"}
 		}
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		if len(intent.Patch) != 1 || intent.Append != "" {
 			return nil, BacklogDiagnostic{"invalid-intent", "invalid assignment patch"}
 		}
 		var assignees []string
-		if err := json.Unmarshal([]byte(intent.Patch["assignees"]), &assignees); err != nil || len(assignees) == 0 {
+		if err := json.Unmarshal([]byte(intent.Patch["assignees"]), &assignees); err != nil || assignees == nil || intent.Action == ActionAssignToMe && len(assignees) == 0 || intent.Action == ActionUnassignMe && slices.Contains(assignees, intent.Principal) {
 			return nil, BacklogDiagnostic{"invalid-intent", "invalid assignee set"}
 		}
 		for _, assignee := range assignees {
@@ -270,20 +296,31 @@ func (a *BacklogWriteAdapter) Inspect(ctx context.Context, intent WriteIntent) (
 			return pre, BacklogDiagnostic{"conflict", "project HEAD changed since preview"}
 		}
 	}
-	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe && intent.Action != ActionUnassignMe {
 		if err := a.ValidateTransition(ctx, intent.Source, intent.Action, intent.Transition); err != nil {
 			return pre, err
 		}
 	}
-	if intent.Action == ActionAssignToMe {
+	if intent.Action == ActionAssignToMe || intent.Action == ActionUnassignMe {
+		if intent.Principal != a.Me {
+			return pre, BacklogDiagnostic{"invalid-intent", "configured actor changed"}
+		}
 		var expected []string
-		if err := json.Unmarshal([]byte(intent.Patch["assignees"]), &expected); err != nil || !slices.Contains(expected, a.Me) || len(expected) != len(task.Assignees)+boolInt(!slices.Contains(task.Assignees, a.Me)) {
+		if err := json.Unmarshal([]byte(intent.Patch["assignees"]), &expected); err != nil {
 			return pre, BacklogDiagnostic{"conflict", "assignee set changed"}
 		}
-		for _, old := range task.Assignees {
-			if !slices.Contains(expected, old) {
+		current := slices.Clone(task.Assignees)
+		if intent.Action == ActionUnassignMe {
+			mine := a.mine()
+			if !slices.Contains(mine, a.Me) || !slices.ContainsFunc(current, func(name string) bool { return backlogMineAssignee(mine, name) }) || slices.ContainsFunc(expected, func(name string) bool { return backlogMineAssignee(mine, name) }) {
 				return pre, BacklogDiagnostic{"conflict", "assignee set changed"}
 			}
+			current = slices.DeleteFunc(current, func(name string) bool { return backlogMineAssignee(mine, name) })
+		} else if !slices.Contains(current, a.Me) {
+			current = append(current, a.Me)
+		}
+		if !slices.Equal(expected, current) {
+			return pre, BacklogDiagnostic{"conflict", "assignee set changed"}
 		}
 	}
 	pre = WritePreflight{Capability: true, Authorized: true, InScope: true, Fresh: true, NativeAvailable: true, Owner: true, Precondition: intent.Precondition}
@@ -301,13 +338,6 @@ func (a *BacklogWriteAdapter) Inspect(ctx context.Context, intent WriteIntent) (
 		}
 	}
 	return pre, nil
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func (a *BacklogWriteAdapter) Write(ctx context.Context, intent WriteIntent) (ProviderReceipt, error) {
@@ -342,7 +372,7 @@ func (a *BacklogWriteAdapter) ReadReceipt(ctx context.Context, intent WriteInten
 	switch intent.Action {
 	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview, ActionComplete, ActionReopen:
 		observed.Patch["status"] = task.Status
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		expected := []string{}
 		if err := json.Unmarshal([]byte(intent.Patch["assignees"]), &expected); err != nil {
 			return observed, err

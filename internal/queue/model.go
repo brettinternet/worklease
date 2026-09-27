@@ -323,6 +323,7 @@ const (
 	ActionReportBlocked  Action = "report-blocked"
 	ActionRecordProgress Action = "record-progress"
 	ActionAssignToMe     Action = "assign-to-me"
+	ActionUnassignMe     Action = "unassign-me"
 	ActionRequestReview  Action = "review"
 	ActionComplete       Action = "complete"
 	ActionReopen         Action = "reopen"

@@ -1549,7 +1549,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.afterNavigation(previous)
 		}
 		switch key {
-		case "c", "S", "s", "p", "a", "x":
+		case "c", "S", "s", "p", "a", "A", "x":
 			// An item being acted on stays in place while its state changes.
 			m.pinned = m.Selected
 		}
@@ -1747,14 +1747,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.WriteInputIdentity = identity(item)
 				m.Input = ""
 			}
-		case "a":
+		case "a", "A":
 			if m.PreviewWrite == nil {
 				m.Notice = "Assignment unavailable"
 				break
 			}
 			if item, ok := m.selected(rows); ok && !m.Writing && !m.WriteLoading {
 				m.WriteLoading = true
-				return m, m.PreviewWrite(item, queue.ActionAssignToMe, "", "")
+				action := queue.ActionAssignToMe
+				if key == "A" {
+					action = queue.ActionUnassignMe
+				}
+				return m, m.PreviewWrite(item, action, "", "")
 			}
 		}
 		return m.afterNavigation(previous)

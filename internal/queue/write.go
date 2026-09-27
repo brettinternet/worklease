@@ -168,6 +168,8 @@ func (r WriteRecord) RecoveryEntry(now time.Time) RecoveryEntry {
 		effect = "append " + r.Intent.Patch["append"] + ": " + r.Intent.Append
 	} else if r.Intent.Action == ActionAssignToMe {
 		effect = "assign " + r.Intent.Principal
+	} else if r.Intent.Action == ActionUnassignMe {
+		effect = "unassign " + r.Intent.Principal
 	}
 	next := []string{"retry read-back"}
 	if r.Status == "checkpoint-pending" {
@@ -392,7 +394,7 @@ func (p WritePipeline) Start(ctx context.Context, intent WriteIntent) (WriteResu
 	if intent.Append != "" && intent.Marker != "worklease-op:"+intent.OperationID {
 		return heldUnchanged(), fmt.Errorf("invalid append marker")
 	}
-	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe && intent.Action != ActionUnassignMe {
 		mapping := map[Action]string{ActionStart: "start", ActionResume: "start", ActionReportBlocked: "blocked", ActionRequestReview: "review", ActionComplete: "complete", ActionReopen: "reopen"}[intent.Action]
 		if mapping == "" || p.Workflow[mapping] == "" || p.Workflow[mapping] != intent.Transition {
 			return heldUnchanged(), fmt.Errorf("no-workflow-mapping")
@@ -505,7 +507,7 @@ func actionWriteEligible(action Action, pre WritePreflight) bool {
 	switch action {
 	case ActionStart, ActionResume:
 		return pre.Ready
-	case ActionReportBlocked, ActionRecordProgress, ActionAssignToMe, ActionRequestReview, ActionReopen:
+	case ActionReportBlocked, ActionRecordProgress, ActionAssignToMe, ActionUnassignMe, ActionRequestReview, ActionReopen:
 		return pre.Owner
 	case ActionComplete:
 		return pre.Owner && pre.CompletionEvidence

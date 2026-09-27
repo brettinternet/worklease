@@ -12,6 +12,7 @@ const linearWorkflowStatesQuery = `query($team:String!) { team(id:$team) { id st
 const linearIssueCommentsQuery = `query($id:String!,$after:String,$count:Int!) { issue(id:$id) { id team { id } project { id } comments(first:$count,after:$after) { nodes { id body user { id } } pageInfo { hasNextPage endCursor } } } }`
 const linearIssueUpdateStateMutation = `mutation($id:String!,$stateId:String!) { issueUpdate(id:$id,input:{stateId:$stateId}) { success issue { id } } }`
 const linearIssueUpdateAssigneeMutation = `mutation($id:String!,$assigneeId:String!) { issueUpdate(id:$id,input:{assigneeId:$assigneeId}) { success issue { id } } }`
+const linearIssueClearAssigneeMutation = `mutation($id:String!) { issueUpdate(id:$id,input:{assigneeId:null}) { success issue { id } } }`
 const linearCommentCreateMutation = `mutation($issueId:String!,$body:String!) { commentCreate(input:{issueId:$issueId,body:$body}) { success comment { id body user { id } } } }`
 
 // LinearWriteAdapter adds only the focused mutations supported by the probe.
@@ -187,16 +188,24 @@ func (a *LinearWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 			return intent, preview, err
 		}
 		preview.Operation = "set Linear state " + state.Name + " (" + state.ID + ")"
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		if intent.Append != "" || intent.Transition != "" || len(intent.Patch) != 0 || intent.Marker != "" {
 			return intent, preview, LinearDiagnostic{"invalid-intent", "assignment must not include unrelated changes"}
 		}
-		intent.Patch = map[string]string{"assigneeId": b.account}
 		intent.ExpectedAssignee = linearAssigneeID(issue)
-		if intent.ExpectedAssignee != "" && intent.ExpectedAssignee != b.account {
-			preview.Operation = "replace Linear assignee " + intent.ExpectedAssignee + " with " + b.account
+		if intent.Action == ActionUnassignMe {
+			if intent.ExpectedAssignee != b.account {
+				return intent, preview, LinearDiagnostic{"conflict", "configured account is not assigned to this issue"}
+			}
+			intent.Patch = map[string]string{"assigneeId": ""}
+			preview.Operation = "clear Linear assignee " + b.account
 		} else {
-			preview.Operation = "assign Linear issue to " + b.account
+			intent.Patch = map[string]string{"assigneeId": b.account}
+			if intent.ExpectedAssignee != "" && intent.ExpectedAssignee != b.account {
+				preview.Operation = "replace Linear assignee " + intent.ExpectedAssignee + " with " + b.account
+			} else {
+				preview.Operation = "assign Linear issue to " + b.account
+			}
 		}
 	case ActionRecordProgress:
 		if strings.TrimSpace(intent.Append) == "" || strings.Contains(intent.Append, "worklease-op:") || intent.Transition != "" || intent.Marker != "" && intent.Marker != "worklease-op:"+intent.OperationID {
@@ -297,6 +306,10 @@ func (a *LinearWriteAdapter) validateIntent(intent WriteIntent, binding linearBi
 		if (intent.ExpectedAssignee == "" || intent.ExpectedAssignee == binding.account) && intent.AssigneeReplacementConfirmed {
 			return LinearDiagnostic{"invalid-intent", "assignee replacement confirmation does not match the preview"}
 		}
+	case ActionUnassignMe:
+		if !exactStringMap(intent.Patch, map[string]string{"assigneeId": ""}) || intent.ExpectedAssignee != binding.account || intent.AssigneeReplacementConfirmed || intent.Transition != "" || intent.Append != "" || intent.Marker != "" {
+			return LinearDiagnostic{"invalid-intent", "Linear unassignment must clear only the configured account"}
+		}
 	case ActionRecordProgress:
 		if !exactStringMap(intent.Patch, map[string]string{"append": "comment"}) || strings.TrimSpace(intent.Append) == "" || strings.Contains(intent.Append, "worklease-op:") || intent.Marker != "worklease-op:"+intent.OperationID || intent.Transition != "" {
 			return LinearDiagnostic{"invalid-intent", "Linear progress requires a marked comment"}
@@ -336,7 +349,7 @@ func (a *LinearWriteAdapter) inspectWith(ctx context.Context, binding linearBind
 	if version := linearWriteVersion(binding, issue); intent.Precondition == "" || version != intent.Precondition {
 		return pre, linearIssue{}, LinearDiagnostic{"conflict", "Linear issue changed since write preview"}
 	}
-	if intent.Action == ActionAssignToMe && linearAssigneeID(issue) != intent.ExpectedAssignee {
+	if (intent.Action == ActionAssignToMe || intent.Action == ActionUnassignMe) && linearAssigneeID(issue) != intent.ExpectedAssignee {
 		return pre, linearIssue{}, LinearDiagnostic{"conflict", "Linear assignee changed since write preview"}
 	}
 	var target linearWorkflowState
@@ -424,6 +437,8 @@ func (a *LinearWriteAdapter) Write(ctx context.Context, intent WriteIntent) (Pro
 		case ActionAssignToMe:
 			operation = linearIssueUpdateAssigneeMutation
 			variables["assigneeId"] = fresh.account
+		case ActionUnassignMe:
+			operation = linearIssueClearAssigneeMutation
 		case ActionRecordProgress:
 			operation = linearCommentCreateMutation
 			operationBody := intent.Append + "\n\n<!-- " + intent.Marker + " -->"
@@ -488,7 +503,7 @@ func (a *LinearWriteAdapter) ReadReceipt(ctx context.Context, intent WriteIntent
 	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview, ActionComplete, ActionReopen:
 		observed.Patch["stateId"] = linearStateID(issue)
 		observed.ReceiptID = issue.ID
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		observed.Patch["assigneeId"] = linearAssigneeID(issue)
 		observed.ReceiptID = issue.ID
 	case ActionRecordProgress:

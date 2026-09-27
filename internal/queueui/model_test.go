@@ -83,6 +83,7 @@ func TestProviderActionsRequirePreviewConfirmation(t *testing.T) {
 		{"s", queue.ActionStart, "Doing", ""},
 		{"p", queue.ActionRecordProgress, "", "note"},
 		{"a", queue.ActionAssignToMe, "", ""},
+		{"A", queue.ActionUnassignMe, "", ""},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			m := New(fixture())

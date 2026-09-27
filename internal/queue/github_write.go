@@ -81,7 +81,7 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 		if intent.Marker == "" {
 			intent.Marker = "worklease-op:" + intent.OperationID
 		}
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		if len(intent.Patch) == 0 {
 			intent.Patch = map[string]string{"assignee": b.account}
 		}
@@ -98,7 +98,7 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 	if err := validateGitHubWriteIntent(intent, b.account); err != nil {
 		return intent, preview, err
 	}
-	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe && intent.Action != ActionUnassignMe {
 		if err := a.ValidateTransition(ctx, intent.Source, intent.Action, intent.Transition); err != nil {
 			return intent, preview, err
 		}
@@ -106,6 +106,9 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 	issue, err := a.writeIssue(ctx, b, intent)
 	if err != nil {
 		return intent, preview, err
+	}
+	if intent.Action == ActionUnassignMe && !githubIssueAssigned(issue, b.account) {
+		return intent, preview, GitHubDiagnostic{"conflict", "configured account is not assigned to this issue"}
 	}
 	if isGitHubProjectStatusAction(intent.Action) {
 		projectItem, err := githubProjectItemByIssue(ctx, a.GitHubAdapter, b, issue)
@@ -133,6 +136,9 @@ func (a *GitHubWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (W
 		preview.Operation, preview.Marker = "append-comment", "<!-- "+intent.Marker+" -->"
 	case ActionAssignToMe:
 		preview.Operation = "add-assignee"
+		preview.PreservesOtherAssignees = true
+	case ActionUnassignMe:
+		preview.Operation = "remove-assignee"
 		preview.PreservesOtherAssignees = true
 	}
 	return intent, preview, nil
@@ -162,9 +168,9 @@ func validateGitHubWriteIntent(intent WriteIntent, account string) error {
 		if strings.TrimSpace(intent.Append) == "" || strings.Contains(intent.Append, "worklease-op:") || intent.Marker != "worklease-op:"+intent.OperationID {
 			return GitHubDiagnostic{"invalid-intent", "progress requires a nonempty comment and operation marker"}
 		}
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		if !exactStringMap(intent.Patch, map[string]string{"assignee": account}) || intent.Append != "" || intent.Marker != "" {
-			return GitHubDiagnostic{"invalid-intent", "assignment must add only the configured account"}
+			return GitHubDiagnostic{"invalid-intent", "assignment must affect only the configured account"}
 		}
 	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview:
 		if intent.Append != "" || intent.Marker != "" || intent.Transition == "" {
@@ -179,6 +185,15 @@ func validateGitHubWriteIntent(intent WriteIntent, account string) error {
 		return GitHubDiagnostic{"no-workflow-mapping", "GitHub Issues has no supported mapping for this action"}
 	}
 	return nil
+}
+
+func githubIssueAssigned(issue githubIssue, account string) bool {
+	for _, assignee := range issue.Assignees.Nodes {
+		if assignee.Login == account {
+			return true
+		}
+	}
+	return false
 }
 
 func exactStringMap(actual, expected map[string]string) bool {
@@ -301,7 +316,7 @@ func (a *GitHubWriteAdapter) inspect(ctx context.Context, intent WriteIntent) (W
 	if err := validateGitHubWriteIntent(intent, b.account); err != nil {
 		return pre, nil, err
 	}
-	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe && intent.Action != ActionUnassignMe {
 		if err := a.ValidateTransition(ctx, intent.Source, intent.Action, intent.Transition); err != nil {
 			return pre, nil, err
 		}
@@ -340,6 +355,9 @@ func (a *GitHubWriteAdapter) inspect(ctx context.Context, intent WriteIntent) (W
 		return pre, b, nil
 	}
 	version := githubWriteVersion(issue)
+	if intent.Action == ActionUnassignMe && !githubIssueAssigned(issue, b.account) {
+		return pre, nil, GitHubDiagnostic{"conflict", "configured account is no longer assigned"}
+	}
 	if intent.Precondition == "" || version != intent.Precondition {
 		return pre, nil, GitHubDiagnostic{"conflict", "issue changed since write preview"}
 	}
@@ -429,8 +447,12 @@ func (a *GitHubWriteAdapter) dispatch(ctx context.Context, b *githubBinding, gat
 	case ActionRecordProgress:
 		method, endpoint = http.MethodPost, base+issuePath+"/comments"
 		payload = map[string]string{"body": intent.Append + "\n\n<!-- " + intent.Marker + " -->"}
-	case ActionAssignToMe:
-		method, endpoint = http.MethodPost, base+issuePath+"/assignees"
+	case ActionAssignToMe, ActionUnassignMe:
+		method = http.MethodPost
+		if intent.Action == ActionUnassignMe {
+			method = http.MethodDelete
+		}
+		endpoint = base + issuePath + "/assignees"
 		payload = map[string][]string{"assignees": {b.account}}
 	default:
 		return ProviderReceipt{}, GitHubDiagnostic{"no-workflow-mapping", "GitHub Issues has no supported mapping for this action"}
@@ -671,15 +693,8 @@ func (a *GitHubWriteAdapter) ReadReceipt(ctx context.Context, intent WriteIntent
 			observed.Patch[key] = value
 		}
 		observed.ReceiptID = item.itemID
-	case ActionAssignToMe:
-		found := false
-		for _, assignee := range issue.Assignees.Nodes {
-			if assignee.Login == b.account {
-				found = true
-				break
-			}
-		}
-		if !found {
+	case ActionAssignToMe, ActionUnassignMe:
+		if githubIssueAssigned(issue, b.account) == (intent.Action == ActionUnassignMe) {
 			return observed, nil
 		}
 		observed.Patch["assignee"] = b.account

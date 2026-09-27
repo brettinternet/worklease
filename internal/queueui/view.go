@@ -686,7 +686,7 @@ var helpGroups = []struct {
 }{
 	{"Navigate", []binding{{"j/k ↓/↑", "move selection"}, {"n / N", "next / previous row"}, {"gg / G", "first / last row"}, {"H / M / L", "top / middle / bottom visible row"}, {"zz / zt / zb", "center / top / bottom selected row"}, {"^f / ^b", "scroll one page forward / back"}, {"^d / ^u", "scroll half page down / up"}, {"^e / ^y", "scroll one line down / up"}, {"pgdn / pgup", "scroll one page"}, {"enter l →", "open detail"}, {"esc h ←", "back / close"}, {"tab ⇧tab", "next / previous detail section"}}},
 	{"Views and filter", []binding{{"v / V", "next / previous view"}, {"1-9", "jump to view"}, {"/", "filter loaded rows"}, {"esc", "clear filter"}, {"d", "show / hide done items"}}},
-	{"Item actions (preview first)", []binding{{"S", "start: claim + move to started status"}, {"c", "claim for me"}, {"s", "change provider status"}, {"p", "add a progress note"}, {"a", "assign to me"}, {"R", "release a verified no-effect claim"}, {"x", "launch a worker"}, {"o", "open in provider"}, {"i", "show the item's claim"}, {"m", "load more comments / claim history"}}},
+	{"Item actions (preview first)", []binding{{"S", "start: claim + move to started status"}, {"c", "claim for me"}, {"s", "change provider status"}, {"p", "add a progress note"}, {"a", "assign to me"}, {"A", "unassign me"}, {"R", "release a verified no-effect claim"}, {"x", "launch a worker"}, {"o", "open in provider"}, {"i", "show the item's claim"}, {"m", "load more comments / claim history"}}},
 	{"General", []binding{{"r", "refresh sources"}, {":", "command palette (start work)"}, {"?", "toggle help"}, {"q", "quit"}}},
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
 }
@@ -1203,7 +1203,7 @@ func (m Model) itemActions(i queue.Item) []binding {
 		actions = append(actions, binding{"s", "status"})
 	}
 	if m.PreviewWrite != nil {
-		actions = append(actions, binding{"p", "note"}, binding{"a", "assign me"})
+		actions = append(actions, binding{"p", "note"}, binding{"a", "assign me"}, binding{"A", "unassign me"})
 	}
 	if m.PreviewLaunch != nil {
 		actions = append(actions, binding{"x", "launch"})

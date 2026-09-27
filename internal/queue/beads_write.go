@@ -105,9 +105,16 @@ func beadsWriteArgs(intent WriteIntent) ([]string, error) {
 			return nil, BeadsDiagnostic{"invalid-intent", "invalid status patch"}
 		}
 		return []string{"update", intent.Ref.ItemID, "--status", intent.Transition}, nil
-	case ActionAssignToMe:
-		if len(intent.Patch) != 1 || intent.Patch["assignee"] != intent.Principal || intent.Principal == "" || strings.HasPrefix(intent.Principal, "-") || intent.Append != "" {
+	case ActionAssignToMe, ActionUnassignMe:
+		assignee := intent.Principal
+		if intent.Action == ActionUnassignMe {
+			assignee = ""
+		}
+		if len(intent.Patch) != 1 || intent.Patch["assignee"] != assignee || intent.Principal == "" || strings.HasPrefix(intent.Principal, "-") || intent.Append != "" {
 			return nil, BeadsDiagnostic{"invalid-intent", "invalid assignment patch"}
+		}
+		if intent.Action == ActionUnassignMe {
+			return []string{"update", intent.Ref.ItemID, "--assignee", "", "--if-assignee", intent.Principal}, nil
 		}
 		return []string{"update", intent.Ref.ItemID, "--assignee", intent.Principal}, nil
 	case ActionRecordProgress:
@@ -133,11 +140,18 @@ func (a *BeadsWriteAdapter) Prepare(ctx context.Context, intent WriteIntent) (Wr
 		if err = a.ValidateTransition(ctx, intent.Source, intent.Action, intent.Transition); err != nil {
 			return intent, preview, err
 		}
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		if intent.Append != "" || len(intent.Patch) != 0 {
 			return intent, preview, BeadsDiagnostic{"invalid-intent", "assignment only"}
 		}
-		intent.Patch = map[string]string{"assignee": a.Me}
+		if intent.Action == ActionUnassignMe && issue.Assignee != a.Me {
+			return intent, preview, BeadsDiagnostic{"conflict", "configured actor is not assigned to this issue"}
+		}
+		assignee := a.Me
+		if intent.Action == ActionUnassignMe {
+			assignee = ""
+		}
+		intent.Patch = map[string]string{"assignee": assignee}
 	case ActionRecordProgress:
 		if intent.Append == "" || strings.Contains(intent.Append, "worklease-op:") || intent.Patch["append"] != "comment" {
 			return intent, preview, BeadsDiagnostic{"invalid-intent", "marked comment required"}
@@ -184,7 +198,10 @@ func (a *BeadsWriteAdapter) Inspect(ctx context.Context, intent WriteIntent) (Wr
 	if version != intent.Precondition {
 		return pre, BeadsDiagnostic{"conflict", "issue or Dolt commit changed after preview"}
 	}
-	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe {
+	if intent.Action == ActionUnassignMe && issue.Assignee != a.Me {
+		return pre, BeadsDiagnostic{"conflict", "configured actor is no longer assigned"}
+	}
+	if intent.Action != ActionRecordProgress && intent.Action != ActionAssignToMe && intent.Action != ActionUnassignMe {
 		if err := a.ValidateTransition(ctx, intent.Source, intent.Action, intent.Transition); err != nil {
 			return pre, err
 		}
@@ -249,7 +266,7 @@ func (a *BeadsWriteAdapter) ReadReceipt(ctx context.Context, intent WriteIntent,
 	switch intent.Action {
 	case ActionStart, ActionResume, ActionReportBlocked, ActionRequestReview, ActionComplete, ActionReopen:
 		obs.Patch["status"] = issue.Status
-	case ActionAssignToMe:
+	case ActionAssignToMe, ActionUnassignMe:
 		obs.Patch["assignee"] = issue.Assignee
 	case ActionRecordProgress:
 		obs.Patch["append"] = "comment"

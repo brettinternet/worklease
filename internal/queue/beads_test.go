@@ -160,7 +160,7 @@ func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 	writer := &BeadsWriteAdapter{BeadsAdapter: a, Me: "alice"}
 	ctx := context.Background()
 	ref := Ref{SourceID: source.ID, ItemID: id}
-	for _, action := range []Action{ActionRecordProgress, ActionAssignToMe, ActionReportBlocked} {
+	for _, action := range []Action{ActionRecordProgress, ActionAssignToMe, ActionUnassignMe, ActionReportBlocked} {
 		intent := WriteIntent{OperationID: "aabbccddeeff00112233445566778899", Source: source, Ref: ref, Principal: "alice", Action: action}
 		switch action {
 		case ActionRecordProgress:
@@ -184,6 +184,14 @@ func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 		}
 		if got := checkWriteEvidence(prepared, &receipt, observed); got != WriteVerified {
 			t.Fatalf("%s evidence: %s %+v", action, got, observed)
+		}
+		if action == ActionUnassignMe {
+			if issue, err := writer.readIssue(ctx, source, ref); err != nil || issue.Assignee != "" {
+				t.Fatalf("unassign left assignee: %+v %v", issue, err)
+			}
+			if _, _, err := writer.Prepare(ctx, intent); err == nil {
+				t.Fatal("repeated unassignment was not rejected")
+			}
 		}
 		if action == ActionRecordProgress {
 			comments, err := writer.comments(ctx, prepared)

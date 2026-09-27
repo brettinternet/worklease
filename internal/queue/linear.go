@@ -169,7 +169,7 @@ func linearApprovedOperation(operation string) bool {
 		return true
 	}
 	switch operation {
-	case linearIssueUpdateStateMutation, linearIssueUpdateAssigneeMutation, linearCommentCreateMutation:
+	case linearIssueUpdateStateMutation, linearIssueUpdateAssigneeMutation, linearIssueClearAssigneeMutation, linearCommentCreateMutation:
 		return true
 	default:
 		return false
