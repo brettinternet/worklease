@@ -343,3 +343,81 @@ Short options now have one meaning across the complete command tree. Long option
 | `replace-file` | `-C` (`--content-file`) | `--content-file` |
 
 `status --verbose` text labels now use upper snake case, matching the other text renderers (for example, `CLAIM_ID` instead of `claimId`).
+
+## 0.7.1 - 2026-07-16
+
+### Fixed
+
+- Compact `list` output keeps path anchors visible when it truncates resources.
+
+## 0.7.0 - 2026-07-16
+
+### Changed
+
+- Running `worklease` with no arguments prints help instead of failing.
+
+### Documentation
+
+- Added the claim model guide and a README comparison of work with and without Worklease.
+
+## 0.6.0 - 2026-07-15
+
+### Added
+
+- Short aliases for common CLI flags, token sources, and the reconciliation target.
+
+### Fixed
+
+- `list` output keeps resource boundaries visible.
+
+## 0.5.0 - 2026-07-15
+
+### Changed
+
+- `list` text output is compact, and CLI help and error messages are clearer.
+- Agent help links point at the matching release.
+
+## 0.4.0 - 2026-07-15
+
+### Added
+
+- `--help-all` prints the whole CLI help tree, and help includes agent workflow guidance.
+
+### Fixed
+
+- `list` text columns stay aligned.
+
+## 0.3.0 - 2026-07-15
+
+### Documentation
+
+- CLI help documents lease and flag defaults.
+
+## 0.2.0 - 2026-07-14
+
+### Added
+
+- Bounded lease checkpoints and bounded `acquire --wait`.
+- Atomic 1–32-resource bundles with guarded bundle execution.
+- Atomic lease transfer.
+- Operation inspection and reconciliation for unknown outcomes.
+- `status --verbose` redacted diagnostics.
+- Versioned resource policies with `policy` inspection.
+- Guarded execution in a validated working directory, including linked worktrees.
+- Credentials from a file or file descriptor instead of argv.
+- Transactional retention with `gc`, which previews by default and requires `--apply`.
+- Source-provider SDK and conformance kit, a stable public Python API, and versioned CLI JSON schemas.
+
+### Changed
+
+- CLI output is text by default; pass `--json` for machine-readable output.
+- Lease state secrets are stored privately, and help is grouped and colored.
+
+## 0.1.0 - 2026-07-13
+
+### Added
+
+- Initial release: a Python CLI for same-host leases with acquire, heartbeat, release, expiry, guarded command execution, and replayable operations.
+- Provider adapter keys for Backlog.md, GitHub, Linear, Markdown, and generic sources.
+- The worklease and source-workflow agent skills.
+- CI and checksummed release artifacts.
