@@ -40,6 +40,9 @@ func nextResult(t *testing.T, h *queueQueryHarness, args ...string) map[string]a
 }
 
 func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	binary, err := exec.LookPath("bd")
 	if err != nil {
 		t.Skip("bd 1.3.0 is not installed")

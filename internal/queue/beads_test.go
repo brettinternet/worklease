@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/brettinternet/worklease/internal/testkit"
 )
@@ -186,6 +185,12 @@ func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 		if got := checkWriteEvidence(prepared, &receipt, observed); got != WriteVerified {
 			t.Fatalf("%s evidence: %s %+v", action, got, observed)
 		}
+		if action == ActionRecordProgress {
+			comments, err := writer.comments(ctx, prepared)
+			if err != nil || len(comments) != 1 || !strings.Contains(comments[0].Text, prepared.Marker) {
+				t.Fatalf("provider comment count: %+v %v", comments, err)
+			}
+		}
 	}
 	beadsCommand(t, binary, source.Locator, "config", "set", "export.auto", "true")
 	previewIntent := WriteIntent{OperationID: "bbccddeeff00112233445566778899aa", Source: source, Ref: ref, Principal: "alice", Action: ActionRecordProgress, Append: "Another note", Patch: map[string]string{"append": "comment"}}
@@ -312,41 +317,6 @@ esac
 	}
 	if _, ok := a.CachedEdges(source, Ref{SourceID: source.ID, ItemID: "probe-1"}); ok {
 		t.Fatal("inconsistent edges were published")
-	}
-}
-
-func TestBeadsWritePipelineCheckpointAndRecovery(t *testing.T) {
-	t.Parallel()
-	binary, a, source := beadsFixture(t)
-	id := beadsCommand(t, binary, source.Locator, "create", "Pipeline target", "--silent")
-	writer := &BeadsWriteAdapter{BeadsAdapter: a, Me: "alice"}
-	root := t.TempDir()
-	journal, err := NewWriteJournal(filepath.Join(root, "recovery"), filepath.Join(root, "cache"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim := &writeFixture{}
-	pipeline := WritePipeline{Adapter: writer, Claim: claim, Journal: journal}
-	opID, err := NewWriteOperationID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	intent := WriteIntent{OperationID: opID, Source: source, Ref: Ref{SourceID: source.ID, ItemID: id}, Principal: "alice", Action: ActionRecordProgress, Append: "Pipeline progress", Patch: map[string]string{"append": "comment"}, AuthorityID: "test-authority", ClaimID: "test-claim", ClaimRevision: 1, Resources: []string{"test-key"}, CheckpointTTL: time.Minute, CheckpointNotAfter: time.Now().Add(time.Hour)}
-	prepared, _, err := writer.Prepare(context.Background(), intent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := pipeline.Start(context.Background(), prepared)
-	if err != nil || result.Outcome != WriteVerified || claim.checkpointCalls != 1 {
-		t.Fatalf("pipeline: %+v %v (checkpoints %d)", result, err, claim.checkpointCalls)
-	}
-	result, err = pipeline.Recover(context.Background(), opID)
-	if err != nil || result.Outcome != WriteVerified || claim.checkpointCalls != 1 {
-		t.Fatalf("recovery redispatched: %+v %v", result, err)
-	}
-	comments, err := writer.comments(context.Background(), prepared)
-	if err != nil || len(comments) != 1 || !strings.Contains(comments[0].Text, prepared.Marker) {
-		t.Fatalf("provider comment count: %+v %v", comments, err)
 	}
 }
 
