@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-26 16:49'
-updated_date: '2026-09-27 05:05'
+updated_date: '2026-09-27 05:29'
 labels:
   - testing
   - ci
@@ -53,4 +53,6 @@ Merged tested configuration commit 7fd6f3e into local main (fast-forward); clean
 Post-publication main CI 36280444961 failed Quality (linux-x64): TestGitHubProjectStatusWritesUseRecoveryAndNeverRedispatchLostResponse/lost-response-true reported credential helper failed; TestNewBacklogCommitShowsPreviousRowsStale returned predecessor cache rows (also linux-arm64). Commit 7fd6f3e is on origin/main. Investigating both; preserve unrelated primary checkout changes.
 
 Follow-up commits 0dd098e (replaced checkout lineage includes creation time; GitHub test helper re-executes the stable test binary instead of a writable shell script, with safe failure details) and 1b76374 (split race suite by TestQueue prefix to avoid CLI Go test deadline). Focused race tests for GitHub recovery, credential helper diagnostic, and replaced checkout passed 3 repetitions; lint, vet, format-check, and queue/queueindex tests passed. New main run 36294294394 also exposed TestQueueNextStartOutcomes isolated child reaching Go per-package deadline under race; split follows the existing compatibility job boundary. Await GitHub main CI validation before checking criterion #2.
+
+Published main at 53e57c2; GitHub CI run 36296215441 completed successfully: Quality (linux-x64), Test (linux-arm64), Test (macos-x64), and Test (macos-arm64) all passed. Local lint, format-check, vet, full test suite, and three race repetitions of the previously failing CLI/queue/queueindex tests passed. This is the first consecutive post-fix successful main Quality run; criterion #2 still needs nine more or a filed remaining failure with root cause.
 <!-- SECTION:NOTES:END -->
