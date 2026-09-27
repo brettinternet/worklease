@@ -224,6 +224,24 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		for range updates {
 		}
 		snapshot := loader.Store.Current()
+		if selector != nil {
+			// Backlog lists may omit dependency fields. Unlike the TUI, next must
+			// finish the entire scope before it can safely select a candidate.
+			for _, source := range sources {
+				if source.Adapter != "backlog-md" || snapshot.Sources[source.ID].State != queue.CoverageComplete {
+					continue
+				}
+				var unresolved []queue.Ref
+				for _, item := range queue.EvaluateView(snapshot.Items, queue.View{SourceOrder: []string{source.ID}}) {
+					if !item.DependenciesKnown || item.Closure != queue.CoverageComplete || !item.Fresh {
+						unresolved = append(unresolved, item.Ref)
+					}
+				}
+				for range loader.HydrateEdges(ctx, source, nil, unresolved, false) {
+				}
+			}
+			snapshot = loader.Store.Current()
+		}
 		for _, source := range refreshSources {
 			if partition, ok := partitions[source.ID]; ok {
 				complete := snapshot.Sources[source.ID].State == queue.CoverageComplete

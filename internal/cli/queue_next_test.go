@@ -256,6 +256,39 @@ func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
 	}
 }
 
+func TestQueueNextHydratesBacklogClosuresMissingFromList(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.setTasks(`[{"id":"TASK-1","title":"Ready","status":"To Do","priority":"high","ordinal":1,"isReady":true},{"id":"TASK-2","title":"Blocked","status":"To Do","ordinal":2,"isReady":false},{"id":"TASK-3","title":"Finished","status":"Done","ordinal":3,"isReady":false}]`)
+	t.Setenv("QUEUE_VIEW_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-1","title":"Ready","status":"To Do","priority":"high","ordinal":1,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Blocked","status":"To Do","ordinal":2,"dependencies":["TASK-1"],"readiness":{"missingDependencies":[]},"isReady":false},{"id":"TASK-3","title":"Finished","status":"Done","ordinal":3,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":false}]}`)
+	if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", "local", "--acknowledge"); err != nil {
+		t.Fatalf("confirm identity: %v: %s", err, data)
+	}
+	next := nextResult(t, h)
+	if next["result"] != "ready" || next["acquired"] != false {
+		t.Fatalf("missing list dependencies prevented selection: %#v", next)
+	}
+	candidate := next["candidates"].([]any)[0].(map[string]any)
+	if candidate["ref"].(map[string]any)["itemId"] != "TASK-1" {
+		t.Fatalf("unexpected candidate: %#v", candidate)
+	}
+	// An unreadable task must not be silently omitted from the complete scope.
+	t.Setenv("QUEUE_VIEW_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[{"id":"TASK-1","title":"Ready","status":"To Do","dependencies":[],"readiness":{"missingDependencies":[]}}]}`)
+	if next := nextResult(t, h); next["result"] != "incomplete" || len(next["candidates"].([]any)) != 0 {
+		t.Fatalf("failed detail read allowed selection: %#v", next)
+	}
+}
+
 func TestQueueNextClaimWorkerLifecycleAndContention(t *testing.T) {
 	if isolateCLIProcess(t) {
 		return
