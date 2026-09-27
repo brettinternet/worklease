@@ -51,7 +51,12 @@ it. Any overlap conflicts, and acquisition is all-or-none.
    immediately after selection, before reading full intent, planning,
    delegation, isolation, or edits. For a configured Worklease queue, prefer
    `worklease queue next --view NAME --claim --session ID --json`; it selects
-   and acquires with the ordinary worker contextual handle. Create the queue
+   and acquires with the ordinary worker contextual handle. Add `--start`
+   (MCP `start: true`) when the source maps a `start` transition so the
+   provider shows the item in progress right after the claim. The claim stays
+   the lock: a `transition.outcome` other than `applied` still leaves the
+   caller holding the claim, and an uncertain one goes to `queue recovery`.
+   Create the queue
    with `worklease queue init` (`--dry-run` previews; it adopts a checkout's
    `.config/worklease/queue-sources.yaml` unless `--ignore-proposal`). On contention,
    skip to the next ready candidate without waiting; hold at most one claim
@@ -79,7 +84,7 @@ still requires a verified provider checkpoint; a started or unresolved/unknown
 operation forbids cancellation.
 
 A configured queue loop selects and claims with
-`worklease queue next --view Ready --claim --session "$SESSION" --json`.
+`worklease queue next --view Ready --claim --start --session "$SESSION" --json`.
 For other sources, a short CLI loop needs no credential plumbing:
 
 ```sh
