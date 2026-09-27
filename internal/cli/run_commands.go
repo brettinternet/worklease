@@ -347,7 +347,10 @@ func (sv *runSupervisor) supervise(ctx context.Context, child *exec.Cmd, exited 
 // reason when ownership is lost; transient failures are retried until expiry.
 func (sv *runSupervisor) renew(ctx context.Context) string {
 	record := sv.snapshot()
-	if record.Claim == nil || time.Since(sv.renewed) < sv.ttl/3 {
+	if record.Claim == nil || record.Claim.State != runs.ClaimHeld || time.Since(sv.renewed) < sv.ttl/3 {
+		return ""
+	}
+	if sv.releasedByWorker() {
 		return ""
 	}
 	fields, err := sv.lifecycle(ctx, "heartbeat", "--handle", sv.handlePath, "--ttl", sv.ttl.String())
@@ -455,11 +458,22 @@ func (sv *runSupervisor) finish(ctx context.Context, imposed string, waitErr err
 	return nil
 }
 
+// releasedByWorker reports, and records, a claim the worker ended itself.
+// Only the supervisor and its worker hold the run's handle, and a committed
+// release removes it, so an absent handle means the worker released.
+func (sv *runSupervisor) releasedByWorker() bool {
+	if _, err := os.Lstat(sv.handlePath); !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	_ = sv.update(func(r *runs.Record) { r.Claim.State, r.Claim.Detail = runs.ClaimReleased, "released by the worker" })
+	return true
+}
+
 // endClaim releases the run's claim, or keeps it when the claim has
 // unresolved guarded operations or queue provider writes.
 func (sv *runSupervisor) endClaim(ctx context.Context, releaseReason string) {
 	record := sv.snapshot()
-	if record.Claim == nil || record.Claim.State != runs.ClaimHeld {
+	if record.Claim == nil || record.Claim.State != runs.ClaimHeld || sv.releasedByWorker() {
 		return
 	}
 	// A cancelled supervisor context must not strand the claim, and a hung
@@ -559,6 +573,19 @@ func (l *runLog) truncated() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.cut
+}
+
+// refuseAcquireInsideRun stops a supervised worker from acquiring through the
+// handle its run still holds; the run already owns the claim for it.
+func refuseAcquireInsideRun(cmd *urfave.Command) error {
+	runID, inherited := os.Getenv(envRunID), strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE"))
+	if runID == "" || inherited == "" || strings.TrimSpace(cmd.String("handle")) != "" {
+		return nil
+	}
+	if _, err := os.Lstat(inherited); err != nil {
+		return nil // the worker released the run's claim; a new acquire is its own
+	}
+	return reason.New(reason.ReasonHandleInUse, "this process runs under worklease run "+runID+", which already holds the claim and releases it when the process exits; use verify and checkpoint, not acquire").With("runId", runID)
 }
 
 func withoutEnv(env []string, names ...string) []string {

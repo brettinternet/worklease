@@ -180,3 +180,24 @@ func TestRunClaimIgnoresInheritedHandle(t *testing.T) {
 		t.Fatal("run acquired through the inherited handle")
 	}
 }
+
+func TestRunWorkerCannotReacquireButMayReleaseEarly(t *testing.T) {
+	t.Parallel()
+	home, _ := testkit.Home(t)
+	binary := filepath.Join(t.TempDir(), "worklease")
+	if err := os.Symlink(os.Args[0], binary); err != nil {
+		t.Fatal(err)
+	}
+	key := "coordination:generic:run-worker-release"
+	refusal := filepath.Join(t.TempDir(), "refusal")
+	// The worker keeps running past a renewal interval after releasing, which
+	// must not be treated as a lost claim.
+	worker := `! "$0" --json acquire --resource "$1" > "$2" && "$0" release --reason early && sleep 3`
+	record, err := supervisedRun(t, home, "--ttl", "3s", "--resource", key, "--", "sh", "-c", worker, binary, key, refusal)
+	if err != nil || record.Outcome != runs.OutcomeDone || record.Claim == nil || record.Claim.State != runs.ClaimReleased || record.Claim.Detail != "released by the worker" {
+		t.Fatalf("run: %v %+v claim %+v", err, record, record.Claim)
+	}
+	if data, _ := os.ReadFile(refusal); !strings.Contains(string(data), "runs under worklease run "+record.ID) {
+		t.Fatalf("acquire refusal: %s", data)
+	}
+}

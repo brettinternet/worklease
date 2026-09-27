@@ -128,6 +128,9 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 }
 func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
+		if err := refuseAcquireInsideRun(cmd); err != nil {
+			return s.handle(cmd, err)
+		}
 		explicitHandle := strings.TrimSpace(cmd.String("handle")) != "" || strings.TrimSpace(os.Getenv("WORKLEASE_HANDLE")) != ""
 		if cmd.Bool("no-handle") && explicitHandle {
 			return s.handle(cmd, reason.New(reason.ReasonCredentialSourceConflict, "--no-handle cannot be mixed with a handle"))

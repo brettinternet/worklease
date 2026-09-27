@@ -200,7 +200,9 @@ supervises and records.
 The worker receives `WORKLEASE_RUN_ID` and `WORKLEASE_RUN_RESULT`, and with a
 claim `WORKLEASE_SESSION_ID`, `WORKLEASE_HANDLE`, `WORKLEASE_HOME`, and
 `WORKLEASE_PROFILE`, so its own `verify`, `checkpoint`, and `exec` calls select
-the run's claim. Before exiting it may write
+the run's claim. An `acquire` through that inherited handle is refused with
+`handle-in-use` naming the run. A worker may `release` early; the run then
+stops renewing and records the claim as released by the worker. Before exiting it may write
 `{"outcome":"done|blocked|review|failed","summary":"..."}` (at most 8 KiB) to
 `WORKLEASE_RUN_RESULT`; otherwise exit 0 is `done` and anything else `failed`.
 The supervisor imposes `stopped` or `timeout` (`--max-duration`).

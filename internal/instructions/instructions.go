@@ -45,6 +45,7 @@ var topics = map[string][]string{
 		"8. Persist and verify provider-visible progress; checkpoint local recovery metadata when useful; then release.",
 		"9. Recover an uncertain pending request by retrying that exact request. For MCP acquire, retry by lease reference only when the error returns one; after a definitive failure with no reference, start a fresh acquire.",
 		"10. Never log or hand off bearer tokens or private handle contents.",
+		"Inside a supervised worklease run (WORKLEASE_RUN_ID is set), the run already holds and renews the claim over the handed-off resources and releases it when the worker exits: do not acquire, heartbeat, or release; use the inherited WORKLEASE_SESSION_ID and WORKLEASE_HANDLE for verify and checkpoint, and write {\"outcome\":\"done|blocked|review|failed\",\"summary\":\"...\"} to WORKLEASE_RUN_RESULT before exiting.",
 	},
 	"safety": {
 		"The backing provider remains authoritative for eligibility, progress, completion, and retries.",

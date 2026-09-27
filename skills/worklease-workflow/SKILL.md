@@ -88,6 +88,14 @@ worklease checkpoint --session "$SESSION" --data '{"phase":"tests"}'
 worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
+Inside a supervised `worklease run` (`WORKLEASE_RUN_ID` is set, as for queue
+launch actions), the run already holds and renews the claim over the handed-off
+resources and releases it when the worker exits. Skip acquire, heartbeat, and
+release; use the inherited `WORKLEASE_SESSION_ID` and `WORKLEASE_HANDLE` for
+verify and checkpoint. Before exiting, report the outcome by writing
+`{"outcome":"done|blocked|review|failed","summary":"..."}` to
+`WORKLEASE_RUN_RESULT`.
+
 Give each independent loop one full, collision-resistant stable ID. Preserve a
 harness workflow/loop-run ID unchanged; otherwise generate and persist a full
 UUID. Never truncate or derive it from labels, agent names, turns, iterations,
