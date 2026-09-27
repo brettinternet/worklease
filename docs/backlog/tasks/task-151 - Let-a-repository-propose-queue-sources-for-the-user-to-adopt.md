@@ -4,13 +4,12 @@ title: Let a repository propose queue sources for the user to adopt
 status: To Do
 assignee: []
 created_date: '2026-09-27 05:56'
+updated_date: '2026-09-27 06:00'
 labels:
   - work-queue
 dependencies: []
 references:
-  - internal/config/queue.go
-  - docs/work-queue-tui-proposal.md
-  - docs/queue.md
+  - internal/cli/queue_init.go
 priority: low
 type: feature
 ordinal: 91000
@@ -23,16 +22,35 @@ ordinal: 91000
 
 Queue configuration lives only in the owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (D10). `config.QueuePath` deliberately ignores the checkout, the working directory, and Worklease environment variables, because that file controls launch argv, external adapter executables, credential helpers, checkout paths, and Git network consent. A repository that could supply any of those would get code execution just by being opened.
 
-That leaves no way for a project to share its work sources with collaborators or agents: each person must discover and hand-write them, or run `worklease queue init --checkout PATH` per repository. The proposal already defers a narrow alternative (docs/work-queue-tui-proposal.md, "Project-suggested sources are deferred"): a repository file may only propose sources, which the user reviews and copies into their own queue.yaml. It never proposes adapters, executables, credentials, or launch actions.
+That leaves no way for a project to share its work sources with collaborators or agents. Each person must rediscover them, and in particular must independently choose the same portable claim domain, or their claims silently stop contending. The proposal already defers a narrow alternative (docs/work-queue-tui-proposal.md, "Project-suggested sources are deferred"): a repository file may only propose sources, which the user reviews and copies into their own queue.yaml.
 
-Open questions for the implementer to settle: the file name and location in the checkout, how proposals are surfaced (`queue init`, a TUI notice, or both), and how a changed proposal is shown after adoption.
+## Decisions
+
+**File.** `.config/worklease/queue-sources.yaml` at the Git worktree root of the checkout, committed with the project. It follows the `.config/<tool>/` project convention (as `.config/wt.toml` does here) and is deliberately not named `queue.yaml`, so it cannot be mistaken for loaded configuration. Shape:
+
+```yaml
+version: 1
+sources:
+  - id: worklease            # suggested; init de-duplicates as it does today
+    adapter: backlog-md      # backlog-md or github only
+    workflow: {start: In Progress, complete: Done, reopen: To Do}
+    claims: {policy: generic, source: worklease}   # optional portable domain
+```
+
+Decoding is an allowlist: `version`, and per source `id`, `adapter`, `workflow`, and `claims`. Everything else is rejected by name, including `checkout`, `me`, `views`, `authority`, `launch`, `executable`, adapter config, `account`, credential helpers, and `allowGitNetwork`. A `github` source carries no host or repository; init derives both from the checkout's `origin`, exactly as detection does, so a proposal cannot point the user's `gh` credentials at another host or repository. At most 8 sources.
+
+**Surface.** Only `worklease queue init` reads the file, and only for the checkout it is resolving (`--checkout PATH` or the current directory). When present, the proposal replaces provider detection as the source of facts, and each fact's origin names the file. Every existing init behavior still applies: preview and `--dry-run`, source ID de-duplication, `me` resolution, the default views or `--view`, `--authority`, `allowGitNetwork: false` unless the user passes `--allow-git-network`, identity confirmation, and portable claims skipping automatic confirmation. `--ignore-proposal` falls back to detection. `worklease queue`, the TUI, MCP, and `queue next` never read it; there is no passive notice.
+
+**Changes after adoption.** Adopted sources are ordinary user configuration with no link back to the file. Re-running init on the checkout matches proposed sources to configured ones by checkout path and adapter: new proposed sources are added through the normal preview and write; a differing `workflow` or `claims` on an already-configured source is reported with the exact YAML difference and never applied; a changed `claims` also points to the identity migration checklist; sources dropped from the proposal are reported, not removed.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A repository file can propose queue sources and optional views; Worklease never loads it as configuration and never reads it outside an explicit user action.
-- [ ] #2 The proposal schema accepts only built-in adapters and source fields that cannot execute code or select credentials; adapters, executables, credential helpers, launch actions, and Git network consent are rejected with an actionable error.
-- [ ] #3 Adopting a proposal shows the exact YAML to be added and writes it to the owner-private queue.yaml only after explicit confirmation; --dry-run previews without writing.
-- [ ] #4 Adopted sources are ordinary user configuration: later edits to the repository file do not change them until the user adopts again.
-- [ ] #5 docs/queue.md and docs/work-queue-tui-proposal.md describe the file, its trust boundary, and the adoption flow.
+- [ ] #1 `worklease queue init` in a checkout with `.config/worklease/queue-sources.yaml` previews every proposed source with that file as each fact's origin, and writes owner-private queue.yaml only when not `--dry-run`; `--ignore-proposal` uses provider detection instead.
+- [ ] #2 No command other than `queue init` reads the file: opening the queue or TUI, `queue query`, `queue next`, and MCP tools behave identically with and without it.
+- [ ] #3 The proposal decoder accepts only `version` and per-source `id`, `adapter` (`backlog-md` or `github`), `workflow`, and `claims`, with at most 8 sources. Any other key, including checkout, me, views, authority, launch, executable, adapter config, account, credential helpers, and allowGitNetwork, fails with an error naming the key, and queue.yaml is left unchanged.
+- [ ] #4 A proposed `github` source takes its host and repository only from the checkout's `origin`; init refuses the source when there is no GitHub origin.
+- [ ] #5 Adopted sources pass through the existing init rules unchanged: ID de-duplication, `me` resolution, default views or `--view`, `--authority`, `allowGitNetwork: false` without `--allow-git-network`, automatic identity confirmation only for new host-local local-authority sources, and the printed confirm command otherwise.
+- [ ] #6 Re-running init after adoption adds newly proposed sources, reports a differing workflow or claims on an existing source (and the migration checklist for claims) without applying it, reports sources removed from the proposal without removing them, and exits 0 with nothing written when nothing is new.
+- [ ] #7 docs/queue.md documents the file, its allowlist and trust boundary, and the adoption and re-run behavior; docs/work-queue-tui-proposal.md replaces the deferred note with the shipped design; CHANGELOG.md Unreleased has an Added entry.
 <!-- AC:END -->
