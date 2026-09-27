@@ -132,8 +132,11 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 	case "R":
 		m.openClaimsAction(ClaimsActionRelease)
 	}
-	if m.Claims.Selected != previous && m.Claims.Detail {
-		return m, m.loadSelectedClaimHistory(m.claimRows())
+	if m.Claims.Selected != previous {
+		m.clearClaimHistory()
+		if m.Claims.Detail {
+			return m, m.loadSelectedClaimHistory(m.claimRows())
+		}
 	}
 	return m, nil
 }
@@ -159,14 +162,18 @@ func (m *Model) selectClaimIndex(rows []lease.ClaimView, index, capacity int) {
 	m.Claims.Index = index
 	m.Claims.Selected = rows[index].ClaimID
 	m.anchorClaims(rows, capacity)
-	if m.Claims.Selected != previous && m.Claims.Detail {
-		m.Claims.DetailOffset = 0
-		m.Claims.DetailTab = 0
-		m.Claims.History = ledger.HistoryPage{}
-		m.Claims.HistoryResource = ""
-		m.Claims.HistoryLoading = false
-		m.Claims.HistoryError = ""
+	if m.Claims.Selected != previous {
+		m.clearClaimHistory()
 	}
+}
+
+func (m *Model) clearClaimHistory() {
+	m.Claims.DetailOffset = 0
+	m.Claims.DetailTab = 0
+	m.Claims.History = ledger.HistoryPage{}
+	m.Claims.HistoryResource = ""
+	m.Claims.HistoryLoading = false
+	m.Claims.HistoryError = ""
 }
 
 func (m *Model) loadSelectedClaimHistory(rows []lease.ClaimView) tea.Cmd {

@@ -1475,8 +1475,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if m.Filtering {
 					if m.ViewName == ClaimsViewID {
+						previous := m.Claims.Selected
 						m.Claims.ResourcePrefix = m.Input
 						m.anchorClaims(m.claimRows(), max(1, m.frame(m.rows()).bodyHeight-1))
+						if m.Claims.Selected != previous {
+							m.clearClaimHistory()
+							if m.Claims.Detail {
+								return m, m.loadSelectedClaimHistory(m.claimRows())
+							}
+						}
 					} else {
 						m.Filter = m.Input
 						m.anchor(m.rows())

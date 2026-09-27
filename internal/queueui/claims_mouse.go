@@ -22,7 +22,11 @@ func (m Model) claimsMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		start := max(0, min(m.Claims.Offset+delta/wheelStep, len(rows)-capacity))
 		m.Claims.Offset = start
+		previous := m.Claims.Selected
 		m.selectClaimIndex(rows, max(start, min(m.Claims.Index, start+capacity-1)), capacity)
+		if m.Claims.Detail && m.Claims.Selected != previous {
+			return m, m.loadSelectedClaimHistory(rows)
+		}
 		return m, nil
 	case tea.MouseButtonLeft:
 		if v.Y == 1 {

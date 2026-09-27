@@ -424,8 +424,17 @@ func runQueueAdapterApprovalProcessHelper(sourceID string) {
 		switch request.Method {
 		case "initialize":
 			schema := `{}`
-			if sourceID == "schema" {
+			switch sourceID {
+			case "schema":
 				schema = `{"type":"object","required":["tenant"],"properties":{"tenant":{"type":"string"}},"additionalProperties":false}`
+			case "invalid-schema":
+				schema = `{"$ref":"https://example.invalid/schema"}`
+			case "numbers":
+				schema = `{"type":"object","properties":{"tenantId":{"type":"integer"}}}`
+			case "secrets":
+				schema = `{"type":"object","properties":{"apiToken":{"type":"string"}}}`
+			case "scoped":
+				schema = `{"type":"object","properties":{"sourceId":{"type":"string"}}}`
 			}
 			result = json.RawMessage(fmt.Sprintf(`{"protocolVersion":1,"manifest":{"id":"example.adapter","version":"1.2.3","protocol":{"minMajor":1,"maxMajor":1},"configSchema":%s,"authentication":[],"resourcePolicy":"generic","capabilities":[],"requiredFeatures":[]}}`, schema))
 		case "resolve":

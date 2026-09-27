@@ -624,8 +624,16 @@ func TestQueueInitExternalManifestApprovalAndReadOnlyDefaults(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("manifest process was not started: %v", err)
 	}
+	second := invoke("--source-id", "team-b", "--adapter-config", `{"tenant":"other"}`, "--json")
+	if second.Err != nil {
+		t.Fatalf("second source from same executable: %v %s", second.Err, second.Stdout)
+	}
+	cfg, err = config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 2 || cfg.Sources[1].ID != "team-b" || cfg.Sources[1].Config["tenant"] != "other" {
+		t.Fatalf("distinct source instance: %+v %v", cfg, err)
+	}
 	before, _ := os.ReadFile(configPath)
-	for _, args := range [][]string{{"--adapter-config", `{"tenant":"acme"}`}, {"--adapter-config", `{"tenant":"acme"}`, "--source-id", "example.adapter"}} {
+	for _, args := range [][]string{{"--adapter-config", `{"tenant":"acme"}`}, {"--adapter-config", `{"tenant":"acme"}`, "--source-id", "team-b"}} {
 		failed := invoke(append(args, "--json")...)
 		if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"reason":"source-already-configured"`) || !strings.Contains(string(failed.Stdout), `"exitCode":64`) {
 			t.Fatalf("duplicate: %v %s", failed.Err, failed.Stdout)
@@ -634,6 +642,38 @@ func TestQueueInitExternalManifestApprovalAndReadOnlyDefaults(t *testing.T) {
 	after, _ := os.ReadFile(configPath)
 	if !bytes.Equal(before, after) {
 		t.Fatal("failed external init modified queue.yaml")
+	}
+}
+
+func TestQueueInitExternalUsesActualSourceForConfigScope(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	_, env := testkit.Home(t)
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
+	executable := writeQueueAdapterApprovalExecutable(t, "scoped", filepath.Join(t.TempDir(), "started"))
+	invoke := func(value string) testkit.CLIResult {
+		args := []string{"worklease", "queue", "init", "--adapter", "external", "--executable", executable, "--source-id", "team-a", "--adapter-config", value, "--json"}
+		return testkit.RunCLI(context.Background(), args, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+			return Run(ctx, args, "test", "unknown", "unknown", stdout, stderr)
+		})
+	}
+	wrong := invoke(`{"sourceId":"config-validation"}`)
+	if wrong.Err == nil || !strings.Contains(string(wrong.Stdout), `"reason":"adapter-config-invalid"`) {
+		t.Fatalf("wrong source scope accepted: %v %s", wrong.Err, wrong.Stdout)
+	}
+	if _, err := os.Stat(config.QueuePath(os.Getenv)); !os.IsNotExist(err) {
+		t.Fatalf("wrong source scope wrote queue.yaml: %v", err)
+	}
+	correct := invoke(`{"sourceId":"team-a"}`)
+	if correct.Err != nil {
+		t.Fatalf("correct source scope rejected: %v %s", correct.Err, correct.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 1 || cfg.Sources[0].Config["sourceId"] != "team-a" {
+		t.Fatalf("persisted source config: %+v %v", cfg, err)
 	}
 }
 
@@ -667,6 +707,10 @@ func TestQueueInitExternalFailureAndPortableClaims(t *testing.T) {
 		{executable, []string{"--adapter-config", `{"tenant":123}`}, "adapter-config-invalid"},
 		{executable, []string{"--adapter-config", `{"tenant":"acme","extra":true}`}, "adapter-config-invalid"},
 		{writeQueueAdapterApprovalExecutable(t, "broken", filepath.Join(t.TempDir(), "broken")), nil, "adapter-manifest-invalid"},
+		{writeQueueAdapterApprovalExecutable(t, "invalid-schema", filepath.Join(t.TempDir(), "schema-invalid")), nil, "adapter-manifest-invalid"},
+		{writeQueueAdapterApprovalExecutable(t, "secrets", filepath.Join(t.TempDir(), "secrets")), []string{"--adapter-config", `{"apiToken":"example-secret"}`}, "adapter-config-invalid"},
+		{writeQueueAdapterApprovalExecutable(t, "numbers", filepath.Join(t.TempDir(), "numbers")), []string{"--adapter-config", `{"tenantId":9007199254740993}`}, "adapter-config-invalid"},
+		{writeQueueAdapterApprovalExecutable(t, "numbers", filepath.Join(t.TempDir(), "numbers-exponent")), []string{"--adapter-config", `{"tenantId":9.007199254740993e15}`}, "adapter-config-invalid"},
 	} {
 		failed := invoke(test.binary, append(test.args, "--json")...)
 		if failed.Err == nil || !strings.Contains(string(failed.Stdout), `"schemaVersion":2`) || !strings.Contains(string(failed.Stdout), `"operation":"queue-init"`) || !strings.Contains(string(failed.Stdout), `"reason":"`+test.reason+`"`) || !strings.Contains(string(failed.Stdout), `"exitCode":64`) {

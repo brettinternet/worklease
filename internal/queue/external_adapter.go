@@ -1208,9 +1208,33 @@ func cloneExternalQueueSource(source config.QueueSource) (config.QueueSource, er
 	return source, nil
 }
 
+// ValidateExternalAdapterSchema checks the manifest's supported schema keywords.
+func ValidateExternalAdapterSchema(manifest ExternalAdapterManifest) error {
+	var schema map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(manifest.ConfigSchema))
+	decoder.UseNumber()
+	if err := decoder.Decode(&schema); err != nil || schema == nil {
+		return fmt.Errorf("external adapter configuration schema is invalid")
+	}
+	return validateExternalSchemaStructure(schema)
+}
+
 // ValidateExternalAdapterConfig checks a source configuration against the negotiated manifest schema.
-func ValidateExternalAdapterConfig(manifest ExternalAdapterManifest, configuration map[string]any) error {
-	return validateExternalConfig(manifest.ConfigSchema, configuration)
+func ValidateExternalAdapterConfig(manifest ExternalAdapterManifest, configuration map[string]any, sourceID string) error {
+	if err := validateExternalConfig(manifest.ConfigSchema, configuration); err != nil {
+		return err
+	}
+	// Match the source-scoped resolve request before persisting queue.yaml.
+	configurationJSON, err := json.Marshal(configuration)
+	if err != nil {
+		return fmt.Errorf("external adapter source configuration is invalid")
+	}
+	id, _ := json.Marshal(sourceID)
+	params := map[string]json.RawMessage{"sourceId": id, "config": configurationJSON}
+	if err := validateExternalScope(params, sourceID, "resolve", ""); err != nil {
+		return fmt.Errorf("external adapter source configuration is unsafe: %w", err)
+	}
+	return nil
 }
 
 func validateExternalConfig(rawSchema json.RawMessage, configuration map[string]any) error {

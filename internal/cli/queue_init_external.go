@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
@@ -44,6 +47,9 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 		if len(data) > 1<<20 || json.Unmarshal(data, &configuration) != nil || configuration == nil {
 			return result, reason.New(reason.ReasonAdapterConfigInvalid, "adapter configuration must be a JSON object under 1 MiB")
 		}
+		if err := checkExternalInitNumbers(data); err != nil {
+			return result, reason.New(reason.ReasonAdapterConfigInvalid, err.Error())
+		}
 	}
 	profiles, _, err := config.LoadProfiles(config.ProfilePaths{Profiles: filepath.Join(filepath.Dir(result.Path), "profiles.yaml")})
 	if err != nil {
@@ -78,11 +84,6 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 	if !existing {
 		initBlockStyle(mapping)
 	}
-	for _, source := range cfg.Sources {
-		if source.Adapter == "external" && source.Executable == path {
-			return result, reason.New(reason.ReasonSourceAlreadyConfigured, "external executable already configured as source "+source.ID).With("sourceId", source.ID)
-		}
-	}
 	process, err := queue.NewExternalProcessForCheck(config.QueueSource{ID: "init", Adapter: "external", Executable: path})
 	if err != nil {
 		return result, reason.New(reason.ReasonAdapterManifestInvalid, "external adapter could not start for manifest negotiation")
@@ -96,12 +97,15 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 	if err != nil || currentDigest != digest {
 		return result, reason.New(reason.ReasonAdapterManifestInvalid, "external adapter executable changed during manifest negotiation")
 	}
-	if err := queue.ValidateExternalAdapterConfig(manifest, configuration); err != nil {
-		return result, reason.New(reason.ReasonAdapterConfigInvalid, err.Error())
+	if err := queue.ValidateExternalAdapterSchema(manifest); err != nil {
+		return result, reason.New(reason.ReasonAdapterManifestInvalid, err.Error())
 	}
 	id := cmd.String("source-id")
 	if id == "" {
 		id = manifest.ID
+	}
+	if err := queue.ValidateExternalAdapterConfig(manifest, configuration, id); err != nil {
+		return result, reason.New(reason.ReasonAdapterConfigInvalid, err.Error())
 	}
 	for _, source := range cfg.Sources {
 		if source.ID == id {
@@ -182,4 +186,54 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 		result.NextCommands = append(result.NextCommands, "worklease queue adapter approve --source "+queueInitQuote(id), fmt.Sprintf("worklease queue --view %s identity confirm --source %s --acknowledge", queueInitQuote(view), queueInitQuote(id)))
 	}
 	return result, nil
+}
+
+// YAML-backed queue config decodes numbers as float64. Refuse values that
+// would change when re-encoded instead of silently changing an ID or limit.
+func checkExternalInitNumbers(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	var check func(any) error
+	check = func(value any) error {
+		switch v := value.(type) {
+		case json.Number:
+			literal := string(v)
+			if len(literal) > 128 {
+				return fmt.Errorf("adapter configuration number exceeds the supported precision")
+			}
+			if pos := strings.IndexAny(literal, "eE"); pos >= 0 {
+				exponent, err := strconv.Atoi(literal[pos+1:])
+				if err != nil || exponent < -324 || exponent > 308 {
+					return fmt.Errorf("adapter configuration number exceeds the supported range")
+				}
+			}
+			exact, ok := new(big.Rat).SetString(literal)
+			converted, err := strconv.ParseFloat(string(v), 64)
+			if !ok || err != nil {
+				return fmt.Errorf("adapter configuration contains an invalid number")
+			}
+			roundTrip, ok := new(big.Rat).SetString(strconv.FormatFloat(converted, 'g', -1, 64))
+			if !ok || exact.Cmp(roundTrip) != 0 {
+				return fmt.Errorf("adapter configuration contains a number that cannot round-trip through queue.yaml")
+			}
+		case map[string]any:
+			for _, child := range v {
+				if err := check(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range v {
+				if err := check(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return check(value)
 }

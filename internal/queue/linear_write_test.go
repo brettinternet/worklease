@@ -31,6 +31,9 @@ type linearWriteFixture struct {
 	assignee            string
 	updatedAt           string
 	mutationCalls       int
+	blockerState        string
+	blockerReopenOnRead bool
+	nullRelations       bool
 	comments            []linearComment
 	commentGraphQLError bool
 	hideCommentReads    int
@@ -123,6 +126,25 @@ func newLinearWriteFixture(t *testing.T) (*LinearAdapter, *LinearWriteAdapter, S
 			data = map[string]any{"team": map[string]any{"id": linearTestTeam, "issues": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}}}
 		case linearDetailQuery:
 			data = map[string]any{"issue": state.issue(variable("id"))}
+		case linearInverseQuery:
+			state.mu.Lock()
+			blocker := state.blockerState
+			nullRelations := state.nullRelations
+			if state.blockerReopenOnRead {
+				state.blockerState = "started"
+				state.blockerReopenOnRead = false
+				blocker = "started"
+			}
+			state.mu.Unlock()
+			relations := []any{}
+			if blocker != "" {
+				relations = append(relations, map[string]any{"type": "blocks", "issue": map[string]any{"id": linearTestBlocker, "team": map[string]any{"id": linearTestTeam}, "state": map[string]any{"type": blocker}}})
+			}
+			var connection any = map[string]any{"nodes": relations, "pageInfo": map[string]any{"hasNextPage": false}}
+			if nullRelations {
+				connection = nil
+			}
+			data = map[string]any{"issue": map[string]any{"id": variable("id"), "team": map[string]any{"id": linearTestTeam}, "inverseRelations": connection}}
 		case linearIssueCommentsQuery:
 			if state.listStarted != nil {
 				select {
@@ -262,6 +284,53 @@ func TestLinearWriteRequiresFreshConfiguredStartedStateAndViewer(t *testing.T) {
 			t.Fatalf("write did not fail closed on fresh viewer mismatch: err=%v writes=%d", err, writes)
 		}
 	})
+}
+
+func TestLinearStartRejectsBlockerReopenedAfterPreview(t *testing.T) {
+	t.Parallel()
+	_, writer, source, state := newLinearWriteFixture(t)
+	state.blockerState = "completed"
+	intent, _, err := writer.Prepare(context.Background(), linearWriteIntent(source, ActionStart, linearStartedState, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := writer.Inspect(context.Background(), intent)
+	if err != nil || !pre.Ready {
+		t.Fatalf("initial prerequisite: %+v %v", pre, err)
+	}
+	state.mu.Lock()
+	state.blockerReopenOnRead = true
+	state.mu.Unlock()
+	if _, err := writer.Write(context.Background(), intent); err == nil || !strings.Contains(err.Error(), "no longer eligible") {
+		t.Fatalf("Start after blocker reopened: %v", err)
+	}
+	state.mu.Lock()
+	writes := state.mutationCalls
+	state.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("wrote blocked issue: %d mutations", writes)
+	}
+}
+
+func TestLinearStartRejectsUnavailableRelationScan(t *testing.T) {
+	t.Parallel()
+	_, writer, source, state := newLinearWriteFixture(t)
+	intent, _, err := writer.Prepare(context.Background(), linearWriteIntent(source, ActionStart, linearStartedState, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.nullRelations = true
+	state.mu.Unlock()
+	if _, err := writer.Write(context.Background(), intent); err == nil || !strings.Contains(err.Error(), "relation scan is unavailable") {
+		t.Fatalf("Start with null dependency scan: %v", err)
+	}
+	state.mu.Lock()
+	writes := state.mutationCalls
+	state.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("wrote without dependency evidence: %d mutations", writes)
+	}
 }
 
 func TestLinearWriteConfiguredStateAndConfirmedSingleAssignee(t *testing.T) {

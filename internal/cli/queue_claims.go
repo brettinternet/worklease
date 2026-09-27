@@ -64,6 +64,38 @@ func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary, n
 	}
 	model := newClaimsOnlyModel(fmt.Sprintf("%s %s", backend.ProfileName, backend.AuthorityID()), scope, cmd.Bool("high-contrast"), notice)
 	configureClaimsTab(&model, backend, ctx, backend.Config.SessionID)
+	if !backend.Remote {
+		// A fresh home has no database to hold open. Reopen for each read so
+		// claims created in another process become visible without restarting.
+		model.Claims.Refresh = func(cursor string) tea.Cmd {
+			return func() tea.Msg {
+				reader, err := authorityFor(ctx, cmd, false)
+				if err != nil {
+					return queueui.ClaimsRefreshMsg{ClaimsErr: err, EventsErr: err}
+				}
+				defer reader.Close()
+				return queueui.ClaimsRefreshCmd(ctx, reader.API, cursor)()
+			}
+		}
+		model.Claims.LoadHistory = func(claimID, resource, cursor string) tea.Cmd {
+			return func() tea.Msg {
+				reader, err := authorityFor(ctx, cmd, false)
+				if err != nil {
+					return queueui.ClaimHistoryMsg{ClaimID: claimID, Resource: resource, Err: err}
+				}
+				defer reader.Close()
+				return queueui.ClaimHistoryCmd(ctx, reader.API, claimID, resource, cursor)()
+			}
+		}
+		model.Claims.ResolveHandles = func(claims []lease.ClaimView) map[string]queueui.ClaimsHandle {
+			reader, err := authorityFor(ctx, cmd, false)
+			if err != nil {
+				return nil
+			}
+			defer reader.Close()
+			return claimsHandleIndex(reader.Config.Home, reader.AuthorityID(), "", claims, reader.ProfileName)
+		}
+	}
 	// Browsing must not create a local store in a fresh home. Open a writable
 	// authority only after confirmation, and reselect it at dispatch time.
 	model.Claims.Mutate = func(actionCtx context.Context, claim lease.ClaimView, selected queueui.ClaimsHandle, reasonText string, release bool) (lease.ClaimView, error) {

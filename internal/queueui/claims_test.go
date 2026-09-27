@@ -268,6 +268,60 @@ func TestClaimsRefreshReplacesPendingHistoryOnClaimChange(t *testing.T) {
 	}
 }
 
+func TestClaimsDetailReloadsHistoryWhenFilterOrWheelChangesSelection(t *testing.T) {
+	t.Parallel()
+	newModel := func() Model {
+		m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+		m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+		m.Width, m.Height = 120, 12
+		for i := range 40 {
+			m.Claims.Items = append(m.Claims.Items, lease.ClaimView{ClaimID: fmt.Sprintf("claim-%02d", i), Resources: []string{fmt.Sprintf("file:%02d", i)}})
+		}
+		m.Claims.Selected, m.Claims.Detail = "claim-00", true
+		m.Claims.HistoryResource = "file:00"
+		m.Claims.History = ledger.HistoryPage{Epochs: []ledger.Epoch{{ClaimID: "claim-00"}}}
+		m.Claims.LoadHistory = func(claimID, resource, cursor string) tea.Cmd {
+			return func() tea.Msg {
+				return ClaimHistoryMsg{ClaimID: claimID, Resource: resource, Page: ledger.HistoryPage{Epochs: []ledger.Epoch{{ClaimID: claimID}}}}
+			}
+		}
+		return m
+	}
+	t.Run("filter", func(t *testing.T) {
+		t.Parallel()
+		m := newModel()
+		m.Filtering, m.Input = true, "file:01"
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = updated.(Model)
+		if m.Claims.Selected != "claim-01" || cmd == nil || !m.Claims.HistoryLoading {
+			t.Fatalf("filter selection=%q loading=%t cmd=%t", m.Claims.Selected, m.Claims.HistoryLoading, cmd != nil)
+		}
+		updated, _ = m.Update(cmd())
+		m = updated.(Model)
+		if len(m.Claims.History.Epochs) != 1 || m.Claims.History.Epochs[0].ClaimID != "claim-01" {
+			t.Fatalf("filter history=%+v", m.Claims.History)
+		}
+	})
+	t.Run("wheel", func(t *testing.T) {
+		t.Parallel()
+		m := newModel()
+		rows := m.claimRows()
+		capacity := max(1, m.frame(m.rows()).bodyHeight-1)
+		m.Claims.Offset = capacity
+		updated, cmd := m.claimsMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown, X: 0})
+		m = updated.(Model)
+		if m.Claims.Selected == "claim-00" || cmd == nil || !m.Claims.HistoryLoading {
+			t.Fatalf("wheel selection=%q loading=%t cmd=%t capacity=%d rows=%d", m.Claims.Selected, m.Claims.HistoryLoading, cmd != nil, capacity, len(rows))
+		}
+		selected := m.Claims.Selected
+		updated, _ = m.Update(cmd())
+		m = updated.(Model)
+		if len(m.Claims.History.Epochs) != 1 || m.Claims.History.Epochs[0].ClaimID != selected {
+			t.Fatalf("wheel history=%+v selected=%q", m.Claims.History, selected)
+		}
+	})
+}
+
 func TestClaimsDetailLoadsHistoryForSelectedClaim(t *testing.T) {
 	t.Parallel()
 	m := New(queue.Snapshot{Items: map[string]queue.Item{}})

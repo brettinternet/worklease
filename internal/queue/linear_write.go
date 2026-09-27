@@ -365,6 +365,12 @@ func (a *LinearWriteAdapter) inspectWith(ctx context.Context, binding linearBind
 		if intent.Action == ActionResume {
 			pre.Ready = issue.State != nil && issue.State.Type == "started"
 		}
+		if pre.Ready {
+			pre.Ready, err = linearPrerequisitesTerminal(ctx, binding, intent.Ref.ItemID, request)
+			if err != nil {
+				return WritePreflight{}, linearIssue{}, err
+			}
+		}
 	}
 	if intent.Action == ActionComplete {
 		pre.CompletionEvidence = target.Type == "completed"
@@ -373,6 +379,64 @@ func (a *LinearWriteAdapter) inspectWith(ctx context.Context, binding linearBind
 		return WritePreflight{}, linearIssue{}, LinearDiagnostic{"assignee-confirmation-required", "confirm replacing the existing Linear assignee in the write preview"}
 	}
 	return pre, issue, nil
+}
+
+// Start and resume recheck the full inverse relation scan immediately before
+// dispatch. The issue's updatedAt does not change when a blocker reopens.
+func linearPrerequisitesTerminal(ctx context.Context, binding linearBinding, id string, request func(context.Context, linearBinding, string, any, any) error) (bool, error) {
+	var after any
+	for page := 0; page < 40; page++ {
+		var result struct {
+			Issue *struct {
+				ID               string
+				Team             *struct{ ID string }
+				Project          *struct{ ID string }
+				InverseRelations *struct {
+					Nodes    []linearRelation
+					PageInfo *linearPageInfo
+				}
+			}
+		}
+		if err := request(ctx, binding, linearInverseQuery, map[string]any{"id": id, "after": after, "count": 250}, &result); err != nil {
+			return false, err
+		}
+		if result.Issue == nil || result.Issue.ID != id || result.Issue.Team == nil || result.Issue.Team.ID != binding.team || (binding.project != "" && (result.Issue.Project == nil || result.Issue.Project.ID != binding.project)) {
+			return false, LinearDiagnostic{"not-found-or-inaccessible", "Linear dependency scope is unavailable"}
+		}
+		if result.Issue.InverseRelations == nil || result.Issue.InverseRelations.Nodes == nil || result.Issue.InverseRelations.PageInfo == nil {
+			return false, LinearDiagnostic{"incomplete-scan", "Linear dependency relation scan is unavailable"}
+		}
+		for _, relation := range result.Issue.InverseRelations.Nodes {
+			related := relation.Issue
+			if related == nil || !linearUUID(related.ID) || related.Team == nil || related.Team.ID != binding.team || (binding.project != "" && (related.Project == nil || related.Project.ID != binding.project)) {
+				return false, nil // Incomplete scope must not authorize Start.
+			}
+			switch relation.Type {
+			case "blocks":
+			case "related", "duplicate", "similar":
+				continue
+			default:
+				return false, nil
+			}
+			if related.State == nil {
+				return false, nil
+			}
+			switch related.State.Type {
+			case "completed", "duplicate", "canceled":
+			default:
+				return false, nil
+			}
+		}
+		if !result.Issue.InverseRelations.PageInfo.HasNextPage {
+			return true, nil
+		}
+		next := result.Issue.InverseRelations.PageInfo.EndCursor
+		if next == "" || next == after {
+			return false, LinearDiagnostic{"invalid-response", "Linear dependency cursor missing or repeated"}
+		}
+		after = next
+	}
+	return false, LinearDiagnostic{"incomplete-scan", "Linear dependency scan exceeded its page limit"}
 }
 
 func (a *LinearWriteAdapter) Inspect(ctx context.Context, intent WriteIntent) (WritePreflight, error) {
