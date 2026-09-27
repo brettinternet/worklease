@@ -4,6 +4,7 @@
 
 ### Added
 
+- `worklease queue init` can preview and adopt bounded, source-only proposals from a checkout's `.config/worklease/queue-sources.yaml`; `--ignore-proposal` restores provider detection, and re-runs report drift without overwriting adopted sources.
 - `worklease queue init` preflights the detected source and writes owner-private `queue.yaml` directly, including safe initial local identity confirmation. `--dry-run` previews without writing; Backlog.md identity falls back to the OS login, and Git network effects require explicit `--allow-git-network` consent.
 - Without `--view`, `worklease queue init` writes Ready, Mine, Claimed, and All views so claimed work stays visible; previously it wrote only Ready, which hid the TUI's built-in tabs.
 

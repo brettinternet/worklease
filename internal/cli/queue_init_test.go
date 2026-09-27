@@ -726,6 +726,247 @@ func TestQueueInitBareBacklogFolderNotDetected(t *testing.T) {
 	}
 }
 
+func (h initHarness) proposal(text string) {
+	h.t.Helper()
+	path := filepath.Join(h.checkout, queueProposalFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestQueueInitProposalAdoptionAndRerun(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newInitHarness(t)
+	h.proposal("version: 1\nsources:\n  - id: shared\n    adapter: backlog-md\n    workflow: {start: In Progress, complete: Done, reopen: To Do}\n    claims: {policy: generic, source: shared/tasks}\n")
+	detected := h.invoke("--ignore-proposal", "--dry-run", "--json")
+	if detected.Err != nil || !strings.Contains(string(detected.Stdout), `"sourceId":"project"`) || !strings.Contains(string(detected.Stdout), "--ignore-proposal") {
+		t.Fatalf("detection apply command: %v %s", detected.Err, detected.Stdout)
+	}
+	preview := h.invoke("--dry-run", "--json")
+	if preview.Err != nil || !strings.Contains(string(preview.Stdout), `"origin":".config/worklease/queue-sources.yaml"`) || !strings.Contains(string(preview.Stdout), "shared/tasks") || !strings.Contains(string(preview.Stdout), `"identity":"pending"`) {
+		t.Fatalf("preview: %v %s", preview.Err, preview.Stdout)
+	}
+	if _, err := os.Stat(h.configPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run wrote configuration: %v", err)
+	}
+	applied := h.invoke("--json")
+	if applied.Err != nil || !strings.Contains(string(applied.Stdout), `"identity":"confirmation-required"`) {
+		t.Fatalf("adopt: %v %s", applied.Err, applied.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 1 || cfg.Sources[0].ID != "shared" || cfg.Sources[0].Claims.Source != "shared/tasks" || cfg.Sources[0].AllowGitNetwork {
+		t.Fatalf("adopted: %+v %v", cfg, err)
+	}
+	before, _ := os.ReadFile(h.configPath)
+	h.proposal("version: 1\nsources:\n  - id: shared\n    adapter: backlog-md\n    workflow: {start: Working, complete: Done, reopen: To Do}\n    claims: {policy: generic, source: shared/new}\n")
+	again := h.invoke("--json")
+	if again.Err != nil || !strings.Contains(string(again.Stdout), `"outcome":"unchanged"`) || !strings.Contains(string(again.Stdout), "Migration checklist:") || !strings.Contains(string(again.Stdout), "Working") || !strings.Contains(string(again.Stdout), "In Progress") {
+		t.Fatalf("drift: %v %s", again.Err, again.Stdout)
+	}
+	after, _ := os.ReadFile(h.configPath)
+	if !bytes.Equal(before, after) {
+		t.Fatal("proposal drift changed adopted configuration")
+	}
+	h.proposal("version: 1\nsources:\n  - id: shared\n    adapter: backlog-md\n    workflow: {start: In Progress, complete: Done, reopen: To Do}\n    claims: {policy: generic, source: shared/tasks}\n")
+	stable := h.invoke("--json")
+	if stable.Err != nil || !strings.Contains(string(stable.Stdout), `"outcome":"unchanged"`) || strings.Contains(string(stable.Stdout), `"applied":true`) {
+		t.Fatalf("stable: %v %s", stable.Err, stable.Stdout)
+	}
+}
+
+func TestQueueInitProposalApplyCommandPreservesOptions(t *testing.T) {
+	h := newInitHarness(t)
+	t.Setenv("INIT_NETWORK", "true")
+	profile := testProfile("team")
+	profile.Credential.Path = filepath.Join(t.TempDir(), "credential")
+	if err := config.SaveProfiles(config.UserProfilePaths(nil), []config.Profile{profile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.proposal("version: 1\nsources:\n  - {id: suggested, adapter: backlog-md}\n")
+	args := []string{"--view", "Ready", "--authority", "team", "--me", "@custom", "--allow-git-network"}
+	preview := h.invoke(append(append([]string{}, args...), "--dry-run", "--json")...)
+	if preview.Err != nil {
+		t.Fatalf("preview: %v %s", preview.Err, preview.Stdout)
+	}
+	var proposed queueInitResult
+	if err := json.Unmarshal(preview.Stdout, &proposed); err != nil {
+		t.Fatal(err)
+	}
+	if len(proposed.NextCommands) != 1 || !strings.Contains(proposed.NextCommands[0], "--view Ready init") || !strings.Contains(proposed.NextCommands[0], "--authority team") || !strings.Contains(proposed.NextCommands[0], "--allow-git-network") || !strings.Contains(proposed.NextCommands[0], "--me @custom") {
+		t.Fatalf("unsafe preview command: %v", proposed.NextCommands)
+	}
+	applied := h.invoke(append(append([]string{}, args...), "--json")...)
+	if applied.Err != nil {
+		t.Fatalf("apply: %v %s", applied.Err, applied.Stdout)
+	}
+	written, err := os.ReadFile(h.configPath)
+	if err != nil || string(written) != proposed.YAML || !strings.Contains(string(written), "@custom") || !strings.Contains(string(applied.Stdout), `"identity":"confirmation-required"`) {
+		t.Fatalf("preview and apply differ: %v %s", err, applied.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Views) != 1 || cfg.Views[0].Authority != "team" || !cfg.Sources[0].AllowGitNetwork {
+		t.Fatalf("safety options: %+v %v", cfg, err)
+	}
+}
+
+func TestQueueInitProposalMultipleSourcesAndRemoval(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newInitHarness(t)
+	t.Setenv("INIT_NETWORK", "true")
+	if out, err := testkit.GitCommand("-C", h.checkout, "remote", "add", "origin", "git@github.com:Owner/Repo.git").CombinedOutput(); err != nil {
+		t.Fatalf("origin: %v %s", err, out)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"tester"},"repository":{"id":"repo-id","nameWithOwner":"Owner/Repo"}}}`)
+	}))
+	defer server.Close()
+	queueInitGitHubAdapter = func() *queue.GitHubAdapter {
+		adapter := queue.NewGitHubAdapter()
+		adapter.APIBase = server.URL + "/graphql"
+		return adapter
+	}
+	t.Cleanup(func() { queueInitGitHubAdapter = queue.NewGitHubAdapter })
+	h.proposal("version: 1\nsources:\n  - {id: shared, adapter: backlog-md}\n")
+	first := h.invoke("--allow-git-network", "--json")
+	if first.Err != nil {
+		t.Fatalf("first adoption: %v %s", first.Err, first.Stdout)
+	}
+	h.proposal("version: 1\nsources:\n  - {id: shared, adapter: backlog-md}\n  - {id: issues, adapter: github}\n")
+	preview := h.invoke("--allow-git-network", "--dry-run", "--json")
+	if preview.Err != nil || !strings.Contains(string(preview.Stdout), `"id":"issues"`) || !strings.Contains(string(preview.Stdout), `"value":"Owner/Repo"`) {
+		t.Fatalf("both sources preview: %v %s", preview.Err, preview.Stdout)
+	}
+	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := config.LoadQueueIdentities(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities.Sources["issues"] = config.QueueIdentity{Locator: "previous"}
+	if err := config.SaveQueueIdentities(os.Getenv, identities); err != nil {
+		t.Fatal(err)
+	}
+	applied := h.invoke("--allow-git-network", "--json")
+	if applied.Err != nil {
+		t.Fatalf("both sources apply: %v %s", applied.Err, applied.Stdout)
+	}
+	cfg, err := config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 2 || cfg.Sources[1].Repository != "Owner/Repo" {
+		t.Fatalf("both sources: %+v %v", cfg, err)
+	}
+	h.proposal("version: 1\nsources:\n  - {id: issues, adapter: github}\n")
+	removed := h.invoke("--allow-git-network", "--json")
+	if removed.Err != nil || !strings.Contains(string(removed.Stdout), "shared (backlog-md) is absent") {
+		t.Fatalf("removed report: %v %s", removed.Err, removed.Stdout)
+	}
+	cfg, err = config.LoadQueue(os.Getenv)
+	if err != nil || len(cfg.Sources) != 2 {
+		t.Fatalf("removed adopted source: %+v %v", cfg, err)
+	}
+}
+
+func TestQueueInitProposalMixedIdentityStatus(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newInitHarness(t)
+	if out, err := testkit.GitCommand("-C", h.checkout, "remote", "add", "origin", "git@github.com:Owner/Repo.git").CombinedOutput(); err != nil {
+		t.Fatalf("origin: %v %s", err, out)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"tester"},"repository":{"id":"repo-id","nameWithOwner":"Owner/Repo"}}}`)
+	}))
+	defer server.Close()
+	queueInitGitHubAdapter = func() *queue.GitHubAdapter {
+		adapter := queue.NewGitHubAdapter()
+		adapter.APIBase = server.URL + "/graphql"
+		return adapter
+	}
+	t.Cleanup(func() { queueInitGitHubAdapter = queue.NewGitHubAdapter })
+	h.proposal("version: 1\nsources:\n  - {id: local, adapter: backlog-md}\n  - {id: issues, adapter: github}\n")
+	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveQueueIdentities(os.Getenv, config.QueueIdentities{Version: 1, Sources: map[string]config.QueueIdentity{"issues": {Locator: "previous"}}}); err != nil {
+		t.Fatal(err)
+	}
+	result := h.invoke("--json")
+	if result.Err != nil || !strings.Contains(string(result.Stdout), `"identity":"confirmation-required"`) || !strings.Contains(string(result.Stdout), `"identity":"confirmed"`) || !strings.Contains(string(result.Stdout), "identity confirm --source issues") {
+		t.Fatalf("mixed identities: %v %s", result.Err, result.Stdout)
+	}
+}
+
+func TestQueueInitProposalRejectsUnsafeKeysAndDoesNotAffectQueue(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newInitHarness(t)
+	baseline := h.invoke("--json")
+	if baseline.Err != nil {
+		t.Fatalf("baseline: %v %s", baseline.Err, baseline.Stdout)
+	}
+	before, _ := os.ReadFile(h.configPath)
+	for _, key := range []string{"checkout", "me", "views", "authority", "launch", "executable", "config", "account", "credentialHelper", "allowGitNetwork", "host", "repository"} {
+		h.proposal(fmt.Sprintf("version: 1\nsources:\n  - adapter: backlog-md\n    %s: injected\n", key))
+		bad := h.invoke("--json")
+		if bad.Err == nil || !strings.Contains(string(bad.Stdout), key) {
+			t.Fatalf("unsafe key %s: %v %s", key, bad.Err, bad.Stdout)
+		}
+		after, _ := os.ReadFile(h.configPath)
+		if !bytes.Equal(before, after) {
+			t.Fatalf("unsafe key %s changed config", key)
+		}
+	}
+	for _, proposal := range []struct{ text, errorKey string }{
+		{"version: 1\nlaunch: []\nsources: [{adapter: backlog-md}]\n", "launch"},
+		{"version: 1\nsources: [{adapter: backlog-md, workflow: {executable: path}}]\n", "workflow.executable"},
+		{"version: 1\nsources: [{adapter: backlog-md, claims: {policy: generic, credentialHelper: path}}]\n", "claims.credentialHelper"},
+		{"version: 1\nsources:\n" + strings.Repeat("  - {adapter: backlog-md}\n", 9), "1 to 8"},
+		{"version: 1\nsources: [{adapter: backlog-md}, {adapter: backlog-md}]\n", "duplicate adapter"},
+	} {
+		h.proposal(proposal.text)
+		bad := h.invoke("--json")
+		if bad.Err == nil || !strings.Contains(string(bad.Stdout), proposal.errorKey) {
+			t.Fatalf("invalid proposal %q: %v %s", proposal.errorKey, bad.Err, bad.Stdout)
+		}
+	}
+	h.proposal("version: 1\nsources:\n  - adapter: external\n")
+	bad := h.invoke("--json")
+	if bad.Err == nil || !strings.Contains(string(bad.Stdout), "adapter") {
+		t.Fatalf("external proposal: %v %s", bad.Err, bad.Stdout)
+	}
+	ignored := h.invoke("--ignore-proposal", "--json")
+	if ignored.Err != nil || !strings.Contains(string(ignored.Stdout), `"outcome":"unchanged"`) {
+		t.Fatalf("ignore proposal: %v %s", ignored.Err, ignored.Stdout)
+	}
+	query := testkit.RunCLI(context.Background(), []string{"worklease", "--home", os.Getenv("WORKLEASE_HOME"), "queue", "query", "--view", "Ready", "--json"}, func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+		return Run(ctx, args, "test", "unknown", "unknown", stdout, stderr)
+	})
+	if query.Err != nil || !strings.Contains(string(query.Stdout), `"ok":true`) {
+		t.Fatalf("query read proposal: %v %s", query.Err, query.Stdout)
+	}
+}
+
+func TestQueueInitProposalGitHubRequiresOrigin(t *testing.T) {
+	h := newInitHarness(t)
+	h.proposal("version: 1\nsources:\n  - {adapter: github}\n")
+	bad := h.invoke("--json")
+	if bad.Err == nil || !strings.Contains(string(bad.Stdout), "GitHub remote") {
+		t.Fatalf("missing origin: %v %s", bad.Err, bad.Stdout)
+	}
+	if _, err := os.Stat(h.configPath); !os.IsNotExist(err) {
+		t.Fatalf("missing origin wrote config: %v", err)
+	}
+}
+
 func TestQueueInitInvalidInputsDoNotWrite(t *testing.T) {
 	h := newInitHarness(t)
 	for _, args := range [][]string{{"--authority", "missing"}, {"--source-id", "bad:id"}, {"--portable-claims", " "}} {
