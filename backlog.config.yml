@@ -1,4 +1,3 @@
-# yaml-language-server: $schema=./schemas/backlog-config.schema.json
 project_name: "worklease"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
