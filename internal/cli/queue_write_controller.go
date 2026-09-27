@@ -15,6 +15,7 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueui"
+	"github.com/brettinternet/worklease/internal/reason"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -165,6 +166,9 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	}
 	h, err := handle.Read(path)
 	if err != nil {
+		if classified := reason.As(err); c.handlePath == "" && classified != nil && classified.Reason == reason.ReasonHandleMalformed && classified.Message == "handle is missing" {
+			return queueui.WritePreview{}, "", fmt.Errorf("no claim for this item in this queue session; press c to claim it, then retry the write")
+		}
 		return queueui.WritePreview{}, "", fmt.Errorf("claim for selected item unavailable: %w", err)
 	}
 	if !slices.Equal(keys, h.Resources) {

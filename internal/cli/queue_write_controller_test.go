@@ -383,6 +383,17 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	configured := config.QueueSource{ID: "tasks", Adapter: "backlog-md", Checkout: root, Workflow: map[string]string{"start": "In Progress"}}
 	controller := queueWriteController{backend: backend, registry: registry, current: current, journal: journal, sources: map[string]queue.Source{source.ID: source}, configured: map[string]config.QueueSource{source.ID: configured}, me: map[string][]string{source.ID: {"@bob"}}, session: claimController.queueSession, profile: config.LocalProfileName}
 	item := queue.Item{Summary: queue.Summary{Ref: ref}}
+	parkedHandle := path + ".parked"
+	if err := os.Rename(path, parkedHandle); err != nil {
+		t.Fatal(err)
+	}
+	missing := controller.Preview(context.Background(), item, queue.ActionAssignToMe, "", "")().(queueui.WritePreviewMsg)
+	if missing.Err == nil || !strings.Contains(missing.Err.Error(), "press c to claim it") || strings.Contains(missing.Err.Error(), "handle is missing") {
+		t.Fatalf("missing queue claim guidance: %+v", missing)
+	}
+	if err := os.Rename(parkedHandle, path); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		action                   queue.Action
 		transition, text, effect string
