@@ -23,7 +23,7 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
-worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--dry-run] [--json]
+worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--dry-run] [--json]
 worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
 worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]
 worklease queue authority-id --json
@@ -128,7 +128,8 @@ Claim for me, and `x` previews configured launch actions. Launch shows argv, cwd
 environment variable names, and authority; Enter starts the action as a detached
 [supervised run](#supervised-runs) that claims the item's exact resources before
 the worker starts and releases them when it exits. Follow it with
-`worklease runs`. Assignment, progress, and state writes remain unavailable.
+`worklease runs`. Item detail also previews provider status, progress-note, and
+assign/unassign writes where the source supports them; see [TUI](queue-tui.md).
 `worklease queue authority-id --json` exposes the invoking worker's selected
 authority ID.
 `queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Source setup and configured views are described in `docs/queue.md`.

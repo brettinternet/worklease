@@ -361,10 +361,10 @@ exposed by MCP.
 
 With a remote profile selected, it keeps credentials, opaque lease handles, and
 pending requests on the client host and calls the remote HTTPS client. The
-eleven existing tools are exactly:
+twelve existing tools are exactly:
 
 ```text
-key acquire status list heartbeat checkpoint verify watch events release instructions
+key acquire queue_next status list heartbeat checkpoint verify watch events release instructions
 ```
 
 The MCP command and setup remain:
@@ -545,7 +545,7 @@ Future capabilities need demonstrated demand or evidence:
 
 ## Evidence and release artifacts
 
-The [TASK-107.11 acceptance record](backlog/tasks/task-107.11%20-%20Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md)
+The [TASK-107.11 acceptance record](backlog/completed/task-107.11%20-%20Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md)
 links two retained reports:
 
 - `dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json`

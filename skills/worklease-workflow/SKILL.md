@@ -51,7 +51,9 @@ it. Any overlap conflicts, and acquisition is all-or-none.
    immediately after selection, before reading full intent, planning,
    delegation, isolation, or edits. For a configured Worklease queue, prefer
    `worklease queue next --view NAME --claim --session ID --json`; it selects
-   and acquires with the ordinary worker contextual handle. On contention,
+   and acquires with the ordinary worker contextual handle. Create the queue
+   with `worklease queue init` (`--dry-run` previews; it adopts a checkout's
+   `.config/worklease/queue-sources.yaml` unless `--ignore-proposal`). On contention,
    skip to the next ready candidate without waiting; hold at most one claim
    while selecting. Stop on an uncertain acquire.
 5. Retain non-secret claim metadata plus the private session handle. Never

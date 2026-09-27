@@ -136,8 +136,26 @@ Worklease exposes non-secret claimant metadata:
 - `workKey` — what it says it’s working on
 - `claimId` and expiry
 
+Open the [TUI](docs/queue-tui.md) with bare `worklease` to inspect, renew, and release local claims—no queue configuration needed:
+
+![Inspecting, renewing, and releasing a local claim in the Worklease TUI](docs/tui-demo.gif)
+
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
+
+## Work queue
+
+Browse and claim work from GitHub, Backlog.md, Beads, Linear, or an external
+adapter:
+
+```sh
+worklease queue init   # detect this checkout's source; --dry-run previews
+worklease              # open the TUI
+# Agent loop: select and claim the next ready item
+worklease --json queue next --view Ready --claim --session loop-a
+```
+
+See [TUI](docs/queue-tui.md) and [queue configuration](docs/queue.md).
 
 ## Remote authority
 

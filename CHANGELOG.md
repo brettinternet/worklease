@@ -4,6 +4,13 @@
 
 ### Added
 
+- Work queue: `worklease queue` (alias `q`) browses configured GitHub Issues (with Projects v2 status), Backlog.md, Beads, Linear, and external-adapter sources in a Vim-style TUI with dependency-aware readiness, claim overlays, and previewed provider writes (start, status, progress note, assign/unassign) with durable write recovery.
+- Bare `worklease` in a terminal opens the TUI; the Claims tab (also `worklease queue claims`) lists every authority claim and renews or releases eligible local handles after confirmation.
+- `worklease queue next` and MCP `queue_next` select ready work from a complete dependency graph and optionally claim it; `queue query` returns read-only JSON pages.
+- `worklease run` supervises a worker under a held claim, and `worklease runs` shows, waits for, stops, and acknowledges runs; TUI launch actions start supervised runs.
+- External queue adapter protocol v1 with `queue adapter check|protocol|approve`, a sample adapter, and an authoring guide.
+- `queue recovery retry|reconcile|checkpoint-missing` resolve unknown provider writes without redispatching them.
+- JSON Schemas for user-authored Worklease YAML files.
 - `worklease queue init` can preview and adopt bounded, source-only proposals from a checkout's `.config/worklease/queue-sources.yaml`; `--ignore-proposal` restores provider detection, and re-runs report drift without overwriting adopted sources.
 - `worklease queue init` preflights the detected source and writes owner-private `queue.yaml` directly, including safe initial local identity confirmation. `--dry-run` previews without writing; Backlog.md identity falls back to the OS login, and Git network effects require explicit `--allow-git-network` consent.
 - Without `--view`, `worklease queue init` writes Ready, Mine, Claimed, and All views so claimed work stays visible; previously it wrote only Ready, which hid the TUI's built-in tabs.

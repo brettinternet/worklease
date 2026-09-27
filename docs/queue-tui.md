@@ -1,6 +1,6 @@
 # TUI
 
-Bare `worklease` opens the TUI in a terminal. It shows the views in [queue.yaml](queue.md) and a Claims tab, and opens on Claims when `queue.yaml` is absent. `worklease queue` opens it on the views too. Press `?` for every key.
+Bare `worklease` opens the TUI in a terminal. It shows the views in [queue.yaml](queue.md) plus Recovery and Claims tabs, and opens on Claims when `queue.yaml` is absent. `worklease queue` opens it on the views too. Press `?` for every key.
 
 ```text
 worklease  authority local 1cc38a84…  me @brett                                      synced now
@@ -23,7 +23,7 @@ worklease  authority local 1cc38a84…  me @brett                               
 | `blocked` | A prerequisite is open |
 | `assigned to others` | Assigned only to other people; the Assigned column and detail name them |
 | `ready ⠋` | Last known state from the cache; being reread now |
-| `ready (stale)` | Last known state; the reread failed, so `r` retries |
+| `ready (stale)` | Last known readiness; the reread failed, so `r` retries |
 | `deps unknown`, `claim unknown`, `stale` | Not known yet; `r` refreshes |
 | `done` | Finished; shown only after `d` |
 
@@ -54,10 +54,15 @@ The action line lists only actions available now. Each one opens a preview; `ent
 | --- | --- |
 | `S` | Start: claim, then move to the configured start status |
 | `c` | Claim without changing provider status |
-| `s`, `p`, `a` | Change status, add a progress note, assign to me |
+| `s`, `p`, `a`, `A` | Change status, add a progress note, assign to me, unassign me |
 | `R` | Release a claim when no operation has started |
 | `x`, `o` | Launch a worker, open in the provider |
 | `i` | Jump to the item's claim in Claims |
+| `m` | Load more comments or claim history |
+
+## Recovery
+
+Recovery lists provider writes whose outcome is unknown: `r` retries read-back, `e` attests with audit evidence, `u` reloads the journal. See [queue configuration](queue.md) for the matching `worklease queue recovery` commands.
 
 ## Claims
 
@@ -70,7 +75,7 @@ The Claims tab lists every claim on the authority, including claims held by othe
             worklease TASK-126                     brett               expired
 ```
 
-`m` shows claims with your agent identity (not proof of ownership), `e` shows claims about to expire, `/` filters by resource prefix, and `esc` clears the filters. An eligible contextual or MCP handle under the current Worklease home marks its claim in the list; detail shows its kind and path. Browse and filter without sending private credentials to the authority.
+`m` shows claims with your agent identity (not proof of ownership), `e` shows claims about to expire, `s` shows stale claims, `/` filters by resource prefix, and `esc` clears the filters. An eligible contextual or MCP handle under the current Worklease home marks its claim in the list; detail shows its kind and path. Browse and filter without sending private credentials to the authority.
 
 `u` renews an eligible active claim for the default TTL; `R` releases it with a reason (default `released`). Both show a preview of the authority, claim, resources, handle, expiry, and effect. Only explicit confirmation dispatches. Dismissing the preview, navigating, or refreshing never mutates a claim. Release frees the resources and removes the handle; renewal updates the displayed expiry immediately.
 

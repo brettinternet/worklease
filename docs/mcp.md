@@ -36,8 +36,14 @@ Legacy clients send `initialize` with protocol version `2025-11-25`, then
 
 ## Tool boundary
 
-The eleven tools are `key`, `acquire`, `status`, `list`, `heartbeat`,
-`checkpoint`, `release`, `verify`, `watch`, `events`, and `instructions`.
+The twelve tools are `key`, `acquire`, `queue_next`, `status`, `list`,
+`heartbeat`, `checkpoint`, `release`, `verify`, `watch`, `events`, and
+`instructions`. `queue_next` mirrors `worklease queue next`:
+
+```json
+{"name":"queue_next","arguments":{"view":"Ready","claim":true,"sessionId":"loop-a","autoHeartbeat":true}}
+```
+
 Schemas reject unknown inputs and return schema-version 2 domain envelopes.
 
 The `instructions` tool accepts `topic: setup|remote|server|loop|safety` and
@@ -118,7 +124,7 @@ handles, and pending requests remain on the client host.
 | `--local` | Use local SQLite; conflicts with remote selection. |
 | No selected profile | Make no network request; local reads remain setup-free. |
 
-The same eleven tools remain available. Remote acquire accepts only configured
+The same twelve tools remain available. Remote acquire accepts only configured
 portable prefixes; `path`, `backlog-md`, and `markdown` keys are rejected.
 `wait` is a client loop capped at 60 seconds, while the server owns polling.
 
