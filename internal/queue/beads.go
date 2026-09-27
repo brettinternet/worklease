@@ -79,11 +79,7 @@ func (a *BeadsAdapter) timeout() time.Duration {
 // commit can be shown as stale while the current one loads. A checkout
 // replaced at the same path has a new lineage.
 func (a *BeadsAdapter) QueueCacheLineage(source Source) (string, bool) {
-	info, err := os.Stat(filepath.Join(source.Locator, ".git"))
-	if err != nil {
-		return "", false
-	}
-	return checkoutInstance(info)
+	return checkoutInstance(filepath.Join(source.Locator, ".git"))
 }
 
 func (a *BeadsAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
@@ -91,11 +87,7 @@ func (a *BeadsAdapter) QueueCacheIdentity(source Source) (string, string, string
 	if err != nil || user.Uid == "" {
 		return "", "", "", false
 	}
-	git, err := os.Stat(filepath.Join(source.Locator, ".git"))
-	if err != nil {
-		return "", "", "", false
-	}
-	instance, ok := checkoutInstance(git)
+	instance, ok := checkoutInstance(filepath.Join(source.Locator, ".git"))
 	if !ok {
 		return "", "", "", false
 	}

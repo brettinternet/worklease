@@ -21,7 +21,14 @@ func fakeGitHub(t testing.TB, handler http.HandlerFunc) (*GitHubAdapter, *httpte
 	t.Cleanup(server.Close)
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "gh")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\n[ \"$1\" = auth ] && [ \"$2\" = token ] && [ \"$3\" = --hostname ] && [ \"$4\" = github.com ] && [ \"$5\" = --user ] && [ \"$6\" = tester ] || exit 3\n[ -z \"$GH_TOKEN$GITHUB_TOKEN$GH_ENTERPRISE_TOKEN$GITHUB_ENTERPRISE_TOKEN\" ] || exit 4\nprintf 'canary-secret-token\\n'\n"), 0700); err != nil {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(executable, binary); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("canary-secret-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	a := NewGitHubAdapter()
@@ -29,6 +36,26 @@ func fakeGitHub(t testing.TB, handler http.HandlerFunc) (*GitHubAdapter, *httpte
 	a.APIBase = server.URL
 	return a, server
 }
+
+// RunFakeGitHubIfInvoked handles the gh symlink before TestMain initializes tests.
+func RunFakeGitHubIfInvoked() {
+	if filepath.Base(os.Args[0]) != "gh" {
+		return
+	}
+	if len(os.Args) != 7 || os.Args[1] != "auth" || os.Args[2] != "token" || os.Args[3] != "--hostname" || os.Args[4] != "github.com" || os.Args[5] != "--user" || os.Args[6] != "tester" {
+		os.Exit(3)
+	}
+	if os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GH_ENTERPRISE_TOKEN") != "" || os.Getenv("GITHUB_ENTERPRISE_TOKEN") != "" {
+		os.Exit(4)
+	}
+	token, err := os.ReadFile(filepath.Join(filepath.Dir(os.Args[0]), "token"))
+	if err != nil {
+		os.Exit(5)
+	}
+	_, _ = os.Stdout.Write(token)
+	os.Exit(0)
+}
+
 func githubRequest(t *testing.T, r *http.Request) (string, map[string]json.RawMessage) {
 	t.Helper()
 	if r.Header.Get("Authorization") != "Bearer canary-secret-token" {
@@ -72,6 +99,19 @@ func TestGitHubPrincipalAndTokenSecrecy(t *testing.T) {
 		t.Fatal("credential leaked in JSON")
 	}
 }
+func TestGitHubCredentialHelperFailureReportsSafeCause(t *testing.T) {
+	t.Parallel()
+	a, _ := fakeGitHub(t, func(http.ResponseWriter, *http.Request) { t.Fatal("helper failure contacted provider") })
+	// Missing private token data makes the fixture exit without producing a token.
+	if err := os.Rename(filepath.Join(filepath.Dir(a.Binary), "token"), filepath.Join(filepath.Dir(a.Binary), "old-token")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.Resolve(context.Background(), map[string]string{"host": "github.com", "repository": "org/repo", "account": "tester"})
+	if err == nil || err.Error() != "authentication: credential helper failed: exit status 5" || strings.Contains(err.Error(), a.Binary) {
+		t.Fatalf("unsafe or ambiguous credential helper diagnostic: %v", err)
+	}
+}
+
 func TestGitHubCredentialRotationChangesObservationGeneration(t *testing.T) {
 	a, _ := fakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -95,7 +135,7 @@ func TestGitHubCredentialRotationChangesObservationGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(a.Binary, []byte("#!/bin/sh\nprintf 'rotated-secret-token\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(a.Binary), "token"), []byte("rotated-secret-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	source, err = a.Resolve(context.Background(), opts)

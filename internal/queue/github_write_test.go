@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -442,7 +443,7 @@ func TestGitHubWritePrincipalAndCredentialChangeMustReverify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(writer.Binary, []byte("#!/bin/sh\nprintf 'rotated-token\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(writer.Binary), "token"), []byte("rotated-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	// Resolving a rotated credential verifies its account; the write path must

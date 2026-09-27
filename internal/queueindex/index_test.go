@@ -506,7 +506,10 @@ func TestNewBacklogCommitShowsPreviousRowsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	create()
-	replaced, _ := ForSource(adapter, source)
+	replaced, ok := ForSource(adapter, source)
+	if !ok || replaced.Lineage == before.Lineage {
+		t.Fatalf("recreated checkout kept predecessor's lineage: before=%+v replaced=%+v", before, replaced)
+	}
 	if got, err := idx.ReadForDisplay(ctx, replaced); err != nil || len(got.Items) != 0 {
 		t.Fatalf("replaced checkout showed its predecessor's rows: %+v err=%v", got, err)
 	}

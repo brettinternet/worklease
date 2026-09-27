@@ -8,6 +8,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	RunFakeGitHubIfInvoked()
 	testkit.RunFakeBacklogIfInvoked()
 	restore, err := testkit.IsolateProcessEnvironment()
 	if err != nil {

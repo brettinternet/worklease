@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -187,7 +189,23 @@ func (a *GitHubAdapter) Resolve(ctx context.Context, options map[string]string) 
 	command.Stderr = io.Discard
 	command.WaitDelay = time.Second
 	if err := command.Run(); err != nil || output.exceeded {
-		return Source{}, GitHubDiagnostic{"authentication", "credential helper failed"}
+		detail := "credential helper failed"
+		switch {
+		case errors.Is(err, syscall.ETXTBSY):
+			detail += ": executable busy"
+		case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.EMFILE), errors.Is(err, syscall.ENFILE):
+			detail += ": process or descriptor limit"
+		case errors.Is(credentialContext.Err(), context.DeadlineExceeded):
+			detail += ": deadline exceeded"
+		case output.exceeded:
+			detail += ": output limit exceeded"
+		default:
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				detail += fmt.Sprintf(": exit status %d", exit.ExitCode())
+			}
+		}
+		return Source{}, GitHubDiagnostic{"authentication", detail}
 	}
 	token := strings.TrimSpace(output.data.String())
 	if token == "" {

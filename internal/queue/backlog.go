@@ -65,11 +65,7 @@ func BacklogDirectory(checkout string) (string, error) {
 // commit can be shown as stale while the current one loads. A checkout
 // replaced at the same path has a new lineage.
 func (a *BacklogAdapter) QueueCacheLineage(source Source) (string, bool) {
-	info, err := os.Stat(filepath.Join(source.Locator, ".git"))
-	if err != nil {
-		return "", false
-	}
-	return checkoutInstance(info)
+	return checkoutInstance(filepath.Join(source.Locator, ".git"))
 }
 
 func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, string, bool) {
@@ -78,11 +74,7 @@ func (a *BacklogAdapter) QueueCacheIdentity(source Source) (string, string, stri
 		return "", "", "", false
 	}
 	// A checkout replaced at the same path must not inherit its predecessor's cache.
-	gitDir, err := os.Stat(filepath.Join(source.Locator, ".git"))
-	if err != nil {
-		return "", "", "", false
-	}
-	generation, ok := checkoutInstance(gitDir)
+	generation, ok := checkoutInstance(filepath.Join(source.Locator, ".git"))
 	if !ok {
 		return "", "", "", false
 	}
