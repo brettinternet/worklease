@@ -1632,6 +1632,9 @@ func (m Model) exitView() dialogBox {
 	var b strings.Builder
 	b.WriteString("Renewal stops when this process exits. No claim is released automatically.\n")
 	for _, owned := range m.OwnedClaims {
+		if owned.Lost {
+			continue
+		}
 		claim, expiry := owned.ClaimID, "unknown"
 		if claim == "" {
 			claim = "outcome unknown"

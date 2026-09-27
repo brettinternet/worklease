@@ -1729,6 +1729,22 @@ func TestUncertainAcquireCannotQuitSilently(t *testing.T) {
 	}
 }
 
+func TestQueueQuitWithLostClaims(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	m.OwnedClaims["/private/queue/expired.json"] = OwnedClaimMsg{Path: "/private/queue/expired.json", ClaimID: "expired", Lost: true, LastResult: "ownership verification failed"}
+	m, cmd := press(m, "q")
+	if cmd == nil || m.Quitting {
+		t.Fatalf("lost claim alone prompted on quit: %s", m.View())
+	}
+
+	m.OwnedClaims["/private/queue/pending.json"] = OwnedClaimMsg{Path: "/private/queue/pending.json", LastResult: "verification pending"}
+	m, cmd = press(m, "q")
+	if cmd != nil || !m.Quitting || !strings.Contains(m.View(), "/private/queue/pending.json") || strings.Contains(m.View(), "/private/queue/expired.json") {
+		t.Fatalf("quit warning must show only claims that may still be held: %s", m.View())
+	}
+}
+
 func TestQueueOwnedClaimExitAndCancel(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

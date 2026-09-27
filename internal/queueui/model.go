@@ -1926,9 +1926,15 @@ func (m Model) requestQuit() (tea.Model, tea.Cmd) {
 		m.Notice = "Wait for claim, launch, write, or Claims action outcome before exiting"
 		return m, nil
 	}
-	if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 || m.RecoveryError != "" {
+	if m.UncertainWrite || len(m.Recovery) > 0 || m.RecoveryError != "" {
 		m.Quitting = true
 		return m, nil
+	}
+	for _, owned := range m.OwnedClaims {
+		if !owned.Lost {
+			m.Quitting = true
+			return m, nil
+		}
 	}
 	return m, tea.Quit
 }
