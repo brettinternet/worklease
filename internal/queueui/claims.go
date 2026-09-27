@@ -289,6 +289,12 @@ func (m Model) claimRows() []lease.ClaimView {
 		}
 		rows = append(rows, claim)
 	}
+	slices.SortFunc(rows, func(a, b lease.ClaimView) int {
+		if order := b.AcquiredAt.Compare(a.AcquiredAt); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ClaimID, b.ClaimID)
+	})
 	return rows
 }
 

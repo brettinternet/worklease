@@ -61,7 +61,7 @@ The action line lists only actions available now. Each one opens a preview; `ent
 
 ## Claims
 
-The Claims tab lists every claim on the authority, including claims held by other queues and agents. A claim on a loaded item shows that item's title. `i` jumps back to the item.
+The Claims tab lists every claim on the authority, including claims held by other queues and agents, newest acquisition first. Renewals do not change the order. A claim on a loaded item shows that item's title. `i` jumps back to the item.
 
 ```text
   ID        Claimed                                Holder              Expires

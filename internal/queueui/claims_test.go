@@ -50,6 +50,35 @@ func TestClaimsListScrollKeepsVisibleSelection(t *testing.T) {
 	}
 }
 
+func TestClaimsNewestAcquisitionFirstAndSelectionStableOnRefresh(t *testing.T) {
+	t.Parallel()
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	claims := []lease.ClaimView{
+		{ClaimID: "old", AcquiredAt: time.Unix(10, 0), HeartbeatAt: time.Unix(90, 0)},
+		{ClaimID: "same-b", AcquiredAt: time.Unix(20, 0)},
+		{ClaimID: "same-a", AcquiredAt: time.Unix(20, 0)},
+		{ClaimID: "new", AcquiredAt: time.Unix(30, 0)},
+	}
+	m.applyClaimsRefresh(ClaimsRefreshMsg{Claims: claims})
+	for index, want := range []string{"new", "same-a", "same-b", "old"} {
+		if got := m.claimRows()[index].ClaimID; got != want {
+			t.Fatalf("row %d = %q, want %q", index, got, want)
+		}
+	}
+	if m.Claims.Selected != "new" {
+		t.Fatalf("initial selection = %q, want newest claim", m.Claims.Selected)
+	}
+	m.Claims.Selected = "same-b"
+	claims[0].HeartbeatAt = time.Unix(100, 0)
+	claims = append(claims, lease.ClaimView{ClaimID: "latest", AcquiredAt: time.Unix(40, 0)})
+	m.applyClaimsRefresh(ClaimsRefreshMsg{Claims: claims})
+	rows := m.claimRows()
+	if m.Claims.Selected != "same-b" || m.Claims.Index != 3 || rows[0].ClaimID != "latest" || rows[len(rows)-1].ClaimID != "old" {
+		t.Fatalf("refresh moved selection or sorted by heartbeat: selected=%q index=%d rows=%v", m.Claims.Selected, m.Claims.Index, rows)
+	}
+}
+
 func TestClaimsTabSwitchingPreservesPerViewSelection(t *testing.T) {
 	t.Parallel()
 	m := New(fixture())
