@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Worklease Backlog.md configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "project_name": { "type": "string" },
+    "default_status": { "type": "string" },
+    "statuses": { "type": "array", "items": { "type": "string" } },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "date_format": { "type": "string" },
+    "max_column_width": { "type": "integer", "minimum": 1 },
+    "default_editor": { "type": "string" },
+    "auto_open_browser": { "type": "boolean" },
+    "default_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "remote_operations": { "type": "boolean" },
+    "auto_commit": { "type": "boolean" },
+    "filesystem_only": { "type": "boolean" },
+    "bypass_git_hooks": { "type": "boolean" },
+    "check_active_branches": { "type": "boolean" },
+    "active_branch_days": { "type": "integer", "minimum": 0 },
+    "task_prefix": { "type": "string" },
+    "backlog_directory": { "type": "string" }
+  }
+}
