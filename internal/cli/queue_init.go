@@ -30,27 +30,38 @@ type queueInitFact struct {
 	Origin string `json:"origin"`
 }
 
+type queueInitSourceResult struct {
+	ID       string          `json:"id"`
+	Adapter  string          `json:"adapter"`
+	Outcome  string          `json:"outcome"`
+	Identity string          `json:"identity"`
+	Facts    []queueInitFact `json:"facts"`
+	Reports  []string        `json:"reports,omitempty"`
+}
+
 type queueInitResult struct {
-	Path             string          `json:"path"`
-	ExecutableSHA256 string          `json:"executableSHA256,omitempty"`
-	Outcome          string          `json:"outcome"`
-	SourceID         string          `json:"sourceId"`
-	Adapter          string          `json:"-"`
-	Me               string          `json:"-"`
-	Mapped           []string        `json:"-"`
-	DefaultView      bool            `json:"-"`
-	Facts            []queueInitFact `json:"facts"`
-	YAML             string          `json:"yaml"`
-	Applied          bool            `json:"applied"`
-	Identity         string          `json:"identity"`
-	Checklist        string          `json:"checklist,omitempty"`
-	Unmapped         []string        `json:"unmapped,omitempty"`
-	NextCommands     []string        `json:"nextCommands"`
+	Sources          []queueInitSourceResult `json:"sources,omitempty"`
+	Reports          []string                `json:"reports,omitempty"`
+	Path             string                  `json:"path"`
+	ExecutableSHA256 string                  `json:"executableSHA256,omitempty"`
+	Outcome          string                  `json:"outcome"`
+	SourceID         string                  `json:"sourceId"`
+	Adapter          string                  `json:"-"`
+	Me               string                  `json:"-"`
+	Mapped           []string                `json:"-"`
+	DefaultView      bool                    `json:"-"`
+	Facts            []queueInitFact         `json:"facts"`
+	YAML             string                  `json:"yaml"`
+	Applied          bool                    `json:"applied"`
+	Identity         string                  `json:"identity"`
+	Checklist        string                  `json:"checklist,omitempty"`
+	Unmapped         []string                `json:"unmapped,omitempty"`
+	NextCommands     []string                `json:"nextCommands"`
 }
 
 func queueInitCommand(s *boundary) *urfave.Command {
 	return &urfave.Command{Name: "init", Usage: "create owner-private queue.yaml from a checkout or external adapter manifest",
-		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--dry-run] [--json]",
+		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--dry-run] [--json]",
 		Description: "Detect provider facts and write queue.yaml directly. Use --dry-run to preview without writing. Re-run to add another checkout.\n\nExamples:\n  worklease queue init\n  worklease queue init --dry-run\n  worklease queue --view Team init --authority shared --allow-git-network",
 		OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
 			return queueInitError(s, cmd, reason.Invalid("invalid command-line arguments"))
@@ -66,6 +77,7 @@ func queueInitCommand(s *boundary) *urfave.Command {
 			&urfave.StringFlag{Name: "portable-claims", Usage: "explicit generic cross-host claim source `SOURCE` (Backlog.md or external)"},
 			&urfave.StringFlag{Name: "me", Usage: "provider principal `PRINCIPAL`"},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "preview detected facts and exact YAML without writing"},
+			&urfave.BoolFlag{Name: "ignore-proposal", Usage: "ignore checkout queue-sources.yaml and detect the provider"},
 			&urfave.BoolFlag{Name: "allow-git-network", Usage: "consent to Backlog.md project Git network effects"},
 		},
 		Action: func(ctx context.Context, cmd *urfave.Command) error {
@@ -93,37 +105,66 @@ func queueInitCommand(s *boundary) *urfave.Command {
 					}
 					result.Applied = true
 				}
-				if result.Applied && result.Identity == "automatic" {
+				if result.Applied {
+					toConfirm := []string{}
+					if result.Identity == "automatic" {
+						toConfirm = append(toConfirm, result.SourceID)
+					}
+					if len(result.Sources) > 0 {
+						toConfirm = nil
+						for _, source := range result.Sources {
+							if source.Identity == "automatic" {
+								toConfirm = append(toConfirm, source.ID)
+							}
+						}
+					}
 					view := cmd.String("view")
 					if view == "" {
 						view = "Ready"
 					}
-					if err := confirmQueueIdentity(ctx, cmd, view, result.SourceID); err != nil {
-						result.Identity = "confirmation-failed"
-						if reason.As(err) == nil {
-							if strings.HasPrefix(err.Error(), reason.ReasonBindingMigrationRequired+":") {
-								err = reason.New(reason.ReasonBindingMigrationRequired, err.Error())
-							} else {
-								err = reason.New(reason.ReasonConfigInvalid, err.Error())
+					for _, sourceID := range toConfirm {
+						if err := confirmQueueIdentity(ctx, cmd, view, sourceID); err != nil {
+							result.Identity = "confirmation-failed"
+							if reason.As(err) == nil {
+								if strings.HasPrefix(err.Error(), reason.ReasonBindingMigrationRequired+":") {
+									err = reason.New(reason.ReasonBindingMigrationRequired, err.Error())
+								} else {
+									err = reason.New(reason.ReasonConfigInvalid, err.Error())
+								}
+							}
+							classified := reason.As(err)
+							classified.With("applied", true).With("nextCommands", result.NextCommands).With("checklist", queue.MigrationChecklist)
+							if !s.jsonRequested(cmd) {
+								fmt.Fprintf(s.writer, "queue.yaml written; identity confirmation failed: %v\n%s\n", err, strings.Join(result.NextCommands, "\n"))
+							}
+							return queueInitError(s, cmd, err)
+						}
+					}
+					if len(toConfirm) > 0 {
+						result.Identity = "confirmed"
+						for i := range result.Sources {
+							if slices.Contains(toConfirm, result.Sources[i].ID) {
+								result.Sources[i].Identity = "confirmed"
 							}
 						}
-						classified := reason.As(err)
-						classified.With("applied", true).With("nextCommands", result.NextCommands).With("checklist", queue.MigrationChecklist)
-						if !s.jsonRequested(cmd) {
-							fmt.Fprintf(s.writer, "queue.yaml written; identity confirmation failed: %v\n%s\n", err, strings.Join(result.NextCommands, "\n"))
+						if slices.ContainsFunc(result.Sources, func(source queueInitSourceResult) bool { return source.Identity == "confirmation-required" }) {
+							result.Identity = "confirmation-required"
+						} else {
+							result.Checklist = ""
 						}
-						return queueInitError(s, cmd, err)
+						result.NextCommands = slices.DeleteFunc(result.NextCommands, func(command string) bool {
+							return slices.ContainsFunc(toConfirm, func(id string) bool {
+								return strings.Contains(command, " identity confirm --source "+queueInitQuote(id)+" --acknowledge")
+							})
+						})
+						if result.Checklist == "" {
+							result.NextCommands = append(result.NextCommands, queueInitQueueCommand(view, result.DefaultView))
+						}
 					}
-					result.Identity = "confirmed"
-					result.Checklist = ""
-					result.NextCommands = slices.DeleteFunc(result.NextCommands, func(command string) bool {
-						return strings.Contains(command, " identity confirm --source ")
-					})
-					result.NextCommands = append(result.NextCommands, queueInitQueueCommand(view, result.DefaultView))
 				}
 			}
 			if s.jsonRequested(cmd) {
-				return output.WriteSuccess(s.writer, "queue-init", map[string]any{"path": result.Path, "outcome": result.Outcome, "sourceId": result.SourceID, "executableSHA256": result.ExecutableSHA256, "facts": result.Facts, "yaml": result.YAML, "applied": result.Applied, "identity": result.Identity, "unmapped": result.Unmapped, "checklist": result.Checklist, "nextCommands": result.NextCommands})
+				return output.WriteSuccess(s.writer, "queue-init", map[string]any{"path": result.Path, "outcome": result.Outcome, "sourceId": result.SourceID, "executableSHA256": result.ExecutableSHA256, "facts": result.Facts, "yaml": result.YAML, "applied": result.Applied, "identity": result.Identity, "unmapped": result.Unmapped, "checklist": result.Checklist, "nextCommands": result.NextCommands, "sources": result.Sources, "reports": result.Reports})
 			}
 			if cmd.Bool("dry-run") {
 				for _, fact := range result.Facts {
@@ -135,6 +176,9 @@ func queueInitCommand(s *boundary) *urfave.Command {
 				if result.ExecutableSHA256 != "" {
 					fmt.Fprintf(s.writer, "Executable SHA-256: %s\n", result.ExecutableSHA256)
 				}
+			}
+			for _, report := range result.Reports {
+				fmt.Fprintln(s.writer, report)
 			}
 			if result.Checklist != "" {
 				fmt.Fprintf(s.writer, "Migration checklist: %s\n", result.Checklist)
@@ -210,7 +254,7 @@ func queueInitCheckoutArg(ctx context.Context, cmd *urfave.Command, checkout str
 
 func queueInitApplyCommand(ctx context.Context, cmd *urfave.Command, checkout, adapter, detectedAdapter, id, defaultID, me, defaultMe string) string {
 	command := "worklease queue"
-	if view := cmd.String("view"); view != "" && view != "Ready" {
+	if view := cmd.String("view"); view != "" {
 		command += " --view " + queueInitQuote(view)
 	}
 	command += " init"
@@ -232,6 +276,9 @@ func queueInitApplyCommand(ctx context.Context, cmd *urfave.Command, checkout, a
 	}
 	if cmd.Bool("allow-git-network") {
 		command += " --allow-git-network"
+	}
+	if cmd.Bool("ignore-proposal") {
+		command += " --ignore-proposal"
 	}
 	return command
 }
@@ -325,6 +372,17 @@ func queueInitOSUser() string {
 }
 
 func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult, error) {
+	proposal, checkout, err := readQueueProposal(ctx, cmd)
+	if err != nil {
+		return queueInitResult{}, err
+	}
+	if proposal != nil {
+		return prepareQueueInitProposal(ctx, cmd, proposal, checkout)
+	}
+	return prepareQueueInitOne(ctx, cmd, nil, nil)
+}
+
+func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *queueProposalSource, snapshot []byte) (queueInitResult, error) {
 	result := queueInitResult{Path: config.QueuePath(os.Getenv), Facts: []queueInitFact{}}
 	if !filepath.IsAbs(result.Path) {
 		return result, reason.Invalid("queue.yaml path must be absolute")
@@ -366,6 +424,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		}
 	}
 	data, err := handle.ReadOwnerPrivate(result.Path, 1<<20)
+	if snapshot != nil {
+		data, err = snapshot, nil
+	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return result, reason.New(reason.ReasonConfigInvalid, "queue.yaml cannot be read safely: "+err.Error())
 	}
@@ -373,9 +434,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	var cfg config.QueueConfig
 	var doc yaml.Node
 	if existing {
-		cfg, err = config.LoadQueue(os.Getenv)
+		cfg, err = config.ValidateQueue(data, os.Getenv)
 		if err != nil {
-			return result, err
+			return result, reason.New(reason.ReasonConfigInvalid, err.Error())
 		}
 		if err := yaml.Unmarshal(data, &doc); err != nil {
 			return result, reason.New(reason.ReasonConfigInvalid, err.Error())
@@ -403,6 +464,10 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		detectedAdapter = "github"
 	}
 	adapter := cmd.String("adapter")
+	if proposed != nil {
+		adapter = proposed.Adapter
+		detectedAdapter = adapter
+	}
 	if adapter == "" {
 		adapter = detectedAdapter
 		if adapter == "" {
@@ -415,7 +480,7 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	if adapter == "backlog-md" && !backlogDetected {
 		return result, reason.Invalid("--checkout has no Backlog.md project")
 	}
-	if adapter == "github" && !github {
+	if adapter == "github" && (!github || host != "github.com" && !strings.HasPrefix(host, "github.")) {
 		return result, reason.Invalid("--checkout origin is not a GitHub remote")
 	}
 	if adapter == "github" && cmd.String("portable-claims") != "" {
@@ -423,7 +488,10 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	}
 	result.Adapter = adapter
 	adapterOrigin := "--adapter"
-	if cmd.String("adapter") == "" {
+	if proposed != nil {
+		adapterOrigin = queueProposalFile
+	}
+	if cmd.String("adapter") == "" && proposed == nil {
 		adapterOrigin = "git origin"
 		if adapter == "backlog-md" {
 			adapterOrigin = "Backlog.md config"
@@ -444,7 +512,7 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 			return result, err
 		}
 		result.Facts = append(result.Facts, queueInitFact{"backlogDirectory", backlogDir, "Backlog.md config"})
-		if github && remoteErr == nil && (host == "github.com" || strings.HasPrefix(host, "github.")) {
+		if proposed == nil && github && remoteErr == nil && (host == "github.com" || strings.HasPrefix(host, "github.")) {
 			other := "worklease queue"
 			if cmd.String("view") != "" {
 				other += " --view " + queueInitQuote(view)
@@ -459,6 +527,25 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	for _, source := range cfg.Sources {
 		resolvedCheckout, _ := filepath.EvalSymlinks(source.Checkout)
 		if adapter == "backlog-md" && source.Adapter == adapter && resolvedCheckout == checkout || adapter == "github" && source.Adapter == adapter && strings.EqualFold(source.Host, host) && strings.EqualFold(source.Repository, repository) {
+			if proposed != nil {
+				result.Facts = append(result.Facts, queueInitFact{"proposedSourceId", proposed.ID, queueProposalFile})
+				if proposed.Workflow != nil {
+					for intent, transition := range proposed.Workflow {
+						result.Facts = append(result.Facts, queueInitFact{"workflow." + intent, transition, queueProposalFile})
+					}
+				}
+				if proposed.Claims != nil {
+					result.Facts = append(result.Facts, queueInitFact{"claims", proposed.Claims.Policy + ":" + proposed.Claims.Source, queueProposalFile})
+				}
+				if proposed.Workflow != nil {
+					if diff := proposalDifference("workflow", source.Workflow, proposed.Workflow); diff != "" {
+						result.Reports = append(result.Reports, "source "+source.ID+": "+diff)
+					}
+				}
+				if diff := proposalClaimReport(source.Claims, proposed.Claims); diff != "" {
+					result.Reports = append(result.Reports, "source "+source.ID+": "+diff)
+				}
+			}
 			if id := cmd.String("source-id"); id != "" && id != source.ID {
 				return result, reason.Invalid("checkout already configured as source " + source.ID)
 			}
@@ -472,7 +559,7 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 			if claims := cmd.String("portable-claims"); claims != "" && (source.Claims == nil || source.Claims.Policy != "generic" || source.Claims.Source != claims) {
 				return result, reason.Invalid("source claim domain differs from --portable-claims")
 			}
-			if cmd.IsSet("allow-git-network") && cmd.Bool("allow-git-network") != source.AllowGitNetwork {
+			if (proposed == nil || adapter == "backlog-md") && cmd.IsSet("allow-git-network") && cmd.Bool("allow-git-network") != source.AllowGitNetwork {
 				return result, reason.Invalid("source allowGitNetwork differs from --allow-git-network")
 			}
 			if err := queueInitPreflight(ctx, source); err != nil {
@@ -557,6 +644,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		}
 	}
 	defaultID := strings.ReplaceAll(filepath.Base(checkout), ":", "")
+	if proposed != nil && proposed.ID != "" {
+		defaultID = proposed.ID
+	}
 	base := defaultID
 	for n := 2; slices.ContainsFunc(cfg.Sources, func(s config.QueueSource) bool { return s.ID == defaultID }); n++ {
 		defaultID = base + "-" + strconv.Itoa(n)
@@ -577,6 +667,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	idOrigin := "--source-id"
 	if cmd.String("source-id") == "" {
 		idOrigin = "checkout basename"
+		if proposed != nil && proposed.ID != "" {
+			idOrigin = queueProposalFile
+		}
 	}
 	result.Facts = append(result.Facts, queueInitFact{"sourceId", id, idOrigin})
 	result.Outcome = "created"
@@ -586,9 +679,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
 		return result, err
 	}
-	source := config.QueueSource{ID: id, Adapter: adapter, AllowGitNetwork: cmd.Bool("allow-git-network")}
+	source := config.QueueSource{ID: id, Adapter: adapter, AllowGitNetwork: adapter == "backlog-md" && cmd.Bool("allow-git-network")}
 	networkOrigin := "default"
-	if cmd.Bool("allow-git-network") {
+	if source.AllowGitNetwork {
 		networkOrigin = "--allow-git-network"
 	}
 	result.Facts = append(result.Facts, queueInitFact{"allowGitNetwork", strconv.FormatBool(source.AllowGitNetwork), networkOrigin})
@@ -602,6 +695,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		}
 		if claim := cmd.String("portable-claims"); claim != "" {
 			source.Claims = &config.QueueClaims{Policy: "generic", Source: claim}
+		}
+		if proposed != nil {
+			source.Claims = proposed.Claims
 		}
 		statuses, e := queueInitCommandOutput(ctx, checkout, "backlog", "config", "get", "statuses")
 		if e != nil {
@@ -629,6 +725,16 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 			}
 		}
 		result.Unmapped = append(result.Unmapped, "blocked", "review")
+		if proposed != nil && proposed.Workflow != nil {
+			source.Workflow = proposed.Workflow
+			result.Unmapped = nil
+			for intent, transition := range source.Workflow {
+				result.Facts = append(result.Facts, queueInitFact{"workflow." + intent, transition, queueProposalFile})
+			}
+		}
+		if proposed != nil && source.Claims != nil {
+			result.Facts = append(result.Facts, queueInitFact{"claims", source.Claims.Policy + ":" + source.Claims.Source, queueProposalFile})
+		}
 		candidates := strings.Split(assignee, ",")
 		if len(candidates) == 1 {
 			defaultMe = strings.TrimSpace(candidates[0])
@@ -688,6 +794,12 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		result.Me = account
 		result.Facts = append(result.Facts, queueInitFact{"me", account, "gh api --hostname " + host + " user"})
 		source.Workflow = map[string]string{"complete": "closed", "reopen": "open"}
+		if proposed != nil && proposed.Workflow != nil {
+			source.Workflow = proposed.Workflow
+			for intent, transition := range source.Workflow {
+				result.Facts = append(result.Facts, queueInitFact{"workflow." + intent, transition, queueProposalFile})
+			}
+		}
 		if node := initField(meNode, host); node != nil {
 			if node.Value != account {
 				return result, reason.Invalid("authenticated account conflicts with existing me." + host)
@@ -762,7 +874,11 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 		result.Checklist = queue.MigrationChecklist
 	} else {
 		result.Identity = "pending"
-		result.NextCommands = append(result.NextCommands, queueInitApplyCommand(ctx, cmd, checkout, adapter, detectedAdapter, id, defaultID, me, defaultMe))
+		if proposed != nil {
+			result.NextCommands = append(result.NextCommands, queueInitApplyCommand(ctx, cmd, checkout, adapter, detectedAdapter, id, id, me, defaultMe))
+		} else {
+			result.NextCommands = append(result.NextCommands, queueInitApplyCommand(ctx, cmd, checkout, adapter, detectedAdapter, id, defaultID, me, defaultMe))
+		}
 	}
 	return result, nil
 }

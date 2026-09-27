@@ -9,6 +9,25 @@ worklease queue init --dry-run  # preview detected facts, their origins, and exa
 
 Use `--checkout PATH` for another repository, `--adapter backlog-md|github` to override detection, `--source-id ID` to choose an ID, `--portable-claims SOURCE` to opt into cross-host claims, and `--authority NAME` for a trusted remote profile. Backlog.md `me` defaults to its single `defaultAssignee`, then `@` plus the OS login; `--me @name` overrides the default or adds a name to an existing list. `--allow-git-network` explicitly consents when the Backlog.md project enables remote Git operations or active-branch checks; otherwise init refuses to write. Init checks the same adapter prerequisites as queue: Git, Backlog.md CLI 1.52.x or an authenticated `gh` account (`gh auth login --hostname HOST`). A bare `backlog/` folder is not enough to detect Backlog.md. If both Backlog.md and a GitHub origin exist, init selects Backlog.md and prints the explicit command to add GitHub. A new file gets the Ready, Mine, Claimed, and All views, because configuring any view replaces the TUI's built-in tabs. `worklease queue --view NAME init` writes only that view. Re-running adds the source to the selected view (without `--view`, to whichever of the four default views the file still has) or reports an already configured checkout. Only new host-local sources on the local authority are automatically identity-confirmed; for other bindings, complete the migration checklist below and run the printed `queue identity confirm` command.
 
+## Repository-suggested sources
+
+A checkout can commit `.config/worklease/queue-sources.yaml` at its Git worktree root to suggest sources for **explicit** `worklease queue init` adoption:
+
+```yaml
+version: 1
+sources:
+  - id: worklease
+    adapter: backlog-md
+    workflow: {start: In Progress, complete: Done, reopen: To Do}
+    claims: {policy: generic, source: worklease}
+  - id: issues
+    adapter: github
+```
+
+The only allowed top-level keys are `version` (must be `1`) and `sources` (1–8 entries); each source allows only `id` (suggested, de-duplicated), `adapter` (`backlog-md` or `github`), `workflow` (start, blocked, review, complete, reopen), and `claims` (optional `generic` policy and portable source for Backlog.md only). Unknown keys fail by name before any write. The file cannot choose a checkout, GitHub host or repository, `me`, views, authority, network consent, launch action, executable, adapter config, account, or credential helper. GitHub host and repository always come from the checkout's GitHub `origin`; a GitHub proposal without one is rejected. The file is **not** loaded as queue configuration: `queue`, the TUI, `queue query`, `queue next`, and MCP do not read it. Configuration remains owner-private, and only explicit init reads the proposal for `--checkout PATH` or the current checkout. Use `--ignore-proposal` to run ordinary provider detection instead.
+
+Preview every proposed source and its fact origins with `worklease queue init --dry-run` before running init without `--dry-run`. Adoption uses the existing preflight, source ID de-duplication, principal resolution, view and authority rules, and explicit `--allow-git-network` consent (default false). New host-local local-authority sources are identity-confirmed automatically; portable claims require the printed confirmation and migration checklist. The adopted sources are independent of the proposal thereafter. Re-running init adds newly proposed sources, reports differing workflow or claim YAML without changing existing sources (claims include the migration checklist), and reports configured sources omitted by the proposal without removing them. With nothing new it exits successfully without writing. For manual adapter, source ID, or portable-claims overrides, use `--ignore-proposal` and the corresponding init flag.
+
 ## External adapter init
 
 From any directory (no Git checkout needed), use an absolute, canonical executable path. Init runs that executable **only to negotiate its manifest**; it validates the JSON object against the manifest's config schema and writes its path, manifest ID/version, and config to owner-private `queue.yaml`:
@@ -27,7 +46,7 @@ The `--json` envelope has `schemaVersion`, `ok`, and `operation: "queue-init"`. 
 
 ## Hand-written YAML reference
 
-The read-only queue uses owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. No repository configuration is read. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.
+The read-only queue uses owner-private `$XDG_CONFIG_HOME/worklease/queue.yaml` (or `~/.config/worklease/queue.yaml` when XDG_CONFIG_HOME is unset). Create the `worklease` directory owner-private (`0700`) and the file owner-private (`0600`). Symlinks and files owned by another user are rejected. Only explicit init reads the optional [source proposal](#repository-suggested-sources); normal queue loading never reads repository configuration. The queue reads trusted remote authority names from the sibling `profiles.yaml`; `local` selects the built-in local authority.
 
 ```yaml
 version: 1
