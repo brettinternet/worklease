@@ -1702,6 +1702,20 @@ func TestClaimPreviewRequiresExplicitConfirmationAndShowsGrant(t *testing.T) {
 	}
 }
 
+func TestClaimNoticeSeparatesLocalSourceAndItem(t *testing.T) {
+	t.Parallel()
+	m := New(fixture())
+	item := m.Snapshot.Items[(queue.Ref{SourceID: "a", ItemID: "1"}).Key()]
+	item.CanonicalID = "worklease\x00TASK-150"
+	expires := time.Date(2026, 9, 27, 2, 52, 53, 0, time.UTC)
+	next, _ := m.Update(ClaimResultMsg{Identity: identity(item), Item: item, GrantedTTL: 15 * time.Minute, Claim: queue.ClaimObservation{ExpiresAt: expires}})
+	m = next.(Model)
+	want := "Claim worklease TASK-150 acquired · TTL 15m0s · expires 2026-09-27T02:52:53Z"
+	if m.Notice != want || !strings.Contains(screenText(m.View()), want) {
+		t.Fatalf("claim notice = %q, view = %q, want %q", m.Notice, screenText(m.View()), want)
+	}
+}
+
 func TestUncertainAcquireCannotQuitSilently(t *testing.T) {
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}

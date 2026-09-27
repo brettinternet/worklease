@@ -1287,7 +1287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.OwnedClaims[pendingPath] = OwnedClaimMsg{Path: pendingPath, LastResult: "claim outcome uncertain; retain private recovery handle"}
 				}
 			}
-			m.Notice = fmt.Sprintf("Claim %s: %s", clean(v.Identity), claimFailureNotice(v.Err))
+			m.Notice = fmt.Sprintf("Claim %s: %s", claimIdentityLabel(v.Identity), claimFailureNotice(v.Err))
 		} else {
 			if v.HandlePath != "" {
 				if m.OwnedClaims == nil {
@@ -1300,7 +1300,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Snapshot.Items[v.Item.Ref.Key()] = current
 				m.rowCache = &rowCache{}
 			}
-			m.Notice = fmt.Sprintf("Claim %s acquired · TTL %s · expires %s", clean(v.Identity), v.GrantedTTL, v.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+			m.Notice = fmt.Sprintf("Claim %s acquired · TTL %s · expires %s", claimIdentityLabel(v.Identity), v.GrantedTTL, v.Claim.ExpiresAt.UTC().Format(time.RFC3339))
 		}
 	case tea.KeyMsg:
 		key := v.String()
@@ -1882,6 +1882,11 @@ func displayResources(resources []string) string {
 		labels[i] = displayResource(resource)
 	}
 	return strings.Join(labels, ", ")
+}
+
+// Canonical IDs for local sources separate the source and item with a NUL.
+func claimIdentityLabel(identity string) string {
+	return clean(strings.ReplaceAll(identity, "\x00", " "))
 }
 
 func clean(s string) string {
