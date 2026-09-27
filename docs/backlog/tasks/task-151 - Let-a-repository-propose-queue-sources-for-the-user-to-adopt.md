@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@brett'
 created_date: '2026-09-27 05:56'
-updated_date: '2026-09-27 06:08'
+updated_date: '2026-09-27 06:37'
 labels:
   - work-queue
 dependencies: []
@@ -69,4 +69,6 @@ Decoding is an allowlist: `version`, and per source `id`, `adapter`, `workflow`,
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented strict proposal parsing and multi-source init preparation, plus focused adoption/rerun/trust-boundary tests and documentation; focused queue init tests pass. Running full gates and one risk-focused review.
+
+Full lint, format-check, typecheck, test, race, and doc-test passed; focused proposal tests passed with -race -count=3. One risk-focused review found three item-scoped defects in preview commands and mixed identity reporting; fixed all three and added focused regression checks. No second general review.
 <!-- SECTION:NOTES:END -->
