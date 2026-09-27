@@ -1,10 +1,37 @@
 package queueui
 
 import (
+	"strings"
+
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func (m *Model) openClaimsAction(action ClaimsAction) {
+	if m.Claims.mutating {
+		m.Claims.Notice = "Claim action already in progress"
+		return
+	}
+	claim, ok := m.selectedClaim(m.claimRows())
+	if !ok {
+		m.Claims.Notice = "No claim selected"
+		return
+	}
+	if unavailable := m.claimActionUnavailable(claim); unavailable != "" {
+		m.Claims.Notice = strings.ToUpper(string(action[:1])) + string(action[1:]) + " unavailable: " + unavailable
+		return
+	}
+	preview := &ClaimsActionPreview{Action: action, Claim: claim, Handle: m.claimHandle(claim)}
+	m.Claims.actionPreview = preview
+	if action == ClaimsActionRelease {
+		m.Claims.releaseReasonInput = true
+		m.Input = "released"
+		m.Claims.Notice = "Enter a release reason before reviewing confirmation"
+		return
+	}
+	m.Claims.Notice = "Review claim renewal; press Enter to confirm"
+}
 
 func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.viewKey(key); ok {
@@ -100,6 +127,10 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.Claims.Notice = "Claims refresh unavailable"
 		}
+	case "u":
+		m.openClaimsAction(ClaimsActionRenew)
+	case "R":
+		m.openClaimsAction(ClaimsActionRelease)
 	}
 	if m.Claims.Selected != previous && m.Claims.Detail {
 		return m, m.loadSelectedClaimHistory(m.claimRows())

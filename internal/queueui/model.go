@@ -405,6 +405,8 @@ const (
 	modeWriteChoices
 	modeWritePreview
 	modeStartPreview
+	modeClaimsReleaseReason
+	modeClaimsActionPreview
 )
 
 func (m Model) mode() mode {
@@ -419,6 +421,10 @@ func (m Model) mode() mode {
 		return modeRecoveryEvidence
 	case m.WriteInput:
 		return modeWriteInput
+	case m.Claims.releaseReasonInput:
+		return modeClaimsReleaseReason
+	case m.Claims.actionPreview != nil:
+		return modeClaimsActionPreview
 	case m.CancelPreview != "":
 		return modeCancel
 	case m.Quitting:
@@ -1112,10 +1118,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case ClaimsRefreshMsg:
 		history := m.applyClaimsRefresh(v)
-		if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil {
-			return m, tea.Batch(history, tea.Tick(claimsPollInterval, func(time.Time) tea.Msg { return ClaimsTickMsg{} }))
+		var refresh tea.Cmd
+		if m.Claims.refreshAfterMutation {
+			m.Claims.refreshAfterMutation = false
+			refresh = m.refreshClaimsAfterMutation()
 		}
-		return m, history
+		if m.ViewName == ClaimsViewID && m.Claims.Refresh != nil {
+			return m, tea.Batch(history, refresh, tea.Tick(claimsPollInterval, func(time.Time) tea.Msg { return ClaimsTickMsg{} }))
+		}
+		return m, tea.Batch(history, refresh)
+	case ClaimsMutationMsg:
+		return m, m.applyClaimsMutation(v)
 	case ClaimHistoryMsg:
 		if v.ClaimID == m.Claims.Selected && v.Resource == m.Claims.HistoryResource {
 			m.Claims.HistoryLoading = false
@@ -1386,6 +1399,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Notice = "Progress empty or selection changed"
 			default:
 				m.editInput(v)
+			}
+			return m, nil
+		case modeClaimsReleaseReason:
+			switch key {
+			case "esc":
+				m.Claims.releaseReasonInput = false
+				m.Claims.actionPreview = nil
+				m.Input = ""
+				m.Claims.Notice = "Release cancelled before confirmation"
+			case "enter":
+				reason := strings.TrimSpace(m.Input)
+				if reason == "" {
+					m.Claims.Notice = "Release reason cannot be empty"
+					return m, nil
+				}
+				m.Claims.actionPreview.Reason = reason
+				m.Claims.releaseReasonInput = false
+				m.Input = ""
+				m.Claims.Notice = "Review release preview; press Enter to confirm"
+			case "ctrl+u":
+				m.Input = ""
+			default:
+				m.editInput(v)
+			}
+			return m, nil
+		case modeClaimsActionPreview:
+			preview := m.Claims.actionPreview
+			if preview == nil {
+				return m, nil
+			}
+			switch key {
+			case "enter", "y":
+				action := *preview
+				m.Claims.actionPreview = nil
+				return m.dispatchClaimsAction(action)
+			case "esc", "n":
+				m.Claims.actionPreview = nil
+				if preview.Action == ClaimsActionRelease {
+					m.Claims.Notice = "Release cancelled; no request sent"
+				} else {
+					m.Claims.Notice = "Renewal cancelled; no request sent"
+				}
 			}
 			return m, nil
 		case modeCancel:
@@ -1858,8 +1913,8 @@ func sameResources(a, b []string) bool {
 // requestQuit refuses exit while a request outcome is pending and shows the
 // exit consequences whenever claims or recovery state remain.
 func (m Model) requestQuit() (tea.Model, tea.Cmd) {
-	if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching || m.Writing || m.WriteLoading {
-		m.Notice = "Wait for claim, launch, or write request outcome before exiting"
+	if m.Claiming || m.ClaimLoading || m.Cancelling || m.Launching || m.Writing || m.WriteLoading || m.Claims.mutating {
+		m.Notice = "Wait for claim, launch, write, or Claims action outcome before exiting"
 		return m, nil
 	}
 	if len(m.OwnedClaims) > 0 || m.UncertainWrite || len(m.Recovery) > 0 || m.RecoveryError != "" {

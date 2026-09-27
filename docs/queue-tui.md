@@ -70,7 +70,11 @@ The Claims tab lists every claim on the authority, including claims held by othe
             worklease TASK-126                     brett               expired
 ```
 
-`m` shows only your claims, `e` shows only claims about to expire, `/` filters by resource prefix, and `esc` clears the filters.
+`m` shows claims with your agent identity (not proof of ownership), `e` shows claims about to expire, `/` filters by resource prefix, and `esc` clears the filters. An eligible contextual or MCP handle under the current Worklease home marks its claim in the list; detail shows its kind and path. Browse and filter without sending private credentials to the authority.
+
+`u` renews an eligible active claim for the default TTL; `R` releases it with a reason (default `released`). Both show a preview of the authority, claim, resources, handle, expiry, and effect. Only explicit confirmation dispatches. Dismissing the preview, navigating, or refreshing never mutates a claim. Release frees the resources and removes the handle; renewal updates the displayed expiry immediately.
+
+Actions are unavailable when the claim is not held by a discoverable handle here, the authority or remote restore ID differs, or the handle is pending/recovering. Use `worklease heartbeat --handle PATH` or `worklease release --handle PATH` for manual recovery and for handles outside the discoverable contextual/MCP directory; explicitly supplied token files remain CLI-only. Queue-owned handles under `queue-handles` must be managed from the item (`i`) or `worklease queue` because their lifecycle also updates the provider. For live supervised runs, use `worklease runs stop` so the supervisor owns heartbeat and release. Public holder identity alone never makes a claim eligible. If an outcome is uncertain, the handle stays pending; recover with the exact CLI command shown by the TUI.
 
 ## Keys
 
@@ -83,5 +87,6 @@ The Claims tab lists every claim on the authority, including claims held by othe
 | `/`, `esc` | Filter loaded rows, clear |
 | `d` | Show or hide done items |
 | `r`, `:`, `q` | Refresh, command palette, quit |
+| `u`, `R` (Claims) | Preview renewal or release of an eligible private-handle claim |
 
 The mouse works too: click a row to select it, click it again to open it, click a tab to switch, and use the wheel to scroll.

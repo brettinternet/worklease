@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -32,7 +33,7 @@ func queueClaimsCommand(s *boundary) *urfave.Command {
 		Name:      "claims",
 		Usage:     "browse current authority claims in the TUI",
 		UsageText: "worklease queue claims [--high-contrast]",
-		Description: "Open the TUI directly on the read-only, authority-wide Claims tab. " +
+		Description: "Open the TUI directly on the authority-wide Claims tab. Eligible locally held claims can be renewed or released. " +
 			"This view lists claims independently of loaded queue items.\n\nExamples:\n  worklease queue claims",
 	}
 	command.Action = func(ctx context.Context, cmd *urfave.Command) error {
@@ -63,6 +64,16 @@ func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary, n
 	}
 	model := newClaimsOnlyModel(fmt.Sprintf("%s %s", backend.ProfileName, backend.AuthorityID()), scope, cmd.Bool("high-contrast"), notice)
 	configureClaimsTab(&model, backend, ctx, backend.Config.SessionID)
+	// Browsing must not create a local store in a fresh home. Open a writable
+	// authority only after confirmation, and reselect it at dispatch time.
+	model.Claims.Mutate = func(actionCtx context.Context, claim lease.ClaimView, selected queueui.ClaimsHandle, reasonText string, release bool) (lease.ClaimView, error) {
+		writer, err := authorityFor(actionCtx, cmd, true)
+		if err != nil {
+			return lease.ClaimView{}, err
+		}
+		defer writer.Close()
+		return mutateClaimsHandle(actionCtx, writer, claim, selected, release, reasonText)
+	}
 	program := tea.NewProgram(model, tea.WithOutput(s.writer), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = program.Run()
 	return err
@@ -91,6 +102,17 @@ func configureClaimsTab(model *queueui.Model, backend *authorityContext, ctx con
 	model.Claims.LoadHistory = func(claimID, resource, cursor string) tea.Cmd {
 		return queueui.ClaimHistoryCmd(ctx, backend.API, claimID, resource, cursor)
 	}
+	model.Claims.ResolveHandles = func(claims []lease.ClaimView) map[string]queueui.ClaimsHandle {
+		restoreID := ""
+		if backend.Profile != nil {
+			restoreID = backend.Profile.RestoreID
+		}
+		return claimsHandleIndex(backend.Config.Home, backend.AuthorityID(), restoreID, claims, backend.ProfileName)
+	}
+	model.Claims.Mutate = func(actionCtx context.Context, claim lease.ClaimView, selected queueui.ClaimsHandle, reasonText string, release bool) (lease.ClaimView, error) {
+		return mutateClaimsHandle(actionCtx, backend, claim, selected, release, reasonText)
+	}
+	model.Claims.RenewTTL = backend.API.DefaultTTL()
 	model.Claims.Now = func() time.Time {
 		if backend.HTTP != nil {
 			if now, err := backend.HTTP.Clock().UpperBound(); err == nil {
