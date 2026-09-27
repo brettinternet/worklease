@@ -21,7 +21,7 @@ worklease  authority local 1cc38a84…  me @brett                               
 | `mine` | This queue holds the claim |
 | `agent@host` | Another session holds the claim |
 | `blocked` | A prerequisite is open |
-| `elsewhere` | Assigned to someone else |
+| `assigned to others` | Assigned only to other people; the Assigned column and detail name them |
 | `ready ⠋` | Last known state from the cache; being reread now |
 | `ready (stale)` | Last known state; the reread failed, so `r` retries |
 | `deps unknown`, `claim unknown`, `stale` | Not known yet; `r` refreshes |

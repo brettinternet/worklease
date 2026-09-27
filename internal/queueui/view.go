@@ -933,14 +933,17 @@ func (p *palette) stateStyle(state queue.StateCategory) lipgloss.Style {
 	return lipgloss.NewStyle()
 }
 
-var readyAliases = map[string]string{"assigned elsewhere": "elsewhere", "unknown dependencies": "deps unknown"}
+var readyAliases = map[string]string{"unknown dependencies": "deps unknown"}
 
 // readyCell answers "can I pick this up?" in one list column: ready, or
-// why not. A claimed item names its holder.
+// why not. A claimed item names its holder; assignees have their own column.
 func (m Model) readyCell(i queue.Item) (string, lipgloss.Style) {
 	text, style := m.readyState(i)
-	if text == "claimed" {
+	switch {
+	case text == "claimed":
 		return valueOr(clean(i.Claim.AgentID), text), style
+	case strings.HasPrefix(text, "assigned to "):
+		return "assigned to others", style
 	}
 	return text, style
 }
@@ -967,8 +970,8 @@ func (m Model) readyState(i queue.Item) (string, lipgloss.Style) {
 		return state, m.s().bad
 	case "claimed":
 		return state, m.s().held
-	case "assigned elsewhere":
-		return state, m.s().faint
+	case "assigned to others":
+		return "assigned to " + assignees(i), m.s().faint
 	case "stale", "unknown dependencies", "unknown":
 		return state, m.s().warn
 	}

@@ -1152,7 +1152,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	m.Scope = "remote"
 	m.anchor(m.rows())
 	wide := m.View()
-	for _, s := range []string{"authority team abcdef (remote)", "[All 2]", "Ready 0", "unknown dependencies", "assigned elsewhere", "Claim", "claims loading"} {
+	for _, s := range []string{"authority team abcdef (remote)", "[All 2]", "Ready 0", "unknown dependencies", "assigned to others", "Claim", "claims loading"} {
 		if !strings.Contains(wide, s) {
 			t.Errorf("wide view missing %q: %s", s, wide)
 		}
@@ -2050,6 +2050,25 @@ func TestDoneItemsHiddenUntilToggled(t *testing.T) {
 	m, _ = press(m, "d")
 	if rows, view := m.rows(), screenText(m.View()); len(rows) != 2 || !strings.Contains(view, "All 2") || strings.Contains(view, "done hidden") {
 		t.Fatalf("d did not show done items: rows=%d %s", len(rows), view)
+	}
+}
+
+func TestAssignedToOthersIgnoresCoAssignedItems(t *testing.T) {
+	t.Parallel()
+	snapshot := fixture()
+	ref := queue.Ref{SourceID: "a", ItemID: "1"}
+	item := snapshot.Items[ref.Key()]
+	item.Claim.Active = false
+	item.AssignedTo = []string{"other"}
+	snapshot.Items[ref.Key()] = item
+	m := New(snapshot)
+	m.Me = "@me"
+	if got, _ := m.readyState(item); got != "assigned to @other" {
+		t.Fatalf("readyState = %q", got)
+	}
+	item.AssignedTo = []string{"other", "@me"}
+	if got := m.displayState(item); got == "assigned to others" {
+		t.Fatalf("co-assigned item shown as assigned to others")
 	}
 }
 

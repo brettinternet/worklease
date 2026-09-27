@@ -2181,14 +2181,34 @@ func (m Model) displayState(i queue.Item) string {
 	if i.Claim.Active {
 		return "claimed"
 	}
-	if m.Me != "" || len(m.MeBySource[i.Ref.SourceID]) > 0 {
-		for _, name := range i.AssignedTo {
-			if !m.isMe(i, name) {
-				return "assigned elsewhere"
-			}
-		}
+	if m.assignedToOthers(i) {
+		return "assigned to others"
 	}
 	return readiness(i)
+}
+
+// assignedToOthers reports whether the provider assigns the item only to
+// people other than the configured identity. Like queue next, an item is
+// still mine when I am one of several assignees.
+func (m Model) assignedToOthers(i queue.Item) bool {
+	if len(i.AssignedTo) == 0 || (m.Me == "" && len(m.MeBySource[i.Ref.SourceID]) == 0) {
+		return false
+	}
+	for _, name := range i.AssignedTo {
+		if m.isMe(i, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// assignees names an item's assignees as @handles.
+func assignees(i queue.Item) string {
+	names := make([]string, len(i.AssignedTo))
+	for n, name := range i.AssignedTo {
+		names[n] = "@" + strings.TrimPrefix(clean(name), "@")
+	}
+	return strings.Join(names, ",")
 }
 func spinnerTick(gen int) tea.Cmd {
 	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{gen} })
