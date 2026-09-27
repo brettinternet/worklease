@@ -54,10 +54,15 @@ func (m Model) claimColumns(rows, visible []lease.ClaimView, items map[string]qu
 			return items[c.ClaimID].Ref.ItemID, m.s().accent
 		}},
 		{title: "Claimed", min: 16, flex: true, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
+			label := shortResources(c.Resources)
+			style := lipgloss.NewStyle()
 			if item, ok := items[c.ClaimID]; ok {
-				return item.Title, lipgloss.NewStyle()
+				label = item.Title
 			}
-			return shortResources(c.Resources), lipgloss.NewStyle()
+			if m.claimActionEligible(c) {
+				return "* " + label, m.s().ready
+			}
+			return label, style
 		}},
 		{title: "Holder", min: 8, max: 28, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
 			if m.claimIsMine(c) {
@@ -116,6 +121,32 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 		}
 	}
 	return lines
+}
+
+func (m Model) claimsActionPreviewView(preview ClaimsActionPreview) dialogBox {
+	claim := preview.Claim
+	var body strings.Builder
+	if m.Authority != "" {
+		fmt.Fprintf(&body, "Authority %s · ID %s\n", clean(m.Authority), clean(claim.AuthorityID))
+	} else {
+		fmt.Fprintf(&body, "Authority %s\n", clean(claim.AuthorityID))
+	}
+	fmt.Fprintf(&body, "Claim ID %s\n", clean(claim.ClaimID))
+	for _, resource := range claim.Resources {
+		fmt.Fprintf(&body, "Resource %s\n", displayResource(resource))
+	}
+	fmt.Fprintf(&body, "Handle %s · %s\nCurrent expiry %s\n", clean(preview.Handle.Kind), clean(preview.Handle.Path), claimExpiryTimestamp(claim.ExpiresAt))
+	if preview.Action == ClaimsActionRelease {
+		fmt.Fprintf(&body, "Reason %s\nEffect resources become free and the private handle is removed.\n", clean(preview.Reason))
+		return m.dialog("Confirm claim release", strings.TrimRight(body.String(), "\n"), confirmKeys)
+	}
+	if m.Claims.RenewTTL > 0 {
+		projected := m.claimsNow().Add(m.Claims.RenewTTL)
+		fmt.Fprintf(&body, "Effect renew with default TTL %s; projected expiry around %s.\n", m.Claims.RenewTTL.Round(time.Second), projected.UTC().Format(time.RFC3339))
+	} else {
+		body.WriteString("Effect renew with the default TTL; projected expiry unavailable because the TTL was not provided.\n")
+	}
+	return m.dialog("Confirm claim renewal", strings.TrimRight(body.String(), "\n"), confirmKeys)
 }
 
 func (m Model) claimStateLabel(claim lease.ClaimView, now time.Time) string {
@@ -228,6 +259,9 @@ func (m Model) claimDetailPane(claim lease.ClaimView, width, height int) []strin
 	} else {
 		title = m.s().bold.Render(clip(shortResources(claim.Resources), width-1))
 	}
+	if m.claimActionEligible(claim) && m.Claims.Mutate != nil {
+		actions = append(actions, binding{"u", "renew"}, binding{"R", "release"})
+	}
 	tabs, _ := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab, width-1)
 	lines := []string{" " + title, " " + m.s().actionLine(actions, width-2), " " + tabs}
 	return append(lines, m.s().scrollWindow(m.claimDetailContent(claim, width), m.Claims.DetailOffset, height-len(lines))...)
@@ -263,6 +297,17 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 		if m.Claims.Stale {
 			add("Freshness", "stale \u00b7 "+valueOr(m.Claims.Error, "refresh unavailable"), m.s().warnBold)
 		}
+		handle := m.claimHandle(claim)
+		handleLabel := strings.TrimSpace(strings.Join([]string{handle.Kind, handle.Path}, " · "))
+		if handleLabel == "" {
+			handleLabel = "not found"
+		}
+		add("Handle", handleLabel, m.s().faint)
+		unavailable := m.claimActionUnavailable(claim)
+		if unavailable == "" {
+			unavailable = "u renew · R release"
+		}
+		add("Actions", unavailable, m.claimExpiryStyle(claim))
 		// Exact identifiers for CLI use, after the facts people scan for.
 		add("", "", plainStyle)
 		add("Session", valueOr(claim.SessionID, "unknown"), m.s().faint)

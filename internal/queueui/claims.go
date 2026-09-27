@@ -2,6 +2,7 @@ package queueui
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,11 +17,42 @@ const (
 	claimsEventLimit   = 100
 )
 
-// ClaimsReader is the public, read-only authority surface used by the Claims tab.
+// ClaimsReader supplies the public, read-only claims and history views.
 type ClaimsReader interface {
 	List(context.Context, string, *lease.RemoteActor) ([]lease.ClaimView, error)
 	Events(context.Context, string, int) (ledger.EventsPage, error)
 	History(context.Context, string, string, int, bool) (ledger.HistoryPage, error)
+}
+
+type ClaimsHandle struct {
+	Kind, Path, Unavailable string
+	Revision                int64
+	AuthorityID, RestoreID  string
+}
+
+func (h ClaimsHandle) available() bool {
+	return h.Kind != "" && h.Path != "" && h.Unavailable == ""
+}
+
+type ClaimsAction string
+
+const (
+	ClaimsActionRenew   ClaimsAction = "renew"
+	ClaimsActionRelease ClaimsAction = "release"
+)
+
+type ClaimsActionPreview struct {
+	Action ClaimsAction
+	Claim  lease.ClaimView
+	Handle ClaimsHandle
+	Reason string
+}
+
+type ClaimsMutationMsg struct {
+	Action  ClaimsAction
+	ClaimID string
+	Claim   lease.ClaimView
+	Err     error
 }
 
 type ClaimsState struct {
@@ -53,7 +85,17 @@ type ClaimsState struct {
 	HistoryError    string
 	Refresh         func(string) tea.Cmd
 	LoadHistory     func(string, string, string) tea.Cmd
+	ResolveHandles  func([]lease.ClaimView) map[string]ClaimsHandle
+	Mutate          func(context.Context, lease.ClaimView, ClaimsHandle, string, bool) (lease.ClaimView, error)
+	RenewTTL        time.Duration
 	Now             func() time.Time
+
+	handles              map[string]ClaimsHandle
+	actionPreview        *ClaimsActionPreview
+	releaseReasonInput   bool
+	mutating             bool
+	pendingMutation      *ClaimsActionPreview
+	refreshAfterMutation bool
 }
 
 type ClaimsRefreshMsg struct {
@@ -99,6 +141,12 @@ func ClaimHistoryCmd(ctx context.Context, reader ClaimsReader, claimID, resource
 }
 
 func (m *Model) applyClaimsRefresh(msg ClaimsRefreshMsg) tea.Cmd {
+	// A poll started before a mutation may finish after its definitive result.
+	// Discard that stale snapshot and let the queued post-mutation refresh run.
+	if m.Claims.refreshAfterMutation {
+		m.Claims.Loading = false
+		return nil
+	}
 	previous := m.Claims.Selected
 	m.Claims.Loading = false
 	if msg.ClaimsErr != nil {
@@ -106,6 +154,7 @@ func (m *Model) applyClaimsRefresh(msg ClaimsRefreshMsg) tea.Cmd {
 		m.Claims.Error = msg.ClaimsErr.Error()
 	} else {
 		m.Claims.Items = append([]lease.ClaimView(nil), msg.Claims...)
+		m.resolveClaimHandles()
 		m.Claims.Stale = false
 		m.Claims.Error = ""
 		m.Claims.LastUpdated = m.claimsNow()
@@ -156,6 +205,70 @@ func (m Model) claimsNow() time.Time {
 		return m.Claims.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (m *Model) resolveClaimHandles() {
+	if m.Claims.ResolveHandles == nil {
+		m.Claims.handles = nil
+		return
+	}
+	m.Claims.handles = m.Claims.ResolveHandles(append([]lease.ClaimView(nil), m.Claims.Items...))
+}
+
+func (m Model) claimHandle(claim lease.ClaimView) ClaimsHandle {
+	if handle, ok := m.Claims.handles[claim.ClaimID]; ok {
+		return handle
+	}
+	if m.Claims.ResolveHandles == nil {
+		return ClaimsHandle{Unavailable: "local handle discovery is unavailable"}
+	}
+	return ClaimsHandle{Unavailable: "no matching local private handle found"}
+}
+
+func claimsHandleUnavailable(claim lease.ClaimView, handle ClaimsHandle) string {
+	if handle.Unavailable != "" {
+		return handle.Unavailable
+	}
+	if handle.Kind == "" || handle.Path == "" {
+		return "no matching local private handle found"
+	}
+	if handle.AuthorityID != claim.AuthorityID {
+		return "authority mismatch"
+	}
+	if handle.RestoreID != claim.RestoreID {
+		return "restore ID mismatch"
+	}
+	if handle.Revision != claim.Revision {
+		return "claim revision mismatch"
+	}
+	return ""
+}
+
+func (m Model) claimActionEligible(claim lease.ClaimView) bool {
+	handle := m.claimHandle(claim)
+	return !m.Claims.Stale && claim.Active && (claim.ExpiresAt.IsZero() || claim.ExpiresAt.After(m.claimsNow())) && handle.available() && claimsHandleUnavailable(claim, handle) == ""
+}
+
+func (m Model) claimActionUnavailable(claim lease.ClaimView) string {
+	handle := m.claimHandle(claim)
+	if unavailable := claimsHandleUnavailable(claim, handle); unavailable != "" {
+		return unavailable
+	}
+	switch {
+	case m.Claims.Stale:
+		return "authority claim list is stale; refresh before acting"
+	case !claim.Active:
+		return "claim is not active"
+	case !claim.ExpiresAt.IsZero() && !claim.ExpiresAt.After(m.claimsNow()):
+		return "claim has expired"
+	}
+	if !handle.available() {
+		return "private handle is unavailable"
+	}
+	if m.Claims.Mutate == nil {
+		return "claim mutation is unavailable"
+	}
+	return ""
 }
 
 func (m Model) claimRows() []lease.ClaimView {
@@ -233,4 +346,113 @@ func (m Model) selectedClaim(rows []lease.ClaimView) (lease.ClaimView, bool) {
 		}
 	}
 	return lease.ClaimView{}, false
+}
+
+func (m Model) dispatchClaimsAction(preview ClaimsActionPreview) (tea.Model, tea.Cmd) {
+	if m.Claims.mutating {
+		m.Claims.Notice = "Claim action already in progress"
+		return m, nil
+	}
+	if m.Claims.Mutate == nil {
+		m.Claims.Notice = "Claim action unavailable: mutation callback is not configured"
+		return m, nil
+	}
+	if m.Claims.Selected != preview.Claim.ClaimID {
+		m.Claims.Notice = "Claim action preview expired because selection changed"
+		return m, nil
+	}
+	if _, ok := m.selectedClaim(m.claimRows()); !ok {
+		m.Claims.Notice = "Claim action preview expired because the claim is no longer listed"
+		return m, nil
+	}
+
+	m.Claims.mutating = true
+	m.Claims.pendingMutation = &preview
+	action := "renewing"
+	release := preview.Action == ClaimsActionRelease
+	if release {
+		action = "releasing"
+	}
+	m.Claims.Notice = "Revalidating and " + action + " claim…"
+	mutate := m.Claims.Mutate
+	return m, func() tea.Msg {
+		claim, err := mutate(context.Background(), preview.Claim, preview.Handle, preview.Reason, release)
+		return ClaimsMutationMsg{Action: preview.Action, ClaimID: preview.Claim.ClaimID, Claim: claim, Err: err}
+	}
+}
+
+func (m *Model) applyClaimsMutation(msg ClaimsMutationMsg) tea.Cmd {
+	pending := m.Claims.pendingMutation
+	if !m.Claims.mutating || pending == nil || pending.Action != msg.Action || pending.Claim.ClaimID != msg.ClaimID {
+		return nil
+	}
+	m.Claims.mutating = false
+	m.Claims.pendingMutation = nil
+	if msg.Err != nil {
+		m.resolveClaimHandles()
+		m.Claims.Notice = strings.ToUpper(string(msg.Action[:1])) + string(msg.Action[1:]) + ": " + msg.Err.Error()
+		return m.refreshClaimsAfterMutation()
+	}
+
+	previous := m.Claims.Selected
+	switch msg.Action {
+	case ClaimsActionRenew:
+		if msg.Claim.ClaimID != msg.ClaimID {
+			m.Claims.Notice = "Renew refused: mutation returned a different claim ID"
+			return nil
+		}
+		found := false
+		for index := range m.Claims.Items {
+			if m.Claims.Items[index].ClaimID == msg.ClaimID {
+				m.Claims.Items[index] = msg.Claim
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.Claims.Items = append(m.Claims.Items, msg.Claim)
+		}
+		m.resolveClaimHandles()
+		m.Claims.Notice = "Claim renewed · expires " + claimExpiryTimestamp(msg.Claim.ExpiresAt)
+	case ClaimsActionRelease:
+		m.Claims.Items = slices.DeleteFunc(m.Claims.Items, func(claim lease.ClaimView) bool { return claim.ClaimID == msg.ClaimID })
+		if m.Claims.handles != nil {
+			delete(m.Claims.handles, msg.ClaimID)
+		}
+		m.resolveClaimHandles()
+		m.Claims.Notice = "Claim released · resources are free"
+	default:
+		m.Claims.Notice = "Claim action result ignored: unknown action"
+		return nil
+	}
+	m.Claims.LastUpdated = m.claimsNow()
+	m.anchorClaims(m.claimRows(), max(1, m.frame(m.rows()).bodyHeight-1))
+	var history tea.Cmd
+	if m.Claims.Detail && m.Claims.Selected != previous {
+		m.Claims.History = ledger.HistoryPage{}
+		m.Claims.HistoryResource = ""
+		m.Claims.HistoryLoading = false
+		m.Claims.HistoryError = ""
+		history = m.loadSelectedClaimHistory(m.claimRows())
+	}
+	return tea.Batch(history, m.refreshClaimsAfterMutation())
+}
+
+func (m *Model) refreshClaimsAfterMutation() tea.Cmd {
+	if m.Claims.Refresh == nil {
+		return nil
+	}
+	if m.Claims.Loading {
+		m.Claims.refreshAfterMutation = true
+		return nil
+	}
+	m.Claims.Loading = true
+	return m.Claims.Refresh(m.Claims.Cursor)
+}
+
+func claimExpiryTimestamp(expiry time.Time) string {
+	if expiry.IsZero() {
+		return "unknown"
+	}
+	return expiry.UTC().Format(time.RFC3339)
 }

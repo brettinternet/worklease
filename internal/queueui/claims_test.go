@@ -168,8 +168,8 @@ func TestClaimsCorrelationJumpAndRemotePublicRendering(t *testing.T) {
 		t.Fatalf("history view leaked private session payload or hid lifecycle: %s", screen)
 	}
 	m.Help = true
-	if help := m.View(); !strings.Contains(help, "authority-wide") || strings.Contains(help, "release a verified") {
-		t.Fatalf("Claims help does not distinguish the read-only tab: %s", help)
+	if help := screenText(m.View()); !strings.Contains(help, "authority-wide") || !strings.Contains(help, "u preview renew") || !strings.Contains(help, "R release reason, preview") {
+		t.Fatalf("Claims help omits authority-wide claim actions: %s", help)
 	}
 	m.Help = false
 	m, _ = press(m, "i")
@@ -324,6 +324,328 @@ func TestClaimsFiltersMinePrefixExpiringAndStale(t *testing.T) {
 	m, _ = press(m, "s")
 	if got := m.claimRows(); len(got) != 1 || got[0].ClaimID != "mine" || m.claimStateLabel(got[0], now) != "stale" {
 		t.Fatalf("stale filter/status=%v", got)
+	}
+}
+
+func TestClaimsRenewPreviewConfirmationAndImmediateUpdate(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claim := lease.ClaimView{ClaimID: "claim-1", AuthorityID: "authority-1", Revision: 4, RestoreID: "restore-1", Resources: []string{"coordination:task"}, Active: true, ExpiresAt: now.Add(5 * time.Minute)}
+	handle := ClaimsHandle{Kind: "contextual", Path: "/home/me/handles/ctx-claim.json", Revision: 4, AuthorityID: "authority-1", RestoreID: "restore-1"}
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Width, m.Height = 160, 30
+	m.Claims.Items = []lease.ClaimView{claim}
+	m.Claims.Selected = claim.ClaimID
+	m.Claims.Now = func() time.Time { return now }
+	m.Claims.RenewTTL = 15 * time.Minute
+	resolveCalls := 0
+	m.Claims.ResolveHandles = func(claims []lease.ClaimView) map[string]ClaimsHandle {
+		resolveCalls++
+		resolved := handle
+		if len(claims) > 0 {
+			resolved.Revision = claims[0].Revision
+		}
+		return map[string]ClaimsHandle{claim.ClaimID: resolved}
+	}
+	updated, _ := m.Update(ClaimsRefreshMsg{Claims: []lease.ClaimView{claim}})
+	m = updated.(Model)
+	if resolveCalls != 1 {
+		t.Fatalf("local handle resolver calls=%d, want one on refresh", resolveCalls)
+	}
+	calls := 0
+	m.Claims.Mutate = func(ctx context.Context, expected lease.ClaimView, expectedHandle ClaimsHandle, reason string, release bool) (lease.ClaimView, error) {
+		calls++
+		if ctx == nil || expected.ClaimID != claim.ClaimID || expectedHandle != handle || reason != "" || release {
+			t.Fatalf("renew callback arguments: ctx=%v claim=%+v handle=%+v reason=%q release=%t", ctx, expected, expectedHandle, reason, release)
+		}
+		expected.Revision++
+		expected.ExpiresAt = now.Add(15 * time.Minute)
+		return expected, nil
+	}
+
+	if screen := screenText(m.View()); !strings.Contains(screen, "* coordination:task") {
+		t.Fatalf("eligible claim row lacks handle marker: %s", screen)
+	}
+	m.Claims.Detail = true
+	if screen := screenText(m.View()); !strings.Contains(screen, "ctx-claim.json") || !strings.Contains(screen, "u renew") || !strings.Contains(screen, "R release") {
+		t.Fatalf("eligible claim detail lacks handle or action keys: %s", screen)
+	}
+	m.Claims.Detail = false
+	m, cmd := press(m, "u")
+	if cmd != nil || m.Claims.actionPreview == nil || calls != 0 {
+		t.Fatalf("renew key dispatched without preview: cmd=%t preview=%+v calls=%d", cmd != nil, m.Claims.actionPreview, calls)
+	}
+	preview := screenText(m.View())
+	for _, text := range []string{"authority-1", "claim-1", "coordination:task", handle.Path, claim.ExpiresAt.Format(time.RFC3339), "default TTL 15m0s", now.Add(15 * time.Minute).Format(time.RFC3339)} {
+		if !strings.Contains(preview, text) {
+			t.Errorf("renew preview omitted %q: %s", text, preview)
+		}
+	}
+	m, cmd = press(m, "enter")
+	if cmd == nil || !m.Claims.mutating || calls != 0 || m.Claims.Items[0].Revision != claim.Revision {
+		t.Fatalf("renew confirmation did not defer dispatch to command: cmd=%t busy=%t calls=%d claim=%+v", cmd != nil, m.Claims.mutating, calls, m.Claims.Items[0])
+	}
+	result, ok := cmd().(ClaimsMutationMsg)
+	if !ok || result.Err != nil {
+		t.Fatalf("renew callback result=%#v", result)
+	}
+	updated, refresh := m.Update(result)
+	m = updated.(Model)
+	if refresh != nil || m.Claims.mutating || len(m.Claims.Items) != 1 || m.Claims.Items[0].Revision != 5 || !m.Claims.Items[0].ExpiresAt.Equal(now.Add(15*time.Minute)) || m.Claims.Selected != claim.ClaimID || resolveCalls != 2 || m.Claims.handles[claim.ClaimID].Revision != 5 {
+		t.Fatalf("renew result not applied immediately: state=%+v refresh=%t handle resolutions=%d", m.Claims, refresh != nil, resolveCalls)
+	}
+	m.Help = true
+	if help := screenText(m.View()); !strings.Contains(help, "u preview renew") || !strings.Contains(help, "R release reason, preview") {
+		t.Fatalf("Claims help omits action keys: %s", help)
+	}
+}
+
+func TestClaimsReleaseReasonPreviewAndNeighborSelection(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claims := []lease.ClaimView{
+		{ClaimID: "first", AuthorityID: "authority-1", Revision: 1, Resources: []string{"resource:first"}, Active: true, ExpiresAt: now.Add(time.Hour)},
+		{ClaimID: "next", AuthorityID: "authority-1", Revision: 2, Resources: []string{"resource:next"}, Active: true, ExpiresAt: now.Add(time.Hour)},
+	}
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Width, m.Height = 160, 30
+	m.Claims.Items = claims
+	m.Claims.Selected, m.Claims.Detail = "first", true
+	m.Claims.Now = func() time.Time { return now }
+	m.Claims.handles = map[string]ClaimsHandle{
+		"first": {Kind: "MCP", Path: "/home/me/handles/mcp-first.json", Revision: 1, AuthorityID: "authority-1"},
+		"next":  {Unavailable: "not held here"},
+	}
+	calls := 0
+	m.Claims.Mutate = func(_ context.Context, claim lease.ClaimView, handle ClaimsHandle, reason string, release bool) (lease.ClaimView, error) {
+		calls++
+		if claim.ClaimID != "first" || handle.Path != "/home/me/handles/mcp-first.json" || reason != "released" || !release {
+			t.Fatalf("release callback arguments: claim=%+v handle=%+v reason=%q release=%t", claim, handle, reason, release)
+		}
+		return lease.ClaimView{}, nil
+	}
+	m, cmd := press(m, "R")
+	if cmd != nil || !m.Claims.releaseReasonInput || m.Input != "released" || calls != 0 {
+		t.Fatalf("release did not open reason input with default: cmd=%t input=%q calls=%d", cmd != nil, m.Input, calls)
+	}
+	if prompt := screenText(m.View()); !strings.Contains(prompt, "Reason recorded in claim history") || !strings.Contains(prompt, "released") {
+		t.Fatalf("release reason prompt missing default: %s", prompt)
+	}
+	m, cmd = press(m, "enter")
+	if cmd != nil || m.Claims.releaseReasonInput || m.Claims.actionPreview == nil || calls != 0 {
+		t.Fatalf("reason submission skipped confirmation: cmd=%t preview=%+v calls=%d", cmd != nil, m.Claims.actionPreview, calls)
+	}
+	preview := screenText(m.View())
+	for _, text := range []string{"authority-1", "first", "resource:first", "/home/me/handles/mcp-first.json", "Current expiry", "Reason released", "resources become free", "private handle is removed"} {
+		if !strings.Contains(preview, text) {
+			t.Errorf("release preview omitted %q: %s", text, preview)
+		}
+	}
+	m, cmd = press(m, "enter")
+	if cmd == nil || !m.Claims.mutating || calls != 0 {
+		t.Fatalf("release confirmation did not defer callback: cmd=%t busy=%t calls=%d", cmd != nil, m.Claims.mutating, calls)
+	}
+	result := cmd().(ClaimsMutationMsg)
+	updated, refresh := m.Update(result)
+	m = updated.(Model)
+	if refresh != nil || calls != 1 || m.Claims.mutating || len(m.Claims.Items) != 1 || m.Claims.Items[0].ClaimID != "next" || m.Claims.Selected != "next" {
+		t.Fatalf("release was not applied and selection moved to neighbor: claims=%+v selected=%q calls=%d refresh=%t", m.Claims.Items, m.Claims.Selected, calls, refresh != nil)
+	}
+}
+
+func TestClaimsMutationIgnoresOlderInflightPoll(t *testing.T) {
+	t.Parallel()
+	for _, action := range []ClaimsAction{ClaimsActionRenew, ClaimsActionRelease} {
+		t.Run(string(action), func(t *testing.T) {
+			t.Parallel()
+			old := lease.ClaimView{ClaimID: "claim", AuthorityID: "authority", Revision: 1, Resources: []string{"resource"}, Active: true, ExpiresAt: time.Now().Add(time.Minute)}
+			m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+			m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+			m.Claims.Items, m.Claims.Selected = []lease.ClaimView{old}, old.ClaimID
+			m.Claims.mutating = true
+			m.Claims.Loading = true // refresh began before confirmation
+			m.Claims.pendingMutation = &ClaimsActionPreview{Action: action, Claim: old}
+			calls := 0
+			m.Claims.Refresh = func(string) tea.Cmd {
+				calls++
+				return func() tea.Msg { return ClaimsRefreshMsg{Claims: nil} }
+			}
+			updated := old
+			updated.Revision = 2
+			updated.ExpiresAt = old.ExpiresAt.Add(time.Minute)
+			result, _ := m.Update(ClaimsMutationMsg{Action: action, ClaimID: old.ClaimID, Claim: updated})
+			m = result.(Model)
+			if !m.Claims.refreshAfterMutation || calls != 0 {
+				t.Fatalf("post-mutation refresh not queued: queued=%t calls=%d", m.Claims.refreshAfterMutation, calls)
+			}
+			result, _ = m.Update(ClaimsRefreshMsg{Claims: []lease.ClaimView{old}})
+			m = result.(Model)
+			if calls != 1 || m.Claims.refreshAfterMutation {
+				t.Fatalf("post-mutation refresh not started: calls=%d queued=%t", calls, m.Claims.refreshAfterMutation)
+			}
+			if action == ClaimsActionRelease {
+				if len(m.Claims.Items) != 0 {
+					t.Fatalf("stale poll restored released claim: %+v", m.Claims.Items)
+				}
+			} else if len(m.Claims.Items) != 1 || m.Claims.Items[0].Revision != 2 {
+				t.Fatalf("stale poll restored prior expiry: %+v", m.Claims.Items)
+			}
+		})
+	}
+}
+
+func TestClaimsActionDismissalDriftAndBusyQuit(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claim := lease.ClaimView{ClaimID: "claim", AuthorityID: "authority-1", Revision: 2, Resources: []string{"resource"}, Active: true, ExpiresAt: now.Add(time.Hour)}
+	handle := ClaimsHandle{Kind: "contextual", Path: "/home/me/handles/ctx-claim.json", Revision: 2, AuthorityID: "authority-1"}
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Claims.Items = []lease.ClaimView{claim}
+	m.Claims.Selected = claim.ClaimID
+	m.Claims.Now = func() time.Time { return now }
+	m.Claims.handles = map[string]ClaimsHandle{claim.ClaimID: handle}
+	calls := 0
+	m.Claims.Mutate = func(_ context.Context, expected lease.ClaimView, expectedHandle ClaimsHandle, _ string, _ bool) (lease.ClaimView, error) {
+		calls++
+		if expected.Revision != 2 || expectedHandle.Revision != 2 {
+			t.Fatalf("dispatch lost preview snapshot: claim revision=%d handle revision=%d", expected.Revision, expectedHandle.Revision)
+		}
+		if m.Claims.Items[0].Revision != expected.Revision {
+			return lease.ClaimView{}, fmt.Errorf("claim revision changed from %d to %d", expected.Revision, m.Claims.Items[0].Revision)
+		}
+		return expected, nil
+	}
+	m, _ = press(m, "u")
+	m, _ = press(m, "esc")
+	if m.Claims.actionPreview != nil || calls != 0 {
+		t.Fatalf("renew dismissal mutated or retained preview: preview=%+v calls=%d", m.Claims.actionPreview, calls)
+	}
+	m, _ = press(m, "R")
+	m, _ = press(m, "esc")
+	if m.Claims.actionPreview != nil || m.Claims.releaseReasonInput || calls != 0 {
+		t.Fatalf("release dismissal mutated or retained state: preview=%+v input=%t calls=%d", m.Claims.actionPreview, m.Claims.releaseReasonInput, calls)
+	}
+	m, _ = press(m, "u")
+	m.Claims.Items[0].Revision++
+	m, cmd := press(m, "enter")
+	if cmd == nil || calls != 0 {
+		t.Fatalf("revision drift dispatched before command execution: cmd=%t calls=%d", cmd != nil, calls)
+	}
+	result := cmd().(ClaimsMutationMsg)
+	updated, _ := m.Update(result)
+	m = updated.(Model)
+	if calls != 1 || m.Claims.Items[0].Revision != 3 || !strings.Contains(m.Claims.Notice, "claim revision changed") {
+		t.Fatalf("drift refusal changed claim or lost cause: calls=%d state=%+v", calls, m.Claims)
+	}
+	m.Claims.mutating = true
+	updated, quit := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = updated.(Model)
+	if quit != nil || !strings.Contains(m.Notice, "Wait for") {
+		t.Fatalf("quit did not wait for Claims mutation: cmd=%t notice=%q", quit != nil, m.Notice)
+	}
+}
+
+func TestClaimsAmbiguousMutationKeepsRecoveryGuidance(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claim := lease.ClaimView{ClaimID: "claim", AuthorityID: "authority", Revision: 2, Resources: []string{"resource"}, Active: true, ExpiresAt: now.Add(time.Hour)}
+	path := "/home/me/handles/ctx-claim.json"
+	pending := false
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Claims.Items = []lease.ClaimView{claim}
+	m.Claims.Selected = claim.ClaimID
+	m.Claims.Now = func() time.Time { return now }
+	m.Claims.ResolveHandles = func([]lease.ClaimView) map[string]ClaimsHandle {
+		handle := ClaimsHandle{Kind: "contextual", Path: path, Revision: 2, AuthorityID: "authority"}
+		if pending {
+			handle.Unavailable = "pending; recover with worklease heartbeat --handle " + path
+		}
+		return map[string]ClaimsHandle{claim.ClaimID: handle}
+	}
+	m.Claims.Mutate = func(context.Context, lease.ClaimView, ClaimsHandle, string, bool) (lease.ClaimView, error) {
+		pending = true
+		return lease.ClaimView{}, fmt.Errorf("outcome uncertain; recover with worklease heartbeat --handle %s", path)
+	}
+	updated, _ := m.Update(ClaimsRefreshMsg{Claims: []lease.ClaimView{claim}})
+	m = updated.(Model)
+	m, _ = press(m, "u")
+	m, cmd := press(m, "enter")
+	if cmd == nil {
+		t.Fatal("confirmation did not dispatch mutation")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if !strings.Contains(m.Claims.Notice, "outcome uncertain") || !strings.Contains(m.Claims.Notice, "worklease heartbeat --handle "+path) || strings.Contains(m.Claims.Notice, "Claim renewed") {
+		t.Fatalf("ambiguous result was reported incorrectly: %q", m.Claims.Notice)
+	}
+	if got := m.claimActionUnavailable(claim); !strings.Contains(got, "pending") || !strings.Contains(got, path) {
+		t.Fatalf("pending handle recovery guidance not refreshed: %q", got)
+	}
+}
+
+func TestClaimsHandleMetadataMismatchExplainsUnavailableActions(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claim := lease.ClaimView{ClaimID: "claim", AuthorityID: "authority-1", RestoreID: "restore-1", Revision: 4, Active: true, ExpiresAt: now.Add(time.Hour)}
+	for _, test := range []struct {
+		name, want string
+		handle     ClaimsHandle
+	}{
+		{"authority", "authority mismatch", ClaimsHandle{Kind: "contextual", Path: "/handle", Revision: 4, AuthorityID: "authority-2", RestoreID: "restore-1"}},
+		{"restore", "restore ID mismatch", ClaimsHandle{Kind: "contextual", Path: "/handle", Revision: 4, AuthorityID: "authority-1", RestoreID: "restore-2"}},
+		{"revision", "claim revision mismatch", ClaimsHandle{Kind: "contextual", Path: "/handle", Revision: 3, AuthorityID: "authority-1", RestoreID: "restore-1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+			m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+			m.Claims.Items = []lease.ClaimView{claim}
+			m.Claims.Selected = claim.ClaimID
+			m.Claims.Now = func() time.Time { return now }
+			m.Claims.handles = map[string]ClaimsHandle{claim.ClaimID: test.handle}
+			if m.claimActionEligible(claim) || m.claimActionUnavailable(claim) != test.want {
+				t.Fatalf("handle mismatch action eligibility=%t reason=%q, want %q", m.claimActionEligible(claim), m.claimActionUnavailable(claim), test.want)
+			}
+			m.Claims.Mutate = func(context.Context, lease.ClaimView, ClaimsHandle, string, bool) (lease.ClaimView, error) {
+				t.Fatal("mismatched handle must not dispatch")
+				return lease.ClaimView{}, nil
+			}
+			m, cmd := press(m, "u")
+			if cmd != nil || m.Claims.actionPreview != nil || !strings.Contains(m.Claims.Notice, test.want) {
+				t.Fatalf("mismatched handle action not refused: cmd=%t preview=%+v notice=%q", cmd != nil, m.Claims.actionPreview, m.Claims.Notice)
+			}
+		})
+	}
+}
+
+func TestClaimsMatchingHolderIdentityDoesNotEnableUnownedActions(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	claim := lease.ClaimView{ClaimID: "foreign", AuthorityID: "authority", AgentID: "same-agent", SessionID: "same-session", Resources: []string{"resource"}, Active: true, ExpiresAt: now.Add(time.Hour)}
+	m := New(queue.Snapshot{Items: map[string]queue.Item{}})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Claims.MineAgentID, m.Claims.MineSessionID = claim.AgentID, claim.SessionID
+	m.Claims.Now = func() time.Time { return now }
+	m.Claims.Detail = true
+	m.Claims.ResolveHandles = func([]lease.ClaimView) map[string]ClaimsHandle {
+		return map[string]ClaimsHandle{claim.ClaimID: {Unavailable: "not held here"}}
+	}
+	m.Claims.Mutate = func(context.Context, lease.ClaimView, ClaimsHandle, string, bool) (lease.ClaimView, error) {
+		t.Fatal("matching public identity must not dispatch a mutation")
+		return lease.ClaimView{}, nil
+	}
+	updated, _ := m.Update(ClaimsRefreshMsg{Claims: []lease.ClaimView{claim}})
+	m = updated.(Model)
+	if screen := screenText(m.View()); !strings.Contains(screen, "Actions not held here") || strings.Contains(screen, "* resource") {
+		t.Fatalf("public identity enabled or hid the unavailable handle reason: %s", screen)
+	}
+	m, cmd := press(m, "u")
+	if cmd != nil || m.Claims.actionPreview != nil || !strings.Contains(m.Claims.Notice, "not held here") {
+		t.Fatalf("unowned action not refused: cmd=%t preview=%+v notice=%q", cmd != nil, m.Claims.actionPreview, m.Claims.Notice)
 	}
 }
 

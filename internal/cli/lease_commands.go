@@ -868,32 +868,44 @@ func heartbeatActionReal(s *boundary) func(context.Context, *urfave.Command) err
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		inputs := map[string]any{"kind": "heartbeat", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
-		bindPendingHold(inputs, pending)
-		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs), lk); recovering {
-			if e != nil {
-				return s.handle(cmd, e)
-			}
-			if e = finishHandleMutation(hp, h, r, lk); e != nil {
-				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
-			}
-			return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
-		}
-		if err := beginHandleMutation(hp, h, "heartbeat", op, deadline, inputs, lk); err != nil {
-			return s.handle(cmd, err)
-		}
-		r, err := svc.Heartbeat(ctx, c, lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline})
+		r, err := heartbeatHandle(ctx, svc, c, hp, h, lk, deadline, ttl, op)
 		if err != nil {
-			if isDefinitiveNoCommit(err) {
-				clearPending(hp, h, lk)
-			}
-			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
-		}
-		if err := finishHandleMutation(hp, h, r, lk); err != nil {
-			return s.handle(cmd, committedHandleFailure(err, r, hp, c.ClaimID, op))
+			return s.handle(cmd, err)
 		}
 		return writeLeaseResult(s, cmd, "heartbeat", map[string]any{"receipt": r})
 	}
+}
+
+// heartbeatHandle is the handle-backed lifecycle core shared by CLI and Claims.
+// The caller owns any local handle lock and selects the request deadline and ID.
+func heartbeatHandle(ctx context.Context, svc commandAuthority, c lease.Credentials, hp string, h *handle.Handle, lk *handle.Lock, deadline time.Time, ttl time.Duration, op string) (lease.Receipt, error) {
+	inputs := map[string]any{"kind": "heartbeat", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "requestNotAfter": deadline.UTC().UnixMicro()}
+	if h != nil {
+		bindPendingHold(inputs, h.PendingRequest)
+	}
+	if r, recovering, err := recoverPendingMutation(ctx, svc, c, hp, h, "heartbeat", requestHashCLI(inputs), lk); recovering {
+		if err != nil {
+			return lease.Receipt{}, err
+		}
+		if err := finishHandleMutation(hp, h, r, lk); err != nil {
+			return lease.Receipt{}, committedHandleFailure(err, r, hp, c.ClaimID, r.OperationID)
+		}
+		return r, nil
+	}
+	if err := beginHandleMutation(hp, h, "heartbeat", op, deadline, inputs, lk); err != nil {
+		return lease.Receipt{}, err
+	}
+	r, err := svc.Heartbeat(ctx, c, lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline})
+	if err != nil {
+		if isDefinitiveNoCommit(err) {
+			clearPending(hp, h, lk)
+		}
+		return lease.Receipt{}, mutationFailure(err, c.ClaimID, op, hp)
+	}
+	if err := finishHandleMutation(hp, h, r, lk); err != nil {
+		return lease.Receipt{}, committedHandleFailure(err, r, hp, c.ClaimID, op)
+	}
+	return r, nil
 }
 func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
@@ -1030,39 +1042,50 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		inputs := map[string]any{"kind": "release", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()}
-		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "release", requestHashCLI(inputs), lk); recovering {
-			if e != nil {
-				return s.handle(cmd, e)
-			}
-			if e = lk.Remove(hp); e != nil {
-				return s.handle(cmd, committedHandleFailure(e, r, hp, c.ClaimID, r.OperationID))
-			}
-			return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
-		}
-		if err := beginHandleMutation(hp, h, "release", op, deadline, inputs, lk); err != nil {
-			return s.handle(cmd, err)
-		}
-		r, err := svc.Release(ctx, c, lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
+		r, err := releaseHandle(ctx, svc, c, hp, h, lk, deadline, reasonText, op)
 		if err != nil {
-			if isDefinitiveNoCommit(err) {
-				clearPending(hp, h, lk)
-			}
-			return s.handle(cmd, mutationFailure(err, c.ClaimID, op, hp))
-		}
-		if h != nil {
-			var removeErr error
-			if lk != nil {
-				removeErr = lk.Remove(hp)
-			} else {
-				removeErr = handle.Remove(hp)
-			}
-			if removeErr != nil {
-				return s.handle(cmd, committedHandleFailure(removeErr, r, hp, c.ClaimID, op))
-			}
+			return s.handle(cmd, err)
 		}
 		return writeLeaseResult(s, cmd, "release", map[string]any{"receipt": r})
 	}
+}
+
+func releaseHandle(ctx context.Context, svc commandAuthority, c lease.Credentials, hp string, h *handle.Handle, lk *handle.Lock, deadline time.Time, reasonText, op string) (lease.Receipt, error) {
+	inputs := map[string]any{"kind": "release", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "reason": reasonText, "requestNotAfter": deadline.UTC().UnixMicro()}
+	if r, recovering, err := recoverPendingMutation(ctx, svc, c, hp, h, "release", requestHashCLI(inputs), lk); recovering {
+		if err != nil {
+			return lease.Receipt{}, err
+		}
+		if h != nil {
+			if err := removeMutatedHandle(hp, lk); err != nil {
+				return lease.Receipt{}, committedHandleFailure(err, r, hp, c.ClaimID, r.OperationID)
+			}
+		}
+		return r, nil
+	}
+	if err := beginHandleMutation(hp, h, "release", op, deadline, inputs, lk); err != nil {
+		return lease.Receipt{}, err
+	}
+	r, err := svc.Release(ctx, c, lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
+	if err != nil {
+		if isDefinitiveNoCommit(err) {
+			clearPending(hp, h, lk)
+		}
+		return lease.Receipt{}, mutationFailure(err, c.ClaimID, op, hp)
+	}
+	if h != nil {
+		if err := removeMutatedHandle(hp, lk); err != nil {
+			return lease.Receipt{}, committedHandleFailure(err, r, hp, c.ClaimID, op)
+		}
+	}
+	return r, nil
+}
+
+func removeMutatedHandle(path string, lk *handle.Lock) error {
+	if lk != nil {
+		return lk.Remove(path)
+	}
+	return handle.Remove(path)
 }
 func lockForPath(locks []*handle.Lock, path string) *handle.Lock {
 	for _, lock := range locks {

@@ -691,7 +691,7 @@ var helpGroups = []struct {
 	{"Mouse", []binding{{"click", "select row; click again to open"}, {"click tab", "switch view or detail section"}, {"wheel", "scroll list or detail"}, {"shift+drag", "select text (option+drag in iTerm2)"}}},
 }
 
-var claimsHelp = []binding{{"enter", "show holder, session, expiry, checkpoint"}, {"/", "filter by resource prefix"}, {"m", "toggle mine / all"}, {"e", "toggle expiring"}, {"s", "toggle stale"}, {"i", "show the claimed queue item"}, {"r", "refresh"}, {"esc", "close detail, then clear filters"}, {"q", "quit"}}
+var claimsHelp = []binding{{"*", "handle found; holder identity is not proof"}, {"u", "preview renew; default TTL"}, {"R", "release reason, preview, then confirm"}, {"not held", "no matching handle in this home"}, {"queue-owned", "i / worklease queue; managed there"}, {"supervised", "worklease runs stop; supervisor owns it"}, {"pending", "worklease heartbeat|release --handle PATH"}, {"mismatch", "authority or restore ID differs"}, {"enter", "show holder, expiry, checkpoint, handle"}, {"/", "filter by resource prefix"}, {"m", "toggle mine / all"}, {"e", "toggle expiring"}, {"s", "toggle stale"}, {"i", "show the claimed queue item"}, {"r", "refresh"}, {"esc", "close detail, then clear filters"}, {"q", "quit"}}
 
 var recoveryHelp = []binding{{"r", "retry read-back"}, {"e", "attest with audit evidence"}, {"u", "reload the journal"}, {"q", "quit"}}
 
@@ -706,7 +706,7 @@ func (m Model) helpLines() []string {
 	var groups [][]string
 	switch m.ViewName {
 	case ClaimsViewID:
-		groups = append(groups, group("Claims · authority-wide, read-only", claimsHelp))
+		groups = append(groups, group("Claims · authority-wide", claimsHelp))
 	case RecoveryViewID:
 		groups = append(groups, group("Recovery", recoveryHelp))
 	}
@@ -1591,6 +1591,12 @@ func (m Model) dialogView() (dialogBox, bool) {
 		return m.dialog("Select configured provider transition", strings.TrimRight(b.String(), "\n"), []binding{{"j/k", "select"}, {"enter", "preview"}, {"esc", "dismiss"}}), true
 	case modeWriteInput:
 		return m.dialog("Progress note (provider append)", m.Input+"▏", []binding{{"enter", "preview"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}), true
+	case modeClaimsReleaseReason:
+		return m.dialog("Release reason", "Reason recorded in claim history\n\n"+m.Input+"▏", []binding{{"enter", "review preview"}, {"ctrl+u", "clear"}, {"esc", "cancel"}}), true
+	case modeClaimsActionPreview:
+		if m.Claims.actionPreview != nil {
+			return m.claimsActionPreviewView(*m.Claims.actionPreview), true
+		}
 	case modeRecoveryEvidence:
 		prompt := "Type NO COMMIT; EXECUTOR STOPPED: followed by provider audit evidence."
 		if m.RecoveryEvidenceEntry.Status == "checkpoint-pending" {
