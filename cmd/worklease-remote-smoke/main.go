@@ -1872,7 +1872,7 @@ func (h *harness) serverConfig(home string, prefixes []string, maxTTL, maxHold s
 	for _, prefix := range prefixes {
 		fmt.Fprintf(&admitted, "  - %q\n", prefix)
 	}
-	return fmt.Sprintf("home: %s\nlisten: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n%smaxTTL: %s\nmaxHold: %s\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", home, listen, cert, key, admitted.String(), maxTTL, maxHold)
+	return fmt.Sprintf("home: %s\nlisten: %s\nadvertisedEndpoint: %s\ntlsCert: %s\ntlsKey: %s\nadmittedPrefixes:\n%smaxTTL: %s\nmaxHold: %s\nshutdownTimeout: 2s\nhealthRate: 100\nmetadataRate: 100\nenrollmentRate: 100\n", home, listen, h.endpoint, cert, key, admitted.String(), maxTTL, maxHold)
 }
 
 func (h *harness) writeServerConfig(prefixes []string, maxTTL, maxHold string) error {

@@ -214,6 +214,15 @@ func TestHarnessDeadlineNamesRunningStep(t *testing.T) {
 	}
 }
 
+func TestRemoteServerConfigAdvertisesEndpoint(t *testing.T) {
+	t.Parallel()
+	h := harness{endpoint: "https://127.0.0.1:4321", remotePort: 4321, remoteCert: "/tmp/server.crt", remoteKey: "/tmp/server.key", realHost: true}
+	config := h.serverConfig("/tmp/server", []string{"coordination:"}, "5s", "1h")
+	if !strings.Contains(config, "listen: 0.0.0.0:4321\n") || !strings.Contains(config, "advertisedEndpoint: https://127.0.0.1:4321\n") {
+		t.Fatalf("remote config must advertise a concrete endpoint for wildcard listener:\n%s", config)
+	}
+}
+
 func TestNormalizeGoTarget(t *testing.T) {
 	for _, test := range []struct{ osName, archName, goos, goarch string }{
 		{"Linux\n", "aarch64\n", "linux", "arm64"},
