@@ -4,9 +4,10 @@ title: Let a repository propose queue sources for the user to adopt
 status: Done
 assignee: []
 created_date: '2026-09-27 05:56'
-updated_date: '2026-09-27 07:03'
+updated_date: '2026-09-27 16:40'
 labels:
   - work-queue
+  - reviewed
 dependencies: []
 references:
   - internal/cli/queue_init.go

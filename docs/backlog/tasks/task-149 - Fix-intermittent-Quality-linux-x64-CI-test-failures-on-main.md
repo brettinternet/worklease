@@ -5,10 +5,11 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-26 16:49'
-updated_date: '2026-09-27 05:54'
+updated_date: '2026-09-27 16:40'
 labels:
   - testing
   - ci
+  - reviewed
 dependencies: []
 priority: high
 ordinal: 83000

@@ -4,8 +4,9 @@ title: Renew and release owned claims from the Claims TUI
 status: Done
 assignee: []
 created_date: '2026-09-27 01:08'
-updated_date: '2026-09-27 03:05'
-labels: []
+updated_date: '2026-09-27 16:40'
+labels:
+  - reviewed
 dependencies: []
 references:
   - internal/queueui/claims_keys.go

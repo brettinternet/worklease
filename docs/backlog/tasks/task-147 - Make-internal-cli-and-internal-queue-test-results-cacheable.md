@@ -5,9 +5,10 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-26 16:28'
-updated_date: '2026-09-26 23:44'
+updated_date: '2026-09-27 16:40'
 labels:
   - testing
+  - reviewed
 dependencies: []
 priority: medium
 ordinal: 81000
@@ -39,10 +40,12 @@ Go cache diagnostics showed clean cache hits for internal/cli and internal/queue
 Two consecutive unchanged `mise run test` runs completed; the second printed (cached) for internal/cli and internal/queue. `mise exec -- go test -race -count=3 -run "TestHomeAndEnvironmentArePrivateAndProcessIsolated|TestIsolateProcessEnvironmentRemovesHostileConfiguration" ./internal/testkit` passed. No source changes were needed. Review: the exact acceptance behavior is already present; no scoped defect remains.
 
 Delivery: commit d097212 (task verification record) fast-forward merged into local main. No push requested. Next step: none; both criteria verified and source code unchanged.
+
+Post-completion review found that two CLI setup tests changed the parent test process cwd, creating per-run Go cache inputs. Isolated both using existing testkit.RunIsolatedTest in a worktree (a6143f2), merged to main. Focused race -count=3 and staged hooks passed; two unchanged mise run test invocations now report (cached) for internal/cli and internal/queue. No further scoped follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Verified both test packages are cached on the second identical mise run test; retained existing per-test home and process isolation, confirmed with repeated race tests. No source change required.
+Both packages reuse cached results on the second unchanged mise run test. A post-completion review found two CLI setup tests invalidating the cache by changing the parent cwd; isolated them with testkit.RunIsolatedTest (a6143f2). Focused race tests, staged hooks, and two full test runs passed.
 <!-- SECTION:FINAL_SUMMARY:END -->
