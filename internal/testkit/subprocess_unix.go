@@ -82,9 +82,12 @@ func RunIsolatedTest(t *testing.T) bool {
 			timeout = remaining
 		}
 	}
+	overrides := map[string]string{isolatedTestEnvironment: name}
+	if providerTests {
+		overrides[providerTestsVariable] = "1"
+	}
 	result, err := runTestBinary(ProcessResult{Helper: name, ExitCode: -1}, timeout,
-		[]string{"-test.run=" + selector, "-test.v"},
-		map[string]string{isolatedTestEnvironment: name})
+		[]string{"-test.run=" + selector, "-test.v"}, overrides)
 	if err != nil {
 		t.Fatalf("isolated test %s: %v\n%s%s", name, err, result.Stdout, result.Stderr)
 	}

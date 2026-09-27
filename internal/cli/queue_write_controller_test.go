@@ -304,13 +304,10 @@ func TestQueueWriteControllerPreviewsAndVerifiesBacklogMutation(t *testing.T) {
 	if isolateCLIProcess(t) {
 		return
 	}
-	binary, err := exec.LookPath("backlog")
-	if err != nil {
-		t.Skip("backlog CLI unavailable")
-	}
-	if _, err := exec.Command(binary, "--version").Output(); err != nil {
-		t.Skip("backlog CLI cannot run")
-	}
+	// The controller is under test; internal/queue covers the adapter against
+	// the real Backlog.md CLI, and testkit checks this fake against it.
+	binary := filepath.Join(testkit.FakeBacklog(t), "backlog")
+	t.Setenv("PATH", filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	claimItem := queueClaimItem("tasks", "TASK-1")

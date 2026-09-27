@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,33 +38,79 @@ func nextResult(t *testing.T, h *queueQueryHarness, args ...string) map[string]a
 	return response["next"].(map[string]any)
 }
 
+// fakeBeadsCLI serves Beads issues from files the test writes, so the CLI can
+// be tested against a Beads source without a real bd process per read. It
+// answers every command the read-only adapter issues; anything else fails.
+// internal/queue covers the adapter against the real bd CLI.
+const fakeBeadsCLI = `#!/bin/sh
+for last; do :; done
+case " $* " in
+  *' version '*) printf '%s\n' '{"version":"1.3.0"}' ;;
+  *' config get sync.remote '*) printf '%s\n' '{"value":""}' ;;
+  *' vc status '*) printf '%s\n' '{"commit":"fixture"}' ;;
+  *' list --all --limit 0 --brief --ready '*) cat .beads/fake/ready.json ;;
+  *' list --all --limit 0 --brief '*) cat .beads/fake/issues.json ;;
+  *' show '*) cat ".beads/fake/show-$last.json" ;;
+  *) exit 2 ;;
+esac
+`
+
+type fakeBeadsIssue struct {
+	id, title string
+	blockedBy []string
+}
+
+// writeFakeBeadsIssues replaces the fake's issues. Every fixture issue stays
+// open, so an issue is ready exactly when it has no blockers.
+func writeFakeBeadsIssues(t *testing.T, checkout string, issues ...fakeBeadsIssue) {
+	t.Helper()
+	dir := filepath.Join(checkout, ".beads", "fake")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	all, ready := []any{}, []any{}
+	for _, issue := range issues {
+		dependencies := []any{}
+		for _, blocker := range issue.blockedBy {
+			dependencies = append(dependencies, map[string]any{"issue_id": issue.id, "depends_on_id": blocker, "type": "blocks"})
+		}
+		row := map[string]any{"id": issue.id, "title": issue.title, "status": "open", "priority": 2, "dependencies": dependencies, "dependency_count": len(dependencies)}
+		all = append(all, row)
+		if len(dependencies) == 0 {
+			ready = append(ready, row)
+		}
+		data, _ := json.Marshal([]any{row})
+		if err := os.WriteFile(filepath.Join(dir, "show-"+issue.id+".json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, rows := range map[string][]any{"issues.json": all, "ready.json": ready} {
+		data, _ := json.Marshal(rows)
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
 	if isolateCLIProcess(t) {
 		return
 	}
-	binary, err := exec.LookPath("bd")
-	if err != nil {
-		t.Skip("bd 1.3.0 is not installed")
-	}
-	version, err := exec.Command(binary, "version").Output()
-	if err != nil || !strings.HasPrefix(string(version), "bd version 1.3.0 (") {
-		t.Skip("bd 1.3.0 is required")
-	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
-	checkout := filepath.Join(filepath.Dir(h.home), "checkout")
-	init := exec.Command(binary, "init", "--non-interactive", "--skip-hooks", "--skip-agents", "--prefix", "probe")
-	init.Dir = checkout
-	if out, err := init.CombinedOutput(); err != nil {
-		t.Fatalf("bd init: %v: %s", err, out)
+	root := filepath.Dir(h.home)
+	if err := os.WriteFile(filepath.Join(root, "bin", "bd"), []byte(fakeBeadsCLI), 0700); err != nil {
+		t.Fatal(err)
 	}
-	for _, title := range []string{"First", "Second"} {
-		create := exec.Command(binary, "create", title, "--silent")
-		create.Dir = checkout
-		if out, err := create.CombinedOutput(); err != nil {
-			t.Fatalf("bd create: %v: %s", err, out)
-		}
+	checkout := filepath.Join(root, "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, ".beads"), 0700); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(checkout, ".beads", "metadata.json"), []byte(`{"dolt_mode":"embedded"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	issues := []fakeBeadsIssue{{id: "probe-1", title: "First"}, {id: "probe-2", title: "Second"}}
+	writeFakeBeadsIssues(t, checkout, issues...)
 	h.writeQueueConfig(fmt.Sprintf("version: 1\nme: {beads: brett}\nsources:\n  - id: local\n    adapter: beads\n    checkout: %s\n    claims: {policy: generic, source: agreed-team/planning}\nviews:\n  - name: Ready\n    authority: local\n    sources: [local]\n    filter: {readiness: ready}\n", checkout))
 	st, err := store.Open(context.Background(), h.state, store.Options{})
 	if err != nil {
@@ -108,30 +153,27 @@ func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
 	if _, err := adapter.List(context.Background(), source, queue.Query{}, ""); err != nil {
 		t.Fatal(err)
 	}
-	dep := exec.Command(binary, "dep", "add", secondID, id)
-	dep.Dir = checkout
-	if out, err := dep.CombinedOutput(); err != nil {
-		t.Fatalf("bd dep: %v: %s", err, out)
+	// A dependency added after the cached list must still block the action.
+	for i := range issues {
+		if issues[i].id == secondID {
+			issues[i].blockedBy = []string{id}
+		}
 	}
+	writeFakeBeadsIssues(t, checkout, issues...)
 	selected := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: secondID}}}
 	fresh, err := refreshQueueActionClosure(context.Background(), registry, map[string]queue.Source{"local": source}, selected)
 	if err != nil || fresh.Readiness.Status != queue.Blocked {
 		t.Fatalf("action used stale bulk edges: %+v %v", fresh, err)
 	}
-	third := exec.Command(binary, "create", "TUI claim", "--silent")
-	third.Dir = checkout
-	thirdBytes, err := third.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thirdID := strings.TrimSpace(string(thirdBytes))
+	issues = append(issues, fakeBeadsIssue{id: "probe-3", title: "TUI claim"})
+	writeFakeBeadsIssues(t, checkout, issues...)
 	backend, authority, err := queueAuthorityForClaim(context.Background(), &urfave.Command{}, config.LocalProfileName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
 	controller := &queueClaimController{backend: backend, registry: registry, sources: map[string]queue.Source{"local": source}, claimSources: map[string]queue.ClaimSource{"local": {Source: source, Policy: "generic", ClaimSource: "agreed-team/planning"}}, queueSession: strings.Repeat("e", 32), paths: config.UserProfilePaths(os.Getenv), current: func() (queue.ClaimAuthority, uint64) { return authority, 1 }, blocked: func() bool { return false }, profile: backend.Profile, profileName: config.LocalProfileName, home: backend.Config.Home}
-	thirdItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: thirdID}}}
+	thirdItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: "probe-3"}}}
 	preview := controller.Preview(context.Background(), thirdItem)().(queueui.ClaimPreviewMsg)
 	if preview.Err != nil || preview.Preview == nil {
 		t.Fatalf("TUI claim preview: %+v", preview)
@@ -140,19 +182,18 @@ func TestBeadsQueueNextClaimAndMCP(t *testing.T) {
 	if acquired.Err != nil || !acquired.Claim.Active {
 		t.Fatalf("TUI Claim for me: %+v", acquired)
 	}
-	blocked := exec.Command(binary, "create", "Blocked TUI claim", "--deps", "blocked-by:"+thirdID, "--silent")
-	blocked.Dir = checkout
-	blockedBytes, err := blocked.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	blockedItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: strings.TrimSpace(string(blockedBytes))}}}
+	issues = append(issues, fakeBeadsIssue{id: "probe-4", title: "Blocked TUI claim", blockedBy: []string{"probe-3"}})
+	writeFakeBeadsIssues(t, checkout, issues...)
+	blockedItem := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "local", ItemID: "probe-4"}}}
 	if _, err := controller.prepare(context.Background(), blockedItem); err == nil {
 		t.Fatal("D11 check allowed claim of blocked Beads item")
 	}
 }
 
 func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	st, err := store.Open(context.Background(), h.state, store.Options{})
@@ -216,6 +257,9 @@ func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
 }
 
 func TestQueueNextClaimWorkerLifecycleAndContention(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
@@ -263,6 +307,9 @@ func TestQueueNextClaimWorkerLifecycleAndContention(t *testing.T) {
 }
 
 func TestQueueNextRechecksAssignmentBeforeClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
@@ -284,6 +331,9 @@ func TestQueueNextRechecksAssignmentBeforeClaim(t *testing.T) {
 }
 
 func TestQueueNextLocalProfileEnvironment(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	t.Setenv("WORKLEASE_PROFILE", "local")
@@ -304,6 +354,9 @@ func TestQueueNextLocalProfileEnvironment(t *testing.T) {
 }
 
 func TestQueueNextUncertainAcquireStopsWithPendingHandle(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","priority":"high","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","priority":"medium","dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
@@ -700,6 +753,9 @@ func TestLinearKnownItemSelectionRejectsInterruptedOrMixedScopes(t *testing.T) {
 }
 
 func TestQueueNextIncompleteScopeDoesNotSelectReadyItem(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","ordinal":1,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","ordinal":2,"dependencies":["TASK-404"],"readiness":{"missingDependencies":[]},"isReady":false}]`)
 	next := nextResult(t, h)

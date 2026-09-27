@@ -20,6 +20,9 @@ import (
 )
 
 func TestQueueRemoteViewUsesSelectedAuthorityWithoutLocalFallback(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"Remote scope","status":"Open","ordinal":1,"isReady":true}]`)
 	profile, _, _ := remoteCLIFixture(t)

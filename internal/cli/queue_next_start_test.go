@@ -29,30 +29,9 @@ func nextStartFixture(t *testing.T) (string, string) {
 			t.Fatalf("git fixture: %v %s", err, data)
 		}
 	}
-	// The installed Backlog.md list omits dependency fields; supply its known
-	// empty edge list so the read-only queue can select this isolated fixture.
-	binary, err := exec.LookPath("backlog")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapper := t.TempDir()
-	script := `#!/bin/sh
-if [ -n "$QUEUE_FAIL_AFTER_EDIT" ] && [ -f "$QUEUE_FAIL_AFTER_EDIT" ] && [ "$1 $2" = "task view" ]; then exit 2; fi
-if [ -n "$QUEUE_FAIL_AFTER_EDIT" ] && [ "$1 $2" = "task edit" ]; then
-  "$REAL_BACKLOG" "$@" || exit $?
-  printf 'edited' > "$QUEUE_FAIL_AFTER_EDIT"
-  exit 0
-fi
-if [ "$1 $2 $3" = "task list --json" ]; then
-  exec python3 -c 'import json,os,subprocess; data=json.loads(subprocess.check_output([os.environ["REAL_BACKLOG"],"task","list","--json"])); [row.setdefault("dependencies",[]) for row in data["tasks"]]; print(json.dumps(data))'
-fi
-exec "$REAL_BACKLOG" "$@"
-`
-	if err := os.WriteFile(filepath.Join(wrapper, "backlog"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("REAL_BACKLOG", binary)
-	t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Real Backlog.md list rows omit dependency fields; report the fixture's
+	// empty edge list so the read-only queue can select it.
+	t.Setenv(testkit.FakeBacklogListDependencies, "1")
 	return controller.claim.backend.Config.Home, root
 }
 
@@ -160,7 +139,7 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				t.Setenv("QUEUE_FAIL_AFTER_EDIT", filepath.Join(t.TempDir(), "dispatched"))
+				t.Setenv(testkit.FakeBacklogFailViewAfterEdit, filepath.Join(t.TempDir(), "dispatched"))
 			}
 			var next map[string]any
 			if scenario.mode == "cli" {
@@ -201,7 +180,8 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 					t.Fatalf("unknown write not journaled: %+v %v", entries, err)
 				}
 			}
-			view := exec.Command(os.Getenv("REAL_BACKLOG"), "task", "view", "TASK-1", "--json")
+			t.Setenv(testkit.FakeBacklogFailViewAfterEdit, "")
+			view := exec.Command("backlog", "task", "view", "TASK-1", "--json")
 			view.Dir = root
 			data, err := view.Output()
 			if err != nil {
@@ -282,6 +262,9 @@ func TestQueueNextStartRefreshFailureIsNotARejection(t *testing.T) {
 }
 
 func TestQueueNextStartExternalWritesThroughRecovery(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	fixture, err := os.ReadFile("../../internal/sampleadapter/reference-fixture.json")
 	if err != nil {

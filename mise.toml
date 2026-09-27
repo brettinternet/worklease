@@ -13,7 +13,9 @@ lint = "staticcheck ./..."
 format = "files=$(find cmd internal -type f -name '*.go'); gofmt -w $files"
 format-check = "test -z \"$(find cmd internal -type f -name '*.go' -exec gofmt -l {} +)\""
 beads-check = "bd version | grep -Eq '^bd version 1[.]3[.]0 [(]'"
-test = { run = "go test -p 1 -parallel 2 ./...", depends = ["beads-check"] }
+# WORKLEASE_PROVIDER_TESTS runs the real bd/backlog round trips that the
+# pre-commit hook skips; see AGENTS.md Testing.
+test = { run = "go test -p 1 -parallel 2 ./...", depends = ["beads-check"], env = { WORKLEASE_PROVIDER_TESTS = "1" } }
 queue-benchmark = "python3 scripts/queue-benchmark.py"
 typecheck = "go vet ./..."
 hooks-install = "lefthook install"
@@ -28,7 +30,7 @@ authority-benchmark = { run = "python3 scripts/authority-queue-benchmark.py --bi
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
-race = { run = "go test -race -p 1 -parallel 2 ./...", depends = ["beads-check"] }
+race = { run = "go test -race -p 1 -parallel 2 ./...", depends = ["beads-check"], env = { WORKLEASE_PROVIDER_TESTS = "1" } }
 vuln = "govulncheck ./..."
 # Keep full and race suites separate on small CI runners; concurrent Go builds
 # and subprocess-heavy tests compete for the same process/CPU budget.

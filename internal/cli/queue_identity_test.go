@@ -12,6 +12,9 @@ import (
 )
 
 func TestQueueIdentityConfirmationAndRebind(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	st, err := store.Open(context.Background(), h.state, store.Options{})
 	if err != nil {

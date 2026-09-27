@@ -35,6 +35,9 @@ func TestDoctorTextColorsStatuses(t *testing.T) {
 }
 
 func TestSetupFreePathLifecycleTextAndJSON(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	clearWorkleaseEnvironment(t)
 	t.Setenv("HOME", t.TempDir())
 	for _, jsonMode := range []bool{false, true} {
@@ -135,6 +138,9 @@ func TestContextualLoopsUseSessionEnvironmentOnly(t *testing.T) {
 }
 
 func TestUnscopedContextualSelectorIsDistinctFromClaimSessionMetadata(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	clearWorkleaseEnvironment(t)
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()

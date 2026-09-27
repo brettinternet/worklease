@@ -106,6 +106,8 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
           restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
       - name: Run platform tests and static build
+        env:
+          WORKLEASE_PROVIDER_TESTS: "1"
         run: |
           mise run beads-check
           # Keep the CLI package below Go's per-invocation deadline on macOS Intel.

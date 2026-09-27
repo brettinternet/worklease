@@ -6,6 +6,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	RunFakeBacklogIfInvoked()
 	restore, err := IsolateProcessEnvironment()
 	if err != nil {
 		panic(err)

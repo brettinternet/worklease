@@ -8,6 +8,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	testkit.RunFakeBacklogIfInvoked()
 	restore, err := testkit.IsolateProcessEnvironment()
 	if err != nil {
 		panic(err)

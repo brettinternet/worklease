@@ -14,12 +14,28 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
-func backlogWriteProject(t *testing.T, autoCommit, bypass bool) (*BacklogWriteAdapter, Source, WritePipeline, *writeFixture) {
+// realBacklog returns the installed Backlog.md CLI. Use it where the test
+// covers the provider's own argv, output, or Git behavior; each real call costs
+// hundreds of milliseconds.
+func realBacklog(t *testing.T) string {
 	t.Helper()
+	testkit.RequireProviderTests(t)
 	binary, err := exec.LookPath("backlog")
 	if err != nil {
 		t.Skip("Backlog.md CLI unavailable")
 	}
+	return binary
+}
+
+// statefulBacklog returns testkit.FakeBacklog, which testkit checks against the
+// real CLI. Use it where the test covers the adapter's own verification logic.
+func statefulBacklog(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(testkit.FakeBacklog(t), "backlog")
+}
+
+func backlogWriteProject(t *testing.T, binary string, autoCommit, bypass bool) (*BacklogWriteAdapter, Source, WritePipeline, *writeFixture) {
+	t.Helper()
 	_, env := testkit.Home(t)
 	root := t.TempDir()
 	config := "project_name: scratch\nstatuses: [To Do, In Progress, Done]\nbacklog_directory: docs/backlog\nremote_operations: false\ncheck_active_branches: false\nauto_commit: "
@@ -87,6 +103,8 @@ func backlogWriteIntent(t *testing.T, source Source, action Action, patch map[st
 	return WriteIntent{OperationID: id, Source: source, Ref: Ref{SourceID: source.ID, ItemID: "TASK-1"}, Principal: "@bob", Patch: patch, Append: appendText, Action: action, Transition: patch["status"], AuthorityID: "test-authority", ClaimID: "test-claim", ClaimRevision: 1, Resources: []string{"scratch-resource"}, CheckpointTTL: time.Minute, CheckpointNotAfter: time.Now().Add(time.Hour)}
 }
 
+// The real CLI runs one write of each kind, proving that Backlog.md accepts
+// each edit argv and reports the change where the adapter verifies it.
 func TestBacklogWritePipelineScratchProject(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -102,7 +120,7 @@ func TestBacklogWritePipelineScratchProject(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			writer, source, pipeline, claim := backlogWriteProject(t, false, false)
+			writer, source, pipeline, claim := backlogWriteProject(t, realBacklog(t), false, false)
 			intent, preview, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, tc.action, tc.patch, tc.appendText))
 			if err != nil || preview.CreatesCommit || preview.AssignmentRace != (tc.action == ActionAssignToMe) {
 				t.Fatalf("prepare: %+v %v", preview, err)
@@ -138,7 +156,7 @@ func taskCommentText(task backlogWriteTask) string {
 
 func TestAdapterConformanceBacklogStaleWriteAndCapabilityDenial(t *testing.T) {
 	t.Parallel()
-	writer, source, pipeline, claim := backlogWriteProject(t, false, false)
+	writer, source, pipeline, claim := backlogWriteProject(t, statefulBacklog(t), false, false)
 	intent, preview, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, ActionAssignToMe, nil, ""))
 	if err != nil || !preview.AssignmentRace {
 		t.Fatalf("preview %+v: %v", preview, err)
@@ -192,7 +210,7 @@ func (a lostBacklogResponse) Write(ctx context.Context, intent WriteIntent) (Pro
 
 func TestBacklogWritePreviewRejectsHookPolicyDriftAndUnsafeAssignee(t *testing.T) {
 	t.Parallel()
-	writer, source, pipeline, _ := backlogWriteProject(t, true, true)
+	writer, source, pipeline, _ := backlogWriteProject(t, statefulBacklog(t), true, true)
 	ctx := context.Background()
 	intent, preview, err := writer.Prepare(ctx, backlogWriteIntent(t, source, ActionRecordProgress, map[string]string{"append": "notes"}, "progress"))
 	if err != nil || preview.RunsHooks {
@@ -226,7 +244,7 @@ func TestBacklogWritePreviewRejectsHookPolicyDriftAndUnsafeAssignee(t *testing.T
 
 func TestBacklogWriteAppendRecoveryWithFollowingWrites(t *testing.T) {
 	t.Parallel()
-	writer, source, _, _ := backlogWriteProject(t, false, false)
+	writer, source, _, _ := backlogWriteProject(t, statefulBacklog(t), false, false)
 	ctx := context.Background()
 	intent, _, err := writer.Prepare(ctx, backlogWriteIntent(t, source, ActionRecordProgress, map[string]string{"append": "notes"}, "progress"))
 	if err != nil {
@@ -260,9 +278,10 @@ func TestBacklogWriteAppendRecoveryWithFollowingWrites(t *testing.T) {
 	}
 }
 
+// The real CLI is required: only Backlog.md makes the auto-commit.
 func TestBacklogWriteCommitVerifiedAfterUnrelatedCommit(t *testing.T) {
 	t.Parallel()
-	writer, source, _, _ := backlogWriteProject(t, true, true)
+	writer, source, _, _ := backlogWriteProject(t, realBacklog(t), true, true)
 	ctx := context.Background()
 	intent, _, err := writer.Prepare(ctx, backlogWriteIntent(t, source, ActionRecordProgress, map[string]string{"append": "notes"}, "progress"))
 	if err != nil {
@@ -290,7 +309,7 @@ func TestBacklogWriteCommitVerifiedAfterUnrelatedCommit(t *testing.T) {
 
 func TestBacklogWriteLostAppendResponseRecoversWithoutRedispatch(t *testing.T) {
 	t.Parallel()
-	writer, source, pipeline, claim := backlogWriteProject(t, false, false)
+	writer, source, pipeline, claim := backlogWriteProject(t, statefulBacklog(t), false, false)
 	pipeline.Adapter = lostBacklogResponse{writer}
 	intent, _, err := writer.Prepare(context.Background(), backlogWriteIntent(t, source, ActionRecordProgress, map[string]string{"append": "comment"}, "progress"))
 	if err != nil {
@@ -312,7 +331,7 @@ func TestBacklogWriteLostAppendResponseRecoversWithoutRedispatch(t *testing.T) {
 
 func TestBacklogWriteMarkerAndStatusVerification(t *testing.T) {
 	t.Parallel()
-	writer, source, _, _ := backlogWriteProject(t, false, false)
+	writer, source, _, _ := backlogWriteProject(t, statefulBacklog(t), false, false)
 	ctx := context.Background()
 	bad := backlogWriteIntent(t, source, ActionStart, map[string]string{"status": "Imaginary"}, "")
 	if _, _, err := writer.Prepare(ctx, bad); !diag(err, "invalid-status") {
@@ -338,12 +357,14 @@ func TestBacklogWriteMarkerAndStatusVerification(t *testing.T) {
 	}
 }
 
+// The real CLI is required: only Backlog.md makes the auto-commit and runs
+// the hook.
 func TestBacklogWriteAutoCommitPreviewAndReceipt(t *testing.T) {
 	t.Parallel()
 	for _, bypass := range []bool{false, true} {
 		t.Run(map[bool]string{false: "hooks", true: "bypass"}[bypass], func(t *testing.T) {
 			t.Parallel()
-			writer, source, pipeline, _ := backlogWriteProject(t, true, bypass)
+			writer, source, pipeline, _ := backlogWriteProject(t, realBacklog(t), true, bypass)
 			unrelated := filepath.Join(source.Locator, "unrelated.txt")
 			if err := os.WriteFile(unrelated, []byte("user staged work"), 0600); err != nil {
 				t.Fatal(err)

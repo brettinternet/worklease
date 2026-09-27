@@ -88,6 +88,9 @@ func TestQueueAdapterProtocolReportsStaticCompatibility(t *testing.T) {
 }
 
 func TestQueueAdapterCheckSampleWithoutApprovalOrQueueState(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	before, err := os.ReadFile(config.QueuePath(os.Getenv))
 	if err != nil {

@@ -470,6 +470,9 @@ func TestQueueLifecycleIndependentOfStalledClaims(t *testing.T) {
 }
 
 func TestQueueLifecycleRemoteUsesAuthorityClockAcrossClientSkew(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	for _, offset := range []time.Duration{-2 * time.Minute, 2 * time.Minute} {
 		t.Run(offset.String(), func(t *testing.T) {
 			item := queueClaimItem("tasks", "offset")

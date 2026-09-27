@@ -68,6 +68,9 @@ func TestQueueQueryConcurrentProcessHelper(t *testing.T) {
 }
 
 func TestQueueQueryConcurrentProcessesShareOneRefreshWithoutMaxAge(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	root := filepath.Dir(h.home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
@@ -249,6 +252,9 @@ func TestQueueQueryFingerprintBindsPrincipalAndConfigurationGeneration(t *testin
 }
 
 func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{ 
 	  "id":"TASK-126","title":"` + strings.Repeat("a", 64) + `","status":"Open","priority":"high","ordinal":1,"isReady":true
@@ -400,6 +406,9 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 }
 
 func TestQueueQueryCacheOnlyCoverageDoesNotInvalidateCursor(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"First","status":"Open","ordinal":1,"isReady":true},{"id":"TASK-2","title":"Second","status":"Open","ordinal":2,"isReady":true}]`)
 	first, err := h.run("queue", "query", "--view", "Ready", "--max-age", "1h", "--limit", "1", "--json")
@@ -481,6 +490,9 @@ func TestQueueQueryReusesCompleteEmptyIndex(t *testing.T) {
 }
 
 func TestQueueQueryKeepsHealthySourceWhenAnotherCannotResolve(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-126","title":"Healthy","status":"Open","ordinal":1,"isReady":true}]`)
 	missing := filepath.Join(filepath.Dir(h.home), "empty-checkout")
@@ -519,6 +531,9 @@ func TestQueueQueryKeepsHealthySourceWhenAnotherCannotResolve(t *testing.T) {
 }
 
 func TestQueueQueryRequiresCompletenessForFilteredOutItems(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-126","title":"Unknown dependency closure","status":"Open","ordinal":1,"isReady":true}]`)
 	h.writeQueueConfig(strings.Replace(h.queueConfig, "filter: {assigned: [nobody]}", "filter: {readiness: ready}", 1))

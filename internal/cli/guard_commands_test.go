@@ -127,6 +127,9 @@ func TestRealClaudeHookClaimAndPathCoverage(t *testing.T) {
 }
 
 func TestRealClaudeHookBlocksMissingPendingAndExpiredClaims(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	home, workspace := filepath.Join(t.TempDir(), "authority"), t.TempDir()
 	event, _ := json.Marshal(hookEvent{CWD: workspace, ToolName: "Write", ToolInput: map[string]json.RawMessage{"file_path": json.RawMessage(strconvQuote(filepath.Join(workspace, "file.txt")))}})
 	missing := filepath.Join(t.TempDir(), "missing.json")
