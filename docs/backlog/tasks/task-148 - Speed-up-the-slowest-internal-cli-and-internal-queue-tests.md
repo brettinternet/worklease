@@ -1,9 +1,11 @@
 ---
 id: TASK-148
 title: Speed up the slowest internal/cli and internal/queue tests
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-26 16:39'
+updated_date: '2026-09-26 23:46'
 labels:
   - testing
 dependencies: []
@@ -27,3 +29,9 @@ These tests run the real bd and backlog CLIs plus Git many times per case (each 
 - [ ] #2 go test -count=1 ./internal/cli completes in under 90s and ./internal/queue in under 45s with the mise task flags
 - [ ] #3 No behavior loses coverage; any moved coverage is named in the task notes
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Profile listed cases and inspect existing test fixtures/callers to remove repeated provider process setup without losing coverage. 2. Reduce duplicate CLI/MCP round-trips at the lowest suitable layer and document any retained integration checks. 3. Measure both packages with the mise test flags, run focused race tests and repository checks; review once, integrate and record evidence.
+<!-- SECTION:PLAN:END -->

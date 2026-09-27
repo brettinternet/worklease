@@ -4,9 +4,10 @@ title: Add a built-in Jira Cloud source adapter with API-token auth
 status: To Do
 assignee: []
 created_date: '2026-09-25 16:21'
-updated_date: '2026-09-25 16:30'
+updated_date: '2026-09-27 00:02'
 labels:
   - work-queue
+  - deferred
 milestone: m-1
 dependencies:
   - TASK-142.2
@@ -49,3 +50,17 @@ Known Jira constraints to account for (verify with the probe):
 - [ ] #10 The adapter passes the shared adapter conformance suite, and tests cover pagination interruption, rate limiting with retry time, permission loss, project moves, non-success resolutions, and secret redaction.
 - [ ] #11 User-facing queue docs describe Jira Cloud setup, the required token scopes, and the Data Center exclusion.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Split the Jira Cloud work into a live probe, identity, read, sync, claim, and focused-write subtasks with explicit dependencies. 2. Run the synthetic-issue probe on a user-approved Jira Cloud test project and update §3/D30/§7 from observed evidence before settling API behavior. 3. Implement identity, read/sync, claims and recovery-backed writes in dependency order, with conformance and security tests; update the skill and queue setup docs. 4. Run repository gates, commit and merge from the owned worktree, then clean it up only after every acceptance criterion is verified.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Selected after TASK-143 and all five children were confirmed Done and merged. Created isolated worktree task-139-jira-cloud. Asked for a user-approved Jira Cloud test project; user confirmed none is available. AC1–2 require a live synthetic-issue probe, so API-dependent implementation and completion must await approved site/project and credentials; do not substitute documentation assumptions for observation.
+
+Blocked after planning: no Jira Cloud test project is available (explicit user answer). Resume at TASK-139.1 only after the user supplies an approved Jira Cloud site URL, disposable project key(s) permitting issue creation, linking, movement, transitions and deletion, a test accountId and a private credential helper for an API token with sufficient scopes. Never request the token in chat or create synthetic issues outside that approved scope. No adapter code, live probe, gates or acceptance checks were performed; TASK-139.1–139.6 record the ordered implementation handoff. Keep parent To Do and unassigned until access is supplied.
+<!-- SECTION:NOTES:END -->
