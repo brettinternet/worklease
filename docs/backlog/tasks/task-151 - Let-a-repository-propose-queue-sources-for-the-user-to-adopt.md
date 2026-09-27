@@ -1,10 +1,11 @@
 ---
 id: TASK-151
 title: Let a repository propose queue sources for the user to adopt
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-27 05:56'
-updated_date: '2026-09-27 06:00'
+updated_date: '2026-09-27 06:08'
 labels:
   - work-queue
 dependencies: []
@@ -54,3 +55,18 @@ Decoding is an allowlist: `version`, and per source `id`, `adapter`, `workflow`,
 - [ ] #6 Re-running init after adoption adds newly proposed sources, reports a differing workflow or claims on an existing source (and the migration checklist for claims) without applying it, reports sources removed from the proposal without removing them, and exits 0 with nothing written when nothing is new.
 - [ ] #7 docs/queue.md documents the file, its allowlist and trust boundary, and the adoption and re-run behavior; docs/work-queue-tui-proposal.md replaces the deferred note with the shipped design; CHANGELOG.md Unreleased has an Added entry.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add strict, bounded proposal parsing at checkout root; reject privileged or unknown fields before writes.
+2. Extend queue init to prepare all proposed sources against an in-memory YAML document, preserving existing init preflight, identity, and views; report drift/removals without applying.
+3. Test trust boundary, multi-source adoption, repeat/drift, detection bypass, and GitHub origin; update docs and changelog.
+4. Run project gates, review once, commit in worktree, merge main, push, and verify CI.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented strict proposal parsing and multi-source init preparation, plus focused adoption/rerun/trust-boundary tests and documentation; focused queue init tests pass. Running full gates and one risk-focused review.
+<!-- SECTION:NOTES:END -->
