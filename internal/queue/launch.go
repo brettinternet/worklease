@@ -1,11 +1,9 @@
 package queue
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,12 +13,16 @@ import (
 	"github.com/brettinternet/worklease/internal/resource"
 )
 
-// LaunchHandoff is a prepared process invocation. It is not evidence that a
-// worker claimed the item; callers must apply the claim/authority gates before Start.
+// LaunchHandoff is a prepared worker invocation. It is not evidence that a
+// worker claimed the item; callers must apply the claim/authority gates before
+// handing it to a supervised run, which claims Resources before starting Argv.
 type LaunchHandoff struct {
-	Argv []string
-	Dir  string
-	Env  []string
+	Name      string
+	Ref       string
+	Resources []string
+	Argv      []string
+	Dir       string
+	Env       []string
 }
 
 // LaunchOption contains only the public preview; environment values stay in the handoff.
@@ -128,7 +130,7 @@ func PrepareLaunch(action config.QueueLaunch, item Item, source config.QueueSour
 	if len(action.Argv) == 0 {
 		return LaunchHandoff{}, "unresolved-placeholder"
 	}
-	handoff := LaunchHandoff{Argv: make([]string, len(action.Argv))}
+	handoff := LaunchHandoff{Name: action.Name, Ref: item.Ref.String(), Resources: append([]string(nil), item.Resources...), Argv: make([]string, len(action.Argv))}
 	for i, arg := range action.Argv {
 		value, ok := resolve(arg)
 		if !ok || i == 0 && value == "" {
@@ -180,18 +182,4 @@ func launchBaseEnv(name string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, "LC_") || strings.HasPrefix(name, "XDG_") && strings.HasSuffix(name, "_HOME")
-}
-
-// StartLaunch uses exec semantics: no shell or argument re-parsing is involved.
-// The child is independent of the queue's context and owns its own lifecycle.
-func StartLaunch(_ context.Context, handoff LaunchHandoff) (*exec.Cmd, error) {
-	if len(handoff.Argv) == 0 || handoff.Dir == "" {
-		return nil, fmt.Errorf("launch handoff is incomplete")
-	}
-	cmd := exec.Command(handoff.Argv[0], handoff.Argv[1:]...)
-	cmd.Dir, cmd.Env = handoff.Dir, handoff.Env
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return cmd, nil
 }

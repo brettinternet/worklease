@@ -1,21 +1,19 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/resource"
+	"github.com/brettinternet/worklease/internal/runs"
 )
 
-func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
+func TestQueueLaunchRunsWorkerUnderSupervisedClaim(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -76,54 +74,34 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 			if provider == "generic" {
 				source.Adapter = "backlog-md"
 			}
-			handoff, disabled := queue.PrepareLaunch(config.QueueLaunch{Name: "reference", Argv: []string{"python3", filepath.Join(root, "scripts", "queue-launch-worker.py")}, Cwd: workDir, PassEnv: []string{"WORKLEASE_HOME"}}, item, source, queue.ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
+			action := config.QueueLaunch{Name: "reference", Argv: []string{"python3", filepath.Join(root, "scripts", "queue-launch-worker.py")}, Cwd: workDir}
+			authority := queue.ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}
+			handoff, disabled := queue.PrepareLaunch(action, item, source, authority, base)
 			if disabled != "" {
 				t.Fatal(disabled)
 			}
-			cmd := exec.Command(handoff.Argv[0], handoff.Argv[1:]...)
-			cmd.Dir, cmd.Env = handoff.Dir, handoff.Env
-			output, err := cmd.CombinedOutput()
+			started, err := startQueueRun(handoff, authority, home)
 			if err != nil {
-				t.Fatalf("launcher: %s: %v", output, err)
+				t.Fatalf("start run: %+v %v", started, err)
 			}
-			var launched struct {
-				AuthorityID string   `json:"authorityId"`
-				Resources   []string `json:"resources"`
-				SessionID   string   `json:"sessionId"`
+			if started.Claim == nil || started.Claim.AuthorityID != resolved.AuthorityID || len(started.Claim.Resources) != len(resources) {
+				t.Fatalf("run did not claim the handoff: %+v", started.Claim)
 			}
-			if err := json.Unmarshal(output, &launched); err != nil || launched.AuthorityID != resolved.AuthorityID || !reflect.DeepEqual(launched.Resources, item.Resources) || launched.SessionID == "" {
-				t.Fatalf("handoff mismatch: %s %v", output, err)
-			}
-			status := exec.Command(binary, "status", "--json", "--resource", key.Resource)
-			status.Dir, status.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
-			statusData, err := status.Output()
-			if err != nil || !strings.Contains(string(statusData), launched.SessionID) {
-				t.Fatalf("worker claim absent: %s %v", statusData, err)
-			}
-			for _, key := range resources {
-				verify := exec.Command(binary, "verify", "--session", launched.SessionID, "--resource", key)
-				verify.Dir, verify.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
-				if data, err := verify.CombinedOutput(); err != nil {
-					t.Fatalf("worker missing claim resource: %s %v", data, err)
-				}
-			}
-			cleanup := exec.Command(binary, "release", "--session", launched.SessionID, "--reason", "test no-effect worker claim")
-			cleanup.Dir, cleanup.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
-			if data, err := cleanup.CombinedOutput(); err != nil {
-				t.Fatalf("release: %s %v", data, err)
-			}
-			// Starting a process that exits without acquiring does not create a
-			// worker claim; only the authority's later observation can do that.
-			noClaim, disabled := queue.PrepareLaunch(config.QueueLaunch{Name: "no-claim", Argv: []string{"python3", "-c", "pass"}, Cwd: workDir}, item, source, queue.ClaimAuthority{ID: resolved.AuthorityID, Profile: "local"}, base)
-			if disabled != "" {
-				t.Fatal(disabled)
-			}
-			child, err := queue.StartLaunch(context.Background(), noClaim)
+			wait := exec.Command(binary, "--json", "runs", "wait", started.ID, "--timeout", "1m")
+			wait.Dir, wait.Env = workDir, base
+			data, err = wait.Output()
 			if err != nil {
+				t.Fatalf("wait: %s %v", data, err)
+			}
+			var finished struct {
+				Run runs.Record `json:"run"`
+			}
+			if err := json.Unmarshal(data, &finished); err != nil {
 				t.Fatal(err)
 			}
-			if err := child.Wait(); err != nil {
-				t.Fatal(err)
+			record := finished.Run
+			if record.ExitCode == nil || *record.ExitCode != 0 || record.Result == nil || record.Result.Outcome != "done" || record.Claim == nil || record.Claim.State != runs.ClaimReleased {
+				t.Fatalf("worker did not verify the inherited claim: %s", data)
 			}
 			free := exec.Command(binary, "status", "--json", "--resource", key.Resource)
 			free.Dir, free.Env = workDir, append(base, "WORKLEASE_PROFILE=local")
@@ -137,19 +115,17 @@ func TestReferenceLauncherClaimsExactQueueHandoff(t *testing.T) {
 				} `json:"resources"`
 			}
 			if err := json.Unmarshal(freeData, &availability); err != nil || len(availability.Resources) != 1 || availability.Resources[0].State != "free" {
-				t.Fatalf("unclaimed launcher created worker claim: %s %v", freeData, err)
+				t.Fatalf("run did not release the claim: %s %v", freeData, err)
 			}
-			// A mismatched handoff cannot acquire; no process owns the resource.
-			wrong := append([]string(nil), handoff.Env...)
-			for i, entry := range wrong {
-				if strings.HasPrefix(entry, "WORKLEASE_QUEUE_AUTHORITY_ID=") {
-					wrong[i] = "WORKLEASE_QUEUE_AUTHORITY_ID=wrong"
-				}
+			// A handoff for another authority is refused before any claim.
+			if record, err := startQueueRun(handoff, queue.ClaimAuthority{ID: "wrong", Profile: "local"}, home); err == nil || record.Claim != nil {
+				t.Fatalf("mismatched authority was accepted: %+v %v", record, err)
 			}
-			bad := exec.Command("python3", filepath.Join(root, "scripts", "queue-launch-worker.py"))
-			bad.Dir, bad.Env = workDir, wrong
-			if err := bad.Run(); err == nil {
-				t.Fatal("mismatched authority was accepted")
+			// The reference worker refuses to run outside a supervised run.
+			bare := exec.Command(handoff.Argv[0], handoff.Argv[1:]...)
+			bare.Dir, bare.Env = handoff.Dir, handoff.Env
+			if err := bare.Run(); err == nil {
+				t.Fatal("reference worker ran without an inherited claim")
 			}
 		})
 	}

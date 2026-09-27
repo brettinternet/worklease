@@ -182,6 +182,17 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(execCommand, "worklease exec [selection] [--max-duration DURATION] [--cwd DIR | --git-primary] -- COMMAND [ARGS...]")
 	detail(execCommand, "Run COMMAND while the selected claim stays valid; everything after -- is the child argv. Ownership loss stops the child and the operation stays inspectable.\n\n"+selectionHelp)
 
+	runCommand := jsonless("run", "supervise a worker process", "worklease run --resource KEY -- ./worker.sh\n  worklease run --detach --name fix-42 --resource KEY -- pi -p 'Implement TASK-42'\n  worklease run -- ./long-job.sh",
+		resourceFlag("exact resource `KEY` the run claims before starting the worker; repeat for up to 32"), ttlFlag(),
+		&urfavecli.DurationFlag{Name: "max-duration", Usage: "stop the worker after `DURATION`; unlimited by default", HideDefault: true},
+		&urfavecli.StringFlag{Name: "name", Usage: "display `NAME` for the run; defaults to the command name"},
+		&urfavecli.StringFlag{Name: "ref", Usage: "work item `REF` the run is for, such as SOURCE:ITEM"},
+		&urfavecli.StringFlag{Name: "expect-authority", Usage: "refuse to claim unless the selected authority has this `ID`"},
+		&urfavecli.BoolFlag{Name: "detach", Usage: "return once the worker is running and keep supervising in the background"})
+	runCommand.Action = runAction(s)
+	usageText(runCommand, "worklease run [--resource KEY...] [--ttl DURATION] [--max-duration DURATION] [--name NAME] [--ref REF] [--expect-authority ID] [--detach] -- COMMAND [ARGS...]")
+	detail(runCommand, "Run COMMAND as a supervised worker and record its health and result under the XDG state directory (see worklease runs). With --resource, the run acquires one claim under its own session before starting the worker, renews it while the worker lives, and releases it when the worker exits. The claim is kept when it has unresolved guarded operations or queue provider writes. Ownership loss stops the worker. The worker receives WORKLEASE_RUN_ID, WORKLEASE_RUN_RESULT, and, with a claim, WORKLEASE_SESSION_ID, WORKLEASE_HANDLE, WORKLEASE_HOME, and WORKLEASE_PROFILE so its own verify and checkpoint calls select the run's claim. A worker may write {\"outcome\":\"done|blocked|review|failed\",\"summary\":\"...\"} to WORKLEASE_RUN_RESULT; otherwise the exit code decides the outcome. Output goes to the run log; a foreground run also copies it to stderr. The exit status is the worker's.")
+
 	replaceCommand := jsonless("replace-file", "replace one file", "worklease replace-file --path FILE --expected-sha256 SHA256 --content-file CONTENT", append(mutate(), &urfavecli.StringFlag{Name: "path", Usage: "claimed file `PATH` to replace"}, flag("expected-sha256"), flag("content-file"))...)
 	replaceCommand.Action = replaceFileAction(s)
 	usageText(replaceCommand, "worklease replace-file --path FILE --content-file FILE [--expected-sha256 HEX] [selection]")
@@ -224,7 +235,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	commands := []*urfavecli.Command{
 		versionCommand, keyCommand, acquireCommand,
 		statusCommand, listCommand, heartbeatCommand, checkpointCommand, releaseCommand, transferCommand,
-		verifyCommand, execCommand, replaceCommand,
+		verifyCommand, execCommand, runCommand, replaceCommand,
 		historyCommand, eventsCommand, watchCommand, gcCommand, doctorCommand,
 	}
 	group := func(name, usage, example string, commands ...*urfavecli.Command) *urfavecli.Command {
@@ -374,15 +385,15 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(queueNext, "worklease queue next --view NAME [--claim [--start] --session SESSION] [--json] [--group N] [--item SOURCE:ITEM ...]")
 	detail(queueNext, "Select from a complete view and dependency graph. Plain next never acquires; --claim acquires one worker-owned claim with the regular contextual handle and no wait.")
 	queueBrowse.Commands = []*urfavecli.Command{queueInitCommand(s), queueQuery, queueNext, queueClaimsCommand(s), queueRecoveryCommand(s), queueIdentityCommand(s), queueAuthorityIDCommand(s), queueAdapterApprovalCommand(s)}
-	all := append(commands, queueBrowse, policy, op, handleCommand, instructions, setup)
+	all := append(commands, runsCommand(s), queueBrowse, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)
 	all = append(all, remoteAdminCommands(s)...)
 	all = append(all, server, serve, mcp, helpCommand(s))
 	for _, command := range all {
 		switch command.Name {
-		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "replace-file":
+		case "key", "acquire", "status", "list", "heartbeat", "checkpoint", "release", "transfer", "verify", "exec", "run", "replace-file":
 			command.Category = categoryLifecycle
-		case "history", "events", "watch", "op", "handle", "doctor":
+		case "history", "events", "watch", "op", "handle", "doctor", "runs":
 			command.Category = categoryInspection
 		default:
 			command.Category = categoryAdmin

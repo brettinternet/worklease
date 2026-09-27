@@ -42,6 +42,10 @@ func (e *handledError) ExitCode() int {
 	if classified := reason.As(e.cause); classified != nil {
 		return classified.ExitCode()
 	}
+	var coder urfavecli.ExitCoder
+	if errors.As(e.cause, &coder) {
+		return coder.ExitCode() // an already reported child exit status
+	}
 	return reason.ExitInternal
 }
 

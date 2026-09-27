@@ -392,11 +392,9 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 					result.Err = fmt.Errorf("launch resources changed; reopen the picker")
 					return result
 				}
-				child, err := queue.StartLaunch(ctx, handoff)
-				if err == nil {
-					detachLaunch(child) // the queue neither waits for nor owns the worker
-				}
-				result.Err = err
+				handoff.Resources = keys
+				record, err := startQueueRun(handoff, selected, backend.Config.Home)
+				result.RunID, result.Err = record.ID, err
 				return result
 			}
 			result.Err = fmt.Errorf("launch action no longer configured")

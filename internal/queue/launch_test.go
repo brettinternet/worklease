@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -54,19 +55,6 @@ func TestLaunchGatesAndPublicPreview(t *testing.T) {
 	option, _ = CheckLaunch(action, item, source, authority, "queue-session", nil)
 	if option.Eligibility.Reasons[0] != "authority-mismatch" {
 		t.Fatalf("wrong authority: %+v", option)
-	}
-}
-
-func TestLaunchProcessStartFailureHasNoClaimSideEffect(t *testing.T) {
-	item, source, authority := launchFixture(t, "42")
-	item.Readiness.Status, item.Claim.Known, item.Claim.State = Ready, true, "free"
-	action := config.QueueLaunch{Name: "missing", Argv: []string{filepath.Join(t.TempDir(), "missing")}, Cwd: t.TempDir()}
-	option, handoff := CheckLaunch(action, item, source, authority, "queue", nil)
-	if !option.Eligibility.Eligible {
-		t.Fatalf("expected eligible: %+v", option)
-	}
-	if _, err := StartLaunch(context.Background(), handoff); err == nil || item.Claim.Active {
-		t.Fatalf("failed process start changed claim: %v %+v", err, item.Claim)
 	}
 }
 
@@ -189,11 +177,9 @@ func TestLaunchExecHandoffIsolatedEnvironment(t *testing.T) {
 	if disabled != "" || strings.Contains(strings.Join(isolated.Env, "\n"), "AWS_SESSION_TOKEN") {
 		t.Fatalf("unnamed credential leaked: %q %s", isolated.Env, disabled)
 	}
-	cmd, err := StartLaunch(context.Background(), handoff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Wait(); err != nil {
+	cmd := exec.Command(handoff.Argv[0], handoff.Argv[1:]...)
+	cmd.Dir, cmd.Env = handoff.Dir, handoff.Env
+	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(capture)

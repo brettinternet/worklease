@@ -1804,7 +1804,7 @@ func TestLaunchPickerPreviewsAndDoesNotInventWorkerClaim(t *testing.T) {
 	}
 	next, _ := m.Update(cmd())
 	m = next.(Model)
-	if m.Launching || !strings.Contains(m.Notice, "awaiting worker claim") || m.Snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()].Claim.SessionID != "full-session-identity" {
+	if m.Launching || !strings.Contains(m.Notice, "Started run") || m.Snapshot.Items[queue.Ref{SourceID: "a", ItemID: "1"}.Key()].Claim.SessionID != "full-session-identity" {
 		t.Fatalf("process start was mistaken for a worker claim: %s", m.Notice)
 	}
 	failed, _ := m.Update(LaunchResultMsg{Name: "missing", Err: fmt.Errorf("executable missing")})
@@ -1835,7 +1835,7 @@ func TestSuccessfulLaunchDoesNotClaimUntilWorkerAppearsInOverlay(t *testing.T) {
 	}
 	next, _ := m.Update(launch())
 	m = next.(Model)
-	if m.Snapshot.Items[key].Claim.Active || !strings.Contains(m.Notice, "awaiting worker claim") || len(m.OwnedClaims) != 0 {
+	if m.Snapshot.Items[key].Claim.Active || !strings.Contains(m.Notice, "Started run") || len(m.OwnedClaims) != 0 {
 		t.Fatalf("process start invented a claim: %+v %s", m.Snapshot.Items[key].Claim, m.Notice)
 	}
 	observed := snapshot.Clone()

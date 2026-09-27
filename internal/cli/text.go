@@ -488,26 +488,7 @@ func writePolicyListText(w io.Writer, values []resource.Descriptor, full, color 
 		}
 		rows = append(rows, row)
 	}
-	widths := make([]int, len(headers))
-	for i, header := range headers {
-		widths[i] = displayWidth(header)
-	}
-	for _, row := range rows {
-		for i, cell := range row {
-			if displayWidth(cell) > widths[i] {
-				widths[i] = displayWidth(cell)
-			}
-		}
-	}
-	if _, err := fmt.Fprintln(w, renderTableRow(headers, widths, color, true)); err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if _, err := fmt.Fprintln(w, renderTableRow(row, widths, color, false)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writeTable(w, headers, rows, color)
 }
 
 func writeListText(w io.Writer, values []lease.ClaimView, full, color bool) error {
@@ -540,15 +521,18 @@ func writeListTextAt(w io.Writer, values []lease.ClaimView, full, color bool, no
 			rows = append(rows, []string{state, shortenOpaque(strings.Join(resources, ","), 52), compactExpiry(value, now)})
 		}
 	}
+	return writeTable(w, headers, rows, color)
+}
+
+// writeTable renders an aligned table with an upper snake case header row.
+func writeTable(w io.Writer, headers []string, rows [][]string, color bool) error {
 	widths := make([]int, len(headers))
 	for i, header := range headers {
 		widths[i] = displayWidth(header)
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if displayWidth(cell) > widths[i] {
-				widths[i] = displayWidth(cell)
-			}
+			widths[i] = max(widths[i], displayWidth(cell))
 		}
 	}
 	if _, err := fmt.Fprintln(w, renderTableRow(headers, widths, color, true)); err != nil {

@@ -272,7 +272,9 @@ type CancelClaimMsg struct {
 }
 type LaunchResultMsg struct {
 	Name string
-	Err  error
+	// RunID identifies the supervised run that holds the worker's claim.
+	RunID string
+	Err   error
 }
 
 type ViewRule struct {
@@ -1249,7 +1251,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.Err != nil {
 			m.Notice = "Launch failed: " + v.Err.Error()
 		} else {
-			m.Notice = "Launched " + clean(v.Name) + "; awaiting worker claim in overlay"
+			m.Notice = "Started run " + clean(v.RunID) + " for " + clean(v.Name) + "; it holds the claim until the worker exits (worklease runs show " + clean(v.RunID) + ")"
 		}
 	case CancelClaimMsg:
 		m.Cancelling = false

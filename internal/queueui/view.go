@@ -1657,7 +1657,8 @@ func (m Model) launchPickerView() dialogBox {
 	}
 	option := m.LaunchOptions[m.LaunchIndex]
 	fmt.Fprintf(&b, "  Authority %s\n  Cwd %s\n  Argv %q\n  Environment names %s", clean(option.Authority), clean(option.Cwd), option.Argv, strings.Join(option.EnvNames, ", "))
-	return m.dialog("Launch worker (process start is not a claim)", b.String(), []binding{{"j/k", "select"}, {"enter/y", "launch"}, {"esc/n", "dismiss"}})
+	b.WriteString("\n  A supervised run claims the item, renews it while the worker runs, and releases it on exit.")
+	return m.dialog("Launch supervised worker", b.String(), []binding{{"j/k", "select"}, {"enter/y", "launch"}, {"esc/n", "dismiss"}})
 }
 
 func (m Model) claimPreviewView(preview ClaimPreview) dialogBox {

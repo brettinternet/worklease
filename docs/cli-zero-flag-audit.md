@@ -17,6 +17,11 @@ local default, or reports the missing required input without guessing.
 | `transfer` | Report missing successor handle | Requires explicit successor destination |
 | `verify` | Verify contextual claim | Acquire first if no claim |
 | `exec` | Report missing child command | Requires `-- COMMAND` |
+| `run` | Report missing child command | Requires `-- COMMAND`; claims only named `--resource` keys |
+| `runs show` | Report missing run ID | Read-only; points to `worklease runs` |
+| `runs wait` | Report missing run ID | Read-only; points to `worklease runs` |
+| `runs stop` | Report missing run ID | Signals only the named live run |
+| `runs ack` | Report missing run IDs | Requires IDs or explicit `--finished` |
 | `replace-file` | Report missing path/content | Requires explicit replacement inputs |
 | `history` | Show global lifecycle history | Read-only |
 | `events` | Show lifecycle events | Read-only |

@@ -125,11 +125,12 @@ coverage, readiness, assignment, native occupancy, authority-scoped Worklease
 claims, and lazy claim history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
 loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, `c` previews
 Claim for me, and `x` previews configured launch actions. Launch shows argv, cwd,
-environment variable names, and authority; Enter starts the selected process,
-not a coordinated worker. The worker acquires its own claim; the queue observes
-it only after it appears in the claim overlay. Assignment, progress, and state
-writes remain unavailable. `worklease queue authority-id --json` exposes the
-invoking worker's selected authority ID for launchers to compare before acquire.
+environment variable names, and authority; Enter starts the action as a detached
+[supervised run](#supervised-runs) that claims the item's exact resources before
+the worker starts and releases them when it exits. Follow it with
+`worklease runs`. Assignment, progress, and state writes remain unavailable.
+`worklease queue authority-id --json` exposes the invoking worker's selected
+authority ID.
 `queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Source setup and configured views are described in `docs/queue.md`.
 
 ## Common lifecycle
@@ -145,6 +146,7 @@ invoking worker's selected authority ID for launchers to compare before acquire.
 | `release` | End the exact current claim. |
 | `transfer` | Atomically create a client-credentialled successor claim. |
 | `verify` | Verify current ownership, optionally with exact path coverage. |
+| `run` | Supervise a worker, holding its claim for exactly the worker's lifetime. |
 
 Use `--session NAME` for each concurrent loop.
 
@@ -172,6 +174,44 @@ references keep their existing path selection and are not remapped.
 
 Re-running remote `acquire` on a ready contextual handle replaces it only after
 the authority confirms the old claim is inactive.
+
+## Supervised runs
+
+`worklease run` wraps a worker process so its health, claim, and result stay
+visible after the launching terminal is gone:
+
+```sh
+worklease run --detach --name fix-42 --resource task:42 -- pi -p 'Implement TASK-42'
+worklease runs                 # live and unacknowledged finished runs
+worklease runs show RUN_ID     # record plus log tail
+worklease runs wait RUN_ID     # block until it ends; exits with the worker's status
+worklease runs stop RUN_ID     # SIGTERM the worker; the supervisor still releases
+worklease runs ack --finished  # hide finished runs from the default list
+```
+
+With `--resource`, the run acquires one claim under its own session
+(`run-RUN_ID`) before starting the worker, renews it while the worker lives,
+and releases it when the worker exits, whatever the outcome. A conflicting
+claim fails the run without starting the worker. The claim is kept, not
+released, when it has unresolved guarded operations or queue provider writes.
+If ownership is lost, the worker is stopped. Without `--resource`, the run only
+supervises and records.
+
+The worker receives `WORKLEASE_RUN_ID` and `WORKLEASE_RUN_RESULT`, and with a
+claim `WORKLEASE_SESSION_ID`, `WORKLEASE_HANDLE`, `WORKLEASE_HOME`, and
+`WORKLEASE_PROFILE`, so its own `verify`, `checkpoint`, and `exec` calls select
+the run's claim. Before exiting it may write
+`{"outcome":"done|blocked|review|failed","summary":"..."}` (at most 8 KiB) to
+`WORKLEASE_RUN_RESULT`; otherwise exit 0 is `done` and anything else `failed`.
+The supervisor imposes `stopped` or `timeout` (`--max-duration`).
+
+Records and logs are owner-private files under
+`$XDG_STATE_HOME/worklease/runs/` (default `~/.local/state/worklease/runs/`).
+The log holds combined stdout and stderr, capped at 64 MiB; a foreground run
+also copies it to stderr. `runs` derives health: `abandoned` when the
+supervisor process is gone or stopped updating the record, and `idle` when the
+worker has written nothing for 10 minutes. Idle is informational only. A run
+record is local convenience state, not a claim or provider progress.
 
 Worklease stages a fresh claim ID, credential, and the current acquire inputs as
 a pending exact request, then publishes ready state only after validating the
