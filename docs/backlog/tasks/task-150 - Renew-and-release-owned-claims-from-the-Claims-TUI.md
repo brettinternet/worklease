@@ -2,8 +2,7 @@
 id: TASK-150
 title: Renew and release owned claims from the Claims TUI
 status: Done
-assignee:
-  - '@brett'
+assignee: []
 created_date: '2026-09-27 01:08'
 updated_date: '2026-09-27 03:05'
 labels: []
