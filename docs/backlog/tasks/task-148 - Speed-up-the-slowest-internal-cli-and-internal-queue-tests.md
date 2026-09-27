@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-26 16:39'
-updated_date: '2026-09-26 23:46'
+updated_date: '2026-09-27 00:31'
 labels:
   - testing
 dependencies: []
@@ -35,3 +35,11 @@ These tests run the real bd and backlog CLIs plus Git many times per case (each 
 <!-- SECTION:PLAN:BEGIN -->
 1. Profile listed cases and inspect existing test fixtures/callers to remove repeated provider process setup without losing coverage. 2. Reduce duplicate CLI/MCP round-trips at the lowest suitable layer and document any retained integration checks. 3. Measure both packages with the mise test flags, run focused race tests and repository checks; review once, integrate and record evidence.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Initial suite measured with mise exec -- go test -count=1 -p 1 -parallel 2: CLI 229.5s, queue 102.8s. Reduced six real Backlog queue-next outcome scenarios to three (one per outcome; both transports still have success tests); isolated the 62s Beads CLI test so it can run in parallel; moved the redundant Beads pipeline/recovery assertions to existing generic pipeline tests, retaining provider comment-count evidence in the Beads write/readback test. Current suite passes but remains above targets (CLI 189.1s, queue 109.7s). Next: reduce serial real-provider CLI setup and queue provider round trips without losing coverage; rerun focused race and measure.
+
+Focused race checks passed: go test -race -count=3 on TestQueueNextStartOutcomes and TestBeadsQueueNextClaimAndMCP (internal/cli), and TestBeadsWriteReadbackKeepsGitStage plus TestWritePipelineRecoveryNeverRedispatches (internal/queue). Hook passed gofmt and affected-package tests (CLI 179.9s, queue 97.5s). Direct diff review found no further item-scoped defect. Commit aa7a3f9 contains the test changes; targets remain unmet, so task stays In Progress. Note: an unadorned go test in this worktree can fail where testkit.Home hides mise shims; use mise exec -- go test.
+<!-- SECTION:NOTES:END -->
