@@ -516,6 +516,8 @@ func TestAdapterConformance(t *testing.T) {
 				root, binary := fakeBacklog(t)
 				fixture["checkout"], fixture["binary"] = root, binary
 			} else if kind == "beads" {
+				// The only real-bd check of the external host's stale-write
+				// conflict path; beadsFixture gates it as a provider test.
 				binary, _, source := beadsFixture(t)
 				fixture["checkout"], fixture["binary"] = source.Locator, binary
 				itemID = beadsCommand(t, binary, source.Locator, "create", "First", "--silent")

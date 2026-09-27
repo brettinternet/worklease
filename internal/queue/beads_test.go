@@ -2,10 +2,12 @@ package queue
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/testkit"
@@ -13,6 +15,7 @@ import (
 
 func beadsFixture(t *testing.T) (string, *BeadsAdapter, Source) {
 	t.Helper()
+	testkit.RequireProviderTests(t)
 	binary, err := exec.LookPath("bd")
 	if err != nil {
 		t.Skip("bd 1.3.0 is not installed")
@@ -21,15 +24,19 @@ func beadsFixture(t *testing.T) (string, *BeadsAdapter, Source) {
 	if err != nil || !strings.HasPrefix(string(version), "bd version 1.3.0 (") {
 		t.Skip("bd 1.3.0 is required")
 	}
-	root := t.TempDir()
-	git := testkit.GitCommand("-C", root, "init")
-	if out, err := git.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
+	template, err := beadsTemplate()
+	if err != nil {
+		t.Fatal(err)
 	}
-	cmd := exec.Command(binary, "init", "--non-interactive", "--skip-hooks", "--skip-agents", "--prefix", "probe")
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bd init: %v: %s", err, out)
+	root := filepath.Join(t.TempDir(), "checkout")
+	// bd init costs seconds; each test gets a private copy of one initialized
+	// embedded store instead.
+	if err := os.CopyFS(root, os.DirFS(template)); err != nil {
+		t.Fatal(err)
+	}
+	// CopyFS drops permission bits; bd warns on a group-readable .beads.
+	if err := os.Chmod(filepath.Join(root, ".beads"), 0700); err != nil {
+		t.Fatal(err)
 	}
 	a := NewBeadsAdapter()
 	a.Binary = binary
@@ -39,6 +46,29 @@ func beadsFixture(t *testing.T) (string, *BeadsAdapter, Source) {
 	}
 	return binary, a, source
 }
+
+// beadsTemplate returns a Git checkout initialized once by bd for this test
+// process. It lives under the process-isolated HOME parent, which TestMain
+// removes.
+var beadsTemplate = sync.OnceValues(func() (string, error) {
+	binary, err := exec.LookPath("bd")
+	if err != nil {
+		return "", err
+	}
+	root, err := os.MkdirTemp(filepath.Dir(os.Getenv("HOME")), "beads-template-")
+	if err != nil {
+		return "", err
+	}
+	if out, err := testkit.GitCommand("-C", root, "init").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git init: %v: %s", err, out)
+	}
+	cmd := exec.Command(binary, "init", "--non-interactive", "--skip-hooks", "--skip-agents", "--prefix", "probe")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("bd init: %v: %s", err, out)
+	}
+	return root, nil
+})
 
 func beadsCommand(t *testing.T, binary, root string, args ...string) string {
 	t.Helper()
@@ -51,6 +81,8 @@ func beadsCommand(t *testing.T, binary, root string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// The real bd is required: this is the only check that the adapter parses
+// bd 1.3.0 list, show, dependency, and config output.
 func TestBeadsAdapterConformance(t *testing.T) {
 	t.Parallel()
 	testkit.Home(t)
@@ -89,6 +121,17 @@ func TestBeadsAdapterConformance(t *testing.T) {
 	capabilities, err := a.Capabilities(context.Background(), source, "alice", &ref)
 	if err != nil || capabilities["dependencies"].Support != Supported || capabilities["native-claims"].Support != Unsupported {
 		t.Fatalf("capabilities: %+v %v", capabilities, err)
+	}
+	// A dependency added after a cached list must block the action closure.
+	third := beadsCommand(t, binary, source.Locator, "create", "Third", "--silent")
+	if _, err := a.List(context.Background(), source, Query{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	beadsCommand(t, binary, source.Locator, "dep", "add", third, first)
+	thirdRef := Ref{SourceID: source.ID, ItemID: third}
+	closure, err := a.RefreshActionClosure(context.Background(), source, thirdRef)
+	if err != nil || closure[thirdRef.Key()].Readiness.Status != Blocked {
+		t.Fatalf("action closure used stale edges: %+v %v", closure[thirdRef.Key()], err)
 	}
 	if _, ok := NewRegistry().Get("beads"); !ok {
 		t.Fatal("built-in adapter not registered")
@@ -134,6 +177,8 @@ func TestBeadsTypedEdgesAndCycleAreNotReady(t *testing.T) {
 	}
 }
 
+// The real bd is required: only bd performs the Dolt write, comment, and
+// Git-hook behavior the read-back verifies.
 func TestBeadsWriteReadbackKeepsGitStage(t *testing.T) {
 	t.Parallel()
 	testkit.Home(t)
@@ -281,7 +326,32 @@ esac
 func TestBeadsRejectsConflictingCheckoutConsent(t *testing.T) {
 	t.Parallel()
 	testkit.Home(t)
-	_, adapter, local := beadsFixture(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".beads", "metadata.json"), []byte(`{"dolt_mode":"embedded"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Source bindings are adapter state; a scripted bd suffices.
+	binary := filepath.Join(root, "bd")
+	script := `#!/bin/sh
+case " $* " in
+  *' version '*) printf '%s\n' '{"version":"1.3.0"}' ;;
+  *' sync.remote '*) printf '%s\n' '{"value":""}' ;;
+  *' vc status '*) printf '%s\n' '{"commit":"abc"}' ;;
+  *' list '*) printf '%s\n' '[]' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewBeadsAdapter()
+	adapter.Binary = binary
+	local, err := adapter.Resolve(context.Background(), map[string]string{"id": "local", "checkout": root})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := adapter.Resolve(context.Background(), map[string]string{"id": "remote", "checkout": local.Locator, "allowGitNetwork": "true"}); err == nil || !strings.Contains(err.Error(), "duplicate-checkout") {
 		t.Fatalf("second source overrode local-only consent: %v", err)
 	}

@@ -27,6 +27,9 @@ func queueMCPServer(t *testing.T, h *queueQueryHarness) *mcp.Server {
 }
 
 func TestMCPQueueNextLazyConfigAndLifecycle(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	s := queueMCPServer(t, h)
@@ -186,6 +189,9 @@ func TestMCPQueueNextEightMixedContenders(t *testing.T) {
 }
 
 func TestMCPQueueNextRejectsRemoteProfileDrift(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	t.Setenv("WORKLEASE_HOME", h.state)
 	profileName, _, _ := remoteCLIFixture(t)
@@ -229,6 +235,7 @@ func TestMCPQueueNextRejectsRemoteProfileDrift(t *testing.T) {
 }
 
 func TestMCPDoesNotImportTUI(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("go", "list", "-deps", "./internal/mcp")
 	cmd.Dir = "../.."
 	data, err := cmd.Output()

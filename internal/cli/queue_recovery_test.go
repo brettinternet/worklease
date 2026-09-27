@@ -18,13 +18,7 @@ import (
 // A new recovery process has no resolved source binding; it must resolve the
 // journaled source from configuration before read-back.
 func TestQueueRecoveryAdapterResolvesJournaledBacklogSource(t *testing.T) {
-	binary, err := exec.LookPath("backlog")
-	if err != nil {
-		t.Skip("backlog CLI unavailable")
-	}
-	if _, err := exec.Command(binary, "--version").Output(); err != nil {
-		t.Skip("backlog CLI cannot run")
-	}
+	t.Setenv("PATH", testkit.FakeBacklog(t)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	root := t.TempDir()
 	configText := "project_name: scratch\nstatuses: [To Do, In Progress, Done]\nbacklog_directory: docs/backlog\nremote_operations: false\ncheck_active_branches: false\nauto_commit: false\nbypass_git_hooks: false\n"
@@ -37,7 +31,7 @@ func TestQueueRecoveryAdapterResolvesJournaledBacklogSource(t *testing.T) {
 		t.Fatalf("git fixture: %v %s", err, data)
 	}
 	for _, args := range [][]string{{"task", "create", "Scratch write", "--no-dod-defaults"}, {"task", "edit", "TASK-1", "--status", "In Progress"}} {
-		c := exec.Command(binary, args...)
+		c := exec.Command("backlog", args...)
 		c.Dir = root
 		if data, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("backlog fixture: %v %s", err, data)

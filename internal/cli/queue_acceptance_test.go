@@ -16,6 +16,9 @@ import (
 // A command response and a separately loaded TUI snapshot must report the
 // same source and item evidence. Do not build the TUI input from query JSON.
 func TestQueueQueryAndTUIFixtureParity(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"Unresolved prerequisite","status":"Open","ordinal":1,"isReady":true,"dependencies":["TASK-404"]},{"id":"TASK-2","title":"Complete","status":"Done","ordinal":2,"isReady":false}]`)
 	assertQueueFixtureParity(t, h, false)

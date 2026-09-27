@@ -56,6 +56,8 @@ func IsolateProcessEnvironment() (func(), error) {
 	}
 
 	before := append([]string(nil), os.Environ()...)
+	// A nested call sees the variable already removed; keep the first answer.
+	providerTests = providerTests || os.Getenv(providerTestsVariable) == "1"
 	preserve := helperEnvironmentForInvocation(before, os.Args)
 	for _, entry := range before {
 		key, _, ok := strings.Cut(entry, "=")
@@ -81,6 +83,23 @@ func IsolateProcessEnvironment() (func(), error) {
 		restoreEnvironment(before)
 		_ = os.RemoveAll(root)
 	}, nil
+}
+
+const providerTestsVariable = "WORKLEASE_PROVIDER_TESTS"
+
+// providerTests records the opt-in before IsolateProcessEnvironment removes
+// WORKLEASE_* variables.
+var providerTests bool
+
+// RequireProviderTests skips t unless the test binary ran with
+// WORKLEASE_PROVIDER_TESTS=1. Mark tests whose only purpose is a real
+// provider CLI round trip (bd, backlog) this way so the pre-commit hook stays
+// fast; mise run test, mise run race, and CI set the variable.
+func RequireProviderTests(t testing.TB) {
+	t.Helper()
+	if !providerTests {
+		t.Skip("real-provider test; set " + providerTestsVariable + "=1 to run")
+	}
 }
 
 var testHelperInvocations = map[string][]string{

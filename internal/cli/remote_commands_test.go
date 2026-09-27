@@ -151,6 +151,9 @@ func TestArtifactEnrollmentRejectsEstablishedProfileCollision(t *testing.T) {
 }
 
 func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:test", "--ttl", "30s", "--json")
 	if err != nil {
@@ -194,6 +197,9 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 }
 
 func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	profileName, clientHome, holderHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", holderHandle, "--resource", "coordination:busy", "--ttl", "30s", "--json")
 	if err != nil {
@@ -443,6 +449,9 @@ func TestLocalAcquireValidatesResourceInputBeforeOpeningStore(t *testing.T) {
 }
 
 func TestRemoteCLIReacquiresExpiredContextualClaimWithFreshInputs(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	profile, clientHome, claimHandle := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:old", "--ttl", "1s", "--json")
 	if err != nil {
@@ -477,6 +486,9 @@ func TestRemoteCLIReacquiresExpiredContextualClaimWithFreshInputs(t *testing.T) 
 }
 
 func TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	profile, clientHome, _ := remoteCLIFixture(t)
 	out, err := runRemoteCLI(t, "acquire", "--profile", profile, "--home", clientHome, "--resource", "coordination:default-old", "--ttl", "1s", "--json")
 	if err != nil {
@@ -835,6 +847,9 @@ func TestRemoteReplaceRejectsBeforeReadingFiles(t *testing.T) {
 }
 
 func TestArtifactEnrollmentCleanupGuidanceAndInputPreservation(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	adminProfile, adminHome, _ := remoteCLIFixture(t)
 	secretRoot := filepath.Join(t.TempDir(), "secrets")
 	if err := handle.EnsureOwnerPrivateDir(secretRoot); err != nil {

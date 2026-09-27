@@ -166,6 +166,9 @@ func TestServerInitWithoutArgumentsCreatesRunnableDefaults(t *testing.T) {
 }
 
 func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	clearWorkleaseEnvironment(t)
 	for _, name := range []string{"WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG"} {
 		t.Setenv(name, "")

@@ -17,6 +17,7 @@ func isolateCLIProcess(t *testing.T) bool {
 }
 
 func TestMain(m *testing.M) {
+	testkit.RunFakeBacklogIfInvoked()
 	if filepath.Base(os.Args[0]) == "worklease" {
 		if err := Run(context.Background(), os.Args, "dev", "unknown", "unknown", os.Stdout, os.Stderr); err != nil {
 			os.Exit(1)

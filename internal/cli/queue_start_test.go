@@ -21,15 +21,12 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+// queueStartFixture uses testkit.FakeBacklog: these tests cover how the CLI
+// composes claims and provider writes. internal/queue tests the adapter against
+// the real Backlog.md CLI, and testkit checks the fake against it.
 func queueStartFixture(t *testing.T) (queueStartController, queue.Item, string) {
 	t.Helper()
-	binary, err := exec.LookPath("backlog")
-	if err != nil {
-		t.Skip("backlog CLI unavailable")
-	}
-	if err := exec.Command(binary, "--version").Run(); err != nil {
-		t.Skip("backlog CLI cannot run")
-	}
+	t.Setenv("PATH", testkit.FakeBacklog(t)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	root := t.TempDir()
@@ -44,7 +41,7 @@ func queueStartFixture(t *testing.T) (queueStartController, queue.Item, string) 
 			t.Fatalf("git fixture: %v %s", err, data)
 		}
 	}
-	create := exec.Command(binary, "task", "create", "Start target", "--no-dod-defaults")
+	create := exec.Command("backlog", "task", "create", "Start target", "--no-dod-defaults")
 	create.Dir = root
 	if data, err := create.CombinedOutput(); err != nil {
 		t.Fatalf("backlog fixture: %v %s", err, data)

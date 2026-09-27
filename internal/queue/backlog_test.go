@@ -491,6 +491,7 @@ func TestBacklogActionReadDoesNotCancelRefreshPreflight(t *testing.T) {
 
 func TestBacklogScratchCLI(t *testing.T) {
 	t.Parallel()
+	testkit.RequireProviderTests(t)
 	binary, err := exec.LookPath("backlog")
 	if err != nil {
 		t.Skipf("backlog CLI not installed: %v", err)

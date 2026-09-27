@@ -68,6 +68,9 @@ func (h initHarness) invoke(args ...string) testkit.CLIResult {
 }
 
 func TestQueueInitDirectWriteDryRunAndIdempotence(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	t.Setenv("INIT_ASSIGNEE", "")
 	preview := h.invoke("--dry-run", "--json")
@@ -165,6 +168,9 @@ func TestQueueInitDirectWriteDryRunAndIdempotence(t *testing.T) {
 }
 
 func TestQueueInitMergeAndUnmapped(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	original := "# retained\nversion: 1\nme:\n  backlog-md: ['@tester']\nsources:\n  - id: project\n    adapter: backlog-md\n    checkout: " + h.checkout + "\nviews:\n  - name: Ready # retained view\n    authority: local\n    sources: [project]\n    filter: {assigned: [me]}\n  - name: All\n    authority: local\n    sources: [project]\n    filter: {readiness: all}\nlaunch:\n  - name: terminal\n    argv: [echo, hello]\n"
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
@@ -218,6 +224,9 @@ func TestQueueInitMergeAndUnmapped(t *testing.T) {
 }
 
 func TestQueueInitNewReadyViewAfterAnotherDefault(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	initial := fmt.Sprintf("version: 1\nme:\n  backlog-md: ['@tester']\nsources:\n  - id: project\n    adapter: backlog-md\n    checkout: %s\nviews:\n  - name: Team\n    authority: local\n    sources: [project]\n    filter: {assigned: [me]}\n", h.checkout)
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
@@ -310,6 +319,9 @@ func TestQueueInitGitHubDetectionAndAuth(t *testing.T) {
 }
 
 func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0700); err != nil {
 		t.Fatal(err)
@@ -348,6 +360,9 @@ func TestQueueInitInvalidConfigAndConfirmationFailure(t *testing.T) {
 }
 
 func TestQueueInitExistingSourceRejectsConflictingSafetyFlags(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	t.Setenv("INIT_LIST_JSON", `{"kind":"task-list","schemaVersion":1,"tasks":[]}`)
 	created := h.invoke("--json")
@@ -412,6 +427,9 @@ func TestQueueInitExistingIdentitySkipsAutomaticConfirmation(t *testing.T) {
 }
 
 func TestQueueInitConcurrentAddsPreserveBothSources(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	second := filepath.Join(t.TempDir(), "second")
 	if out, err := testkit.GitCommand("init", "-b", "main", second).CombinedOutput(); err != nil {
@@ -445,6 +463,9 @@ func TestQueueInitConcurrentAddsPreserveBothSources(t *testing.T) {
 }
 
 func TestQueueInitIgnoresProviderEnvironmentOverrides(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	t.Setenv("BACKLOG_CWD", filepath.Dir(h.checkout))
 	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "not-a-repository"))
@@ -455,6 +476,9 @@ func TestQueueInitIgnoresProviderEnvironmentOverrides(t *testing.T) {
 }
 
 func TestQueueInitRemovesColonFromDefaultSourceID(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	withColon := filepath.Join(filepath.Dir(h.checkout), "proj:ect")
 	if err := os.Rename(h.checkout, withColon); err != nil {
@@ -468,6 +492,9 @@ func TestQueueInitRemovesColonFromDefaultSourceID(t *testing.T) {
 }
 
 func TestQueueInitPreflightBeforeWrite(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	for _, test := range []struct {
 		name, env, value, args, failure string
 		removeBinary                    string
@@ -520,6 +547,9 @@ func TestQueueInitPreflightBeforeWrite(t *testing.T) {
 }
 
 func TestQueueInitNetworkConsentAndBothDetected(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newInitHarness(t)
 	t.Setenv("INIT_NETWORK", "true")
 	if out, err := testkit.GitCommand("-C", h.checkout, "remote", "add", "origin", "git@github.com:Owner/Repo.git").CombinedOutput(); err != nil {
@@ -608,6 +638,9 @@ func TestQueueInitExternalManifestApprovalAndReadOnlyDefaults(t *testing.T) {
 }
 
 func TestQueueInitExternalFailureAndPortableClaims(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	_, paths := testkit.Home(t)
 	for name, value := range paths {
 		t.Setenv(name, value)

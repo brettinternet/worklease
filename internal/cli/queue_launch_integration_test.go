@@ -14,6 +14,9 @@ import (
 )
 
 func TestQueueLaunchRunsWorkerUnderSupervisedClaim(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

@@ -376,6 +376,9 @@ func TestHandlelessTransferIsRejected(t *testing.T) {
 }
 
 func TestBareContextualCommandsShareMissingClaimGuidance(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	t.Setenv("WORKLEASE_HANDLE", "")
 	const message = "no contextual claim is available; run worklease acquire --path FILE"
 	for _, command := range []string{"status", "verify", "heartbeat", "checkpoint", "release"} {

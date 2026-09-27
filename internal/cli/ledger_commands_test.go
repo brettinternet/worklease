@@ -79,6 +79,9 @@ func TestHistoryWithoutResourceShowsRecentEventsAndTextOmitsCursor(t *testing.T)
 }
 
 func TestSameHandleReconciliationAdoptsCurrentRevisionAndRestoresLifecycle(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	ctx := context.Background()
 	home := t.TempDir()
 	st, err := store.Open(ctx, home, store.Options{})

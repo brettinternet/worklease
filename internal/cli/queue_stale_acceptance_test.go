@@ -12,6 +12,9 @@ import (
 )
 
 func TestStaleSourceRemainsVisibleInQueryAndTUI(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
 	h := newQueueQueryHarness(t)
 	h.setTasks(`[{"id":"TASK-1","title":"Cached task","status":"Open","ordinal":1,"isReady":true}]`)
 	var loader *queue.Loader
