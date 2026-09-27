@@ -8,9 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestSetupMCPPreviewApplyAndNewUserLifecycle(t *testing.T) {
+	if testkit.RunIsolatedTest(t) {
+		return
+	}
 	project, authority := t.TempDir(), filepath.Join(t.TempDir(), "authority")
 	previous, err := os.Getwd()
 	if err != nil {
@@ -63,6 +68,9 @@ func TestSetupMCPPreviewApplyAndNewUserLifecycle(t *testing.T) {
 }
 
 func TestSetupGuardAndInstructionsJSON(t *testing.T) {
+	if testkit.RunIsolatedTest(t) {
+		return
+	}
 	project := t.TempDir()
 	previous, _ := os.Getwd()
 	_ = os.Chdir(project)
