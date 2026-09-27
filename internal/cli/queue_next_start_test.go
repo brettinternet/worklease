@@ -134,83 +134,83 @@ func TestQueueNextStartOutcomes(t *testing.T) {
 	if isolateCLIProcess(t) {
 		return
 	}
-	for _, mode := range []string{"cli", "mcp"} {
-		for _, scenario := range []struct {
-			name, replacement, outcome string
-			uncertain                  bool
-		}{
-			{"missing-mapping", "", "not attempted", false},
-			{"invalid-transition", "start: Missing", "rejected", false},
-			{"unknown-readback", "start: In Progress", "unknown", true},
-		} {
-			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
-				home, root := nextStartFixture(t)
-				if !scenario.uncertain {
-					path := config.QueuePath(os.Getenv)
-					data, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					replacement := ""
-					if scenario.replacement != "" {
-						replacement = "    workflow:\n      " + scenario.replacement + "\n"
-					}
-					if err := handle.WriteOwnerPrivate(path, []byte(strings.Replace(string(data), "    workflow:\n      start: In Progress\n", replacement, 1)), 1<<20); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					t.Setenv("QUEUE_FAIL_AFTER_EDIT", filepath.Join(t.TempDir(), "dispatched"))
-				}
-				var next map[string]any
-				if mode == "cli" {
-					next = nextStartCLI(t, home, "--claim", "--start", "--session", "worker")
-				} else {
-					// Heartbeats are off, so the claim must outlive the Backlog CLI
-					// writes even on a loaded runner.
-					s, err := mcp.NewServer(mcp.Options{Home: home, ProfileName: config.LocalProfileName, TTL: config.DefaultTTL, QueueNext: mcpQueueNext(home, config.LocalProfileName)})
-					if err != nil {
-						t.Fatal(err)
-					}
-					t.Cleanup(s.Close)
-					// Keep the acquired claim renewed while slow provider/fixture reads
-					// exercise an unknown transition; expiry is not the behavior under test.
-					result, err := s.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "start": true, "sessionId": "worker", "autoHeartbeat": true})
-					if err != nil || result["isError"] == true {
-						t.Fatalf("MCP start: %v %#v", err, result)
-					}
-					next = result["structuredContent"].(map[string]any)["next"].(map[string]any)
-				}
-				transition := next["transition"].(map[string]any)
-				if next["claimOutcome"] != "applied" || transition["outcome"] != scenario.outcome {
-					t.Fatalf("claim must remain held with %s transition: %#v", scenario.outcome, next)
-				}
-				if scenario.outcome == "rejected" && transition["message"] != "Claim acquired; status unchanged" {
-					t.Fatalf("rejection message: %#v", transition)
-				}
-				if scenario.uncertain {
-					if transition["operationId"] == nil {
-						t.Fatalf("missing recovery operation: %#v", transition)
-					}
-					journal, err := queueRecoveryJournal()
-					if err != nil {
-						t.Fatal(err)
-					}
-					entries, err := journal.Recovery(time.Now())
-					if err != nil || len(entries) != 1 {
-						t.Fatalf("unknown write not journaled: %+v %v", entries, err)
-					}
-				}
-				view := exec.Command(os.Getenv("REAL_BACKLOG"), "task", "view", "TASK-1", "--json")
-				view.Dir = root
-				data, err := view.Output()
+	// Exercise each provider outcome once; the CLI and MCP success tests above
+	// separately cover both transport paths without repeating every provider write.
+	for _, scenario := range []struct {
+		name, mode, replacement, outcome string
+		uncertain                        bool
+	}{
+		{"missing-mapping", "cli", "", "not attempted", false},
+		{"invalid-transition", "cli", "start: Missing", "rejected", false},
+		{"unknown-readback", "mcp", "start: In Progress", "unknown", true},
+	} {
+		t.Run(scenario.mode+"/"+scenario.name, func(t *testing.T) {
+			home, root := nextStartFixture(t)
+			if !scenario.uncertain {
+				path := config.QueuePath(os.Getenv)
+				data, err := os.ReadFile(path)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if scenario.uncertain == !strings.Contains(string(data), `"status": "In Progress"`) {
-					t.Fatalf("unexpected provider status: %s", data)
+				replacement := ""
+				if scenario.replacement != "" {
+					replacement = "    workflow:\n      " + scenario.replacement + "\n"
 				}
-			})
-		}
+				if err := handle.WriteOwnerPrivate(path, []byte(strings.Replace(string(data), "    workflow:\n      start: In Progress\n", replacement, 1)), 1<<20); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv("QUEUE_FAIL_AFTER_EDIT", filepath.Join(t.TempDir(), "dispatched"))
+			}
+			var next map[string]any
+			if scenario.mode == "cli" {
+				next = nextStartCLI(t, home, "--claim", "--start", "--session", "worker")
+			} else {
+				// Heartbeats are off, so the claim must outlive the Backlog CLI
+				// writes even on a loaded runner.
+				s, err := mcp.NewServer(mcp.Options{Home: home, ProfileName: config.LocalProfileName, TTL: config.DefaultTTL, QueueNext: mcpQueueNext(home, config.LocalProfileName)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(s.Close)
+				// Keep the acquired claim renewed while slow provider/fixture reads
+				// exercise an unknown transition; expiry is not the behavior under test.
+				result, err := s.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "claim": true, "start": true, "sessionId": "worker", "autoHeartbeat": true})
+				if err != nil || result["isError"] == true {
+					t.Fatalf("MCP start: %v %#v", err, result)
+				}
+				next = result["structuredContent"].(map[string]any)["next"].(map[string]any)
+			}
+			transition := next["transition"].(map[string]any)
+			if next["claimOutcome"] != "applied" || transition["outcome"] != scenario.outcome {
+				t.Fatalf("claim must remain held with %s transition: %#v", scenario.outcome, next)
+			}
+			if scenario.outcome == "rejected" && transition["message"] != "Claim acquired; status unchanged" {
+				t.Fatalf("rejection message: %#v", transition)
+			}
+			if scenario.uncertain {
+				if transition["operationId"] == nil {
+					t.Fatalf("missing recovery operation: %#v", transition)
+				}
+				journal, err := queueRecoveryJournal()
+				if err != nil {
+					t.Fatal(err)
+				}
+				entries, err := journal.Recovery(time.Now())
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("unknown write not journaled: %+v %v", entries, err)
+				}
+			}
+			view := exec.Command(os.Getenv("REAL_BACKLOG"), "task", "view", "TASK-1", "--json")
+			view.Dir = root
+			data, err := view.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario.uncertain == !strings.Contains(string(data), `"status": "In Progress"`) {
+				t.Fatalf("unexpected provider status: %s", data)
+			}
+		})
 	}
 }
 
