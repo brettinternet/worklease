@@ -237,7 +237,7 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			}
 		}
 		for _, item := range candidates {
-			if _, err := fmt.Fprintf(s.writer, "%s\t%s\t%s\n", safeQueueCell(item.Ref.String()), safeQueueCell(item.Title), safeQueueCell(strings.Join(item.Resources, ","))); err != nil {
+			if _, err := fmt.Fprintf(s.writer, "%s  %s\n", safeQueueCell(item.Ref.String()), safeQueueCell(item.Title)); err != nil {
 				return err
 			}
 		}

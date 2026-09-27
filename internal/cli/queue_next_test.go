@@ -236,8 +236,8 @@ func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
 		t.Fatalf("next acquired a claim: %v: %s", err, data)
 	}
 	plain, err := h.run("queue", "next", "--view", "Ready")
-	if err != nil || !strings.Contains(string(plain), "no claim acquired") {
-		t.Fatalf("plain next not explicit about no acquisition: %v: %s", err, plain)
+	if err != nil || string(plain) != "ready (no claim acquired; use --claim for agent loops)\nlocal:TASK-2  Second\n" {
+		t.Fatalf("plain next should show the item without its encoded claim resource: %v: %s", err, plain)
 	}
 	// Deliberate selection overrides advisory assignment even when the view
 	// filters to unassigned items. The default still excludes the other owner.
