@@ -196,7 +196,12 @@ func TestBacklogReadSettingsCheckedOncePerListRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	logged := strings.Replace(string(script), "#!/bin/sh\n", "#!/bin/sh\necho \"$*\" >> calls.log\n", 1)
+	logged = strings.Replace(logged, "'config get remoteOperations'|", "'config get remoteOperations') /bin/cat remote-operations;;\n  ", 1)
 	if err := os.WriteFile(binary, []byte(logged), 0700); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(root, "remote-operations")
+	if err := os.WriteFile(settings, []byte("false\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	checks := func() int {
@@ -226,8 +231,7 @@ func TestBacklogReadSettingsCheckedOncePerListRevision(t *testing.T) {
 	if after := checks(); after != before {
 		t.Fatalf("a view of the same list revision rechecked read settings: %d -> %d", before, after)
 	}
-	enabled := strings.Replace(logged, "'config get remoteOperations'|", "'config get remoteOperations') echo true;;\n  ", 1)
-	if err := os.WriteFile(binary, []byte(enabled), 0700); err != nil {
+	if err := os.WriteFile(settings, []byte("true\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.List(ctx, source, Query{}, ""); !diag(err, "git-network-consent") {
