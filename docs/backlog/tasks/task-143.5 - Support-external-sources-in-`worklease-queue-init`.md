@@ -4,10 +4,11 @@ title: Support external sources in `worklease queue init`
 status: Done
 assignee: []
 created_date: '2026-09-25 16:38'
-updated_date: '2026-09-26 00:34'
+updated_date: '2026-09-27 17:29'
 labels:
   - work-queue
   - external-adapter
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-143.4
@@ -49,6 +50,8 @@ The user wants the CLI approached with API-driven design: every command added he
 Implemented external manifest-only init with schema validation, explicit portable claim binding, SHA-256 approval guidance and stable JSON errors. Focused in-process tests pass (race count=3); lint, format-check, typecheck and full mise test passed. Independent reviewer unavailable due authentication error; performed one item-scoped self-review and corrected human digest rendering.
 
 Verified TestQueueInitExternalManifestApprovalAndReadOnlyDefaults and TestQueueInitExternalFailureAndPortableClaims with go test -race -count=3; manifest-only test helper refuses all non-initialize calls, checks schema rejection, exact SHA-256 and approval command, default read-only source, explicit portable claims, JSON reason/exitCode, and unchanged YAML on duplicate/failure. docs/queue.md covers CLI, approval, exit codes. All mise quality gates and staged hooks passed; code commit 6be11e0 merged to main by 9bf26ea; post-main-merge focused race, lint, format-check and typecheck passed. Review: no remaining item-scoped defects; external reviewer failed due invalid API key.
+
+Post-completion review: fixed multi-instance executable init, scope/secret validation, numeric precision and invalid-schema diagnostics in 2200408. Focused race x3 and full quality gates passed; no remaining scoped follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

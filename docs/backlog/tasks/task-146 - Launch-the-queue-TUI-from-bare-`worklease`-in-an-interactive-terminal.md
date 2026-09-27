@@ -4,8 +4,9 @@ title: Launch the queue TUI from bare `worklease` in an interactive terminal
 status: Done
 assignee: []
 created_date: '2026-09-26 06:09'
-updated_date: '2026-09-26 08:32'
-labels: []
+updated_date: '2026-09-27 17:29'
+labels:
+  - reviewed
 dependencies:
   - TASK-145
 references:
@@ -56,6 +57,8 @@ Bare invocation is also the current onboarding path: root help says to start wit
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented in 0cd42a4 (fast-forwarded to main). PTY tests exercised bare launch with missing queue config (Claims, onboarding, clean home/config/state), valid config with unavailable source (first view and source error), and malformed config parity with queue. Terminal matrix and nonterminal/explicit help tests passed; generated man-page assertion and shipped-binary doc-test passed. Validation: mise run lint, format-check, test, typecheck, doc-test, hooks; focused go test -race -count=3. One item-scoped general review found no remaining defects. No blocker or follow-up.
+
+Post-completion review: bare TUI startup paths inspected; fresh-authority claims refresh corrected in 2200408. Focused race x3 and full quality gates passed; no remaining scoped follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

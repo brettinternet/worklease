@@ -4,8 +4,9 @@ title: Add an authority-wide Claims tab to the queue TUI
 status: Done
 assignee: []
 created_date: '2026-09-26 06:03'
-updated_date: '2026-09-26 08:00'
-labels: []
+updated_date: '2026-09-27 17:29'
+labels:
+  - reviewed
 dependencies: []
 references:
   - internal/queueui/model.go
@@ -61,6 +62,8 @@ Implemented Claims tab and claims-only entry in isolated worktree task-145-claim
 Verification: queueui Claims model tests cover independent tab selection, rendering/help/detail/history, filters, live cursor gap/reset, item jump and remote public-only rendering; CLI tests cover claims-only startup, dedicated command, malformed config. go test -race -count=3 focused Claims/queue Claims suites passed. mise run lint, format-check, test, typecheck and staged hooks passed after merging with concurrent main updates. One unrelated queue invalidation test timed out once during main integration, passed isolated race x3 and full hook rerun. Review found four concrete issues; all fixed and focused checks rerun. Implementation commit 7e2b0ff; main integration f6cbd89.
 
 All 11 acceptance criteria checked from focused model/CLI tests and full quality gates. No remaining blocker; next step TASK-146 may proceed. Claim released after finalization.
+
+Post-completion review: fixed fresh-authority refresh and history after filter/wheel selection in 2200408. Focused race x3 and full quality gates passed; no remaining scoped follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

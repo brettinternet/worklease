@@ -4,10 +4,11 @@ title: Make external source adapters practical for third-party authors
 status: Done
 assignee: []
 created_date: '2026-09-25 16:38'
-updated_date: '2026-09-26 01:32'
+updated_date: '2026-09-27 17:29'
 labels:
   - work-queue
   - external-adapter
+  - reviewed
 milestone: m-1
 dependencies:
   - TASK-143.1
@@ -57,6 +58,8 @@ SDKs and a generic MCP-bridge adapter are out of scope: the protocol is plain JS
 
 <!-- SECTION:NOTES:BEGIN -->
 AC1: TASK-143.1–143.5 are Done with 7/7, 6/6, 4/4, 4/4 and 5/5 checked acceptance criteria (backlog task list --plain). AC2: in a fresh owner-private /private/tmp/worklease-task-143-author-OU0R5Q HOME/XDG directory, used a built worklease host binary and separately supplied disposable reference adapter executable (no in-repo runtime imports) to run queue adapter protocol --json (v1), queue adapter check --executable /private/tmp/worklease-task-143-reference --adapter-config JSON --disposable-target reference-1 --json (verdict pass; credential-leak, mutation-receipt, lost-response pass), queue init --adapter external --executable ... --adapter-config JSON --portable-claims fixture/planning --json (manifest and digest, unapproved), queue adapter approve --source worklease.reference.local-fixture --acknowledge --json (approved digest), queue --view Ready identity confirm --source ... --acknowledge (succeeded), queue query --view Ready --json (complete source and eligible claim, principal alice). Added private 0600 credential hash store and executable helper, config.origin https://reference.invalid, account alice and start Doing mapping, reapproved; queue next --view Ready --claim --start --session author-e2e-2 --agent author --json returned acquired=true and transition.outcome=applied, reference fixture shows rawStatus Doing and writeState receipt operation 3c08daf4a9c04cbd40cfca954cf9986b by alice at fixture-v6; queue recovery --json returned [] and release succeeded. This is a network-free simulated provider; real outside authors supply their own executable/provider mapping. Reproduced external init from an empty non-Git working directory in TestQueueInitExternalFailureAndPortableClaims. Discovered and fixed an identity-confirmation panic (unregistered external adapter key), verified by focused CLI regression. AC3: D16/D17 and plan §11 document shipped protocol/CLI, credential channel, approval, receipts and exclusions; guide now contains minimal standalone fixture and credential/Start walkthrough. Validation: mise run lint, format-check, test, typecheck and staged mise run hooks passed; changed behavior race count=3 passed. Review: one item-scoped self-review, no residual actionable defect; independent reviewer unavailable due invalid API key. Initial accidental queue init without isolated XDG created a user config queue.yaml and lock; confirmed both were new and immediately moved to Trash, leaving no user queue state.
+
+Post-completion review: external author init now validates actual source scope, secret fields, numeric round-trip and manifest schema; fixed in 2200408. Focused race x3 and full quality gates passed; no remaining scoped follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
