@@ -325,4 +325,12 @@ func TestClaimsHandleDispatchRejectsDriftAndUpdatesLifecycle(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("release did not remove handle: %v", err)
 	}
+	events, err := backend.API.Events(context.Background(), "", 20)
+	if err != nil || len(events.Events) == 0 {
+		t.Fatalf("release lifecycle history unavailable: %+v %v", events.Events, err)
+	}
+	last := events.Events[len(events.Events)-1]
+	if last.Kind != "released" || last.Detail["reason"] != "finished" {
+		t.Fatalf("release reason not recorded in lifecycle history: %+v", last)
+	}
 }
