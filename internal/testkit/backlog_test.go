@@ -78,6 +78,8 @@ func backlogScenario(t *testing.T, binary string) map[string]any {
 	result["ready view"] = backlogFields(t, must("task", "view", "TASK-1", "--json"), "task-view")
 	result["done view"] = backlogFields(t, must("task", "view", "TASK-2", "--json"), "task-view")
 	result["ready list"] = backlogFields(t, must("task", "list", "--json"), "task-list")
+	must("task", "edit", "TASK-1", "--assignee", "")
+	result["unassigned view"] = backlogFields(t, must("task", "view", "TASK-1", "--json"), "task-view")
 	return result
 }
 

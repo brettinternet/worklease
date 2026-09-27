@@ -161,7 +161,7 @@ func TestBacklogUnassignMePreservesOtherAssignees(t *testing.T) {
 	} {
 		t.Run(tc.original, func(t *testing.T) {
 			t.Parallel()
-			writer, source, pipeline, claim := backlogWriteProject(t, false, false)
+			writer, source, pipeline, claim := backlogWriteProject(t, statefulBacklog(t), false, false)
 			writer.Mine = tc.mine
 			cmd := exec.Command(writer.binary(), "task", "edit", "TASK-1", "--assignee", tc.original)
 			cmd.Dir = source.Locator
