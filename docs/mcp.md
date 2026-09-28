@@ -41,7 +41,7 @@ The twelve tools are `key`, `acquire`, `queue_next`, `status`, `list`,
 `instructions`. `queue_next` mirrors `worklease queue next`:
 
 ```json
-{"name":"queue_next","arguments":{"view":"Ready","claim":true,"sessionId":"loop-a","autoHeartbeat":true}}
+{"name":"queue_next","arguments":{"view":"Ready","claim":true,"start":true,"sessionId":"loop-a","autoHeartbeat":true}}
 ```
 
 Schemas reject unknown inputs and return schema-version 2 domain envelopes.

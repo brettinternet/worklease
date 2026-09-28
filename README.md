@@ -151,8 +151,8 @@ adapter:
 ```sh
 worklease queue init   # detect this checkout's source; --dry-run previews
 worklease              # open the TUI
-# Agent loop: select and claim the next ready item
-worklease --json queue next --view Ready --claim --session loop-a
+# Agent loop: select, claim, and mark the next ready item in progress
+worklease --json queue next --view Ready --claim --start --session loop-a
 ```
 
 See [TUI](docs/queue-tui.md) and [queue configuration](docs/queue.md).
