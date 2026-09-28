@@ -91,6 +91,8 @@ Write a test only when it would catch a real regression, and cover each behavior
 
 For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
 
+When your Worklease queue configuration has a `Ready` view over this repository's Backlog.md source, select and claim work with `worklease queue next --view Ready --claim --start --session ID --json`. Without that view, select through the `backlog` CLI.
+
 When caller context does not already provide those source/provider capabilities,
 read
 [`skills/worklease-workflow/references/source-workflow.md`](skills/worklease-workflow/references/source-workflow.md)
