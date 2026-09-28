@@ -15,7 +15,7 @@ type Exclusion struct {
 	Reasons []string `json:"reasons"`
 }
 
-// SelectWave applies the start/resume policy to a complete view. visible is the
+// SelectWave selects only open work from a complete view. visible is the
 // view-filtered set; scoped includes filtered-out items for no-work diagnostics.
 // A wave never contains two items with an overlapping exact resource.
 func SelectWave(scoped, visible []Item, sources []string, selectors []Ref, complete bool, limit int, assignedToMe func(Item, string) bool) Selection {
@@ -117,7 +117,7 @@ func SelectWave(scoped, visible []Item, sources []string, selectors []Ref, compl
 				elsewhere++
 			}
 		}
-		if item.State != StateOpen && item.State != StateInProgress {
+		if item.State != StateOpen {
 			reasons = append(reasons, "not-startable")
 		}
 		if len(item.Resources) == 0 || item.KeyInputs == nil {
@@ -137,7 +137,7 @@ func SelectWave(scoped, visible []Item, sources []string, selectors []Ref, compl
 	// The sorted visible set determines the wave; exclusions from this phase
 	// explain exact resource collisions and the caller's bounded group size.
 	for _, item := range visible {
-		if item.Terminal || item.State == StateComplete || item.Readiness.Status != Ready || item.Claim.Active || !item.Claim.Known || item.Claim.Stale || item.Claim.Reason != "" || item.State != StateOpen && item.State != StateInProgress || len(item.Resources) == 0 || item.KeyInputs == nil {
+		if item.Terminal || item.State == StateComplete || item.Readiness.Status != Ready || item.Claim.Active || !item.Claim.Known || item.Claim.Stale || item.Claim.Reason != "" || item.State != StateOpen || len(item.Resources) == 0 || item.KeyInputs == nil {
 			continue
 		}
 		mine := len(selectors) > 0 || len(item.AssignedTo) == 0

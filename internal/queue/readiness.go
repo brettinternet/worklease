@@ -230,9 +230,10 @@ func EvaluateAction(item Item, action Action) Eligibility {
 		if item.Claim.Active {
 			return Eligibility{Eligible: false, Reasons: []string{"active-claim"}, Outcome: "active-claims"}
 		}
-		// The queue's resume policy: only unclaimed work the source reports in progress.
-		if action == ActionResume && item.State != StateInProgress {
-			return Eligibility{Eligible: false, Reasons: []string{"not-in-progress"}, Outcome: "ineligible"}
+		// Automatic acquisition starts only open work. Claim expiry or absence
+		// cannot establish that an earlier worker stopped.
+		if action == ActionResume || item.State != StateOpen {
+			return Eligibility{Eligible: false, Reasons: []string{"not-startable"}, Outcome: "ineligible"}
 		}
 		return Eligibility{Eligible: true}
 	}

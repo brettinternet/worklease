@@ -46,7 +46,7 @@ it. Any overlap conflicts, and acquisition is all-or-none.
    dependency graph.
 2. Return `complete`, `blocked`, `active-claims`, or `capability`/unknown
    evidence when no item is eligible.
-3. Evaluate each candidate's fresh, complete hard-prerequisite closure with the declared named condition per edge (legacy dependencies default to terminal). Known unsatisfied edges block even with other unknown edges; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence stays unknown/capability. Select only ready, unblocked, claimable start/resume work in provider order. Hierarchy and related work are not hard edges; shared resources are claim contention.
+3. Evaluate each candidate's fresh, complete hard-prerequisite closure with the declared named condition per edge (legacy dependencies default to terminal). Known unsatisfied edges block even with other unknown edges; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence stays unknown/capability. Select only ready, unblocked, claimable open work in provider order. Hierarchy and related work are not hard edges; shared resources are claim contention.
 4. Accept exact caller-supplied resources and acquire a fresh ownership epoch
    immediately after selection, before reading full intent, planning,
    delegation, isolation, or edits. For a configured Worklease queue, prefer
@@ -155,7 +155,11 @@ checkpoints, reconciliation evidence, or provider payloads in status, events,
 comments, logs, or handoffs. Handles and cursors must match the authority ID.
 Expiry ends authorization but does not prove prior executor cessation. Before
 resuming prior work, require explicit handoff or authoritative
-abandonment/cessation evidence.
+abandonment/cessation evidence. `queue next` selects only open items: in-progress
+items are excluded even after release or with no claim history, including explicit
+item selectors. Current owners continue under their verified claim outside
+`queue next`. After establishing the evidence, use an authorized provider
+transition to return prior work to open before `queue next` can select it.
 
 ## Provider boundary
 

@@ -11,21 +11,21 @@ func selectionItem(source, id string, priority int, order string) Item {
 	return Item{Summary: Summary{Ref: Ref{SourceID: source, ItemID: id}, State: StateOpen, Fresh: true, Priority: priority, Order: order}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{Known: true, Available: true, State: "free"}, Resources: []string{source + id}, KeyInputs: &resource.Input{Provider: "generic", Source: source, Item: id}}
 }
 
-func TestSelectWaveOrderingResumeAndResourceConflict(t *testing.T) {
-	resume := selectionItem("first", "resume", 1, "2")
-	resume.State = StateInProgress
+func TestSelectWaveOrderingAndResourceConflict(t *testing.T) {
+	t.Parallel()
+	resume := selectionItem("first", "later", 1, "2")
 	first := selectionItem("first", "priority", 1, "1")
 	lower := selectionItem("first", "lower", 3, "0")
 	second := selectionItem("second", "higher", 1, "0")
 	items := []Item{second, lower, resume, first}
 	got := SelectWave(items, append([]Item{}, items...), []string{"first", "second"}, nil, true, 4, func(Item, string) bool { return false })
-	want := []string{"priority", "resume", "lower", "higher"}
+	want := []string{"priority", "later", "lower", "higher"}
 	ids := []string{}
 	for _, candidate := range got.Candidates {
 		ids = append(ids, candidate.Ref.ItemID)
 	}
 	if got.Result != "ready" || !reflect.DeepEqual(ids, want) {
-		t.Fatalf("ordering/resume: %+v; ids=%v", got, ids)
+		t.Fatalf("ordering: %+v; ids=%v", got, ids)
 	}
 	selected := SelectWave(items, append([]Item{}, items...), []string{"first", "second"}, []Ref{second.Ref, first.Ref}, true, 2, func(Item, string) bool { return false })
 	if len(selected.Candidates) != 2 || selected.Candidates[0].Ref != second.Ref || selected.Candidates[1].Ref != first.Ref {
@@ -37,6 +37,36 @@ func TestSelectWaveOrderingResumeAndResourceConflict(t *testing.T) {
 	got = SelectWave(items, append([]Item{}, items...), []string{"first", "second"}, nil, true, 3, func(Item, string) bool { return false })
 	if len(got.Candidates) != 2 || got.Candidates[0].Ref != first.Ref || got.Candidates[1].Ref != second.Ref || len(got.Excluded) != 1 || got.Excluded[0].Reasons[0] != "resource-conflict" {
 		t.Fatalf("shared key was selected twice: %+v", got)
+	}
+}
+
+func TestSelectWaveRejectsInProgress(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"expired", "free"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			item := selectionItem("source", "prior-work", 1, "")
+			item.State = StateInProgress
+			// Expired claims and absent history both look available to acquire.
+			item.Claim = ClaimObservation{Known: true, Available: true, State: state}
+			for _, selectors := range [][]Ref{nil, {item.Ref}} {
+				got := SelectWave([]Item{item}, []Item{item}, []string{"source"}, selectors, true, 1, func(Item, string) bool { return true })
+				if got.Result != "ineligible" || len(got.Candidates) != 0 || len(got.Excluded) != 1 || !reflect.DeepEqual(got.Excluded[0].Reasons, []string{"not-startable"}) {
+					t.Fatalf("in-progress work selected: %+v", got)
+				}
+			}
+			for _, action := range []Action{ActionStart, ActionResume, ActionClaim, ActionLaunch} {
+				if got := ClaimActions(item)[action]; got.Eligible || !reflect.DeepEqual(got.Reasons, []string{"not-startable"}) {
+					t.Fatalf("%s allows in-progress work: %+v", action, got)
+				}
+			}
+			open := selectionItem("source", "new-work", 2, "")
+			items := []Item{item, open}
+			got := SelectWave(items, append([]Item{}, items...), []string{"source"}, nil, true, 1, func(Item, string) bool { return true })
+			if got.Result != "ready" || len(got.Candidates) != 1 || got.Candidates[0].Ref != open.Ref {
+				t.Fatalf("in-progress item prevented open work selection: %+v", got)
+			}
+		})
 	}
 }
 

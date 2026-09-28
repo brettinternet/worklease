@@ -308,7 +308,7 @@ func TestLocalCheckoutAuthorityMustMatchWorkerDefaultAuthority(t *testing.T) {
 }
 
 func TestClaimActionRequiresFreshVerifiedFreeObservation(t *testing.T) {
-	item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "1"}, Fresh: true}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{Known: true, Available: true, State: "free"}}
+	item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "1"}, State: StateOpen, Fresh: true}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{Known: true, Available: true, State: "free"}}
 	if got := ClaimActions(item)[ActionClaim]; !got.Eligible {
 		t.Fatalf("verified free item cannot be claimed: %+v", got)
 	}

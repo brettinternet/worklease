@@ -21,7 +21,7 @@ func launchFixture(t *testing.T, id string) (Item, config.QueueSource, ClaimAuth
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Item{Summary: Summary{Ref: Ref{SourceID: "source", ItemID: id}, Title: "hostile title '-option' $(echo injected)\nsecond line", CanonicalID: "not-a-launch-identifier"}, Body: "hostile body with quotes and $(echo injected)\n", Resources: []string{key.Resource}, KeyInputs: &inputs, Claim: ClaimObservation{AuthorityID: "authority", SessionID: "session-secret"}}, config.QueueSource{ID: "source", Adapter: "github"}, ClaimAuthority{ID: "authority", Profile: "team"}
+	return Item{Summary: Summary{Ref: Ref{SourceID: "source", ItemID: id}, State: StateOpen, Title: "hostile title '-option' $(echo injected)\nsecond line", CanonicalID: "not-a-launch-identifier"}, Body: "hostile body with quotes and $(echo injected)\n", Resources: []string{key.Resource}, KeyInputs: &inputs, Claim: ClaimObservation{AuthorityID: "authority", SessionID: "session-secret"}}, config.QueueSource{ID: "source", Adapter: "github"}, ClaimAuthority{ID: "authority", Profile: "team"}
 }
 
 func TestLaunchGatesAndPublicPreview(t *testing.T) {
@@ -67,7 +67,7 @@ func TestLaunchHandoffIncludesRetiredBindingKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputs := resource.Input{Provider: "generic", Source: "portable", Item: "1"}
-	item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "1"}}, KeyInputs: &inputs, Resources: []string{current.Resource}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{AuthorityID: authority.ID, Known: true, State: "free"}}
+	item := Item{Summary: Summary{Ref: Ref{SourceID: "s", ItemID: "1"}, State: StateOpen}, KeyInputs: &inputs, Resources: []string{current.Resource}, Readiness: Readiness{Status: Ready}, Claim: ClaimObservation{AuthorityID: authority.ID, Known: true, State: "free"}}
 	keys, err := LaunchResources(item, receipt, authority)
 	if err != nil || len(keys) != 2 {
 		t.Fatalf("launch keys: %v %v", keys, err)

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy. Optional item state (default open) is the source-reported category; resume requires in-progress.",
+  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy. Optional item state (default open) is the source-reported category; automatic acquisition requires open work and resume is unavailable.",
   "cases": [
     {
       "name": "hard versus hierarchy",
@@ -44,13 +44,13 @@
     },
     {
       "name": "legacy dependencies",
-      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "state": "in-progress", "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
-      "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
+      "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "state": "open", "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
+      "candidate": ["local", "a"], "action": "start", "expected": {"readiness": "ready", "eligible": true, "reasons": []}
     },
     {
-      "name": "resume requires in-progress",
+      "name": "automatic resume unavailable",
       "graph": {"coverage": "complete", "items": [{"ref": ["local", "a"], "state": "open", "dependencies": [["local", "b"]]}, {"ref": ["local", "b"], "terminal": true}]},
-      "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": false, "reasons": ["not-in-progress"], "outcome": "ineligible"}
+      "candidate": ["local", "a"], "action": "resume", "expected": {"readiness": "ready", "eligible": false, "reasons": ["not-startable"], "outcome": "ineligible"}
     },
     {
       "name": "conflicting dependency projection",
