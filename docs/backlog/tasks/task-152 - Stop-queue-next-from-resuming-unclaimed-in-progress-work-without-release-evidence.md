@@ -3,11 +3,11 @@ id: TASK-152
 title: >-
   Stop queue next from resuming unclaimed in-progress work without release
   evidence
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-28 21:47'
-updated_date: '2026-09-28 23:30'
+updated_date: '2026-09-28 23:31'
 labels:
   - work-queue
 dependencies: []
@@ -43,4 +43,12 @@ queue next --claim treats any unclaimed item the provider reports In Progress as
 <!-- SECTION:NOTES:BEGIN -->
 User approved open-only policy, recorded as D34. SelectWave excludes all in-progress items (including explicit selectors); EvaluateAction rejects fresh in-progress state before acquisition. Selection-layer regression covers expired and free/no-history observations, action gates, and fallback to open work. CLI and MCP share the queue selection path. Loop instructions, workflow skill/example, and queue docs aligned.
 Validation: focused changed tests passed with -race -count=3; mise lint, format-check, typecheck, test passed. Both race task phases passed: initial mise run race completed non-Queue phase before tool timeout; remaining Queue phase passed separately with WORKLEASE_PROVIDER_TESTS=1 go test -race -p 1 -parallel 2 -run ^TestQueue ./.... Independent reviewer found no validated defects. Delivery pending commit/push on main.
+
+Delivered implementation commit 25aa6b8 on main and pushed to origin/main. No remaining blockers; review found no validated findings. Pre-commit checks passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Queue next now selects only open work, including explicit selectors and fresh pre-acquire revalidation. Expired or absent claims cannot authorize resuming in-progress items. D34 records the approved policy; instructions, skill, and docs agree. Selection regression, full tests, lint, format-check, typecheck, both race phases, and hooks passed. Implementation 25aa6b8 pushed to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
