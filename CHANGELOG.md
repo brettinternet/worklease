@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.8.0 - 2026-09-28
+
 ### Added
 
 - Work queue: `worklease queue` (alias `q`) browses configured GitHub Issues (with Projects v2 status), Backlog.md, Beads, Linear, and external-adapter sources in a Vim-style TUI with dependency-aware readiness, claim overlays, and previewed provider writes (start, status, progress note, assign/unassign) with durable write recovery.
