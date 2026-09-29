@@ -1,11 +1,10 @@
 ---
 id: TASK-153.2
 title: Scope queue reads and selection to the current project
-status: In Progress
-assignee:
-  - '@pi'
+status: Done
+assignee: []
 created_date: '2026-09-29 02:25'
-updated_date: '2026-09-29 05:44'
+updated_date: '2026-09-29 05:47'
 labels:
   - work-queue
 milestone: m-1
@@ -71,3 +70,9 @@ Acceptance evidence:
 - AC 7: all requested docs, schema, skill, and Unreleased changelog updated; mise run doc-test passed.
 Validation: mise run lint, format-check, typecheck, test, race, and doc-test passed. New/changed focused tests passed go test -race -count=3. LSP diagnostics clean for queue_command.go; git diff --check passed. One parent review pass completed after implementation worker timed out; the planned independent reviewer did not launch. Two concrete TUI defects were fixed and affected checks rerun. No remaining blocker; next step is commit and terminal provider checkpoint.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented project-scoped queue reads and selection in cff559efb7f737cde1abc40fca7a478419d624d6 on main. CLI and MCP require explicit cross-project opt-in; the TUI has an X scope toggle. Linked worktrees share their project identity, owner-private projectCheckout associates non-checkout sources, and filter-only views coexist with preserved legacy restrictions. All seven acceptance criteria verified. Full lint, format-check, typecheck, provider-enabled test, race, doc-test, repeated focused race checks, and real PTY toggle exercise passed. Parent review fixed scope-restart backend retention and empty-view filtering. Pre-commit hooks passed. No blocker or remaining step for this item; TASK-153.3 and TASK-153.4 remain separate follow-up work. No push performed.
+<!-- SECTION:FINAL_SUMMARY:END -->
