@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.0 - 2026-09-29
+
 ### Changed
 
 - Enrolled queue sources now load shared IDs, adapters, workflows, and claim domains from the committed checkout contract; enrollment is owner-private and explicit, and contract identity drift requires confirmation.
@@ -10,6 +12,7 @@
 
 ### Fixed
 
+- Fixed `queue next` selecting in-progress work when a prior claim had expired or was absent; it now selects only open work, since claim expiry does not prove the prior worker stopped.
 - Profile bindings now apply across all worktrees of a Git repository, while contextual claim handles remain worktree-scoped; conflicting legacy worktree bindings fail closed.
 
 ## 1.8.0 - 2026-09-28
