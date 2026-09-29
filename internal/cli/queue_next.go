@@ -116,6 +116,10 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 					skipped = append(skipped, map[string]any{"ref": candidate.Ref, "reason": "eligibility-changed"})
 					continue
 				}
+				configured := queueSourceByID(cfg.Sources, candidate.Ref.SourceID)
+				if err := validateCurrentQueueContract(ctx, configured); err != nil {
+					return s.handle(cmd, err)
+				}
 				inputs := queue.IdentityInputs(source, candidateAuthority.ID)
 				key, err := resource.Resolve(resource.Input{Provider: inputs.Policy, Source: inputs.Source, Item: fresh.Ref.ItemID})
 				if err != nil || !containsResource(candidate.Resources, key.Resource) {
@@ -132,6 +136,9 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 				}
 				if !observed.Claim.Known || observed.Claim.Stale || !observed.Claim.Available || observed.Claim.Reason != "" || observed.Claim.AuthorityID != candidateAuthority.ID {
 					return s.handle(cmd, reason.New("claim-unknown", "claim authority observation is unavailable"))
+				}
+				if err := validateCurrentQueueContract(ctx, configured); err != nil {
+					return s.handle(cmd, err)
 				}
 				workerHandle := ""
 				if cmd.Bool("start") {

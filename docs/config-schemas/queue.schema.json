@@ -27,6 +27,7 @@
         "adapter": {"enum": ["backlog-md", "beads", "github", "linear", "jira-cloud", "external"]},
         "checkout": {"type": "string", "minLength": 1},
         "projectCheckout": {"type": "string", "minLength": 1, "description": "Owner-private checkout association for sources without a provider checkout."},
+        "contractCheckout": {"type": "string", "minLength": 1, "description": "Explicit owner-private enrollment of this source in the committed queue-sources.yaml contract at this checkout."},
         "claims": {"$ref": "#/$defs/claims"},
         "workflow": {
           "type": "object",

@@ -62,6 +62,7 @@ type QueueSource struct {
 	Adapter           string            `yaml:"adapter"`
 	Checkout          string            `yaml:"checkout"`
 	ProjectCheckout   string            `yaml:"projectCheckout"`
+	ContractCheckout  string            `yaml:"contractCheckout"`
 	Claims            *QueueClaims      `yaml:"claims"`
 	Workflow          map[string]string `yaml:"workflow"`
 	AllowGitNetwork   bool              `yaml:"allowGitNetwork"`
@@ -232,7 +233,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":         {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch":        {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source":        {"id": true, "authority": true, "adapter": true, "checkout": true, "projectCheckout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
+		"source":        {"id": true, "authority": true, "adapter": true, "checkout": true, "projectCheckout": true, "contractCheckout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
 		"githubProject": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
 		"claims":        {"policy": true, "source": true},
 		"view":          {"name": true, "authority": true, "sources": true, "filter": true},
@@ -532,6 +533,11 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	}
 	if _, err := QueueSourceAuthorities(cfg); err != nil {
 		return QueueConfig{}, err
+	}
+	for i, source := range cfg.Sources {
+		if source.ContractCheckout != "" && (!filepath.IsAbs(source.ContractCheckout) || filepath.Clean(source.ContractCheckout) != source.ContractCheckout) {
+			return QueueConfig{}, fmt.Errorf("sources[%d].contractCheckout: absolute canonical checkout path required", i)
+		}
 	}
 	launchNames := map[string]bool{}
 	for i, action := range cfg.Launch {

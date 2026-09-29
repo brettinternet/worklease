@@ -609,6 +609,7 @@ func TestQueueQueryRedactsNonDigestResources(t *testing.T) {
 }
 
 type queueQueryHarness struct {
+	checkout    string
 	t           *testing.T
 	state       string
 	queueConfig string
@@ -647,7 +648,7 @@ func newQueueQueryHarness(t *testing.T) *queueQueryHarness {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("QUEUE_LIST_JSON", "")
 	queueConfig := fmt.Sprintf("version: 1\nme: {}\nsources:\n  - id: local\n    adapter: backlog-md\n    checkout: %s\n    claims: {policy: generic, source: brettinternet/worklease/backlog}\nviews:\n  - name: Ready\n    authority: local\n    sources: [local]\n    filter: {assigned: [nobody]}\n", checkout)
-	h := &queueQueryHarness{t: t, state: state, queueConfig: queueConfig, home: home}
+	h := &queueQueryHarness{t: t, state: state, queueConfig: queueConfig, home: home, checkout: checkout}
 	h.writeQueueConfig(queueConfig)
 	return h
 }

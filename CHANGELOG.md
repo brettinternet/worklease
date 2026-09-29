@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Enrolled queue sources now load shared IDs, adapters, workflows, and claim domains from the committed checkout contract; enrollment is owner-private and explicit, and contract identity drift requires confirmation.
 - Queue views now filter within the current project's source scope by default, with explicit all-projects selection in CLI, MCP, and TUI; queue init creates filter-only views.
 - Claim authority is configured per source, so filter views can combine local and remote projects while each source's CLI, TUI, and MCP claims route to its single trusted authority. Unambiguous legacy per-view authorities continue to load; conflicting assignments name the affected source.
 

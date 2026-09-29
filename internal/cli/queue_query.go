@@ -83,7 +83,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		if cmd.String("view") == "" {
 			return s.handle(cmd, reason.Invalid("--view is required for queue query"))
 		}
-		cfg, err := config.LoadQueue(nil)
+		cfg, contractErrors, err := loadQueueRuntimeConfig(ctx, nil)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
@@ -113,6 +113,10 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		sources := make([]queue.Source, 0, len(view.Sources))
 		resolveErrors := make(map[string]string)
 		for _, configured := range queueSourcesByIDs(cfg, view.Sources) {
+			if diagnostic := contractErrors[configured.ID]; diagnostic != "" {
+				resolveErrors[configured.ID] = diagnostic
+				continue
+			}
 			adapterKey := queueAdapterRegistryKey(configured)
 			adapter, ok := registry.Get(adapterKey)
 			if !ok {

@@ -30,6 +30,7 @@ type queueClaimController struct {
 	registry          *queue.Registry
 	sources           map[string]queue.Source
 	claimSources      map[string]queue.ClaimSource
+	configured        map[string]config.QueueSource
 	queueSession      string
 	paths             config.ProfilePaths
 	current           func() (queue.ClaimAuthority, uint64)
@@ -92,6 +93,11 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 	backend, selected, err := c.authorityForSource(item.Ref.SourceID)
 	if err != nil {
 		return queueClaimPlan{}, err
+	}
+	if configured, ok := c.configured[item.Ref.SourceID]; ok {
+		if err := validateCurrentQueueContract(ctx, configured); err != nil {
+			return queueClaimPlan{}, err
+		}
 	}
 	if err := c.profileIdentityCurrentFor(backend); err != nil {
 		return queueClaimPlan{}, err
@@ -413,6 +419,11 @@ func (c *queueClaimController) preAcquireCheck(ctx context.Context, selected que
 	}
 	if err := c.profileIdentityCurrentFor(plan.backend); err != nil {
 		return nil, err
+	}
+	if configured, ok := c.configured[plan.item.Ref.SourceID]; ok {
+		if err := validateCurrentQueueContract(ctx, configured); err != nil {
+			return nil, err
+		}
 	}
 	// Re-read the prerequisite closure at the last moment: a prerequisite can
 	// reopen while preview confirmation and authority status reads run.

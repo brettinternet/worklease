@@ -56,6 +56,20 @@ func TestQueueBeadsConfiguration(t *testing.T) {
 	}
 }
 
+func TestQueueContractCheckoutEnrollmentReference(t *testing.T) {
+	t.Parallel()
+	checkout := filepath.Join(string(filepath.Separator), "enrolled", "project")
+	content := strings.Replace(queueFixture(t.TempDir()), "    claims: {policy: generic, source: project}\n", "    claims: {policy: generic, source: project}\n    contractCheckout: "+checkout+"\n", 1)
+	cfg, err := parseQueue([]byte(content), nil, nil)
+	if err != nil || cfg.Sources[0].ContractCheckout != checkout {
+		t.Fatalf("contract enrollment reference: %+v %v", cfg, err)
+	}
+	invalid := strings.Replace(content, checkout, "relative/project", 1)
+	if _, err := parseQueue([]byte(invalid), nil, nil); err == nil || !strings.Contains(err.Error(), "contractCheckout: absolute canonical checkout path required") {
+		t.Fatalf("relative contract enrollment accepted: %v", err)
+	}
+}
+
 func TestQueueProjectCheckoutAssociationAndFilterOnlyViews(t *testing.T) {
 	t.Parallel()
 	checkout := t.TempDir()

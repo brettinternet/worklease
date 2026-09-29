@@ -32,9 +32,12 @@ func queueIdentityCommand(s *boundary) *urfave.Command {
 }
 
 func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, sourceID string) error {
-	cfg, err := config.LoadQueue(os.Getenv)
+	cfg, contractErrors, err := loadQueueRuntimeConfig(ctx, os.Getenv)
 	if err != nil {
 		return err
+	}
+	if diagnostic := contractErrors[sourceID]; diagnostic != "" {
+		return reason.New(reason.ReasonBindingMigrationRequired, "enrolled source contract is unavailable: "+diagnostic)
 	}
 	var view *config.QueueView
 	for i := range cfg.Views {

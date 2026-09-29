@@ -108,9 +108,12 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		return queueui.WritePreview{}, "", fmt.Errorf("source unavailable")
 	}
 	// An old live handle cannot authorize writes under a changed claim binding.
-	cfg, err := config.LoadQueue(os.Getenv)
+	cfg, contractErrors, err := loadQueueRuntimeConfig(ctx, os.Getenv)
 	if err != nil {
 		return queueui.WritePreview{}, "", err
+	}
+	if diagnostic := contractErrors[source.ID]; diagnostic != "" {
+		return queueui.WritePreview{}, "", reason.New(reason.ReasonBindingMigrationRequired, "enrolled source contract is unavailable: "+diagnostic)
 	}
 	configured := c.configured[source.ID]
 	if source.Adapter == "beads" {
@@ -141,7 +144,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			continue
 		}
 		found = true
-		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) || configured.Adapter == "linear" && (current.Organization != configured.Organization || current.Team != configured.Team || current.Project != configured.Project || !slices.Equal(current.CredentialHelper, configured.CredentialHelper) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
+		if current.Adapter != configured.Adapter || current.Checkout != configured.Checkout || current.Repository != configured.Repository || current.Host != configured.Host || current.Account != configured.Account || current.ContractCheckout != configured.ContractCheckout || configured.ContractCheckout != "" && !reflect.DeepEqual(current.Claims, configured.Claims) || action == queue.ActionStart && current.Workflow["start"] != configured.Workflow["start"] || configured.ContractCheckout != "" && !reflect.DeepEqual(current.Workflow, configured.Workflow) || configured.GitHubProject != nil && (!reflect.DeepEqual(current.GitHubProject, configured.GitHubProject) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) || configured.Adapter == "linear" && (current.Organization != configured.Organization || current.Team != configured.Team || current.Project != configured.Project || !slices.Equal(current.CredentialHelper, configured.CredentialHelper) || !reflect.DeepEqual(current.Workflow, configured.Workflow)) {
 			return queueui.WritePreview{}, "", fmt.Errorf("queue source binding changed; confirm migration before writing")
 		}
 		if configured.Adapter == "beads" && !reflect.DeepEqual(current.Workflow, configured.Workflow) {

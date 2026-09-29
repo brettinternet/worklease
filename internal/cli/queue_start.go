@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,9 +31,12 @@ func (c queueStartController) prepare(ctx context.Context, item queue.Item) (que
 	if err != nil {
 		return queueui.StartPreview{}, queueClaimPlan{}, err
 	}
-	live, err := config.LoadQueue(os.Getenv)
+	live, diagnostics, err := loadQueueRuntimeConfig(ctx, os.Getenv)
 	if err != nil {
 		return queueui.StartPreview{}, queueClaimPlan{}, err
+	}
+	if diagnostic := diagnostics[cfg.ID]; diagnostic != "" {
+		return queueui.StartPreview{}, queueClaimPlan{}, fmt.Errorf("Start work source contract unavailable: %s", diagnostic)
 	}
 	current := false
 	for _, source := range live.Sources {

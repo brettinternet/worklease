@@ -61,8 +61,8 @@ type queueInitResult struct {
 
 func queueInitCommand(s *boundary) *urfave.Command {
 	return &urfave.Command{Name: "init", Usage: "create owner-private queue.yaml from a checkout or external adapter manifest",
-		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--dry-run] [--json]",
-		Description: "Detect provider facts and write queue.yaml directly. Use --dry-run to preview without writing. Re-run to add another checkout.\n\nExamples:\n  worklease queue init\n  worklease queue init --dry-run\n  worklease queue --view Team init --authority shared --allow-git-network",
+		UsageText:   "worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--enroll-contract] [--dry-run] [--json]",
+		Description: "Detect provider facts and write queue.yaml directly. Use --dry-run to preview without writing. Re-run to add another checkout. Use --enroll-contract only after reviewing the committed source contract; --dry-run previews the owner-private enrollment.\n\nExamples:\n  worklease queue init\n  worklease queue init --dry-run\n  worklease queue init --enroll-contract --dry-run\n  worklease queue --view Team init --authority shared --allow-git-network",
 		OnUsageError: func(_ context.Context, cmd *urfave.Command, _ error, _ bool) error {
 			return queueInitError(s, cmd, reason.Invalid("invalid command-line arguments"))
 		},
@@ -78,6 +78,7 @@ func queueInitCommand(s *boundary) *urfave.Command {
 			&urfave.StringFlag{Name: "me", Usage: "provider principal `PRINCIPAL`"},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "preview detected facts and exact YAML without writing"},
 			&urfave.BoolFlag{Name: "ignore-proposal", Usage: "ignore checkout queue-sources.yaml and detect the provider"},
+			&urfave.BoolFlag{Name: "enroll-contract", Usage: "explicitly use the reviewed checkout source contract at runtime"},
 			&urfave.BoolFlag{Name: "allow-git-network", Usage: "consent to Backlog.md project Git network effects"},
 		},
 		Action: func(ctx context.Context, cmd *urfave.Command) error {
@@ -280,6 +281,9 @@ func queueInitApplyCommand(ctx context.Context, cmd *urfave.Command, checkout, a
 	if cmd.Bool("ignore-proposal") {
 		command += " --ignore-proposal"
 	}
+	if cmd.Bool("enroll-contract") {
+		command += " --enroll-contract"
+	}
 	return command
 }
 
@@ -333,6 +337,31 @@ func initSet(mapping *yaml.Node, key string, value *yaml.Node) {
 	mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
 }
 
+func queueInitSetContractCheckout(mapping *yaml.Node, sourceID, checkout string) error {
+	sources := initField(mapping, "sources")
+	if sources == nil || sources.Kind != yaml.SequenceNode {
+		return reason.New(reason.ReasonConfigInvalid, "queue sources are unavailable")
+	}
+	for _, source := range sources.Content {
+		id := initField(source, "id")
+		if id == nil || id.Value != sourceID {
+			continue
+		}
+		value, err := initNode(checkout)
+		if err != nil {
+			return err
+		}
+		if field := initField(source, "contractCheckout"); field == nil {
+			initSet(source, "contractCheckout", value)
+		} else {
+			field.Value = checkout
+			field.Tag = "!!str"
+		}
+		return nil
+	}
+	return reason.New(reason.ReasonConfigInvalid, "queue source could not be enrolled")
+}
+
 var queueInitGitHubAdapter = queue.NewGitHubAdapter
 
 func queueInitPreflight(ctx context.Context, source config.QueueSource) error {
@@ -376,6 +405,9 @@ func prepareQueueInit(ctx context.Context, cmd *urfave.Command) (queueInitResult
 	if err != nil {
 		return queueInitResult{}, err
 	}
+	if cmd.Bool("enroll-contract") && proposal == nil {
+		return queueInitResult{}, reason.Invalid("--enroll-contract requires a valid .config/worklease/queue-sources.yaml; do not combine it with --ignore-proposal")
+	}
 	if proposal != nil {
 		return prepareQueueInitProposal(ctx, cmd, proposal, checkout)
 	}
@@ -408,7 +440,21 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	if err != nil {
 		return result, reason.Invalid("--checkout must resolve to an existing git checkout")
 	}
+	if cmd.Bool("enroll-contract") {
+		_, checkout, err = handle.BindingRoots(checkout, nil)
+		if err != nil {
+			return result, reason.Invalid("--enroll-contract requires a resolvable Git checkout")
+		}
+	}
 	result.Facts = append(result.Facts, queueInitFact{"checkout", checkout, "git rev-parse --show-toplevel"})
+	contractCheckout := ""
+	if cmd.Bool("enroll-contract") {
+		contractCheckout, err = enrolledQueueContractRoot(ctx, checkout)
+		if err != nil {
+			return result, reason.Invalid("--enroll-contract requires an existing Git checkout")
+		}
+		result.Facts = append(result.Facts, queueInitFact{"contractCheckout", contractCheckout, "--enroll-contract"})
+	}
 	view := cmd.String("view")
 	if view == "" {
 		view = "Ready"
@@ -527,6 +573,18 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	for _, source := range cfg.Sources {
 		resolvedCheckout, _ := filepath.EvalSymlinks(source.Checkout)
 		if adapter == "backlog-md" && source.Adapter == adapter && resolvedCheckout == checkout || adapter == "github" && source.Adapter == adapter && strings.EqualFold(source.Host, host) && strings.EqualFold(source.Repository, repository) {
+			contractEnrollmentChanged := false
+			identitySourceID := source.ID
+			if cmd.Bool("enroll-contract") && proposed != nil && proposed.ID != "" {
+				identitySourceID = proposed.ID
+			}
+			if cmd.Bool("enroll-contract") && source.ContractCheckout != contractCheckout {
+				if err := queueInitSetContractCheckout(mapping, source.ID, contractCheckout); err != nil {
+					return result, err
+				}
+				source.ContractCheckout = contractCheckout
+				contractEnrollmentChanged = true
+			}
 			if proposed != nil {
 				result.Facts = append(result.Facts, queueInitFact{"proposedSourceId", proposed.ID, queueProposalFile})
 				if proposed.Workflow != nil {
@@ -568,6 +626,9 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 				return result, err
 			}
 			result.SourceID, result.Outcome = source.ID, "unchanged"
+			if contractEnrollmentChanged {
+				result.Outcome = "merged"
+			}
 			result.Identity = "unchanged"
 			meNode := initField(mapping, "me")
 			if adapter == "backlog-md" {
@@ -623,7 +684,7 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 				if _, confirmed := identities.Sources[source.ID]; !confirmed {
 					result.Identity = "confirmation-required"
 					result.Checklist = queue.MigrationChecklist
-					result.NextCommands = append(result.NextCommands, fmt.Sprintf("worklease queue --view %s identity confirm --source %s --acknowledge", queueInitQuote(view), queueInitQuote(source.ID)))
+					result.NextCommands = append(result.NextCommands, fmt.Sprintf("worklease queue --view %s identity confirm --source %s --acknowledge", queueInitQuote(view), queueInitQuote(identitySourceID)))
 					return result, nil
 				}
 				result.NextCommands = append(result.NextCommands, queueInitQueueCommand(view, result.DefaultView))
@@ -634,6 +695,15 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 				result.NextCommands = append(result.NextCommands, queueInitApplyCommand(ctx, cmd, checkout, adapter, detectedAdapter, source.ID, source.ID, cmd.String("me"), ""))
 			} else {
 				result.NextCommands = append(result.NextCommands, queueInitQueueCommand(view, result.DefaultView))
+			}
+			if contractEnrollmentChanged {
+				result.Checklist = queue.MigrationChecklist
+				if cmd.Bool("dry-run") {
+					result.Identity = "pending"
+				} else {
+					result.Identity = "confirmation-required"
+					result.NextCommands = append(result.NextCommands, fmt.Sprintf("worklease queue --view %s identity confirm --source %s --acknowledge", queueInitQuote(view), queueInitQuote(identitySourceID)))
+				}
 			}
 			result.YAML, err = queueInitRender(&doc)
 			if err != nil {
@@ -681,7 +751,7 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
 		return result, err
 	}
-	source := config.QueueSource{ID: id, Authority: authority, Adapter: adapter, AllowGitNetwork: adapter == "backlog-md" && cmd.Bool("allow-git-network")}
+	source := config.QueueSource{ID: id, Authority: authority, Adapter: adapter, ContractCheckout: contractCheckout, AllowGitNetwork: adapter == "backlog-md" && cmd.Bool("allow-git-network")}
 	networkOrigin := "default"
 	if source.AllowGitNetwork {
 		networkOrigin = "--allow-git-network"
@@ -842,6 +912,10 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 		node, _ := initNode(source.Workflow)
 		initSet(sourceNode, "workflow", node)
 	}
+	if source.ContractCheckout != "" {
+		node, _ := initNode(source.ContractCheckout)
+		initSet(sourceNode, "contractCheckout", node)
+	}
 	node, _ := initNode(source.AllowGitNetwork)
 	initSet(sourceNode, "allowGitNetwork", node)
 	sourcesNode := initField(mapping, "sources")
@@ -867,7 +941,7 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 			return result, err
 		}
 		_, existingIdentity := identities.Sources[id]
-		if source.Claims == nil && authority == "local" && !existingIdentity {
+		if source.Claims == nil && authority == "local" && !existingIdentity && !cmd.Bool("enroll-contract") {
 			result.Identity = "automatic"
 		} else {
 			result.Identity = "confirmation-required"

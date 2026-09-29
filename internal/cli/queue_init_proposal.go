@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/reason"
 	urfave "github.com/urfave/cli/v3"
@@ -47,9 +48,19 @@ func readQueueProposal(ctx context.Context, cmd *urfave.Command) (*queueProposal
 	if err != nil {
 		return nil, "", nil // ordinary init will report the checkout error
 	}
-	root, err = filepath.EvalSymlinks(root)
+	if cmd.Bool("enroll-contract") {
+		_, root, err = handle.BindingRoots(root, nil)
+		if err != nil {
+			return nil, "", reason.Invalid("--enroll-contract requires a resolvable Git checkout")
+		}
+	}
+	return readQueueProposalAt(root)
+}
+
+func readQueueProposalAt(root string) (*queueProposal, string, error) {
+	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return nil, "", reason.Invalid("--checkout must resolve to an existing git checkout")
+		return nil, "", reason.Invalid("checkout must resolve to an existing git checkout")
 	}
 	for _, directory := range []string{".config", filepath.Join(".config", "worklease")} {
 		info, err := os.Lstat(filepath.Join(root, directory))
@@ -176,6 +187,11 @@ func prepareQueueInitProposal(ctx context.Context, cmd *urfave.Command, proposal
 		part, err := prepareQueueInitOne(ctx, cmd, &proposal.Sources[i], snapshot)
 		if err != nil {
 			return aggregate, err
+		}
+		if cmd.Bool("enroll-contract") {
+			for i := range part.Reports {
+				part.Reports[i] = strings.ReplaceAll(part.Reports[i], "(not applied)", "(contract-owned at runtime)")
+			}
 		}
 		if i == 0 {
 			aggregate = part

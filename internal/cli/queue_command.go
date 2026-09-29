@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 
 // Each frame owns its backend and workers; close them before changing scope.
 func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allProjects bool, viewName string) (queueui.Model, error) {
-	cfg, loadErr := config.LoadQueue(os.Getenv)
+	cfg, contractErrors, loadErr := loadQueueRuntimeConfig(ctx, os.Getenv)
 	notice, claimsOnly, err := queueClaimsOnlyFallback(cfg, loadErr)
 	if err != nil {
 		return queueui.Model{}, err
@@ -106,6 +107,11 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 		return queueui.Model{}, err
 	}
 	selected.Sources = queueViewSourceIDs(selected, scopedSources)
+	for sourceID := range contractErrors {
+		if !slices.Contains(selected.Sources, sourceID) {
+			delete(contractErrors, sourceID)
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	queueSession, err := config.QueueSessionID(os.Getenv)
@@ -184,7 +190,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 	quit := make(chan struct{})
 	setupDone := make(chan error, 1)
 	go func() {
-		err := runQueueSession(ctx, cancel, cfg, selected, backend, authorityView, authorities, queueSession, sourceByID, model, program, quit)
+		err := runQueueSession(ctx, cancel, cfg, contractErrors, selected, backend, authorityView, authorities, queueSession, sourceByID, model, program, quit)
 		select {
 		case <-quit:
 			if errors.Is(err, context.Canceled) {
@@ -209,7 +215,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 
 // runQueueSession resolves sources and runs the queue's background work
 // behind the already drawn frame until quit closes.
-func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.QueueConfig, selected config.QueueView, backend *authorityContext, authorityView queue.ClaimAuthority, authorities *queueAuthoritySet, queueSession string, sourceByID map[string]config.QueueSource, model queueui.Model, program *tea.Program, quit <-chan struct{}) error {
+func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.QueueConfig, contractErrors map[string]string, selected config.QueueView, backend *authorityContext, authorityView queue.ClaimAuthority, authorities *queueAuthoritySet, queueSession string, sourceByID map[string]config.QueueSource, model queueui.Model, program *tea.Program, quit <-chan struct{}) error {
 	registry := queue.NewRegistry()
 	cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
 	if err != nil {
@@ -225,6 +231,11 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 			return reason.Invalid("unknown queue source: " + id)
 		}
 		adapterKey := queueAdapterRegistryKey(src)
+		if diagnostic := contractErrors[id]; diagnostic != "" {
+			shownSources = append(shownSources, queue.Source{ID: src.ID, Name: src.ID, Adapter: adapterKey})
+			sourceErrors[src.ID] = diagnostic
+			continue
+		}
 		adapter, ok := registry.Get(adapterKey)
 		if !ok {
 			shownSources = append(shownSources, queue.Source{ID: src.ID, Name: src.ID, Adapter: adapterKey})
@@ -266,7 +277,11 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	}
 	// The frame and tabs are already on screen; hand over the cached rows.
 	model.Snapshot = loader.Store.Current()
+	applyQueueContractDiagnostics(&model.Snapshot, contractErrors)
 	model.Sources = shownSources
+	for sourceID, diagnostic := range contractErrors {
+		sourceErrors[sourceID] = diagnostic
+	}
 	model.SourceErrors = sourceErrors
 	journal, err := queueRecoveryJournal()
 	if err != nil {
@@ -357,7 +372,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	for _, source := range sources {
 		resolvedByID[source.ID] = source
 	}
-	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, forSource: currentAuthorityForSource, backendsByName: backendsByName, authoritiesByName: authoritiesByName, profile: backend.Profile, profileName: backend.ProfileName, home: backend.Config.Home}
+	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, configured: sourceByID, queueSession: queueSession, paths: paths, current: currentAuthority, forSource: currentAuthorityForSource, backendsByName: backendsByName, authoritiesByName: authoritiesByName, profile: backend.Profile, profileName: backend.ProfileName, home: backend.Config.Home}
 	writeController := queueWriteController{backend: backend, registry: registry, current: currentAuthority, forSource: func(id string) (*authorityContext, queue.ClaimAuthority) {
 		candidateBackend, candidateAuthority, _ := currentAuthorityForSource(id)
 		return candidateBackend, candidateAuthority
@@ -447,6 +462,10 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 				claimSource, ok := claimInputs[item.Ref.SourceID]
 				if !ok {
 					result.Err = fmt.Errorf("claim source unavailable")
+					return result
+				}
+				if err := validateCurrentQueueContract(ctx, sourceByID[item.Ref.SourceID]); err != nil {
+					result.Err = err
 					return result
 				}
 				adapter, ok := registry.Get(claimSource.Source.Adapter)
@@ -549,7 +568,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 		defer program.Send(queueui.LoadingMsg{Active: false})
 		// The cache key follows the checkout's branch and commit, so a queue
 		// left open saves under the commit it is showing, not the one it opened on.
-		return publishQueue(ctx, loader, sources, guardClaims, currentAuthorities, paths, model, program, index, queueIndexPartitions(registry, sources), &claimOverlay, restartOverlay)
+		return publishQueue(ctx, loader, sources, guardClaims, currentAuthorities, paths, model, program, index, queueIndexPartitions(registry, sources), &claimOverlay, restartOverlay, contractErrors)
 	}, report: func(err error) {
 		if ctx.Err() == nil {
 			program.Send(queueui.RefreshedMsg{Err: err})
@@ -928,7 +947,7 @@ func lacksClaims(snapshot queue.Snapshot) bool {
 	return false
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authorities func() (map[string]queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authorities func() (map[string]queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource), contractErrors map[string]string) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -975,6 +994,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		overlayCachedClaimsByAuthority(ctx, &cached, claims, authorities, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
+		applyQueueContractDiagnostics(&seeded, contractErrors)
 		program.Send(queueui.PrepareSnapshotForModel(seeded, model))
 		onSnapshot(seeded, claims)
 	} else if shown := loader.Store.Current(); lacksClaims(shown) {
@@ -988,6 +1008,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range overlayCurrentClaimsByAuthority(ctx, items, guard(shown), authorities, paths) {
 			shown.Items[item.Ref.Key()] = item
 		}
+		applyQueueContractDiagnostics(&shown, contractErrors)
 		program.Send(queueui.PrepareSnapshotForModel(shown, model))
 	}
 	defer func() {
@@ -1008,6 +1029,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}
+		applyQueueContractDiagnostics(&snapshot, contractErrors)
 		program.Send(queueui.PrepareSnapshotForModel(snapshot, model))
 		onSnapshot(snapshot, claims)
 	}
@@ -1021,6 +1043,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 			latest.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}
+		applyQueueContractDiagnostics(&latest, contractErrors)
 		program.Send(queueui.PrepareSnapshotForModel(latest, model))
 		onSnapshot(latest, claims)
 	}
@@ -1063,11 +1086,13 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		}
 		for snapshot := range updates {
 			applyStoredClaims(&snapshot, stored)
+			applyQueueContractDiagnostics(&snapshot, contractErrors)
 			program.Send(queueui.PrepareSnapshotForModel(snapshot, model))
 			onSnapshot(snapshot, claims)
 		}
 	}
 	current := loader.Store.Current()
+	applyQueueContractDiagnostics(&current, contractErrors)
 	// Persist hydrated details and readiness so the next launch starts from them.
 	for _, source := range refreshSources {
 		partition, ok := partitions[source.ID]

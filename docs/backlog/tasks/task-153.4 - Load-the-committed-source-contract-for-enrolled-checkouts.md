@@ -1,10 +1,11 @@
 ---
 id: TASK-153.4
 title: Load the committed source contract for enrolled checkouts
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-29 02:25'
-updated_date: '2026-09-29 02:25'
+updated_date: '2026-09-29 10:02'
 labels:
   - work-queue
 milestone: m-1
@@ -44,3 +45,21 @@ This revises D10 ("v1 reads no repository-provided queue configuration") and TAS
 - [ ] #6 Sources adopted by copy under TASK-151 keep working, and a documented, previewed step converts them to contract-backed sources.
 - [ ] #7 docs/work-queue-tui-proposal.md records the revised D10, including the rejected gitignored override and why; docs/queue.md and CHANGELOG.md are updated.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a validated owner-private contract enrollment reference and an explicit queue-init opt-in that previews the YAML change; keep legacy copied sources unenrolled by default.
+2. Reuse the existing TASK-151 strict parser to load contracts only from enrolled canonical checkout roots, merge contract-owned ID/adapter/workflow/claims over owner-private runtime fields, and return named source-local diagnostics without widening the allowlist.
+3. Apply effective contract configuration consistently to TUI, query, next/MCP, and identity confirmation; block claims on missing/malformed contracts and revalidate enrolled contracts immediately before claims.
+4. Add focused tests for linked roots, enrollment isolation, precedence, drift, diagnostics, and migration preview; update the queue schema, docs, and Unreleased changelog, then run focused race tests and repository quality gates.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented explicit owner-private contractCheckout enrollment via queue init --enroll-contract (dry-run previews; existing copies stay independent). Runtime loader reuses the unchanged TASK-151 parser and canonical enrolled-main-checkout resolution; contract ID/adapter/workflow/claims take precedence, with source-local missing/invalid/conflict diagnostics. Query, next/MCP, TUI, Start work, writes and identity confirmation use effective contracts; stale claim paths revalidate before acquiring.
+Verification: new TestQueueContract* and TestQueueInitContract* tests passed with go test -race -count=3 in internal/cli and internal/config. Coverage includes linked-main contract selection, unenrolled malformed-file non-reading, copy precedence, domain drift blocking claims while reads work, successful reconfirmation, missing/malformed project isolation and named privileged-key rejection, conflicting renames, and dry-run migration with renamed-source confirmation guidance. Existing strict proposal/parser, CLI/TUI and MCP suites passed.
+Quality gates passed: mise run lint, format-check, typecheck, test, race, and doc-test. Full race suite passed before final enrollment guidance wording/renamed-source command correction; affected contract tests then reran under race count=3, and all non-race gates reran. An earlier broad focused race command exceeded the tool timeout; the subsequent complete race suite passed without skipped failures.
+Implementation child timed out before validation; parent took over and completed one bounded item-scoped review. Fixed enrollment outcome being overwritten, stale Start-work private-config loading, cross-project TUI diagnostic spillover, colliding rename fallback, and renamed-source confirmation guidance. No remaining known task-scoped defects or external blockers. Next step: commit verified implementation, record commit and mark done.
+<!-- SECTION:NOTES:END -->
