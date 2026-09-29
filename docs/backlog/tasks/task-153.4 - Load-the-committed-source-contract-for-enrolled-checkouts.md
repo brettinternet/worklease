@@ -1,11 +1,11 @@
 ---
 id: TASK-153.4
 title: Load the committed source contract for enrolled checkouts
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-29 02:25'
-updated_date: '2026-09-29 10:02'
+updated_date: '2026-09-29 10:05'
 labels:
   - work-queue
 milestone: m-1
@@ -37,13 +37,13 @@ This revises D10 ("v1 reads no repository-provided queue configuration") and TAS
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 For a project the user enrolled in owner-private configuration, the TUI, `queue query`, `queue next`, and MCP `queue_next` read `.config/worklease/queue-sources.yaml` from the enrolled checkout (not the current linked worktree) and apply its source IDs, adapters, workflows, and claim domains at runtime; an unenrolled checkout's file is never read.
-- [ ] #2 The TASK-151 allowlist and bounds are unchanged, and every privileged key is still rejected by name.
-- [ ] #3 A contract change to any claim input disables claim actions for the affected source until `queue identity confirm`, while reads continue; no path lets a user keep claiming under a superseded claim domain.
-- [ ] #4 Owner-private configuration cannot override the contract's claim domain; any contract field it may override is documented with its precedence.
-- [ ] #5 A missing or malformed contract marks only that project's sources incomplete with a named diagnostic; other projects are unaffected.
-- [ ] #6 Sources adopted by copy under TASK-151 keep working, and a documented, previewed step converts them to contract-backed sources.
-- [ ] #7 docs/work-queue-tui-proposal.md records the revised D10, including the rejected gitignored override and why; docs/queue.md and CHANGELOG.md are updated.
+- [x] #1 For a project the user enrolled in owner-private configuration, the TUI, `queue query`, `queue next`, and MCP `queue_next` read `.config/worklease/queue-sources.yaml` from the enrolled checkout (not the current linked worktree) and apply its source IDs, adapters, workflows, and claim domains at runtime; an unenrolled checkout's file is never read.
+- [x] #2 The TASK-151 allowlist and bounds are unchanged, and every privileged key is still rejected by name.
+- [x] #3 A contract change to any claim input disables claim actions for the affected source until `queue identity confirm`, while reads continue; no path lets a user keep claiming under a superseded claim domain.
+- [x] #4 Owner-private configuration cannot override the contract's claim domain; any contract field it may override is documented with its precedence.
+- [x] #5 A missing or malformed contract marks only that project's sources incomplete with a named diagnostic; other projects are unaffected.
+- [x] #6 Sources adopted by copy under TASK-151 keep working, and a documented, previewed step converts them to contract-backed sources.
+- [x] #7 docs/work-queue-tui-proposal.md records the revised D10, including the rejected gitignored override and why; docs/queue.md and CHANGELOG.md are updated.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -62,4 +62,12 @@ Implemented explicit owner-private contractCheckout enrollment via queue init --
 Verification: new TestQueueContract* and TestQueueInitContract* tests passed with go test -race -count=3 in internal/cli and internal/config. Coverage includes linked-main contract selection, unenrolled malformed-file non-reading, copy precedence, domain drift blocking claims while reads work, successful reconfirmation, missing/malformed project isolation and named privileged-key rejection, conflicting renames, and dry-run migration with renamed-source confirmation guidance. Existing strict proposal/parser, CLI/TUI and MCP suites passed.
 Quality gates passed: mise run lint, format-check, typecheck, test, race, and doc-test. Full race suite passed before final enrollment guidance wording/renamed-source command correction; affected contract tests then reran under race count=3, and all non-race gates reran. An earlier broad focused race command exceeded the tool timeout; the subsequent complete race suite passed without skipped failures.
 Implementation child timed out before validation; parent took over and completed one bounded item-scoped review. Fixed enrollment outcome being overwritten, stale Start-work private-config loading, cross-project TUI diagnostic spillover, colliding rename fallback, and renamed-source confirmation guidance. No remaining known task-scoped defects or external blockers. Next step: commit verified implementation, record commit and mark done.
+
+Committed implementation on main as 8830342 (Load enrolled queue source contracts at runtime). Staged-file hooks and commit hook passed. All seven acceptance criteria verified by the focused contract tests, existing parser/CLI/MCP suites, documentation test and recorded review. No remaining blocker or resumable implementation step; no push performed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Runtime queue source contracts now require explicit owner-private enrollment, use the enrolled main checkout across linked worktrees, override shared source fields, and fail closed on claim-input drift or missing/invalid contracts without disabling other projects. Existing copies remain compatible; migration is previewed with --enroll-contract --dry-run. Implemented in 8830342 on main. Verified with focused race tests (count=3), lint, format-check, typecheck, full tests, full race suite, doc-test and pre-commit hooks. No remaining blockers.
+<!-- SECTION:FINAL_SUMMARY:END -->
