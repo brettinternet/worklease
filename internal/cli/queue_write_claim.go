@@ -50,7 +50,7 @@ func (c queueWriteClaim) Verify(ctx context.Context, intent queue.WriteIntent) e
 	if h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil {
 		return reason.New(reason.ReasonRecoveryRequired, "queue handle has a pending request")
 	}
-	credentials := (queueLifecycle{controller: &queueClaimController{backend: c.backend}}).credentials(c.path, h)
+	credentials := (queueLifecycle{controller: &queueClaimController{backend: c.backend}}).credentialsForBackend(c.backend, c.path, h)
 	verified, err := c.backend.API.Verify(ctx, credentials, intent.Resources)
 	if err != nil {
 		return err

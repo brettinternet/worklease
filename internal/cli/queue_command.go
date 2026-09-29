@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -113,11 +112,15 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 	if err != nil {
 		return queueui.Model{}, err
 	}
-	backend, authorityView, err := queueAuthorityForClaim(ctx, cmd, selected.Authority)
+	authorities, err := queueAuthoritiesForSources(ctx, cmd, cfg, selected.Sources, true, true)
 	if err != nil {
 		return queueui.Model{}, err
 	}
-	defer backend.Close()
+	defer authorities.Close()
+	backend, authorityView, ok := authorities.Primary(selected.Sources)
+	if !ok {
+		return queueui.Model{}, reason.New(reason.ReasonConfigInvalid, "queue authority is unavailable")
+	}
 	sourceByID := map[string]config.QueueSource{}
 	for _, src := range cfg.Sources {
 		sourceByID[src.ID] = src
@@ -131,7 +134,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 	model.ViewRules = make(map[string]queueui.ViewRule)
 	for _, v := range cfg.Views {
 		viewSources := queueViewSourceIDs(v, scopedSources)
-		if v.Authority != selected.Authority || !sourceSubset(viewSources, selected.Sources) {
+		if !sourceSubset(viewSources, selected.Sources) {
 			continue
 		}
 		model.Views = append(model.Views, v.Name)
@@ -144,12 +147,12 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 	for _, src := range selected.Sources {
 		model.MeBySource[src] = queueMeBySource(cfg, sourceByID[src])
 	}
-	model.Authority = authorityView.Profile
-	model.Scope = "local"
-	if authorityView.Remote {
-		model.Scope = "remote"
+	authoritySummary := queueAuthoritySummary(authorities, selected.Sources)
+	model.Authority = authoritySummary.Profile
+	if authoritySummary.ID != "" {
+		model.Authority = fmt.Sprintf("%s %s", authoritySummary.Profile, authoritySummary.ID)
 	}
-	model.Authority = fmt.Sprintf("%s %s", authorityView.Profile, authorityView.ID)
+	model.Scope = authoritySummary.Scope
 	model.ProjectScope = projectScope.label()
 	model.CanToggleProjectScope = true
 	if me, ok := cfg.Me["backlog-md"]; ok {
@@ -181,7 +184,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 	quit := make(chan struct{})
 	setupDone := make(chan error, 1)
 	go func() {
-		err := runQueueSession(ctx, cancel, cfg, selected, backend, authorityView, queueSession, sourceByID, model, program, quit)
+		err := runQueueSession(ctx, cancel, cfg, selected, backend, authorityView, authorities, queueSession, sourceByID, model, program, quit)
 		select {
 		case <-quit:
 			if errors.Is(err, context.Canceled) {
@@ -206,7 +209,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 
 // runQueueSession resolves sources and runs the queue's background work
 // behind the already drawn frame until quit closes.
-func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.QueueConfig, selected config.QueueView, backend *authorityContext, authorityView queue.ClaimAuthority, queueSession string, sourceByID map[string]config.QueueSource, model queueui.Model, program *tea.Program, quit <-chan struct{}) error {
+func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.QueueConfig, selected config.QueueView, backend *authorityContext, authorityView queue.ClaimAuthority, authorities *queueAuthoritySet, queueSession string, sourceByID map[string]config.QueueSource, model queueui.Model, program *tea.Program, quit <-chan struct{}) error {
 	registry := queue.NewRegistry()
 	cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
 	if err != nil {
@@ -280,11 +283,43 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	claimInputs := queue.ClaimSources(cfg, sources)
 	var claimOverlay sync.Map // ref key -> most recently observed claim and key inputs
 	var authorityMu sync.Mutex
-	var authorityVersion uint64 // bumped when late admission metadata replaces authorityView
+	var authorityVersion uint64 // bumped when late admission metadata replaces authority metadata
 	currentAuthority := func() (queue.ClaimAuthority, uint64) {
 		authorityMu.Lock()
 		defer authorityMu.Unlock()
 		return authorityView, authorityVersion
+	}
+	currentAuthorityForSource := func(sourceID string) (*authorityContext, queue.ClaimAuthority, uint64) {
+		authorityMu.Lock()
+		defer authorityMu.Unlock()
+		backend, authority, ok := authorities.ForSource(sourceID)
+		if !ok {
+			return nil, queue.ClaimAuthority{}, authorityVersion
+		}
+		return backend, authority, authorityVersion
+	}
+	currentAuthorities := func() (map[string]queue.ClaimAuthority, uint64) {
+		authorityMu.Lock()
+		defer authorityMu.Unlock()
+		current := make(map[string]queue.ClaimAuthority, len(selected.Sources))
+		for _, id := range selected.Sources {
+			if _, authority, ok := authorities.ForSource(id); ok {
+				current[id] = authority
+			}
+		}
+		return current, authorityVersion
+	}
+	backendsByName := make(map[string]*authorityContext, len(authorities.Backends))
+	backendsByID := make(map[string]*authorityContext, len(authorities.Backends))
+	authoritiesByName := make(map[string]queue.ClaimAuthority, len(authorities.Authorities))
+	for name, candidateAuthority := range authorities.Authorities {
+		authoritiesByName[name] = candidateAuthority
+	}
+	for name, candidateBackend := range authorities.Backends {
+		backendsByName[name] = candidateBackend
+		if authority, ok := authorities.Authorities[name]; ok {
+			backendsByID[authority.ID] = candidateBackend
+		}
 	}
 	guardClaims := func(snapshot queue.Snapshot) map[string]queue.ClaimSource {
 		state, err := config.LoadQueueIdentities(os.Getenv)
@@ -296,8 +331,18 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 			}
 			return blocked
 		}
-		selected, _ := currentAuthority()
-		return queue.GuardClaimSources(ctx, claimInputs, registry, selected, state, snapshot)
+		claimAuthorities, _ := currentAuthorities()
+		guardedInputs := make(map[string]queue.ClaimSource, len(claimInputs))
+		for id, source := range claimInputs {
+			backend, _, _ := currentAuthorityForSource(id)
+			if backend != nil {
+				if identityErr := (&queueClaimController{paths: paths}).profileIdentityCurrentFor(backend); identityErr != nil {
+					source.BlockReason, source.BlockDetail = "authority-mismatch", identityErr.Error()
+				}
+			}
+			guardedInputs[id] = source
+		}
+		return queue.GuardClaimSourcesByAuthority(ctx, guardedInputs, registry, claimAuthorities, state, snapshot)
 	}
 	var claimController *queueClaimController
 	var workers sync.WaitGroup
@@ -306,15 +351,17 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	var liveCancel context.CancelFunc
 	var liveDone chan struct{}
 	var liveKeys map[string]string
-	var blockedIdentity atomic.Bool
 	var hydrationCancel context.CancelFunc
 	closing := false
 	resolvedByID := make(map[string]queue.Source, len(sources))
 	for _, source := range sources {
 		resolvedByID[source.ID] = source
 	}
-	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, blocked: func() bool { return blockedIdentity.Load() }, profile: backend.Profile, profileName: selected.Authority, home: backend.Config.Home}
-	writeController := queueWriteController{backend: backend, registry: registry, current: currentAuthority, journal: journal, sources: resolvedByID, configured: sourceByID, me: model.MeBySource, session: queueSession, profile: selected.Authority}
+	claimController = &queueClaimController{backend: backend, registry: registry, sources: resolvedByID, claimSources: claimInputs, queueSession: queueSession, paths: paths, current: currentAuthority, forSource: currentAuthorityForSource, backendsByName: backendsByName, authoritiesByName: authoritiesByName, profile: backend.Profile, profileName: backend.ProfileName, home: backend.Config.Home}
+	writeController := queueWriteController{backend: backend, registry: registry, current: currentAuthority, forSource: func(id string) (*authorityContext, queue.ClaimAuthority) {
+		candidateBackend, candidateAuthority, _ := currentAuthorityForSource(id)
+		return candidateBackend, candidateAuthority
+	}, backendsByID: backendsByID, journal: journal, sources: resolvedByID, configured: sourceByID, me: model.MeBySource, session: queueSession, profile: backend.ProfileName}
 	model.StateChoices = make(map[string][]queueui.StateChoice)
 	model.StartTransitions = make(map[string]string)
 	for id, source := range sourceByID {
@@ -345,7 +392,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 		return writeController.AttestCheckpointMissing(ctx, entry, evidence)
 	}
 	model.PreviewLaunch = func(item queue.Item) []queue.LaunchOption {
-		selected, _ := currentAuthority()
+		_, selected, _ := currentAuthorityForSource(item.Ref.SourceID)
 		identities, identityErr := config.LoadQueueIdentities(os.Getenv)
 		options := make([]queue.LaunchOption, 0, len(cfg.Launch))
 		for _, action := range cfg.Launch {
@@ -361,11 +408,15 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	model.Launch = func(item queue.Item, name string) tea.Cmd {
 		return func() tea.Msg {
 			result := queueui.LaunchResultMsg{Name: name}
-			if err := claimController.profileIdentityCurrent(); err != nil {
+			itemBackend, selected, _ := currentAuthorityForSource(item.Ref.SourceID)
+			if itemBackend == nil {
+				result.Err = reason.New(reason.ReasonAuthorityMismatch, "source claim authority is unavailable")
+				return result
+			}
+			if err := claimController.profileIdentityCurrentFor(itemBackend); err != nil {
 				result.Err = err
 				return result
 			}
-			selected, _ := currentAuthority()
 			// Re-read the current claim immediately before starting the child. A
 			// release-then-launch sequence does not reserve the resource.
 			fresh, err := refreshQueueActionClosure(ctx, registry, resolvedByID, item)
@@ -373,7 +424,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 				result.Err = err
 				return result
 			}
-			observed := queue.OverlayClaims(ctx, []queue.Item{fresh}, guardClaims(loader.Store.Current()), selected, paths, os.Getenv)
+			observed := queue.OverlayClaimsByAuthority(ctx, []queue.Item{fresh}, guardClaims(loader.Store.Current()), map[string]queue.ClaimAuthority{item.Ref.SourceID: selected}, paths, os.Getenv)
 			if len(observed) != 1 {
 				result.Err = fmt.Errorf("claim observation unavailable")
 				return result
@@ -414,7 +465,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 					return result
 				}
 				handoff.Resources = keys
-				record, err := startQueueRun(handoff, selected, backend.Config.Home)
+				record, err := startQueueRun(handoff, selected, itemBackend.Config.Home)
 				result.RunID, result.Err = record.ID, err
 				return result
 			}
@@ -442,32 +493,18 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 	restartOverlay := func(base queue.Snapshot, claims map[string]queue.ClaimSource) {
 		liveMu.Lock()
 		defer liveMu.Unlock()
-		if blockedIdentity.Load() {
-			return
-		}
-		if claimController != nil {
-			if identityErr := claimController.profileIdentityCurrent(); identityErr != nil {
-				blockedIdentity.Store(true)
-				stopped := base.Clone()
-				for key, item := range stopped.Items {
-					item.Claim = queue.ClaimObservation{AuthorityID: authorityView.ID, State: "unknown", NativeState: "not-exposed", Stale: true, Reason: "authority-mismatch", Detail: identityErr.Error(), ObservedAt: time.Now().UTC()}
-					stopped.Items[key] = item
-				}
-				program.Send(queueui.ClaimOverlayMsg{Snapshot: stopped, Err: identityErr})
-				return
-			}
-		}
-		authorityMu.Lock()
-		view := authorityView
-		authorityMu.Unlock()
-		keys := make(map[string]string, len(base.Items)+1)
+		views, _ := currentAuthorities()
+		keys := make(map[string]string, len(base.Items)+len(views))
 		for key, item := range base.Items {
 			keys[key] = strings.Join(item.Resources, "\x00") + "\x00" + item.Claim.Reason + "\x00" + item.Claim.Detail
 		}
-		// Late admission metadata changes action eligibility, so it restarts the overlay.
-		keys["\x00admitted"] = "unknown"
-		if view.AdmittedPrefixes != nil {
-			keys["\x00admitted"] = "known\x00" + strings.Join(*view.AdmittedPrefixes, "\x00")
+		// Admission metadata changes action eligibility, so it restarts the overlay.
+		for sourceID, view := range views {
+			value := "unknown"
+			if view.AdmittedPrefixes != nil {
+				value = "known\x00" + strings.Join(*view.AdmittedPrefixes, "\x00")
+			}
+			keys["\x00authority\x00"+sourceID] = view.ID + "\x00" + view.Profile + "\x00" + value
 		}
 		if len(keys) == len(liveKeys) && liveKeys != nil {
 			same := true
@@ -498,13 +535,10 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 			for _, item := range base.Items {
 				items = append(items, item)
 			}
-			_ = queue.RunClaimOverlay(liveCtx, items, claims, view, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
+			_ = queue.RunClaimOverlayByAuthority(liveCtx, items, claims, views, paths, os.Getenv, func(observed []queue.Item, rebuilding bool, err error) {
 				updated := base.Clone()
 				for _, item := range observed {
 					updated.Items[item.Ref.Key()] = item
-					if err != nil && item.Claim.Reason == "authority-mismatch" {
-						blockedIdentity.Store(true)
-					}
 				}
 				program.Send(queueui.ClaimOverlayMsg{Snapshot: updated, Rebuilding: rebuilding, Err: err})
 			})
@@ -515,7 +549,7 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 		defer program.Send(queueui.LoadingMsg{Active: false})
 		// The cache key follows the checkout's branch and commit, so a queue
 		// left open saves under the commit it is showing, not the one it opened on.
-		return publishQueue(ctx, loader, sources, guardClaims, currentAuthority, paths, model, program, index, queueIndexPartitions(registry, sources), &claimOverlay, restartOverlay)
+		return publishQueue(ctx, loader, sources, guardClaims, currentAuthorities, paths, model, program, index, queueIndexPartitions(registry, sources), &claimOverlay, restartOverlay)
 	}, report: func(err error) {
 		if ctx.Err() == nil {
 			program.Send(queueui.RefreshedMsg{Err: err})
@@ -664,20 +698,28 @@ func runQueueSession(ctx context.Context, cancel context.CancelFunc, cfg config.
 		lifecycle.run(ctx, func(msg queueui.OwnedClaimMsg) { program.Send(msg) })
 	}()
 	refresh.trigger()
-	if backend.HTTP != nil {
+	for name, metadataBackend := range authorities.Backends {
+		if metadataBackend.HTTP == nil {
+			continue
+		}
 		workers.Add(1)
-		go func() {
+		go func(name string, metadataBackend *authorityContext) {
 			defer workers.Done()
-			response, metadataErr := backend.HTTP.Metadata(ctx)
+			response, metadataErr := metadataBackend.HTTP.Metadata(ctx)
 			if metadataErr != nil || response.Metadata == nil || ctx.Err() != nil {
 				return
 			}
 			authorityMu.Lock()
-			authorityView.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			updated := authorities.Authorities[name]
+			updated.AdmittedPrefixes = response.Metadata.AdmittedPrefixes
+			authorities.Authorities[name] = updated
+			if metadataBackend == backend {
+				authorityView = updated
+			}
 			authorityVersion++
 			authorityMu.Unlock()
 			refresh.trigger()
-		}()
+		}(name, metadataBackend)
 	}
 	for _, source := range sources {
 		adapter, ok := registry.Get(source.Adapter)
@@ -855,6 +897,27 @@ func overlayCachedClaims(ctx context.Context, cached *queue.Snapshot, claims map
 	}
 }
 
+func overlayCurrentClaimsByAuthority(ctx context.Context, items []queue.Item, claims map[string]queue.ClaimSource, authorities func() (map[string]queue.ClaimAuthority, uint64), paths config.ProfilePaths) []queue.Item {
+	for {
+		selected, version := authorities()
+		observed := queue.OverlayClaimsByAuthority(ctx, items, claims, selected, paths, os.Getenv)
+		if _, current := authorities(); current == version || ctx.Err() != nil {
+			return observed
+		}
+	}
+}
+
+func overlayCachedClaimsByAuthority(ctx context.Context, cached *queue.Snapshot, claims map[string]queue.ClaimSource, authorities func() (map[string]queue.ClaimAuthority, uint64), paths config.ProfilePaths, stored *sync.Map) {
+	items := make([]queue.Item, 0, len(cached.Items))
+	for _, item := range cached.Items {
+		items = append(items, item)
+	}
+	for _, item := range overlayCurrentClaimsByAuthority(ctx, items, claims, authorities, paths) {
+		cached.Items[item.Ref.Key()] = item
+		stored.Store(item.Ref.Key(), item)
+	}
+}
+
 // lacksClaims reports stale cached rows without a claim observation.
 func lacksClaims(snapshot queue.Snapshot) bool {
 	for _, item := range snapshot.Items {
@@ -865,7 +928,7 @@ func lacksClaims(snapshot queue.Snapshot) bool {
 	return false
 }
 
-func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authority func() (queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
+func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Source, guard func(queue.Snapshot) map[string]queue.ClaimSource, authorities func() (map[string]queue.ClaimAuthority, uint64), paths config.ProfilePaths, model queueui.Model, program *tea.Program, index *queueindex.Index, partitions map[string]queueindex.Partition, stored *sync.Map, onSnapshot func(queue.Snapshot, map[string]queue.ClaimSource)) error {
 	refreshStarted := time.Now()
 	stored.Range(func(key, _ any) bool { stored.Delete(key); return true }) // rebind after source/config refresh
 	var releases []func()
@@ -909,7 +972,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 	}
 	claims := guard(cached)
 	if len(cached.Items) > 0 {
-		overlayCachedClaims(ctx, &cached, claims, authority, paths, stored)
+		overlayCachedClaimsByAuthority(ctx, &cached, claims, authorities, paths, stored)
 		loader.Store.SeedSnapshot(cached)
 		seeded := loader.Store.Current()
 		program.Send(queueui.PrepareSnapshotForModel(seeded, model))
@@ -922,7 +985,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range shown.Items {
 			items = append(items, item)
 		}
-		for _, item := range overlayCurrentClaims(ctx, items, guard(shown), authority, paths) {
+		for _, item := range overlayCurrentClaimsByAuthority(ctx, items, guard(shown), authorities, paths) {
 			shown.Items[item.Ref.Key()] = item
 		}
 		program.Send(queueui.PrepareSnapshotForModel(shown, model))
@@ -940,7 +1003,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range snapshot.Items {
 			items = append(items, item)
 		}
-		observed := overlayCurrentClaims(ctx, items, claims, authority, paths)
+		observed := overlayCurrentClaimsByAuthority(ctx, items, claims, authorities, paths)
 		for _, item := range observed {
 			snapshot.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
@@ -954,7 +1017,7 @@ func publishQueue(ctx context.Context, loader *queue.Loader, sources []queue.Sou
 		for _, item := range latest.Items {
 			items = append(items, item)
 		}
-		for _, item := range overlayCurrentClaims(ctx, items, claims, authority, paths) {
+		for _, item := range overlayCurrentClaimsByAuthority(ctx, items, claims, authorities, paths) {
 			latest.Items[item.Ref.Key()] = item
 			stored.Store(item.Ref.Key(), item)
 		}

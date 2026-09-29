@@ -247,6 +247,18 @@ func PreAcquireIdentity(ctx context.Context, source ClaimSource, adapter Adapter
 	return keys, nil
 }
 
+// GuardClaimSourcesByAuthority gates every source against its own configured authority.
+func GuardClaimSourcesByAuthority(ctx context.Context, sources map[string]ClaimSource, registry *Registry, authorities map[string]ClaimAuthority, state config.QueueIdentities, snapshot Snapshot) map[string]ClaimSource {
+	out := make(map[string]ClaimSource, len(sources))
+	for id, source := range sources {
+		guarded := GuardClaimSources(ctx, map[string]ClaimSource{id: source}, registry, authorities[id], state, snapshot)
+		if current, ok := guarded[id]; ok {
+			out[id] = current
+		}
+	}
+	return out
+}
+
 // GuardClaimSources applies the same gate to all actionable items in a view.
 // The source index is not proof of identity: portable Backlog.md bindings
 // always re-list from the provider, including when a cached snapshot is used.

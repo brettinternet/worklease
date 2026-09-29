@@ -126,7 +126,7 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
 		return result, err
 	}
-	source := config.QueueSource{ID: id, Adapter: "external", Executable: path, ExpectedAdapterID: manifest.ID, ExpectedVersion: manifest.Version, Config: configuration}
+	source := config.QueueSource{ID: id, Authority: authority, Adapter: "external", Executable: path, ExpectedAdapterID: manifest.ID, ExpectedVersion: manifest.Version, Config: configuration}
 	if claim := cmd.String("portable-claims"); claim != "" {
 		source.Claims = &config.QueueClaims{Policy: "generic", Source: claim}
 	}
@@ -135,7 +135,7 @@ func prepareQueueInitExternal(ctx context.Context, cmd *urfave.Command, result q
 		key   string
 		value any
 	}{
-		{"id", id}, {"adapter", "external"}, {"executable", path}, {"expectedAdapterId", manifest.ID}, {"expectedVersion", manifest.Version}, {"config", configuration},
+		{"id", id}, {"authority", authority}, {"adapter", "external"}, {"executable", path}, {"expectedAdapterId", manifest.ID}, {"expectedVersion", manifest.Version}, {"config", configuration},
 	} {
 		node, err := initNode(field.value)
 		if err != nil {

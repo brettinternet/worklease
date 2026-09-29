@@ -853,7 +853,7 @@ func TestQueueInitProposalApplyCommandPreservesOptions(t *testing.T) {
 		t.Fatalf("preview and apply differ: %v %s", err, applied.Stdout)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
-	if err != nil || len(cfg.Views) != 1 || cfg.Views[0].Authority != "team" || !cfg.Sources[0].AllowGitNetwork {
+	if err != nil || len(cfg.Views) != 1 || cfg.Sources[0].Authority != "team" || !cfg.Sources[0].AllowGitNetwork {
 		t.Fatalf("safety options: %+v %v", cfg, err)
 	}
 }

@@ -26,27 +26,32 @@ import (
 const queueClaimHold = time.Hour
 
 type queueClaimController struct {
-	backend      *authorityContext
-	registry     *queue.Registry
-	sources      map[string]queue.Source
-	claimSources map[string]queue.ClaimSource
-	queueSession string
-	paths        config.ProfilePaths
-	current      func() (queue.ClaimAuthority, uint64)
-	blocked      func() bool
-	profile      *config.Profile
-	profileName  string
-	home         string
+	backend           *authorityContext
+	registry          *queue.Registry
+	sources           map[string]queue.Source
+	claimSources      map[string]queue.ClaimSource
+	queueSession      string
+	paths             config.ProfilePaths
+	current           func() (queue.ClaimAuthority, uint64)
+	forSource         func(string) (*authorityContext, queue.ClaimAuthority, uint64)
+	backendsByName    map[string]*authorityContext
+	authoritiesByName map[string]queue.ClaimAuthority
+	blocked           func() bool
+	profile           *config.Profile
+	profileName       string
+	home              string
 }
 
 type queueClaimPlan struct {
-	item     queue.Item
-	source   queue.ClaimSource
-	adapter  queue.Adapter
-	keys     []string
-	preview  queueui.ClaimPreview
-	handle   string
-	existing *handle.Handle
+	backend   *authorityContext
+	authority queue.ClaimAuthority
+	item      queue.Item
+	source    queue.ClaimSource
+	adapter   queue.Adapter
+	keys      []string
+	preview   queueui.ClaimPreview
+	handle    string
+	existing  *handle.Handle
 }
 
 func (c *queueClaimController) Preview(ctx context.Context, item queue.Item) tea.Cmd {
@@ -84,14 +89,14 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 	if c.blocked != nil && c.blocked() {
 		return queueClaimPlan{}, reason.New(reason.ReasonAuthorityMismatch, "claim actions stopped because authority identity changed; recover the existing queue handle before resubscribing")
 	}
-	selected, err := c.selectedAuthority()
+	backend, selected, err := c.authorityForSource(item.Ref.SourceID)
 	if err != nil {
 		return queueClaimPlan{}, err
 	}
-	if err := c.profileIdentityCurrent(); err != nil {
+	if err := c.profileIdentityCurrentFor(backend); err != nil {
 		return queueClaimPlan{}, err
 	}
-	if err := c.checkQueueHandles(selected); err != nil {
+	if err := c.checkQueueHandlesFor(selected, backend); err != nil {
 		return queueClaimPlan{}, err
 	}
 	fresh, err := refreshQueueActionClosure(ctx, c.registry, c.sources, item)
@@ -154,7 +159,7 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 	if eligibility := queue.ClaimActions(observed)[queue.ActionClaim]; !eligibility.Eligible {
 		return queueClaimPlan{}, reason.New(reason.ReasonInvalidArgument, "claim unavailable: "+strings.Join(eligibility.Reasons, ", "))
 	}
-	profileName := c.profileName
+	profileName := backend.ProfileName
 	if profileName == "" {
 		profileName = config.LocalProfileName
 	}
@@ -173,7 +178,7 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 	}
 	var existing *handle.Handle
 	if previous, readErr := handle.Read(handlePath); readErr == nil {
-		if previous.AuthorityID != selected.ID || previous.SessionID != c.queueSession || selected.Remote && previous.RestoreID != c.profile.RestoreID {
+		if previous.AuthorityID != selected.ID || previous.SessionID != c.queueSession || selected.Remote && (backend.Profile == nil || previous.RestoreID != backend.Profile.RestoreID) {
 			return queueClaimPlan{}, queueHandleIdentityError(handlePath)
 		}
 		if previous.State == "pending" || previous.PendingRequest != nil || previous.RecoveryRequest != nil {
@@ -182,7 +187,7 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 		if previous.State != "ready" {
 			return queueClaimPlan{}, reason.New(reason.ReasonHandleMalformed, "queue claim handle is not ready").With("pendingPath", handlePath)
 		}
-		status, statusErr := c.backend.API.Status(ctx, lease.Selector{AuthorityID: selected.ID, ClaimID: previous.ClaimID})
+		status, statusErr := backend.API.Status(ctx, lease.Selector{AuthorityID: selected.ID, ClaimID: previous.ClaimID})
 		if statusErr != nil {
 			return queueClaimPlan{}, reason.New("claim-unknown", "existing queue claim status is unavailable; handle was not replaced")
 		}
@@ -200,19 +205,49 @@ func (c *queueClaimController) prepare(ctx context.Context, item queue.Item) (qu
 	} else if !isMissingHandle(readErr) {
 		return queueClaimPlan{}, readErr
 	}
-	preview := queueui.ClaimPreview{Identity: queueIdentity(fresh), Title: fresh.Title, AuthorityProfile: profileName, AuthorityID: selected.ID, Scope: scope, SessionID: c.queueSession, Resources: append([]string(nil), keys...), TTL: c.backend.Config.TTL, Hold: queueClaimHold, CoordinationLimits: limits}
-	return queueClaimPlan{item: observed, source: source, adapter: adapter, keys: append([]string(nil), keys...), preview: preview, handle: handlePath, existing: existing}, nil
+	preview := queueui.ClaimPreview{Identity: queueIdentity(fresh), Title: fresh.Title, AuthorityProfile: profileName, AuthorityID: selected.ID, Scope: scope, SessionID: c.queueSession, Resources: append([]string(nil), keys...), TTL: backend.Config.TTL, Hold: queueClaimHold, CoordinationLimits: limits}
+	return queueClaimPlan{backend: backend, authority: selected, item: observed, source: source, adapter: adapter, keys: append([]string(nil), keys...), preview: preview, handle: handlePath, existing: existing}, nil
+}
+
+func (c *queueClaimController) authorityForSource(sourceID string) (*authorityContext, queue.ClaimAuthority, error) {
+	backend := c.backend
+	var selected queue.ClaimAuthority
+	if c.forSource != nil {
+		backend, selected, _ = c.forSource(sourceID)
+	} else if c.current != nil {
+		selected, _ = c.current()
+	}
+	if backend == nil || selected.API == nil || selected.ID == "" {
+		return nil, queue.ClaimAuthority{}, reason.New("claim-unknown", "claim authority unavailable")
+	}
+	if selected.Remote && selected.AdmittedPrefixes == nil {
+		return nil, queue.ClaimAuthority{}, reason.New("admission-unknown", "remote authority has not advertised resource admission")
+	}
+	return backend, selected, nil
 }
 
 func (c *queueClaimController) selectedAuthority() (queue.ClaimAuthority, error) {
-	selected, _ := c.current()
-	if selected.API == nil || selected.ID == "" {
-		return queue.ClaimAuthority{}, reason.New("claim-unknown", "claim authority unavailable")
+	_, selected, err := c.authorityForSource("")
+	return selected, err
+}
+
+func (c *queueClaimController) profileIdentityCurrentFor(backend *authorityContext) error {
+	return queueProfileIdentityCurrent(c.paths, backend)
+}
+
+func queueProfileIdentityCurrent(paths config.ProfilePaths, backend *authorityContext) error {
+	if backend == nil || backend.Profile == nil {
+		return nil
 	}
-	if selected.Remote && selected.AdmittedPrefixes == nil {
-		return queue.ClaimAuthority{}, reason.New("admission-unknown", "remote authority has not advertised resource admission")
+	profiles, _, err := config.LoadProfiles(paths)
+	if err != nil {
+		return reason.New(reason.ReasonAuthorityMismatch, "remote profile identity is unavailable; claim actions stopped")
 	}
-	return selected, nil
+	current, ok := profiles[backend.ProfileName]
+	if !ok || current != *backend.Profile {
+		return reason.New(reason.ReasonAuthorityMismatch, "remote profile identity changed; recover existing queue handles before resubscribing")
+	}
+	return nil
 }
 
 func (c *queueClaimController) profileIdentityCurrent() error {
@@ -231,9 +266,19 @@ func (c *queueClaimController) profileIdentityCurrent() error {
 }
 
 func (c *queueClaimController) checkQueueHandles(selected queue.ClaimAuthority) error {
-	profileName := c.profileName
-	if profileName == "" {
-		profileName = config.LocalProfileName
+	backend := c.backend
+	if backend != nil {
+		pinned := *backend
+		pinned.ProfileName, pinned.Profile = c.profileName, c.profile
+		backend = &pinned
+	}
+	return c.checkQueueHandlesFor(selected, backend)
+}
+
+func (c *queueClaimController) checkQueueHandlesFor(selected queue.ClaimAuthority, backend *authorityContext) error {
+	profileName := config.LocalProfileName
+	if backend != nil && backend.ProfileName != "" {
+		profileName = backend.ProfileName
 	}
 	dir := queueClaimHandleDir(c.home, c.queueSession, profileName)
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
@@ -260,7 +305,7 @@ func (c *queueClaimController) checkQueueHandles(selected queue.ClaimAuthority) 
 		if h.SessionID != c.queueSession {
 			return reason.New(reason.ReasonHandleMalformed, "queue-owned handle session does not match").With("pendingPath", path)
 		}
-		if h.AuthorityID != selected.ID || selected.Remote && h.RestoreID != c.profile.RestoreID || !selected.Remote && h.RestoreID != "" {
+		if h.AuthorityID != selected.ID || selected.Remote && (backend == nil || backend.Profile == nil || h.RestoreID != backend.Profile.RestoreID) || !selected.Remote && h.RestoreID != "" {
 			return queueHandleIdentityError(path)
 		}
 		if h.State == "pending" || h.PendingRequest != nil || h.RecoveryRequest != nil {
@@ -270,9 +315,14 @@ func (c *queueClaimController) checkQueueHandles(selected queue.ClaimAuthority) 
 	return nil
 }
 
+func (c *queueClaimController) acquireAuthority(ctx context.Context, backend *authorityContext, request lease.AcquireRequest) (lease.Grant, error) {
+	c = &queueClaimController{backend: backend}
+	return c.backend.API.Acquire(ctx, request)
+}
+
 func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan) (lease.Grant, error) {
-	selected, _ := c.current()
-	request := lease.AcquireRequest{AuthorityID: selected.ID, ClaimID: randomHex(16), Token: randomHex(32), Resources: append([]string(nil), plan.keys...), AgentID: c.backend.Config.AgentID, SessionID: c.queueSession, WorkKey: strings.Join(plan.keys, ","), TTL: c.backend.Config.TTL, CoordinationOnly: true, HandlePath: plan.handle}
+	selected, backend := plan.authority, plan.backend
+	request := lease.AcquireRequest{AuthorityID: selected.ID, ClaimID: randomHex(16), Token: randomHex(32), Resources: append([]string(nil), plan.keys...), AgentID: backend.Config.AgentID, SessionID: c.queueSession, WorkKey: strings.Join(plan.keys, ","), TTL: backend.Config.TTL, CoordinationOnly: true, HandlePath: plan.handle}
 	if selected.Remote {
 		request.MaxHold = queueClaimHold
 	} else {
@@ -294,7 +344,7 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 			return lease.Grant{}, reason.New(reason.ReasonOperationRequestMismatch, "claim resources changed after preview")
 		}
 		request.Resources = keys
-		grant, err := c.backend.API.Acquire(ctx, request)
+		grant, err := c.acquireAuthority(ctx, backend, request)
 		if err != nil {
 			return lease.Grant{}, mutationFailure(err, request.ClaimID, request.ClaimID, plan.handle)
 		}
@@ -340,7 +390,7 @@ func (c *queueClaimController) acquire(ctx context.Context, plan queueClaimPlan)
 		return lease.Grant{}, reason.New(reason.ReasonOperationRequestMismatch, "claim resources changed after preview")
 	}
 	request.Resources = keys
-	grant, err := c.backend.API.Acquire(ctx, request)
+	grant, err := c.acquireAuthority(ctx, backend, request)
 	if err != nil {
 		if isDefinitiveNoCommit(err) {
 			_ = lock.Remove(plan.handle)
@@ -361,7 +411,7 @@ func (c *queueClaimController) preAcquireCheck(ctx context.Context, selected que
 	if c.blocked != nil && c.blocked() {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "claim actions stopped because authority identity changed")
 	}
-	if err := c.profileIdentityCurrent(); err != nil {
+	if err := c.profileIdentityCurrentFor(plan.backend); err != nil {
 		return nil, err
 	}
 	// Re-read the prerequisite closure at the last moment: a prerequisite can

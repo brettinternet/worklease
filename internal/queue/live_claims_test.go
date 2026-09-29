@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,218 @@ import (
 	"github.com/brettinternet/worklease/internal/store"
 	"github.com/brettinternet/worklease/internal/watch"
 )
+
+type routedLiveAuthority struct {
+	id   string
+	seen chan string
+}
+
+func (a routedLiveAuthority) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
+	if selector.AuthorityID != a.id {
+		return lease.Status{}, errors.New("source routed to the wrong authority")
+	}
+	for range selector.Resources {
+		a.seen <- a.id
+	}
+	status := lease.Status{}
+	for _, key := range selector.Resources {
+		status.Resources = append(status.Resources, lease.ResourceStatus{Resource: key, State: "free"})
+	}
+	return status, nil
+}
+
+func (a routedLiveAuthority) Events(_ context.Context, _ string, _ int) (ledger.EventsPage, error) {
+	return ledger.EventsPage{AuthorityID: a.id, NextCursor: "head"}, nil
+}
+
+func (routedLiveAuthority) Watch(ctx context.Context, _ watch.Request) (watch.Result, error) {
+	<-ctx.Done()
+	return watch.Result{}, ctx.Err()
+}
+
+type gatedLiveAuthority struct {
+	id         string
+	eventsSeen chan<- string
+	statusGate <-chan struct{}
+	statusSeen chan<- string
+}
+
+func (a gatedLiveAuthority) Events(_ context.Context, _ string, _ int) (ledger.EventsPage, error) {
+	a.eventsSeen <- a.id
+	return ledger.EventsPage{AuthorityID: a.id, NextCursor: "head"}, nil
+}
+
+func (a gatedLiveAuthority) Status(ctx context.Context, selector lease.Selector) (lease.Status, error) {
+	if selector.AuthorityID != a.id {
+		return lease.Status{}, errors.New("source routed to the wrong authority")
+	}
+	select {
+	case <-a.statusGate:
+	case <-ctx.Done():
+		return lease.Status{}, ctx.Err()
+	}
+	a.statusSeen <- a.id
+	status := lease.Status{}
+	for _, key := range selector.Resources {
+		status.Resources = append(status.Resources, lease.ResourceStatus{Resource: key, State: "active", Claim: &lease.ClaimView{AuthorityID: a.id, AgentID: "holder", Active: true, ExpiresAt: time.Now().Add(time.Hour)}})
+	}
+	return status, nil
+}
+
+func (gatedLiveAuthority) Watch(ctx context.Context, _ watch.Request) (watch.Result, error) {
+	<-ctx.Done()
+	return watch.Result{}, ctx.Err()
+}
+
+func TestRunClaimOverlayByAuthorityPublishesAggregatesInOrder(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventsSeen := make(chan string, 2)
+	statusSeen := make(chan string, 2)
+	allowAlpha := make(chan struct{})
+	allowBeta := make(chan struct{})
+	alpha := gatedLiveAuthority{id: "authority-alpha", eventsSeen: eventsSeen, statusGate: allowAlpha, statusSeen: statusSeen}
+	beta := gatedLiveAuthority{id: "authority-beta", eventsSeen: eventsSeen, statusGate: allowBeta, statusSeen: statusSeen}
+	items := []Item{
+		{Summary: Summary{Ref: Ref{SourceID: "alpha", ItemID: "1"}}, Claim: ClaimObservation{Known: true, State: "free", Available: true}},
+		{Summary: Summary{Ref: Ref{SourceID: "beta", ItemID: "2"}}, Claim: ClaimObservation{Known: true, State: "free", Available: true}},
+	}
+	sources := map[string]ClaimSource{
+		"alpha": {Source: Source{ID: "alpha", Adapter: "generic", Locator: "alpha"}, Policy: "generic"},
+		"beta":  {Source: Source{ID: "beta", Adapter: "generic", Locator: "beta"}, Policy: "generic"},
+	}
+	now := func() (time.Time, error) { return time.Now(), nil }
+	authorities := map[string]ClaimAuthority{
+		"alpha": {API: alpha, LiveAPI: alpha, ID: alpha.id, Now: now},
+		"beta":  {API: beta, LiveAPI: beta, ID: beta.id, Now: now},
+	}
+	firstPublish := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondPublish := make(chan struct{}, 1)
+	var firstOnce sync.Once
+	var snapshotsMu sync.Mutex
+	var snapshots [][2]string
+	done := make(chan error, 1)
+	go func() {
+		done <- RunClaimOverlayByAuthority(ctx, items, sources, authorities, config.ProfilePaths{}, nil, func(observed []Item, _ bool, _ error) {
+			states := [2]string{observed[0].Claim.State, observed[1].Claim.State}
+			firstOnce.Do(func() {
+				close(firstPublish)
+				select {
+				case <-releaseFirst:
+				case <-ctx.Done():
+				}
+			})
+			snapshotsMu.Lock()
+			snapshots = append(snapshots, states)
+			snapshotsMu.Unlock()
+			if states == [2]string{"held", "held"} {
+				select {
+				case secondPublish <- struct{}{}:
+				default:
+				}
+			}
+		})
+	}()
+	for range 2 {
+		select {
+		case <-eventsSeen:
+		case <-time.After(time.Second):
+			t.Fatal("live workers did not read their event baselines")
+		}
+	}
+	close(allowAlpha)
+	select {
+	case <-statusSeen:
+	case <-time.After(time.Second):
+		t.Fatal("alpha status was not read")
+	}
+	select {
+	case <-firstPublish:
+	case <-time.After(time.Second):
+		t.Fatal("alpha aggregate was not published")
+	}
+	close(allowBeta)
+	select {
+	case <-statusSeen:
+	case <-time.After(time.Second):
+		t.Fatal("beta status was not read")
+	}
+	publishedWhileBlocked := false
+	select {
+	case <-secondPublish:
+		publishedWhileBlocked = true
+	case <-time.After(time.Second):
+	}
+	close(releaseFirst)
+	if !publishedWhileBlocked {
+		select {
+		case <-secondPublish:
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("newer aggregate was not published after the earlier publication completed")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("overlay exit error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live overlay workers outlived cancellation")
+	}
+	if publishedWhileBlocked {
+		t.Fatal("newer aggregate published while the preceding publication was blocked")
+	}
+	snapshotsMu.Lock()
+	defer snapshotsMu.Unlock()
+	if len(snapshots) != 2 || snapshots[0] != [2]string{"held", "free"} || snapshots[1] != [2]string{"held", "held"} {
+		t.Fatalf("aggregate snapshots were stale or out of order: %v", snapshots)
+	}
+}
+
+func TestRunClaimOverlayByAuthorityRoutesAndJoinsWorkers(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	seen := make(chan string, 4)
+	items := []Item{
+		{Summary: Summary{Ref: Ref{SourceID: "personal", ItemID: "1"}}},
+		{Summary: Summary{Ref: Ref{SourceID: "team", ItemID: "2"}}},
+	}
+	sources := map[string]ClaimSource{
+		"personal": {Source: Source{ID: "personal", Adapter: "external", Locator: "personal"}, Policy: "generic", ClaimSource: "acme/personal"},
+		"team":     {Source: Source{ID: "team", Adapter: "external", Locator: "team"}, Policy: "generic", ClaimSource: "acme/team"},
+	}
+	authorities := map[string]ClaimAuthority{
+		"personal": {API: routedLiveAuthority{id: "authority-local", seen: seen}, LiveAPI: routedLiveAuthority{id: "authority-local", seen: seen}, ID: "authority-local"},
+		"team":     {API: routedLiveAuthority{id: "authority-team", seen: seen}, LiveAPI: routedLiveAuthority{id: "authority-team", seen: seen}, ID: "authority-team"},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- RunClaimOverlayByAuthority(ctx, items, sources, authorities, config.ProfilePaths{}, nil, func([]Item, bool, error) {})
+	}()
+	routed := map[string]bool{}
+	for len(routed) < 2 {
+		select {
+		case id := <-seen:
+			routed[id] = true
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatalf("live status was not routed to both authorities: %v", routed)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("overlay exit error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live overlay workers outlived cancellation")
+	}
+}
 
 type liveAuthorityFake struct {
 	calls                     []string

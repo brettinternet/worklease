@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brettinternet/worklease/blob/main/docs/config-schemas/queue.schema.json",
   "title": "Worklease queue.yaml (v1)",
-  "description": "Editor schema for owner-private queue configuration. The loader additionally checks paths, trusted profiles, cross-references, unique names, adapter identities and source-specific semantics.",
+  "description": "Editor schema for owner-private queue configuration. Each source may select its claim authority; legacy view authorities are accepted only when they resolve unambiguously. The loader additionally checks paths, trusted profiles, cross-references, unique names, adapter identities and source-specific semantics.",
   "type": "object",
   "required": ["version", "me", "sources", "views"],
   "properties": {
@@ -23,6 +23,7 @@
       "required": ["id", "adapter"],
       "properties": {
         "id": {"type": "string", "minLength": 1, "pattern": "^[^:]+$"},
+        "authority": {"type": "string", "minLength": 1, "description": "Claim authority for this source: local or a trusted profile name. Defaults to an unambiguous legacy view authority or local."},
         "adapter": {"enum": ["backlog-md", "beads", "github", "linear", "jira-cloud", "external"]},
         "checkout": {"type": "string", "minLength": 1},
         "projectCheckout": {"type": "string", "minLength": 1, "description": "Owner-private checkout association for sources without a provider checkout."},
@@ -87,10 +88,10 @@
     },
     "view": {
       "type": "object",
-      "required": ["name", "authority", "filter"],
+      "required": ["name", "filter"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "authority": {"type": "string"},
+        "authority": {"type": "string", "description": "Legacy default for sources listed in this view; migrate to source.authority when assignments conflict or when views share sources across authorities."},
         "sources": {"type": "array", "description": "Optional legacy source restriction; omitted or empty means all sources in the effective project scope.", "items": {"type": "string"}},
         "filter": {
           "type": "object",

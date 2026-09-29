@@ -17,6 +17,7 @@ import (
 type ClaimSource struct {
 	Source                   Source
 	Policy, ClaimSource      string
+	Checkout                 string
 	BlockReason, BlockDetail string
 }
 
@@ -34,7 +35,10 @@ func ClaimSources(cfg config.QueueConfig, resolved []Source) map[string]ClaimSou
 		if !ok {
 			continue
 		}
-		input := ClaimSource{Source: source}
+		input := ClaimSource{Source: source, Checkout: configured.Checkout}
+		if input.Checkout == "" {
+			input.Checkout = configured.ProjectCheckout
+		}
 		if configured.Adapter == "beads" && (configured.Claims == nil || configured.Claims.Policy != "generic" || !validExternalClaimSource(configured.Claims.Source)) {
 			input.BlockReason = "claim-binding-required"
 			input.BlockDetail = "Beads claims require an explicit portable generic source binding"
@@ -99,6 +103,31 @@ type ClaimAuthority struct {
 	LocalDefaultAuthorityID string
 }
 
+// OverlayClaimsByAuthority observes each source at its configured authority.
+// A failed read never converts an unknown claim to a free claim.
+func OverlayClaimsByAuthority(ctx context.Context, items []Item, sources map[string]ClaimSource, authorities map[string]ClaimAuthority, paths config.ProfilePaths, env func(string) string) []Item {
+	out := make([]Item, len(items))
+	groups := make(map[string][]int)
+	for i, item := range items {
+		groups[item.Ref.SourceID] = append(groups[item.Ref.SourceID], i)
+	}
+	for sourceID, indexes := range groups {
+		selected, ok := authorities[sourceID]
+		if !ok {
+			selected = ClaimAuthority{}
+		}
+		group := make([]Item, len(indexes))
+		for i, index := range indexes {
+			group[i] = items[index]
+		}
+		overlaid := OverlayClaims(ctx, group, sources, selected, paths, env)
+		for i, index := range indexes {
+			out[index] = overlaid[i]
+		}
+	}
+	return out
+}
+
 // OverlayClaims observes one selected authority. A failed read never converts
 // an unknown claim to a free claim; no authority mutation is performed.
 func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSource, selected ClaimAuthority, paths config.ProfilePaths, env func(string) string) []Item {
@@ -150,11 +179,15 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 				case selected.Remote && !lease.ResourceAdmitted(*selected.AdmittedPrefixes, key.Resource):
 					item.Claim.Reason = "resource-not-admitted"
 				default:
-					if source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads" {
-						matches, known := checkoutMatches[source.Source.Locator]
+					checkout := source.Checkout
+					if checkout == "" && (source.Source.Adapter == "backlog-md" || source.Source.Adapter == "beads") {
+						checkout = source.Source.Locator
+					}
+					if checkout != "" {
+						matches, known := checkoutMatches[checkout]
 						if !known {
-							matches = matchingCheckoutAuthority(source.Source.Locator, selected, paths, env)
-							checkoutMatches[source.Source.Locator] = matches
+							matches = matchingCheckoutAuthority(checkout, selected, paths, env)
+							checkoutMatches[checkout] = matches
 						}
 						if !matches {
 							item.Claim.Reason = "authority-mismatch"

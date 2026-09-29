@@ -32,17 +32,19 @@ type queueQueryEnvelope struct {
 	Incomplete    bool               `json:"incomplete"`
 }
 type queueAuthorityJSON struct {
-	Profile string `json:"profile"`
-	ID      string `json:"authorityId"`
-	Scope   string `json:"scope"`
+	Profile     string                        `json:"profile"`
+	ID          string                        `json:"authorityId"`
+	Scope       string                        `json:"scope"`
+	Authorities map[string]queueAuthorityJSON `json:"authorities,omitempty"`
 }
 type queueSourceJSON struct {
-	ID              string         `json:"id"`
-	Coverage        queue.Coverage `json:"coverage"`
-	Freshness       string         `json:"freshness"`
-	ObservedAt      time.Time      `json:"observedAt,omitempty"`
-	ServedFromIndex bool           `json:"servedFromIndex"`
-	Diagnostics     []string       `json:"diagnostics,omitempty"`
+	ID              string             `json:"id"`
+	Authority       queueAuthorityJSON `json:"authority"`
+	Coverage        queue.Coverage     `json:"coverage"`
+	Freshness       string             `json:"freshness"`
+	ObservedAt      time.Time          `json:"observedAt,omitempty"`
+	ServedFromIndex bool               `json:"servedFromIndex"`
+	Diagnostics     []string           `json:"diagnostics,omitempty"`
 }
 type queueQueryItem struct {
 	queue.Item
@@ -74,7 +76,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 
 // The selector runs over the same unpaginated, overlaid snapshot as query.
 // It runs before any query cursor or page limit can hide part of the scope.
-type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, queueScope, *queue.Registry, []queue.Source, map[string]queue.ClaimSource, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
+type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, queueScope, *queue.Registry, []queue.Source, map[string]queue.ClaimSource, *authorityContext, queue.ClaimAuthority, *queueAuthoritySet, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
 
 func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader, selector queueSnapshotSelector) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -256,17 +258,29 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		case "ready": /* readiness post-filter */
 		}
 		items := queue.EvaluateView(snapshot.Items, queue.View{SourceOrder: view.Sources, Filters: viewFilters})
-		selected, auth, e := queueAuthorityForViewMode(ctx, cmd, view.Authority, true, selector != nil && cmd.Bool("claim"))
+		authorities, e := queueAuthoritiesForSources(ctx, cmd, cfg, view.Sources, true, selector != nil && cmd.Bool("claim"))
 		if e != nil {
 			return s.handle(cmd, e)
 		}
-		defer selected.Close()
+		defer authorities.Close()
+		selected, auth, ok := authorities.Primary(view.Sources)
+		if !ok {
+			return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "queue authority is unavailable"))
+		}
 		identities, e := config.LoadQueueIdentities(nil)
 		if e != nil {
 			return s.handle(cmd, e)
 		}
-		claimSources := queue.GuardClaimSources(ctx, queue.ClaimSources(cfg, sources), registry, auth, identities, snapshot)
-		items = queue.OverlayClaims(ctx, items, claimSources, auth, config.UserProfilePaths(nil), nil)
+		claimInputs := queue.ClaimSources(cfg, sources)
+		claimAuthorities := make(map[string]queue.ClaimAuthority, len(view.Sources))
+		for _, id := range view.Sources {
+			if _, sourceAuthority, found := authorities.ForSource(id); found {
+				claimAuthorities[id] = sourceAuthority
+			}
+		}
+		claimSources := queue.GuardClaimSourcesByAuthority(ctx, claimInputs, registry, claimAuthorities, identities, snapshot)
+		items = queue.OverlayClaimsByAuthority(ctx, items, claimSources, claimAuthorities, config.UserProfilePaths(nil), nil)
+		queryAuthority := queueAuthoritySummary(authorities, view.Sources)
 		cursorItems := append([]queue.Item(nil), items...)
 		readiness := strings.ToLower(view.Filter.Readiness)
 		claim := strings.ToLower(view.Filter.Claim)
@@ -326,7 +340,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				}
 			}
 		}
-		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), cfg.Me, generations, queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, cursorCoverage, cursorItems, scope)
+		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), cfg.Me, generations, queryAuthority, cursorCoverage, cursorItems, scope)
 		cursor := queueCursor{Fingerprint: fingerprint}
 		if encoded := cmd.String("cursor"); encoded != "" {
 			raw, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
@@ -361,7 +375,8 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			}
 			launches := make([]queue.LaunchOption, 0, len(cfg.Launch))
 			for _, action := range cfg.Launch {
-				option, _ := queueLaunchOption(action, item, queueSourceByID(cfg.Sources, item.Ref.SourceID), auth, queueSession, identities.Sources[item.Ref.SourceID], os.Environ())
+				_, sourceAuthority, _ := authorities.ForSource(item.Ref.SourceID)
+				option, _ := queueLaunchOption(action, item, queueSourceByID(cfg.Sources, item.Ref.SourceID), sourceAuthority, queueSession, identities.Sources[item.Ref.SourceID], os.Environ())
 				launches = append(launches, option)
 				if option.Eligibility.Eligible || len(launches) == 1 {
 					available[string(queue.ActionLaunch)] = option.Eligibility
@@ -400,7 +415,8 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			if source := claimSources[id]; source.BlockReason != "" {
 				diagnostics = append(diagnostics, source.BlockReason+": "+source.BlockDetail)
 			}
-			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Coverage: coverage, Freshness: freshness, ObservedAt: observationTimes[id], ServedFromIndex: servedFromIndex[id], Diagnostics: diagnostics})
+			_, sourceAuthority, _ := authorities.ForSource(id)
+			sourceRows = append(sourceRows, queueSourceJSON{ID: id, Authority: queueAuthorityDetail(sourceAuthority), Coverage: coverage, Freshness: freshness, ObservedAt: observationTimes[id], ServedFromIndex: servedFromIndex[id], Diagnostics: diagnostics})
 		}
 		for _, item := range cursorItems {
 			if !item.DependenciesKnown || item.Closure != queue.CoverageComplete {
@@ -408,13 +424,13 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			}
 		}
 		if selector != nil {
-			return selector(ctx, cmd, cfg, view, scope, registry, sources, claimSources, selected, auth, cursorItems, items, sourceRows, incomplete)
+			return selector(ctx, cmd, cfg, view, scope, registry, sources, claimSources, selected, auth, authorities, cursorItems, items, sourceRows, incomplete)
 		}
 		if incomplete && cmd.Bool("require-complete") {
-			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
+			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queryAuthority, Sources: sourceRows, Items: page, Incomplete: true}
 			return s.handle(cmd, reason.New(reason.ReasonQueueIncomplete, "queue query is incomplete").With("result", "incomplete").With("query", normalizedQueueEnvelope(fields)))
 		}
-		envelope := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: incomplete}
+		envelope := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queryAuthority, Sources: sourceRows, Items: page, Incomplete: incomplete}
 		if end < len(items) {
 			next := queueCursor{Fingerprint: fingerprint, Offset: end}
 			raw, _ := json.Marshal(next)
@@ -442,6 +458,36 @@ func mergeItems(dst, src map[string]queue.Item) map[string]queue.Item {
 		dst[key] = item
 	}
 	return dst
+}
+
+func queueAuthorityDetail(authority queue.ClaimAuthority) queueAuthorityJSON {
+	return queueAuthorityJSON{Profile: authority.Profile, ID: authority.ID, Scope: scopeLabel(authority.Remote)}
+}
+
+func queueAuthoritySummary(authorities *queueAuthoritySet, sourceIDs []string) queueAuthorityJSON {
+	bySource := make(map[string]queueAuthorityJSON, len(sourceIDs))
+	var first queueAuthorityJSON
+	mixed := false
+	for _, sourceID := range sourceIDs {
+		_, authority, ok := authorities.ForSource(sourceID)
+		if !ok {
+			continue
+		}
+		detail := queueAuthorityDetail(authority)
+		bySource[sourceID] = detail
+		if first.Profile == "" {
+			first = detail
+		} else if first.Profile != detail.Profile || first.ID != detail.ID || first.Scope != detail.Scope {
+			mixed = true
+		}
+	}
+	if !mixed {
+		if first.Profile != "" {
+			return first
+		}
+		return queueAuthorityJSON{Profile: config.LocalProfileName, Scope: "local"}
+	}
+	return queueAuthorityJSON{Profile: "mixed", Scope: "mixed", Authorities: bySource}
 }
 
 func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {

@@ -1,10 +1,11 @@
 ---
 id: TASK-153.3
 title: Resolve one claim authority per source
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-29 02:25'
-updated_date: '2026-09-29 02:25'
+updated_date: '2026-09-29 08:46'
 labels:
   - work-queue
   - authority
@@ -45,3 +46,23 @@ Authority is already a claim input, so changing it goes through identity confirm
 - [ ] #4 Changing a source's authority still requires identity confirmation before claim actions are available.
 - [ ] #5 Existing `queue.yaml` files with per-view authority keep loading or fail with a documented migration step; docs/queue.md, docs/config-schemas/queue.schema.json, and CHANGELOG.md are updated.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Resolve authority once per source, preserving unambiguous legacy per-view configurations and rejecting conflicting source authority assignments.
+2. Route CLI, TUI and MCP reads/claims and identity confirmation through source authority; enforce consistency with checkout/worktree profile selection. Allow mixed-authority projects to share filter views and queue init defaults.
+3. Add focused authority-routing, mismatch, migration and identity regression coverage; update queue documentation, schema and changelog.
+4. Run required validation and one independent scoped review; fix concrete findings, commit on main, record evidence and release the claim.
+
+5. Add optional per-source authority with conflict-checked legacy per-view inference; route each source through its configured trusted authority across CLI/TUI/MCP, bind MCP lease lifecycle to the authority/profile selected at acquisition, and enforce source-checkout binding consistency.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented source-owned authorities with conflict-checked legacy view inference, mixed-authority CLI/TUI/MCP routing, source-checkout/worktree authority guards, queue init migration, and identity-confirmation preservation. Updated docs/queue.md, queue JSON schema and CHANGELOG.
+Verification: full mise lint, format-check, typecheck, test, race and doc-test passed after corrections. Parent independently reran lint/format-check/typecheck and nine routing, mismatch, identity, restart and live-overlay tests with go test -race -count=3 across config/cli/queue/mcp; all passed.
+One independent review found two concrete P2 defects: MCP profile binding lost on restart with profile aliases, and out-of-order mixed-authority live publications. Both fixed with persisted private profile binding and serialized publications; restart/pending-recovery and controlled-interleaving regression tests pass. No second general review performed.
+Compatibility limits: older remote MCP handles without profile metadata fail closed if multiple profiles match; authority migration still requires the documented operator checks for claims/workers on the former authority. No remaining implementation blocker. Delivery pending main commit and final task checkpoint.
+<!-- SECTION:NOTES:END -->

@@ -324,22 +324,23 @@ type RecoveryRequest struct {
 	Evidence          json.RawMessage `json:"evidence,omitempty"`
 }
 type Handle struct {
-	SchemaVersion       int              `json:"schemaVersion"`
-	AuthorityID         string           `json:"authorityId"`
-	RestoreID           string           `json:"restoreId,omitempty"`
-	ClaimID             string           `json:"claimId"`
-	Token               string           `json:"token"`
-	Revision            int64            `json:"revision,omitempty"`
-	Resources           []string         `json:"resources"`
-	ExpiresAt           time.Time        `json:"expiresAt,omitempty"`
-	AgentID             string           `json:"agentId"`
-	SessionID           string           `json:"sessionId"`
-	LocalReplaceAllowed bool             `json:"localReplaceAllowed"`
-	State               string           `json:"state"`
-	PendingRequest      *PendingRequest  `json:"pendingRequest,omitempty"`
-	RecoveryRequest     *RecoveryRequest `json:"recoveryRequest,omitempty"`
-	HoldUntil           time.Time        `json:"holdUntil,omitempty"`
-	AutoRenewOwner      string           `json:"autoRenewOwner,omitempty"`
+	SchemaVersion        int              `json:"schemaVersion"`
+	AuthorityID          string           `json:"authorityId"`
+	RestoreID            string           `json:"restoreId,omitempty"`
+	AuthorityProfileName string           `json:"authorityProfileName,omitempty"`
+	ClaimID              string           `json:"claimId"`
+	Token                string           `json:"token"`
+	Revision             int64            `json:"revision,omitempty"`
+	Resources            []string         `json:"resources"`
+	ExpiresAt            time.Time        `json:"expiresAt,omitempty"`
+	AgentID              string           `json:"agentId"`
+	SessionID            string           `json:"sessionId"`
+	LocalReplaceAllowed  bool             `json:"localReplaceAllowed"`
+	State                string           `json:"state"`
+	PendingRequest       *PendingRequest  `json:"pendingRequest,omitempty"`
+	RecoveryRequest      *RecoveryRequest `json:"recoveryRequest,omitempty"`
+	HoldUntil            time.Time        `json:"holdUntil,omitempty"`
+	AutoRenewOwner       string           `json:"autoRenewOwner,omitempty"`
 }
 
 func newHandleError(r, msg string) error { return reason.New(r, msg) }
@@ -381,6 +382,9 @@ func validateHandle(h Handle) error {
 		seen[r] = true
 	}
 	if h.AgentID == "" || h.SessionID == "" || !validPublicText(h.AgentID) || !validPublicText(h.SessionID) || (h.AutoRenewOwner != "" && !validID(h.AutoRenewOwner)) {
+		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
+	}
+	if name := h.AuthorityProfileName; name != "" && (h.SchemaVersion != RemoteSchemaVersion || !validPublicText(name) || name == "." || name == ".." || strings.ContainsAny(name, "/\\")) {
 		return newHandleError(reason.ReasonHandleMalformed, "handle is malformed")
 	}
 	if h.State == "ready" && (h.Revision < 1 || h.ExpiresAt.IsZero() || h.PendingRequest != nil) {

@@ -23,6 +23,8 @@ type queueWriteController struct {
 	backend          *authorityContext
 	registry         *queue.Registry
 	current          func() (queue.ClaimAuthority, uint64)
+	forSource        func(string) (*authorityContext, queue.ClaimAuthority)
+	backendsByID     map[string]*authorityContext
 	journal          queue.WriteJournal
 	sources          map[string]queue.Source
 	configured       map[string]config.QueueSource
@@ -31,6 +33,35 @@ type queueWriteController struct {
 	// handlePath is the worker's acquired CLI or MCP handle for queue next --start.
 	// Interactive queue writes continue to use their item-scoped handle.
 	handlePath string
+}
+
+func (c queueWriteController) authority(sourceID string) (*authorityContext, queue.ClaimAuthority) {
+	if c.forSource != nil {
+		return c.forSource(sourceID)
+	}
+	selected, _ := c.current()
+	return c.backend, selected
+}
+
+func (c queueWriteController) backendForAuthority(id string) *authorityContext {
+	if backend := c.backendsByID[id]; backend != nil {
+		return backend
+	}
+	if c.backend != nil && c.backend.AuthorityID() == id {
+		return c.backend
+	}
+	return nil
+}
+
+func (c queueWriteController) backendForIntent(intent queue.WriteIntent) *authorityContext {
+	if c.forSource != nil {
+		backend, authority := c.forSource(intent.Source.ID)
+		if backend != nil && authority.ID == intent.AuthorityID {
+			return backend
+		}
+		return nil
+	}
+	return c.backendForAuthority(intent.AuthorityID)
 }
 
 func (c queueWriteController) adapter(source queue.Source) (queue.WriteAdapter, error) {
@@ -137,6 +168,20 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			return queueui.WritePreview{}, "", fmt.Errorf("linear start eligibility changed: %s", strings.Join(eligibility.Reasons, "; "))
 		}
 	}
+	backend, authority := c.authority(source.ID)
+	if backend == nil || authority.ID == "" || authority.ID != backend.AuthorityID() {
+		return queueui.WritePreview{}, "", fmt.Errorf("claim authority or source unavailable")
+	}
+	if backend.Profile != nil {
+		profiles, _, profileErr := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+		if profileErr != nil || profiles[backend.ProfileName] != *backend.Profile {
+			return queueui.WritePreview{}, "", reason.New(reason.ReasonAuthorityMismatch, "remote profile identity changed; recover existing queue handles before writing")
+		}
+	}
+	resolvedAuthorities, authorityErr := config.QueueSourceAuthorities(cfg)
+	if authorityErr != nil || resolvedAuthorities[source.ID] != backend.ProfileName {
+		return queueui.WritePreview{}, "", reason.New(reason.ReasonAuthorityMismatch, "source claim authority changed; confirm migration before writing")
+	}
 	claimSource, ok := queue.ClaimSources(cfg, []queue.Source{source})[source.ID]
 	if !ok {
 		return queueui.WritePreview{}, "", fmt.Errorf("queue claim source unavailable")
@@ -145,21 +190,25 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	if err != nil {
 		return queueui.WritePreview{}, "", err
 	}
-	if c.current == nil {
-		return queueui.WritePreview{}, "", fmt.Errorf("claim authority unavailable")
-	}
-	authority, _ := c.current()
 	read, ok := c.registry.Get(source.Adapter)
-	if !ok || authority.ID != c.backend.AuthorityID() || authority.API == nil {
+	if !ok || authority.API == nil {
 		return queueui.WritePreview{}, "", fmt.Errorf("claim authority or source unavailable")
 	}
 	keys, err := queue.PreAcquireIdentity(ctx, claimSource, read, authority, identities.Sources[source.ID], item)
 	if err != nil {
 		return queueui.WritePreview{}, "", err
 	}
+	observed := queue.OverlayClaims(ctx, []queue.Item{item}, map[string]queue.ClaimSource{source.ID: claimSource}, authority, config.UserProfilePaths(os.Getenv), os.Getenv)[0]
+	if observed.Claim.Reason == "authority-mismatch" {
+		return queueui.WritePreview{}, "", reason.New(reason.ReasonAuthorityMismatch, "source checkout profile does not match its configured claim authority")
+	}
+	profileName := backend.ProfileName
+	if profileName == "" {
+		profileName = config.LocalProfileName
+	}
 	path := c.handlePath
 	if path == "" {
-		path, err = queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, source, item.Ref)
+		path, err = queueClaimHandlePath(backend.Config.Home, c.session, profileName, source, item.Ref)
 		if err != nil {
 			return queueui.WritePreview{}, "", err
 		}
@@ -195,7 +244,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 			return queueui.WritePreview{}, "", err
 		}
 	}
-	intent := queue.WriteIntent{OperationID: operationID, OperationRef: checkpointRef, Source: source, Ref: item.Ref, Principal: principal, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: append([]string(nil), h.Resources...), CheckpointTTL: c.backend.Config.TTL, CheckpointNotAfter: time.Now().Add(time.Hour), Action: action, Transition: transition, Append: text}
+	intent := queue.WriteIntent{OperationID: operationID, OperationRef: checkpointRef, Source: source, Ref: item.Ref, Principal: principal, AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, ClaimRevision: h.Revision, Resources: append([]string(nil), h.Resources...), CheckpointTTL: backend.Config.TTL, CheckpointNotAfter: time.Now().Add(time.Hour), Action: action, Transition: transition, Append: text}
 	if intent.CheckpointTTL <= 0 {
 		intent.CheckpointTTL = 10 * time.Minute
 	}
@@ -212,7 +261,7 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 	} else if source.Adapter == "linear" && action != queue.ActionAssignToMe && action != queue.ActionUnassignMe {
 		intent.Patch = map[string]string{"stateId": transition}
 	}
-	claim := queueWriteClaim{backend: c.backend, path: path, session: c.session}
+	claim := queueWriteClaim{backend: backend, path: path, session: c.session}
 	if err := claim.Verify(ctx, intent); err != nil {
 		return queueui.WritePreview{}, "", err
 	}
@@ -221,10 +270,10 @@ func (c queueWriteController) prepare(ctx context.Context, item queue.Item, acti
 		return queueui.WritePreview{}, "", err
 	}
 	scope := "local"
-	if c.backend.Remote {
+	if backend.Remote {
 		scope = "remote"
 	}
-	preview := queueui.WritePreview{Identity: queueIdentity(item), AuthorityProfile: c.profile, Scope: scope, Intent: intent, Races: []string{"external provider writers are not fenced by this claim"}}
+	preview := queueui.WritePreview{Identity: queueIdentity(item), AuthorityProfile: backend.ProfileName, Scope: scope, Intent: intent, Races: []string{"external provider writers are not fenced by this claim"}}
 	switch a := adapter.(type) {
 	case *queue.BacklogWriteAdapter:
 		var detail queue.BacklogWritePreview
@@ -366,7 +415,20 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 				return result
 			}
 		}
-		path, err := queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, record.Intent.Source, record.Intent.Ref)
+		backend := c.backendForIntent(record.Intent)
+		if backend == nil {
+			result.Err = reason.New(reason.ReasonAuthorityMismatch, "recovery intent authority is not configured in this queue session")
+			return result
+		}
+		if identityErr := queueProfileIdentityCurrent(config.UserProfilePaths(os.Getenv), backend); identityErr != nil {
+			result.Err = identityErr
+			return result
+		}
+		profileName := backend.ProfileName
+		if profileName == "" {
+			profileName = config.LocalProfileName
+		}
+		path, err := queueClaimHandlePath(backend.Config.Home, c.session, profileName, record.Intent.Source, record.Intent.Ref)
 		if err != nil {
 			result.Err = err
 			return result
@@ -405,7 +467,7 @@ func (c queueWriteController) Recover(ctx context.Context, entry queue.RecoveryE
 		}
 		recoverCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 		defer stop()
-		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal, Workflow: workflow}
+		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: path, session: c.session}, Journal: c.journal, Workflow: workflow}
 		result.Result, result.Err = pipeline.Recover(recoverCtx, entry.OperationID)
 		return result
 	}
@@ -464,18 +526,31 @@ func (c queueWriteController) AttestCheckpointMissing(ctx context.Context, entry
 			result.Err = err
 			return result
 		}
-		path, err := queueClaimHandlePath(c.backend.Config.Home, c.session, c.profile, record.Intent.Source, record.Intent.Ref)
+		backend := c.backendForIntent(record.Intent)
+		if backend == nil {
+			result.Err = reason.New(reason.ReasonAuthorityMismatch, "recovery intent authority is not configured in this queue session")
+			return result
+		}
+		if identityErr := queueProfileIdentityCurrent(config.UserProfilePaths(os.Getenv), backend); identityErr != nil {
+			result.Err = identityErr
+			return result
+		}
+		profileName := backend.ProfileName
+		if profileName == "" {
+			profileName = config.LocalProfileName
+		}
+		path, err := queueClaimHandlePath(backend.Config.Home, c.session, profileName, record.Intent.Source, record.Intent.Ref)
 		if err != nil {
 			result.Err = err
 			return result
 		}
-		if c.backend.AuthorityID() != record.Intent.AuthorityID {
+		if backend.AuthorityID() != record.Intent.AuthorityID {
 			result.Err = fmt.Errorf("selected authority differs from recovery intent")
 			return result
 		}
 		recoverCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 		defer stop()
-		result.Err = (queue.WritePipeline{Journal: c.journal, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}}).AttestCheckpointMissing(recoverCtx, entry.OperationID, operator.Username, evidence, true)
+		result.Err = (queue.WritePipeline{Journal: c.journal, Claim: queueWriteClaim{backend: backend, path: path, session: c.session}}).AttestCheckpointMissing(recoverCtx, entry.OperationID, operator.Username, evidence, true)
 		return result
 	}
 }
@@ -507,7 +582,16 @@ func (c queueWriteController) Confirm(ctx context.Context, preview queueui.Write
 			result.Err = err
 			return result
 		}
-		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: c.backend, path: path, session: c.session}, Journal: c.journal, Workflow: c.configured[fresh.Intent.Source.ID].Workflow}
+		backend := c.backendForIntent(fresh.Intent)
+		if backend == nil {
+			result.Err = reason.New(reason.ReasonAuthorityMismatch, "write authority changed before dispatch")
+			return result
+		}
+		if identityErr := queueProfileIdentityCurrent(config.UserProfilePaths(os.Getenv), backend); identityErr != nil {
+			result.Err = identityErr
+			return result
+		}
+		pipeline := queue.WritePipeline{Adapter: adapter, Claim: queueWriteClaim{backend: backend, path: path, session: c.session}, Journal: c.journal, Workflow: c.configured[fresh.Intent.Source.ID].Workflow}
 		result.Result, result.Err = pipeline.Start(ctx, fresh.Intent)
 		return result
 	}

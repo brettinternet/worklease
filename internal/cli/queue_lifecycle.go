@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,27 +35,74 @@ func (l queueLifecycle) directory() string {
 	return queueClaimHandleDir(l.controller.home, l.controller.queueSession, profile)
 }
 
+func (l queueLifecycle) directories() []string {
+	if len(l.controller.backendsByName) == 0 {
+		return []string{l.directory()}
+	}
+	directories := make([]string, 0, len(l.controller.backendsByName))
+	for name, backend := range l.controller.backendsByName {
+		home := l.controller.home
+		if backend != nil {
+			home = backend.Config.Home
+		}
+		directories = append(directories, queueClaimHandleDir(home, l.controller.queueSession, name))
+	}
+	slices.Sort(directories)
+	return directories
+}
+
 func (l queueLifecycle) paths() ([]string, error) {
-	names, err := handle.ListOwnerPrivateNames(l.directory())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(names))
-	for _, name := range names {
-		if strings.HasPrefix(name, "claim-") && strings.HasSuffix(name, ".json") {
-			paths = append(paths, filepath.Join(l.directory(), name))
+	var paths []string
+	for _, directory := range l.directories() {
+		names, err := handle.ListOwnerPrivateNames(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			if strings.HasPrefix(name, "claim-") && strings.HasSuffix(name, ".json") {
+				paths = append(paths, filepath.Join(directory, name))
+			}
 		}
 	}
+	slices.Sort(paths)
 	return paths, nil
 }
 
+func (l queueLifecycle) withBackend(backend *authorityContext) queueLifecycle {
+	controller := *l.controller
+	controller.backend = backend
+	l.controller = &controller
+	return l
+}
+
+func (l queueLifecycle) authorityForPath(path string) (*authorityContext, queue.ClaimAuthority, error) {
+	for name, backend := range l.controller.backendsByName {
+		directory := queueClaimHandleDir(backend.Config.Home, l.controller.queueSession, name)
+		if filepath.Clean(filepath.Dir(path)) == filepath.Clean(directory) {
+			authority, ok := l.controller.authoritiesByName[name]
+			if ok {
+				return backend, authority, nil
+			}
+		}
+	}
+	if l.controller.backend != nil {
+		authority, err := l.controller.selectedAuthority()
+		return l.controller.backend, authority, err
+	}
+	return nil, queue.ClaimAuthority{}, reason.New(reason.ReasonAuthorityMismatch, "queue handle authority is not configured")
+}
+
 func (l queueLifecycle) credentials(path string, h handle.Handle) lease.Credentials {
+	return l.credentialsForBackend(l.controller.backend, path, h)
+}
+
+func (l queueLifecycle) credentialsForBackend(backend *authorityContext, path string, h handle.Handle) lease.Credentials {
 	c := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path}
-	if l.controller.backend.Profile != nil {
-		c.CredentialPath = l.controller.backend.Profile.Credential.Path
+	if backend != nil && backend.Profile != nil {
+		c.CredentialPath = backend.Profile.Credential.Path
 	}
 	return c
 }
@@ -79,9 +127,10 @@ func renewalMargin(ttl time.Duration) time.Duration {
 
 func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) queueui.OwnedClaimMsg {
 	msg := queueui.OwnedClaimMsg{Path: path, LastResult: "verification pending"}
-	selected, err := l.controller.selectedAuthority()
+	backend, selected, err := l.authorityForPath(path)
 	if err == nil {
-		err = l.controller.profileIdentityCurrent()
+		l = l.withBackend(backend)
+		err = l.controller.profileIdentityCurrentFor(backend)
 	}
 	if err != nil {
 		msg.LastResult = "authority unavailable: " + err.Error()
@@ -107,7 +156,7 @@ func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) qu
 		return msg
 	}
 	msg.Resources, msg.ClaimID, msg.ExpiresAt = append([]string(nil), h.Resources...), h.ClaimID, h.ExpiresAt
-	if h.AuthorityID != selected.ID || h.SessionID != l.controller.queueSession || selected.Remote && (l.controller.profile == nil || h.RestoreID != l.controller.profile.RestoreID) {
+	if h.AuthorityID != selected.ID || h.SessionID != l.controller.queueSession || selected.Remote && (backend.Profile == nil || h.RestoreID != backend.Profile.RestoreID) {
 		msg.LastResult = "authority identity changed; recovery required"
 		return msg
 	}
@@ -115,7 +164,7 @@ func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) qu
 		msg.LastResult = "pending operation; exact recovery required"
 		return msg
 	}
-	verification, err := l.controller.backend.API.Verify(ctx, l.credentials(path, h), h.Resources)
+	verification, err := backend.API.Verify(ctx, l.credentialsForBackend(backend, path, h), h.Resources)
 	if err != nil {
 		msg.LastResult = "ownership unverified: " + err.Error()
 		if classified := reason.As(err); classified != nil && (classified.Reason == reason.ReasonStaleClaim || classified.Reason == reason.ReasonClaimExpired || classified.Reason == reason.ReasonVerifyFailed && (classified.Details["cause"] == reason.ReasonStaleClaim || classified.Details["cause"] == reason.ReasonClaimExpired)) {
@@ -136,7 +185,7 @@ func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) qu
 	msg.ExpiresAt = verification.Claim.ExpiresAt
 	ttl := h.ExpiresAt.Sub(verification.Claim.HeartbeatAt)
 	if ttl <= 0 {
-		ttl = l.controller.backend.Config.TTL
+		ttl = backend.Config.TTL
 	}
 	msg.NextRenewal = nextRenewal(verification.Claim.HeartbeatAt, msg.ExpiresAt, h.ClaimID)
 	msg.LastResult = "verified"
@@ -174,7 +223,7 @@ func (l queueLifecycle) inspect(ctx context.Context, path string, renew bool) qu
 		msg.LastResult = "renewal preparation failed: " + err.Error()
 		return msg
 	}
-	receipt, err := l.controller.backend.API.Heartbeat(ctx, l.credentials(path, h), lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
+	receipt, err := l.controller.backend.API.Heartbeat(ctx, l.credentialsForBackend(backend, path, h), lease.Renew{OperationID: op, TTL: ttl, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	if err != nil {
 		if isDefinitiveNoCommit(err) {
 			clearPending(path, &h, lock)
@@ -237,9 +286,10 @@ func nextRenewal(last, expiry time.Time, id string) time.Time {
 // Cancel permits only a demonstrably no-effect epoch. Checkpoints alone are
 // not provider receipts; journaled provider intents disallow cancellation.
 func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
-	selected, err := l.controller.selectedAuthority()
+	backend, selected, err := l.authorityForPath(path)
 	if err == nil {
-		err = l.controller.profileIdentityCurrent()
+		l = l.withBackend(backend)
+		err = l.controller.profileIdentityCurrentFor(backend)
 	}
 	if err != nil {
 		return err
@@ -282,7 +332,7 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	if h.ClaimID != peek.ClaimID || h.AuthorityID != peek.AuthorityID || h.AuthorityID != selected.ID || h.SessionID != l.controller.queueSession || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil {
 		return reason.New(reason.ReasonRecoveryRequired, "queue claim identity or pending request requires recovery")
 	}
-	verified, err := l.controller.backend.API.Verify(ctx, l.credentials(path, h), h.Resources)
+	verified, err := backend.API.Verify(ctx, l.credentialsForBackend(backend, path, h), h.Resources)
 	if err != nil {
 		return err
 	}
@@ -298,7 +348,7 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	}
 	// An incomplete/pruned history cannot establish the no-effect exception.
 	for _, resource := range h.Resources {
-		page, e := l.controller.backend.API.History(ctx, resource, "", 100, false)
+		page, e := backend.API.History(ctx, resource, "", 100, false)
 		if e != nil {
 			return e
 		}
@@ -333,7 +383,7 @@ func (l queueLifecycle) Cancel(ctx context.Context, path string) error {
 	if err = beginHandleMutation(path, &h, "release", op, deadline, inputs, lock); err != nil {
 		return err
 	}
-	receipt, err := l.controller.backend.API.Release(ctx, l.credentials(path, h), lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
+	receipt, err := l.controller.backend.API.Release(ctx, l.credentialsForBackend(backend, path, h), lease.ReleaseRequest{OperationID: op, Reason: reasonText, RequestNotAfter: deadline})
 	if err != nil {
 		if isDefinitiveNoCommit(err) {
 			clearPending(path, &h, lock)
@@ -430,8 +480,11 @@ func (l queueLifecycle) run(ctx context.Context, send func(queueui.OwnedClaimMsg
 			if !item.msg.Verified {
 				interval = time.Second
 			} else if !item.msg.NextRenewal.IsZero() {
-				selected, _ := l.controller.current()
+				_, selected, authorityErr := l.authorityForPath(item.path)
 				authorityTime, clockErr := l.authorityNow(selected)
+				if authorityErr != nil {
+					clockErr = authorityErr
+				}
 				if clockErr != nil {
 					item.msg.Verified = false
 					item.msg.LastResult = "authority clock unavailable: " + clockErr.Error()

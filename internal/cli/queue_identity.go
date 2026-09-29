@@ -58,7 +58,11 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	if configured == nil {
 		return reason.Invalid("unknown queue source")
 	}
-	selected, authority, err := queueAuthorityForClaim(ctx, cmd, view.Authority)
+	sourceAuthorities, err := config.QueueSourceAuthorities(cfg)
+	if err != nil {
+		return err
+	}
+	selected, authority, err := queueAuthorityForClaim(ctx, cmd, sourceAuthorities[sourceID])
 	if err != nil {
 		return err
 	}
@@ -123,7 +127,7 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	})
 }
 
-// confirmQueueSourceIdentity checks old keys in the view authority and records
+// confirmQueueSourceIdentity checks old keys in the source authority and records
 // the new claim domain. Claims in a former, different authority cannot be seen
 // here; the operator's acknowledgement covers them.
 func confirmQueueSourceIdentity(ctx context.Context, identities *config.QueueIdentities, sourceID string, configured *config.QueueSource, resolved queue.Source, source queue.ClaimSource, authority queue.ClaimAuthority, ids []string) error {

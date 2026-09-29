@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"os"
 
 	"github.com/brettinternet/worklease/internal/config"
 
@@ -55,16 +54,14 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 			profile = config.LocalProfileName
 		}
 	}
-	result, err := s.options.QueueNext(ctx, valueString(a, "view"), allProjects, claim, start, session, ttl, authorityID, profile, s.profile, func(ctx context.Context, resources []string) (map[string]any, error) {
-		if s.profile != nil {
-			profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
-			if err != nil {
-				return nil, err
-			}
-			current, ok := profiles[profile]
-			if !ok || current != *s.profile {
-				return nil, reason.New(reason.ReasonAuthorityMismatch, "MCP authority profile changed before acquisition")
-			}
+	result, err := s.options.QueueNext(ctx, valueString(a, "view"), allProjects, claim, start, session, ttl, authorityID, profile, s.profile, func(ctx context.Context, targetID, targetProfile string, target *config.Profile, resources []string) (map[string]any, error) {
+		bundle, err := s.openNamedAuthority(ctx, targetProfile, target, true)
+		if err != nil {
+			return nil, err
+		}
+		defer bundle.Close()
+		if bundle.id != targetID {
+			return nil, reason.New(reason.ReasonAuthorityMismatch, "source claim authority changed before acquisition")
 		}
 		acquire := map[string]any{"resources": resources, "sessionId": session, "ttl": ttl, "coordinationOnly": true, "wait": float64(0)}
 		for _, key := range []string{"agentId", "maxHold", "autoHeartbeat"} {
@@ -72,7 +69,7 @@ func (s *Server) queueNext(ctx context.Context, a map[string]any) (any, error) {
 				acquire[key] = value
 			}
 		}
-		value, err := s.acquire(ctx, acquire, authorityID)
+		value, err := s.acquireWithBundle(ctx, acquire, targetID, bundle, resources)
 		if err != nil {
 			return nil, err
 		}

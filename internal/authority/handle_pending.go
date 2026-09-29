@@ -37,7 +37,7 @@ func sameResourceSet(request, grant []string) bool {
 
 // persistHandleRequest uses the existing owner-private handle slot for named
 // claim mutations. A different unresolved request can never replace it.
-func persistHandleRequest(ctx context.Context, path, claimID string, p PendingRequest, newToken string, replacement handleReplacement) error {
+func persistHandleRequest(ctx context.Context, path, claimID string, p PendingRequest, newToken string, replacement handleReplacement, profileName string) error {
 	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
@@ -62,14 +62,14 @@ func persistHandleRequest(ctx context.Context, path, claimID string, p PendingRe
 		if p.Kind != "acquire" || metadataErr != nil || present {
 			return err
 		}
-		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, AuthorityProfileName: profileName, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
 	} else if h.ClaimID != claimID {
 		if p.Kind != "acquire" || replacement.ClaimID == "" || h.AuthorityID != p.AuthorityID || h.SchemaVersion != handle.RemoteSchemaVersion || h.State != "ready" || h.PendingRequest != nil || h.RecoveryRequest != nil || h.ClaimID != replacement.ClaimID || h.Token != replacement.Token || h.Revision != replacement.Revision || !h.ExpiresAt.Equal(replacement.ExpiresAt) {
 			return fmt.Errorf("handle claim does not match request")
 		}
 		old := h
 		replaced = &old
-		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
+		h = handle.Handle{SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: p.AuthorityID, RestoreID: p.ExpectedRestoreID, AuthorityProfileName: profileName, ClaimID: claimID, Token: newToken, Resources: request.Resources, AgentID: request.AgentID, SessionID: request.SessionID, State: "pending"}
 	}
 	if h.PendingRequest != nil {
 		existing := h.PendingRequest
@@ -80,6 +80,9 @@ func persistHandleRequest(ctx context.Context, path, claimID string, p PendingRe
 	}
 	h.SchemaVersion = handle.RemoteSchemaVersion
 	h.RestoreID = p.ExpectedRestoreID
+	if p.Kind == "acquire" && profileName != "" {
+		h.AuthorityProfileName = profileName
+	}
 	h.State = "pending"
 	kind := p.Kind
 	if kind == "operations/begin" {

@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -21,6 +22,63 @@ type LiveClaimReader interface {
 // RunClaimOverlay maintains a claim projection from a baseline cursor. publish
 // receives complete projections after baselines and targeted updates; a history
 // gap causes a visible rebuilding transition before any new projection appears.
+func RunClaimOverlayByAuthority(ctx context.Context, items []Item, sources map[string]ClaimSource, authorities map[string]ClaimAuthority, paths config.ProfilePaths, env func(string) string, publish func([]Item, bool, error)) error {
+	results := make(map[string]Item, len(items))
+	for _, item := range items {
+		results[item.Ref.Key()] = cloneItem(item)
+	}
+	var mu sync.Mutex
+	var workers sync.WaitGroup
+	for sourceID, authority := range authorities {
+		if authority.LiveAPI == nil {
+			continue
+		}
+		var sourceItems []Item
+		for _, item := range items {
+			if item.Ref.SourceID == sourceID {
+				sourceItems = append(sourceItems, item)
+			}
+		}
+		if len(sourceItems) == 0 {
+			continue
+		}
+		claimSource, ok := sources[sourceID]
+		if !ok {
+			continue
+		}
+		workers.Add(1)
+		go func(sourceID string, authority ClaimAuthority, source ClaimSource, sourceItems []Item) {
+			defer workers.Done()
+			_ = RunClaimOverlay(ctx, sourceItems, map[string]ClaimSource{sourceID: source}, authority, paths, env, func(observed []Item, rebuilding bool, err error) {
+				mu.Lock()
+				for _, item := range observed {
+					results[item.Ref.Key()] = item
+				}
+				combined := make([]Item, 0, len(items))
+				for _, original := range items {
+					if current, ok := results[original.Ref.Key()]; ok {
+						combined = append(combined, cloneItem(current))
+					}
+				}
+				publish(combined, rebuilding, err)
+				mu.Unlock()
+			})
+		}(sourceID, authority, claimSource, sourceItems)
+	}
+	finished := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(finished)
+	}()
+	select {
+	case <-ctx.Done():
+		<-finished
+		return ctx.Err()
+	case <-finished:
+		return nil
+	}
+}
+
 func RunClaimOverlay(ctx context.Context, items []Item, sources map[string]ClaimSource, selected ClaimAuthority, paths config.ProfilePaths, env func(string) string, publish func([]Item, bool, error)) error {
 	if selected.LiveAPI == nil {
 		return errors.New("live claim watch is unavailable")

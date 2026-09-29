@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"time"
 
@@ -15,11 +16,6 @@ import (
 )
 
 func (s *Server) status(ctx context.Context, a map[string]any) (any, error) {
-	b, e := s.open(ctx, false)
-	if e != nil {
-		return nil, e
-	}
-	defer b.Close()
 	ref, _ := argString(a, "lease")
 	resources, has := a["resources"]
 	if ref != "" && has {
@@ -31,15 +27,22 @@ func (s *Server) status(ctx context.Context, a map[string]any) (any, error) {
 			return nil, e
 		}
 		defer lk.Close()
-		if h.AuthorityID != b.id {
-			return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+		b, e := s.openAuthorityForHandle(ctx, ref, h, false)
+		if e != nil {
+			return nil, e
 		}
-		v, e := b.authority.Status(ctx, lease.Selector{ClaimID: h.ClaimID})
+		defer b.Close()
+		v, e := b.authority.Status(ctx, lease.Selector{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID})
 		if e != nil {
 			return nil, e
 		}
 		return map[string]any{"lease": ref, "claim": v.Claim, "unknownOperations": claimUnknown(v)}, nil
 	}
+	b, e := s.open(ctx, false)
+	if e != nil {
+		return nil, e
+	}
+	defer b.Close()
 	var rs []string
 	if has {
 		rs, e = stringList(resources)
@@ -95,17 +98,14 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 		return nil, e
 	}
 	defer lk.Close()
-	if h.SchemaVersion == handle.RemoteSchemaVersion {
-		_ = lk.Close()
-		return s.remoteMutation(ctx, a, kind, ref, path, h)
-	}
-	b, e := s.open(ctx, true)
+	b, e := s.openAuthorityForHandle(ctx, ref, h, true)
 	if e != nil {
 		return nil, e
 	}
 	defer b.Close()
-	if h.AuthorityID != b.id {
-		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+	if h.SchemaVersion == handle.RemoteSchemaVersion {
+		_ = lk.Close()
+		return s.remoteMutation(ctx, a, kind, ref, path, h, b)
 	}
 	if h.State == "pending" {
 		return s.recoverPending(ctx, ref, h, path, lk, b, kind)
@@ -200,6 +200,7 @@ func (s *Server) mutation(ctx context.Context, a map[string]any, kind string) (a
 		if e = lk.Remove(path); e != nil {
 			return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be removed").With("claimId", h.ClaimID).With("operationId", id).With("commitState", "committed")
 		}
+		s.forgetAuthority(ref)
 		return map[string]any{"receipt": receipt, "lease": ref, "autoHeartbeat": "stopped"}, nil
 	}
 	h.State = "ready"
@@ -259,6 +260,7 @@ func (s *Server) recoverPending(ctx context.Context, ref string, h handle.Handle
 		if e := lk.Remove(path); e != nil {
 			return nil, e
 		}
+		s.forgetAuthority(ref)
 		return map[string]any{"lease": ref, "receipt": rec, "autoHeartbeat": "stopped"}, nil
 	}
 	h.State = "ready"
@@ -290,18 +292,18 @@ func clearRemotePending(path string) {
 	}
 }
 
-func (s *Server) remoteMutation(ctx context.Context, a map[string]any, kind, ref, path string, h handle.Handle) (any, error) {
-	if s.remote == nil || s.profile == nil || h.AuthorityID != s.profile.AuthorityID {
+func (s *Server) remoteMutation(ctx context.Context, a map[string]any, kind, ref, path string, h handle.Handle, b serviceBundle) (any, error) {
+	if !b.remote || b.profile == nil || b.client == nil || h.AuthorityID != b.id {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
 	}
-	if err := s.ensureRemoteCredential(); err != nil {
-		return nil, err
+	if _, err := os.Stat(b.profile.Credential.Path); err != nil {
+		return nil, reason.New(reason.ReasonAuthenticationRequired, "remote installation is not enrolled")
 	}
 	if h.PendingRequest != nil {
 		if h.PendingRequest.Kind != kind {
 			return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending request differs")
 		}
-		response, err := s.remoteClient.ReplayHandle(ctx, path)
+		response, err := b.client.ReplayHandle(ctx, path)
 		if err != nil {
 			if reason.DefinitiveNoCommit(err) {
 				clearRemotePending(path)
@@ -317,7 +319,10 @@ func (s *Server) remoteMutation(ctx context.Context, a map[string]any, kind, ref
 	if h.State != "ready" {
 		return nil, reason.New(reason.ReasonHandleInUse, "lease has a pending request")
 	}
-	authorityNow, err := s.remoteUpperNow(ctx)
+	if _, err := b.client.Metadata(ctx); err != nil {
+		return nil, err
+	}
+	authorityNow, err := b.client.Clock().UpperBound()
 	if err != nil {
 		return nil, err
 	}
@@ -361,15 +366,15 @@ func (s *Server) remoteMutation(ctx context.Context, a map[string]any, kind, ref
 		}
 	}
 	id := opID()
-	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path, CredentialPath: s.profile.Credential.Path}
+	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: path, CredentialPath: b.profile.Credential.Path}
 	var receipt lease.Receipt
 	switch kind {
 	case "heartbeat":
-		receipt, err = s.remote.Heartbeat(ctx, creds, lease.Renew{OperationID: id, TTL: ttlDuration(ttlv)})
+		receipt, err = b.authority.Heartbeat(ctx, creds, lease.Renew{OperationID: id, TTL: ttlDuration(ttlv)})
 	case "checkpoint":
-		receipt, err = s.remote.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: id, TTL: ttlDuration(ttlv), Data: checkpointRaw})
+		receipt, err = b.authority.Checkpoint(ctx, creds, lease.CheckpointRequest{OperationID: id, TTL: ttlDuration(ttlv), Data: checkpointRaw})
 	case "release":
-		receipt, err = s.remote.Release(ctx, creds, lease.ReleaseRequest{OperationID: id, Reason: releaseReason})
+		receipt, err = b.authority.Release(ctx, creds, lease.ReleaseRequest{OperationID: id, Reason: releaseReason})
 	}
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
@@ -386,6 +391,7 @@ func (s *Server) finishRemoteMutation(ref, path string, h handle.Handle, kind st
 		if err := handle.Remove(path); err != nil {
 			return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be removed").With("claimId", h.ClaimID).With("operationId", receipt.OperationID).With("commitState", "committed")
 		}
+		s.forgetAuthority(ref)
 		return map[string]any{"receipt": receipt, "lease": ref, "autoHeartbeat": "stopped"}, nil
 	}
 	lock, err := handle.AcquireLock(context.Background(), path+".lock")
@@ -467,14 +473,11 @@ func (s *Server) verify(ctx context.Context, a map[string]any) (any, error) {
 		return nil, e
 	}
 	defer lk.Close()
-	b, e := s.open(ctx, false)
+	b, e := s.openAuthorityForHandle(ctx, ref, h, false)
 	if e != nil {
 		return nil, e
 	}
 	defer b.Close()
-	if h.AuthorityID != b.id {
-		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
-	}
 	expected := []string{}
 	if v, ok := a["resources"]; ok {
 		expected, e = stringList(v)

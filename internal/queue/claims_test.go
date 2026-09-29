@@ -55,6 +55,45 @@ func (a *statusAuthority) Status(_ context.Context, sel lease.Selector) (lease.S
 	return result, nil
 }
 
+type routedClaimStatus struct {
+	id   string
+	keys []string
+}
+
+func (a *routedClaimStatus) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {
+	if selector.AuthorityID != a.id {
+		return lease.Status{}, fmt.Errorf("authority %q received status for %q", a.id, selector.AuthorityID)
+	}
+	a.keys = append(a.keys, selector.Resources...)
+	status := lease.Status{}
+	for _, key := range selector.Resources {
+		status.Resources = append(status.Resources, lease.ResourceStatus{Resource: key, State: "free"})
+	}
+	return status, nil
+}
+
+func TestOverlayClaimsByAuthorityRoutesEachSource(t *testing.T) {
+	t.Parallel()
+	firstAPI := &routedClaimStatus{id: "authority-local"}
+	secondAPI := &routedClaimStatus{id: "authority-team"}
+	firstSource := ClaimSource{Source: Source{ID: "personal", Adapter: "external", Locator: "personal"}, Policy: "generic", ClaimSource: "acme/personal"}
+	secondSource := ClaimSource{Source: Source{ID: "team", Adapter: "external", Locator: "team"}, Policy: "generic", ClaimSource: "acme/team"}
+	items := []Item{
+		{Summary: Summary{Ref: Ref{SourceID: "personal", ItemID: "1"}}},
+		{Summary: Summary{Ref: Ref{SourceID: "team", ItemID: "2"}}},
+	}
+	observed := OverlayClaimsByAuthority(context.Background(), items, map[string]ClaimSource{"personal": firstSource, "team": secondSource}, map[string]ClaimAuthority{
+		"personal": {API: firstAPI, ID: firstAPI.id, Profile: "local"},
+		"team":     {API: secondAPI, ID: secondAPI.id, Profile: "team"},
+	}, config.ProfilePaths{}, nil)
+	if len(firstAPI.keys) != 1 || len(secondAPI.keys) != 1 || firstAPI.keys[0] == secondAPI.keys[0] {
+		t.Fatalf("status was not routed by source: local=%v team=%v", firstAPI.keys, secondAPI.keys)
+	}
+	if len(observed) != 2 || !observed[0].Claim.Known || observed[0].Claim.AuthorityID != firstAPI.id || !observed[1].Claim.Known || observed[1].Claim.AuthorityID != secondAPI.id {
+		t.Fatalf("claim projections used the wrong authority: %+v", observed)
+	}
+}
+
 type heldStatusAuthority struct{}
 
 func (heldStatusAuthority) Status(_ context.Context, selector lease.Selector) (lease.Status, error) {

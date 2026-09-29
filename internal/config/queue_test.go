@@ -11,6 +11,32 @@ import (
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
+func TestQueueSourceAuthoritiesResolveLegacyAndSourceBindings(t *testing.T) {
+	t.Parallel()
+	cfg := QueueConfig{
+		Sources: []QueueSource{{ID: "local"}, {ID: "team", Authority: "shared"}},
+		Views: []QueueView{
+			{Name: "Ready", Authority: "local", Sources: []string{"local", "team"}},
+			{Name: "Team", Authority: "shared", Sources: []string{"team"}},
+		},
+	}
+	resolved, err := QueueSourceAuthorities(cfg)
+	if err != nil || resolved["local"] != LocalProfileName || resolved["team"] != "shared" {
+		t.Fatalf("source authorities: %v %v", resolved, err)
+	}
+
+	cfg.Sources[1].Authority = ""
+	if _, err := QueueSourceAuthorities(cfg); err == nil || !strings.Contains(err.Error(), `source "team"`) {
+		t.Fatalf("conflicting legacy views accepted or unnamed: %v", err)
+	}
+
+	cfg.Sources[1].Authority = "shared"
+	resolved, err = QueueSourceAuthorities(cfg)
+	if err != nil || resolved["team"] != "shared" {
+		t.Fatalf("explicit source authority did not override legacy views: %v %v", resolved, err)
+	}
+}
+
 func queueFixture(checkout string) string {
 	return "version: 1\nme:\n  github.com: brett\n  backlog-md: ['@brett']\nsources:\n  - id: local\n    adapter: backlog-md\n    checkout: " + checkout + "\n    claims: {policy: generic, source: project}\n  - id: remote\n    adapter: github\n    host: github.com\n    repository: acme/api\n    account: brett\nviews:\n  - name: Ready\n    authority: local\n    sources: [local, remote]\n    filter: {readiness: ready, claim: free, assigned: [me, nobody]}\n"
 }

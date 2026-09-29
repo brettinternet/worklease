@@ -106,6 +106,82 @@ func queueAuthorityForClaim(ctx context.Context, cmd *urfave.Command, name strin
 	return queueAuthorityForViewMode(ctx, cmd, name, true, true)
 }
 
+type queueAuthoritySet struct {
+	Backends      map[string]*authorityContext
+	Authorities   map[string]queue.ClaimAuthority
+	SourceNames   map[string]string
+	SourceBackend map[string]*authorityContext
+}
+
+func (set *queueAuthoritySet) Close() {
+	if set == nil {
+		return
+	}
+	closed := make(map[*authorityContext]bool)
+	for _, backend := range set.Backends {
+		if backend != nil && !closed[backend] {
+			closed[backend] = true
+			_ = backend.Close()
+		}
+	}
+}
+
+func queueAuthoritiesForSources(ctx context.Context, cmd *urfave.Command, cfg config.QueueConfig, sourceIDs []string, fetchMetadata, write bool) (*queueAuthoritySet, error) {
+	resolved, err := config.QueueSourceAuthorities(cfg)
+	if err != nil {
+		return nil, err
+	}
+	set := &queueAuthoritySet{Backends: map[string]*authorityContext{}, Authorities: map[string]queue.ClaimAuthority{}, SourceNames: map[string]string{}, SourceBackend: map[string]*authorityContext{}}
+	if len(sourceIDs) == 0 {
+		backend, selected, err := queueAuthorityForViewMode(ctx, cmd, config.LocalProfileName, fetchMetadata, write)
+		if err != nil {
+			return nil, err
+		}
+		set.Backends[config.LocalProfileName], set.Authorities[config.LocalProfileName] = backend, selected
+	}
+	for _, sourceID := range sourceIDs {
+		name := resolved[sourceID]
+		if name == "" {
+			name = config.LocalProfileName
+		}
+		backend, ok := set.Backends[name]
+		if !ok {
+			var selected queue.ClaimAuthority
+			backend, selected, err = queueAuthorityForViewMode(ctx, cmd, name, fetchMetadata, write)
+			if err != nil {
+				set.Close()
+				return nil, err
+			}
+			set.Backends[name] = backend
+			set.Authorities[name] = selected
+		}
+		set.SourceNames[sourceID] = name
+		set.SourceBackend[sourceID] = backend
+	}
+	return set, nil
+}
+
+func (set *queueAuthoritySet) ForSource(sourceID string) (*authorityContext, queue.ClaimAuthority, bool) {
+	if set == nil {
+		return nil, queue.ClaimAuthority{}, false
+	}
+	name := set.SourceNames[sourceID]
+	backend, backendOK := set.SourceBackend[sourceID]
+	authority, authorityOK := set.Authorities[name]
+	return backend, authority, backendOK && authorityOK
+}
+
+func (set *queueAuthoritySet) Primary(sourceIDs []string) (*authorityContext, queue.ClaimAuthority, bool) {
+	for _, id := range sourceIDs {
+		if backend, authority, ok := set.ForSource(id); ok {
+			return backend, authority, true
+		}
+	}
+	backend, backendOK := set.Backends[config.LocalProfileName]
+	authority, authorityOK := set.Authorities[config.LocalProfileName]
+	return backend, authority, backendOK && authorityOK
+}
+
 func queueAuthorityForViewMode(ctx context.Context, cmd *urfave.Command, name string, fetchMetadata, write bool) (*authorityContext, queue.ClaimAuthority, error) {
 	paths := config.UserProfilePaths(os.Getenv)
 	profiles, _, err := config.LoadProfiles(paths)

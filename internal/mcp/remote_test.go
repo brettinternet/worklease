@@ -144,6 +144,108 @@ func TestRemoteMCPRoutesExistingAuthorityTools(t *testing.T) {
 	}
 }
 
+func TestMCPLeaseKeepsAcquisitionAuthorityProfileForLifecycle(t *testing.T) {
+	profile, home, _, _ := remoteMCPFixture(t, true)
+	alternate := profile
+	alternate.Name = "alternate"
+	paths := config.UserProfilePaths(os.Getenv)
+	if err := config.SaveProfiles(paths, []config.Profile{alternate}, ""); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Options{Home: home, AgentID: "mcp-agent", SessionID: "mcp-session", TTL: 30 * time.Second, Profile: &profile, ProfileName: profile.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	bundle, err := server.openNamedAuthority(context.Background(), alternate.Name, &alternate, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	result, err := server.acquireWithBundle(context.Background(), map[string]any{"resources": []string{"coordination:profile-bound"}, "ttl": 30.0, "maxHold": 60.0, "autoHeartbeat": false, "coordinationOnly": true}, alternate.AuthorityID, bundle, []string{"coordination:profile-bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseRef, _ := result.(map[string]any)["lease"].(string)
+	if leaseRef == "" || server.bindings[leaseRef].profileName != alternate.Name {
+		t.Fatalf("acquisition profile was not bound: ref=%q bindings=%+v", leaseRef, server.bindings)
+	}
+	stored, err := handle.Read(server.handlePath(leaseRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AuthorityProfileName != alternate.Name {
+		t.Fatalf("acquisition profile was not persisted: %q", stored.AuthorityProfileName)
+	}
+	pendingRef, pendingClaim := opID(), opID()
+	pendingOperation := pendingClaim
+	pendingDeadline := time.Now().UTC().Add(time.Hour)
+	pendingResources := []string{"coordination:pending-profile-bound"}
+	pendingRequest, err := json.Marshal(map[string]any{
+		"protocolVersion": "worklease-http/1", "authorityId": alternate.AuthorityID, "expectedRestoreId": alternate.RestoreID,
+		"operationId": pendingOperation, "requestNotAfter": pendingDeadline, "claimId": pendingClaim,
+		"resources": pendingResources, "agentId": "mcp-agent", "sessionId": "mcp-session", "workKey": pendingResources[0],
+		"ttlMicros": (30 * time.Second).Microseconds(), "maxHoldMicros": (60 * time.Second).Microseconds(), "coordinationOnly": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingHash := sha256.Sum256(pendingRequest)
+	pendingPath := server.handlePath(pendingRef)
+	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(pendingPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Write(pendingPath, handle.Handle{
+		SchemaVersion: handle.RemoteSchemaVersion, AuthorityID: alternate.AuthorityID, RestoreID: alternate.RestoreID,
+		AuthorityProfileName: alternate.Name, ClaimID: pendingClaim, Token: randomToken(), Resources: pendingResources,
+		AgentID: "mcp-agent", SessionID: "mcp-session", State: "pending",
+		PendingRequest: &handle.PendingRequest{
+			OperationID: pendingOperation, Kind: "acquire", AuthorityID: alternate.AuthorityID, Endpoint: alternate.Endpoint,
+			CertificateSHA256: alternate.CertificateSHA256, ClaimID: pendingClaim, RequestHash: hex.EncodeToString(pendingHash[:]),
+			RequestNotAfter: pendingDeadline, ExpectedRestoreID: alternate.RestoreID, Request: pendingRequest, Inputs: map[string]any{"request": string(pendingRequest)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Read(pendingPath); err != nil {
+		t.Fatalf("pending handle cannot be read: %v", err)
+	}
+	server.Close()
+
+	restarted, err := NewServer(Options{Home: home, AgentID: "mcp-agent", SessionID: "mcp-session", TTL: 30 * time.Second, Profile: &profile, ProfileName: profile.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	recovered, err := restarted.Call(context.Background(), "acquire", map[string]any{"lease": pendingRef})
+	if err != nil || mcpFields(t, recovered)["ok"] != true {
+		t.Fatalf("pending acquire recovery after restart failed: err=%v result=%#v", err, recovered)
+	}
+	recoveredRef, _ := mcpFields(t, recovered)["lease"].(string)
+	if recoveredRef != pendingRef {
+		t.Fatalf("recovered lease reference=%q want %q", recoveredRef, pendingRef)
+	}
+	pendingRelease, err := restarted.Call(context.Background(), "release", map[string]any{"lease": pendingRef, "reason": "recovered"})
+	if err != nil || mcpFields(t, pendingRelease)["ok"] != true {
+		t.Fatalf("recovered lease release failed: err=%v result=%#v", err, pendingRelease)
+	}
+	verified, err := restarted.verify(context.Background(), map[string]any{"lease": leaseRef})
+	if err != nil {
+		t.Fatalf("verification after restart did not use the acquisition profile: %v", err)
+	}
+	if verified == nil {
+		t.Fatal("verification returned no result")
+	}
+	heartbeat, err := restarted.Call(context.Background(), "heartbeat", map[string]any{"lease": leaseRef, "ttl": 30.0})
+	if err != nil || mcpFields(t, heartbeat)["ok"] != true {
+		t.Fatalf("heartbeat after restart failed: err=%v result=%#v", err, heartbeat)
+	}
+	released, err := restarted.Call(context.Background(), "release", map[string]any{"lease": leaseRef, "reason": "done"})
+	if err != nil || mcpFields(t, released)["ok"] != true {
+		t.Fatalf("release after restart failed: err=%v result=%#v", err, released)
+	}
+}
+
 func TestRemoteMCPDefinitiveMutationFailureClearsPendingRequest(t *testing.T) {
 	profile, home, _, _ := remoteMCPFixture(t, true)
 	s, err := NewServer(Options{Home: home, AgentID: "expiry-agent", SessionID: "expiry-session", TTL: time.Second, Profile: &profile, ProfileName: profile.Name})

@@ -31,17 +31,18 @@ type Options struct {
 	ProfileName              string
 	// QueueNext is supplied by the CLI entry point to reuse its queue selection core.
 	// It is invoked only when the queue_next tool is called.
-	QueueNext func(context.Context, string, bool, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, []string) (map[string]any, error), func(string) string) (map[string]any, error)
+	QueueNext func(context.Context, string, bool, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, string, string, *config.Profile, []string) (map[string]any, error), func(string) string) (map[string]any, error)
 }
 type runtimeLease struct {
-	ref, path string
-	ttl       time.Duration
-	holdUntil time.Time
-	ctx       context.Context
-	cancel    context.CancelFunc
-	stop      chan struct{}
-	done      chan struct{}
-	status    string
+	ref, path, profileName string
+	profile                *config.Profile
+	ttl                    time.Duration
+	holdUntil              time.Time
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	stop                   chan struct{}
+	done                   chan struct{}
+	status                 string
 }
 
 func NewServer(opts Options) (*Server, error) {
@@ -57,9 +58,12 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.SessionID == "" {
 		opts.SessionID = opID()
 	}
-	s := &Server{options: opts, requests: map[string]*requestState{}, seen: map[string]struct{}{}, leases: map[string]*runtimeLease{}}
+	s := &Server{options: opts, requests: map[string]*requestState{}, seen: map[string]struct{}{}, leases: map[string]*runtimeLease{}, bindings: map[string]authorityBinding{}}
 	if opts.Profile != nil {
 		profile := *opts.Profile
+		if profile.Name == "" {
+			profile.Name = opts.ProfileName
+		}
 		pending := authority.NewFilePendingStore(filepath.Join(opts.Home, "pending", opts.ProfileName))
 		client, err := authority.NewHTTPClient(profile, pending, nil)
 		if err != nil {
@@ -75,11 +79,14 @@ func NewServer(opts Options) (*Server, error) {
 }
 
 type serviceBundle struct {
-	authority authority.Authority
-	svc       *lease.Service
-	st        *store.Store
-	id        string
-	remote    bool
+	authority   authority.Authority
+	svc         *lease.Service
+	st          *store.Store
+	id          string
+	remote      bool
+	profile     *config.Profile
+	profileName string
+	client      *authority.HTTPClient
 }
 
 func (b serviceBundle) Close() {
@@ -97,19 +104,16 @@ func (s *Server) ensureRemoteCredential() error {
 	return nil
 }
 
-func (s *Server) remoteUpperNow(ctx context.Context) (time.Time, error) {
-	if _, err := s.remoteClient.Metadata(ctx); err != nil {
-		return time.Time{}, err
-	}
-	return s.remoteClient.Clock().UpperBound()
-}
-
 func (s *Server) open(ctx context.Context, write bool) (serviceBundle, error) {
 	if s.remote != nil {
 		if err := s.ensureRemoteCredential(); err != nil {
 			return serviceBundle{}, err
 		}
-		return serviceBundle{authority: s.remote, id: s.profile.AuthorityID, remote: true}, nil
+		name := s.options.ProfileName
+		if name == "" {
+			name = s.profile.Name
+		}
+		return serviceBundle{authority: s.remote, id: s.profile.AuthorityID, remote: true, profile: s.profile, profileName: name, client: s.remoteClient}, nil
 	}
 	st, e := store.Open(ctx, s.options.Home, store.Options{ReadOnly: !write})
 	if e != nil {
@@ -121,7 +125,149 @@ func (s *Server) open(ctx context.Context, write bool) (serviceBundle, error) {
 		_ = st.Close()
 		return serviceBundle{}, e
 	}
-	return serviceBundle{authority: local, svc: svc, st: st, id: st.AuthorityID()}, nil
+	return serviceBundle{authority: local, svc: svc, st: st, id: st.AuthorityID(), profileName: config.LocalProfileName}, nil
+}
+
+func (s *Server) openNamedAuthority(ctx context.Context, name string, expected *config.Profile, write bool) (serviceBundle, error) {
+	if name == "" || name == config.LocalProfileName {
+		st, err := store.Open(ctx, s.options.Home, store.Options{ReadOnly: !write})
+		if err != nil {
+			return serviceBundle{}, err
+		}
+		svc := lease.New(st, nil, nil, lease.Defaults{TTL: s.options.TTL, PollInterval: s.options.PollInterval})
+		local, err := authority.NewLocalAuthority(svc, st, s.options.PollInterval)
+		if err != nil {
+			_ = st.Close()
+			return serviceBundle{}, err
+		}
+		return serviceBundle{authority: local, svc: svc, st: st, id: st.AuthorityID(), profileName: config.LocalProfileName}, nil
+	}
+	profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil {
+		return serviceBundle{}, err
+	}
+	profile, ok := profiles[name]
+	if !ok || expected != nil && profile != *expected {
+		return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "queue authority profile changed or is no longer trusted")
+	}
+	if expected != nil {
+		profile = *expected
+	}
+	pending := authority.NewFilePendingStore(filepath.Join(s.options.Home, "pending", name))
+	client, err := authority.NewHTTPClient(profile, pending, nil)
+	if err != nil {
+		return serviceBundle{}, err
+	}
+	remote, err := authority.NewRemoteAuthority(client)
+	if err != nil {
+		return serviceBundle{}, err
+	}
+	return serviceBundle{authority: remote, id: profile.AuthorityID, remote: true, profile: &profile, profileName: name, client: client}, nil
+}
+
+func (s *Server) openAuthorityForHandle(ctx context.Context, ref string, h handle.Handle, write bool) (serviceBundle, error) {
+	if h.SchemaVersion != handle.RemoteSchemaVersion {
+		bundle, err := s.openNamedAuthority(ctx, config.LocalProfileName, nil, write)
+		if err == nil && bundle.id != h.AuthorityID {
+			bundle.Close()
+			return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+		}
+		return bundle, err
+	}
+	s.mu.Lock()
+	runtime := s.leases[ref]
+	bound, hasBinding := s.bindings[ref]
+	var boundName string
+	var boundProfile *config.Profile
+	if hasBinding {
+		boundName = bound.profileName
+		if bound.profile != nil {
+			profile := *bound.profile
+			boundProfile = &profile
+		}
+	}
+	if runtime != nil {
+		boundName = runtime.profileName
+		if runtime.profile != nil {
+			profile := *runtime.profile
+			boundProfile = &profile
+		}
+	}
+	s.mu.Unlock()
+	if hasBinding || runtime != nil {
+		if boundProfile != nil {
+			if boundProfile.AuthorityID != h.AuthorityID || boundProfile.RestoreID != h.RestoreID {
+				return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority profile changed")
+			}
+		}
+		bundle, err := s.openNamedAuthority(ctx, boundName, boundProfile, write)
+		if err == nil && bundle.id != h.AuthorityID {
+			bundle.Close()
+			return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+		}
+		return bundle, err
+	}
+	if name := h.AuthorityProfileName; name != "" {
+		startupName := s.options.ProfileName
+		if startupName == "" && s.profile != nil {
+			startupName = s.profile.Name
+		}
+		if s.remote != nil && s.profile != nil && name == startupName {
+			if s.profile.AuthorityID != h.AuthorityID || h.RestoreID != "" && s.profile.RestoreID != h.RestoreID {
+				return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority profile changed")
+			}
+			profile := *s.profile
+			return serviceBundle{authority: s.remote, id: s.profile.AuthorityID, remote: true, profile: &profile, profileName: name, client: s.remoteClient}, nil
+		}
+		bundle, err := s.openNamedAuthority(ctx, name, nil, write)
+		if err != nil {
+			return serviceBundle{}, err
+		}
+		if !bundle.remote || bundle.profile == nil || bundle.id != h.AuthorityID || h.RestoreID != "" && bundle.profile.RestoreID != h.RestoreID {
+			bundle.Close()
+			return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority profile changed")
+		}
+		return bundle, nil
+	}
+	var candidates []config.Profile
+	if s.profile != nil && s.profile.AuthorityID == h.AuthorityID && (h.RestoreID == "" || s.profile.RestoreID == h.RestoreID) {
+		candidates = append(candidates, *s.profile)
+	}
+	profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))
+	if err != nil {
+		return serviceBundle{}, err
+	}
+	for _, profile := range profiles {
+		if profile.AuthorityID == h.AuthorityID && (h.RestoreID == "" || profile.RestoreID == h.RestoreID) {
+			duplicate := false
+			for _, existing := range candidates {
+				if existing == profile {
+					duplicate = true
+				}
+			}
+			if !duplicate {
+				candidates = append(candidates, profile)
+			}
+		}
+	}
+	if len(candidates) != 1 {
+		return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority profile cannot be uniquely resolved")
+	}
+	name := candidates[0].Name
+	if name == "" {
+		for key, profile := range profiles {
+			if profile == candidates[0] {
+				name = key
+				break
+			}
+		}
+	}
+	bundle, err := s.openNamedAuthority(ctx, name, &candidates[0], write)
+	if err == nil && bundle.id != h.AuthorityID {
+		bundle.Close()
+		return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "lease authority does not match")
+	}
+	return bundle, err
 }
 
 var toolOrder = []string{"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions"}
@@ -644,6 +790,10 @@ func (s *Server) acquire(ctx context.Context, a map[string]any, authorityID stri
 		return nil, e
 	}
 	defer b.Close()
+	return s.acquireWithBundle(ctx, a, authorityID, b, resources)
+}
+
+func (s *Server) acquireWithBundle(ctx context.Context, a map[string]any, authorityID string, b serviceBundle, resources []string) (any, error) {
 	if authorityID != "" && b.id != authorityID {
 		return nil, reason.New(reason.ReasonAuthorityMismatch, "authority changed before acquisition")
 	}
@@ -721,12 +871,14 @@ func (s *Server) acquire(ctx context.Context, a map[string]any, authorityID stri
 	if e = lk.Write(path, h); e != nil {
 		return nil, e
 	}
+	s.bindAuthority(ref, b)
 	g, e := b.authority.Acquire(ctx, lease.AcquireRequest{AuthorityID: b.id, ClaimID: claim, Token: h.Token, Resources: resources, AgentID: agent, SessionID: session, WorkKey: work, TTL: time.Duration(ttlv * float64(time.Second)), Wait: time.Duration(wait * float64(time.Second)), CoordinationOnly: co, LocalReplaceAllowed: !co, RequestNotAfter: deadline, HoldUntil: h.HoldUntil})
 	if e != nil {
 		if reason.DefinitiveNoCommit(e) {
 			// A grant that provably never committed leaves no recoverable
 			// state; retaining it would only accumulate orphan pending handles.
 			_ = lk.Remove(path)
+			s.forgetAuthority(ref)
 			return nil, mutationError(e, claim, claim, path)
 		}
 		if x := reason.As(e); x != nil {
@@ -750,7 +902,7 @@ func (s *Server) acquire(ctx context.Context, a map[string]any, authorityID stri
 	status := "disabled"
 	if auto {
 		status = "active"
-		s.startRenewal(ref, ttlDuration(ttlv), h.HoldUntil)
+		s.startRenewal(ref, ttlDuration(ttlv), h.HoldUntil, b)
 	} else {
 		status = "disabled"
 	}
@@ -762,21 +914,18 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 		return nil, err
 	}
 	defer lk.Close()
-	if h.SchemaVersion == handle.RemoteSchemaVersion {
-		_ = lk.Close()
-		if err := s.ensureRemoteCredential(); err != nil {
-			return nil, err
-		}
-		return s.recoverRemoteAcquire(ctx, ref, path, h)
-	}
-	if h.State != "pending" || h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
-		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs")
-	}
-	b, err := s.open(ctx, true)
+	b, err := s.openAuthorityForHandle(ctx, ref, h, true)
 	if err != nil {
 		return nil, err
 	}
 	defer b.Close()
+	if h.SchemaVersion == handle.RemoteSchemaVersion {
+		_ = lk.Close()
+		return s.recoverRemoteAcquire(ctx, ref, path, h, b)
+	}
+	if h.State != "pending" || h.PendingRequest == nil || h.PendingRequest.Kind != "acquire" {
+		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs")
+	}
 	p := h.PendingRequest
 	resources, ok := p.Inputs["resources"].([]any)
 	var rs []string
@@ -814,8 +963,9 @@ func (s *Server) recoverAcquire(ctx context.Context, ref string) (any, error) {
 	if err := lk.Write(path, h); err != nil {
 		return nil, reason.New(reason.ReasonHandleWriteFailed, "lease handle could not be updated").With("claimId", h.ClaimID).With("operationId", p.OperationID).With("commitState", "committed")
 	}
+	s.bindAuthority(ref, b)
 	if h.AutoRenewOwner != "" {
-		s.startRenewal(ref, time.Duration(pendingInt(p.Inputs, "ttl"))*time.Microsecond, h.HoldUntil)
+		s.startRenewal(ref, time.Duration(pendingInt(p.Inputs, "ttl"))*time.Microsecond, h.HoldUntil, b)
 	}
 	status := "disabled"
 	if h.AutoRenewOwner != "" {
@@ -829,6 +979,7 @@ func (s *Server) acquireRemote(ctx context.Context, b serviceBundle, ref, path, 
 	if err := handle.EnsureOwnerPrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
+	s.bindAuthority(ref, b)
 	autoOwner := ""
 	if auto {
 		autoOwner = opID()
@@ -845,7 +996,7 @@ func (s *Server) acquireRemote(ctx context.Context, b serviceBundle, ref, path, 
 			status := "disabled"
 			if auto {
 				status = "active"
-				s.startRenewal(ref, ttl, holdUntil)
+				s.startRenewal(ref, ttl, holdUntil, b)
 			}
 			return map[string]any{"lease": ref, "authorityId": grant.AuthorityID, "handlePath": path, "claim": gClaim(grant), "autoHeartbeat": status, "holdUntil": holdUntil}, nil
 		}
@@ -853,6 +1004,7 @@ func (s *Server) acquireRemote(ctx context.Context, b serviceBundle, ref, path, 
 		if wait == 0 || classified == nil || classified.Reason != reason.ReasonAlreadyClaimed || !time.Now().Before(waitUntil) {
 			if reason.DefinitiveNoCommit(err) {
 				_ = handle.Remove(path)
+				s.forgetAuthority(ref)
 			}
 			if x := reason.As(err); x != nil && !reason.DefinitiveNoCommit(err) {
 				x.With("lease", ref)
@@ -896,11 +1048,14 @@ func (s *Server) finishRemoteAcquire(path string, grant lease.Grant, holdUntil t
 	return lock.Write(path, h)
 }
 
-func (s *Server) recoverRemoteAcquire(ctx context.Context, ref, path string, before handle.Handle) (any, error) {
+func (s *Server) recoverRemoteAcquire(ctx context.Context, ref, path string, before handle.Handle, b serviceBundle) (any, error) {
 	if before.State != "pending" || before.PendingRequest == nil || before.PendingRequest.Kind != "acquire" {
 		return nil, reason.New(reason.ReasonOperationRequestMismatch, "pending acquire request differs")
 	}
-	response, err := s.remoteClient.ReplayHandle(ctx, path)
+	if b.client == nil {
+		return nil, reason.New(reason.ReasonAuthorityMismatch, "lease authority client is unavailable")
+	}
+	response, err := b.client.ReplayHandle(ctx, path)
 	if err != nil {
 		return nil, mutationError(err, before.ClaimID, before.PendingRequest.OperationID, path)
 	}
@@ -918,10 +1073,11 @@ func (s *Server) recoverRemoteAcquire(ctx context.Context, ref, path string, bef
 	if err := s.finishRemoteAcquire(path, grant, holdUntil, auto); err != nil {
 		return nil, err
 	}
+	s.bindAuthority(ref, b)
 	status := "disabled"
 	if auto {
 		status = "active"
-		s.startRenewal(ref, time.Duration(request.TTLMicros)*time.Microsecond, holdUntil)
+		s.startRenewal(ref, time.Duration(request.TTLMicros)*time.Microsecond, holdUntil, b)
 	}
 	return map[string]any{"lease": ref, "authorityId": grant.AuthorityID, "handlePath": path, "claim": gClaim(grant), "autoHeartbeat": status, "holdUntil": holdUntil}, nil
 }

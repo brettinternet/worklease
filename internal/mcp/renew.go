@@ -4,14 +4,45 @@ import (
 	"context"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
-func (s *Server) startRenewal(ref string, ttl time.Duration, hold time.Time) {
+type authorityBinding struct {
+	profileName string
+	profile     *config.Profile
+}
+
+func (s *Server) bindAuthority(ref string, bundle serviceBundle) {
+	binding := authorityBinding{profileName: bundle.profileName}
+	if bundle.profile != nil {
+		profile := *bundle.profile
+		binding.profile = &profile
+	}
+	s.mu.Lock()
+	s.bindings[ref] = binding
+	s.mu.Unlock()
+}
+
+func (s *Server) forgetAuthority(ref string) {
+	s.mu.Lock()
+	delete(s.bindings, ref)
+	s.mu.Unlock()
+}
+
+func (s *Server) startRenewal(ref string, ttl time.Duration, hold time.Time, binding ...serviceBundle) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &runtimeLease{ref: ref, path: s.handlePath(ref), ttl: ttl, holdUntil: hold, ctx: ctx, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{}), status: "active"}
+	r := &runtimeLease{ref: ref, path: s.handlePath(ref), profileName: config.LocalProfileName, ttl: ttl, holdUntil: hold, ctx: ctx, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{}), status: "active"}
+	if len(binding) > 0 {
+		r.profileName = binding[0].profileName
+		if binding[0].profile != nil {
+			profile := *binding[0].profile
+			r.profile = &profile
+		}
+		s.bindAuthority(ref, binding[0])
+	}
 	s.mu.Lock()
 	s.leases[ref] = r
 	s.mu.Unlock()
@@ -42,14 +73,27 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		if err != nil {
 			return
 		}
+		bundle, err := s.openAuthorityForHandle(r.ctx, r.ref, h, false)
+		if err != nil {
+			return
+		}
 		now := time.Now()
-		if s.remote != nil {
-			var nowErr error
-			now, nowErr = s.remoteUpperNow(r.ctx)
-			if nowErr != nil {
+		if bundle.remote {
+			if bundle.client == nil {
+				bundle.Close()
+				return
+			}
+			if _, err := bundle.client.Metadata(r.ctx); err != nil {
+				bundle.Close()
+				return
+			}
+			now, err = bundle.client.Clock().UpperBound()
+			if err != nil {
+				bundle.Close()
 				return
 			}
 		}
+		bundle.Close()
 		if !r.holdUntil.After(now) || !h.ExpiresAt.After(now) {
 			return
 		}
@@ -70,7 +114,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		s.mu.Lock()
 		ttl := r.ttl
 		s.mu.Unlock()
-		if s.remote != nil {
+		if r.profile != nil {
 			if !s.renewRemote(r, ttl) {
 				return
 			}
@@ -86,7 +130,7 @@ func (s *Server) renewLoop(r *runtimeLease) {
 		if ttl < time.Second {
 			return
 		}
-		b, err := s.open(r.ctx, true)
+		b, err := s.openAuthorityForHandle(r.ctx, r.ref, h, true)
 		if err != nil {
 			return
 		}
@@ -148,14 +192,22 @@ func (s *Server) renewLoop(r *runtimeLease) {
 	}
 }
 func (s *Server) renewRemote(r *runtimeLease, ttl time.Duration) bool {
-	if s.ensureRemoteCredential() != nil {
+	if r.profile == nil {
 		return false
 	}
+	b, err := s.openNamedAuthority(r.ctx, r.profileName, r.profile, true)
+	if err != nil {
+		return false
+	}
+	defer b.Close()
 	h, err := handle.Read(r.path)
-	if err != nil || h.State != "ready" || h.PendingRequest != nil || s.profile == nil || h.AuthorityID != s.profile.AuthorityID {
+	if err != nil || h.State != "ready" || h.PendingRequest != nil || h.AuthorityID != b.id || h.RestoreID != b.profile.RestoreID {
 		return false
 	}
-	authorityNow, err := s.remoteUpperNow(r.ctx)
+	if _, err := b.client.Metadata(r.ctx); err != nil {
+		return false
+	}
+	authorityNow, err := b.client.Clock().UpperBound()
 	if err != nil || !h.HoldUntil.After(authorityNow) {
 		return false
 	}
@@ -167,8 +219,8 @@ func (s *Server) renewRemote(r *runtimeLease, ttl time.Duration) bool {
 		return false
 	}
 	id := opID()
-	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: r.path, CredentialPath: s.profile.Credential.Path}
-	receipt, err := s.remote.Heartbeat(r.ctx, creds, lease.Renew{OperationID: id, TTL: ttl})
+	creds := lease.Credentials{AuthorityID: h.AuthorityID, ClaimID: h.ClaimID, Token: h.Token, Revision: h.Revision, HandlePath: r.path, CredentialPath: b.profile.Credential.Path}
+	receipt, err := b.authority.Heartbeat(r.ctx, creds, lease.Renew{OperationID: id, TTL: ttl})
 	if err != nil {
 		if reason.DefinitiveNoCommit(err) {
 			clearRemotePending(r.path)

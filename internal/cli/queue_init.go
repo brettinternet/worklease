@@ -550,10 +550,12 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 				return result, reason.Invalid("checkout already configured as source " + source.ID)
 			}
 			if cmd.IsSet("authority") {
-				for _, configuredView := range cfg.Views {
-					if configuredView.Name == view && configuredView.Authority != authority {
-						return result, reason.Invalid("view authority differs from --authority")
-					}
+				sourceAuthorities, authorityErr := config.QueueSourceAuthorities(cfg)
+				if authorityErr != nil {
+					return result, authorityErr
+				}
+				if sourceAuthorities[source.ID] != authority {
+					return result, reason.Invalid("source authority differs from --authority")
 				}
 			}
 			if claims := cmd.String("portable-claims"); claims != "" && (source.Claims == nil || source.Claims.Policy != "generic" || source.Claims.Source != claims) {
@@ -679,7 +681,7 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	if err := queueInitAddViews(mapping, cfg, existing, cmd.String("view"), authority, id); err != nil {
 		return result, err
 	}
-	source := config.QueueSource{ID: id, Adapter: adapter, AllowGitNetwork: adapter == "backlog-md" && cmd.Bool("allow-git-network")}
+	source := config.QueueSource{ID: id, Authority: authority, Adapter: adapter, AllowGitNetwork: adapter == "backlog-md" && cmd.Bool("allow-git-network")}
 	networkOrigin := "default"
 	if source.AllowGitNetwork {
 		networkOrigin = "--allow-git-network"
@@ -819,7 +821,7 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	for _, field := range []struct {
 		key   string
 		value any
-	}{{"id", id}, {"adapter", adapter}} {
+	}{{"id", id}, {"authority", authority}, {"adapter", adapter}} {
 		node, _ := initNode(field.value)
 		initSet(sourceNode, field.key, node)
 	}
@@ -894,7 +896,7 @@ var queueInitViews = []config.QueueView{
 
 // queueInitAddViews creates filter-only defaults. Existing source lists remain
 // untouched, so legacy views continue to impose their explicit restrictions.
-func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool, view, authority, id string) error {
+func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool, view, _ string, id string) error {
 	wanted := []config.QueueView{{Name: view, Filter: queueInitViews[0].Filter}}
 	if view == "" {
 		wanted = queueInitViews
@@ -904,14 +906,9 @@ func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool
 		primary := n == 0
 		index := slices.IndexFunc(cfg.Views, func(v config.QueueView) bool { return v.Name == want.Name })
 		switch {
-		case index >= 0 && cfg.Views[index].Authority != authority:
-			if primary {
-				return reason.Invalid("view authority differs from --authority")
-			}
 		case index >= 0:
 			// Preserve legacy explicit source restrictions unchanged.
 		case primary || !existing:
-			want.Authority = authority
 			viewNode, err := initNode(want)
 			if err != nil {
 				return err

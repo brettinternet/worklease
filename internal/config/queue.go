@@ -58,6 +58,7 @@ func ValidateLaunchTemplate(value string) error {
 
 type QueueSource struct {
 	ID                string            `yaml:"id"`
+	Authority         string            `yaml:"authority,omitempty"`
 	Adapter           string            `yaml:"adapter"`
 	Checkout          string            `yaml:"checkout"`
 	ProjectCheckout   string            `yaml:"projectCheckout"`
@@ -110,6 +111,49 @@ type QueueFilter struct {
 	Readiness string   `yaml:"readiness,omitempty"`
 	Claim     string   `yaml:"claim,omitempty"`
 	Assigned  []string `yaml:"assigned,omitempty"`
+}
+
+// QueueSourceAuthorities resolves source-owned authority settings and supports
+// legacy per-view settings only when every legacy view that includes a source
+// agrees. A source-level authority takes precedence over legacy view defaults.
+func QueueSourceAuthorities(cfg QueueConfig) (map[string]string, error) {
+	sources := make(map[string]QueueSource, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		sources[source.ID] = source
+	}
+	assignments := make(map[string]string, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		if source.Authority != "" {
+			assignments[source.ID] = source.Authority
+		}
+	}
+	for _, view := range cfg.Views {
+		if view.Authority == "" {
+			continue
+		}
+		viewSources := view.Sources
+		if len(viewSources) == 0 {
+			viewSources = make([]string, 0, len(sources))
+			for _, source := range cfg.Sources {
+				viewSources = append(viewSources, source.ID)
+			}
+		}
+		for _, sourceID := range viewSources {
+			if sources[sourceID].Authority != "" {
+				continue
+			}
+			if previous := assignments[sourceID]; previous != "" && previous != view.Authority {
+				return nil, fmt.Errorf("source %q is assigned conflicting claim authorities %q and %q", sourceID, previous, view.Authority)
+			}
+			assignments[sourceID] = view.Authority
+		}
+	}
+	for _, source := range cfg.Sources {
+		if assignments[source.ID] == "" {
+			assignments[source.ID] = LocalProfileName
+		}
+	}
+	return assignments, nil
 }
 
 // QueuePath does not consult checkout, working directory, or Worklease-specific environment variables.
@@ -188,7 +232,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":         {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch":        {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source":        {"id": true, "adapter": true, "checkout": true, "projectCheckout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
+		"source":        {"id": true, "authority": true, "adapter": true, "checkout": true, "projectCheckout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
 		"githubProject": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
 		"claims":        {"policy": true, "source": true},
 		"view":          {"name": true, "authority": true, "sources": true, "filter": true},
@@ -467,7 +511,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			return QueueConfig{}, fmt.Errorf("%s.name: empty or duplicate name %q", label, v.Name)
 		}
 		names[v.Name] = true
-		if v.Authority != LocalProfileName {
+		if v.Authority != "" && v.Authority != LocalProfileName {
 			if _, ok := profiles[v.Authority]; !ok {
 				return QueueConfig{}, fmt.Errorf("%s.authority: unknown profile %q", label, v.Authority)
 			}
@@ -477,6 +521,17 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				return QueueConfig{}, fmt.Errorf("%s.sources: unknown source %q", label, id)
 			}
 		}
+	}
+	for i := range cfg.Sources {
+		source := &cfg.Sources[i]
+		if source.Authority != "" && source.Authority != LocalProfileName {
+			if _, ok := profiles[source.Authority]; !ok {
+				return QueueConfig{}, fmt.Errorf("sources[%d].authority: unknown profile %q", i, source.Authority)
+			}
+		}
+	}
+	if _, err := QueueSourceAuthorities(cfg); err != nil {
+		return QueueConfig{}, err
 	}
 	launchNames := map[string]bool{}
 	for i, action := range cfg.Launch {

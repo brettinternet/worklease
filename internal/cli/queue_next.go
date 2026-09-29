@@ -18,7 +18,7 @@ import (
 )
 
 func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) error {
-	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, scope queueScope, registry *queue.Registry, sources []queue.Source, claimSources map[string]queue.ClaimSource, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
+	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, scope queueScope, registry *queue.Registry, sources []queue.Source, claimSources map[string]queue.ClaimSource, backend *authorityContext, auth queue.ClaimAuthority, authorities *queueAuthoritySet, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
 		if cmd.Bool("start") && !cmd.Bool("claim") {
 			return s.handle(cmd, reason.Invalid("--start requires --claim"))
 		}
@@ -51,8 +51,16 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			return isQueueMe(cfg, item, owner)
 		})
 		selected := result.Candidates
-		if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok && cmd.Bool("claim") && (auth.ID != bridge.authorityID || auth.Profile != bridge.profile || (backend.Profile == nil) != (bridge.pinnedProfile == nil) || backend.Profile != nil && *backend.Profile != *bridge.pinnedProfile) {
-			return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "queue view authority differs from the MCP lease authority"))
+		if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok && cmd.Bool("claim") {
+			for _, id := range view.Sources {
+				if authorities.SourceNames[id] != bridge.profile {
+					continue
+				}
+				profileBackend, _, found := authorities.ForSource(id)
+				if !found || (profileBackend.Profile == nil) != (bridge.pinnedProfile == nil) || profileBackend.Profile != nil && *profileBackend.Profile != *bridge.pinnedProfile {
+					return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "MCP authority profile changed before queue claim"))
+				}
+			}
 		}
 		skipped := make([]map[string]any, 0)
 		if cmd.Bool("claim") && result.Result != "incomplete" {
@@ -79,6 +87,10 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			selected = nil
 			eligibilityChanged := false
 			for _, candidate := range result.Candidates {
+				candidateBackend, candidateAuthority, authorityOK := authorities.ForSource(candidate.Ref.SourceID)
+				if !authorityOK {
+					return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "claim source authority is unavailable").With("source", candidate.Ref.SourceID))
+				}
 				source, ok := claimSources[candidate.Ref.SourceID]
 				if !ok || source.BlockReason != "" {
 					return s.handle(cmd, reason.New("identity-unknown", "claim source is unavailable"))
@@ -104,33 +116,33 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 					skipped = append(skipped, map[string]any{"ref": candidate.Ref, "reason": "eligibility-changed"})
 					continue
 				}
-				inputs := queue.IdentityInputs(source, auth.ID)
+				inputs := queue.IdentityInputs(source, candidateAuthority.ID)
 				key, err := resource.Resolve(resource.Input{Provider: inputs.Policy, Source: inputs.Source, Item: fresh.Ref.ItemID})
 				if err != nil || !containsResource(candidate.Resources, key.Resource) {
 					return s.handle(cmd, reason.New("identity-changed", "candidate claim resource changed; query again"))
 				}
-				keys, err := preAcquireQueueIdentity(ctx, source, adapter, auth, fresh)
+				keys, err := preAcquireQueueIdentity(ctx, source, adapter, candidateAuthority, fresh)
 				if err != nil {
 					return s.handle(cmd, err)
 				}
-				observed := queue.OverlayClaims(ctx, []queue.Item{fresh}, map[string]queue.ClaimSource{source.Source.ID: source}, auth, config.UserProfilePaths(os.Getenv), os.Getenv)[0]
-				if observed.Claim.Active && observed.Claim.Known && observed.Claim.AuthorityID == auth.ID {
+				observed := queue.OverlayClaims(ctx, []queue.Item{fresh}, map[string]queue.ClaimSource{source.Source.ID: source}, candidateAuthority, config.UserProfilePaths(os.Getenv), os.Getenv)[0]
+				if observed.Claim.Active && observed.Claim.Known && observed.Claim.AuthorityID == candidateAuthority.ID {
 					skipped = append(skipped, map[string]any{"ref": candidate.Ref, "holder": observed.Claim.AgentID, "expiresAt": observed.Claim.ExpiresAt})
 					continue
 				}
-				if !observed.Claim.Known || observed.Claim.Stale || !observed.Claim.Available || observed.Claim.Reason != "" || observed.Claim.AuthorityID != auth.ID {
+				if !observed.Claim.Known || observed.Claim.Stale || !observed.Claim.Available || observed.Claim.Reason != "" || observed.Claim.AuthorityID != candidateAuthority.ID {
 					return s.handle(cmd, reason.New("claim-unknown", "claim authority observation is unavailable"))
 				}
 				workerHandle := ""
 				if cmd.Bool("start") {
 					if _, mcp := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); !mcp {
-						workerHandle, err = acquireHandlePath(ctx, cmd, backend.Config, auth.ID, true)
+						workerHandle, err = acquireHandlePath(ctx, cmd, candidateBackend.Config, candidateAuthority.ID, true)
 						if err != nil {
 							return s.handle(cmd, err)
 						}
 					}
 				}
-				grant, err = acquireQueueWorker(ctx, cmd, backend, auth, keys, workerHandle)
+				grant, err = acquireQueueWorker(ctx, cmd, candidateBackend, candidateAuthority, keys, workerHandle)
 				if err != nil {
 					if failure := reason.As(err); failure != nil && failure.Reason == reason.ReasonAlreadyClaimed {
 						row := map[string]any{"ref": candidate.Ref}
@@ -173,7 +185,11 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		if cmd.Bool("start") {
 			transition = map[string]any{"outcome": "not attempted", "reason": "no claim acquired"}
 			if grant != nil {
-				transition = queueNextStart(ctx, cfg, selected[0], registry, sources, backend, auth, backend.Config.SessionID, startHandle)
+				itemBackend, itemAuthority, ok := authorities.ForSource(selected[0].Ref.SourceID)
+				if !ok {
+					return s.handle(cmd, reason.New(reason.ReasonConfigInvalid, "claim source authority is unavailable"))
+				}
+				transition = queueNextStart(ctx, cfg, selected[0], registry, sources, itemBackend, itemAuthority, itemBackend.Config.SessionID, startHandle)
 			}
 		}
 		candidates := make([]queueQueryItem, 0, len(selected))
@@ -186,7 +202,7 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			"view":          view.Name,
 			"scope":         scope,
 			"result":        result.Result,
-			"authority":     queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)},
+			"authority":     queueAuthoritySummary(authorities, view.Sources),
 			"sources":       sourceRows,
 			"candidates":    projected["items"],
 			"excluded":      result.Excluded,
@@ -315,7 +331,7 @@ type queueMCPAcquireKey struct{}
 type queueMCPAcquire struct {
 	authorityID, profile string
 	pinnedProfile        *config.Profile
-	acquire              func(context.Context, []string) (map[string]any, error)
+	acquire              func(context.Context, string, string, *config.Profile, []string) (map[string]any, error)
 	handlePath           func(map[string]any) string
 }
 
@@ -329,7 +345,7 @@ type queueAcquirePin struct {
 // replay, admission, and remote pending-request implementation in the queue.
 func acquireQueueWorker(ctx context.Context, cmd *urfavecli.Command, backend *authorityContext, auth queue.ClaimAuthority, keys []string, workerHandle string) (map[string]any, error) {
 	if bridge, ok := ctx.Value(queueMCPAcquireKey{}).(queueMCPAcquire); ok {
-		return bridge.acquire(ctx, keys)
+		return bridge.acquire(ctx, auth.ID, auth.Profile, backend.Profile, keys)
 	}
 	args := []string{"worklease", "--json", "--home", backend.Config.Home}
 	if auth.Remote {

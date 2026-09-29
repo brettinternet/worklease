@@ -59,6 +59,7 @@ type Server struct {
 	requests     map[string]*requestState
 	seen         map[string]struct{}
 	leases       map[string]*runtimeLease
+	bindings     map[string]authorityBinding
 	writerMu     sync.Mutex
 	active       sync.WaitGroup
 	slots        chan struct{}
