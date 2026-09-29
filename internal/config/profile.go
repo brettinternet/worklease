@@ -87,26 +87,58 @@ func LoadProfiles(paths ProfilePaths) (map[string]Profile, string, error) {
 	return profiles, doc.Default, nil
 }
 
-func LoadBinding(paths ProfilePaths, checkoutRoot string) (string, error) {
+func LoadBindings(paths ProfilePaths) (map[string]string, error) {
 	data, err := handle.ReadOwnerPrivate(paths.Bindings, 1<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return map[string]string{}, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("bindings file cannot be read safely")
+		return nil, fmt.Errorf("bindings file cannot be read safely")
 	}
 	var doc struct {
 		Bindings map[string]string `yaml:"bindings"`
 	}
 	if err := strictYAML(data, &doc, map[string]bool{"bindings": true}); err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.TrimSpace(doc.Bindings[checkoutRoot]), nil
+	if doc.Bindings == nil {
+		doc.Bindings = map[string]string{}
+	}
+	return doc.Bindings, nil
 }
 
-// SelectProfile implements the fixed precedence. The caller supplies the
-// already-resolved checkout root; no repository file is read here.
+func LoadBinding(paths ProfilePaths, checkoutRoot string) (string, error) {
+	bindings, err := LoadBindings(paths)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(bindings[checkoutRoot]), nil
+}
+
+func bindingForRoots(paths ProfilePaths, bindings map[string]string, checkoutRoot, repositoryRoot string) (string, error) {
+	repositoryBinding := strings.TrimSpace(bindings[repositoryRoot])
+	if checkoutRoot != repositoryRoot {
+		legacyBinding := strings.TrimSpace(bindings[checkoutRoot])
+		if legacyBinding != "" && legacyBinding != repositoryBinding {
+			repositorySelection := repositoryBinding
+			if repositorySelection == "" {
+				repositorySelection = "<no binding>"
+			}
+			return "", reason.New(reason.ReasonProfileBindingConflict,
+				fmt.Sprintf("linked worktree %q has a legacy binding to profile %q, while repository checkout %q has %s; manually reconcile these entries in owner-private bindings file %q", checkoutRoot, legacyBinding, repositoryRoot, repositorySelection, paths.Bindings))
+		}
+	}
+	return repositoryBinding, nil
+}
+
+// SelectProfile implements the fixed precedence for one checkout root.
 func SelectProfile(flags map[string]string, env func(string) string, checkoutRoot string, paths ProfilePaths) (ProfileSelection, error) {
+	return SelectProfileForRoots(flags, env, checkoutRoot, checkoutRoot, paths)
+}
+
+// SelectProfileForRoots resolves profile precedence with per-worktree context
+// and repository-wide binding roots kept distinct.
+func SelectProfileForRoots(flags map[string]string, env func(string) string, checkoutRoot, repositoryRoot string, paths ProfilePaths) (ProfileSelection, error) {
 	if env == nil {
 		env = os.Getenv
 	}
@@ -114,7 +146,7 @@ func SelectProfile(flags map[string]string, env func(string) string, checkoutRoo
 	if err != nil {
 		return ProfileSelection{}, err
 	}
-	binding, err := LoadBinding(paths, checkoutRoot)
+	bindings, err := LoadBindings(paths)
 	if err != nil {
 		return ProfileSelection{}, err
 	}
@@ -123,7 +155,11 @@ func SelectProfile(flags map[string]string, env func(string) string, checkoutRoo
 		name, source = strings.TrimSpace(env("WORKLEASE_PROFILE")), "env"
 	}
 	if name == "" {
-		name, source = binding, "binding"
+		name, err = bindingForRoots(paths, bindings, checkoutRoot, repositoryRoot)
+		source = "binding"
+		if err != nil {
+			return ProfileSelection{}, err
+		}
 	}
 	if name == "" {
 		name, source = strings.TrimSpace(defaultName), "default"

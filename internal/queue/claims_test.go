@@ -11,9 +11,11 @@ import (
 
 	"github.com/brettinternet/worklease/internal/authority"
 	"github.com/brettinternet/worklease/internal/config"
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 type statusAuthority struct {
@@ -212,6 +214,67 @@ func TestLargeResourceStatusSplitsOnResponseLimit(t *testing.T) {
 		if item.Claim.State != "free" {
 			t.Fatalf("missing status after split: %+v", item.Claim)
 		}
+	}
+}
+
+func TestLinkedCheckoutAuthorityUsesRepositoryBindingWithoutChangingViewAgreement(t *testing.T) {
+	t.Parallel()
+	main := filepath.Join(t.TempDir(), "main")
+	if err := os.Mkdir(main, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", main}, {"-C", main, "config", "user.name", "test"}, {"-C", main, "config", "user.email", "test@example.invalid"}} {
+		if output, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(main, "tracked"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", main, "add", "tracked"}, {"-C", main, "commit", "-m", "initial"}} {
+		if output, err := testkit.GitCommand(args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	if output, err := testkit.GitCommand("-C", main, "worktree", "add", "--detach", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, output)
+	}
+	mainRoot, err := handle.ContextRoot(main, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot, err := handle.ContextRoot(linked, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := t.TempDir()
+	paths := config.ProfilePaths{Profiles: filepath.Join(private, "profiles.yaml"), Bindings: filepath.Join(private, "bindings.yaml")}
+	profile := config.Profile{Name: "worker", Endpoint: "http://127.0.0.1:8888", AuthorityID: strings.Repeat("a", 32), AllowInsecureHTTP: true, Credential: config.CredentialDescriptor{Path: filepath.Join(private, "credential")}}
+	otherProfile := profile
+	otherProfile.Name = "other"
+	otherProfile.AuthorityID = strings.Repeat("b", 32)
+	otherProfile.Credential.Path = filepath.Join(private, "other-credential")
+	if err := config.SaveProfiles(paths, []config.Profile{profile, otherProfile}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveBindings(paths, map[string]string{mainRoot: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	selected := ClaimAuthority{ID: profile.AuthorityID, Profile: profile.Name, Remote: true}
+	if !matchingCheckoutAuthority(linked, selected, paths, func(string) string { return "" }) {
+		t.Fatal("linked checkout did not inherit its repository profile binding")
+	}
+	selected.ID = strings.Repeat("b", 32)
+	if matchingCheckoutAuthority(linked, selected, paths, func(string) string { return "" }) {
+		t.Fatal("view authority mismatch was ignored")
+	}
+	if err := config.SaveBindings(paths, map[string]string{mainRoot: "worker", linkedRoot: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	selected.ID = profile.AuthorityID
+	if matchingCheckoutAuthority(linked, selected, paths, func(string) string { return "" }) {
+		t.Fatal("conflicting legacy worktree binding was accepted")
 	}
 }
 

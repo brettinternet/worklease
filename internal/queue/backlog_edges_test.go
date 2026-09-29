@@ -142,7 +142,7 @@ func TestBacklogInvalidatedInFlightListCannotRestoreStaleEdges(t *testing.T) {
 	if err := syscall.Mkfifo(releasePath, 0600); err != nil {
 		t.Fatal(err)
 	}
-	blocking := `  'task list --json') if [ ! -e backlog-list-started ]; then : > backlog-list-started; /bin/cat backlog-list-release >/dev/null; /bin/cat backlog-list-held.json; else /bin/cat backlog-list.json; fi;;`
+	blocking := `  'task list --json') if [ ! -e backlog-list-started ]; then : > backlog-list-started; IFS= read -r release < backlog-list-release; /bin/cat backlog-list-held.json; else /bin/cat backlog-list.json; fi;;`
 	updated := strings.Replace(string(original), "  'task list --json') /bin/cat backlog-list.json;;", blocking, 1)
 	if updated == string(original) {
 		t.Fatal("fake backlog list command not found")
@@ -154,12 +154,17 @@ func TestBacklogInvalidatedInFlightListCannotRestoreStaleEdges(t *testing.T) {
 	oldReceived := false
 	started := false
 	released := false
+	// Keep the FIFO open until cleanup and release with data, not a transient
+	// writer-open/close EOF. The latter can be missed by a reader still opening
+	// the FIFO, leaving the provider blocked until its read timeout.
+	writer, err := os.OpenFile(releasePath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
 	releaseOldList := func() error {
-		writer, err := os.OpenFile(releasePath, os.O_WRONLY, 0)
-		if err != nil {
-			return err
-		}
-		return writer.Close()
+		_, err := writer.WriteString("release\n")
+		return err
 	}
 	go func() {
 		_, listErr := a.List(context.Background(), source, Query{}, "")

@@ -307,7 +307,7 @@ func TestProfileCommandHelpDocumentsNameArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--profile, WORKLEASE_PROFILE, checkout binding, user default, then implicit local", "Selecting local explicitly stops fallback", "--local instead forces local", "Unbind removes only the checkout override", "persisted remote profile named local must be renamed manually"} {
+	for _, want := range []string{"--profile, WORKLEASE_PROFILE, repository binding, user default, then implicit local", "Selecting local explicitly stops fallback", "--local instead forces local", "Binding or unbinding from a linked worktree changes the repository binding", "persisted remote profile named local must be renamed manually"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("profile help missing %q: %q", want, out)
 		}

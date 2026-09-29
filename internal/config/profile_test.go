@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/brettinternet/worklease/internal/reason"
 )
 
 func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
@@ -48,6 +50,46 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 	got, err = SelectProfile(nil, func(string) string { return "" }, "/other", paths)
 	if err != nil || got.Profile != nil || got.Source != "local" {
 		t.Fatalf("local fallback: %#v %v", got, err)
+	}
+}
+
+func TestRepositoryBindingSelectionRejectsConflictingLegacyWorktreeBindings(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	paths := ProfilePaths{Profiles: filepath.Join(dir, "profiles.yaml"), Bindings: filepath.Join(dir, "bindings.yaml")}
+	profile := func(name string) Profile {
+		return Profile{Name: name, Endpoint: "https://" + name + ".example", AuthorityID: strings.Repeat("a", 32), Credential: CredentialDescriptor{Path: filepath.Join(dir, name+".credential")}}
+	}
+	if err := SaveProfiles(paths, []Profile{profile("main"), profile("legacy")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	mainRoot, linkedRoot := "/checkout", "/checkout/.worktrees/agent"
+	if err := SaveBindings(paths, map[string]string{mainRoot: "main", linkedRoot: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := SelectProfileForRoots(nil, func(string) string { return "" }, linkedRoot, mainRoot, paths)
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonProfileBindingConflict || !strings.Contains(err.Error(), paths.Bindings) || !strings.Contains(err.Error(), mainRoot) || !strings.Contains(err.Error(), linkedRoot) {
+		t.Fatalf("conflicting binding err=%v", err)
+	}
+	selected, err := SelectProfileForRoots(map[string]string{"profile": "legacy"}, func(string) string { return "" }, linkedRoot, mainRoot, paths)
+	if err != nil || selected.Name != "legacy" || selected.Source != "flag" {
+		t.Fatalf("explicit profile did not retain precedence: selection=%+v err=%v", selected, err)
+	}
+	if err := SaveBindings(paths, map[string]string{mainRoot: "main", linkedRoot: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	selected, err = SelectProfileForRoots(nil, func(string) string { return "" }, linkedRoot, mainRoot, paths)
+	if err != nil || selected.Name != "main" || selected.Source != "binding" {
+		t.Fatalf("matching legacy binding: selection=%+v err=%v", selected, err)
+	}
+	if err := SaveBindings(paths, map[string]string{linkedRoot: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = SelectProfileForRoots(nil, func(string) string { return "" }, linkedRoot, mainRoot, paths)
+	classified = reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonProfileBindingConflict {
+		t.Fatalf("legacy binding without repository binding err=%v", err)
 	}
 }
 

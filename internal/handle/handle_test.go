@@ -58,6 +58,10 @@ func TestContextRootAndContextualPathAreStableSessionAndAuthorityScoped(t *testi
 	if got != resolved {
 		t.Fatalf("root=%q want=%q", got, resolved)
 	}
+	contextRoot, bindingRoot, err := BindingRoots(sub, func(c string, args ...string) (string, error) { return "false", nil })
+	if err != nil || contextRoot != resolved || bindingRoot != resolved {
+		t.Fatalf("non-Git binding roots=(%q, %q) err=%v want=%q", contextRoot, bindingRoot, err, resolved)
+	}
 	authorityA, authorityB := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	if ContextualPath("/state", root, "one", authorityA) == ContextualPath("/state", root, "two", authorityA) {
 		t.Fatal("sessions share contextual path")
@@ -380,6 +384,23 @@ func TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees(t *testi
 	}
 	if err != nil || linkedRoot != resolvedLinked || linkedRoot == root {
 		t.Fatalf("linked root=%q err=%v primary=%q", linkedRoot, err, root)
+	}
+	hostile := filepath.Join(t.TempDir(), "hostile")
+	if out, err := testkit.GitCommand("init", hostile).CombinedOutput(); err != nil {
+		t.Fatalf("git init hostile repo: %v: %s", err, out)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(hostile, ".git"))
+	t.Setenv("GIT_WORK_TREE", hostile)
+	mainContext, mainBinding, err := BindingRoots(repository, nil)
+	if err != nil || mainContext != resolvedRepository || mainBinding != resolvedRepository {
+		t.Fatalf("main binding roots=(%q, %q) err=%v want=%q", mainContext, mainBinding, err, resolvedRepository)
+	}
+	linkedContext, linkedBinding, err := BindingRoots(linked, nil)
+	if err != nil || linkedContext != resolvedLinked || linkedBinding != resolvedRepository {
+		t.Fatalf("linked binding roots=(%q, %q) err=%v want=(%q, %q)", linkedContext, linkedBinding, err, resolvedLinked, resolvedRepository)
+	}
+	if ContextualPath("/state", mainContext, "same", "authority") == ContextualPath("/state", linkedContext, "same", "authority") {
+		t.Fatal("main and linked worktrees share contextual handles")
 	}
 }
 

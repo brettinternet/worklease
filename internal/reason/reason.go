@@ -45,6 +45,7 @@ const (
 	ReasonSourceAlreadyConfigured        = "source-already-configured"
 	ReasonConfigInvalid                  = "config-invalid"
 	ReasonConfigMissing                  = "config-missing"
+	ReasonProfileBindingConflict         = "profile-binding-conflict"
 	ReasonNoSourcesConfigured            = "no-sources-configured"
 	ReasonMeRequired                     = "me-required"
 	ReasonBindingMigrationRequired       = "binding-migration-required"
@@ -163,7 +164,7 @@ var registry = map[string]int{
 	ReasonReplayExpired:            ExitLedger,
 	ReasonAdapterConformanceFailed: ExitConformance,
 	ReasonAdapterManifestInvalid:   ExitInvalid, ReasonAdapterConfigInvalid: ExitInvalid, ReasonSourceAlreadyConfigured: ExitInvalid,
-	ReasonInvalidArgument: ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid, ReasonMeRequired: ExitInvalid, ReasonBindingMigrationRequired: ExitInvalid,
+	ReasonInvalidArgument: ExitInvalid, ReasonConfigInvalid: ExitInvalid, ReasonConfigMissing: ExitInvalid, ReasonProfileBindingConflict: ExitInvalid, ReasonNoSourcesConfigured: ExitInvalid, ReasonMeRequired: ExitInvalid, ReasonBindingMigrationRequired: ExitInvalid,
 	ReasonClaimSelectionMissing: ExitInvalid, ReasonResourceInputConflict: ExitInvalid, ReasonInvalidResource: ExitInvalid,
 	ReasonUnknownPolicy: ExitInvalid, ReasonInvalidPath: ExitInvalid, ReasonHandleUnsafe: ExitInvalid,
 	ReasonHandleMalformed: ExitInvalid, ReasonCredentialUnsafe: ExitInvalid, ReasonCredentialMalformed: ExitInvalid,

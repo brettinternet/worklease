@@ -15,7 +15,6 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	urfave "github.com/urfave/cli/v3"
 	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 const insecureHTTPWarning = "warning: insecure HTTP exposes Worklease credentials and claim data to the network"
@@ -38,13 +37,13 @@ func profileCommands(s *boundary) []*urfave.Command {
 	show := leaf("show", "show one trusted remote authority profile", "[NAME]", "Without NAME, normal profile selection precedence chooses the profile and the selecting rule is reported.", nil, profileShowAction(s))
 	remove := leaf("remove", "remove one trusted remote authority profile", "NAME", "NAME is required; the built-in local selection cannot be removed.", nil, profileRemoveAction(s))
 	def := leaf("default", "show or select the default authority profile", "[NAME]", "Without NAME, reports the configured default (including local) or that no default is configured.", nil, profileDefaultAction(s))
-	bind := leaf("bind", "bind this checkout to an authority profile", "NAME [--cwd DIR]", "NAME is required; local binds this checkout to the built-in authority. Alias: use.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
+	bind := leaf("bind", "bind this repository's worktrees to an authority profile", "NAME [--cwd DIR]", "NAME is required; local binds every worktree to the built-in authority. A targeted legacy worktree binding is removed. Alias: use.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to bind"}}, profileBindAction(s, false))
 	bind.Aliases = []string{"use"}
-	unbind := leaf("unbind", "remove this checkout's remote authority binding", "[--cwd DIR]", "This command takes no profile NAME. Alias: unuse.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
+	unbind := leaf("unbind", "remove this repository's authority binding", "[--cwd DIR]", "This command takes no profile NAME. A targeted legacy worktree binding is removed. Alias: unuse.", []urfave.Flag{&urfave.StringFlag{Name: "cwd", Usage: "checkout `DIR` to unbind"}}, profileBindAction(s, true))
 	unbind.Aliases = []string{"unuse"}
 	profile := &urfave.Command{
 		Name: "profile", Usage: "manage authority profiles", UsageText: "worklease profile <add|list|show|remove|default|bind|unbind>",
-		Description: "Manage owner-private remote authority profiles and checkout bindings. Selection precedence is --profile, WORKLEASE_PROFILE, checkout binding, user default, then implicit local. Selecting local explicitly stops fallback without creating a remote profile; --local instead forces local and conflicts with any profile flag or environment selection. Unbind removes only the checkout override. A persisted remote profile named local must be renamed manually together with its default and binding references while retaining its credential path.\n\nExamples:\n  worklease profile list",
+		Description: "Manage owner-private remote authority profiles and checkout bindings. A Git checkout binding applies to every worktree in the repository. Selection precedence is --profile, WORKLEASE_PROFILE, repository binding, user default, then implicit local. Selecting local explicitly stops fallback without creating a remote profile; --local instead forces local and conflicts with any profile flag or environment selection. Binding or unbinding from a linked worktree changes the repository binding and removes that worktree's legacy override. Conflicting legacy worktree bindings fail closed and require manual reconciliation in the owner-private bindings file. A persisted remote profile named local must be renamed manually together with its default and binding references while retaining its credential path.\n\nExamples:\n  worklease profile list",
 		Commands:    []*urfave.Command{add, list, show, remove, def, bind, unbind},
 		OnUsageError: func(_ context.Context, cmd *urfave.Command, err error, _ bool) error {
 			return s.handle(cmd, reason.Invalid(err.Error()))
@@ -274,35 +273,20 @@ func profileBindAction(s *boundary, remove bool) func(context.Context, *urfave.C
 		if cwd == "" {
 			cwd = mustGetwd()
 		}
-		root, err := handle.ContextRoot(cwd, nil)
+		checkoutRoot, repositoryRoot, err := handle.BindingRoots(cwd, nil)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		bindings := map[string]string{}
-		if dataErr := func() error {
-			data, e := handle.ReadOwnerPrivate(paths.Bindings, 1<<20)
-			if os.IsNotExist(e) {
-				return nil
-			}
-			if e != nil {
-				return e
-			}
-			var doc struct {
-				Bindings map[string]string `yaml:"bindings"`
-			}
-			if e = yaml.Unmarshal(data, &doc); e != nil {
-				return e
-			}
-			for k, v := range doc.Bindings {
-				bindings[k] = v
-			}
-			return nil
-		}(); dataErr != nil {
-			return s.handle(cmd, dataErr)
+		bindings, err := config.LoadBindings(paths)
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		if checkoutRoot != repositoryRoot {
+			delete(bindings, checkoutRoot)
 		}
 		op := "profile-bind"
 		if remove {
-			delete(bindings, root)
+			delete(bindings, repositoryRoot)
 			op = "profile-unbind"
 		} else {
 			name, e := profileNameArg(cmd)
@@ -318,12 +302,12 @@ func profileBindAction(s *boundary, remove bool) func(context.Context, *urfave.C
 					return s.handle(cmd, reason.New(reason.ReasonConfigMissing, "profile is not defined"))
 				}
 			}
-			bindings[root] = name
+			bindings[repositoryRoot] = name
 		}
 		if err := config.SaveBindings(paths, bindings); err != nil {
 			return s.handle(cmd, err)
 		}
-		return writeProfileResult(s, cmd, op, root)
+		return writeProfileResult(s, cmd, op, repositoryRoot)
 	}
 }
 

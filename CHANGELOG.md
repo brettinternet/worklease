@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Profile bindings now apply across all worktrees of a Git repository, while contextual claim handles remain worktree-scoped; conflicting legacy worktree bindings fail closed.
+
 ## 1.8.0 - 2026-09-28
 
 ### Added

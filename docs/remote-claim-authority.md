@@ -179,9 +179,17 @@ Selection order is:
 
 1. `--profile NAME`
 2. `WORKLEASE_PROFILE`
-3. user-side checkout binding
+3. user-side repository binding
 4. user default
 5. implicit local authority
+
+A binding on a Git checkout applies to every worktree in that repository. Contextual
+claim handles remain scoped to each individual worktree. A legacy linked-worktree
+binding that differs from the repository binding (or exists without one) fails
+closed with `profile-binding-conflict`; manually reconcile the two entries in the
+owner-private `bindings.yaml`. Running `profile bind` or `profile unbind` from a
+linked worktree changes the repository binding and removes that worktree's legacy
+override.
 
 The exact, case-sensitive name `local` is a built-in authority selection at
 every layer.
@@ -192,8 +200,8 @@ absent default remains an implicit local fallback.
 
 `profile default` reports the configured default (or unset), while `profile show`
 reports the effective selection and its source. `profile bind local` overrides a
-remote default for that checkout; `profile unbind` removes the override and
-restores normal fallback.
+remote default for every worktree in that repository; `profile unbind` removes
+the repository override and restores normal fallback.
 
 `--local` remains a forced bypass of bindings, defaults, and profile store
 loading. It conflicts with any nonempty `--profile` or `WORKLEASE_PROFILE`,
@@ -222,8 +230,8 @@ worklease profile list                         # alias: profile ls
 worklease profile show NAME
 worklease profile remove NAME
 worklease profile default NAME
-worklease profile bind NAME [--cwd DIR]          # alias: profile use
-worklease profile unbind [--cwd DIR]              # alias: profile unuse
+worklease profile bind NAME [--cwd DIR]          # alias: profile use; applies to all repository worktrees
+worklease profile unbind [--cwd DIR]              # alias: profile unuse; removes repository binding
 ```
 
 `profile add` performs bounded metadata discovery and pins the supplied

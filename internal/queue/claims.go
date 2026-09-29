@@ -188,13 +188,13 @@ func OverlayClaims(ctx context.Context, items []Item, sources map[string]ClaimSo
 }
 
 func matchingCheckoutAuthority(checkout string, selected ClaimAuthority, paths config.ProfilePaths, env func(string) string) bool {
-	root, err := handle.ContextRoot(checkout, nil)
+	checkoutRoot, repositoryRoot, err := handle.BindingRoots(checkout, nil)
 	if err != nil {
 		return false
 	}
 	// The worker's own explicit --profile is not the queue's view flag. The
 	// worker may still select one later; this checks the checkout default.
-	choice, err := config.SelectProfile(nil, env, root, paths)
+	choice, err := config.SelectProfileForRoots(nil, env, checkoutRoot, repositoryRoot, paths)
 	if err != nil {
 		return false
 	}

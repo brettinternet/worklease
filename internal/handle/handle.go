@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -68,6 +69,111 @@ func ContextRoot(cwd string, run GitRunner) (string, error) {
 	}
 	return root, nil
 }
+
+// BindingRoots resolves both the per-worktree context root and the main
+// checkout root used for repository-wide profile bindings. Non-Git directories
+// use the same root for both purposes.
+func BindingRoots(cwd string, run GitRunner) (contextRoot, bindingRoot string, err error) {
+	contextRoot, err = ContextRoot(cwd, run)
+	if err != nil {
+		return "", "", err
+	}
+	if run == nil {
+		run = defaultGitRunner
+	}
+	inside, gitErr := run(contextRoot, "rev-parse", "--is-inside-work-tree")
+	if gitErr != nil || strings.TrimSpace(inside) != "true" {
+		return contextRoot, contextRoot, nil
+	}
+	bindingRoot, err = mainWorktreeRoot(contextRoot, run)
+	if err != nil {
+		return "", "", reason.New(reason.ReasonInvalidPath, "repository checkout root cannot be resolved")
+	}
+	return contextRoot, bindingRoot, nil
+}
+
+func mainWorktreeRoot(contextRoot string, run GitRunner) (string, error) {
+	commonOutput, err := run(contextRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	commonDir, err := resolveGitPath(contextRoot, strings.TrimRight(commonOutput, "\r\n"))
+	if err != nil {
+		return "", err
+	}
+	currentGitDirOutput, err := run(contextRoot, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	currentGitDir, err := resolveGitPath(contextRoot, strings.TrimRight(currentGitDirOutput, "\r\n"))
+	if err != nil {
+		return "", err
+	}
+	if currentGitDir == commonDir {
+		return contextRoot, nil
+	}
+
+	worktrees, err := run(contextRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range parseWorktreePaths(worktrees) {
+		candidate, err = resolveGitPath(contextRoot, candidate)
+		if err != nil {
+			continue
+		}
+		gitDirOutput, gitErr := run(candidate, "rev-parse", "--git-dir")
+		if gitErr != nil {
+			continue
+		}
+		gitDir, pathErr := resolveGitPath(candidate, strings.TrimRight(gitDirOutput, "\r\n"))
+		if pathErr == nil && gitDir == commonDir {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("main worktree was not found")
+}
+
+func parseWorktreePaths(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		path := strings.TrimPrefix(line, "worktree ")
+		if strings.HasPrefix(path, `"`) {
+			unquoted, err := strconv.Unquote(path)
+			if err != nil {
+				continue
+			}
+			path = unquoted
+		}
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func resolveGitPath(cwd, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("git path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
 func defaultGitRunner(cwd string, args ...string) (string, error) {
 	cmd := execCommand("git", args...)
 	cmd.Dir = cwd

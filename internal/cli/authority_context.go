@@ -68,19 +68,27 @@ func (a *authorityContext) AuthorityID() string {
 
 func profileSelection(cmd *urfave.Command) (config.ProfileSelection, error) {
 	paths := config.UserProfilePaths(os.Getenv)
-	root, err := handle.ContextRoot(mustGetwd(), nil)
-	if err != nil {
-		root = filepath.Clean(mustGetwd())
-	}
 	explicit := strings.TrimSpace(cmd.String("profile"))
+	environmentProfile := strings.TrimSpace(os.Getenv("WORKLEASE_PROFILE"))
 	if cmd.Bool("local") {
-		if explicit != "" || strings.TrimSpace(os.Getenv("WORKLEASE_PROFILE")) != "" {
+		if explicit != "" || environmentProfile != "" {
 			return config.ProfileSelection{}, reason.New(reason.ReasonCredentialSourceConflict, "--local conflicts with remote profile selection")
 		}
 		return config.ProfileSelection{Source: "forced-local", Name: config.LocalProfileName}, nil
 	}
-	selected, err := config.SelectProfile(map[string]string{"profile": explicit}, os.Getenv, root, paths)
+	var checkoutRoot, repositoryRoot string
+	if explicit == "" && environmentProfile == "" {
+		var err error
+		checkoutRoot, repositoryRoot, err = handle.BindingRoots(mustGetwd(), nil)
+		if err != nil {
+			return config.ProfileSelection{}, reason.New(reason.ReasonConfigInvalid, err.Error())
+		}
+	}
+	selected, err := config.SelectProfileForRoots(map[string]string{"profile": explicit}, os.Getenv, checkoutRoot, repositoryRoot, paths)
 	if err != nil {
+		if classified := reason.As(err); classified != nil && classified.Reason == reason.ReasonProfileBindingConflict {
+			return config.ProfileSelection{}, err
+		}
 		return config.ProfileSelection{}, reason.New(reason.ReasonConfigInvalid, err.Error())
 	}
 	return selected, nil
