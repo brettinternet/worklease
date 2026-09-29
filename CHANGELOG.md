@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Queue views now filter within the current project's source scope by default, with explicit all-projects selection in CLI, MCP, and TUI; queue init creates filter-only views.
+
 ### Fixed
 
 - Profile bindings now apply across all worktrees of a Git repository, while contextual claim handles remain worktree-scoped; conflicting legacy worktree bindings fail closed.

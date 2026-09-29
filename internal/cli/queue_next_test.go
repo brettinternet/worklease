@@ -17,10 +17,12 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/mcp"
 	"github.com/brettinternet/worklease/internal/queue"
 	"github.com/brettinternet/worklease/internal/queueui"
 	"github.com/brettinternet/worklease/internal/resource"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 	urfave "github.com/urfave/cli/v3"
 )
 
@@ -36,6 +38,77 @@ func nextResult(t *testing.T, h *queueQueryHarness, args ...string) map[string]a
 		t.Fatal(err)
 	}
 	return response["next"].(map[string]any)
+}
+
+func queueHarnessCheckout(h *queueQueryHarness) string {
+	return filepath.Join(filepath.Dir(h.home), "checkout")
+}
+
+func makeQueueScopeCheckout(t *testing.T, path string) {
+	t.Helper()
+	if out, err := testkit.GitCommand("init", "-b", "main", path).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if out, err := testkit.GitCommand("-C", path, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(path, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeQueueScopeTask(t *testing.T, checkout, id, title string, ordinal int) {
+	t.Helper()
+	task := map[string]any{"id": id, "title": title, "status": "Open", "priority": "medium", "ordinal": ordinal, "dependencies": []any{}, "readiness": map[string]any{"missingDependencies": []any{}}, "isReady": true}
+	data, err := json.Marshal(map[string]any{"kind": "task-list", "schemaVersion": 1, "tasks": []any{task}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, ".queue-test-list"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func configureTwoProjectQueue(t *testing.T, h *queueQueryHarness) string {
+	t.Helper()
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	makeQueueScopeCheckout(t, other)
+	writeQueueScopeTask(t, queueHarnessCheckout(h), "TASK-A", "Project A", 1)
+	writeQueueScopeTask(t, other, "TASK-B", "Project B", 1)
+	h.setTasks(`[{"id":"TASK-A","title":"Project A","status":"Open","ordinal":1,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true},{"id":"TASK-B","title":"Project B","status":"Open","ordinal":1,"dependencies":[],"readiness":{"missingDependencies":[]},"isReady":true}]`)
+	configuration := fmt.Sprintf(`version: 1
+me:
+  backlog-md: ["@tester"]
+sources:
+  - id: other
+    adapter: backlog-md
+    checkout: %q
+    claims: {policy: generic, source: shared/tasks}
+  - id: local
+    adapter: backlog-md
+    checkout: %q
+    claims: {policy: generic, source: shared/tasks}
+views:
+  - name: Ready
+    authority: local
+    sources: [other, local]
+    filter: {readiness: ready, claim: free, assigned: [nobody]}
+`, other, queueHarnessCheckout(h))
+	h.queueConfig = configuration
+	h.writeQueueConfig(configuration)
+	return other
+}
+
+func confirmProjectQueueSources(t *testing.T, h *queueQueryHarness) {
+	t.Helper()
+	for _, source := range []string{"other", "local"} {
+		if data, err := h.run("queue", "--view", "Ready", "identity", "confirm", "--source", source, "--acknowledge"); err != nil {
+			t.Fatalf("confirm %s: %v: %s", source, err, data)
+		}
+	}
 }
 
 // fakeBeadsCLI serves Beads issues from files the test writes, so the CLI can
@@ -89,6 +162,133 @@ func writeFakeBeadsIssues(t *testing.T, checkout string, issues ...fakeBeadsIssu
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestQueueNextClaimNeverEscapesCurrentProjectScope(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newQueueQueryHarness(t)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	other := configureTwoProjectQueue(t, h)
+	oldWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(queueHarnessCheckout(h)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWorkingDirectory); err != nil {
+			t.Error(err)
+		}
+	})
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	confirmProjectQueueSources(t, h)
+	queryData, err := h.run("queue", "query", "--view", "Ready", "--json")
+	if err != nil {
+		t.Fatalf("project-scoped query: %v: %s", err, queryData)
+	}
+	var queryEnvelope map[string]any
+	if err := json.Unmarshal(queryData, &queryEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	query := queryEnvelope["query"].(map[string]any)
+	queryRows := query["items"].([]any)
+	querySources := query["sources"].([]any)
+	if query["scope"].(map[string]any)["kind"] != "project" || len(querySources) != 1 || querySources[0].(map[string]any)["id"] != "local" || queryRows[0].(map[string]any)["ref"].(map[string]any)["itemId"] != "TASK-A" {
+		t.Fatalf("queue query escaped project A scope: %#v", query)
+	}
+
+	crossProject := nextResult(t, h, "--all-projects")
+	crossCandidates := crossProject["candidates"].([]any)
+	if crossProject["scope"].(map[string]any)["kind"] != "all-projects" || len(crossCandidates) == 0 {
+		t.Fatalf("explicit cross-project scope missing: %#v", crossProject)
+	}
+	crossRef := crossCandidates[0].(map[string]any)["ref"].(map[string]any)
+	if crossRef["sourceId"] != "other" || crossRef["itemId"] != "TASK-B" {
+		t.Fatalf("fixture did not prove B would be selected cross-project: %#v", crossRef)
+	}
+
+	claimed := nextResult(t, h, "--claim", "--session", "project-a-worker")
+	candidates := claimed["candidates"].([]any)
+	if claimed["result"] != "ready" || claimed["acquired"] != true || claimed["scope"].(map[string]any)["kind"] != "project" || len(candidates) != 1 {
+		t.Fatalf("project A claim result: %#v", claimed)
+	}
+	ref := candidates[0].(map[string]any)["ref"].(map[string]any)
+	if ref["sourceId"] != "local" || ref["itemId"] != "TASK-A" {
+		t.Fatalf("project A claimed a different project's item: %#v", ref)
+	}
+	if data, err := h.run("queue", "next", "--view", "Ready", "--item", "other:TASK-B", "--claim", "--session", "project-a-selector", "--json"); err == nil || !strings.Contains(err.Error(), "effective view scope") {
+		t.Fatalf("out-of-scope explicit selector was not rejected: %v %s", err, data)
+	}
+	if _, err := os.Stat(filepath.Join(other, ".queue-test-list")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMCPQueueNextPinsStartupProjectScope(t *testing.T) {
+	if isolateCLIProcess(t) {
+		return
+	}
+	h := newQueueQueryHarness(t)
+	other := configureTwoProjectQueue(t, h)
+	t.Setenv("WORKLEASE_HOME", h.state)
+	st, err := store.Open(context.Background(), h.state, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	confirmProjectQueueSources(t, h)
+	oldWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(queueHarnessCheckout(h)); err != nil {
+		t.Fatal(err)
+	}
+	server, err := mcp.NewServer(mcp.Options{Home: h.state, ProfileName: config.LocalProfileName, TTL: 30 * time.Second, QueueNext: mcpQueueNext(h.state, config.LocalProfileName, queueHarnessCheckout(h))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		server.Close()
+		if err := os.Chdir(oldWorkingDirectory); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Chdir(other); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := server.Call(context.Background(), "queue_next", map[string]any{"view": "Ready"})
+	if err != nil || observed["isError"] == true {
+		t.Fatalf("pinned MCP queue_next: %v %#v", err, observed)
+	}
+	next := observed["structuredContent"].(map[string]any)["next"].(map[string]any)
+	candidates := next["candidates"].([]any)
+	if next["scope"].(map[string]any)["kind"] != "project" || len(candidates) != 1 {
+		t.Fatalf("MCP scope was not pinned to startup project: %#v", next)
+	}
+	ref := candidates[0].(map[string]any)["ref"].(map[string]any)
+	if ref["sourceId"] != "local" || ref["itemId"] != "TASK-A" {
+		t.Fatalf("MCP selected another checkout's item after cwd change: %#v", ref)
+	}
+	cross, err := server.Call(context.Background(), "queue_next", map[string]any{"view": "Ready", "allProjects": true})
+	if err != nil || cross["isError"] == true {
+		t.Fatalf("explicit MCP cross-project selection: %v %#v", err, cross)
+	}
+	crossNext := cross["structuredContent"].(map[string]any)["next"].(map[string]any)
+	if crossNext["scope"].(map[string]any)["kind"] != "all-projects" || len(crossNext["sources"].([]any)) != 2 {
+		t.Fatalf("MCP cross-project argument did not widen scope: %#v", crossNext)
 	}
 }
 
@@ -236,7 +436,7 @@ func TestQueueNextUsesEntireScopeAndNeverAcquires(t *testing.T) {
 		t.Fatalf("next acquired a claim: %v: %s", err, data)
 	}
 	plain, err := h.run("queue", "next", "--view", "Ready")
-	if err != nil || string(plain) != "ready (no claim acquired; use --claim for agent loops)\nlocal:TASK-2  Second\n" {
+	if err != nil || string(plain) != "Scope: all projects\nready (no claim acquired; use --claim for agent loops)\nlocal:TASK-2  Second\n" {
 		t.Fatalf("plain next should show the item without its encoded claim resource: %v: %s", err, plain)
 	}
 	// Deliberate selection overrides advisory assignment even when the view

@@ -30,6 +30,25 @@ func TestQueueBeadsConfiguration(t *testing.T) {
 	}
 }
 
+func TestQueueProjectCheckoutAssociationAndFilterOnlyViews(t *testing.T) {
+	t.Parallel()
+	checkout := t.TempDir()
+	content := strings.Replace(externalQueueFixture("/opt/worklease/planning"), "    expectedVersion: 1.2.3-rc.1\n", "    expectedVersion: 1.2.3-rc.1\n    projectCheckout: "+checkout+"\n", 1)
+	content = strings.Replace(content, "    sources: [docs]\n", "", 1)
+	cfg, err := parseQueue([]byte(content), nil, nil)
+	if err != nil || cfg.Sources[0].ProjectCheckout != checkout || cfg.Views[0].Sources != nil {
+		t.Fatalf("owner-private project association/filter-only view: config=%+v err=%v", cfg, err)
+	}
+	missing := strings.Replace(content, checkout, filepath.Join(t.TempDir(), "missing"), 1)
+	if _, err := parseQueue([]byte(missing), nil, nil); err == nil || !strings.Contains(err.Error(), "projectCheckout: existing directory required") {
+		t.Fatalf("invalid project association accepted: %v", err)
+	}
+	local := strings.Replace(queueFixture(checkout), "    checkout: "+checkout+"\n", "    checkout: "+checkout+"\n    projectCheckout: "+checkout+"\n", 1)
+	if _, err := parseQueue([]byte(local), nil, nil); err == nil || !strings.Contains(err.Error(), "projectCheckout: not valid for this adapter") {
+		t.Fatalf("local provider accepted duplicate checkout association: %v", err)
+	}
+}
+
 func TestQueueSchema(t *testing.T) {
 	home := t.TempDir()
 	base := queueFixture(home)

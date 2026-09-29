@@ -46,13 +46,8 @@ func confirmQueueIdentity(ctx context.Context, cmd *urfave.Command, viewName, so
 	if view == nil {
 		return reason.Invalid("unknown queue view")
 	}
-	included := false
-	for _, id := range view.Sources {
-		included = included || id == sourceID
-	}
-	if !included {
-		return reason.Invalid("source is not in view")
-	}
+	// Confirmation targets an explicit source; the view selects its authority,
+	// not project membership. Init may add a source outside a legacy view list.
 	var configured *config.QueueSource
 	for i := range cfg.Sources {
 		if cfg.Sources[i].ID == sourceID {

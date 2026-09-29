@@ -24,7 +24,8 @@ worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
 worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--dry-run] [--json]
-worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
+worklease queue query --view NAME [--all-projects] [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
+worklease queue next --view NAME [--all-projects] [--claim [--start] --session SESSION] [--json]
 worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]
 worklease queue authority-id --json
 worklease queue --view NAME identity confirm --source SOURCE --acknowledge
@@ -50,7 +51,7 @@ For contextual handles, an explicit `--session` overrides
 and human output renders it as `"" (unscoped)`. `unscoped` is a display label,
 not a literal selector.
 
-Text output is for humans; `--json` emits one schema-version 2 envelope. `worklease queue query --view NAME --json` places its queue schema v1 projection in the `query` field; see [queue configuration and query schema](queue.md#read-only-query).
+Text output is for humans; `--json` emits one schema-version 2 envelope. `worklease queue query --view NAME --json` places its queue schema v1 projection in the `query` field; `scope` names the effective project or all-projects sources. Queue query and next default to the current project (resolved through linked worktrees), and `--all-projects` explicitly widens either command; see [queue configuration and query schema](queue.md#read-only-query).
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
@@ -118,8 +119,12 @@ worklease completion fish > ~/.config/fish/completions/worklease.fish
 
 `worklease queue [--view NAME] [--high-contrast]` (or `worklease q [-v NAME]`)
 opens the configured view from the owner's private `queue.yaml` in a Bubble Tea
-terminal. `--high-contrast` replaces faint text and color with bold, underline,
-and reverse video; `NO_COLOR` removes styling entirely.
+terminal. It defaults to sources associated with the current project checkout,
+resolving linked worktrees to their main checkout; outside a configured project
+it shows all sources. The header names the scope, and `X` toggles between the
+current project and all projects with a fresh source reload. `--high-contrast`
+replaces faint text and color with bold, underline, and reverse video;
+`NO_COLOR` removes styling entirely.
 Root-level `worklease -v` still shows the version. The queue shows source
 coverage, readiness, assignment, native occupancy, authority-scoped Worklease
 claims, and lazy claim history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
@@ -132,7 +137,7 @@ the worker starts and releases them when it exits. Follow it with
 assign/unassign writes where the source supports them; see [TUI](queue-tui.md).
 `worklease queue authority-id --json` exposes the invoking worker's selected
 authority ID.
-`queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Source setup and configured views are described in `docs/queue.md`.
+`queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Init creates filter-only Ready, Mine, Claimed, and All views; an existing view with a `sources` list keeps that explicit restriction. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Linear, external, and other sources without a provider checkout can be associated in owner-private `queue.yaml` with `projectCheckout: /absolute/path/to/checkout`; without that association they appear only in all-projects scope. Source setup and view behavior are described in `docs/queue.md`.
 
 ## Common lifecycle
 

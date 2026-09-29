@@ -338,7 +338,11 @@ func newCommands(s *boundary) []*urfavecli.Command {
 		if err != nil {
 			return err
 		}
-		server, err := mcpserver.NewServer(mcpserver.Options{Home: cfg.Home, AgentID: cfg.AgentID, SessionID: cfg.SessionID, TTL: cfg.TTL, PollInterval: cfg.PollInterval, Profile: selected.Profile, ProfileName: selected.Name, QueueNext: mcpQueueNext(cfg.Home, selected.Name)})
+		checkout, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		server, err := mcpserver.NewServer(mcpserver.Options{Home: cfg.Home, AgentID: cfg.AgentID, SessionID: cfg.SessionID, TTL: cfg.TTL, PollInterval: cfg.PollInterval, Profile: selected.Profile, ProfileName: selected.Name, QueueNext: mcpQueueNext(cfg.Home, selected.Name, checkout)})
 		if err != nil {
 			return err
 		}
@@ -375,15 +379,15 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	}
 	usageText(serve, "worklease serve [--server-config FILE] [--allow-insecure-http]")
 	detail(serve, "Serve one marked hosted authority using --server-config, WORKLEASE_SERVER_CONFIG, or the default user configuration. TLS is required unless insecure HTTP is explicitly enabled by the file or flag.")
-	queueQuery := jsonless("query", "query a configured work queue", "worklease queue query --view Ready --json", &urfavecli.IntFlag{Name: "limit", Usage: "maximum items `N` per page (1-1000)", DefaultText: "50"}, &urfavecli.StringFlag{Name: "cursor", Usage: "opaque `CURSOR` from the previous page"}, &urfavecli.DurationFlag{Name: "max-age", Usage: "serve the index when observations are younger than `DURATION`", HideDefault: true}, &urfavecli.BoolFlag{Name: "require-complete", Usage: "fail if source coverage or dependency edges are incomplete"})
+	queueQuery := jsonless("query", "query a configured work queue", "worklease queue query --view Ready --json", &urfavecli.BoolFlag{Name: "all-projects", Usage: "include sources from every configured project"}, &urfavecli.IntFlag{Name: "limit", Usage: "maximum items `N` per page (1-1000)", DefaultText: "50"}, &urfavecli.StringFlag{Name: "cursor", Usage: "opaque `CURSOR` from the previous page"}, &urfavecli.DurationFlag{Name: "max-age", Usage: "serve the index when observations are younger than `DURATION`", HideDefault: true}, &urfavecli.BoolFlag{Name: "require-complete", Usage: "fail if source coverage or dependency edges are incomplete"})
 	queueQuery.Action = queueQueryAction(s)
-	usageText(queueQuery, "worklease queue query --view NAME [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]")
-	detail(queueQuery, "Read one configured queue view. Query is read-only; source coverage and dependency completeness are reported explicitly.")
+	usageText(queueQuery, "worklease queue query --view NAME [--all-projects] [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]")
+	detail(queueQuery, "Read one configured queue view within the current project by default. --all-projects opts into every source; source coverage and dependency completeness are reported explicitly.")
 	queueBrowse := queueCommand(s)
-	queueNext := jsonless("next", "select ready work or claim it for an agent loop", "worklease queue next --view Ready --claim --session WORKER --json", &urfavecli.IntFlag{Name: "group", Value: 1, Usage: "return up to `N` independent ready items (1-32); read-only only"}, &urfavecli.StringSliceFlag{Name: "item", Usage: "select exact `SOURCE:ITEM` in explicit order (repeatable)"}, &urfavecli.BoolFlag{Name: "claim", Usage: "acquire the first available candidate for this worker without waiting"}, &urfavecli.BoolFlag{Name: "start", Usage: "after claiming, attempt the mapped provider Start work transition"}, flag("session", "s"), flag("handle"), ttlFlag(), flag("agent", "a"))
+	queueNext := jsonless("next", "select ready work or claim it for an agent loop", "worklease queue next --view Ready --claim --session WORKER --json", &urfavecli.BoolFlag{Name: "all-projects", Usage: "include sources from every configured project"}, &urfavecli.IntFlag{Name: "group", Value: 1, Usage: "return up to `N` independent ready items (1-32); read-only only"}, &urfavecli.StringSliceFlag{Name: "item", Usage: "select exact `SOURCE:ITEM` in explicit order (repeatable)"}, &urfavecli.BoolFlag{Name: "claim", Usage: "acquire the first available candidate for this worker without waiting"}, &urfavecli.BoolFlag{Name: "start", Usage: "after claiming, attempt the mapped provider Start work transition"}, flag("session", "s"), flag("handle"), ttlFlag(), flag("agent", "a"))
 	queueNext.Action = queueNextAction(s)
-	usageText(queueNext, "worklease queue next --view NAME [--claim [--start] --session SESSION] [--json] [--group N] [--item SOURCE:ITEM ...]")
-	detail(queueNext, "Select from a complete view and dependency graph. Plain next never acquires; --claim acquires one worker-owned claim with the regular contextual handle and no wait.")
+	usageText(queueNext, "worklease queue next --view NAME [--all-projects] [--claim [--start] --session SESSION] [--json] [--group N] [--item SOURCE:ITEM ...]")
+	detail(queueNext, "Select from the current project scope and a complete dependency graph by default. --all-projects opts into other projects. Plain next never acquires; --claim acquires one worker-owned claim with the regular contextual handle and no wait.")
 	queueBrowse.Commands = []*urfavecli.Command{queueInitCommand(s), queueQuery, queueNext, queueClaimsCommand(s), queueRecoveryCommand(s), queueIdentityCommand(s), queueAuthorityIDCommand(s), queueAdapterApprovalCommand(s)}
 	all := append(commands, runsCommand(s), queueBrowse, policy, op, handleCommand, instructions, setup)
 	all = append(all, profileCommands(s)...)

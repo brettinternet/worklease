@@ -883,8 +883,8 @@ func prepareQueueInitOne(ctx context.Context, cmd *urfave.Command, proposed *que
 	return result, nil
 }
 
-// queueInitViews mirrors the TUI's built-in tabs. Configuring any view hides
-// those tabs, so init writes all of them rather than only Ready.
+// queueInitViews mirrors the TUI's built-in filters. Source membership comes
+// from project scope, not from the views.
 var queueInitViews = []config.QueueView{
 	{Name: "Ready", Filter: config.QueueFilter{Readiness: "ready", Claim: "free", Assigned: []string{"me", "nobody"}}},
 	{Name: "Mine", Filter: config.QueueFilter{Assigned: []string{"me"}}},
@@ -892,9 +892,8 @@ var queueInitViews = []config.QueueView{
 	{Name: "All", Filter: config.QueueFilter{Readiness: "all"}},
 }
 
-// queueInitAddViews adds source id to the named view, creating it with the
-// Ready filter when missing. Without --view, a new file gets every default
-// view, and an existing file adds the source to the defaults it still has.
+// queueInitAddViews creates filter-only defaults. Existing source lists remain
+// untouched, so legacy views continue to impose their explicit restrictions.
 func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool, view, authority, id string) error {
 	wanted := []config.QueueView{{Name: view, Filter: queueInitViews[0].Filter}}
 	if view == "" {
@@ -910,12 +909,9 @@ func queueInitAddViews(mapping *yaml.Node, cfg config.QueueConfig, existing bool
 				return reason.Invalid("view authority differs from --authority")
 			}
 		case index >= 0:
-			sources := initField(viewsNode.Content[index], "sources")
-			item, _ := initNode(id)
-			sources.Content = append(sources.Content, item)
-			sources.Style &^= yaml.FlowStyle
+			// Preserve legacy explicit source restrictions unchanged.
 		case primary || !existing:
-			want.Authority, want.Sources = authority, []string{id}
+			want.Authority = authority
 			viewNode, err := initNode(want)
 			if err != nil {
 				return err

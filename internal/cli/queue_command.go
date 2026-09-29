@@ -25,7 +25,7 @@ import (
 )
 
 func queueCommand(s *boundary) *urfave.Command {
-	c := &urfave.Command{Name: "queue", Aliases: []string{"q"}, Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME] [--high-contrast]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes.\n\nExamples:\n  worklease queue\n  worklease q -v Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Aliases: []string{"v"}, Usage: "configured queue view `NAME`"}, &urfave.BoolFlag{Name: "high-contrast", Usage: "render without faint text or color, using bold, underline and reverse video"}}}
+	c := &urfave.Command{Name: "queue", Aliases: []string{"q"}, Usage: "browse and claim configured work", UsageText: "worklease queue [--view NAME] [--high-contrast]", Description: "Browse configured source snapshots; Claim for me acquires a Worklease coordination lease without provider writes. The current project is the default source scope; press X to toggle all projects.\n\nExamples:\n  worklease queue\n  worklease q -v Ready", Flags: []urfave.Flag{&urfave.StringFlag{Name: "view", Aliases: []string{"v"}, Usage: "configured queue view `NAME`"}, &urfave.BoolFlag{Name: "high-contrast", Usage: "render without faint text or color, using bold, underline and reverse video"}}}
 	c.Action = func(ctx context.Context, cmd *urfave.Command) error {
 		if s.jsonRequested(cmd) {
 			return s.handle(cmd, reason.Invalid("queue TUI is text-only; use queue query --json when available"))
@@ -65,19 +65,31 @@ func queueMeBySource(cfg config.QueueConfig, source config.QueueSource) []string
 }
 
 func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
+	allProjects, view := false, cmd.String("view")
+	for {
+		final, err := runQueueFrame(ctx, cmd, s, allProjects, view)
+		if err != nil || !final.ScopeToggleRequested {
+			return err
+		}
+		allProjects, view = !allProjects, final.ViewName
+	}
+}
+
+// Each frame owns its backend and workers; close them before changing scope.
+func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allProjects bool, viewName string) (queueui.Model, error) {
 	cfg, loadErr := config.LoadQueue(os.Getenv)
 	notice, claimsOnly, err := queueClaimsOnlyFallback(cfg, loadErr)
 	if err != nil {
-		return err
+		return queueui.Model{}, err
 	}
 	if claimsOnly {
-		if cmd.String("view") != "" {
-			return reason.Invalid("unknown queue view: " + cmd.String("view"))
+		if viewName != "" {
+			return queueui.Model{}, reason.Invalid("unknown queue view: " + viewName)
 		}
-		return runQueueClaimsOnly(ctx, cmd, s, notice)
+		return queueui.Model{}, runQueueClaimsOnly(ctx, cmd, s, notice)
 	}
 	selected := cfg.Views[0]
-	if name := cmd.String("view"); name != "" {
+	if name := viewName; name != "" {
 		found := false
 		for _, v := range cfg.Views {
 			if v.Name == name {
@@ -87,18 +99,23 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 			}
 		}
 		if !found {
-			return reason.Invalid("unknown queue view: " + name)
+			return queueui.Model{}, reason.Invalid("unknown queue view: " + name)
 		}
 	}
+	projectScope, scopedSources, err := queueProjectSources(ctx, cfg, allProjects)
+	if err != nil {
+		return queueui.Model{}, err
+	}
+	selected.Sources = queueViewSourceIDs(selected, scopedSources)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	queueSession, err := config.QueueSessionID(os.Getenv)
 	if err != nil {
-		return err
+		return queueui.Model{}, err
 	}
 	backend, authorityView, err := queueAuthorityForClaim(ctx, cmd, selected.Authority)
 	if err != nil {
-		return err
+		return queueui.Model{}, err
 	}
 	defer backend.Close()
 	sourceByID := map[string]config.QueueSource{}
@@ -113,11 +130,12 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	model.ViewFilters = make(map[string]queue.Filters)
 	model.ViewRules = make(map[string]queueui.ViewRule)
 	for _, v := range cfg.Views {
-		if v.Authority != selected.Authority || !sourceSubset(v.Sources, selected.Sources) {
+		viewSources := queueViewSourceIDs(v, scopedSources)
+		if v.Authority != selected.Authority || !sourceSubset(viewSources, selected.Sources) {
 			continue
 		}
 		model.Views = append(model.Views, v.Name)
-		filters := queue.Filters{SourceIDs: append([]string(nil), v.Sources...)}
+		filters := queue.Filters{SourceIDs: append([]string(nil), viewSources...)}
 		model.ViewFilters[v.Name] = filters
 		model.ViewRules[v.Name] = queueui.ViewRule{Readiness: v.Filter.Readiness, Claim: v.Filter.Claim, Assigned: v.Filter.Assigned}
 	}
@@ -132,6 +150,8 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		model.Scope = "remote"
 	}
 	model.Authority = fmt.Sprintf("%s %s", authorityView.Profile, authorityView.ID)
+	model.ProjectScope = projectScope.label()
+	model.CanToggleProjectScope = true
 	if me, ok := cfg.Me["backlog-md"]; ok {
 		var names []string
 		if me.Decode(&names) == nil && len(names) > 0 {
@@ -174,13 +194,14 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 		}
 		setupDone <- err
 	}()
-	_, err = program.Run()
+	finalModel, err := program.Run()
 	close(quit)
 	cancel() // stop provider checks still running behind the frame
 	if setupErr := <-setupDone; setupErr != nil {
-		return setupErr
+		return queueui.Model{}, setupErr
 	}
-	return err
+	final, _ := finalModel.(queueui.Model)
+	return final, err
 }
 
 // runQueueSession resolves sources and runs the queue's background work

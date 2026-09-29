@@ -51,7 +51,10 @@ it. Any overlap conflicts, and acquisition is all-or-none.
    immediately after selection, before reading full intent, planning,
    delegation, isolation, or edits. For a configured Worklease queue, prefer
    `worklease queue next --view NAME --claim --session ID --json`; it selects
-   and acquires with the ordinary worker contextual handle. Add `--start`
+   and acquires with the ordinary worker contextual handle. Queue selection is
+   restricted to the current project's configured sources by default, including
+   in linked worktrees. Use `--all-projects` only for intentional
+   cross-project selection; item selectors cannot widen the scope. Add `--start`
    (MCP `start: true`) when the source maps a `start` transition so the
    provider shows the item in progress right after the claim. The claim stays
    the lock: a `transition.outcome` other than `applied` still leaves the
@@ -85,6 +88,10 @@ operation forbids cancellation.
 
 A configured queue loop selects and claims with
 `worklease queue next --view Ready --claim --start --session "$SESSION" --json`.
+It uses the current project's sources by default and returns the selected
+`scope`; `--all-projects` is required to consider other projects. MCP
+`queue_next` pins this default to the server's startup checkout and requires
+`allProjects: true` for the same explicit cross-project opt-in.
 For other sources, a short CLI loop needs no credential plumbing:
 
 ```sh

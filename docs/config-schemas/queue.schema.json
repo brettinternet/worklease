@@ -25,6 +25,7 @@
         "id": {"type": "string", "minLength": 1, "pattern": "^[^:]+$"},
         "adapter": {"enum": ["backlog-md", "beads", "github", "linear", "jira-cloud", "external"]},
         "checkout": {"type": "string", "minLength": 1},
+        "projectCheckout": {"type": "string", "minLength": 1, "description": "Owner-private checkout association for sources without a provider checkout."},
         "claims": {"$ref": "#/$defs/claims"},
         "workflow": {
           "type": "object",
@@ -53,9 +54,9 @@
         "githubProject": {"$ref": "#/$defs/githubProject"}
       },
       "allOf": [
-        {"if": {"properties": {"adapter": {"enum": ["backlog-md", "beads"]}}, "required": ["adapter"]}, "then": {"required": ["checkout"], "not": {"anyOf": [{"required": ["githubProject"]}, {"required": ["executable"]}]} }},
+        {"if": {"properties": {"adapter": {"enum": ["backlog-md", "beads"]}}, "required": ["adapter"]}, "then": {"required": ["checkout"], "not": {"anyOf": [{"required": ["projectCheckout"]}, {"required": ["githubProject"]}, {"required": ["executable"]}]}}},
         {"if": {"properties": {"adapter": {"const": "beads"}}, "required": ["adapter"]}, "then": {"required": ["claims"]}},
-        {"if": {"properties": {"adapter": {"const": "github"}}, "required": ["adapter"]}, "then": {"required": ["host", "repository", "account"], "not": {"anyOf": [{"required": ["claims"]}, {"required": ["checkout"]}]}}},
+        {"if": {"properties": {"adapter": {"const": "github"}}, "required": ["adapter"]}, "then": {"required": ["host", "repository", "account"], "not": {"anyOf": [{"required": ["claims"]}, {"required": ["checkout"]}, {"required": ["projectCheckout"]}]}}},
         {"if": {"properties": {"adapter": {"enum": ["linear", "jira-cloud"]}}, "required": ["adapter"]}, "then": {"required": ["account", "credentialHelper"]}},
         {"if": {"properties": {"adapter": {"const": "linear"}}, "required": ["adapter"]}, "then": {"required": ["organization", "team"], "properties": {"organization": {"$ref": "#/$defs/uuid"}, "team": {"$ref": "#/$defs/uuid"}, "project": {"$ref": "#/$defs/uuid"}, "account": {"$ref": "#/$defs/uuid"}}}},
         {"if": {"properties": {"adapter": {"const": "external"}}, "required": ["adapter"]}, "then": {"required": ["executable", "expectedAdapterId", "expectedVersion", "config"], "not": {"anyOf": [{"required": ["checkout"]}, {"required": ["host"]}, {"required": ["repository"]}]}}},
@@ -86,11 +87,11 @@
     },
     "view": {
       "type": "object",
-      "required": ["name", "authority", "sources", "filter"],
+      "required": ["name", "authority", "filter"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "authority": {"type": "string"},
-        "sources": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "sources": {"type": "array", "description": "Optional legacy source restriction; omitted or empty means all sources in the effective project scope.", "items": {"type": "string"}},
         "filter": {
           "type": "object",
           "properties": {

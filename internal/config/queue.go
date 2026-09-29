@@ -60,6 +60,7 @@ type QueueSource struct {
 	ID                string            `yaml:"id"`
 	Adapter           string            `yaml:"adapter"`
 	Checkout          string            `yaml:"checkout"`
+	ProjectCheckout   string            `yaml:"projectCheckout"`
 	Claims            *QueueClaims      `yaml:"claims"`
 	Workflow          map[string]string `yaml:"workflow"`
 	AllowGitNetwork   bool              `yaml:"allowGitNetwork"`
@@ -187,7 +188,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 	schemas := map[string]map[string]bool{
 		"queue":         {"version": true, "me": true, "sources": true, "views": true, "launch": true},
 		"launch":        {"name": true, "argv": true, "cwd": true, "passEnv": true},
-		"source":        {"id": true, "adapter": true, "checkout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
+		"source":        {"id": true, "adapter": true, "checkout": true, "projectCheckout": true, "claims": true, "workflow": true, "allowGitNetwork": true, "host": true, "repository": true, "account": true, "executable": true, "expectedAdapterId": true, "expectedVersion": true, "config": true, "credentialRef": true, "credentialHelper": true, "organization": true, "team": true, "project": true, "githubProject": true},
 		"githubProject": {"owner": true, "number": true, "id": true, "fieldId": true, "options": true, "allowWrites": true},
 		"claims":        {"policy": true, "source": true},
 		"view":          {"name": true, "authority": true, "sources": true, "filter": true},
@@ -273,7 +274,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 					if nested["checkout"] == nil {
 						return QueueConfig{}, fmt.Errorf("%s.checkout: required", label)
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
+					if err := rejectQueueFields(nested, label, "projectCheckout", "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "github":
@@ -282,7 +283,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 							return QueueConfig{}, fmt.Errorf("%s.%s: required", label, key)
 						}
 					}
-					if err := rejectQueueFields(nested, label, "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
+					if err := rejectQueueFields(nested, label, "projectCheckout", "executable", "expectedAdapterId", "expectedVersion", "config", "credentialRef", "credentialHelper", "organization", "team", "project"); err != nil {
 						return QueueConfig{}, err
 					}
 				case "linear", "jira-cloud":
@@ -367,7 +368,7 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		seen[s.ID] = true
 		switch s.Adapter {
 		case "backlog-md", "beads":
-			if s.Host != "" || s.Repository != "" || s.Account != "" || s.Project != "" || s.GitHubProject != nil {
+			if s.Host != "" || s.Repository != "" || s.Account != "" || s.Project != "" || s.ProjectCheckout != "" || s.GitHubProject != nil {
 				return QueueConfig{}, fmt.Errorf("%s: remote fields are not valid for this local source", label)
 			}
 			if strings.HasPrefix(s.Checkout, "~/") {
@@ -415,6 +416,9 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 		case "linear", "jira-cloud":
+			if err := validateQueueProjectCheckout(label, s.ProjectCheckout); err != nil {
+				return QueueConfig{}, err
+			}
 			if s.GitHubProject != nil {
 				return QueueConfig{}, fmt.Errorf("%s.githubProject: only valid for github", label)
 			}
@@ -445,6 +449,9 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 				}
 			}
 		case "external":
+			if err := validateQueueProjectCheckout(label, s.ProjectCheckout); err != nil {
+				return QueueConfig{}, err
+			}
 			if s.GitHubProject != nil {
 				return QueueConfig{}, fmt.Errorf("%s.githubProject: only valid for github", label)
 			}
@@ -464,9 +471,6 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 			if _, ok := profiles[v.Authority]; !ok {
 				return QueueConfig{}, fmt.Errorf("%s.authority: unknown profile %q", label, v.Authority)
 			}
-		}
-		if len(v.Sources) == 0 {
-			return QueueConfig{}, fmt.Errorf("%s.sources: at least one source required", label)
 		}
 		for _, id := range v.Sources {
 			if !seen[id] {
@@ -499,6 +503,20 @@ func parseQueue(data []byte, env func(string) string, profiles map[string]Profil
 		}
 	}
 	return cfg, nil
+}
+
+func validateQueueProjectCheckout(label, checkout string) error {
+	if checkout == "" {
+		return nil
+	}
+	if !filepath.IsAbs(checkout) || filepath.Clean(checkout) != checkout {
+		return fmt.Errorf("%s.projectCheckout: absolute canonical existing directory required", label)
+	}
+	info, err := os.Stat(checkout)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("%s.projectCheckout: existing directory required", label)
+	}
+	return nil
 }
 
 func rejectQueueFields(fields map[string]*yaml.Node, label string, keys ...string) error {

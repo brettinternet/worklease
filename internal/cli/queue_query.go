@@ -24,6 +24,7 @@ import (
 type queueQueryEnvelope struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	View          string             `json:"view"`
+	Scope         queueScope         `json:"scope"`
 	Authority     queueAuthorityJSON `json:"authority"`
 	Sources       []queueSourceJSON  `json:"sources"`
 	Items         []queueQueryItem   `json:"items"`
@@ -73,7 +74,7 @@ func queueQueryActionWithRegistry(s *boundary, newRegistry func() *queue.Registr
 
 // The selector runs over the same unpaginated, overlaid snapshot as query.
 // It runs before any query cursor or page limit can hide part of the scope.
-type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, *queue.Registry, []queue.Source, map[string]queue.ClaimSource, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
+type queueSnapshotSelector func(context.Context, *urfavecli.Command, config.QueueConfig, *config.QueueView, queueScope, *queue.Registry, []queue.Source, map[string]queue.ClaimSource, *authorityContext, queue.ClaimAuthority, []queue.Item, []queue.Item, []queueSourceJSON, bool) error
 
 func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Registry, newLoader func(*queue.Registry) *queue.Loader, selector queueSnapshotSelector) func(context.Context, *urfavecli.Command) error {
 	return func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -94,6 +95,13 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		if view == nil {
 			return s.handle(cmd, reason.Invalid("unknown queue view"))
 		}
+		scope, scopedSources, err := queueProjectSources(ctx, cfg, cmd.Bool("all-projects"))
+		if err != nil {
+			return s.handle(cmd, err)
+		}
+		effectiveView := *view
+		effectiveView.Sources = queueViewSourceIDs(effectiveView, scopedSources)
+		view = &effectiveView
 		registry := newRegistry()
 		cleanupExternal, err := queue.RegisterExternalSources(registry, cfg.Sources, os.Getenv)
 		if err != nil {
@@ -102,17 +110,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		defer cleanupExternal()
 		sources := make([]queue.Source, 0, len(view.Sources))
 		resolveErrors := make(map[string]string)
-		for _, configured := range cfg.Sources {
-			included := false
-			for _, id := range view.Sources {
-				if id == configured.ID {
-					included = true
-					break
-				}
-			}
-			if !included {
-				continue
-			}
+		for _, configured := range queueSourcesByIDs(cfg, view.Sources) {
 			adapterKey := queueAdapterRegistryKey(configured)
 			adapter, ok := registry.Get(adapterKey)
 			if !ok {
@@ -328,7 +326,7 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 				}
 			}
 		}
-		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), cfg.Me, generations, queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, cursorCoverage, cursorItems)
+		fingerprint := queueQueryFingerprint(view, configuredQueueSources(cfg.Sources, view.Sources), cfg.Me, generations, queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, cursorCoverage, cursorItems, scope)
 		cursor := queueCursor{Fingerprint: fingerprint}
 		if encoded := cmd.String("cursor"); encoded != "" {
 			raw, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
@@ -410,13 +408,13 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 			}
 		}
 		if selector != nil {
-			return selector(ctx, cmd, cfg, view, registry, sources, claimSources, selected, auth, cursorItems, items, sourceRows, incomplete)
+			return selector(ctx, cmd, cfg, view, scope, registry, sources, claimSources, selected, auth, cursorItems, items, sourceRows, incomplete)
 		}
 		if incomplete && cmd.Bool("require-complete") {
-			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
+			fields := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: true}
 			return s.handle(cmd, reason.New(reason.ReasonQueueIncomplete, "queue query is incomplete").With("result", "incomplete").With("query", normalizedQueueEnvelope(fields)))
 		}
-		envelope := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: incomplete}
+		envelope := queueQueryEnvelope{SchemaVersion: 1, View: view.Name, Scope: scope, Authority: queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)}, Sources: sourceRows, Items: page, Incomplete: incomplete}
 		if end < len(items) {
 			next := queueCursor{Fingerprint: fingerprint, Offset: end}
 			raw, _ := json.Marshal(next)
@@ -424,6 +422,9 @@ func queueQueryActionWithSelection(s *boundary, newRegistry func() *queue.Regist
 		}
 		if cmd.Bool("json") {
 			return output.WriteSuccess(s.writer, "queue-query", map[string]any{"query": normalizedQueueEnvelope(envelope)})
+		}
+		if _, err := fmt.Fprintf(s.writer, "Scope: %s\n", scope.label()); err != nil {
+			return err
 		}
 		if _, err := fmt.Fprintln(s.writer, "ID\tSTATE\tREADY\tCLAIM\tTITLE"); err != nil {
 			return err
@@ -465,7 +466,11 @@ func normalizedQueueEnvelope(envelope queueQueryEnvelope) map[string]any {
 	}
 	return projected
 }
-func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, me map[string]yaml.Node, generations map[string]string, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item) string {
+func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource, me map[string]yaml.Node, generations map[string]string, authority queueAuthorityJSON, coverage map[string]queue.Coverage, items []queue.Item, scopes ...queueScope) string {
+	var scope queueScope
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	stableCoverage := make(map[string]queue.Coverage, len(coverage))
 	for id, value := range coverage {
 		if value.Reason == "cached-index" {
@@ -491,10 +496,11 @@ func queueQueryFingerprint(view *config.QueueView, bindings []config.QueueSource
 		Bindings    []config.QueueSource
 		Me          map[string]yaml.Node
 		Generations map[string]string
+		Scope       queueScope
 		Authority   queueAuthorityJSON
 		Coverage    map[string]queue.Coverage
 		Items       []queue.Item
-	}{view.Name, view.Filter, view.Sources, bindings, me, generations, authority, stableCoverage, stableItems})
+	}{view.Name, view.Filter, view.Sources, bindings, me, generations, scope, authority, stableCoverage, stableItems})
 	digest := sha256.Sum256(fingerprintData)
 	return hex.EncodeToString(digest[:])
 }

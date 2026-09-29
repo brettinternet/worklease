@@ -213,9 +213,15 @@ func TestQueueQueryIsRegisteredAndDocumentsBoundedReadOnlyInterface(t *testing.T
 }
 
 func TestQueueQueryFingerprintBindsPrincipalAndConfigurationGeneration(t *testing.T) {
+	t.Parallel()
 	view := &config.QueueView{Name: "Ready", Sources: []string{"source"}}
 	item := queue.Item{Summary: queue.Summary{Ref: queue.Ref{SourceID: "source", ItemID: "1"}}, Observation: queue.Observation{Principal: "alice", ConfigurationGeneration: "generation-1"}}
 	base := queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item})
+	projectA := queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item}, queueScope{Kind: "project", Checkout: "/repo/a"})
+	projectB := queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{item}, queueScope{Kind: "project", Checkout: "/repo/b"})
+	if projectA == projectB {
+		t.Fatal("project scope change did not invalidate cursor fingerprint")
+	}
 	changedPrincipal := item
 	changedPrincipal.Observation.Principal = "bob"
 	if base == queueQueryFingerprint(view, nil, nil, nil, queueAuthorityJSON{Profile: "local", Scope: "local"}, map[string]queue.Coverage{}, []queue.Item{changedPrincipal}) {
@@ -272,6 +278,9 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := response["query"].(map[string]any)
+	if query["scope"].(map[string]any)["kind"] != "all-projects" {
+		t.Fatalf("effective all-project scope missing from JSON: %#v", query["scope"])
+	}
 	if query["schemaVersion"] != float64(1) {
 		t.Fatalf("schema version: %#v", query["schemaVersion"])
 	}
@@ -373,8 +382,8 @@ func TestQueueQueryEndToEndJSONCursorIdentityTextAndCompleteness(t *testing.T) {
 	if strings.Contains(string(text), strings.Repeat("a", 64)) {
 		t.Fatal("text output bypassed redaction")
 	}
-	if !strings.Contains(string(text), "ID\tSTATE\tREADY\tCLAIM\tTITLE") {
-		t.Fatalf("missing text table: %s", text)
+	if !strings.Contains(string(text), "Scope: all projects\n") || !strings.Contains(string(text), "ID\tSTATE\tREADY\tCLAIM\tTITLE") {
+		t.Fatalf("missing effective scope or text table: %s", text)
 	}
 	// A cursor must bind to the full source snapshot, not only the returned page.
 	h.setTasks(`[{"id":"TASK-126","title":"Alpha changed","status":"Open","ordinal":1,"isReady":true},{"id":"TASK-127","title":"Beta","status":"Open","ordinal":2,"isReady":true}]`)
@@ -629,7 +638,7 @@ func newQueueQueryHarness(t *testing.T) *queueQueryHarness {
 	if err := os.WriteFile(filepath.Join(checkout, "backlog.config.yml"), []byte("version: 1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf '1.52.0\\n' ;;\n  'config get autoCommit') printf 'true\\n' ;;\n  'config get '*) printf 'false\\n' ;;\n  'task list --json') printf '%s\\n' \"$QUEUE_LIST_JSON\" ;;\n  task\\ view\\ TASK-*\\ --json) python3 -c 'import json,os,sys; tasks=json.loads(os.environ.get(\"QUEUE_VIEW_LIST_JSON\") or os.environ[\"QUEUE_LIST_JSON\"])[\"tasks\"]; selected=next(task for task in tasks if task[\"id\"]==sys.argv[1]); print(json.dumps({\"kind\":\"task-view\",\"schemaVersion\":1,\"task\":selected}))' \"$3\" ;;\n  *) exit 2 ;;\nesac\n"
+	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf '1.52.0\\n' ;;\n  'config get autoCommit') printf 'true\\n' ;;\n  'config get '*) printf 'false\\n' ;;\n  'task list --json') if [ -f .queue-test-list ]; then cat .queue-test-list; else printf '%s\\n' \"$QUEUE_LIST_JSON\"; fi ;;\n  task\\ view\\ TASK-*\\ --json) python3 -c 'import json,os,sys; tasks=json.loads(os.environ.get(\"QUEUE_VIEW_LIST_JSON\") or os.environ[\"QUEUE_LIST_JSON\"])[\"tasks\"]; selected=next(task for task in tasks if task[\"id\"]==sys.argv[1]); print(json.dumps({\"kind\":\"task-view\",\"schemaVersion\":1,\"task\":selected}))' \"$3\" ;;\n  *) exit 2 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "backlog"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

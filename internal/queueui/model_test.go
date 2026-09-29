@@ -38,6 +38,44 @@ func screenText(view string) string {
 	return strings.Join(strings.Fields(view), " ")
 }
 
+func TestEmptyProjectViewIntersectionShowsNoRows(t *testing.T) {
+	t.Parallel()
+	model := New(fixture())
+	model.ViewName = "Elsewhere"
+	model.Views = []string{"All", "Elsewhere"}
+	model.ViewFilters = map[string]queue.Filters{
+		"All":       {SourceIDs: []string{"a"}},
+		"Elsewhere": {SourceIDs: []string{}},
+	}
+	if rows := model.rows(); len(rows) != 0 || model.viewCount("Elsewhere") != 0 {
+		t.Fatalf("empty source intersection showed rows or a nonzero count: %+v", rows)
+	}
+	model.ViewName = "All"
+	if len(model.rows()) != 2 {
+		t.Fatal("project rows disappeared from the included view")
+	}
+}
+
+func TestProjectScopeToggleRequestsScopeRestart(t *testing.T) {
+	t.Parallel()
+	model := New(fixture())
+	model.ProjectScope = "project /repo/a"
+	model.CanToggleProjectScope = true
+	updated, cmd := press(model, "X")
+	if !updated.ScopeToggleRequested || cmd == nil {
+		t.Fatalf("project-scope toggle did not request a restart: requested=%t command=%v", updated.ScopeToggleRequested, cmd != nil)
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("scope toggle did not exit the current TUI session")
+	}
+
+	model = New(fixture())
+	updated, cmd = press(model, "X")
+	if updated.ScopeToggleRequested || cmd != nil {
+		t.Fatalf("disabled scope toggle changed the model: requested=%t command=%v", updated.ScopeToggleRequested, cmd != nil)
+	}
+}
+
 func press(m Model, key string) (Model, tea.Cmd) {
 	type msg = tea.KeyMsg
 	var k msg

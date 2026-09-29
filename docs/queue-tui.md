@@ -1,6 +1,6 @@
 # TUI
 
-Bare `worklease` opens the TUI in a terminal. It shows the views in [queue.yaml](queue.md) plus Recovery and Claims tabs, and opens on Claims when `queue.yaml` is absent. `worklease queue` opens it on the views too. Press `?` for every key.
+Bare `worklease` opens the TUI in a terminal. It shows the views in [queue.yaml](queue.md) plus Recovery and Claims tabs, and opens on Claims when `queue.yaml` is absent. `worklease queue` opens it on the views too. Queue rows default to sources associated with the current project checkout (the main checkout when launched from a linked worktree); outside a configured project, all sources are included. The header names the effective project scope. Press `X` to toggle between that project and all projects; the TUI refreshes the source set before showing the widened scope. Listed sources in legacy views remain an additional restriction. Press `?` for every key.
 
 ```text
 worklease  authority local 1cc38a84…  me @brett                                      synced now
@@ -89,6 +89,7 @@ Actions are unavailable when the claim is not held by a discoverable handle here
 | `enter`, `esc` | Open, back |
 | `tab` | Next detail section |
 | `v`/`V`, `1`-`9` | Next or previous view, jump to view |
+| `X` | Toggle current-project / all-projects scope and refresh |
 | `/`, `esc` | Filter loaded rows, clear |
 | `d` | Show or hide done items |
 | `r`, `:`, `q` | Refresh, command palette, quit |

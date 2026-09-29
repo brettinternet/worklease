@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/brettinternet/worklease/internal/config"
@@ -17,7 +18,7 @@ import (
 )
 
 func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) error {
-	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, registry *queue.Registry, sources []queue.Source, claimSources map[string]queue.ClaimSource, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
+	return queueQueryActionWithSelection(s, queue.NewRegistry, queue.NewLoader, func(ctx context.Context, cmd *urfavecli.Command, cfg config.QueueConfig, view *config.QueueView, scope queueScope, registry *queue.Registry, sources []queue.Source, claimSources map[string]queue.ClaimSource, backend *authorityContext, auth queue.ClaimAuthority, scoped, visible []queue.Item, sourceRows []queueSourceJSON, incomplete bool) error {
 		if cmd.Bool("start") && !cmd.Bool("claim") {
 			return s.handle(cmd, reason.Invalid("--start requires --claim"))
 		}
@@ -33,8 +34,8 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		for _, value := range cmd.StringSlice("item") {
 			source, id, ok := strings.Cut(value, ":")
 			ref := queue.Ref{SourceID: source, ItemID: id}
-			if !ok || source == "" || id == "" || !known[ref.Key()] && !incomplete {
-				return s.handle(cmd, reason.Invalid("--item must be a source-qualified ref present in the view"))
+			if !ok || source == "" || id == "" || !slices.Contains(view.Sources, source) || !known[ref.Key()] && !incomplete {
+				return s.handle(cmd, reason.Invalid("--item must be a source-qualified ref present in the effective view scope"))
 			}
 			selectors = append(selectors, ref)
 		}
@@ -183,6 +184,7 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 		payload := map[string]any{
 			"schemaVersion": 1,
 			"view":          view.Name,
+			"scope":         scope,
 			"result":        result.Result,
 			"authority":     queueAuthorityJSON{Profile: auth.Profile, ID: auth.ID, Scope: scopeLabel(auth.Remote)},
 			"sources":       sourceRows,
@@ -219,6 +221,9 @@ func queueNextAction(s *boundary) func(context.Context, *urfavecli.Command) erro
 			} else if transition != nil && transition["outcome"] == "unknown" {
 				label = "Claim acquired; provider outcome requires recovery"
 			}
+		}
+		if _, err := fmt.Fprintf(s.writer, "Scope: %s\n", scope.label()); err != nil {
+			return err
 		}
 		if _, err := fmt.Fprintf(s.writer, "%s (%s)\n", result.Result, label); err != nil {
 			return err

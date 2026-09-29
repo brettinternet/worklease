@@ -204,8 +204,8 @@ func TestQueueInitMergeAndUnmapped(t *testing.T) {
 		t.Fatalf("merge lost comments/launch: %s %v", data, err)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
-	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views) != 2 || len(cfg.Views[0].Sources) != 2 || len(cfg.Views[1].Sources) != 2 || cfg.Sources[1].Workflow["start"] != "" {
-		t.Fatalf("merge must extend existing default views without adding others: %+v %v", cfg, err)
+	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views) != 2 || len(cfg.Views[0].Sources) != 1 || cfg.Views[0].Sources[0] != "project" || len(cfg.Views[1].Sources) != 1 || cfg.Views[1].Sources[0] != "project" || cfg.Sources[1].Workflow["start"] != "" {
+		t.Fatalf("merge must preserve existing explicit view restrictions without adding others: %+v %v", cfg, err)
 	}
 	dryAdd := h.invoke("--me", "@another", "--dry-run", "--json")
 	if dryAdd.Err != nil || !strings.Contains(string(dryAdd.Stdout), `"applied":false`) || !strings.Contains(string(dryAdd.Stdout), "init --checkout") {
@@ -457,8 +457,8 @@ func TestQueueInitConcurrentAddsPreserveBothSources(t *testing.T) {
 		t.Error(failure)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
-	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 2 {
-		t.Fatalf("lost concurrent source: %+v %v", cfg, err)
+	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 0 {
+		t.Fatalf("lost concurrent source or added source restrictions to filter-only view: %+v %v", cfg, err)
 	}
 }
 
@@ -903,7 +903,7 @@ func TestQueueInitProposalMultipleSourcesAndRemoval(t *testing.T) {
 		t.Fatalf("both sources apply: %v %s", applied.Err, applied.Stdout)
 	}
 	cfg, err := config.LoadQueue(os.Getenv)
-	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 2 || cfg.Sources[1].Repository != "Owner/Repo" {
+	if err != nil || len(cfg.Sources) != 2 || len(cfg.Views[0].Sources) != 0 || cfg.Sources[1].Repository != "Owner/Repo" {
 		t.Fatalf("both sources: %+v %v", cfg, err)
 	}
 	h.proposal("version: 1\nsources:\n  - {id: issues, adapter: github}\n")

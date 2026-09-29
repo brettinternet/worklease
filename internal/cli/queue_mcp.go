@@ -12,13 +12,23 @@ import (
 
 // mcpQueueNext invokes the same unpaginated selector and candidate revalidation
 // as the CLI. Only the final acquire is substituted with MCP's private lease.
-func mcpQueueNext(home, profile string) func(context.Context, string, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, []string) (map[string]any, error), func(string) string) (map[string]any, error) {
-	return func(ctx context.Context, view string, claim, start bool, session string, ttl float64, authorityID, authorityProfile string, pinnedProfile *config.Profile, acquire func(context.Context, []string) (map[string]any, error), handlePath func(string) string) (map[string]any, error) {
+func mcpQueueNext(home, profile string, pinnedCheckout ...string) func(context.Context, string, bool, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, []string) (map[string]any, error), func(string) string) (map[string]any, error) {
+	checkout := ""
+	if len(pinnedCheckout) > 0 {
+		checkout = pinnedCheckout[0]
+	}
+	return func(ctx context.Context, view string, allProjects, claim, start bool, session string, ttl float64, authorityID, authorityProfile string, pinnedProfile *config.Profile, acquire func(context.Context, []string) (map[string]any, error), handlePath func(string) string) (map[string]any, error) {
+		if checkout != "" {
+			ctx = context.WithValue(ctx, queueProjectRootKey{}, checkout)
+		}
 		args := []string{"worklease", "--json", "--home", home}
 		if profile != "" {
 			args = append(args, "--profile", profile)
 		}
 		args = append(args, "queue", "next", "--view", view)
+		if allProjects {
+			args = append(args, "--all-projects")
+		}
 		if claim {
 			args = append(args, "--claim", "--session", session, "--ttl", time.Duration(ttl*float64(time.Second)).String())
 			ctx = context.WithValue(ctx, queueMCPAcquireKey{}, queueMCPAcquire{authorityID: authorityID, profile: authorityProfile, pinnedProfile: pinnedProfile, acquire: acquire, handlePath: func(grant map[string]any) string {

@@ -297,6 +297,9 @@ type Model struct {
 	ViewFilters                    map[string]queue.Filters
 	ViewRules                      map[string]ViewRule
 	ViewName, Authority, Scope, Me string
+	ProjectScope                   string
+	CanToggleProjectScope          bool
+	ScopeToggleRequested           bool
 	MeBySource                     map[string][]string
 	Sources                        []queue.Source
 	SourceErrors                   map[string]string
@@ -601,7 +604,10 @@ func (m Model) project() ([]queue.Item, int) {
 			}
 		}
 	}
-	filters := m.ViewFilters[m.ViewName]
+	filters, scoped := m.ViewFilters[m.ViewName]
+	if scoped && len(filters.SourceIDs) == 0 {
+		return nil, 0
+	}
 	filters.Text = m.Filter
 	var rows []queue.Item
 	if m.orderedKeys != nil {
@@ -1304,6 +1310,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := v.String()
+		if key == "X" && m.CanToggleProjectScope && m.mode() == modeList {
+			m.ScopeToggleRequested = true
+			return m, tea.Quit
+		}
 		switch m.mode() {
 		case modeStartPreview:
 			switch key {
@@ -2050,7 +2060,10 @@ func (m Model) viewCountMatches(item queue.Item, name string) bool {
 		return false
 	}
 	rule := m.ViewRules[name]
-	filters := m.ViewFilters[name]
+	filters, scoped := m.ViewFilters[name]
+	if scoped && len(filters.SourceIDs) == 0 {
+		return false
+	}
 	if len(filters.SourceIDs) > 0 {
 		found := false
 		for _, id := range filters.SourceIDs {
