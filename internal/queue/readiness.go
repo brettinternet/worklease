@@ -1,5 +1,7 @@
 package queue
 
+import "sort"
+
 // Recompute uses one memoized traversal per graph node, so overlapping prerequisite
 // closures are evaluated in O(items + relationships), not once per selected item.
 func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
@@ -164,14 +166,8 @@ func Recompute(items map[string]Item, graph CoverageState) map[string]Item {
 				reasons = append(reasons, name)
 			}
 		}
-		// Small fixed vocabulary: sorting makes diagnostics deterministic.
-		for i := 0; i < len(reasons); i++ {
-			for j := i + 1; j < len(reasons); j++ {
-				if reasons[j] < reasons[i] {
-					reasons[i], reasons[j] = reasons[j], reasons[i]
-				}
-			}
-		}
+		// Sorting makes diagnostics deterministic.
+		sort.Strings(reasons)
 		freshness := Fresh
 		if flags&rStale != 0 {
 			freshness = Stale
