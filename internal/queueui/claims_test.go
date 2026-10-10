@@ -129,6 +129,39 @@ func (*claimsTestReader) History(context.Context, string, string, int, bool) (le
 	return ledger.HistoryPage{}, nil
 }
 
+func TestClaimsEmptyViewRemainsStableDuringPolling(t *testing.T) {
+	t.Parallel()
+	m := New(queue.Snapshot{})
+	m.Views, m.ViewName = []string{ClaimsViewID}, ClaimsViewID
+	m.Claims.Now = func() time.Time { return time.Unix(100, 0).UTC() }
+	m.Claims.Loading = true
+	m.Claims.Refresh = func(string) tea.Cmd {
+		return func() tea.Msg { return ClaimsRefreshMsg{} }
+	}
+	if view := screenText(m.View()); !strings.Contains(view, "Loading authority claims…") {
+		t.Fatalf("initial read did not show loading:\n%s", view)
+	}
+	updated, _ := m.Update(ClaimsRefreshMsg{})
+	m = updated.(Model)
+	emptyView := screenText(m.View())
+	if !strings.Contains(emptyView, "No active claims on this authority.") {
+		t.Fatalf("successful empty read did not show empty state:\n%s", emptyView)
+	}
+	updated, poll := m.Update(ClaimsTickMsg{})
+	m = updated.(Model)
+	if poll == nil {
+		t.Fatal("background poll did not start")
+	}
+	if view := screenText(m.View()); view != emptyView {
+		t.Fatalf("background poll changed empty view:\n%s", view)
+	}
+	updated, _ = m.Update(poll())
+	m = updated.(Model)
+	if view := screenText(m.View()); view != emptyView {
+		t.Fatalf("unchanged poll result changed empty view:\n%s", view)
+	}
+}
+
 func TestClaimsLiveRefreshResetsGapAndRetainsPublicEvents(t *testing.T) {
 	t.Parallel()
 	reader := &claimsTestReader{

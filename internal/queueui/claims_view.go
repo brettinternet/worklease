@@ -111,7 +111,7 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 		case len(m.Claims.Items) == 0:
 			// First-run guidance: the footer carries no key hints.
 			message, hints = "No active claims on this authority.", []string{"Start with worklease acquire --path README.md", "Press ? for help · q to quit"}
-			if m.Claims.Loading {
+			if m.Claims.Loading && m.Claims.LastUpdated.IsZero() {
 				message = "Loading authority claims…"
 			}
 		}
