@@ -49,7 +49,7 @@ mise install
 worklease version
 ```
 
-Or build from source with Go 1.27.1:
+Or build from source with Go 1.27.2:
 
 ```sh
 mise run build
