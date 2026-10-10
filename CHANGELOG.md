@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.9.1 - 2026-10-10
+
+### Changed
+
+- Enter now toggles item and claim detail views in the TUI.
+- Queue setup guidance now appears in TUI help instead of interrupting startup.
+- Updated dependencies and the Go toolchain.
+
+### Fixed
+
+- Empty claim lists no longer flicker during polling.
+
 ## 1.9.0 - 2026-09-29
 
 ### Changed
