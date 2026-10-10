@@ -25,32 +25,32 @@ import (
 func TestQueueClaimsOnlyFallbackForMissingAndViewlessConfig(t *testing.T) {
 	t.Parallel()
 	missing := reason.New(reason.ReasonNoSourcesConfigured, "queue config missing")
-	notice, onlyClaims, err := queueClaimsOnlyFallback(config.QueueConfig{}, missing)
-	if err != nil || !onlyClaims || !strings.Contains(notice, "worklease queue init") {
-		t.Fatalf("missing config fallback=(%q,%t,%v)", notice, onlyClaims, err)
+	onlyClaims, err := queueClaimsOnlyFallback(config.QueueConfig{}, missing)
+	if err != nil || !onlyClaims {
+		t.Fatalf("missing config fallback=(%t,%v)", onlyClaims, err)
 	}
-	notice, onlyClaims, err = queueClaimsOnlyFallback(config.QueueConfig{Sources: []config.QueueSource{{ID: "source"}}}, nil)
-	if err != nil || !onlyClaims || !strings.Contains(notice, "no views") {
-		t.Fatalf("viewless config fallback=(%q,%t,%v)", notice, onlyClaims, err)
+	onlyClaims, err = queueClaimsOnlyFallback(config.QueueConfig{Sources: []config.QueueSource{{ID: "source"}}}, nil)
+	if err != nil || !onlyClaims {
+		t.Fatalf("viewless config fallback=(%t,%v)", onlyClaims, err)
 	}
 	configured := config.QueueConfig{Views: []config.QueueView{{Name: "First"}, {Name: "Second"}}}
-	if notice, onlyClaims, err = queueClaimsOnlyFallback(configured, nil); err != nil || onlyClaims || notice != "" {
-		t.Fatalf("configured views must keep their queue entry point: (%q,%t,%v)", notice, onlyClaims, err)
+	if onlyClaims, err = queueClaimsOnlyFallback(configured, nil); err != nil || onlyClaims {
+		t.Fatalf("configured views must keep their queue entry point: (%t,%v)", onlyClaims, err)
 	}
 	malformed := errors.New("malformed queue config")
-	if notice, onlyClaims, err = queueClaimsOnlyFallback(config.QueueConfig{}, malformed); !errors.Is(err, malformed) || onlyClaims || notice != "" {
-		t.Fatalf("malformed config was hidden: (%q,%t,%v)", notice, onlyClaims, err)
+	if onlyClaims, err = queueClaimsOnlyFallback(config.QueueConfig{}, malformed); !errors.Is(err, malformed) || onlyClaims {
+		t.Fatalf("malformed config was hidden: (%t,%v)", onlyClaims, err)
 	}
 }
 
-func TestClaimsOnlyModelStartsOnAuthorityClaimsWithNotice(t *testing.T) {
+func TestClaimsOnlyModelStartsOnAuthorityClaimsWithoutSetupNotice(t *testing.T) {
 	t.Parallel()
-	model := newClaimsOnlyModel("remote authority-1", "remote", true, "queue.yaml is not configured")
-	if model.ViewName != queueui.ClaimsViewID || len(model.Views) != 1 || model.Views[0] != queueui.ClaimsViewID || !model.HighContrast || !model.Claims.Loading || model.Claims.Notice == "" {
+	model := newClaimsOnlyModel("remote authority-1", "remote", true)
+	if model.ViewName != queueui.ClaimsViewID || len(model.Views) != 1 || model.Views[0] != queueui.ClaimsViewID || !model.HighContrast || !model.Claims.Loading || model.Claims.Notice != "" {
 		t.Fatalf("claims-only model startup state=%+v views=%v", model.Claims, model.Views)
 	}
-	if view := model.View(); !strings.Contains(view, "Claims") || !strings.Contains(view, "queue.yaml is not configured") || !strings.Contains(view, "worklease acquire --path README.md") || !strings.Contains(view, "? for help") || !strings.Contains(view, "q to quit") {
-		t.Fatalf("claims-only startup notice not visible: %s", view)
+	if view := model.View(); !strings.Contains(view, "Claims") || strings.Contains(view, "queue.yaml") || strings.Contains(view, "worklease queue init") || !strings.Contains(view, "worklease acquire --path README.md") || !strings.Contains(view, "? for help") || !strings.Contains(view, "q to quit") {
+		t.Fatalf("claims-only startup should show claims guidance without a setup notice: %s", view)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestBareInteractiveFreshHomeShowsClaimsWithoutState(t *testing.T) {
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
-	runBarePTY(t, "worklease acquire --path README.md", "worklease queue init", "Claims")
+	runBarePTY(t, "worklease acquire --path README.md", "? for help", "Claims")
 	for _, path := range []string{home, env["XDG_CONFIG_HOME"], env["XDG_STATE_HOME"]} {
 		entries, err := os.ReadDir(path)
 		if err != nil || len(entries) != 0 {
@@ -272,7 +272,7 @@ func TestBareInteractiveKeepsConfiguredViewWhenSourceFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, claimsOnly, err := queueClaimsOnlyFallback(cfg, nil); err != nil || claimsOnly {
+	if claimsOnly, err := queueClaimsOnlyFallback(cfg, nil); err != nil || claimsOnly {
 		t.Fatalf("configured source must use the queue view: %t %v", claimsOnly, err)
 	}
 	model := queueui.New(queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}})

@@ -78,7 +78,7 @@ func runQueue(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 // Each frame owns its backend and workers; close them before changing scope.
 func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allProjects bool, viewName string) (queueui.Model, error) {
 	cfg, contractErrors, loadErr := loadQueueRuntimeConfig(ctx, os.Getenv)
-	notice, claimsOnly, err := queueClaimsOnlyFallback(cfg, loadErr)
+	claimsOnly, err := queueClaimsOnlyFallback(cfg, loadErr)
 	if err != nil {
 		return queueui.Model{}, err
 	}
@@ -86,7 +86,7 @@ func runQueueFrame(ctx context.Context, cmd *urfave.Command, s *boundary, allPro
 		if viewName != "" {
 			return queueui.Model{}, reason.Invalid("unknown queue view: " + viewName)
 		}
-		return queueui.Model{}, runQueueClaimsOnly(ctx, cmd, s, notice)
+		return queueui.Model{}, runQueueClaimsOnly(ctx, cmd, s)
 	}
 	selected := cfg.Views[0]
 	if name := viewName; name != "" {

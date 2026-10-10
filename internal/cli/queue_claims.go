@@ -15,17 +15,14 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-func queueClaimsOnlyFallback(cfg config.QueueConfig, loadErr error) (string, bool, error) {
+func queueClaimsOnlyFallback(cfg config.QueueConfig, loadErr error) (bool, error) {
 	if loadErr != nil {
 		if classified := reason.As(loadErr); classified != nil && classified.Reason == reason.ReasonNoSourcesConfigured {
-			return "queue.yaml is not configured; run worklease queue init to add sources", true, nil
+			return true, nil
 		}
-		return "", false, loadErr
+		return false, loadErr
 	}
-	if len(cfg.Views) == 0 {
-		return "queue.yaml has no views; showing authority-wide claims only", true, nil
-	}
-	return "", false, nil
+	return len(cfg.Views) == 0, nil
 }
 
 func queueClaimsCommand(s *boundary) *urfave.Command {
@@ -41,16 +38,16 @@ func queueClaimsCommand(s *boundary) *urfave.Command {
 			return s.handle(cmd, reason.Invalid("queue TUI is text-only"))
 		}
 		cfg, loadErr := config.LoadQueue(os.Getenv)
-		notice, _, err := queueClaimsOnlyFallback(cfg, loadErr)
+		_, err := queueClaimsOnlyFallback(cfg, loadErr)
 		if err != nil {
 			return s.handle(cmd, err)
 		}
-		return s.handle(cmd, runQueueClaimsOnly(ctx, cmd, s, notice))
+		return s.handle(cmd, runQueueClaimsOnly(ctx, cmd, s))
 	}
 	return command
 }
 
-func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary, notice string) error {
+func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	backend, err := authorityFor(ctx, cmd, false)
@@ -62,7 +59,7 @@ func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary, n
 	if backend.Remote {
 		scope = "remote"
 	}
-	model := newClaimsOnlyModel(fmt.Sprintf("%s %s", backend.ProfileName, backend.AuthorityID()), scope, cmd.Bool("high-contrast"), notice)
+	model := newClaimsOnlyModel(fmt.Sprintf("%s %s", backend.ProfileName, backend.AuthorityID()), scope, cmd.Bool("high-contrast"))
 	configureClaimsTab(&model, backend, ctx, backend.Config.SessionID)
 	if !backend.Remote {
 		// A fresh home has no database to hold open. Reopen for each read so
@@ -111,7 +108,7 @@ func runQueueClaimsOnly(ctx context.Context, cmd *urfave.Command, s *boundary, n
 	return err
 }
 
-func newClaimsOnlyModel(authority, scope string, highContrast bool, notice string) queueui.Model {
+func newClaimsOnlyModel(authority, scope string, highContrast bool) queueui.Model {
 	model := queueui.New(queue.Snapshot{Items: map[string]queue.Item{}, Sources: map[string]queue.Coverage{}})
 	model.Views = []string{queueui.ClaimsViewID}
 	model.ViewName = queueui.ClaimsViewID
@@ -119,7 +116,6 @@ func newClaimsOnlyModel(authority, scope string, highContrast bool, notice strin
 	model.Authority = authority
 	model.Scope = scope
 	model.Claims.Loading = true
-	model.Claims.Notice = notice
 	return model
 }
 

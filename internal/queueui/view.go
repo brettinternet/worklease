@@ -711,6 +711,7 @@ func (m Model) helpLines() []string {
 	switch m.ViewName {
 	case ClaimsViewID:
 		groups = append(groups, group("Claims · authority-wide", claimsHelp))
+		groups = append(groups, []string{m.s().bold.Render("Queue sources"), "  worklease queue init", "  Add sources from a checkout.", ""})
 	case RecoveryViewID:
 		groups = append(groups, group("Recovery", recoveryHelp))
 	}
