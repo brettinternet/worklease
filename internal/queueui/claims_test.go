@@ -377,6 +377,14 @@ func TestClaimsDetailLoadsHistoryForSelectedClaim(t *testing.T) {
 	if m.Claims.HistoryLoading || len(m.Claims.History.Epochs) != 1 {
 		t.Fatalf("history response not displayed: %+v", m.Claims.History)
 	}
+	if !m.Claims.Detail {
+		t.Fatal("enter did not open claim detail")
+	}
+	selected := m.Claims.Selected
+	m, command = press(m, "enter")
+	if m.Claims.Detail || m.Claims.Selected != selected || command != nil {
+		t.Fatal("enter did not return to the selected claim without reloading history")
+	}
 }
 
 func TestClaimsJumpKeepsVisibleNoticeWhenQueueFilterHidesItem(t *testing.T) {

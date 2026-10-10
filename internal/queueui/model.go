@@ -1689,7 +1689,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.move(len(rows))
 		case "l", "right", "enter":
-			if len(rows) > 0 {
+			if key == "enter" && m.Detail {
+				m.Detail = false
+			} else if len(rows) > 0 {
 				m.openDetail()
 			}
 		case "h", "left":

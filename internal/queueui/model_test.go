@@ -1211,6 +1211,7 @@ func TestHeaderViewsStatesCoverageAndResize(t *testing.T) {
 	}
 }
 func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
+	t.Parallel()
 	m := New(fixture())
 	m.Sources = []queue.Source{{ID: "a"}}
 	m.anchor(m.rows())
@@ -1234,6 +1235,15 @@ func TestScriptedKeyboardAndDisabledActions(t *testing.T) {
 	m, _ = press(m, "h")
 	if m.Detail {
 		t.Fatal("h did not close")
+	}
+	selected := m.Selected
+	m, _ = press(m, "enter")
+	if !m.Detail {
+		t.Fatal("enter did not open detail")
+	}
+	m, _ = press(m, "enter")
+	if m.Detail || m.Selected != selected {
+		t.Fatal("enter did not return to the selected row")
 	}
 	refreshed, opened := 0, 0
 	m.Refresh = func() tea.Cmd { refreshed++; return func() tea.Msg { return RefreshedMsg{} } }

@@ -74,7 +74,9 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 			m.scrollClaims(rows, scrollStep(key, capacity), capacity)
 		}
 	case "enter", "l", "right":
-		if len(rows) > 0 {
+		if key == "enter" && m.Claims.Detail {
+			m.Claims.Detail = false
+		} else if len(rows) > 0 {
 			m.Claims.Detail = true
 			m.Claims.DetailTab = 0
 			m.Claims.DetailOffset = 0
