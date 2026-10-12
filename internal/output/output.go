@@ -3,6 +3,7 @@
 package output
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -266,7 +267,7 @@ func redact(value any, key string, public bool) any {
 		if err != nil {
 			return "[REDACTED]"
 		}
-		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
 		decoder.UseNumber()
 		var projected any
 		if err := decoder.Decode(&projected); err != nil {
@@ -385,7 +386,7 @@ func redactHolder(value any) map[string]any {
 		if err != nil {
 			return map[string]any{}
 		}
-		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
 		decoder.UseNumber()
 		if decoder.Decode(&raw) != nil {
 			return map[string]any{}
