@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.9.2 - 2026-10-16
+
+### Changed
+
+- Clarified MCP tool descriptions, agent guidance, and generated setup instructions.
+- Reduced allocations when decoding command output.
+
 ## 1.9.1 - 2026-10-10
 
 ### Changed
