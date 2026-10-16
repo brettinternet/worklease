@@ -272,7 +272,22 @@ func (s *Server) openAuthorityForHandle(ctx context.Context, ref string, h handl
 
 var toolOrder = []string{"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions"}
 
-const serverInstructions = "Worklease claim authority. Use the opaque lease returned by a successful acquire. Retry acquire by lease reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
+const serverInstructions = "Worklease coordinates work claims. Claim with acquire, or queue_next with claim: true, then pass the returned lease to status, heartbeat, checkpoint, verify, and release. After an uncertain outcome that returns a lease reference, retry acquire with only that lease. A definitive failure returns no reference; call acquire again. Read instructions with topic loop before starting work."
+
+var toolDescriptions = map[string]string{
+	"key":          "Resolve a path, or a provider, source, and item, to its canonical resource key. Read-only.",
+	"acquire":      "Claim resources and return an opaque lease. Give resources, a path, or a provider, source, and item. Retry by reference only after an uncertain outcome that returns one, passing only the lease; a definitive failure returns no reference and requires a fresh acquire.",
+	"queue_next":   "Select the next ready item from a configured queue view. Set claim: true to claim it in the same step and start: true to also mark it in progress. Skips claimed items without waiting.",
+	"status":       "Show the claim for a lease, or the current claims on resources. Read-only.",
+	"list":         "List active claims, optionally for one resource. Read-only.",
+	"heartbeat":    "Extend a lease before half its TTL has passed.",
+	"checkpoint":   "Save local recovery data on a lease and extend it.",
+	"verify":       "Confirm a lease still owns its claim, optionally for the given resources. Call before mutating work after any pause.",
+	"watch":        "Wait up to timeout seconds for the next event after cursor, or until resources are free or change (until: free or change).",
+	"events":       "Read the authority's event log from a cursor.",
+	"release":      "Release a lease after saving progress in the provider.",
+	"instructions": "Return Worklease guidance for a topic: setup, remote, server, loop, or safety. Read-only.",
+}
 
 func (s *Server) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
 	if v := requestVersion(req); v != "" && v != ModernVersion && v != LegacyVersion {
@@ -387,11 +402,7 @@ func (s *Server) tools() []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(order))
 	for _, name := range order {
-		description := "Worklease " + name + " operation"
-		if name == "acquire" {
-			description = "Acquire a claim and return an opaque lease reference on success. Retry by reference only after an uncertain outcome that returns one; a definitive failure returns no reference and requires a fresh acquire."
-		}
-		out = append(out, map[string]any{"name": name, "description": description, "inputSchema": defs[name]})
+		out = append(out, map[string]any{"name": name, "description": toolDescriptions[name], "inputSchema": defs[name]})
 	}
 	return out
 }

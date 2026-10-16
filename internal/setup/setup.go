@@ -490,11 +490,11 @@ Authority selection: <verified local state home or remote profile selection>
 Work source: <authoritative source for eligibility and progress>
 Resource convention: <exact shared canonical keys; include admitted prefixes for remote>
 
-Fill these non-secret settings before using this block; do not guess missing values.
-Read worklease instructions loop and worklease instructions safety before work.
-Use the recorded authority and exact resources across all contenders, with distinct sessions.
-Claim before work, heartbeat before half the TTL, stop on ownership loss, and release after verified progress.
-Keep credentials, invitations, and private handles out of project instructions and logs.
+Fill in these non-secret values before use; do not guess missing ones.
+Before work, read worklease instructions loop and worklease instructions safety.
+Every contender uses this authority and these exact resources, each with its own session.
+Claim before work, heartbeat before half the TTL, stop on ownership loss, and release after saving verified progress.
+Keep credentials, invites, and private handles out of project instructions and logs.
 `)
 	b.WriteString("<!-- worklease:end -->\n")
 	return Result{Preview: b.String()}, nil

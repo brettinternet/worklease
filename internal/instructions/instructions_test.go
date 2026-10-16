@@ -13,16 +13,16 @@ func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testin
 	joined := strings.Join(loop, "\n")
 	for _, want := range []string{
 		"Use a harness-provided loop-run ID unchanged",
-		"For CLI, set it as WORKLEASE_SESSION_ID",
-		"For MCP, pass it as acquire.sessionId, persist the returned lease before work",
-		"Never truncate or derive the identity",
-		"MCP automatic heartbeat is process-scoped",
-		"After every subagent run, wait, long command, human pause, resumed session, or new loop iteration",
-		"before any filesystem edit, mutating command, provider write, commit, merge, or cleanup",
-		"Claim expiry does not prove the prior worker stopped",
-		"require explicit handoff or authoritative abandonment evidence",
-		"Acquire immediately after choosing a candidate, before reading its full intent",
-		"on conflict do not wait: select the next ready candidate",
+		"CLI: set WORKLEASE_SESSION_ID",
+		"MCP: pass it as sessionId to acquire or queue_next, persist the returned lease before work",
+		"Never truncate the ID or derive it",
+		"MCP automatic heartbeat lasts only while the server process runs",
+		"After any subagent run, wait, long command, human pause, resumed session, or new loop iteration",
+		"before any file edit, mutating command, provider write, commit, merge, or cleanup",
+		"Expiry does not prove the previous worker stopped",
+		"require an explicit handoff or authoritative evidence of abandonment",
+		"Claim as soon as you choose a candidate, before reading its full intent",
+		"on conflict do not wait: pick the next ready candidate",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing loop ownership guardrail %q", want)
@@ -37,7 +37,7 @@ func TestRemoteSetupPreservesAuthoritySelection(t *testing.T) {
 	}
 	for _, want := range []string{
 		"worklease profile default before enrollment",
-		"obtain approval for that scope change before proceeding",
+		"get approval for that scope change before proceeding",
 		"preserves an existing default",
 		"worklease profile show without a name",
 	} {
