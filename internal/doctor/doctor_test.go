@@ -135,7 +135,7 @@ func TestDiagnoseReportsPythonEraStateAndAuthorityIdentity(t *testing.T) {
 	}
 	checks := Diagnose(context.Background(), testConfig(home), home)
 	legacy := checkByID(checks, "state.python-era")
-	if legacy.Status != "warn" || !strings.Contains(legacy.Detail, "leases.sqlite3") || !strings.Contains(legacy.Hint, "recoverable disposal") {
+	if legacy.Status != "warn" || legacy.Detail != "Python-era state remains: context-leases, leases.sqlite3, locks, mcp-leases" || !strings.Contains(legacy.Hint, "recoverable disposal") {
 		t.Fatalf("legacy=%+v", legacy)
 	}
 	if strings.Contains(legacy.Detail, "legacy-secret") {
