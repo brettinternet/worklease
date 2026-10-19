@@ -197,7 +197,7 @@ func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Tim
 	}
 	if len(legacy) > 0 {
 		sort.Strings(legacy)
-		add("state.python-era", "warn", "Python-era state remains: "+joinNames(legacy), "dispose of it only with the documented recoverable disposal procedure; Go never reads it")
+		add("state.python-era", "warn", "Python-era state remains: "+strings.Join(legacy, ", "), "dispose of it only with the documented recoverable disposal procedure; Go never reads it")
 	} else {
 		add("state.python-era", "ok", "no Python-era state was detected", "")
 	}
@@ -207,15 +207,4 @@ func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Tim
 func ownedByCurrentUser(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && uint32(stat.Uid) == uint32(os.Geteuid())
-}
-
-func joinNames(names []string) string {
-	result := ""
-	for i, name := range names {
-		if i > 0 {
-			result += ", "
-		}
-		result += name
-	}
-	return result
 }
