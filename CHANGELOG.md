@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.3 - 2026-10-20
+
+### Security
+
+- Updated Go to 1.27.3 to fix GO-2026-6809, which distrusts compromised intermediate certificates in crypto/x509.
+
 ## 1.9.2 - 2026-10-16
 
 ### Changed
