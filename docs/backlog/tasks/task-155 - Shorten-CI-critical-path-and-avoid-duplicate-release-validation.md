@@ -1,11 +1,10 @@
 ---
 id: TASK-155
 title: Shorten CI critical path and avoid duplicate release validation
-status: In Progress
-assignee:
-  - '@pi'
+status: Done
+assignee: []
 created_date: '2026-10-21 01:56'
-updated_date: '2026-10-22 05:48'
+updated_date: '2026-10-22 05:49'
 labels:
   - ci
   - testing
@@ -31,10 +30,10 @@ Publishing v1.9.3 launched CI runs 39527899383 and 39527899273 for the same comm
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Independent quality gates and race partitions can execute on separate runners with visible timings; every existing test and gate remains required, and partitions have demonstrably complete coverage without multiplying full-suite execution.
-- [ ] #2 A branch and release-tag push for the same commit does not launch duplicate full CI suites; tag-only release attempts still obtain required validation, and publication fails closed unless the exact tagged commit passes all required gates.
-- [ ] #3 Go build-cache identity distinguishes toolchain versions as well as platform and dependencies, and evidence demonstrates a new toolchain can populate a reusable cache.
-- [ ] #4 Record comparable before/after CI critical-path and runner-minute measurements, showing reduced release wait without reintroducing resource-contention failures; verify both ordinary CI and the release-gating path.
+- [x] #1 Independent quality gates and race partitions can execute on separate runners with visible timings; every existing test and gate remains required, and partitions have demonstrably complete coverage without multiplying full-suite execution.
+- [x] #2 A branch and release-tag push for the same commit does not launch duplicate full CI suites; tag-only release attempts still obtain required validation, and publication fails closed unless the exact tagged commit passes all required gates.
+- [x] #3 Go build-cache identity distinguishes toolchain versions as well as platform and dependencies, and evidence demonstrates a new toolchain can populate a reusable cache.
+- [x] #4 Record comparable before/after CI critical-path and runner-minute measurements, showing reduced release wait without reintroducing resource-contention failures; verify both ordinary CI and the release-gating path.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -84,4 +83,12 @@ Release paths: fallback 39728503358 / 1 succeeded in 506s wall / 1684 summed job
 Release wait interpretation: warm old CI already finishes before typical archive/container readiness, so do not claim a positive warm release-wait reduction from zero. With the measured 246s archive/container readiness from the fallback run and simultaneous starts, the measured colder CI durations imply remaining CI wait falls from 177s to 50s (127s less); this is a matched-schedule estimate, not a separately observed before-release run. The live reuse retry deliberately starts while CI is running and demonstrates actual bounded waiting and no duplicate validation. Branch+tag no longer duplicates CI because only main pushes/PRs/explicit dispatch trigger CI; tag-only releases obtain the same reusable gates.
 
 Single focused independent review found no concrete defects; all local checks and hooks passed. No implementation corrections or extra general review passes were needed. Live evidence URLs: https://github.com/brettinternet/worklease/actions/runs/39728926141/attempts/3 ; https://github.com/brettinternet/worklease/actions/runs/39728503358 ; https://github.com/brettinternet/worklease/actions/runs/39728952024/attempts/2 .
+
+Delivery complete: implementation 12bbe49 integrated into local main by merge dbf256b after evidence commit 041ff2d. Post-merge actionlint, lint, format-check, typecheck, and package tests passed; workflow/race-script/mise files match the exact live-tested implementation SHA. Verified receipt and Worktrunk listing, inspected exact Herdr workspace wJ6 (one idle zsh pane), then removed owned task-155 checkout and local branch with wt remove --foreground. Post-remove hook closed wJ6; subsequent workspace/worktree listings confirm it disappeared. No owned checkout or workspace remains. Remote origin/task-155 is intentionally retained: remote-branch deletion is prohibited by the applicable instructions. Main was not pushed; no tag, publication, or PR was created. No remaining blocker or resumable item-scoped work; task claim released by terminal status and clearing assignee.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Split all required gates across isolated runners; exhaustive CLI/rest race partitions preserve full coverage. CI no longer runs on release tags; releases reuse exact-SHA CI or run the same required validation for tag-only commits, rejecting cancelled/failed CI. Toolchain/platform/gate-aware caches were populated and all nine restored live. Comparable post-queue-removal warm CI improved 177s to 132s (25%) at 6.73 to 6.63 unrounded runner-minutes; colder CI 423s to 296s at essentially equal aggregate time. Recorded actual release fallback/reuse and fail-closed evidence, plus explicitly labeled release-wait estimates. Local checks, full race/e2e, live CI, both release dry-run paths, and focused review passed. Merged locally as dbf256b; owned worktree/local branch/workspace removed. Main unpushed; remote task branch retained.
+<!-- SECTION:FINAL_SUMMARY:END -->
