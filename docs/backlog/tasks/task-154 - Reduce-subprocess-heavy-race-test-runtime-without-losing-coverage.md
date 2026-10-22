@@ -1,11 +1,10 @@
 ---
 id: TASK-154
 title: Reduce subprocess-heavy race test runtime without losing coverage
-status: In Progress
-assignee:
-  - '@pi'
+status: Done
+assignee: []
 created_date: '2026-10-21 01:56'
-updated_date: '2026-10-22 05:11'
+updated_date: '2026-10-22 05:19'
 labels:
   - testing
   - ci
@@ -32,7 +31,7 @@ The v1.9.3 release exposed a longstanding CI bottleneck. Successful CI run 39329
 <!-- AC:BEGIN -->
 - [x] #1 Record repeatable per-test and package race timings with provider tests enabled, distinguishing test execution, subprocess overhead, and build time; identify measured dominant causes.
 - [x] #2 Reduce the measured dominant test overhead and record before/after timings on equivalent runner resources, including total CPU or runner time rather than only sharded wall time.
-- [ ] #3 All existing behavioral and provider coverage remains exercised; changed process helpers retain bounded cleanup and surface race failures, verified by focused repeated race tests and a successful full CI run.
+- [x] #3 All existing behavioral and provider coverage remains exercised; changed process helpers retain bounded cleanup and surface race failures, verified by focused repeated race tests and a successful full CI run.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -56,4 +55,12 @@ Package seconds before -> after2: CLI47.594->31.519; guard10.277->6.186; lease10
 Validation: full lint, format-check (fixed gofmt alignment then reran successfully), typecheck, normal tests, race task, e2e (local/remote shipped binaries and doc examples), vulnerability scan, staged hooks all passed. Focused changed profile tests and all process-helper tests passed -race -count=3. New race-only regression verifies deliberate unordered child writes still emit WARNING: DATA RACE and preserve configured nonzero exitcode77 even after os.Exit(0). Production process helper and its process-group cleanup/timeouts unchanged. Direct one-pass risk review found no defects; optional independent reviewer launch was rejected by configured model scope, so no reviewer result is claimed. User explicitly authorized push main after local merge to obtain full CI; criterion3 remains pending until that succeeds.
 
 Implementation committed as c856d73 (Remove race-test process exit delays) in session-owned worktree, fast-forward merged to main. Full CI pending on push; then record run evidence and mark Done. Owned checkout receipt: .git/worktrees/task-154/agent-creation.json, session01a161f2-0ba8-7288-ae92-fa592b87c826, loopc1e7ab2c-e80b-4cb7-b494-91c34b6a286f; checkout /Users/brett/dev/me/worklease/.worktrees/task-154; branch task-154; creationb4c93f968a47189970d91f1117eb957d8482553f.
+
+Full CI passed: https://github.com/brettinternet/worklease/actions/runs/39726608192, exact commit f9b0f08415eeebeeda2d1ed9ece616e37fcc8f25 (includes implementation c856d73362c281a0c2229ad8a6263061d86773c1). Quality linux-x64 and compatibility linux-arm64, macos-x64, macos-arm64 all succeeded. Linux quality job completed in 6m23s including full quality gates, race tests, shipped-binary/remote/documentation smoke and generated-manual validation; this is not an equivalent-runner before/after comparison to pre-queue CI. All acceptance criteria satisfied. Session-owned task-154 checkout and branch removed together by wt remove --foreground; only primary checkout remains. Herdr workspace listing confirms no workspace for the removed checkout; workbench plugin was unavailable, so verified via Herdr CLI. No retained implementation checkout/workspace or remaining blocker.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Removed race-runtime exit sleeps from the race task while retaining caller GORACE options, instrumentation, and failure exits. Added a deliberate child-race regression and isolated two profile fixtures from linked-worktree binding differences. Equivalent local full-suite measurements improved from128.3s to72.5–74.5s (42–43.5% less runner time), with unchanged913 passing test/subtest identities and essentially unchanged CPU usage. Focused repeated race checks, full local gates, and all four platform jobs in CI39726608192 passed. Committed as c856d73, merged and pushed to main; owned worktree/branch cleaned up.
+<!-- SECTION:FINAL_SUMMARY:END -->
