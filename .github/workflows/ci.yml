@@ -4,8 +4,8 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,70 +15,5 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Quality (linux-x64)
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install mise
-        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-        with:
-          cache: true
-      - name: Cache Go dependencies and builds
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
-          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
-      # Exercise the hook on one file; `mise run ci` below runs the full suite.
-      - name: Install and exercise repository hooks
-        run: |
-          mise run hooks-install
-          lefthook validate
-          lefthook run pre-commit --file cmd/worklease/main.go
-      - name: Run quality gates, race tests, and end-to-end smoke
-        run: mise run ci
-      - name: Validate generated manual
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes groff-base
-          groff -mandoc -Tutf8 dist/worklease.1 >/dev/null
-
-  compatibility:
-    name: Test (${{ matrix.platform }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04-arm
-            platform: linux-arm64
-          - os: macos-15-intel
-            platform: macos-x64
-          - os: macos-14
-            platform: macos-arm64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install mise
-        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
-        with:
-          cache: true
-      - name: Cache Go dependencies and builds
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-            ~/Library/Caches/go-build
-          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
-          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
-      - name: Run platform tests and static build
-        run: |
-          go test -p 1 -parallel 2 ./...
-          mise run build
+  validation:
+    uses: ./.github/workflows/validate.yml

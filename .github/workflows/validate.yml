@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Required validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: ${{ matrix.gate }} (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x64, gate: static }
+          - { os: ubuntu-latest, platform: linux-x64, gate: test }
+          - { os: ubuntu-24.04-arm, platform: linux-arm64, gate: test }
+          - { os: macos-15-intel, platform: macos-x64, gate: test }
+          - { os: macos-14, platform: macos-arm64, gate: test }
+          - { os: ubuntu-latest, platform: linux-x64, gate: race-cli }
+          - { os: ubuntu-latest, platform: linux-x64, gate: race-rest }
+          - { os: ubuntu-latest, platform: linux-x64, gate: vuln }
+          - { os: ubuntu-latest, platform: linux-x64, gate: e2e }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          cache: true
+      - name: Resolve Go toolchain
+        id: go
+        run: echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: Cache Go dependencies and builds
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/Library/Caches/go-build
+          # A gate-specific cache avoids a small/fast gate winning the immutable
+          # cache save race and preventing the larger race cache from persisting.
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.version }}-${{ matrix.gate }}-${{ hashFiles('go.sum') }}
+          restore-keys: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.version }}-${{ matrix.gate }}-
+      - name: Static quality gates and repository hooks
+        if: matrix.gate == 'static'
+        run: |
+          mise run format-check
+          mise run lint
+          mise run typecheck
+          mise run hooks-install
+          lefthook validate
+          lefthook run pre-commit --file cmd/worklease/main.go
+      - name: Platform tests and static build
+        if: matrix.gate == 'test'
+        run: |
+          mise run test
+          mise run build
+      - name: Race partition
+        if: startsWith(matrix.gate, 'race-')
+        env:
+          PARTITION: ${{ matrix.gate }}
+        run: scripts/test-race.sh "$PARTITION"
+      - name: Vulnerability scan
+        if: matrix.gate == 'vuln'
+        run: mise run vuln
+      - name: End-to-end smoke and manual
+        if: matrix.gate == 'e2e'
+        run: |
+          mise run e2e
+          mise run man
+          sudo apt-get update
+          sudo apt-get install --yes groff-base
+          groff -mandoc -Tutf8 dist/worklease.1 >/dev/null
