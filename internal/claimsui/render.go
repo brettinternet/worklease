@@ -126,97 +126,28 @@ func hit(spans []span, x int) (int, bool) {
 	return 0, false
 }
 
-type tabItem struct {
-	label, suffix string
-	suffixStyle   lipgloss.Style
-}
-
-func tabCellWidth(item tabItem) int {
-	n := ansi.StringWidth(item.label) + 2
-	if item.suffix != "" {
-		n += 1 + ansi.StringWidth(item.suffix)
-	}
-	return n
-}
-
-// tabBar renders tabs with the active one highlighted. When the tabs do not
-// fit, it shows a window around the active tab with clickable ‹ › markers.
-func (p *palette) tabBar(items []tabItem, active, width int) (string, []span) {
-	cell := tabCellWidth
-	total := func(lo, hi int) int {
-		n := 0
-		for i := lo; i <= hi; i++ {
-			n += cell(items[i]) + 1
-		}
-		n-- // no gap after the last tab
-		if lo > 0 {
-			n += 2
-		}
-		if hi < len(items)-1 {
-			n += 2
-		}
-		return n
-	}
-	if len(items) == 0 {
-		return "", nil
-	}
-	active = max(0, min(active, len(items)-1))
-	lo, hi := active, active
-	for grown := true; grown; {
-		grown = false
-		if hi+1 < len(items) && total(lo, hi+1) <= width {
-			hi++
-			grown = true
-		}
-		if lo > 0 && total(lo-1, hi) <= width {
-			lo--
-			grown = true
-		}
-	}
+// tabBar renders the claim's two detail sections, which fit at the minimum
+// supported terminal width, and shares their hit areas with mouse handling.
+func (p *palette) tabBar(labels []string, active int) (string, []span) {
 	var b strings.Builder
 	var spans []span
 	x := 0
-	if lo > 0 {
-		b.WriteString(p.faint.Render("‹ "))
-		spans = append(spans, span{0, 2, lo - 1})
-		x = 2
-	}
-	for i := lo; i <= hi; i++ {
-		item := items[i]
-		w := cell(item)
+	for i, label := range labels {
+		width := ansi.StringWidth(label) + 2
 		switch {
 		case i == active && plain():
-			text := item.label
-			if item.suffix != "" {
-				text += " " + item.suffix
-			}
-			b.WriteString("[" + text + "]")
+			b.WriteString("[" + label + "]")
 		case i == active:
-			text := " " + item.label
-			if item.suffix != "" {
-				text += " " + item.suffix
-			}
-			b.WriteString(p.activeTab.Render(text + " "))
+			b.WriteString(p.activeTab.Render(" " + label + " "))
 		default:
-			b.WriteString(" " + item.label)
-			if item.suffix != "" {
-				b.WriteString(" " + item.suffixStyle.Render(item.suffix))
-			}
-			b.WriteString(" ")
+			b.WriteString(" " + label + " ")
 		}
-		spans = append(spans, span{x, x + w, i})
+		spans = append(spans, span{x, x + width, i})
 		b.WriteByte(' ')
-		x += w + 1
-	}
-	if hi < len(items)-1 {
-		b.WriteString(p.faint.Render(" ›"))
-		spans = append(spans, span{x, x + 2, hi + 1})
+		x += width + 1
 	}
 	return b.String(), spans
 }
-
-// frame is the fixed chrome around the body. Mouse hit-testing uses the same
-// frame as rendering, so a click always maps to what is on screen.
 
 func spread(left, right []seg, width int) string {
 	for len(left) > 1 && segsWidth(left)+2+segsWidth(right) > width {
@@ -304,7 +235,6 @@ type column[T any] struct {
 	min, max int
 	width    int
 	flex     bool
-	alias    map[string]string
 	cell     func(T) (string, lipgloss.Style)
 }
 
@@ -374,13 +304,6 @@ func cellWidths[T any](cols []column[T], rows []T) map[string]int {
 	return widths
 }
 
-func (c column[T]) text(value string) string {
-	if alias, ok := c.alias[value]; ok && ansi.StringWidth(value) > c.width {
-		value = alias
-	}
-	return fit(value, c.width)
-}
-
 func tableHeader[T any](p *palette, cols []column[T]) string {
 	header := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -397,11 +320,11 @@ func tableRow[T any](p *palette, cols []column[T], row T, selected, muted bool, 
 		text, style := c.cell(row)
 		switch {
 		case selected:
-			cells = append(cells, c.text(text))
+			cells = append(cells, fit(text, c.width))
 		case muted:
-			cells = append(cells, p.faint.Render(c.text(text)))
+			cells = append(cells, p.faint.Render(fit(text, c.width)))
 		default:
-			cells = append(cells, style.Render(c.text(text)))
+			cells = append(cells, style.Render(fit(text, c.width)))
 		}
 	}
 	line := strings.Join(cells, strings.Repeat(" ", columnGap))
@@ -410,9 +333,6 @@ func tableRow[T any](p *palette, cols []column[T], row T, selected, muted bool, 
 	}
 	return "  " + line
 }
-
-// columns fits the claims list list columns to width. Fixed columns size to their
-// content up to a cap, so values stay whole as long as space allows.
 
 func splitBody(list, pane []string, listWidth, height int, separator string) []string {
 	out := make([]string, height)
@@ -442,9 +362,6 @@ func (p *palette) scrollWindow(content []string, offset, visible int) []string {
 	}
 	return shown
 }
-
-// itemActions lists the actions this claims list can take on the item, most
-// common first. Claiming is offered only for unclaimed, unfinished work.
 
 type dline struct {
 	label, text string

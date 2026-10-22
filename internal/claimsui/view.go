@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// frame is the fixed chrome shared by rendering and mouse hit-testing.
 type frame struct {
 	top, footer         []string
 	bodyTop, bodyHeight int

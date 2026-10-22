@@ -39,7 +39,8 @@ func (m Model) claimsMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 				if listWidth == 0 {
 					start = 1
 				}
-				if tab, ok := hit(m.claimDetailTabSpans(detailWidth-1), v.X-start); ok {
+				_, spans := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab)
+				if tab, ok := hit(spans, v.X-start); ok {
 					m.Claims.DetailTab = tab
 					m.Claims.DetailOffset = 0
 				}

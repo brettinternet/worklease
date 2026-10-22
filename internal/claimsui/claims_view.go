@@ -32,7 +32,7 @@ func (m Model) claimsBody(height int) []string {
 }
 
 // claimColumns lays out the authority-wide Claims table.
-func (m Model) claimColumns(rows, visible []lease.ClaimView, width int) []column[lease.ClaimView] {
+func (m Model) claimColumns(visible []lease.ClaimView, width int) []column[lease.ClaimView] {
 	now := m.claimsNow()
 	cols := []column[lease.ClaimView]{
 		{title: "Claimed", min: 16, flex: true, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
@@ -71,7 +71,7 @@ func (m Model) claimListLines(rows []lease.ClaimView, width, height int) []strin
 	capacity := max(0, height-1)
 	start := max(0, min(m.Claims.Offset, len(rows)-capacity))
 	visible := rows[start:min(len(rows), start+capacity)]
-	cols := m.claimColumns(rows, visible, width)
+	cols := m.claimColumns(visible, width)
 	lines := []string{tableHeader(m.s(), cols)}
 	now := m.claimsNow()
 	for index, claim := range visible {
@@ -230,12 +230,12 @@ func (m Model) claimDetailPane(claim lease.ClaimView, width, height int) []strin
 	if m.claimActionEligible(claim) && m.Claims.Mutate != nil {
 		actions = append(actions, binding{"u", "renew"}, binding{"R", "release"})
 	}
-	tabs, _ := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab, width-1)
+	tabs, _ := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab)
 	lines := []string{" " + title, " " + m.s().actionLine(actions, width-2), " " + tabs}
 	return append(lines, m.s().scrollWindow(m.claimDetailContent(claim, width), m.Claims.DetailOffset, height-len(lines))...)
 }
 
-var claimDetailTabs = []tabItem{{label: "Summary"}, {label: "History"}}
+var claimDetailTabs = []string{"Summary", "History"}
 
 func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 	plainStyle := lipgloss.NewStyle()
@@ -370,11 +370,6 @@ func (m Model) claimDetailMaxOffset(claim lease.ClaimView) int {
 	content := m.claimDetailContent(claim, width)
 	visible := max(1, m.frame().bodyHeight-detailChrome)
 	return max(0, len(content)-visible)
-}
-
-func (m Model) claimDetailTabSpans(width int) []span {
-	_, spans := m.s().tabBar(claimDetailTabs, m.Claims.DetailTab, width)
-	return spans
 }
 
 // claimFilters names the active Claims filters.

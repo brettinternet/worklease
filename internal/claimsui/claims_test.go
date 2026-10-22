@@ -53,15 +53,63 @@ func TestClaimsListScrollKeepsVisibleSelection(t *testing.T) {
 	}
 }
 
-func TestClaimsMouseReleaseDoesNotOpenDetail(t *testing.T) {
+func TestClaimsMouseMatchesRenderedRowsAndTabs(t *testing.T) {
 	t.Parallel()
-	m := New()
-	m.Claims.Items = []lease.ClaimView{{ClaimID: "claim"}}
-	m.anchorClaims(m.claimRows(), 10)
-	click := tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, X: 1, Y: m.frame().bodyTop + 1}
-	next, _ := m.Update(click)
-	if next.(Model).Claims.Detail {
-		t.Fatal("mouse release opened detail without a second press")
+	for _, width := range []int{30, 80, 120} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			t.Parallel()
+			m := New()
+			m.Width = width
+			m.Claims.PublicOnly = true
+			m.Claims.Items = []lease.ClaimView{{ClaimID: "claim", Resources: []string{"resource:one"}}}
+			m.anchorClaims(m.claimRows(), 10)
+			row := -1
+			for y, line := range strings.Split(ansi.Strip(m.View()), "\n") {
+				if strings.Contains(line, "resource:one") {
+					row = y
+					break
+				}
+			}
+			if row < 0 {
+				t.Fatal("claim row not rendered")
+			}
+			click := tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, X: 1, Y: row}
+			next, _ := m.Update(click)
+			m = next.(Model)
+			if m.Claims.Detail {
+				t.Fatal("mouse release opened detail without a second press")
+			}
+			click.Action = tea.MouseActionPress
+			next, _ = m.Update(click)
+			m = next.(Model)
+			if !m.Claims.Detail {
+				t.Fatal("clicking the rendered claim row did not open detail")
+			}
+			for _, label := range []string{"History", "Summary"} {
+				found := false
+				for y, line := range strings.Split(ansi.Strip(m.View()), "\n") {
+					x := strings.Index(line, label)
+					if x < 0 {
+						continue
+					}
+					found = true
+					click.X, click.Y = ansi.StringWidth(line[:x]), y
+					next, _ = m.Update(click)
+					m = next.(Model)
+					want := "Checkpoint"
+					if label == "History" {
+						want = "Remote authorities do not share claim history."
+					}
+					if view := screenText(m.View()); !strings.Contains(view, want) {
+						t.Fatalf("clicking %s did not show its content: %s", label, view)
+					}
+					break
+				}
+				if !found {
+					t.Fatalf("%s tab not rendered", label)
+				}
+			}
+		})
 	}
 }
 

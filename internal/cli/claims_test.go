@@ -20,7 +20,7 @@ func TestClaimsOnlyModelStartsOnAuthorityClaimsWithoutSetupNotice(t *testing.T) 
 	if !model.HighContrast || !model.Claims.Loading || model.Claims.Notice != "" {
 		t.Fatalf("claims-only model startup state=%+v", model.Claims)
 	}
-	if view := model.View(); !strings.Contains(view, "Claims") || !strings.Contains(view, "worklease acquire --path README.md") || !strings.Contains(view, "? for help") || !strings.Contains(view, "q to quit") {
+	if view := model.View(); !strings.Contains(view, "Claimed") || strings.Contains(view, "\nClaims\n") || !strings.Contains(view, "worklease acquire --path README.md") || !strings.Contains(view, "? for help") || !strings.Contains(view, "q to quit") {
 		t.Fatalf("claims-only startup should show claims guidance without a setup notice: %s", view)
 	}
 }
@@ -33,7 +33,7 @@ func TestBareInteractiveFreshHomeShowsClaimsWithoutState(t *testing.T) {
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
-	runBarePTY(t, "worklease acquire --path README.md", "? for help", "Claims")
+	runBarePTY(t, "worklease acquire --path README.md", "? for help", "Claimed")
 	for _, path := range []string{home, env["XDG_CONFIG_HOME"], env["XDG_STATE_HOME"]} {
 		entries, err := os.ReadDir(path)
 		if err != nil || len(entries) != 0 {

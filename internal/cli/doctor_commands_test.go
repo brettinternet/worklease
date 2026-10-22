@@ -79,7 +79,7 @@ func TestLegacyArtifactsDoNotAffectClaims(t *testing.T) {
 			t.Fatalf("doctor omitted cleanup path %s: %s", path, data)
 		}
 	}
-	runBarePTY(t, "coordination:legacy", "Claims")
+	runBarePTY(t, "coordination:legacy", "Claimed")
 	run("release")
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
