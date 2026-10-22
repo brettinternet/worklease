@@ -454,6 +454,11 @@ func checkExistingPath(path, kind string) error {
 		if uint32(stat.Uid) != uint32(os.Geteuid()) {
 			return fmt.Errorf("unsafe %s path %q: owner differs from effective user", kind, path)
 		}
+		// SQLite can unlink a sidecar while lstat is inspecting it. A zero
+		// link count means it disappeared, not that it has extra hard links.
+		if stat.Nlink == 0 {
+			return &os.PathError{Op: "lstat", Path: path, Err: syscall.ENOENT}
+		}
 		if stat.Nlink != 1 {
 			return fmt.Errorf("unsafe %s path %q: hard links are not allowed", kind, path)
 		}
