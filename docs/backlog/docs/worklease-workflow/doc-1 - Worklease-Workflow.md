@@ -3,7 +3,7 @@ id: doc-1
 title: Worklease Workflow
 type: guide
 created_date: '2026-07-13 19:42'
-updated_date: '2026-09-27 00:46'
+updated_date: '2026-10-22 03:09'
 tags:
   - agent
   - workflow
@@ -63,8 +63,7 @@ worklease checkpoint --session "$SESSION" --data '{"phase":"verified"}'
 worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
-Inside a supervised `worklease run` (`WORKLEASE_RUN_ID` is set, as for queue
-launch actions), the run already holds and renews the claim over the handed-off
+Inside a supervised `worklease run` (`WORKLEASE_RUN_ID` is set), the run already holds and renews the claim over the handed-off
 resources and releases it when the worker exits. Skip acquire, heartbeat, and
 release; use the inherited `WORKLEASE_SESSION_ID` and `WORKLEASE_HANDLE` for
 verify and checkpoint. Before exiting, report the outcome by writing
