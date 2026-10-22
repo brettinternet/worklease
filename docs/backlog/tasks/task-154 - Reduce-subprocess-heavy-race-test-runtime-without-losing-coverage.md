@@ -4,10 +4,11 @@ title: Reduce subprocess-heavy race test runtime without losing coverage
 status: Done
 assignee: []
 created_date: '2026-10-21 01:56'
-updated_date: '2026-10-22 05:19'
+updated_date: '2026-10-22 07:09'
 labels:
   - testing
   - ci
+  - reviewed
 dependencies:
   - TASK-156
 references:
@@ -57,6 +58,8 @@ Validation: full lint, format-check (fixed gofmt alignment then reran successful
 Implementation committed as c856d73 (Remove race-test process exit delays) in session-owned worktree, fast-forward merged to main. Full CI pending on push; then record run evidence and mark Done. Owned checkout receipt: .git/worktrees/task-154/agent-creation.json, session01a161f2-0ba8-7288-ae92-fa592b87c826, loopc1e7ab2c-e80b-4cb7-b494-91c34b6a286f; checkout /Users/brett/dev/me/worklease/.worktrees/task-154; branch task-154; creationb4c93f968a47189970d91f1117eb957d8482553f.
 
 Full CI passed: https://github.com/brettinternet/worklease/actions/runs/39726608192, exact commit f9b0f08415eeebeeda2d1ed9ece616e37fcc8f25 (includes implementation c856d73362c281a0c2229ad8a6263061d86773c1). Quality linux-x64 and compatibility linux-arm64, macos-x64, macos-arm64 all succeeded. Linux quality job completed in 6m23s including full quality gates, race tests, shipped-binary/remote/documentation smoke and generated-manual validation; this is not an equivalent-runner before/after comparison to pre-queue CI. All acceptance criteria satisfied. Session-owned task-154 checkout and branch removed together by wt remove --foreground; only primary checkout remains. Herdr workspace listing confirms no workspace for the removed checkout; workbench plugin was unavailable, so verified via Herdr CLI. No retained implementation checkout/workspace or remaining blocker.
+
+Review 2026-10-22: no issues. Race regression and isolated profile tests pass go test -race -count=3; race partition lists cover all 29 packages (1 cli + 28 rest).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

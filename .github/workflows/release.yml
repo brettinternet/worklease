@@ -187,7 +187,9 @@ jobs:
 
   publish:
     name: Publish immutable release assets
-    if: github.event_name == 'push'
+    # On the reuse path the skipped tag-only validation is an ancestor, and an
+    # implicit success() would skip publication; gate on release-gate instead.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.release-gate.result == 'success' }}
     needs: [go-assets, release-gate]
     runs-on: ubuntu-latest
     permissions:
@@ -228,7 +230,7 @@ jobs:
 
   publish-container:
     name: Publish immutable multi-platform container
-    if: github.event_name == 'push'
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.release-gate.result == 'success' }}
     needs: [go-assets, release-gate]
     runs-on: ubuntu-latest
     permissions:

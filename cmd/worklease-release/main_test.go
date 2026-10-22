@@ -42,7 +42,7 @@ func TestReleaseWorkflowValidatesAndPublishesContainer(t *testing.T) {
 		"arch: amd64",
 		"arch: arm64",
 		"scripts/test-container-image.sh",
-		"if: github.event_name == 'push'",
+		"if: ${{ !cancelled() && github.event_name == 'push' && needs.release-gate.result == 'success' }}",
 		"ghcr.io/brettinternet/worklease",
 		"--platform linux/amd64,linux/arm64",
 		"docker buildx imagetools inspect",

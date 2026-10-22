@@ -4,11 +4,12 @@ title: Shorten CI critical path and avoid duplicate release validation
 status: Done
 assignee: []
 created_date: '2026-10-21 01:56'
-updated_date: '2026-10-22 05:49'
+updated_date: '2026-10-22 07:09'
 labels:
   - ci
   - testing
   - release
+  - reviewed
 dependencies:
   - TASK-156
 references:
@@ -85,6 +86,8 @@ Release wait interpretation: warm old CI already finishes before typical archive
 Single focused independent review found no concrete defects; all local checks and hooks passed. No implementation corrections or extra general review passes were needed. Live evidence URLs: https://github.com/brettinternet/worklease/actions/runs/39728926141/attempts/3 ; https://github.com/brettinternet/worklease/actions/runs/39728503358 ; https://github.com/brettinternet/worklease/actions/runs/39728952024/attempts/2 .
 
 Delivery complete: implementation 12bbe49 integrated into local main by merge dbf256b after evidence commit 041ff2d. Post-merge actionlint, lint, format-check, typecheck, and package tests passed; workflow/race-script/mise files match the exact live-tested implementation SHA. Verified receipt and Worktrunk listing, inspected exact Herdr workspace wJ6 (one idle zsh pane), then removed owned task-155 checkout and local branch with wt remove --foreground. Post-remove hook closed wJ6; subsequent workspace/worktree listings confirm it disappeared. No owned checkout or workspace remains. Remote origin/task-155 is intentionally retained: remote-branch deletion is prohibited by the applicable instructions. Main was not pushed; no tag, publication, or PR was created. No remaining blocker or resumable item-scoped work; task claim released by terminal status and clearing assignee.
+
+Review 2026-10-22: fixed two release-path gaps not exercised by the dispatch dry runs. (1) publish and publish-container used an implicit success() while tag-only validation is a skipped ancestor on the reuse path, which GitHub propagates as a skip; they now gate on !cancelled() && push && release-gate success. (2) CI concurrency grouped main pushes by ref with cancel-in-progress, so a later main push could cancel the tagged commit's CI and fail the release; only PR runs now share a group. actionlint and go test ./cmd/worklease-release pass.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
