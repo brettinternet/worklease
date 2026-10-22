@@ -4,7 +4,7 @@ title: 'Work queue S8: evidence-driven additions intake'
 status: Done
 assignee: []
 created_date: '2026-09-23 04:29'
-updated_date: '2026-09-25 23:07'
+updated_date: '2026-10-22 01:23'
 labels:
   - work-queue
   - reviewed
@@ -12,7 +12,6 @@ milestone: m-1
 dependencies: []
 references:
   - TASK-142
-  - TASK-139
   - TASK-141
   - TASK-140
 documentation:

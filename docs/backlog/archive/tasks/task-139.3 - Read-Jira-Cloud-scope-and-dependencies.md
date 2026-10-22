@@ -4,6 +4,7 @@ title: Read Jira Cloud scope and dependencies
 status: To Do
 assignee: []
 created_date: '2026-09-27 00:02'
+updated_date: '2026-10-22 01:23'
 labels: []
 dependencies:
   - TASK-139.1
@@ -25,3 +26,12 @@ Jira sites configure workflows, link names and visibility differently; use obser
 - [ ] #2 Principal matches configured account on credential change; token is not persisted or emitted in logs or errors, and hard links require configured types
 - [ ] #3 Shared adapter conformance and focused tests cover interrupted pagination, permission loss, project moves, redaction and non-success resolution
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-10-22 01:23
+---
+Superseded on 2026-10-21: the work queue leaves Worklease (TASK-156). Jira Cloud support moves to bl as BL-40 (probe, owner-gated) and BL-41 (adapter) in github.com/brettinternet/backlog.
+---
+<!-- COMMENTS:END -->

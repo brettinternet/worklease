@@ -4,7 +4,7 @@ title: Add a built-in Jira Cloud source adapter with API-token auth
 status: To Do
 assignee: []
 created_date: '2026-09-25 16:21'
-updated_date: '2026-09-27 00:02'
+updated_date: '2026-10-22 01:23'
 labels:
   - work-queue
   - deferred
@@ -64,3 +64,12 @@ Selected after TASK-143 and all five children were confirmed Done and merged. Cr
 
 Blocked after planning: no Jira Cloud test project is available (explicit user answer). Resume at TASK-139.1 only after the user supplies an approved Jira Cloud site URL, disposable project key(s) permitting issue creation, linking, movement, transitions and deletion, a test accountId and a private credential helper for an API token with sufficient scopes. Never request the token in chat or create synthetic issues outside that approved scope. No adapter code, live probe, gates or acceptance checks were performed; TASK-139.1–139.6 record the ordered implementation handoff. Keep parent To Do and unassigned until access is supplied.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-10-22 01:23
+---
+Superseded on 2026-10-21: the work queue leaves Worklease (TASK-156). Jira Cloud support moves to bl as BL-40 (probe, owner-gated) and BL-41 (adapter) in github.com/brettinternet/backlog.
+---
+<!-- COMMENTS:END -->

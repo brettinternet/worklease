@@ -4,11 +4,13 @@ title: Shorten CI critical path and avoid duplicate release validation
 status: To Do
 assignee: []
 created_date: '2026-10-21 01:56'
+updated_date: '2026-10-22 01:23'
 labels:
   - ci
   - testing
   - release
-dependencies: []
+dependencies:
+  - TASK-156
 references:
   - .github/workflows/ci.yml
   - .github/workflows/release.yml
@@ -33,3 +35,9 @@ Publishing v1.9.3 launched CI runs 39527899383 and 39527899273 for the same comm
 - [ ] #3 Go build-cache identity distinguishes toolchain versions as well as platform and dependencies, and evidence demonstrates a new toolchain can populate a reusable cache.
 - [ ] #4 Record comparable before/after CI critical-path and runner-minute measurements, showing reduced release wait without reintroducing resource-contention failures; verify both ordinary CI and the release-gating path.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-21: Take before and after measurements on a tree where TASK-156 has removed the queue, so the comparison reflects the workflow changes and not the deleted suites.
+<!-- SECTION:NOTES:END -->

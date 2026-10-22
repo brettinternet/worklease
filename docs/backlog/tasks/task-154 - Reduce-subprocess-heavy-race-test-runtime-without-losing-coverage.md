@@ -4,10 +4,12 @@ title: Reduce subprocess-heavy race test runtime without losing coverage
 status: To Do
 assignee: []
 created_date: '2026-10-21 01:56'
+updated_date: '2026-10-22 01:23'
 labels:
   - testing
   - ci
-dependencies: []
+dependencies:
+  - TASK-156
 references:
   - 'https://github.com/brettinternet/worklease/actions/runs/39329277019'
   - internal/testkit
@@ -31,3 +33,9 @@ The v1.9.3 release exposed a longstanding CI bottleneck. Successful CI run 39329
 - [ ] #2 Reduce the measured dominant test overhead and record before/after timings on equivalent runner resources, including total CPU or runner time rather than only sharded wall time.
 - [ ] #3 All existing behavioral and provider coverage remains exercised; changed process helpers retain bounded cleanup and surface race failures, verified by focused repeated race tests and a successful full CI run.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-21: The measured dominant costs (CLI TestQueue cases at 487 s and internal/queue at 286 s of race time) disappear with TASK-156. Re-measure after it lands, then target what remains. If the race job is no longer a material bottleneck, record the measurement and close this task with that evidence.
+<!-- SECTION:NOTES:END -->
