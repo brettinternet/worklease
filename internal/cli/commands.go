@@ -162,10 +162,10 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	usageText(checkpointCommand, "worklease checkpoint (--data JSON | --data-file FILE) [selection]")
 	detail(checkpointCommand, "Persist bounded JSON recovery metadata with the selected claim and renew it in the same transaction. Supply exactly one --data JSON or --data-file FILE; if no claim is selected, acquire one first.\n\n"+selectionHelp)
 
-	releaseCommand := jsonless("release", "release the contextual claim", "worklease release\n  worklease release --reason done", append(mutate(), &urfavecli.StringFlag{Name: "reason", Aliases: []string{"m"}, Usage: "release `REASON` recorded in history", DefaultText: "released"})...)
+	releaseCommand := jsonless("release", "release the contextual claim", "worklease release\n  worklease release --reason done", append(mutate(), &urfavecli.StringFlag{Name: "reason", Aliases: []string{"m"}, Usage: "release `REASON` recorded in history", DefaultText: "released"}, &urfavecli.StringFlag{Name: "if-claim-id", Usage: "refuse release unless selected credentials belong to claim `ID`"})...)
 	releaseCommand.Action = releaseActionReal(s)
-	usageText(releaseCommand, "worklease release [--reason REASON] [selection]")
-	detail(releaseCommand, "End the selected claim so other agents can acquire its resources.\n\n"+selectionHelp)
+	usageText(releaseCommand, "worklease release [--reason REASON] [--if-claim-id ID] [selection]")
+	detail(releaseCommand, "End the selected claim so other agents can acquire its resources. --if-claim-id binds release to a previously inspected claim: a changed contextual handle refuses with stale-claim before any mutation. It is a condition, not a credential source.\n\n"+selectionHelp)
 
 	transferCommand := jsonless("transfer", "transfer a claim", "worklease transfer --successor-handle PATH --to-agent AGENT --to-session SESSION", append(mutate(), flag("to-agent"), flag("to-session"), flag("to-work-key"), flag("successor-handle"))...)
 	transferCommand.Action = transferActionReal(s)

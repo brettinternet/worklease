@@ -662,6 +662,48 @@ func TestContextualDefaultRunsCompleteLifecycle(t *testing.T) {
 	run("release", "--json", "--home", home, "--operation-id", strings.Repeat("3", 32))
 }
 
+// A caller may inspect claim A, then another request replaces the session's
+// handle with claim B. A conditional release must never mutate B.
+func TestConditionalReleasePreservesReplacementClaim(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := Run(context.Background(), append([]string{"worklease", "--json", "--home", home}, args...), "dev", "unknown", "unknown", &out, &bytes.Buffer{})
+		return out.String(), err
+	}
+	acquire := func(resource string) string {
+		t.Helper()
+		out, err := run("acquire", "--resource", resource, "--session", "caller")
+		var result struct {
+			ClaimID string `json:"claimId"`
+		}
+		if err != nil || json.Unmarshal([]byte(out), &result) != nil || result.ClaimID == "" {
+			t.Fatalf("acquire: %v %s", err, out)
+		}
+		return result.ClaimID
+	}
+	old := acquire("item-a")
+	if out, err := run("release", "--session", "caller"); err != nil {
+		t.Fatalf("release old: %v %s", err, out)
+	}
+	replacement := acquire("item-b")
+	out, err := run("release", "--session", "caller", "--if-claim-id", old)
+	if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonStaleClaim {
+		t.Fatalf("release must reject replaced handle: %v %s", err, out)
+	}
+	out, err = run("verify", "--session", "caller", "--resource", "item-b")
+	if err != nil || !strings.Contains(out, replacement) {
+		t.Fatalf("replacement was changed: %v %s", err, out)
+	}
+	if out, err := run("release", "--session", "caller", "--if-claim-id", replacement); err != nil {
+		t.Fatalf("matching release: %v %s", err, out)
+	}
+	if out, err := run("verify", "--session", "caller"); err == nil {
+		t.Fatalf("matching claim was not released: %s", out)
+	}
+}
+
 func TestAcquireTextPreservesUnresolvedPredecessorRecoveryIDs(t *testing.T) {
 	home := t.TempDir()
 	st, err := store.Open(context.Background(), home, store.Options{})

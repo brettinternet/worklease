@@ -122,6 +122,12 @@ Task discovery and provider writes belong to the caller's task manager.
 
 Use `--session NAME` for each concurrent loop.
 
+When releasing a claim inspected earlier, pass `release --if-claim-id ID`.
+Worklease compares the selected credentials with that exact claim ID before any
+mutation, while holding the local handle lock. A replaced contextual handle
+fails with `stale-claim`; the replacement claim and handle remain untouched.
+The condition is not a credential source and cannot authorize a release.
+
 Without an explicit handle, Worklease selects an authority-bound contextual
 handle by Git worktree root (or resolved current directory), contextual handle
 selector, and authority ID. The selector resolves from `--session`, then

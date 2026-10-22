@@ -993,6 +993,10 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 }
 func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error {
 	return func(ctx context.Context, cmd *urfave.Command) error {
+		expected := cmd.String("if-claim-id")
+		if cmd.IsSet("if-claim-id") && !validHexID(expected) {
+			return s.handle(cmd, reason.Invalid("if-claim-id must be 32 lowercase hex characters"))
+		}
 		c, svc, st, lk, h, hp, err := credsCLI(ctx, cmd)
 		if err != nil {
 			return s.handle(cmd, err)
@@ -1003,6 +1007,12 @@ func releaseActionReal(s *boundary) func(context.Context, *urfave.Command) error
 				lk.Close()
 			}
 		}()
+		// Local selection holds the handle lock until release completes. Remote
+		// mutations carry these exact credentials and validate retained handles.
+		// Never reselect a mutable contextual handle after checking this guard.
+		if expected != "" && c.ClaimID != expected {
+			return s.handle(cmd, reason.New(reason.ReasonStaleClaim, "selected claim differs from if-claim-id"))
+		}
 		if h != nil && h.RecoveryRequest != nil {
 			return s.handle(cmd, reason.New(reason.ReasonHandleInUse, "pending recovery requires reconciliation"))
 		}
