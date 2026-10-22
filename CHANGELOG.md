@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.10.0 - 2026-10-22
+
 ### Breaking
 
 - Remove `worklease queue` (`q`), its provider adapters, launches, recovery,
