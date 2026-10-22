@@ -64,7 +64,7 @@ Keep four independent freshness/concurrency values distinct: Worklease claim
 revision, provider version, provider update timestamp, and synchronization
 cursor. A read ETag or timestamp never implies conditional-write capability.
 
-## Queue-facing read semantics
+## Caller-owned read semantics
 
 Operation names below are illustrative, not a wire protocol. Equivalent
 interfaces are valid when they preserve the same observable guarantees.

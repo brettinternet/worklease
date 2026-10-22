@@ -23,7 +23,7 @@ observations do not imply write authorization beyond the named operation.
 | Discovery | Supported: complete project list in one call, no cursor, exact observed total. |
 | Dependencies | Supported: intra-project edges from task views; per-item closure; Backlog-reported `isReady` retained as provider evidence, not generic scheduling. |
 | State | Supported when caller maps configured project statuses and blockers to normalized state. |
-| Progress | Supported: append notes or comments; criterion-index mutation exists but is initially disabled by queue policy. |
+| Progress | Supported: append notes or comments; criterion-index mutation requires explicit caller authorization. |
 | Assignment | Supported: multiple assignees; CLI edit replaces the full list, requiring read-modify-write. |
 | Native claims | Unsupported: not exposed. |
 | Mutation | Supported only as unconditional CLI edits; no provider compare-and-set or conditional write. Permission and availability remain caller/project-specific. |
@@ -42,7 +42,7 @@ worklease key --provider backlog-md --source "$backlog_directory" --item "$task_
 ```
 
 When the project declares a D12 portable binding, use exactly its agreed source
-name instead; adopting it migrates every CLI, skill, and queue caller together:
+name instead; adopting it migrates every CLI and skill caller together:
 
 ```sh
 worklease key --provider generic --source "$binding_source" --item "$task_id"

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
@@ -108,6 +109,12 @@ func detachRun(s *boundary, cmd *urfave.Command, dir string) error {
 		return reason.New(code, record.Error).With("runId", id)
 	}
 	return writeRunResult(s, cmd, "run", record)
+}
+
+type acquirePinKey struct{}
+type acquirePin struct {
+	authorityID string
+	profile     *config.Profile
 }
 
 type runSupervisor struct {
@@ -273,7 +280,7 @@ func (sv *runSupervisor) acquire(ctx context.Context, id, dir string, resources 
 	for _, key := range resources {
 		args = append(args, "--resource", key)
 	}
-	pinned := context.WithValue(ctx, queueAcquirePinKey{}, queueAcquirePin{authorityID: authorityID, profile: profile})
+	pinned := context.WithValue(ctx, acquirePinKey{}, acquirePin{authorityID: authorityID, profile: profile})
 	grant, err := sv.lifecycle(pinned, args...)
 	if err != nil {
 		return nil, err
@@ -470,7 +477,7 @@ func (sv *runSupervisor) releasedByWorker() bool {
 }
 
 // endClaim releases the run's claim, or keeps it when the claim has
-// unresolved guarded operations or queue provider writes.
+// unresolved guarded operations.
 func (sv *runSupervisor) endClaim(ctx context.Context, releaseReason string) {
 	record := sv.snapshot()
 	if record.Claim == nil || record.Claim.State != runs.ClaimHeld || sv.releasedByWorker() {
@@ -485,20 +492,6 @@ func (sv *runSupervisor) endClaim(ctx context.Context, releaseReason string) {
 		keep = "verify failed: " + err.Error()
 	} else if unknown, _ := fields["unknownOperations"].([]any); len(unknown) > 0 {
 		keep = fmt.Sprintf("%d unresolved guarded operation(s); inspect with worklease op inspect", len(unknown))
-	}
-	if keep == "" {
-		if journal, err := queueRecoveryJournal(); err == nil {
-			entries, err := journal.Recovery(time.Now())
-			for _, entry := range entries {
-				if entry.ClaimID == record.Claim.ClaimID {
-					keep = "unresolved queue provider write " + entry.OperationID + "; see worklease queue recovery"
-					break
-				}
-			}
-			if err != nil {
-				keep = "queue recovery state is unreadable: " + err.Error()
-			}
-		}
 	}
 	if keep != "" {
 		_ = sv.update(func(r *runs.Record) { r.Claim.State, r.Claim.Detail = runs.ClaimKept, keep })

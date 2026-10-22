@@ -16,10 +16,78 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 
 	"github.com/brettinternet/worklease/internal/output"
 	"github.com/brettinternet/worklease/internal/reason"
 )
+
+func TestLegacyArtifactsDoNotAffectClaims(t *testing.T) {
+	if testkit.RunIsolatedTest(t) {
+		return
+	}
+	home, env := testkit.Home(t)
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
+	checkout := t.TempDir()
+	t.Chdir(checkout)
+	paths := []string{
+		filepath.Join(env["XDG_CONFIG_HOME"], "worklease", "queue.yaml"),
+		filepath.Join(checkout, ".config", "worklease", "queue-sources.yaml"),
+		filepath.Join(env["XDG_CACHE_HOME"], "worklease", "queue", "index.sqlite"),
+		filepath.Join(env["XDG_STATE_HOME"], "worklease", "queue-recovery", "invalid.json"),
+		filepath.Join(home, "queue-handles", "invalid.json"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("invalid legacy data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(args ...string) []byte {
+		t.Helper()
+		var out, stderr bytes.Buffer
+		argv := append([]string{"worklease", "--json", "--local"}, args...)
+		if err := Run(context.Background(), argv, "test", "unknown", "unknown", &out, &stderr); err != nil {
+			t.Fatalf("%v: %v %s", args, err, out.String())
+		}
+		return out.Bytes()
+	}
+	run("acquire", "--resource", "coordination:legacy")
+	for _, command := range []string{"status", "list", "heartbeat", "verify"} {
+		run(command)
+	}
+	run("checkpoint", "--data", `{"phase":"verified"}`)
+	data := run("doctor")
+	var result struct {
+		Checks []doctor.Check `json:"checks"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths[0], paths[1], filepath.Dir(paths[2]), filepath.Dir(paths[3]), filepath.Dir(paths[4])} {
+		found := false
+		for _, check := range result.Checks {
+			if strings.Contains(check.Detail, path) && strings.Contains(check.Hint, "safe to delete") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("doctor omitted cleanup path %s: %s", path, data)
+		}
+	}
+	runBarePTY(t, "coordination:legacy", "Claims")
+	run("release")
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != "invalid legacy data" {
+			t.Fatalf("legacy artifact changed %s: %q %v", path, data, err)
+		}
+	}
+}
 
 func TestDoctorTextColorsStatuses(t *testing.T) {
 	checks := []doctor.Check{{ID: "good", Status: "ok", Detail: "ready"}, {ID: "caution", Status: "warn", Detail: "check"}, {ID: "bad", Status: "fail", Detail: "broken"}}

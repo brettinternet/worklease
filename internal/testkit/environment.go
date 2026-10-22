@@ -56,8 +56,6 @@ func IsolateProcessEnvironment() (func(), error) {
 	}
 
 	before := append([]string(nil), os.Environ()...)
-	// A nested call sees the variable already removed; keep the first answer.
-	providerTests = providerTests || os.Getenv(providerTestsVariable) == "1"
 	preserve := helperEnvironmentForInvocation(before, os.Args)
 	for _, entry := range before {
 		key, _, ok := strings.Cut(entry, "=")
@@ -85,23 +83,6 @@ func IsolateProcessEnvironment() (func(), error) {
 	}, nil
 }
 
-const providerTestsVariable = "WORKLEASE_PROVIDER_TESTS"
-
-// providerTests records the opt-in before IsolateProcessEnvironment removes
-// WORKLEASE_* variables.
-var providerTests bool
-
-// RequireProviderTests skips t unless the test binary ran with
-// WORKLEASE_PROVIDER_TESTS=1. Mark tests whose only purpose is a real
-// provider CLI round trip (bd, backlog) this way so the pre-commit hook stays
-// fast; mise run test, mise run race, and CI set the variable.
-func RequireProviderTests(t testing.TB) {
-	t.Helper()
-	if !providerTests {
-		t.Skip("real-provider test; set " + providerTestsVariable + "=1 to run")
-	}
-}
-
 var testHelperInvocations = map[string][]string{
 	"TestDriverProcessHelper":                     {"WORKLEASE_DRIVER_HELPER"},
 	"TestGuardHelperProcess":                      {"WORKLEASE_GO_HELPER"},
@@ -110,8 +91,6 @@ var testHelperInvocations = map[string][]string{
 	"TestProcessHelper":                           {"WORKLEASE_TEST_HELPER"},
 	"TestStoreEventProcessHelper":                 {"WORKLEASE_STORE_EVENT_HOME", "WORKLEASE_STORE_EVENT_RESULT"},
 	"TestWatchSubprocessEventWakesFilteredWaiter": {"WORKLEASE_WATCH_HELPER", "WORKLEASE_WATCH_HOME", "WORKLEASE_WATCH_CURSOR"},
-	"TestQueueQueryConcurrentProcessHelper":       {"QUEUE_QUERY_CONCURRENT_ROOT"},
-	"TestLaunchChildHelper":                       {"WORKLEASE_PROFILE", "WORKLEASE_QUEUE_AUTHORITY_ID", "WORKLEASE_QUEUE_REF", "WORKLEASE_QUEUE_RESOURCES"},
 }
 
 func helperEnvironmentForInvocation(environment, arguments []string) map[string]string {

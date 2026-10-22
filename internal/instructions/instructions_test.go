@@ -14,7 +14,7 @@ func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testin
 	for _, want := range []string{
 		"Use a harness-provided loop-run ID unchanged",
 		"CLI: set WORKLEASE_SESSION_ID",
-		"MCP: pass it as sessionId to acquire or queue_next, persist the returned lease before work",
+		"MCP: pass it as sessionId to acquire, persist the returned lease before work",
 		"Never truncate the ID or derive it",
 		"MCP automatic heartbeat lasts only while the server process runs",
 		"After any subagent run, wait, long command, human pause, resumed session, or new loop iteration",

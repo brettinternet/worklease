@@ -83,9 +83,6 @@ func RunIsolatedTest(t *testing.T) bool {
 		}
 	}
 	overrides := map[string]string{isolatedTestEnvironment: name}
-	if providerTests {
-		overrides[providerTestsVariable] = "1"
-	}
 	result, err := runTestBinary(ProcessResult{Helper: name, ExitCode: -1}, timeout,
 		[]string{"-test.run=" + selector, "-test.v"}, overrides)
 	if err != nil {

@@ -49,21 +49,10 @@ it. Any overlap conflicts, and acquisition is all-or-none.
 3. Evaluate each candidate's fresh, complete hard-prerequisite closure with the declared named condition per edge (legacy dependencies default to terminal). Known unsatisfied edges block even with other unknown edges; otherwise incomplete, stale, inaccessible, cyclic, or unsupported evidence stays unknown/capability. Select only ready, unblocked, claimable open work in provider order. Hierarchy and related work are not hard edges; shared resources are claim contention.
 4. Accept exact caller-supplied resources and acquire a fresh ownership epoch
    immediately after selection, before reading full intent, planning,
-   delegation, isolation, or edits. For a configured Worklease queue, prefer
-   `worklease queue next --view NAME --claim --session ID --json`; it selects
-   and acquires with the ordinary worker contextual handle. Queue selection is
-   restricted to the current project's configured sources by default, including
-   in linked worktrees. Use `--all-projects` only for intentional
-   cross-project selection; item selectors cannot widen the scope. Add `--start`
-   (MCP `start: true`) when the source maps a `start` transition so the
-   provider shows the item in progress right after the claim. The claim stays
-   the lock: a `transition.outcome` other than `applied` still leaves the
-   caller holding the claim, and an uncertain one goes to `queue recovery`.
-   Create the queue
-   with `worklease queue init` (`--dry-run` previews; it adopts a checkout's
-   `.config/worklease/queue-sources.yaml` unless `--ignore-proposal`). On contention,
-   skip to the next ready candidate without waiting; hold at most one claim
-   while selecting. Stop on an uncertain acquire.
+   delegation, isolation, or edits. Discover and select through the caller's task
+   provider, then acquire via the stable claim CLI or MCP. On contention, skip to
+   the next ready candidate without waiting; hold at most one claim while
+   selecting. Stop on an uncertain acquire.
 5. Retain non-secret claim metadata plus the private session handle. Never
    expose its credential.
 6. Revalidate hard edges and completion evidence, ownership, guarantee scope, and provider state
@@ -86,13 +75,7 @@ checkpoint, and reports the distinct `cancelled` outcome. Every other release
 still requires a verified provider checkpoint; a started or unresolved/unknown
 operation forbids cancellation.
 
-A configured queue loop selects and claims with
-`worklease queue next --view Ready --claim --start --session "$SESSION" --json`.
-It uses the current project's sources by default and returns the selected
-`scope`; `--all-projects` is required to consider other projects. MCP
-`queue_next` pins this default to the server's startup checkout and requires
-`allProjects: true` for the same explicit cross-project opt-in.
-For other sources, a short CLI loop needs no credential plumbing:
+A short CLI loop needs no credential plumbing:
 
 ```sh
 worklease acquire --resource "$RESOURCE" --work-key "implement:TASK-42" --session "$SESSION"
@@ -102,8 +85,7 @@ worklease checkpoint --session "$SESSION" --data '{"phase":"tests"}'
 worklease release --session "$SESSION" --reason "provider checkpoint verified"
 ```
 
-Inside a supervised `worklease run` (`WORKLEASE_RUN_ID` is set, as for queue
-launch actions), the run already holds and renews the claim over the handed-off
+Inside a supervised `worklease run` (`WORKLEASE_RUN_ID` is set), the run already holds and renews the claim over the handed-off
 resources and releases it when the worker exits. Skip acquire, heartbeat, and
 release; use the inherited `WORKLEASE_SESSION_ID` and `WORKLEASE_HANDLE` for
 verify and checkpoint. Before exiting, report the outcome by writing
@@ -162,11 +144,8 @@ checkpoints, reconciliation evidence, or provider payloads in status, events,
 comments, logs, or handoffs. Handles and cursors must match the authority ID.
 Expiry ends authorization but does not prove prior executor cessation. Before
 resuming prior work, require explicit handoff or authoritative
-abandonment/cessation evidence. `queue next` selects only open items: in-progress
-items are excluded even after release or with no claim history, including explicit
-item selectors. Current owners continue under their verified claim outside
-`queue next`. After establishing the evidence, use an authorized provider
-transition to return prior work to open before `queue next` can select it.
+abandonment/cessation evidence. Use the authoritative task provider for readiness
+and status transitions. Current owners continue under their verified claim.
 
 ## Provider boundary
 

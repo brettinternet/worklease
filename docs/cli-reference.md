@@ -3,11 +3,9 @@
 Run `worklease COMMAND --help` or read `worklease(1)` for every flag and
 example. Bare `worklease` opens the TUI only when both stdin and stdout
 are terminals. With a pipe or redirected output it prints root help and exits
-successfully; `worklease help` and `worklease -h` always print help. A configured
-queue opens its first view even if a source is down. Without `queue.yaml`, it
-opens Claims without creating authority or config state; run `worklease queue init`
-to add sources. An invalid config is reported just as with `worklease queue`.
-The empty Claims tab suggests `worklease acquire --path README.md`, `?` for help,
+successfully; `worklease help` and `worklease -h` always print help. The
+claims-only TUI opens without creating authority or config state.
+The empty Claims view suggests `worklease acquire --path README.md`, `?` for help,
 and `q` to quit.
 
 `worklease help --all` prints the root help followed by every command and
@@ -23,12 +21,6 @@ Usage lines expose required inputs and alternate forms:
 worklease exec [selection] ... -- COMMAND [ARGS...]
 worklease policy describe NAME
 worklease history [--resource RESOURCE]
-worklease queue [--view NAME] init [--checkout PATH] [--adapter backlog-md|github|external] [--executable PATH] [--adapter-config JSON | --adapter-config-file FILE] [--source-id ID] [--authority NAME] [--portable-claims SOURCE] [--me PRINCIPAL] [--allow-git-network] [--ignore-proposal] [--dry-run] [--json]
-worklease queue query --view NAME [--all-projects] [--json] [--limit N] [--cursor CURSOR] [--max-age DURATION] [--require-complete]
-worklease queue next --view NAME [--all-projects] [--claim [--start] --session SESSION] [--json]
-worklease queue adapter check --executable PATH [--adapter-config JSON | --adapter-config-file FILE] [--disposable-target ITEM] [--cancel-marker PATH] [--json]
-worklease queue authority-id --json
-worklease queue --view NAME identity confirm --source SOURCE --acknowledge
 ```
 
 `[selection]` means the shared claim-selection options listed in that command's
@@ -51,20 +43,12 @@ For contextual handles, an explicit `--session` overrides
 and human output renders it as `"" (unscoped)`. `unscoped` is a display label,
 not a literal selector.
 
-Text output is for humans; `--json` emits one schema-version 2 envelope. `worklease queue query --view NAME --json` places its queue schema v1 projection in the `query` field; `scope` names the effective project or all-projects sources. Queue query and next default to the current project (resolved through linked worktrees), and `--all-projects` explicitly widens either command; see [queue configuration and query schema](queue.md#read-only-query).
+Text output is for humans; `--json` emits one schema-version 2 envelope.
 
 Bearer credentials are accepted only through a private contextual/explicit
 handle, `--token-file`, or `--token-fd`. An argv `--token` option is deliberately
 unsupported. Acquire persists a client-generated credential before dispatch and
 never returns it in text or JSON.
-
-## External adapter conformance
-
-`queue adapter check` launches only the explicitly named canonical absolute executable through the production supervised host. It snapshots its bytes but never reads/writes queue.yaml, adapter approvals, the queue index, or Worklease authority. The configuration is a JSON object supplied inline with `--adapter-config` or in a file with `--adapter-config-file`; it must satisfy the negotiated manifest schema. The process has user privileges, not a sandbox. Inspect it before running. Without `--disposable-target ITEM` no mutation is dispatched. With the flag, the checker may append a marked progress note **to that existing disposable item**; do not point it at real work. A read-only adapter does not write even when a target is supplied.
-
-`--json` uses the usual schema-version 2 envelope, operation `queue-adapter-check`. Successful results contain `verdict: "pass"`, a bounded manifest summary (`id`, `version`, `protocolMajor`), and `checks: [{id,status,reason,detail}]`. `status` is `pass`, `fail`, or `skip`; skips include a reason and do not count as passes. Details never contain provider payloads or stderr. A conformance failure returns `ok: false`, `error.reason: "adapter-conformance-failed"`, `error.exitCode: 65`, and `error.details.verdict` and `error.details.checks` in the same shape. An invalid flag, unreadable executable, or configuration error exits 64 (`invalid-argument`); success exits 0. Output is one JSON document per invocation. Human text renders the same check list.
-
-The checker exercises negotiation, configuration, source binding, capability/list/read/dependency semantics, continuation and budget, static resource-policy inputs, host frame/collection/deadline guards, and (only with an explicit target and declared supported mutation) a receipt and read-back without redispatch. The host tests crash restart and a redaction sentinel. To check adapter cancellation, configure a disposable fixture that blocks a `list` query with text `__worklease_conformance_cancel__`, writes `PATH.request` when it begins, handles `$/cancelRequest`, and writes `PATH.done` after aborting. Pass a fresh `--cancel-marker PATH` and the corresponding fixture config. Without that marker the check is `skip`, **not** certification of cancellation behavior. The checker only reads the marker files; the adapter creates them. Check those failure modes in your adapter's own tests before shipping.
 
 ## Short options
 
@@ -115,29 +99,11 @@ mkdir -p ~/.config/fish/completions
 worklease completion fish > ~/.config/fish/completions/worklease.fish
 ```
 
-## Work queue
+## Claims TUI
 
-`worklease queue [--view NAME] [--high-contrast]` (or `worklease q [-v NAME]`)
-opens the configured view from the owner's private `queue.yaml` in a Bubble Tea
-terminal. It defaults to sources associated with the current project checkout,
-resolving linked worktrees to their main checkout; outside a configured project
-it shows all sources. The header names the scope, and `X` toggles between the
-current project and all projects with a fresh source reload. `--high-contrast`
-replaces faint text and color with bold, underline, and reverse video;
-`NO_COLOR` removes styling entirely.
-Root-level `worklease -v` still shows the version. The queue shows source
-coverage, readiness, assignment, native occupancy, authority-scoped Worklease
-claims, and lazy claim history. `j`/`k` move, Enter opens detail, Tab changes detail tabs, `/` filters
-loaded rows, `r` refreshes, `o` opens a GitHub issue URL explicitly, `c` previews
-Claim for me, and `x` previews configured launch actions. Launch shows argv, cwd,
-environment variable names, and authority; Enter starts the action as a detached
-[supervised run](#supervised-runs) that claims the item's exact resources before
-the worker starts and releases them when it exits. Follow it with
-`worklease runs`. Item detail also previews provider status, progress-note, and
-assign/unassign writes where the source supports them; see [TUI](queue-tui.md).
-`worklease queue authority-id --json` exposes the invoking worker's selected
-authority ID.
-`queue init` writes owner-private configuration directly; `--dry-run` previews facts, origins, and exact YAML without writing. Init creates filter-only Ready, Mine, Claimed, and All views; an existing view with a `sources` list keeps that explicit restriction. Backlog.md identity defaults to `@` plus the OS login if no single default assignee exists. Init preflights the real adapter, including Backlog.md CLI 1.52.x and explicit `--allow-git-network` consent for project Git network effects. Linear, external, and other sources without a provider checkout can be associated in owner-private `queue.yaml` with `projectCheckout: /absolute/path/to/checkout`; without that association they appear only in all-projects scope. Source setup and view behavior are described in `docs/queue.md`.
+Bare `worklease` opens the [authority-wide Claims TUI](claims-tui.md). Inspect,
+filter, renew, and release locally held claims after preview and confirmation.
+Task discovery and provider writes belong to the caller's task manager.
 
 ## Common lifecycle
 
@@ -199,7 +165,7 @@ With `--resource`, the run acquires one claim under its own session
 (`run-RUN_ID`) before starting the worker, renews it while the worker lives,
 and releases it when the worker exits, whatever the outcome. A conflicting
 claim fails the run without starting the worker. The claim is kept, not
-released, when it has unresolved guarded operations or queue provider writes.
+released, when it has unresolved guarded operations.
 If ownership is lost, the worker is stopped. Without `--resource`, the run only
 supervises and records.
 

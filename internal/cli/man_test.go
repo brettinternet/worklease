@@ -13,7 +13,7 @@ func TestWriteManPageDerivesRegisteredCommandsFlagsExamplesAndVersion(t *testing
 		t.Fatal(err)
 	}
 	page := output.String()
-	for _, phrase := range []string{"stdin and stdout are terminals", "otherwise it prints this help", "worklease queue init", "worklease acquire \\-\\-path README.md"} {
+	for _, phrase := range []string{"stdin and stdout are terminals", "otherwise it prints this help", "locally held claims", "worklease acquire \\-\\-path README.md"} {
 		if !strings.Contains(page, phrase) {
 			t.Errorf("manual missing bare invocation guidance: %q", phrase)
 		}

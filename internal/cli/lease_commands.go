@@ -156,9 +156,9 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			return s.handle(cmd, err)
 		}
 		defer backend.Close()
-		if pin, ok := ctx.Value(queueAcquirePinKey{}).(queueAcquirePin); ok {
+		if pin, ok := ctx.Value(acquirePinKey{}).(acquirePin); ok {
 			if backend.AuthorityID() != pin.authorityID || (backend.Profile == nil) != (pin.profile == nil) || backend.Profile != nil && *backend.Profile != *pin.profile {
-				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "queue authority identity changed before acquisition"))
+				return s.handle(cmd, reason.New(reason.ReasonAuthorityMismatch, "authority identity changed before acquisition"))
 			}
 		}
 		svc, st, cfg := backend.Local, backend.Store, backend.Config
@@ -544,9 +544,8 @@ func beginHandleMutation(path string, h *handle.Handle, kind, op string, deadlin
 	if deadline.IsZero() {
 		return reason.New(reason.ReasonReplayExpired, "request-not-after is required")
 	}
-	// An explicit CLI mutation normally takes the handle outside an MCP hold.
-	// A queue write checkpoint instead retains the exact admitted
-	// ceiling in its pending request so interrupted dispatch replays boundedly.
+	// Explicit CLI mutations take the handle outside an MCP hold unless replaying
+	// an already admitted pending request.
 	if inputInt64(inputs, "holdUntil") == 0 {
 		h.HoldUntil = time.Time{}
 	}
@@ -966,10 +965,6 @@ func checkpointActionReal(s *boundary) func(context.Context, *urfave.Command) er
 		}
 		inputs := map[string]any{"kind": "checkpoint", "authorityId": c.AuthorityID, "claimId": c.ClaimID, "ttl": ttl.Microseconds(), "checkpoint": json.RawMessage(data), "requestNotAfter": deadline.UTC().UnixMicro()}
 		hold := time.Time{}
-		if ctx.Value(queuePreserveHold{}) == true && h != nil && !h.HoldUntil.IsZero() {
-			hold = h.HoldUntil
-			inputs["holdUntil"] = hold.UTC().UnixMicro()
-		}
 		bindPendingHold(inputs, pending)
 		if r, recovering, e := recoverPendingMutation(ctx, svc, c, hp, h, "checkpoint", requestHashCLI(inputs), lk); recovering {
 			if e != nil {

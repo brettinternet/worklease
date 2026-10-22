@@ -28,7 +28,7 @@ Complete this checklist for each source kind. A missing answer is an unsupported
 - What exact local operation, if any, executes within the Worklease guard?
 - Is coordination-only mode required for direct provider mutations?
 
-## Capability, queue reads, and freshness
+## Capability, provider reads, and freshness
 
 - Are capabilities reported with support (`supported|unsupported|unknown`), permission (`allowed|denied|unknown`), availability (`available|unavailable|authentication-required`), semantics, limits, and reason?
 - Are capability scopes distinguished at adapter, source, principal, and item/action levels? Does unknown remain non-actionable?

@@ -35,7 +35,7 @@ func Diagnose(ctx context.Context, cfg config.Config, cwd string) []Check {
 }
 
 func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Time) []Check {
-	checks := make([]Check, 0, 16)
+	checks := LegacyArtifacts(cfg.Home, cwd, os.Getenv)
 	add := func(id, status, detail, hint string) {
 		checks = append(checks, Check{ID: id, Status: status, Detail: output.RedactString(detail), Hint: output.RedactString(hint)})
 	}

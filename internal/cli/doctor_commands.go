@@ -233,6 +233,7 @@ func remoteDoctorAction(s *boundary, ctx context.Context, cmd *urfave.Command) e
 			}
 		}
 	}
+	checks = append(checks, doctor.LegacyArtifacts(backend.Config.Home, mustGetwd(), os.Getenv)...)
 	return finishRemoteDoctor(s, cmd, checks)
 }
 

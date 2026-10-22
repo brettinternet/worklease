@@ -36,17 +36,9 @@ Legacy clients send `initialize` with protocol version `2025-11-25`, then
 
 ## Tool boundary
 
-The twelve tools are `key`, `acquire`, `queue_next`, `status`, `list`,
-`heartbeat`, `checkpoint`, `release`, `verify`, `watch`, `events`, and
-`instructions`. `queue_next` mirrors `worklease queue next` and defaults to the project checkout where `worklease mcp` started (including linked-worktree resolution):
-
-```json
-{"name":"queue_next","arguments":{"view":"Ready","claim":true,"start":true,"sessionId":"loop-a","autoHeartbeat":true}}
-```
-
-The result's `next.scope` names the effective project and checkout. Cross-project selection requires the explicit `allProjects: true` argument; it has the same effect as CLI `--all-projects`. View source lists, when present in an older queue configuration, further restrict the effective scope.
-
-Schemas reject unknown inputs and return schema-version 2 domain envelopes. `queue_next` accepts the optional boolean `allProjects`, which defaults to false.
+The eleven tools are `key`, `acquire`, `status`, `list`, `heartbeat`,
+`checkpoint`, `release`, `verify`, `watch`, `events`, and `instructions`.
+Schemas reject unknown inputs and return schema-version 2 domain envelopes.
 
 The `instructions` tool accepts `topic: setup|remote|server|loop|safety` and
 returns the same guidance as the CLI. These are read-only instructions, not MCP

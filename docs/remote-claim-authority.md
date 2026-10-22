@@ -372,7 +372,7 @@ pending requests on the client host and calls the remote HTTPS client. The
 twelve existing tools are exactly:
 
 ```text
-key acquire queue_next status list heartbeat checkpoint verify watch events release instructions
+key acquire status list heartbeat checkpoint verify watch events release instructions
 ```
 
 The MCP command and setup remain:

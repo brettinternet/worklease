@@ -65,8 +65,6 @@ func TestBareNonterminalAndExplicitHelp(t *testing.T) {
 func TestNestedUsageErrorsAreClassifiedWithoutHelpOutput(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
-		{"queue", "--invalid"},
-		{"queue", "recovery", "retry", "--invalid"},
 		{"enroll", "--invalid"},
 		{"profile", "add", "--invalid"},
 		{"completion", "bash", "--invalid=sensitive-value"},
@@ -449,7 +447,6 @@ func TestShortOptionNamespaceIsExactAndRemovedAliasesFail(t *testing.T) {
 	collect := func(flags []urfavecli.Flag) {
 		for _, flag := range flags {
 			for _, name := range flag.Names()[1:] {
-				// The queue's -v/--view is scoped below the root's local -v/--version.
 				if len(name) == 1 && !(name == "v" && flag.Names()[0] == "view") {
 					got[name] = flag.Names()[0]
 				}

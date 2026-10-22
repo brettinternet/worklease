@@ -187,7 +187,7 @@ func runsCommand(s *boundary) *urfave.Command {
 	}
 	command := &urfave.Command{
 		Name: "runs", Usage: "inspect supervised runs", UsageText: "worklease runs [--all]\nworklease runs show|wait|stop|ack ...",
-		Description: "Inspect workers started with worklease run or a queue launch. The default list shows live runs and finished runs that are not yet acknowledged.\n\nExamples:\n  worklease runs\n  worklease runs show ID\n  worklease runs wait ID --timeout 1h\n  worklease runs ack --finished",
+		Description: "Inspect workers started with worklease run. The default list shows live runs and finished runs that are not yet acknowledged.\n\nExamples:\n  worklease runs\n  worklease runs show ID\n  worklease runs wait ID --timeout 1h\n  worklease runs ack --finished",
 		Flags:       []urfave.Flag{&urfave.BoolFlag{Name: "all", Usage: "include acknowledged runs"}},
 		Commands:    []*urfave.Command{show, wait, stop, ack},
 		Action: func(_ context.Context, cmd *urfave.Command) error {

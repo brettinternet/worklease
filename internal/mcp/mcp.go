@@ -29,9 +29,6 @@ type Options struct {
 	TTL, PollInterval        time.Duration
 	Profile                  *config.Profile
 	ProfileName              string
-	// QueueNext is supplied by the CLI entry point to reuse its queue selection core.
-	// It is invoked only when the queue_next tool is called.
-	QueueNext func(context.Context, string, bool, bool, bool, string, float64, string, string, *config.Profile, func(context.Context, string, string, *config.Profile, []string) (map[string]any, error), func(string) string) (map[string]any, error)
 }
 type runtimeLease struct {
 	ref, path, profileName string
@@ -148,7 +145,7 @@ func (s *Server) openNamedAuthority(ctx context.Context, name string, expected *
 	}
 	profile, ok := profiles[name]
 	if !ok || expected != nil && profile != *expected {
-		return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "queue authority profile changed or is no longer trusted")
+		return serviceBundle{}, reason.New(reason.ReasonAuthorityMismatch, "authority profile changed or is no longer trusted")
 	}
 	if expected != nil {
 		profile = *expected
@@ -272,12 +269,11 @@ func (s *Server) openAuthorityForHandle(ctx context.Context, ref string, h handl
 
 var toolOrder = []string{"key", "acquire", "status", "list", "heartbeat", "checkpoint", "verify", "watch", "events", "release", "instructions"}
 
-const serverInstructions = "Worklease coordinates work claims. Claim with acquire, or queue_next with claim: true, then pass the returned lease to status, heartbeat, checkpoint, verify, and release. After an uncertain outcome that returns a lease reference, retry acquire with only that lease. A definitive failure returns no reference; call acquire again. Read instructions with topic loop before starting work."
+const serverInstructions = "Worklease coordinates work claims. Claim with acquire, then pass the returned lease to status, heartbeat, checkpoint, verify, and release. After an uncertain outcome that returns a lease reference, retry acquire with only that lease. A definitive failure returns no reference; call acquire again. Read instructions with topic loop before starting work."
 
 var toolDescriptions = map[string]string{
 	"key":          "Resolve a path, or a provider, source, and item, to its canonical resource key. Read-only.",
 	"acquire":      "Claim resources and return an opaque lease. Give resources, a path, or a provider, source, and item. Retry by reference only after an uncertain outcome that returns one, passing only the lease; a definitive failure returns no reference and requires a fresh acquire.",
-	"queue_next":   "Select the next ready item from a configured queue view. Set claim: true to claim it in the same step and start: true to also mark it in progress. Skips claimed items without waiting.",
 	"status":       "Show the claim for a lease, or the current claims on resources. Read-only.",
 	"list":         "List active claims, optionally for one resource. Read-only.",
 	"heartbeat":    "Extend a lease before half its TTL has passed.",
@@ -318,7 +314,7 @@ func (s *Server) handle(ctx context.Context, req rpcRequest) (any, *rpcError) {
 	if p.Arguments == nil {
 		p.Arguments = map[string]any{}
 	}
-	if !contains(toolOrder, p.Name) && !(p.Name == "queue_next" && s.options.QueueNext != nil) {
+	if !contains(toolOrder, p.Name) {
 		return nil, protocolError(-32601, "unknown tool", nil)
 	}
 	if err := validateArgs(p.Name, p.Arguments); err != nil {
@@ -381,7 +377,6 @@ func (s *Server) tools() []map[string]any {
 	defs := map[string]map[string]any{
 		"key":          schema(nil, map[string]any{"provider": str(), "source": str(), "item": str(), "path": str(), "coordinationOnly": map[string]any{"type": "boolean"}}),
 		"acquire":      schema(nil, map[string]any{"lease": str(), "resources": resources, "provider": str(), "source": str(), "item": str(), "path": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}, "wait": map[string]any{"type": "number", "minimum": 0, "maximum": 60}, "workKey": str(), "agentId": str(), "sessionId": str(), "coordinationOnly": map[string]any{"type": "boolean"}, "autoHeartbeat": map[string]any{"type": "boolean", "default": true}, "maxHold": map[string]any{"type": "number", "minimum": 60}}),
-		"queue_next":   schema([]string{"view"}, map[string]any{"view": str(), "allProjects": map[string]any{"type": "boolean", "default": false}, "claim": map[string]any{"type": "boolean"}, "start": map[string]any{"type": "boolean"}, "sessionId": str(), "agentId": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}, "maxHold": map[string]any{"type": "number", "minimum": 60}, "autoHeartbeat": map[string]any{"type": "boolean", "default": true}}),
 		"status":       schema(nil, map[string]any{"lease": str(), "resources": resources}),
 		"list":         schema(nil, map[string]any{"resource": str()}),
 		"heartbeat":    schema([]string{"lease"}, map[string]any{"lease": str(), "ttl": map[string]any{"type": "number", "exclusiveMinimum": 0}}),
@@ -397,9 +392,6 @@ func (s *Server) tools() []map[string]any {
 	defs["status"]["oneOf"] = []any{map[string]any{"required": []string{"lease"}}, map[string]any{"required": []string{"resources"}}}
 	defs["watch"]["oneOf"] = []any{map[string]any{"required": []string{"cursor"}}, map[string]any{"required": []string{"resources", "until"}}}
 	order := append([]string(nil), toolOrder...)
-	if s.options.QueueNext != nil {
-		order = append(order[:2], append([]string{"queue_next"}, order[2:]...)...)
-	}
 	out := make([]map[string]any, 0, len(order))
 	for _, name := range order {
 		out = append(out, map[string]any{"name": name, "description": toolDescriptions[name], "inputSchema": defs[name]})
@@ -514,8 +506,6 @@ func (s *Server) callTool(ctx context.Context, name string, a map[string]any) (a
 		return s.key(a)
 	case "acquire":
 		return s.acquire(ctx, a, "")
-	case "queue_next":
-		return s.queueNext(ctx, a)
 	case "status":
 		return s.status(ctx, a)
 	case "list":
@@ -540,10 +530,9 @@ func (s *Server) callTool(ctx context.Context, name string, a map[string]any) (a
 
 func validateArgs(name string, a map[string]any) error {
 	allowed := map[string]map[string]bool{
-		"key":        {"provider": true, "source": true, "item": true, "path": true, "coordinationOnly": true},
-		"acquire":    {"lease": true, "resources": true, "provider": true, "source": true, "item": true, "path": true, "ttl": true, "wait": true, "workKey": true, "agentId": true, "sessionId": true, "coordinationOnly": true, "autoHeartbeat": true, "maxHold": true},
-		"queue_next": {"view": true, "allProjects": true, "claim": true, "start": true, "sessionId": true, "agentId": true, "ttl": true, "maxHold": true, "autoHeartbeat": true},
-		"status":     {"lease": true, "resources": true}, "list": {"resource": true},
+		"key":     {"provider": true, "source": true, "item": true, "path": true, "coordinationOnly": true},
+		"acquire": {"lease": true, "resources": true, "provider": true, "source": true, "item": true, "path": true, "ttl": true, "wait": true, "workKey": true, "agentId": true, "sessionId": true, "coordinationOnly": true, "autoHeartbeat": true, "maxHold": true},
+		"status":  {"lease": true, "resources": true}, "list": {"resource": true},
 		"heartbeat": {"lease": true, "ttl": true}, "checkpoint": {"lease": true, "data": true, "ttl": true}, "verify": {"lease": true, "resources": true},
 		"watch": {"cursor": true, "resources": true, "until": true, "timeout": true}, "events": {"cursor": true, "limit": true}, "release": {"lease": true, "reason": true}, "instructions": {"topic": true},
 	}
@@ -593,9 +582,6 @@ func validateArgs(name string, a map[string]any) error {
 		if _, ok := a["lease"].(string); !ok || a["lease"] == "" {
 			return reason.Invalid("lease is required")
 		}
-	}
-	if name == "queue_next" && valueString(a, "view") == "" {
-		return reason.Invalid("view is required")
 	}
 	if name == "instructions" {
 		topic, _ := a["topic"].(string)
@@ -787,7 +773,7 @@ func (s *Server) readLease(ctx context.Context, ref string, write bool) (handle.
 func (s *Server) deadline() time.Time { return time.Now().UTC().Add(24 * time.Hour) }
 
 // acquire dispatches a new claim. A non-empty authorityID pins the claim to
-// the authority a caller already validated against, such as queue_next.
+// the authority a caller already validated against, before claim acquisition.
 func (s *Server) acquire(ctx context.Context, a map[string]any, authorityID string) (any, error) {
 	if ref, _ := argString(a, "lease"); ref != "" {
 		return s.recoverAcquire(ctx, ref)

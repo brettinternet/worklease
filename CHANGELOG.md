@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking
+
+- Remove `worklease queue` (`q`), its provider adapters, launches, recovery,
+  external-adapter protocol, and MCP `queue_next`. Task discovery and management
+  move to [bl](https://github.com/brettinternet/backlog), which integrates only
+  through Worklease's stable JSON claim CLI. Worklease does not depend on bl.
+- Bare `worklease` now opens the authority-wide Claims TUI only. Inspect, renew,
+  and release locally held claims as before. All claim commands and JSON schema
+  version 2 remain unchanged.
+- Old `queue.yaml`, `.config/worklease/queue-sources.yaml`, cached queue index,
+  recovery journal, and queue handles are ignored. `worklease doctor` reports
+  existing leftovers by path as safe to delete; removal is never automatic.
+
+## Unreleased
+
 ## 1.9.3 - 2026-10-20
 
 ### Security

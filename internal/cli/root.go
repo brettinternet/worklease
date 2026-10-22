@@ -93,7 +93,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 	state := &boundary{writer: stdout, errWriter: stderr, version: version, commit: commit, buildTime: buildTime}
 	root := &urfavecli.Command{
 		Name: "worklease", Usage: "Coordinate local work ownership", UsageText: "worklease [global options] [command]",
-		Description: "Coordinate work safely on one host. Bare `worklease` opens the TUI when stdin and stdout are terminals; otherwise it prints this help and exits. `worklease help` and `worklease -h` always print help. Without queue.yaml, the TUI opens on Claims; run `worklease queue init` to configure sources. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
+		Description: "Coordinate work safely on one host. Bare `worklease` opens the TUI when stdin and stdout are terminals; otherwise it prints this help and exits. `worklease help` and `worklease -h` always print help. The TUI inspects authority-wide claims and can renew or release locally held claims. Start with `worklease acquire --path README.md`, then `worklease status` and `worklease release`. Commands that act on a claim accept the shared [selection] options described in each command's help. Run `worklease help --all` to read the whole interface once.\n\nExamples:\n  worklease acquire --path README.md\n  worklease help --all\n  worklease version --json",
 		Version:     version, HideVersion: true, Writer: stdout, ErrWriter: stderr,
 		EnableShellCompletion: true, ShellComplete: writeShellCompletions,
 		ConfigureShellCompletionCommand: configureCompletionCommand(state),
@@ -121,7 +121,7 @@ func NewRootCommand(version, commit, buildTime string, stdout, stderr io.Writer)
 				return state.handle(cmd, reason.Invalid(fmt.Sprintf("unknown command %q", cmd.Args().First())))
 			}
 			if bareInteractive(state.invocation, os.Stdin, state.writer) {
-				return state.handle(cmd, runQueue(ctx, cmd, state))
+				return state.handle(cmd, runClaims(ctx, cmd, state))
 			}
 			return urfavecli.ShowRootCommandHelp(cmd)
 		},
