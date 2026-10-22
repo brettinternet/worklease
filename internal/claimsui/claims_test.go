@@ -20,15 +20,19 @@ func TestClaimsListScrollKeepsVisibleSelection(t *testing.T) {
 			t.Parallel()
 			m := New()
 			m.Width, m.Height = 120, 20
-			for index := range 60 {
+			capacity := max(1, m.frame().bodyHeight-1)
+			for index := range capacity * 5 {
 				m.Claims.Items = append(m.Claims.Items, lease.ClaimView{ClaimID: fmt.Sprintf("claim-%02d", index)})
 			}
 			rows := m.claimRows()
-			capacity := max(1, m.frame().bodyHeight-1)
 			m.Claims.Offset = capacity * 2
-			m.selectClaimIndex(rows, m.Claims.Offset+capacity/2, capacity)
-			original := m.Claims.Index
 			step := scrollStep(key, capacity)
+			middle := capacity / 2
+			if step < 0 {
+				middle = (capacity - 1) / 2
+			}
+			m.selectClaimIndex(rows, m.Claims.Offset+middle, capacity)
+			original := m.Claims.Index
 			for move := range 2 {
 				wantOffset := max(0, min(m.Claims.Offset+step, len(rows)-capacity))
 				wantIndex := max(wantOffset, min(m.Claims.Index, wantOffset+capacity-1))

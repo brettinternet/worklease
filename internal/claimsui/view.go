@@ -12,7 +12,7 @@ type frame struct {
 }
 
 func (m Model) frame() frame {
-	f := frame{top: []string{m.headerLine(), m.s().bold.Render("Claims")}}
+	f := frame{top: []string{m.headerLine()}}
 	if m.Claims.Error != "" {
 		f.top = append(f.top, m.s().warn.Render(clip(m.Claims.Error, m.Width)))
 	}
