@@ -15,8 +15,6 @@
   recovery journal, and queue handles are ignored. `worklease doctor` reports
   existing leftovers by path as safe to delete; removal is never automatic.
 
-## Unreleased
-
 ## 1.9.3 - 2026-10-20
 
 ### Security

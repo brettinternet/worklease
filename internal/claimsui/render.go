@@ -11,7 +11,7 @@ import (
 )
 
 type palette struct {
-	faint, bold, accent, appTitle, key, good, ready, warn, warnBold, bad, held, selected, activeTab, alert, dialog lipgloss.Style
+	faint, bold, appTitle, key, ready, warn, warnBold, selected, activeTab, dialog lipgloss.Style
 }
 
 func style() lipgloss.Style { return lipgloss.NewStyle() }
@@ -21,18 +21,13 @@ func style() lipgloss.Style { return lipgloss.NewStyle() }
 var standardPalette = palette{
 	faint:     style().Faint(true),
 	bold:      style().Bold(true),
-	accent:    style().Foreground(lipgloss.Color("6")),
 	appTitle:  style().Bold(true).Foreground(lipgloss.Color("6")),
 	key:       style().Bold(true).Foreground(lipgloss.Color("6")),
-	good:      style().Foreground(lipgloss.Color("2")),
 	ready:     style().Bold(true).Foreground(lipgloss.Color("2")),
 	warn:      style().Foreground(lipgloss.Color("3")),
 	warnBold:  style().Bold(true).Foreground(lipgloss.Color("3")),
-	bad:       style().Bold(true).Foreground(lipgloss.Color("1")),
-	held:      style().Foreground(lipgloss.Color("5")),
 	selected:  style().Reverse(true).Bold(true),
 	activeTab: style().Reverse(true).Bold(true).Foreground(lipgloss.Color("6")),
-	alert:     style().Reverse(true).Bold(true).Foreground(lipgloss.Color("1")),
 	dialog:    style().Reverse(true).Bold(true).Foreground(lipgloss.Color("6")),
 }
 
@@ -42,18 +37,13 @@ var standardPalette = palette{
 var highContrastPalette = palette{
 	faint:     style(),
 	bold:      style().Bold(true),
-	accent:    style(),
 	appTitle:  style().Bold(true),
 	key:       style().Bold(true),
-	good:      style(),
 	ready:     style().Bold(true),
 	warn:      style().Bold(true),
 	warnBold:  style().Bold(true).Underline(true),
-	bad:       style().Bold(true).Underline(true),
-	held:      style().Bold(true),
 	selected:  style().Reverse(true).Bold(true),
 	activeTab: style().Reverse(true).Bold(true),
-	alert:     style().Reverse(true).Bold(true),
 	dialog:    style().Reverse(true).Bold(true),
 }
 

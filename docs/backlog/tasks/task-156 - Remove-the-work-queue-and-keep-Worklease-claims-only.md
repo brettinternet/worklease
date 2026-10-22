@@ -4,10 +4,11 @@ title: Remove the work queue and keep Worklease claims-only
 status: Done
 assignee: []
 created_date: '2026-10-22 01:23'
-updated_date: '2026-10-22 04:50'
+updated_date: '2026-10-22 07:12'
 labels:
   - work-queue
   - breaking
+  - reviewed
 dependencies: []
 references:
   - 'https://github.com/brettinternet/worklease/tree/v1.9.3'
@@ -90,6 +91,8 @@ Final verification and delivery:
 - Single direct review completed; fixed the extracted mouse press-only guard. Requested review subagent was unavailable under model restrictions; no second general review was started.
 - Implementation commits 62a1dbc and ca94d6a are fast-forward integrated into local main, with installed pre-commit hooks passing; nothing pushed.
 - Verified original receipt, clean branch, and exact wHR workspace shell before Worktrunk removal. Worktree and task-156-claims-only branch removed together; personal post-remove hook closed wHR and absence verified. Owned standalone benchmark/diagnostic/PTY snapshots moved to Trash after ownership verification. No task worktree, workspace, or scratch checkout retained.
+
+Review 2026-10-22: removed queue-era unused Claims UI palette styles (accent, good, bad, held, alert), renamed remote-smoke test env var QUEUE_TEST_HIDDEN_INVITE to SMOKE_TEST_HIDDEN_INVITE, and merged a duplicate empty CHANGELOG Unreleased heading. Verified legacy artifact paths match v1.9.3 config/index/recovery/handle locations, the store Nlink==0 fix keeps hard-link fail-closed behavior, and run supervisor still keeps claims for unresolved guarded operations. go test -race -count=3 claimsui and remote-smoke pass; mise run lint passes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

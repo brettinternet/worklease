@@ -70,7 +70,7 @@ func writeCertificate(certPath, keyPath string, sanValues ...any) error {
 // TestHiddenInviteChild is re-executed as a fake PTY child; it must not run in
 // the ordinary test process.
 func TestHiddenInviteChild(t *testing.T) {
-	mode := os.Getenv("QUEUE_TEST_HIDDEN_INVITE")
+	mode := os.Getenv("SMOKE_TEST_HIDDEN_INVITE")
 	if mode == "" {
 		return
 	}
@@ -81,7 +81,7 @@ func TestHiddenInviteChild(t *testing.T) {
 	if mode == "descendant" {
 		// A hangup-immune grandchild that only a process-group kill stops. It
 		// records its PID only after ignoring SIGHUP.
-		descendant := exec.Command("/bin/sh", "-c", `trap "" HUP; echo $$ > "$QUEUE_TEST_HIDDEN_INVITE_PID"; exec sleep 60`)
+		descendant := exec.Command("/bin/sh", "-c", `trap "" HUP; echo $$ > "$SMOKE_TEST_HIDDEN_INVITE_PID"; exec sleep 60`)
 		if err := descendant.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestHiddenInviteCancellationKillsDescendants(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHiddenInviteChild$")
-	cmd.Env = append(os.Environ(), "QUEUE_TEST_HIDDEN_INVITE=descendant", "QUEUE_TEST_HIDDEN_INVITE_PID="+pidPath)
+	cmd.Env = append(os.Environ(), "SMOKE_TEST_HIDDEN_INVITE=descendant", "SMOKE_TEST_HIDDEN_INVITE_PID="+pidPath)
 	done := make(chan error, 1)
 	go func() { done <- runHiddenInvite(cmd, []byte("private-invite"), time.Minute) }()
 	deadline := time.Now().Add(10 * time.Second)
@@ -132,7 +132,7 @@ func TestHiddenInviteChildBounded(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHiddenInviteChild$")
-			cmd.Env = append(os.Environ(), "QUEUE_TEST_HIDDEN_INVITE="+mode)
+			cmd.Env = append(os.Environ(), "SMOKE_TEST_HIDDEN_INVITE="+mode)
 			err := runHiddenInvite(cmd, []byte("private-invite"), 150*time.Millisecond)
 			if err == nil {
 				t.Fatal("stuck child unexpectedly succeeded")
