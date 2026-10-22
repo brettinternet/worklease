@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.10.1 - 2026-10-22
+
+### Fixed
+
+- Preserve canonical claim resource digests in JSON claim, handle, and run output without exposing credentials.
+- Add `release --if-claim-id` to prevent releasing a replacement claim when a contextual handle changes after inspection.
+
 ## 1.10.0 - 2026-10-22
 
 ### Breaking
