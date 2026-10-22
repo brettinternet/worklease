@@ -135,23 +135,55 @@ jobs:
           scripts/test-container-image.sh "$image" "$version" \
             "$RUNNER_TEMP/released/bin/worklease" "$upgrade_image"
 
-  release-gate:
-    name: Authorize tagged release
-    if: github.event_name == 'push'
+  existing-ci:
+    name: Reuse exact-commit CI
+    # Archive/container validation gives a simultaneous main push time to appear
+    # in the API. Tags do not trigger CI; a tag-only commit uses the fallback.
     needs: [go-assets, container-images]
     runs-on: ubuntu-latest
-    environment: release
+    timeout-minutes: 35
+    outputs:
+      run-id: ${{ steps.ci.outputs.run-id }}
     steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { fetch-depth: 0 }
-      - name: Verify CI passed for tag commit
+      - name: Find and verify exact-commit main CI
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          run_id=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 1 --json databaseId --jq '.[0].databaseId')
-          test -n "$run_id"
-          gh run watch "$run_id" --exit-status
+          run_id=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" \
+            --limit 100 --json databaseId,event \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
+          if [ -n "$run_id" ]; then
+            gh run watch "$run_id" --exit-status
+            # Explicitly reject skipped/cancelled or nonmatching validation.
+            gh run view "$run_id" --json headSha,conclusion,event \
+              | jq -e --arg sha "$GITHUB_SHA" \
+                '.headSha == $sha and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch")'
+            echo "Reused CI run $run_id for $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No CI for $GITHUB_SHA; running all required gates" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  validation:
+    name: Tag-only validation
+    needs: [existing-ci]
+    if: needs.existing-ci.outputs.run-id == ''
+    uses: ./.github/workflows/validate.yml
+
+  release-gate:
+    name: Authorize tagged release
+    if: >-
+      always() && needs.existing-ci.result == 'success' &&
+      ((needs.existing-ci.outputs.run-id != '' && needs.validation.result == 'skipped') ||
+       (needs.existing-ci.outputs.run-id == '' && needs.validation.result == 'success'))
+    needs: [existing-ci, validation]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
+    steps:
+      - name: Confirm required validation
+        run: echo "All required gates passed for $GITHUB_SHA"
 
   publish:
     name: Publish immutable release assets
@@ -245,8 +277,8 @@ jobs:
 
   mise-install:
     name: mise latest (${{ matrix.platform }})
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
-    needs: [go-assets, publish]
+    if: always() && needs.release-gate.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
+    needs: [go-assets, release-gate, publish]
     strategy:
       fail-fast: false
       matrix:
