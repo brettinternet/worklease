@@ -4,6 +4,7 @@ title: Public claim attributes for work-item associations
 status: Draft
 assignee: []
 created_date: '2026-09-23 16:23'
+updated_date: '2026-10-22 18:07'
 labels:
   - authority
   - claims
@@ -21,7 +22,7 @@ type: feature
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Users want to find the coding-agent session (and similar context) that worked a given item. Upstream providers have no place for this, so Worklease is the natural home. Claim epochs already retain agentId, sessionId, and workKey, and agent instructions ask harnesses to pass their own loop-run ID as the session. Two gaps remain: when no selector is given, Worklease generates the claim sessionId, so it is not the harness session; and there is nowhere to record other non-secret associations such as the harness name, transcript reference, worktree, or PR URL. The checkpoint is the wrong home: it is private recovery metadata, overwritten on every write, and redacted from public views. This changes the claims/epochs schema, Remote Authority Protocol V1, and the redaction rules in docs/claim-model.md, so it should wait for demonstrated need rather than join the work-queue slices.
+Users want to find the coding-agent session (and similar context) that worked a given item. Claim epochs already retain agentId, sessionId, and workKey, and agent instructions ask harnesses to pass their own loop-run ID as the session. Two gaps remain: when no selector is given, Worklease generates the claim sessionId, so it is not the harness session; and there is nowhere to record other non-secret associations such as the harness name, transcript reference, worktree, or PR URL. The checkpoint is the wrong home: it is private recovery metadata, overwritten on every write, and redacted from public views. Task trackers such as `bl` would read these associations through the `--json` claim CLI. This changes the claims/epochs schema, Remote Authority Protocol V1, and the redaction rules in docs/claim-model.md, so it should wait for demonstrated need.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
