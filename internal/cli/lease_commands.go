@@ -91,7 +91,7 @@ func validateTokenCLI(v string) error {
 func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields map[string]any) error {
 	if s.jsonRequested(cmd) {
 		if operation == "status" || operation == "list" {
-			return output.WritePublicSuccess(s.writer, operation, fields)
+			return output.WritePublicSuccess(s.writer, operation, output.PublicResources(fields).(map[string]any))
 		}
 		jsonFields := fields
 		if operation == "checkpoint" || operation == "transfer" {
@@ -105,7 +105,7 @@ func writeLeaseResult(s *boundary, cmd *urfave.Command, operation string, fields
 				delete(jsonFields, "successorHandle")
 			}
 		}
-		return output.WriteSuccess(s.writer, operation, jsonFields)
+		return output.WriteSuccess(s.writer, operation, output.PublicResources(jsonFields).(map[string]any))
 	}
 	switch operation {
 	case "acquire":

@@ -214,6 +214,34 @@ func TestPublicDigestDoesNotRelaxStringOrSecretFieldRedaction(t *testing.T) {
 	}
 }
 
+// Claim, handle, and run projections normalize typed resource slices before
+// redaction. Losing their digest prevents callers from proving membership.
+func TestClaimResourceDigestsRemainPublicWithoutExposingCredentials(t *testing.T) {
+	t.Parallel()
+	token := strings.Repeat("a", 64)
+	generic := "coordination:generic:" + token
+	linear := "coordination:linear:" + token
+	type claim struct {
+		Resources []string `json:"resources"`
+		Token     string   `json:"token"`
+	}
+	for _, project := range []func(any) any{Redact, RedactPublic} {
+		got := project(PublicResources(map[string]any{
+			"claim":    claim{Resources: []string{generic, linear, token, "custom:" + token}, Token: generic},
+			"resource": generic,
+			"note":     generic,
+		})).(map[string]any)
+		c := got["claim"].(map[string]any)
+		resources := c["resources"].([]any)
+		if resources[0] != generic || resources[1] != linear || got["resource"] != generic {
+			t.Fatalf("public resource identity lost: %#v", got)
+		}
+		if resources[2] != "[REDACTED]" || resources[3] != "custom:[REDACTED]" || c["token"] != "[REDACTED]" || got["note"] != "coordination:generic:[REDACTED]" {
+			t.Fatalf("credential redaction relaxed: %#v", got)
+		}
+	}
+}
+
 func TestInvalidUTF8IsRedacted(t *testing.T) {
 	t.Parallel()
 	if got := RedactString(string([]byte{0xff})); got != "[REDACTED]" {

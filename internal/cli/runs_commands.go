@@ -25,7 +25,7 @@ func runFields(record runs.Record, now time.Time) map[string]any {
 	if path, err := runStore().LogPath(record.ID); err == nil {
 		fields["logPath"] = path
 	}
-	return fields
+	return output.PublicResources(fields).(map[string]any)
 }
 
 func writeRunResult(s *boundary, cmd *urfave.Command, operation string, record runs.Record) error {
@@ -213,7 +213,7 @@ func listRuns(s *boundary, cmd *urfave.Command) error {
 		}
 	}
 	if s.jsonRequested(cmd) {
-		values := make([]map[string]any, 0, len(shown))
+		values := make([]any, 0, len(shown))
 		for _, record := range shown {
 			values = append(values, runFields(record, now))
 		}

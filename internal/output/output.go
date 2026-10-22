@@ -286,6 +286,53 @@ func isPublicHexKey(key string) bool {
 	return strings.HasSuffix(lower, "sha256") || strings.HasSuffix(lower, "path") || lower == "successorhandle"
 }
 
+// PublicResources marks canonical policy identities in validated claim, handle,
+// or run metadata as public digests. Do not use it on raw caller input or errors.
+// Other fields still pass through the ordinary credential-redaction policy.
+func PublicResources(value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "[REDACTED]"
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var normalized any
+	if err := decoder.Decode(&normalized); err != nil {
+		return "[REDACTED]"
+	}
+	return markPublicResources(normalized, "")
+}
+
+func markPublicResources(value any, key string) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for name, child := range v {
+			v[name] = markPublicResources(child, name)
+		}
+	case []any:
+		for i, child := range v {
+			v[i] = markPublicResources(child, key)
+		}
+	case string:
+		if isPublicResourceDigest(key, v) {
+			return PublicDigest(v)
+		}
+	}
+	return value
+}
+
+func isPublicResourceDigest(key, value string) bool {
+	if key != "resource" && key != "resources" {
+		return false
+	}
+	for _, prefix := range []string{"coordination:generic:", "coordination:linear:"} {
+		if digest, ok := strings.CutPrefix(value, prefix); ok && len(digest) == 64 {
+			return tokenAt(digest, 0)
+		}
+	}
+	return false
+}
+
 func normalizedKey(key string) string {
 	key = strings.ToLower(strings.ReplaceAll(key, "_", ""))
 	return strings.ReplaceAll(key, "-", "")

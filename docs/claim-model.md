@@ -149,7 +149,13 @@ rules apply to structs, typed collections, and loose JSON:
 
 - Always redact keys named `token`, `tokenHash`, `bearer`, `password`, `secret`,
   `credential`, or `credentials`.
-- Redact token-shaped values except documented SHA-256 and path fields.
+- Redact token-shaped values except documented SHA-256 and path fields, and
+  canonical `coordination:generic:<sha256>` / `coordination:linear:<sha256>` keys
+  in `resource` or `resources` fields explicitly projected from validated claim,
+  handle, and run metadata. These public identities remain exact so callers can
+  check membership. Raw caller input is not exempt.
+  Bare token-shaped resources and the same digest-looking text in other fields
+  are still redacted; secret fields are always redacted.
 - Redact token-shaped member names; preserve collisions with deterministic
   suffixes.
 - Allow `argv`, `rawRequest`, `rawReceipt`, `checkpoint`, `evidence`, and

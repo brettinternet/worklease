@@ -52,7 +52,7 @@ func resourceState(t *testing.T, home, key string) string {
 func TestRunHoldsClaimForWorkerAndReleasesOnExit(t *testing.T) {
 	t.Parallel()
 	home, _ := testkit.Home(t)
-	key := "coordination:generic:run-release"
+	key := "coordination:generic:" + strings.Repeat("a", 64)
 	// The worker sees the run's claim session and reports a structured result.
 	worker := `test -n "$WORKLEASE_SESSION_ID" && test -f "$WORKLEASE_HANDLE" && printf '{"outcome":"review","summary":"ok"}' > "$WORKLEASE_RUN_RESULT"`
 	record, err := supervisedRun(t, home, "--resource", key, "--ref", "s:1", "--", "sh", "-c", worker)
@@ -68,6 +68,25 @@ func TestRunHoldsClaimForWorkerAndReleasesOnExit(t *testing.T) {
 	if state := resourceState(t, home, key); state != "free" {
 		t.Fatalf("resource %s after run", state)
 	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--json", "--home", home, "runs", "--all"}, "", "", "", &out, &out); err != nil {
+		t.Fatalf("runs: %v %s", err, out.String())
+	}
+	var listed struct {
+		Runs []runs.Record `json:"runs"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatalf("runs: %v %s", err, out.String())
+	}
+	for _, got := range listed.Runs {
+		if got.ID == record.ID {
+			if got.Claim == nil || len(got.Claim.Resources) != 1 || got.Claim.Resources[0] != key {
+				t.Fatalf("runs lost claim identity: %s", out.String())
+			}
+			return
+		}
+	}
+	t.Fatalf("run %s missing from list: %s", record.ID, out.String())
 }
 
 func TestRunPropagatesWorkerFailureAndReleases(t *testing.T) {

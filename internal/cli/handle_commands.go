@@ -155,7 +155,7 @@ func handleInspectionFields(selection offlineHandleSelection, h handle.Handle) m
 
 func writeOfflineHandleResult(s *boundary, cmd *urfave.Command, operation string, fields map[string]any) error {
 	if s.jsonRequested(cmd) {
-		return output.WritePublicSuccess(s.writer, operation, fields)
+		return output.WritePublicSuccess(s.writer, operation, output.PublicResources(fields).(map[string]any))
 	}
 	textFields := fields
 	if fields["selectorType"] == "contextual" {
