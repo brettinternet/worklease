@@ -26,7 +26,9 @@ authority-benchmark = { run = "python3 scripts/authority-benchmark.py --binary .
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"
-race = "go test -race -p 1 -parallel 2 ./..."
+# Re-executed tests are waited on and reaped; the race runtime's default 1s
+# exit sleep adds no synchronization. Keep instrumentation and failure exits.
+race = 'GORACE="${GORACE:-} atexit_sleep_ms=0" go test -race -p 1 -parallel 2 ./...'
 vuln = "govulncheck ./..."
 # Keep full and race suites separate on small CI runners; concurrent Go builds
 # and subprocess-heavy tests compete for the same process/CPU budget.

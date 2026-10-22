@@ -193,6 +193,7 @@ func TestProfileDefaultWithoutNameReportsWithoutMutation(t *testing.T) {
 }
 
 func TestProfileDefaultLocalAndBindLocalPersistSelectionsWithoutRemoteProfile(t *testing.T) {
+	t.Chdir(t.TempDir())
 	remote := testProfile("team")
 	saveTestProfiles(t, []config.Profile{remote}, "team")
 	out, err := runProfileCLI(t, "profile", "default", "local")
@@ -238,6 +239,7 @@ func TestProfileDefaultLocalAndBindLocalPersistSelectionsWithoutRemoteProfile(t 
 }
 
 func TestProfileUseAliasesBindAndUnbind(t *testing.T) {
+	t.Chdir(t.TempDir())
 	saveTestProfiles(t, []config.Profile{testProfile("remote")}, "")
 	checkoutRoot, err := handle.ContextRoot(mustGetwd(), nil)
 	if err != nil {
