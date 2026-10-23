@@ -602,7 +602,7 @@ func preflightGuidedTargets(configPath, invitePath string, result *guidedSetupRe
 			return err
 		}
 		if err := store.ValidateHostedHome(parent); err != nil {
-			return reason.Invalid("guided setup output directory must be owner-private: " + parent)
+			return err
 		}
 	}
 	return nil

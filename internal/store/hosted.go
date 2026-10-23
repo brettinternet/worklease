@@ -503,8 +503,11 @@ func WriteHostedExport(path string, write func(io.Writer) error) error {
 	}
 	parent := filepath.Dir(resolved)
 	dir, _, err := secureHome(parent, true)
-	if err != nil || dir == nil {
-		return homeUnsafe(errors.New("export parent is not owner-private"))
+	if err != nil {
+		return err
+	}
+	if dir == nil {
+		return homeUnsafe(errors.New("export parent does not exist"))
 	}
 	defer dir.Close()
 	info, err := dir.Stat()

@@ -130,7 +130,7 @@ func writeDefaultServerConfig(path string) error {
 		}
 	}
 	if err := store.ValidateHostedHome(parent); err != nil {
-		return reason.New(reason.ReasonHomeUnsafe, "server configuration directory must be owner-private")
+		return err
 	}
 	certPath := filepath.Join(parent, "server.crt")
 	keyPath := filepath.Join(parent, "server.key")

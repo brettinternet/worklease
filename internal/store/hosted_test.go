@@ -18,7 +18,45 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
+func TestValidateHostedHomeDistinguishesSymlinkAndPermissions(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real")
+	private := filepath.Join(real, "private")
+	if err := os.MkdirAll(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"private", "missing"} {
+		err := ValidateHostedHome(filepath.Join(alias, suffix))
+		failure := reason.As(err)
+		if failure == nil || failure.Reason != reason.ReasonHomeUnsafe || !strings.Contains(failure.Message, alias) || !strings.Contains(failure.Message, filepath.Join(real, suffix)) || !strings.Contains(failure.Message, "symlink") || !strings.Contains(failure.Message, "use resolved path") {
+			t.Fatalf("symlinked ancestor (%s): %v", suffix, err)
+		}
+		if strings.Contains(failure.Message, "owner-private") || strings.Contains(failure.Message, "permissions") {
+			t.Fatalf("symlink mislabeled as permissions: %v", err)
+		}
+	}
+	if err := ValidateHostedHome(private); err != nil {
+		t.Fatalf("resolved private directory: %v", err)
+	}
+	if err := os.Chmod(private, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failure := reason.As(ValidateHostedHome(private))
+	if failure == nil || failure.Reason != reason.ReasonHomeUnsafe || failure.Details["cause"] != "home permissions are not private" {
+		t.Fatalf("shared directory error: %#v", failure)
+	}
+}
+
 func TestWriteHostedExportRefusesReplacementAndSymlinkedParents(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -46,7 +84,7 @@ func TestWriteHostedExportRefusesReplacementAndSymlinkedParents(t *testing.T) {
 		t.Fatal(err)
 	}
 	aliasExport := filepath.Join(aliasParent, "export.json")
-	if err := WriteHostedExport(aliasExport, write); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+	if err := WriteHostedExport(aliasExport, write); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), aliasParent) {
 		t.Fatalf("symlinked export parent error=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(realParent, "export.json")); !errors.Is(err, os.ErrNotExist) {
