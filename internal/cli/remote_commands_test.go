@@ -258,6 +258,68 @@ func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing
 	}
 }
 
+// A metadata timeout must not invent recovery state; a lost mutation response
+// must retain a handle that the public inspect and replay commands can use.
+func TestRemoteAcquireFailureRecoveryMatchesStaging(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		name := "metadata-timeout"
+		if staged {
+			name = "lost-acquire-response"
+		}
+		t.Run(name, func(t *testing.T) {
+			profileName, clientHome, claimHandle := remoteCLIFixture(t)
+			originalTransport := http.DefaultTransport
+			mutationCalls := 0
+			http.DefaultTransport = cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if !staged {
+					if request.URL.Path != "/.well-known/worklease" {
+						t.Errorf("pre-staging timeout dispatched %s", request.URL.Path)
+					}
+					return nil, context.DeadlineExceeded
+				}
+				response, err := originalTransport.RoundTrip(request)
+				if request.URL.Path == "/v1/claims/acquire" && err == nil {
+					mutationCalls++
+					_ = response.Body.Close()
+					return nil, io.ErrUnexpectedEOF
+				}
+				return response, err
+			})
+			t.Cleanup(func() { http.DefaultTransport = originalTransport })
+			out, err := runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--resource", "coordination:staging", "--ttl", "30s", "--wait", "0s", "--json")
+			classified := reason.As(err)
+			if classified == nil {
+				t.Fatalf("missing failure: err=%v output=%s", err, out)
+			}
+			http.DefaultTransport = originalTransport
+			if !staged {
+				if classified.Reason != reason.ReasonRemoteTransportFailure || classified.Details["commitState"] != "not-committed" || strings.Contains(out, `"pendingPath"`) || strings.Contains(out, `"recoveryHint"`) {
+					t.Fatalf("pre-staging failure: err=%v output=%s", err, out)
+				}
+				if _, statErr := os.Stat(claimHandle); !os.IsNotExist(statErr) {
+					t.Fatalf("pre-staging handle exists: %v", statErr)
+				}
+				return
+			}
+			if classified.Reason != reason.ReasonUnknownOutcome || classified.Details["commitState"] != "unknown" || classified.Details["pendingPath"] != claimHandle || mutationCalls != 1 {
+				t.Fatalf("post-staging failure: err=%v output=%s calls=%d", err, out, mutationCalls)
+			}
+			out, err = runRemoteCLI(t, "handle", "inspect", "--home", clientHome, "--handle", claimHandle, "--json")
+			if err != nil || !strings.Contains(out, `"recordedState":"pending"`) || !strings.Contains(out, `"pendingRequestPresent":true`) {
+				t.Fatalf("inspect staged handle: err=%v output=%s", err, out)
+			}
+			out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--json")
+			if err != nil || !strings.Contains(out, `"resources":["coordination:staging"]`) {
+				t.Fatalf("replay staged handle: err=%v output=%s", err, out)
+			}
+			ready, err := handle.Read(claimHandle)
+			if err != nil || ready.State != "ready" || ready.PendingRequest != nil {
+				t.Fatalf("replayed handle not ready: err=%v", err)
+			}
+		})
+	}
+}
+
 func TestPendingAcquireBlocksLifecycleAndReplaysWithoutResourceFlags(t *testing.T) {
 	profileName, clientHome, claimHandle := remoteCLIFixture(t)
 	profiles, _, err := config.LoadProfiles(config.UserProfilePaths(os.Getenv))

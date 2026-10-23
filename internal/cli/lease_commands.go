@@ -728,7 +728,13 @@ func mutationFailure(err error, claim, op, path string) error {
 		} else {
 			e.With("claimId", claim)
 		}
-		e.With("operationId", op).With("pendingPath", path)
+		e.With("operationId", op)
+		// A selected handle path is not evidence that a request was staged.
+		if h, readErr := handle.Read(path); readErr == nil && h.PendingRequest != nil {
+			e.With("pendingPath", path)
+		} else {
+			delete(e.Details, "pendingPath")
+		}
 		// A guard that already committed its started intent reports its own
 		// commit state; only classify errors that have not been classified.
 		if _, classified := e.Details["commitState"]; !classified {

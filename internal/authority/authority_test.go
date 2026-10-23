@@ -10,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -50,6 +52,33 @@ func profileForTest(t *testing.T) config.Profile {
 }
 func response(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, Body: io.NopCloser(strings.NewReader(body))}
+}
+
+// Transfer must not turn a read-only metadata timeout into an uncertain mutation.
+func TestTransferMetadataTimeoutIsNotCommitted(t *testing.T) {
+	t.Parallel()
+	pending := NewFilePendingStore(filepath.Join(t.TempDir(), "pending"))
+	client, err := NewHTTPClient(profileForTest(t), pending, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/.well-known/worklease" {
+			t.Errorf("metadata timeout dispatched %s", request.URL.Path)
+		}
+		return nil, context.DeadlineExceeded
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := NewRemoteAuthority(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = remote.Transfer(context.Background(), lease.Credentials{}, lease.TransferRequest{OperationID: strings.Repeat("d", 32)})
+	classified := reason.As(err)
+	if classified == nil || classified.Reason != reason.ReasonRemoteTransportFailure || classified.Details["commitState"] != "not-committed" {
+		t.Fatalf("metadata failure lost its definite state: %v", err)
+	}
+	if records, err := pending.List(); err != nil || len(records) != 0 {
+		t.Fatalf("metadata failure staged requests: count=%d err=%v", len(records), err)
+	}
 }
 
 func TestRemoteMutationWritesBeforeDispatchAndRetainsUncertainty(t *testing.T) {

@@ -176,6 +176,10 @@ func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id str
 func (a *RemoteAuthority) dispatch(ctx context.Context, spec RequestSpec, body any) (json.RawMessage, error) {
 	if spec.Mutating && a.Client.clock.ResampleNeeded() {
 		if _, e := a.Client.Metadata(ctx); e != nil {
+			// Metadata is read-only; the mutation has not been staged or sent.
+			if classified := reason.As(e); classified != nil {
+				classified.With("commitState", "not-committed")
+			}
 			return nil, e
 		}
 	}
@@ -414,10 +418,11 @@ func (a *RemoteAuthority) Transfer(ctx context.Context, c lease.Credentials, r l
 	q["requestNotAfter"] = r.RequestNotAfter
 	q["claimId"], q["revision"], q["successorClaimId"], q["toAgent"], q["toSession"], q["toWorkKey"], q["ttlMicros"] = c.ClaimID, c.Revision, r.SuccessorClaimID, r.ToAgent, r.ToSession, r.ToWorkKey, r.TTL.Microseconds()
 	b, e := a.request(ctx, "/v1/claims/transfer", "transfer", r.OperationID, q, true, false, c.Token, r.SuccessorToken, c.HandlePath, r.SuccessorHandlePath, "", c.CredentialPath, r.SuccessorCredentialPath)
-	var out lease.Grant
-	if e == nil {
-		e = decodeResult(b, &out)
+	if e != nil {
+		return lease.Grant{}, e
 	}
+	var out lease.Grant
+	e = decodeResult(b, &out)
 	if e == nil {
 		e = validateResult(&out)
 	}
