@@ -12,11 +12,9 @@ Set Shell "bash"
 Set FontSize 18
 Set Width 1400
 Set Height 720
-Set Padding 24
-Set Margin 16
-Set MarginFill "#11111b"
-Set BorderRadius 10
-Set WindowBar "ColorfulRight"
+Set Padding 0
+Set Margin 0
+Set BorderRadius 0
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 20ms
 Set Framerate 20
