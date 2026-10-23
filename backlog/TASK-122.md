@@ -1,0 +1,44 @@
+---
+id: TASK-122
+title: Clarify implicit session and handle-selector semantics
+status: done
+type: enhancement
+priority: medium
+assignees: ['@brett']
+labels: [cli, docs, ux]
+rank: af0bad5c84f0bac88
+refs: [internal/cli/lease_commands.go, docs/claim-model.md, docs/cli-reference.md, internal/config/config.go, internal/cli/remote_commands_test.go]
+created: 2026-09-16T23:57:00Z
+updated: 2026-09-17T05:43:00Z
+---
+
+Omitting both --session and configured session selection uses an empty-selector contextual slot while acquire generates a claim sessionId. docs/claim-model.md already distinguishes these concepts, but help and diagnostics need a consistent explanation: the generated claim sessionId is metadata, not a lookup key for the original slot. Extend the existing contract rather than changing session generation or credential selection. A distinct selector selects another handle, not another resource-lock namespace.
+
+## Acceptance criteria
+
+- [x] CLI help and lifecycle documentation name the contextual handle selector separately from claim session metadata
+- [x] Commands and diagnostics represent an omitted selector consistently as unscoped and explain when a claim sessionId is generated
+- [x] User-visible acquire, status, list, and contention output does not imply that a generated claim sessionId can recover a contextual handle or bypass exact-resource contention
+- [x] Examples demonstrate stable explicit session use across acquire, heartbeat, status, and release, plus profile switching and same-resource contention
+- [x] Tests cover omitted and explicit selectors and verify stable, unambiguous text and structured output terminology
+- [x] Unscoped means the resolved selector is empty after flag/environment/config precedence, not merely that --session was omitted; documented examples cover WORKLEASE_SESSION_ID and explicit override.
+- [x] This change preserves existing JSON field names and claim sessionId values, session generation, handle selection, and exact-resource contention semantics; terminology changes do not turn the display label unscoped into a literal selector.
+
+## Plan
+
+1. Audit help, doctor, lifecycle text, and existing session docs; use contextual selector for lookup and claim sessionId for recorded metadata.
+2. Explain configuration precedence and label the empty resolved selector unscoped without changing the empty-string selection key or existing JSON sessionId values.
+3. Add explicit-session lifecycle and same-resource contention examples now; describe current profile-switch limitations and let TASK-119 update its resulting behavior.
+4. Add omitted/environment/config/explicit-selector assertions and verify generated IDs cannot be used to rediscover the original slot. Preserve existing machine-readable fields.
+
+## Notes
+
+Validation: internal/cli/lease_commands.go generates a random session only when cfg.SessionID is empty; acquireHandlePath passes the configured selector to ContextualPath. internal/config/config.go also resolves WORKLEASE_SESSION_ID and config-file session values, so an omitted flag is not necessarily unscoped. docs/claim-model.md already explains generated epoch metadata and uncertain-request recovery. TestRemoteCLIDefaultAndExplicitSessionsSelectIndependentHandles covers slot separation but not all terminology. TASK-119 profile-switch examples should land with the authority-scoping change; this terminology task need not wait for that implementation.
+
+Implemented selector/session terminology across help, lifecycle text, diagnostics, and docs. Added coverage proving the unscoped empty selector remains distinct from generated claim session metadata, explicit flags override WORKLEASE_SESSION_ID, and separate selectors still contend on one exact resource. Focused internal/cli and internal/doctor tests pass.
+
+Validation passed on merged main: mise run lint, mise run format-check, mise run test, and mise run typecheck. Staged pre-commit hooks passed. Independent review found three selector-display/test ambiguities; all were fixed by qualifying generated session metadata, quoting exact selectors, and adding env-only plus explicit lifecycle coverage. Implementation commit baaa48a merged as b06d0ab.
+
+## Summary
+
+Clarified contextual handle selectors versus claim session metadata in help, text output, diagnostics, and lifecycle docs. Empty selectors now display unambiguously as "" (unscoped) while JSON and selection semantics remain unchanged. Added tests for generated IDs, environment and flag precedence, explicit lifecycle reuse, literal-selector display, and exact-resource contention; all repository quality gates pass on merged main.

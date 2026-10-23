@@ -1,0 +1,47 @@
+---
+id: TASK-126
+title: 'Work queue S1: contracts, identity vectors, and provider probes'
+status: done
+type: task
+priority: high
+assignees: ['@brett']
+labels: [work-queue, reviewed]
+milestone: m-1
+blocked_by: [TASK-126.1, TASK-126.2, TASK-126.3, TASK-126.4, TASK-126.5, TASK-126.6, TASK-126.7]
+rank: a01cbe6d9601cbe6c
+refs: [docs/work-queue-tui-proposal.md]
+created: 2026-09-23T04:29:00Z
+updated: 2026-09-23T21:13:00Z
+---
+
+Every later work-queue slice builds on three foundations that are not settled yet. The first is contract semantics for capabilities, coverage, and freshness. The second is claim resources that are byte-identical between queue and CLI callers. The third is provider behavior the plan could not verify offline: GitHub sync behavior, Backlog.md cost at 10,000 tasks, and Git side effects. A mistake in any of them would be built into every adapter. See plan sections 2, 3, 6, 7, and 16 (S1).
+
+The upstream Backlog.md bulk-dependency request (TASK-127) runs in parallel and does not gate S1.
+
+This parent is an integration checklist, not an implementation lane. It depends on every child, so it becomes ready only after they are Done. Complete it by re-verifying the criteria below on main and recording the evidence.
+
+## Acceptance criteria
+
+- [x] Every S1 child task is Done, with its evidence recorded in the child task
+- [x] Dependency fixtures distinguish hard edges from hierarchy, cross-source references, cycles, partial graphs with known blockers, and unsupported completion conditions
+- [x] Plan section 3 contains the S1 probe results. Any decision they change is updated in section 2 and in the dependent plan sections
+- [x] contract.md, source-provider-contract.md, and the Backlog doc `doc-1 - Worklease-Workflow` agree with the plan and with each other
+- [x] The TASK-126.4 identity vectors run in `mise run test`
+
+## Plan
+
+Re-verify all S1 child evidence and main-branch contracts, fixture coverage, proposal probe results, and full test suite; record criteria evidence and finalize the integration task.
+
+Correct the stale pre-S1 cancellation wording in proposal section 8 before final verification.
+
+## Notes
+
+Main at 7fbb964: all seven children Done with individual evidence. Dependency eligibility v1 JSON cases cover hard/hierarchy, cross-source, cycle, partial known blocker, and unsupported condition (jq assertions passed). Proposal §3 contains Backlog 10k and GitHub probes with D13/D14 and §14 updates. Cross-checked contract.md, source-provider-contract.md, and doc-1; corrected stale pre-S1 cancellation text in proposal §8. mise run lint, format-check, test, typecheck, doc-test and focused TestVersionedKeyVectors all passed.
+
+Integration commit 871f283 fast-forwarded to main; main reran TestVersionedKeyVectors and doc-test successfully. One general consistency review found and corrected the stale cancellation sentence in proposal §8; no remaining blocker. Next: TASK-128.2 and TASK-128.3 are dependency-ready.
+
+Post-completion review (cce444b): child fixes applied for 126.6/126.7 (SKILL.md now agrees with contract on no-work outcomes). Parent criteria still hold; no follow-up.
+
+## Summary
+
+Re-verified S1 on main; corrected obsolete cancellation wording. All five criteria satisfied by child receipts, dependency fixture assertions, aligned contracts/proposal, and full checks including identity vectors.

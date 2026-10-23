@@ -1,0 +1,44 @@
+---
+id: TASK-142.2
+title: Add a bounded generic queue credential helper
+status: done
+type: feature
+priority: medium
+labels: [work-queue, reviewed]
+milestone: m-1
+parent: TASK-142
+rank: a777777777777770e
+refs: [docs/work-queue-tui-proposal.md]
+created: 2026-09-25T16:30:00Z
+updated: 2026-09-26T04:41:00Z
+---
+
+Linear and Jira Cloud need user-configured source credentials without embedding tokens in queue.yaml or inheriting secrets into child processes. Keep GitHub gh helper behavior unchanged. Design the helper so future providers can reuse it without adding auth frameworks.
+
+## Acceptance criteria
+
+- [x] queue.yaml accepts a user-configured credential helper argv for approved remote sources without storing credentials
+- [x] Helper execution bounds runtime/output, scrubs environment, redacts stderr, keeps tokens in memory only, and serializes refresh per credential
+- [x] Principal mismatch or helper failure disables authorized writes with actionable diagnostics; tests exercise secret redaction and concurrency
+
+## Plan
+
+1. Add a validated helper argv field to the approved remote-source configuration without changing gh auth.
+2. Implement a bounded, scrubbed, per-credential serialized token resolver with safe diagnostics and principal verification gate for future adapters.
+3. Cover failure, redaction, and concurrency with focused tests; run project gates, commit, merge and finalize.
+
+## Notes
+
+Merged code commit 4a7add4 via 9c84d53. Config test validates Linear/Jira Cloud helper argv and rejects missing/invalid commands; GitHub auth is unchanged. Helper tests exercise principal mismatch/failure redaction, bounded stdout/stderr, scrubbed child env, timeout/process-group teardown and serialized refresh. Focused -race -count=3 on config and queue passed on main; mise run lint, format-check, test, typecheck and staged hooks passed in implementation worktree. One review found process-group and stderr-limit defects; both fixed and retested. No Linear/Jira adapter is shipped in this subtask, so claims and provider writes remain disabled until later subtasks.
+
+Finalized on main in fb19977; verified session-owned worktree/branch removed by Worktrunk and its idle Herdr workspace closed. No blocker for this subtask; next eligible Linear child is TASK-142.3 (identity vectors).
+
+## Summary
+
+Added a bounded, principal-verified queue credential helper and Linear/Jira Cloud helper-argv configuration; merged 9c84d53. Focused race tests and all project gates passed.
+
+## Comments
+
+### 2026-09-26T04:41:00Z @pi
+
+Post-completion review fixed per-credential serialization across Linear and external adapters in merge 00903bc. Merged repository gates and focused race checks passed; no further item-scoped action identified.

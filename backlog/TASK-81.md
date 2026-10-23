@@ -1,0 +1,31 @@
+---
+id: TASK-81
+title: Add cursor-based lifecycle watches
+status: done
+type: feature
+priority: medium
+blocked_by: [TASK-69]
+rank: a9efd4e25b9efd456
+refs: ['https://github.com/DmarshalTU/coord']
+created: 2026-09-12T03:06:00Z
+updated: 2026-09-12T04:45:00Z
+---
+
+Supervisors and coding agents currently poll status, retry acquisition, or repeatedly inspect history to learn that a resource or the local authority changed. A bounded cursor-based watch should let callers sleep until relevant lifecycle activity occurs, reducing process churn and model/tool polling while building on the cross-resource event feed.
+
+## Acceptance criteria
+
+- [ ] Callers can wait from a supplied event cursor for a bounded duration and receive the first matching lifecycle change or an explicit timeout result.
+- [ ] Resource-scoped waiting supports the practical condition of a claimed resource becoming available without requiring the caller to repeatedly invoke status.
+- [ ] The watch contract handles release, transfer, replacement after expiry, new acquisition, and retained-history cursor gaps without silently reporting a false match.
+- [ ] CLI and MCP surfaces return consistent schema-versioned, non-secret results and enforce finite timeout limits appropriate to their transports.
+- [ ] Concurrent tests demonstrate prompt wake-up, timeout behavior, multiple waiters, cursor resumption, and token/checkpoint redaction.
+- [ ] Documentation distinguishes lifecycle notification from task scheduling, durable provider progress, and provider-side fencing.
+
+## Notes
+
+Closed 2026-09-12 as superseded before starting the unattended go-rewrite loop, so readiness-based selection cannot pick Python-era work. Acceptance criteria intentionally left unchecked: they were not delivered here. Delivery is owned by TASK-85.13.
+
+## Summary
+
+Superseded by TASK-85.13 in the Go rewrite (TASK-85). Not delivered in Python. Go Product Contract (docs/backlog/docs/go-rewrite/doc-2) section 11 (watch by cursor or resource with bounded timeout and honest gaps) fixes the behavior.

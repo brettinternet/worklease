@@ -2,49 +2,52 @@
 
 ## Backlog is the plan of record
 
-This repository uses Backlog.md for work that needs durable planning or coordination across sessions. Treat the task, document, decision, and milestone records under `docs/backlog/` as durable project state. Do not edit those Markdown files directly; use the `backlog` CLI so IDs, metadata, relationships, and structured sections remain valid.
+This repository tracks its own work with native `bl` (github.com/brettinternet/backlog), coordinated through Worklease itself (`coordination.worklease` in `backlog.yaml`). Treat `backlog/<ID>.md` and `backlog/archive/<ID>.md` as durable project state. Read and change tasks only through `bl` (CLI or MCP); never edit item Markdown directly.
 
 The CLI is installed through `mise`. Prefer the explicit form below when the command is not already on `PATH`:
 
 ```bash
-backlog <command>
+bl <command>
 ```
 
-When work needs cross-session planning, coordination, review, or handoff, read the overview before deciding whether to use an existing task or create one:
+Read `bl instructions` and `bl instructions workflow` before acting; use the installed binary's guidance, not commands from a newer design or another tracker.
 
-```bash
-backlog instructions overview
-```
-
-Do not search for or create a backlog item for work expected to finish in the current session, even if it produces a commit. Questions, explanations, exploration, and mechanical requests also need no item. Use Backlog.md only when the user requests it or the work needs durable state across sessions.
+Do not search for or create a backlog item for work expected to finish in the current session, even if it produces a commit. Questions, explanations, exploration, and mechanical requests also need no item. Use `bl` only when the user requests it or the work needs durable state across sessions.
 
 For work that meets that threshold, inspect existing work before starting:
 
 ```bash
-backlog search "<terms>" --plain
-backlog task list --plain
+bl ls --json
+bl ls "<query>" --json
 ```
 
-Use an existing task when it covers that work. Otherwise create one through `backlog task create`; do not create duplicate tasks.
+Use an existing task when it covers that work; otherwise create one (`bl instructions workflow` covers creation). Do not create duplicate tasks. Query syntax: `bl instructions query`.
 
 ## Working on backlog tasks
 
-For an existing task, read it before changing anything and load the matching guide:
+Pick and claim work in one step, before changing any status. Use one stable session for your whole loop:
 
 ```bash
-backlog task view TASK-123 --plain
-backlog instructions task-execution
+bl next --claim --start --session SESSION --json
 ```
 
-Keep status, assignee, plan, progress notes, comments, acceptance checks, and final summary in the task through `backlog task edit`. Re-read command help before using unfamiliar fields. Respect dependencies and acceptance criteria; do not silently expand scope. If the approach changes, update the task plan before continuing.
+This is `bl next --claim --start`: one ranked snapshot, skip confirmed contention, stop on an uncertain acquire. A held open item resumes without acquiring; a pending acquire replays its exact retained request. Keep the same session on uncertainty; never bypass recovery with a new session. `bl next` alone is read-only.
 
-Before completion, read and follow the finalization guide:
+Read the item fully before changing anything:
 
 ```bash
-backlog instructions task-finalization
+bl show ID --json
 ```
 
-Verify every acceptance criterion with objective evidence, record the evidence in the task, and move the task to its terminal status only after verification. A claim, assignee, branch, worktree, or lock is not a substitute for durable task state.
+Keep status, plan, progress notes, and acceptance checks in the task through `bl note ID TEXT`, `bl ac ID check N --evidence TEXT`, and `bl edit ID --section plan` (or `summary`/`dod`). Renew the claim with `bl heartbeat --session SESSION` at least every few minutes and before half the TTL. Read `show ID --json` first and pass `--if-version VERSION` when acting on criterion indices. Respect dependencies and acceptance criteria; do not silently expand scope. If the approach changes, update the task plan before continuing.
+
+Before completion, record each criterion's command and observed result with `bl ac ID check N --evidence TEXT`. Verify every acceptance criterion with objective evidence, then finish with:
+
+```bash
+bl done ID --session SESSION --json
+```
+
+`bl done` writes then releases before returning. If stopping incomplete, persist progress then `bl release ID --session SESSION`. A claim, assignee, branch, worktree, or lock is not a substitute for durable task state.
 
 ## Quality gates
 
@@ -88,9 +91,9 @@ Write a test only when it would catch a real regression, and cover each behavior
 
 ## Worklease workflow
 
-For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read the generated guide at `docs/backlog/docs/worklease-workflow/doc-1 - Worklease-Workflow.md` and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
+For agent coordination that needs claims, dependency-aware selection, heartbeats, durable progress, review boundaries, or archival, read [`docs/worklease-workflow.md`](docs/worklease-workflow.md) and then [`skills/worklease-workflow/SKILL.md`](skills/worklease-workflow/SKILL.md). They define the provider-neutral coordination contract: work sources and item IDs are opaque, and the caller supplies discovery, mutation, resource, and authority capabilities. Do not add provider assumptions to that contract or treat local coordination as provider-side fencing.
 
-Select work through the `backlog` CLI; use Worklease's claim CLI for bounded ownership when coordinating concurrent workers.
+Select work through `bl`; use Worklease's claim CLI for bounded ownership when coordinating concurrent workers.
 
 When caller context does not already provide those source/provider capabilities,
 read
@@ -100,33 +103,3 @@ GitHub Issues, Linear, Jira, and custom sources into that contract. Load only
 the matching provider reference, keep provider credentials and writes
 caller-authorized, and leave graph selection and claim lifecycle in
 `worklease-workflow`.
-
-The short Backlog.md command nudge in this file is managed by `backlog agents`. Keep the managed block intact; refresh it after changing project instructions with:
-
-```bash
-backlog agents --update-instructions
-```
-
-The detailed contracts remain in the generated Backlog guide and reusable skills; the generated nudge should point agents there rather than duplicate them.
-
-<!-- BACKLOG.MD GUIDELINES START -->
-<!-- backlog.md-instructions-version: 1.52.0 -->
-<CRITICAL_INSTRUCTION>
-
-## Backlog.md Workflow
-
-This project uses Backlog.md for task and project management.
-
-Only for work that needs durable planning or coordination across sessions, run `backlog instructions overview` to decide whether to search, read, create, or update Backlog tasks. Do not use Backlog.md for work expected to finish in the current session unless the user requests it.
-
-Before task lifecycle actions, read the matching detailed guide:
-- `backlog instructions task-creation` before creating or splitting tasks
-- `backlog instructions task-execution` before planning, changing status or assignee, adding a plan or implementation notes, or implementing task work
-- `backlog instructions task-finalization` before checking acceptance criteria, writing final summaries, or moving tasks to terminal statuses
-
-Use `backlog <command> --help` before running unfamiliar commands. Help shows options, fields, and examples.
-
-Do not edit Backlog task, draft, document, decision, or milestone markdown files directly. Use the `backlog` CLI so metadata, relationships, and history stay consistent.
-
-</CRITICAL_INSTRUCTION>
-<!-- BACKLOG.MD GUIDELINES END -->

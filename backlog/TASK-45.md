@@ -1,0 +1,39 @@
+---
+id: TASK-45
+title: Stop scanning child argv for output options when -- is omitted
+status: done
+type: bug
+priority: medium
+assignees: ['@codex-task-45']
+labels: [cli]
+rank: a51bd87a2951bd832
+refs: [src/worklease/cli.py]
+created: 2026-09-07T03:27:00Z
+updated: 2026-09-07T14:13:00Z
+---
+
+`_visible_output_options` truncates argv only at a bare `--`, but `exec`/`exec-bundle` accept child argv without it. Any exact `--json`, `-j`, `--format`, `-f`, `--format=...`, or `-f...` token in the child command then either rejects the whole command as conflicting-output-format (`worklease --json exec ... git log --format=oneline` exits 64) or flips the error output mode. Either require `--` for exec commands with an actionable hint, or truncate the pre-parse scan at the first positional after the exec subcommand, and prefer deriving the json/format conflict from parsed args rather than argv scanning where possible.
+
+## Acceptance criteria
+
+- [x] worklease --json exec <claim flags> git log --format=oneline runs the child and returns JSON
+- [x] A parser error for exec is rendered in the format chosen by worklease options, unaffected by tokens in child argv
+- [x] Behavior with and without -- is documented in exec help and README; tests cover both
+
+## Plan
+
+1. Bound raw output-option scanning at the first child argv token for exec, exec-bundle, and bundle-exec while preserving worklease options before that boundary.
+2. Add singleton and bundle CLI regressions for child output-like flags with and without `--`, including parser-error format isolation.
+3. Document optional `--` separation in command help and README, then run focused and repository quality gates.
+
+## Notes
+
+Implemented child-argv boundary detection for output-format scanning, documented optional `--` behavior, and added regressions for singleton/bundle aliases plus an executing child with `--format=oneline`. Repository gates pass: lint, format-check, test (232 tests), and typecheck.
+
+Post-rebase validation on main base passed: lint, format-check, 233 tests (214 core + 19 SDK), and typecheck. Direct acceptance script ran `git log --format=oneline -1` through separator-free JSON exec and verified text parser-error isolation plus exec help. Adversarial review found the JSON test helper still used the old boundary rule; fixed it to reuse `_visible_output_options` and added no-separator coverage for exec and bundle aliases.
+
+Post-delivery review (TASK-56) found and fixed defects in this work; see TASK-56 for the specific defect, the fix, and its regression test.
+
+## Summary
+
+Exec output-format scanning now stops at the child executable even when `--` is omitted, so child `--json`/`--format` flags pass through unchanged and cannot alter Worklease errors. Documented both invocation forms and added singleton/bundle regressions. Verified with the full lint, format, test, and typecheck gates plus a direct JSON `git log --format=oneline` acceptance run.

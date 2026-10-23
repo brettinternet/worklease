@@ -1,0 +1,80 @@
+---
+id: TASK-24
+title: Add bounded blocking lease acquisition
+status: done
+type: enhancement
+priority: medium
+assignees: ['@codex-loop-fresh-20260714-worklease-pass']
+rank: a2c0397cdb2c03956
+files: [src/worklease/cli.py, tests/test_cli.py, README.md]
+created: 2026-07-15T03:22:00Z
+updated: 2026-07-15T05:29:00Z
+---
+
+Close the documented scarce-resource UX gap by adding bounded wait-and-acquire behavior to the singleton `acquire` command. A standalone read-only `wait` would create a time-of-check/time-of-use race, so the CLI must retry the existing atomic acquire operation instead. Existing callers remain immediate by default, lease guarantees remain same-host, and bundle members retain their bundle-only lifecycle.
+
+## Acceptance criteria
+
+- [x] A caller can request a bounded wait while acquiring one singleton resource, and success returns the atomically acquired claim rather than advisory availability.
+- [x] Waiting retries only transient singleton contention and succeeds when a free or expired singleton resource becomes acquirable.
+- [x] Timeout preserves the stable lease-conflict exit-code contract and returns redacted contention context without exposing a bearer token.
+- [x] Singleton acquisition does not wait or retry when the resource belongs to a bundle, including an expired bundle; the existing bundle-operation-required result is returned immediately.
+- [x] Calls that do not request waiting retain their current output, error, timing, and exit-code behavior.
+- [x] CLI documentation and deterministic tests cover success after release or expiry, heartbeat extension, timeout, transient resource guards, invalid wait options, and bundle-member rejection.
+
+## Definition of done
+
+- [x] DOD1 — Targeted deterministic wait-acquisition tests and all repository quality gates pass.
+- [x] DOD2 — README syntax and compatibility claims match observed JSON/text CLI behavior, including redaction and exit code 2 on timeout.
+
+## Plan
+
+### Implementation tasks
+- [x] T1 — Add bounded singleton wait-and-acquire behavior, deterministic contract tests, and operator documentation (AC1-AC6).
+
+### Target area
+- Existing `src/worklease/cli.py`: add `acquire --wait-timeout SECONDS` and optional `--poll-interval SECONDS`; keep `LeaseStore.acquire` as the atomic ownership primitive.
+- Existing `tests/test_cli.py`: cover retry decisions and JSON/text CLI compatibility with injected monotonic time and sleeping so tests do not use wall-clock delays.
+- Existing `README.md`: document syntax, timeout behavior, retryable conflicts, bundle-member behavior, and the unchanged same-host guarantee.
+- Existing response schemas remain applicable because the operation and envelopes do not change; update schema fixtures/tests only if implementation adds a response field, which is not planned.
+
+### Resolved decisions and boundaries
+- Do not add a standalone `wait` command: availability would be advisory and another caller could acquire before the waiter.
+- `--wait-timeout` is optional and absent by default. Its presence enables waiting; zero performs one immediate attempt. Values must be finite and non-negative.
+- `--poll-interval` defaults to 0.25 seconds, must be finite and greater than zero, and is valid only with `--wait-timeout`.
+- Use a monotonic deadline and sleep for at most the lesser of the poll interval and remaining time. Re-run atomic `acquire` directly; never preflight with `status`.
+- Retry only `already-claimed` and transient `resource-guarded`. Return every other `LeaseError` immediately.
+- At deadline, return the last transient conflict unchanged with exit code 2 and existing redaction. Do not add a new exit code or expose tokens.
+- A free or expired singleton row can be acquired by the existing store logic. If the resource is or becomes a bundle member, including an expired bundle, singleton acquire returns `bundle-operation-required` immediately and is not retried.
+- Heartbeats may extend expiry, so reported expiry is never treated as a reservation or a guaranteed wake time.
+- Non-goals: bundle waiting, unbounded waits, provider-side/cross-host fencing, status subscriptions, SQLite notification infrastructure, and library-level blocking APIs.
+
+### Verification
+- Deterministically exercise success after release, success after singleton expiry, heartbeat extension beyond the original expiry, timeout on `already-claimed`, timeout on repeated `resource-guarded`, immediate bundle rejection, invalid numeric options, unchanged no-wait behavior, token redaction, and JSON/text rendering.
+- Run the repository quality gates required by `AGENTS.md` after implementation.
+
+Implementation Notes:
+--------------------------------------------------
+Refinement checkpoint: refinement: complete.
+Readiness: available; TASK-24 has no dependencies or external inputs.
+Implementation snapshot: `README.md:165` already directs scarce-resource callers to wait for release or expiry, while `src/worklease/cli.py:197-212` exposes only immediate singleton acquisition. `src/worklease/store.py:1796-1976` provides the atomic acquire/reclaim primitive and returns `already-claimed` for active singleton contention; it checks bundle membership first and returns `bundle-operation-required` even for expired bundle members. `src/worklease/locking.py:27-40` makes `resource-guarded` a transient non-blocking file-lock conflict. `README.md:203-212` defines exit code 2 for lease/capability conflicts and stable reason values. Existing CLI tests in `tests/test_cli.py:17-109` provide subprocess JSON/text helpers and `tests/test_cli.py:697-723` verifies conflict token redaction.
+Open questions: none. Least-confident assumption: a fixed 0.25-second local poll interval is responsive enough without jitter; it is reversible and explicitly configurable.
+Next action: review TASK-24 after implementation commit 424ac3c53368ff1e9695ef6b66b59053814803f2.
+
+## Notes
+
+Refinement checkpoint: refinement: complete.
+Readiness: available; TASK-24 has no dependencies or external inputs.
+Implementation snapshot: `README.md:165` already directs scarce-resource callers to wait for release or expiry, while `src/worklease/cli.py:197-212` exposes only immediate singleton acquisition. `src/worklease/store.py:1796-1976` provides the atomic acquire/reclaim primitive and returns `already-claimed` for active singleton contention; it checks bundle membership first and returns `bundle-operation-required` even for expired bundle members. `src/worklease/locking.py:27-40` makes `resource-guarded` a transient non-blocking file-lock conflict. `README.md:203-212` defines exit code 2 for lease/capability conflicts and stable reason values. Existing CLI tests in `tests/test_cli.py:17-109` provide subprocess JSON/text helpers and `tests/test_cli.py:697-723` verifies conflict token redaction.
+Open questions: none. Least-confident assumption: a fixed 0.25-second local poll interval is responsive enough without jitter; it is reversible and explicitly configurable.
+Next action: implement T1 without changing `LeaseStore.acquire` semantics or adding a standalone wait operation.
+
+T1 complete in commit 424ac3c53368ff1e9695ef6b66b59053814803f2. Added bounded singleton --wait-timeout/--poll-interval retrying only already-claimed/resource-guarded with monotonic deadlines; bundle members remain immediate bundle-operation-required. Added deterministic tests for release, expiry, heartbeat extension, timeout/redaction, invalid options, no-wait, and text/JSON behavior; documented operator syntax. Verification: targeted 7 tests, full CLI unittest (27 passed), mise run lint, mise run format-check, mise run typecheck, mise run test, mise run hooks. Next pass: REVIEW.
+
+Full review completed against implementation 2d5de0d (recorded implementation marker 424ac3c53368ff1e9695ef6b66b59053814803f2) and review-fix 43941c46c19e68db0ace8cc392d5af69a16e68d7. Finding fixed: _acquire_with_wait now checks the monotonic deadline after sleeping, preventing acquire after exact or overshot timeout; added deterministic overshoot regression test. Verification: targeted wait tests 6 passed; mise run lint passed; mise run format-check passed; mise run typecheck passed; mise run test passed (19 SDK, 168 core); mise run hooks passed. Review depth: full (public CLI and concurrency/timeout behavior); no remaining findings. Integration is pending because canonical main has unrelated staged changes in src/worklease/cli.py and tests/test_cli.py plus untracked task-26 backlog item; merge was attempted under control lock and refused without overwriting dirty files.
+
+reviewed: implementation commits 566d282 and 53eabf2; review-fix commit 8114afd; full implementation-review applied for public CLI, timeout, concurrency, and bundle lifecycle behavior. Finding fixed: LeaseStore.acquire now preflight-classifies persisted bundle membership before resource locking while retaining the in-lock atomic recheck; added a CLI-path cross-process bundle-member lock regression. No remaining findings. Verification: 9 focused wait tests passed; mise run lint, mise run format-check, mise run test (174 core and 19 SDK), mise run typecheck, and mise run hooks passed. Integration: cherry-picked implementation commits 566d282 and 53eabf2 into canonical main; committed review fix 8114afd; canonical HEAD 8114afd.
+
+## Summary
+
+Added bounded singleton acquire waiting with monotonic timeout and poll validation, preserving atomic acquire, redacted conflict behavior, same-host guarantees, and immediate bundle-member rejection. Integrated commits 566d282 and 53eabf2 into canonical main and fixed persisted bundle-lock classification in 8114afd. Verified with 9 focused wait tests plus mise run lint, mise run format-check, mise run test, mise run typecheck, and mise run hooks.

@@ -3,6 +3,10 @@
     "worklease": {
       "command": "worklease",
       "args": ["mcp"]
+    },
+    "bl": {
+      "command": "bl",
+      "args": ["mcp"]
     }
   }
 }

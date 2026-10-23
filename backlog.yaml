@@ -1,0 +1,45 @@
+version: 1
+project:
+    name: worklease
+sources:
+    - id: tasks
+      type: native
+      path: backlog
+      prefix: TASK
+statuses:
+    - key: draft
+      name: Draft
+      category: backlog
+    - key: todo
+      name: To Do
+      category: todo
+    - key: in-progress
+      name: In Progress
+      category: active
+    - key: done
+      name: Done
+      category: done
+workflow:
+    start: in-progress
+    done: done
+milestones:
+    - key: m-0
+      name: Worklease Go Rewrite
+      description: Replace the Python proof of concept with a POSIX-first Go implementation. The rewrite may redesign CLI, configuration, persistence, and internal APIs while preserving the useful coordination, guarded-execution, history, maintenance, and MCP capabilities. Python core and source-provider SDK compatibility are not release requirements.
+    - key: m-1
+      name: Provider-backed work queue
+      description: Deliver `worklease queue`, a Vim-first TUI, and a JSON query path over Backlog.md and GitHub Issues. Both explain provider readiness and Worklease claim availability without moving tasks into a new tracker. The plan of record is docs/work-queue-tui-proposal.md, and tasks cite its decision IDs (D1-D27) and section numbers. Slices S1-S8 are parent tasks that act as integration checklists and depend on their children. Each slice's children depend on the previous slice's parent.
+      archived: true
+labels:
+    - Blocked
+ready:
+    statuses:
+        - todo
+    satisfiedBy:
+        - done
+        - canceled
+    excludeLabels:
+        - Blocked
+    skipContainers: true
+coordination:
+    worklease: {}

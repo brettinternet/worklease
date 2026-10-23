@@ -1,0 +1,40 @@
+---
+id: TASK-143.3
+title: Add a write-capable reference adapter covering receipts and recovery
+status: done
+type: feature
+priority: medium
+labels: [work-queue, external-adapter]
+milestone: m-1
+parent: TASK-143
+blocked_by: [TASK-143.1]
+rank: a87a2951bd87a28da
+refs: [docs/external-adapter-protocol.md, skills/worklease-workflow/references/external-adapter-authoring.md]
+created: 2026-09-25T16:38:00Z
+updated: 2026-09-25T20:53:00Z
+---
+
+The only example (`cmd/worklease-sample-adapter`) is read-only. Writes are where adapter authors are most likely to break Worklease guarantees: treating HTTP success as proof, replaying a non-idempotent append after a lost response, or claiming conditional writes and fencing they do not have. Authors need a working example of the write half of the protocol.
+
+## Acceptance criteria
+
+- [x] A reference adapter, runnable without network access against a local fixture store, implements a configured state transition, an appended progress comment carrying the D7 operation marker, and assign-to-me, each returning a provider receipt with honest `conditionalWrite` and `fencingEvidence` values.
+- [x] `readReceipt` recovers after a lost response using the journaled intent and marker, returns `unknown` when it cannot distinguish its own write from another actor's, and never redispatches.
+- [x] The reference adapter passes `worklease queue adapter check` including mutation checks, and host tests drive it through claim, write, lost-response, and recovery flows.
+- [x] The authoring guide walks through the write methods and states which guarantees the example does not provide.
+
+## Plan
+
+1. Inspect protocol, sample adapter, conformance runner and host integration tests.
+2. Implement a local-fixture write adapter with truthful receipts and journal-backed readReceipt; add focused host tests.
+3. Document write/recovery walkthrough, run conformance and project gates, review once; commit, merge and clean up.
+
+## Notes
+
+Implemented fixture-backed reference adapter with writeState, recordProgress and assign; host pipeline test verifies applied-but-lost response recovers from journal with one dispatch. Independent review identified four concrete fixture correctness issues (custom completion, rejected rebind, symlink store, post-write small-budget error); corrected all and reran focused race tests. Full lint/format/test/typecheck passed. Built shipped binaries and queue adapter check --disposable-target reference-1 returned pass including mutation-receipt, lost-response and unknown-outcome.
+
+Evidence: TestReferenceAdapterWritesReceiptsAndRecoversMarkedAppend and TestReferenceAdapterThroughHostWritesConfiguredActions cover all write receipts and marker; TestReferenceAdapterReceiptUnknownWhenMarkerAttributionIsAmbiguous and TestReferenceAdapterLostResponseRecoversWithClaimAndNoRedispatch prove unknown and exactly-once recovery; built CLI adapter check verdict pass with disposable reference-1, including mutation-receipt/lost-response/unknown-outcome. Focused race count=3 passed on merged main. Authoring guide documents all methods and explicit lack of fencing/conditional provider writes. Commit 7d7ab8e1dbe086c5cd24f3382f606b6423755867 merged to main as 91378f1. Review: four item-scoped findings fixed and tests added; no remaining task blockers. Next: TASK-143.4 is ready; TASK-143 parent still depends on remaining subtasks.
+
+## Summary
+
+Delivered fixture-backed writable external reference adapter and recovery guide; conformance mutation probes, host claim/recovery tests, focused race checks and repository gates passed. Merged to main (91378f1).
