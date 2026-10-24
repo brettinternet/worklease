@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.11.0 - 2026-10-23
+
+### Added
+
+- Document Litestream backups and recovery for hosted authorities, with a Docker-backed backup and restore drill.
+
+### Changed
+
+- Show caller-supplied work keys as claim labels in CLI lists and the Claims TUI, while retaining resource details in full views.
+- Default hosted restore's durable cutoff to the backup's last committed write and its loss interval start to the selected cutoff; report both in restore output.
+- Prefer harness-provided session IDs in agent guidance and clarify their role in claim traceability.
+
 ## 1.10.2 - 2026-10-23
 
 ### Fixed
