@@ -2,10 +2,21 @@
 id: TASK-169
 title: Support safe hosted configuration reload
 status: draft
+type: feature
+priority: low
 labels: [remote-authority]
 rank: af53896e7bf538896
+refs: [docs/remote-claim-authority.md, docs/container.md]
 created: 2026-09-16T06:03:00Z
-updated: 2026-09-16T06:03:00Z
+updated: 2026-10-24T04:09:37Z
 ---
 
 Hosted configuration changes currently require stop-before-start. Define a fail-closed reload boundary for settings that can change safely, explicitly retaining restart requirements for authority identity, storage, TLS trust, admitted-prefix, or limit changes whose in-flight semantics cannot be preserved.
+
+## Acceptance criteria
+
+- [ ] Before design, the item records an operator need that stop-before-start does not meet
+
+- [ ] Docs list which settings reload and which still require a restart
+
+- [ ] A reload that changes a restart-only setting or fails validation keeps the running configuration and reports why

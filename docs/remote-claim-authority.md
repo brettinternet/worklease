@@ -553,7 +553,7 @@ Future capabilities need demonstrated demand or evidence:
 
 ## Evidence and release artifacts
 
-The [TASK-107.11 acceptance record](backlog/completed/task-107.11%20-%20Build-the-two-host-acceptance-harness-and-run-scenario-groups-1-to-5.md)
+The [TASK-107.11 acceptance record](../backlog/TASK-107.11.md)
 links two retained reports:
 
 - `dist/remote-acceptance/task-107-11-final-local-reviewed-6/report.json`

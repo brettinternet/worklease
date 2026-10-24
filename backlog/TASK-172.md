@@ -3,12 +3,12 @@ id: TASK-172
 title: Public claim attributes for work-item associations
 status: draft
 type: feature
-priority: low
+priority: medium
 labels: [authority, claims]
 rank: af7ea712dcf7ea638
-refs: [docs/claim-model.md, internal/store/schema.go, internal/instructions/instructions.go, docs/remote-authority-protocol-v1.md]
+refs: [docs/claim-model.md, internal/store/schema.go, internal/instructions/instructions.go, docs/remote-authority-protocol-v1.md, 'internal/cli/remote_lifecycle.go,internal/cli/lease_commands.go']
 created: 2026-09-23T16:23:00Z
-updated: 2026-10-23T22:58:23Z
+updated: 2026-10-24T04:09:37Z
 ---
 
 Users want to find the coding-agent session (and similar context) that worked a given item. Claim epochs already retain agentId, sessionId, and workKey, and agent instructions ask harnesses to pass their own loop-run ID as the session. Two gaps remain: when no selector is given, Worklease generates the claim sessionId, so it is not the harness session; and there is nowhere to record other non-secret associations such as the harness name, transcript reference, worktree, or PR URL. The checkpoint is the wrong home: it is private recovery metadata, overwritten on every write, and redacted from public views. Task trackers such as `bl` would read these associations through the `--json` claim CLI. This changes the claims/epochs schema, Remote Authority Protocol V1, and the redaction rules in docs/claim-model.md, so it should wait for demonstrated need.

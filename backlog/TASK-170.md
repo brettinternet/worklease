@@ -2,10 +2,19 @@
 id: TASK-170
 title: Add an authenticated browser control plane
 status: draft
+type: feature
+priority: low
 labels: [remote-authority, control-plane]
 rank: af61e8a546f61e7cc
+refs: [docs/remote-claim-authority.md]
 created: 2026-09-16T06:03:00Z
-updated: 2026-09-16T06:03:00Z
+updated: 2026-10-24T04:09:37Z
 ---
 
 Remote administration is CLI-only with installation credentials and no browser or OAuth surface. Add a browser control plane only when deployment demand justifies a separately authenticated and authorized interface with CSRF protection, secret-safe enrollment, role enforcement, auditability, and no trust in arbitrary proxy identity headers.
+
+## Acceptance criteria
+
+- [ ] Before design, the item records a deployment that needs administration without the CLI
+
+- [ ] The browser surface has its own authentication and role checks, CSRF protection, and an audit log, and ignores proxy identity headers

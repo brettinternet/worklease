@@ -3,11 +3,12 @@ id: TASK-171
 title: Evaluate resource-scoped coordination signals
 status: draft
 type: spike
+priority: low
 labels: [coordination, design]
 rank: af7047dc11f704702
 refs: [docs/claim-model.md, docs/cli-reference.md, skills/worklease-workflow/SKILL.md]
 created: 2026-09-18T20:22:00Z
-updated: 2026-09-18T20:22:00Z
+updated: 2026-10-24T04:09:37Z
 ---
 
 ## Recommendation
@@ -55,3 +56,9 @@ Before adding server behavior, prototype orchestration using events and watch an
 ## Decision threshold
 
 Proceed with implementation only when at least one concrete multi-agent workflow demonstrates that lifecycle events plus client-side orchestration are insufficient. Prefer improving watch ergonomics over adding a new durable protocol surface.
+
+## Acceptance criteria
+
+- [ ] The item records answers to the six questions above with a prototype built on events and watch
+
+- [ ] The item records a go or no-go decision against the decision threshold; a go creates a separate implementation task
