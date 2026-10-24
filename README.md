@@ -143,6 +143,25 @@ Open the [Claims TUI](docs/claims-tui.md) with bare `worklease` to inspect, rene
 See the [CLI reference](docs/cli-reference.md) for provider, credential, replay,
 polling, coordination-only, and guarded-operation options.
 
+## Use with Backlog
+
+[Backlog](https://github.com/brettinternet/backlog) (`bl`) claims items through
+Worklease when coordination is enabled in `backlog.yaml`:
+
+```yaml
+coordination:
+  worklease: {}
+```
+
+```sh
+bl next --claim --start --session loop-a  # pick, claim, and start the top ready item
+bl heartbeat --session loop-a             # renew the claim
+bl done TASK-1 --session loop-a           # finish and release
+```
+
+A second loop skips claimed items instead of starting the same work. This
+repository tracks its own work this way.
+
 ## Remote authority
 
 Start an authority with local TLS and the `coordination:` prefix:
