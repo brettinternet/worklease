@@ -748,6 +748,7 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body []byte, s
 		}
 		remoteErr := reason.New(e.Error.Reason, "remote request failed")
 		if e.Error.Reason == reason.ReasonAlreadyClaimed {
+			remoteErr.Message = "resource is already claimed"
 			if resource, ok := boundedRemoteText(e.Error.Details["resource"], 1024); ok {
 				remoteErr.With("resource", resource)
 			}
@@ -784,7 +785,24 @@ func boundedRemoteHolder(value any) map[string]any {
 	if !ok {
 		return nil
 	}
-	projected := make(map[string]any, 4)
+	projected := make(map[string]any, 6)
+	if sessionID, ok := boundedRemoteText(raw["sessionId"], 128); ok {
+		projected["sessionId"] = sessionID
+	}
+	if resources, ok := raw["resources"].([]any); ok && len(resources) > 0 && len(resources) <= 32 {
+		values := make([]string, 0, len(resources))
+		for _, resource := range resources {
+			value, valid := boundedRemoteText(resource, 1024)
+			if !valid {
+				values = nil
+				break
+			}
+			values = append(values, value)
+		}
+		if values != nil {
+			projected["resources"] = values
+		}
+	}
 	if claimID, ok := boundedRemoteText(raw["claimId"], 32); ok && validID(claimID) {
 		projected["claimId"] = claimID
 	}

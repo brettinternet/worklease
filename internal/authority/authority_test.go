@@ -329,7 +329,7 @@ func TestRemoteAlreadyClaimedPreservesOnlyBoundedHolderProjection(t *testing.T) 
 	store := NewFilePendingStore(t.TempDir())
 	authorityTime := time.Now().UTC()
 	holderID := strings.Repeat("a", 32)
-	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"private wire message","details":{"resource":"coordination:busy","holder":{"claimId":%q,"agentId":"holder-agent","workKey":"holder-work","expiresAt":"2026-09-12T00:00:00.000000Z","token":"%s","checkpoint":{"private":"evidence"},"unexpected":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("b", 64))
+	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"private wire message","details":{"resource":"coordination:busy","holder":{"claimId":%q,"resources":["coordination:busy","coordination:other"],"sessionId":"holder-session","agentId":"holder-agent","workKey":"holder-work","expiresAt":"2026-09-12T00:00:00.000000Z","token":"%s","checkpoint":{"private":"evidence"},"unexpected":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("b", 64))
 	client, err := NewHTTPClient(p, store, roundTripFunc(func(*http.Request) (*http.Response, error) { return response(409, body), nil }))
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +343,10 @@ func TestRemoteAlreadyClaimedPreservesOnlyBoundedHolderProjection(t *testing.T) 
 		t.Fatalf("remote contention=%#v", err)
 	}
 	holder, ok := classified.Details["holder"].(map[string]any)
-	if !ok || len(holder) != 4 || holder["claimId"] != holderID || holder["agentId"] != "holder-agent" || holder["workKey"] != "holder-work" {
+	if classified.Message != "resource is already claimed" {
+		t.Fatalf("contention message=%q", classified.Message)
+	}
+	if !ok || len(holder) != 6 || holder["sessionId"] != "holder-session" || fmt.Sprint(holder["resources"]) != "[coordination:busy coordination:other]" || holder["claimId"] != holderID || holder["agentId"] != "holder-agent" || holder["workKey"] != "holder-work" {
 		t.Fatalf("holder=%#v", classified.Details["holder"])
 	}
 	if _, present := holder["token"]; present {
@@ -358,7 +361,7 @@ func TestRemoteAlreadyClaimedDropsMalformedHolderFieldsButKeepsResource(t *testi
 	}
 	authorityTime := time.Now().UTC()
 	holderID := strings.Repeat("a", 32)
-	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"ignored","details":{"resource":"coordination:busy","holder":{"claimId":%q,"agentId":"bad\nfield","workKey":"%s","expiresAt":"not-a-time","private":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("x", 1025))
+	body := fmt.Sprintf(`{"ok":false,"protocolVersion":"worklease-http/1","authorityId":%q,"restoreId":%q,"authorityTime":%q,"error":{"reason":"already-claimed","message":"ignored","details":{"resource":"coordination:busy","holder":{"claimId":%q,"resources":["coordination:busy","bad\nresource"],"sessionId":"bad\nsession","agentId":"bad\nfield","workKey":"%s","expiresAt":"not-a-time","private":"drop"}}}}`, p.AuthorityID, p.RestoreID, authorityTime.Format(time.RFC3339Nano), holderID, strings.Repeat("x", 1025))
 	client, err := NewHTTPClient(p, NewFilePendingStore(t.TempDir()), roundTripFunc(func(*http.Request) (*http.Response, error) { return response(409, body), nil }))
 	if err != nil {
 		t.Fatal(err)

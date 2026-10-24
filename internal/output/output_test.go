@@ -163,12 +163,12 @@ func TestHolderProjectionKeepsOnlyBoundedPublicFields(t *testing.T) {
 	t.Parallel()
 	claimID := strings.Repeat("a", 32)
 	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "coordination:test").With("holder", map[string]any{
-		"claimId": claimID, "agentId": "agent", "workKey": "work", "expiresAt": "2026-09-12T00:00:00.000000Z",
+		"claimId": claimID, "resources": []string{"coordination:test"}, "sessionId": "holder-session", "agentId": "agent", "workKey": "work", "expiresAt": "2026-09-12T00:00:00.000000Z",
 		"token": strings.Repeat("b", 64), "checkpoint": map[string]any{"secret": "private"}, "unexpected": "drop",
 	})
 	failure := Classify(err)
 	holder, ok := failure.Details["holder"].(map[string]any)
-	if !ok || len(holder) != 4 || holder["claimId"] != claimID || holder["agentId"] != "agent" || holder["workKey"] != "work" {
+	if !ok || len(holder) != 6 || holder["sessionId"] != "holder-session" || fmt.Sprint(holder["resources"]) != "[coordination:test]" || holder["claimId"] != claimID || holder["agentId"] != "agent" || holder["workKey"] != "work" {
 		t.Fatalf("holder projection=%#v", failure.Details["holder"])
 	}
 	if _, present := holder["unexpected"]; present {

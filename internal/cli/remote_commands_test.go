@@ -201,7 +201,19 @@ func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing
 		return
 	}
 	profileName, clientHome, holderHandle := remoteCLIFixture(t)
-	out, err := runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", holderHandle, "--resource", "coordination:busy", "--ttl", "30s", "--json")
+	resources := []string{"coordination:busy"}
+	args := []string{"acquire", "--profile", profileName, "--home", clientHome, "--handle", holderHandle, "--session", "holder-session", "--work-key", "holder-work", "--ttl", "30s", "--json", "--resource", resources[0]}
+	for i := 1; i < 32; i++ {
+		prefix := fmt.Sprintf("coordination:%02d:", i)
+		resource := prefix + strings.Repeat("x", 1024-len(prefix))
+		resources = append(resources, resource)
+		args = append(args, "--resource", resource)
+	}
+	encodedResources, err := json.Marshal(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := runRemoteCLI(t, args...)
 	if err != nil {
 		t.Fatalf("holder acquire: %v output=%s", err, out)
 	}
@@ -218,7 +230,7 @@ func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing
 	if err == nil || !strings.Contains(out, `"reason":"already-claimed"`) || !strings.Contains(out, `"resource":"coordination:busy"`) || !strings.Contains(out, holderResult.ClaimID) {
 		t.Fatalf("contention JSON=%v output=%s", err, out)
 	}
-	if !strings.Contains(out, `"requestClaimId"`) || strings.Contains(out, `"sessionId"`) || strings.Contains(out, `"token"`) {
+	if !strings.Contains(out, `"requestClaimId"`) || !strings.Contains(out, `"message":"resource is already claimed"`) || !strings.Contains(out, `"sessionId":"holder-session"`) || !strings.Contains(out, `"resources":`+string(encodedResources)) || strings.Contains(out, `"token"`) {
 		t.Fatalf("contention identifiers/redaction=%s", out)
 	}
 	if _, statErr := os.Stat(attemptHandle); !os.IsNotExist(statErr) {

@@ -253,7 +253,7 @@ func TestUnscopedContextualSelectorIsDistinctFromClaimSessionMetadata(t *testing
 		t.Fatalf("generated claim session selected the unscoped handle: err=%v output=%s", selectErr, selected)
 	}
 	contended, contentionErr := run("--json", "acquire", "--session", "other", "--resource", "coordination:shared")
-	if contentionErr == nil || !strings.Contains(contended, `"reason":"already-claimed"`) || strings.Contains(contended, `"sessionId"`) {
+	if contentionErr == nil || !strings.Contains(contended, `"reason":"already-claimed"`) || !strings.Contains(contended, `"sessionId":"`+claimSession+`"`) {
 		t.Fatalf("same resource did not contend independently of selector: err=%v output=%s", contentionErr, contended)
 	}
 

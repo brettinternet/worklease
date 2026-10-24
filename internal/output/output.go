@@ -422,7 +422,7 @@ func redactMap(values map[string]any, public bool) map[string]any {
 	return redacted
 }
 
-// redactHolder keeps contention diagnostics to the four public holder fields.
+// redactHolder keeps contention diagnostics to the public holder fields.
 // Unlike general output maps, holder data is a protocol projection and unknown
 // fields must not survive merely because they were nested under an admitted
 // key.
@@ -439,8 +439,31 @@ func redactHolder(value any) map[string]any {
 			return map[string]any{}
 		}
 	}
-	projected := make(map[string]any, 4)
-	for _, field := range []string{"claimId", "agentId", "workKey", "expiresAt"} {
+	projected := make(map[string]any, 6)
+	var resources []any
+	switch values := raw["resources"].(type) {
+	case []any:
+		resources = values
+	case []string:
+		for _, value := range values {
+			resources = append(resources, value)
+		}
+	}
+	if len(resources) > 0 && len(resources) <= 32 {
+		values := make([]string, 0, len(resources))
+		for _, resource := range resources {
+			value, ok := resource.(string)
+			if !ok || !safeHolderText(value, 1024) {
+				values = nil
+				break
+			}
+			values = append(values, RedactString(value))
+		}
+		if values != nil {
+			projected["resources"] = values
+		}
+	}
+	for _, field := range []string{"claimId", "sessionId", "agentId", "workKey", "expiresAt"} {
 		text, ok := raw[field].(string)
 		if !ok || !safeHolderText(text, holderFieldLimit(field)) {
 			continue
@@ -459,7 +482,7 @@ func holderFieldLimit(field string) int {
 	if field == "claimId" {
 		return 32
 	}
-	if field == "agentId" {
+	if field == "agentId" || field == "sessionId" {
 		return 128
 	}
 	return 1024

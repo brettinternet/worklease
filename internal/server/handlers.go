@@ -471,7 +471,13 @@ func (s *Server) failStatus(w http.ResponseWriter, err error, status int) {
 		msg = msg[:4096]
 	}
 	ctx := s.service.ResponseContext()
-	if encoded, marshalErr := json.Marshal(details); marshalErr != nil || len(encoded) > 16<<10 {
+	detailsLimit := 16 << 10
+	if e.Reason == reason.ReasonAlreadyClaimed {
+		// A holder can own 32 1024-byte resources. Allow their worst-case
+		// JSON escaping plus the remaining bounded public holder fields.
+		detailsLimit = 256 << 10
+	}
+	if encoded, marshalErr := json.Marshal(details); marshalErr != nil || len(encoded) > detailsLimit {
 		details = nil
 	}
 	x := envelope{OK: false, ProtocolVersion: ProtocolVersion, AuthorityID: ctx.AuthorityID, RestoreID: ctx.RestoreID, AuthorityTime: ctx.AuthorityTime, Error: &wireError{Reason: e.Reason, Message: msg, Details: details}}

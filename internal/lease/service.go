@@ -445,7 +445,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 				continue
 			}
 			if old.ExpiresAt > effective.UnixMicro() {
-				return reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", resource).With("holder", map[string]any{"claimId": old.ClaimID, "agentId": old.AgentID, "workKey": old.WorkKey, "expiresAt": formatMicros(old.ExpiresAt)})
+				return reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", resource).With("holder", map[string]any{"claimId": old.ClaimID, "resources": old.Resources, "sessionId": old.SessionID, "agentId": old.AgentID, "workKey": old.WorkKey, "expiresAt": formatMicros(old.ExpiresAt)})
 			}
 			if _, found := expired[old.ClaimID]; !found {
 				expired[old.ClaimID] = old
