@@ -88,6 +88,7 @@ Write a test only when it would catch a real regression, and cover each behavior
 | End-to-end | `mise run e2e` (built-binary smoke, remote smoke, doc test) | CI linux-x64 |
 | Authority load probe | `mise run authority-benchmark` | manual |
 | VM remote smoke | `mise run remote-smoke-vm` | manual |
+| Hosted backup drill (Docker, Litestream, S3) | `mise run backup-drill` | manual |
 
 ## Worklease workflow
 

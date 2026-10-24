@@ -114,20 +114,109 @@ A restart or stop-before-start image upgrade reuses the mounted home unchanged.
 This preserves the authority identity, restore identity, claims, replay, and
 authentication state.
 
-Back up SQLite through a supported online SQLite backup or replication
-integration; do not copy a live database file independently of its WAL state.
-Optional asynchronous object replication is disaster recovery, not high
-availability.
+Never copy a live database file independently of its WAL state. Online
+replication to object storage is disaster recovery, not high availability, and
+can lose acknowledged writes after the last upload.
 
-For backup integrations:
+### Online backup with Litestream
 
-- keep replication credentials in read-only secrets;
-- keep tool metadata, replica generations, and restore-selection state in a
-  separate durable volume;
-- never bake that state into the image or mix a writable replica with the
-  authority home; and
-- restore through `worklease server restore`, which creates a new incarnation
-  in recovery mode.
+This recipe replicates the authority to S3-compatible storage with
+Litestream 0.5. `mise run backup-drill` runs it end to end against SeaweedFS:
+replicate, lose the home, restore, and verify recovery mode and the cutoff.
 
-See the [remote authority recovery model](remote-claim-authority.md) for cutoff,
-evidence, and reopening requirements.
+Keep Litestream state and credentials outside the authority home:
+
+```sh
+sudo install -d -m 0700 -o 65532 -g 65532 /srv/worklease/litestream
+sudo install -d -m 0700 -o 65532 -g 65532 /srv/worklease/restore
+sudo install -d -m 0700 -o 65532 -g 65532 /etc/litestream
+```
+
+`/etc/litestream/litestream.yml`, mode 0600 and owned by 65532:
+
+```yaml
+socket:
+  enabled: true
+  path: /var/lib/litestream/litestream.sock
+dbs:
+  - path: /var/lib/worklease/server/worklease.db
+    meta-path: /var/lib/litestream/worklease.db-litestream
+    replica:
+      type: s3
+      endpoint: https://s3.example.com
+      bucket: worklease-backup
+      path: authority
+      force-path-style: true
+```
+
+`/etc/litestream/s3.env`, mode 0600, supplies
+`LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY`. Run the
+replicator beside the authority on the same host:
+
+```sh
+docker run --detach --name worklease-backup --restart unless-stopped \
+  --user 65532:65532 \
+  --env-file /etc/litestream/s3.env \
+  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease/server \
+  --mount type=bind,src=/srv/worklease/litestream,dst=/var/lib/litestream \
+  --mount type=bind,src=/etc/litestream/litestream.yml,dst=/etc/litestream.yml,readonly \
+  litestream/litestream:0.5.17 replicate
+```
+
+Litestream writes to the database: it adds `_litestream_seq` and
+`_litestream_lock` tables and coordinates WAL checkpoints. Worklease accepts
+both. Stopping Litestream does not upload pending changes; confirm an upload
+with `docker exec worklease-backup litestream sync -wait -socket
+/var/lib/litestream/litestream.sock /var/lib/worklease/server/worklease.db`.
+
+### Restore
+
+Stop the old authority and establish its cessation time first. Restore the
+replica into the staging directory; `server restore` accepts only an
+owner-private file:
+
+```sh
+docker run --rm --user 65532:65532 \
+  --env-file /etc/litestream/s3.env \
+  --mount type=bind,src=/srv/worklease/restore,dst=/restore \
+  --mount type=bind,src=/etc/litestream/litestream.yml,dst=/etc/litestream.yml,readonly \
+  litestream/litestream:0.5.17 \
+  restore -integrity-check full -o /restore/worklease.db /var/lib/worklease/server/worklease.db
+sudo chmod 0600 /srv/worklease/restore/worklease.db
+```
+
+If the home was lost, recreate it with the `server init` command above. Then
+install the backup and reissue the bootstrap invite as an enrollment artifact:
+
+```sh
+docker run --rm \
+  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease/server \
+  --mount type=bind,src=/srv/worklease/restore,dst=/restore,readonly \
+  --mount type=bind,src=/srv/worklease/bootstrap,dst=/run/bootstrap \
+  ghcr.io/brettinternet/worklease:v1.2.0 \
+  server restore --home /var/lib/worklease/server --from /restore/worklease.db \
+  --loss-interval-end 2026-09-14T00:05:00Z \
+  --bootstrap-invite-file /run/bootstrap/restore.secret
+docker run --rm \
+  --mount type=bind,src=/srv/worklease/home,dst=/var/lib/worklease/server \
+  --mount type=bind,src=/etc/worklease,dst=/run/worklease,readonly \
+  --mount type=bind,src=/srv/worklease/bootstrap,dst=/run/bootstrap \
+  ghcr.io/brettinternet/worklease:v1.2.0 \
+  server bootstrap-reissue --server-config /run/worklease/server.yaml \
+  --bootstrap-invite-file /run/bootstrap/admin.invite
+```
+
+`server restore` creates a new incarnation in recovery mode. Its selected
+durable cutoff defaults to the backup's last committed write, which restore
+output reports. Litestream's file timestamps record uploads, not commits, so do
+not use them as the cutoff. Start the authority, enroll with the reissued
+invite, and follow the
+[remote authority recovery model](remote-claim-authority.md#restore-recovery-and-reopening)
+to reopen.
+
+| Need | Coverage |
+| --- | --- |
+| Scheduling | Litestream replicates continuously. |
+| Retention | Litestream replica retention and compaction. |
+| Verification | `restore -integrity-check full`, restore schema checks, and periodic `mise run backup-drill`. |
+| Cutoff | `server restore` records the backup's last committed write. |

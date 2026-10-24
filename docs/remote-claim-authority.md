@@ -396,9 +396,9 @@ They take the hosted lock before opening SQLite:
 worklease server init [--server-config FILE] [--bootstrap-invite-file FILE]
 worklease server init [--listen HOST:PORT] [--endpoint URL] \
   [--transport tls|http] [--admitted-prefix PREFIX]...
-worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 \
-  --loss-interval-start RFC3339 --loss-interval-end RFC3339 \
-  --bootstrap-invite-file FILE [--cutoff-unknown]
+worklease server restore --home DIR --from FILE --loss-interval-end RFC3339 \
+  --bootstrap-invite-file FILE [--selected-cutoff RFC3339 | --cutoff-unknown] \
+  [--loss-interval-start RFC3339]
 worklease server bootstrap-reissue [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE]
 worklease server reset [--server-config FILE | --home DIR] [--bootstrap-invite-file FILE] \
   [--confirm-reset] [--force --unresolved-export FILE]
@@ -464,7 +464,9 @@ Restore recreates an authority; it never resumes one.
 Recover in this order:
 
 1. Record the durable backup cutoff and loss interval through old-authority
-   cessation. Use `--cutoff-unknown` when needed; backup lag is not the bound.
+   cessation. The cutoff defaults to the backup's last committed write and the
+   loss interval start to the cutoff; restore output reports both. Use
+   `--cutoff-unknown` when needed; backup lag is not the bound.
 2. Enumerate the private evidence below.
 3. Replay or reconcile every retained started operation. Never redispatch a
    missing row.

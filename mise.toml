@@ -23,6 +23,12 @@ smoke = { run = "go run ./cmd/worklease-smoke --binary ./bin/worklease --version
 remote-smoke = { run = "go run ./cmd/worklease-remote-smoke --binary ./bin/worklease", depends = ["build"] }
 remote-smoke-vm = { run = "scripts/test-remote-vm.sh", depends = ["build"] }
 authority-benchmark = { run = "python3 scripts/authority-benchmark.py --binary ./bin/worklease --output /tmp/worklease-authority-$(date +%s)-$$", depends = ["build"] }
+backup-drill = { run = """
+arch=$(docker version --format json | jq -r .Server.Arch)
+CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -o bin/worklease-$arch ./cmd/worklease
+docker build --quiet --build-arg TARGETARCH=$arch --tag worklease-backup-drill:dev .
+scripts/drill-hosted-backup.sh worklease-backup-drill:dev ./bin/worklease
+""", depends = ["build"] }
 doc-test = { run = "go run ./cmd/worklease-doc-test", depends = ["build"] }
 e2e = "scripts/test-e2e.sh"
 release = "go run ./cmd/worklease-release"

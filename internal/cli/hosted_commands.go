@@ -52,9 +52,9 @@ func serverCommands(s *boundary) *urfave.Command {
 	}
 	initCommand.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedInit(s, ctx, cmd) }
 	restore := &urfave.Command{
-		Name: "restore", Usage: "restore a server authority backup", UsageText: "worklease server restore --home DIR --from FILE --selected-cutoff RFC3339 --loss-interval-start RFC3339 --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--cutoff-unknown]",
-		Description: "Restore a hosted backup into a fresh authority incarnation and enter recovery mode.\n\nExamples:\n  worklease server restore --home DIR --from FILE --selected-cutoff 2026-09-14T00:00:00Z --loss-interval-start 2026-09-14T00:00:00Z --loss-interval-end 2026-09-14T00:05:00Z --bootstrap-invite-file FILE",
-		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "from", Usage: "owner-private backup `FILE`"}, &urfave.StringFlag{Name: "selected-cutoff", Usage: "durable backup cutoff `RFC3339`"}, &urfave.StringFlag{Name: "loss-interval-start", Usage: "loss interval start `RFC3339`"}, &urfave.StringFlag{Name: "loss-interval-end", Usage: "loss interval end `RFC3339`"}, &urfave.BoolFlag{Name: "cutoff-unknown", Usage: "record that the durable cutoff is unknown"}, secret},
+		Name: "restore", Usage: "restore a server authority backup", UsageText: "worklease server restore --home DIR --from FILE --loss-interval-end RFC3339 --bootstrap-invite-file FILE [--selected-cutoff RFC3339 | --cutoff-unknown] [--loss-interval-start RFC3339]",
+		Description: "Restore a hosted backup into a fresh authority incarnation and enter recovery mode.\n\nExamples:\n  worklease server restore --home DIR --from FILE --loss-interval-end 2026-09-14T00:05:00Z --bootstrap-invite-file FILE",
+		Flags:       []urfave.Flag{&urfave.StringFlag{Name: "from", Usage: "owner-private backup `FILE`"}, &urfave.StringFlag{Name: "selected-cutoff", Usage: "durable backup cutoff `RFC3339` (default: the backup's last committed write)"}, &urfave.StringFlag{Name: "loss-interval-start", Usage: "loss interval start `RFC3339` (default: the selected cutoff)"}, &urfave.StringFlag{Name: "loss-interval-end", Usage: "loss interval end `RFC3339`"}, &urfave.BoolFlag{Name: "cutoff-unknown", Usage: "record that the durable cutoff is unknown"}, secret},
 	}
 	restore.Action = func(ctx context.Context, cmd *urfave.Command) error { return hostedRestore(s, ctx, cmd) }
 	reissue := &urfave.Command{
@@ -735,11 +735,14 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	cutoff, err := parseHostedTime(cmd.String("selected-cutoff"), "selected-cutoff", !cmd.Bool("cutoff-unknown"))
+	cutoffUnknown := cmd.Bool("cutoff-unknown")
+	cutoff, err := parseHostedTime(cmd.String("selected-cutoff"), "selected-cutoff", false)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	start, err := parseHostedTime(cmd.String("loss-interval-start"), "loss-interval-start", true)
+	// Without an explicit cutoff, the loss interval starts at the cutoff read
+	// from the backup below; an unknown cutoff provides no such default.
+	start, err := parseHostedTime(cmd.String("loss-interval-start"), "loss-interval-start", cutoffUnknown)
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
@@ -747,7 +750,7 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
-	if end.Before(start) {
+	if !start.IsZero() && end.Before(start) {
 		return hostedError(s, cmd, reason.Invalid("loss interval end must not precede its start"))
 	}
 	if _, err = os.Stat(from); err != nil {
@@ -768,8 +771,23 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err != nil {
 		return hostedError(s, cmd, err)
 	}
+	if !cutoffUnknown && cutoff.IsZero() {
+		// Every authority write advances last_observed_at in its own
+		// transaction, so the backup's value is its last committed write.
+		if cutoff, err = st.LastObservedAt(ctx); err != nil {
+			_ = st.Close()
+			return hostedError(s, cmd, err)
+		}
+	}
+	if start.IsZero() {
+		start = cutoff
+		if end.Before(start) {
+			_ = st.Close()
+			return hostedError(s, cmd, reason.Invalid("loss interval end must not precede the backup cutoff"))
+		}
+	}
 	svc := lease.New(st, nil, nil, lease.Defaults{})
-	result, err := svc.HostedRestore(ctx, lease.HostedRestoreRequest{SelectedCutoff: cutoff, LossStart: start, LossEnd: end, CutoffUnknown: cmd.Bool("cutoff-unknown")}, secret)
+	result, err := svc.HostedRestore(ctx, lease.HostedRestoreRequest{SelectedCutoff: cutoff, LossStart: start, LossEnd: end, CutoffUnknown: cutoffUnknown}, secret)
 	if err != nil {
 		_ = st.Close()
 		return hostedError(s, cmd, err)
@@ -781,7 +799,16 @@ func hostedRestore(s *boundary, ctx context.Context, cmd *urfave.Command) error 
 	if err := st.Close(); err != nil {
 		return hostedError(s, cmd, err)
 	}
-	return hostedResultPath(s, cmd, "server-restore", result, secretPath)
+	output := struct {
+		lease.BootstrapResult
+		SelectedDurableCutoff *time.Time `json:"selectedDurableCutoff"`
+		LossIntervalStart     time.Time  `json:"lossIntervalStart"`
+	}{BootstrapResult: result, LossIntervalStart: start.UTC().Truncate(time.Microsecond)}
+	if !cutoffUnknown {
+		recorded := cutoff.UTC().Truncate(time.Microsecond)
+		output.SelectedDurableCutoff = &recorded
+	}
+	return hostedResultPath(s, cmd, "server-restore", output, secretPath)
 }
 
 func hostedReissue(s *boundary, ctx context.Context, cmd *urfave.Command) error {

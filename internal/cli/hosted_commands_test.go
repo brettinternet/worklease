@@ -1401,6 +1401,57 @@ func TestServerResetResumesInterruptedCleanupStates(t *testing.T) {
 	}
 }
 
+// An omitted cutoff must come from the backup's last committed write, not from
+// the restore's own write, which would overstate what the backup preserved.
+func TestHostedRestoreDefaultsCutoffToBackupLastWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	home := filepath.Join(root, "authority")
+	cfg := hostedTestFile(t, root, "server.conf", home, 0o600)
+	secretDir := filepath.Join(root, "secrets")
+	if err := os.Mkdir(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr strings.Builder
+	if err := Run(context.Background(), []string{"worklease", "server", "init", "--home", home, "--server-config", cfg, "--bootstrap-invite-file", filepath.Join(secretDir, "bootstrap")}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(root, "backup.db")
+	contents, err := os.ReadFile(filepath.Join(home, store.DatabaseFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Open(context.Background(), home, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastWrite, err := snapshot.LastObservedAt(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	end := lastWrite.Add(time.Minute)
+	out.Reset()
+	if err := Run(context.Background(), []string{"worklease", "server", "restore", "--home", home, "--from", backup, "--loss-interval-end", end.Format(time.RFC3339Nano), "--bootstrap-invite-file", filepath.Join(secretDir, "restored"), "--json"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
+		t.Fatalf("restore: %v stderr=%s", err, stderr.String())
+	}
+	var result struct {
+		SelectedDurableCutoff time.Time `json:"selectedDurableCutoff"`
+		LossIntervalStart     time.Time `json:"lossIntervalStart"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &result); err != nil {
+		t.Fatalf("restore output=%s: %v", out.String(), err)
+	}
+	if !result.SelectedDurableCutoff.Equal(lastWrite) || !result.LossIntervalStart.Equal(lastWrite) {
+		t.Fatalf("cutoff=%s loss start=%s, want backup last write %s", result.SelectedDurableCutoff, result.LossIntervalStart, lastWrite)
+	}
+}
+
 func TestHostedRestoreAndForcedRetirement(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "authority")
