@@ -1,6 +1,6 @@
 [tools]
 go = "1.27.3"
-"github:brettinternet/backlog" = "latest" # repository task management
+"github:brettinternet/backlog" = "0.2.0" # repository task management
 lefthook = "latest"
 # Go 1.27.2 export-data support; replace with the next stable Staticcheck release.
 "go:honnef.co/go/tools/cmd/staticcheck" = "v0.7.0-0.dev.0.20261009221906-f1838cc308e5"

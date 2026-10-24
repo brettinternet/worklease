@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.10.2 - 2026-10-23
+
+### Fixed
+
+- Identify symlinked path components and suggest resolved paths instead of reporting generic permission errors.
+- Report remote mutation failures before request staging as not committed, while preserving uncertain outcomes for previously staged requests.
+- Include holder session and resource details in remote contention errors without exposing credentials.
+
 ## 1.10.1 - 2026-10-22
 
 ### Fixed
