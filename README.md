@@ -156,7 +156,7 @@ coordination:
 ```sh
 bl next --claim --start --session loop-a  # pick, claim, and start the top ready item
 bl heartbeat --session loop-a             # renew the claim
-bl done TASK-1 --session loop-a           # finish and release
+bl done WL-1 --session loop-a           # finish and release
 ```
 
 A second loop skips claimed items instead of starting the same work. This

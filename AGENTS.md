@@ -66,7 +66,7 @@ The pre-commit hook runs gofmt on staged files and `go vet`, `staticcheck`, and 
 
 ## Testing
 
-Write a test only when it would catch a real regression, and cover each behavior once. These rules apply to new and edited tests. Older tests were written before them; do not mass-rename or rewrite unrelated tests, because TASK-136 tracks that cleanup.
+Write a test only when it would catch a real regression, and cover each behavior once. These rules apply to new and edited tests. Older tests were written before them; do not mass-rename or rewrite unrelated tests, because WL-136 tracks that cleanup.
 
 - Put each test in the `_test.go` file for the behavior it covers. Do not name files after where a finding came from (`review_*_test.go`, `*_regression_test.go`).
 - Add one regression test per fixed bug, at the lowest layer that reproduces it. Do not repeat the same assertion at the CLI, MCP, and smoke layers.

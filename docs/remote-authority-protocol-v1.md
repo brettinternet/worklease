@@ -1,9 +1,9 @@
 # Remote Authority Protocol V1
 
-Status: frozen specification for TASK-107.1. This document defines the initial
+Status: frozen specification for WL-107.1. This document defines the initial
 remote wire and command surface. It does not claim that the surface is
 implemented or shipped. Normative words such as MUST describe the later
-TASK-107 implementation.
+WL-107 implementation.
 
 ## 1. Scope and ownership
 
@@ -12,21 +12,21 @@ HTTPS. SQLite table, column, transaction, and row shapes are not wire types.
 
 Implementation ownership is fixed as follows:
 
-- TASK-107.2 owns schema version 2, persisted replay/incarnation provenance,
+- WL-107.2 owns schema version 2, persisted replay/incarnation provenance,
   installations, invites, recovery state, admitted limits, and migrations.
-- TASK-107.4 owns domain validation, mutation ordering, exact replay,
+- WL-107.4 owns domain validation, mutation ordering, exact replay,
   incarnation checks, admission limits, recovery-mode behavior, administrative
   claim revocation, and reopening invariants.
-- TASK-107.5 owns offline `hosted` command composition, hosted lock use,
+- WL-107.5 owns offline `hosted` command composition, hosted lock use,
   crash-recoverable bootstrap secret files, restore, reissue, and retirement.
-- TASK-107.6 owns invite and installation credential generation, hashing,
+- WL-107.6 owns invite and installation credential generation, hashing,
   authentication, roles, enrollment, rotation-by-reenrollment, and revocation.
-- TASK-107.7 owns HTTP parsing, envelopes, limits, rate limiting, cancellation,
+- WL-107.7 owns HTTP parsing, envelopes, limits, rate limiting, cancellation,
   logging redaction, and `serve`.
-- TASK-107.8 owns profiles, trusted endpoints, installation credential storage,
+- WL-107.8 owns profiles, trusted endpoints, installation credential storage,
   authority-time estimation, redirects, and durable pending requests.
-- TASK-107.9 owns CLI routing through the local or remote client.
-- TASK-107.10 owns the existing local stdio MCP adapter over that client.
+- WL-107.9 owns CLI routing through the local or remote client.
+- WL-107.10 owns the existing local stdio MCP adapter over that client.
 
 No wire field exposes a SQLite primary key, schema/row version, table, row ID,
 transaction ID, backup path, or lock path. Domain claim revisions and recovery
@@ -294,7 +294,7 @@ predecessor hold deadline; cross-host transfer is absent.
 | `POST /v1/operations/inspect` | `ledger.InspectRequest`: common context; `operationId`, optional `claimId` or `resource`, `view` (`public` or `private`). Claim header required for private epoch view unless caller is admin. | `OperationV1` |
 | `POST /v1/operations/reconcile` | `lease.Credentials` + `lease.ReconcileRequest`: common context; resolver `claimId`, `revision`, `operationId`, `targetClaimId`, `targetOperationId`, `expectedRequestSha256`, `outcome`, `evidence`, `ttlMicros`, `requestNotAfter`. | `lease.ReconciliationReceipt` public fields: `operationId`, `targetClaimId`, `targetOperationId`, `resolverClaimId`, `outcome`, `requestSha256`, `revision`, `reconciledAt`, `expiresAt`, `idempotent`, `committed` |
 
-The canonical begin `request` is at most 48 KiB. TASK-107.8 introduces a
+The canonical begin `request` is at most 48 KiB. WL-107.8 introduces a
 `RemoteHandleV2` file with a 1 MiB encoded-file limit; before begin, the client
 constructs the complete pending handle, including all resources and the exact
 request, and rejects it unless that final encoded file fits. Local handle V1
@@ -321,8 +321,8 @@ reconcile route, not a second wire method.
 
 `RemoteOperationRenewRequestV1` is a named typed extension: `renewalId` is a
 fresh 32-lowercase-hex exact-replay key for one renewal of the target started
-operation. TASK-107.2 retains its normalized request and receipt through
-`requestNotAfter`; TASK-107.4 resolves identical replay before current revision
+operation. WL-107.2 retains its normalized request and receipt through
+`requestNotAfter`; WL-107.4 resolves identical replay before current revision
 authorization, returns the original receipt without extending again, and
 returns `operation-request-mismatch` for changed intent. A different renewal
 uses a new `renewalId`. This makes a lost renewal response recoverable even when
@@ -547,7 +547,7 @@ uses the same client and profile resolver. Existing MCP tool names remain
 `key`, `acquire`, `status`, `list`, `heartbeat`, `checkpoint`, `verify`,
 `watch`, `events`, `release`, and `instructions`; no enrollment,
 administration, transfer, exec, replace, reconciliation, history, profile, or
-recovery tool is added by TASK-107.
+recovery tool is added by WL-107.
 
 ## 10. Security and logging invariants
 

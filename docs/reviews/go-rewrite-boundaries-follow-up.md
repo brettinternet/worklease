@@ -1,15 +1,15 @@
 # Go rewrite boundary review — 2026-09-12
 
-Reviewed completed TASK-85 and TASK-88, including lease ownership, authenticated
+Reviewed completed WL-85 and WL-88, including lease ownership, authenticated
 replay/recovery, SQLite locking, handle isolation, GC/watch races, and MCP output.
 
 ## Findings
 
 | Priority | Finding | Disposition |
 | --- | --- | --- |
-| High | MCP redaction skips typed structs and slices. Bearer-shaped resource, agent, and work metadata can reach text and structured output. | Fixed in TASK-94. |
-| High | Handle operations re-resolve pathnames after validation and locking. Replacing the parent directory separates the held lock from subsequent handle reads/writes. The write-lock opener also lacks `O_NOFOLLOW`. | TASK-95; requires a coordinated handle filesystem change. |
-| Medium | `HoldUntil` affects authority expiry but is absent from acquire/heartbeat/checkpoint request hashes and pending inputs. Changed deadlines are accepted as equal replay intent. | TASK-96; requires service and adapter recovery changes. |
+| High | MCP redaction skips typed structs and slices. Bearer-shaped resource, agent, and work metadata can reach text and structured output. | Fixed in WL-94. |
+| High | Handle operations re-resolve pathnames after validation and locking. Replacing the parent directory separates the held lock from subsequent handle reads/writes. The write-lock opener also lacks `O_NOFOLLOW`. | WL-95; requires a coordinated handle filesystem change. |
+| Medium | `HoldUntil` affects authority expiry but is absent from acquire/heartbeat/checkpoint request hashes and pending inputs. Changed deadlines are accepted as equal replay intent. | WL-96; requires service and adapter recovery changes. |
 
 ### MCP redaction fix
 
@@ -21,7 +21,7 @@ list, events, and verify return typed projections. A resource containing a
 `internal/mcp/mcp.go` now converts success and error projections to JSON values
 before recursive redaction. `UseNumber` preserves integers above 2^53. Both
 output channels use the redacted projection. This leaves the broader CLI
-authenticated/private output policy in TASK-90.
+authenticated/private output policy in WL-90.
 
 The new tests directly marshal the returned MCP result rather than using
 `jsonText`, which itself redacts and could conceal a structured-output leak.
@@ -53,7 +53,7 @@ thirty minutes away. The replay returns the original receipt with
 `Idempotent=true`; it does not reject changed intent. An independent reviewer
 reproduced this with a test overlay, and the primary reviewer reran it.
 
-TASK-96 preserves the documented direct CLI takeover exception. It does not
+WL-96 preserves the documented direct CLI takeover exception. It does not
 propose enforcing MCP's hold budget on every future authenticated CLI mutation.
 
 ## Verification and limits
@@ -68,6 +68,6 @@ reconciliation, replay, or SQLite locking defects. Local inspection and race
 tests found no additional GC/watch defect. These results are bounded review
 evidence, not a proof that all interleavings are safe.
 
-Existing TASK-89 tracks same-handle guard reconciliation; TASK-90 tracks broader
-output policy; TASK-91 tracks long replacement work inside SQLite transactions.
+Existing WL-89 tracks same-handle guard reconciliation; WL-90 tracks broader
+output policy; WL-91 tracks long replacement work inside SQLite transactions.
 They remain separate work and are not resolved by this MCP fix.

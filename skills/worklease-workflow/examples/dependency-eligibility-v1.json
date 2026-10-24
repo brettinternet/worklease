@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Normative examples for TASK-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy. Optional item state (default open) is the source-reported category; automatic acquisition requires open work and resume is unavailable.",
+  "description": "Normative examples for WL-128.3; refs are [sourceID,itemID], edges point dependent -> prerequisite. Readiness is independent of claim occupancy. Optional item state (default open) is the source-reported category; automatic acquisition requires open work and resume is unavailable.",
   "cases": [
     {
       "name": "hard versus hierarchy",

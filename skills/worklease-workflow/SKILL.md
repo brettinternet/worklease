@@ -78,7 +78,7 @@ operation forbids cancellation.
 A short CLI loop needs no credential plumbing:
 
 ```sh
-worklease acquire --resource "$RESOURCE" --work-key "implement:TASK-42" --session "$SESSION"
+worklease acquire --resource "$RESOURCE" --work-key "implement:WL-42" --session "$SESSION"
 worklease verify --session "$SESSION"
 worklease heartbeat --session "$SESSION"
 worklease checkpoint --session "$SESSION" --data '{"phase":"tests"}'

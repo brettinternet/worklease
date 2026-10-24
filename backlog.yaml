@@ -5,7 +5,7 @@ sources:
     - id: tasks
       type: native
       path: backlog
-      prefix: TASK
+      prefix: WL
 statuses:
     - key: draft
       name: Draft

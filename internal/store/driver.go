@@ -87,7 +87,7 @@ type Driver struct {
 // TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars documents that
 // limit because the driver exposes no way to refuse it. The parent directory is
 // intentionally not created here; home ownership and directory checks belong
-// to the authority store (TASK-85.6).
+// to the authority store (WL-85.6).
 //
 // Existing database, -wal, and -shm paths are checked before opening. Because
 // the selected driver opens by path, this check has the residual pre-open race
