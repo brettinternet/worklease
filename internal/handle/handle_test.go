@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/testkit"
 )
 
@@ -286,6 +288,15 @@ func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
 	}
 	if _, err := ValidateMetadata(filepath.Join(symlinkParent, "h.json")); err == nil {
 		t.Fatal("accepted symlink handle parent")
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(symlinkTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Operators must see the symlinked ancestor, not a generic permission error.
+	err = WriteOwnerPrivate(filepath.Join(symlinkParent, "invite"), []byte("x"), 1)
+	if classified := reason.As(err); classified == nil || !strings.Contains(classified.Message, `/handles" is a symlink`) || !strings.Contains(classified.Message, strconv.Quote(filepath.Join(resolvedTarget, "invite"))) {
+		t.Fatalf("symlinked parent diagnostic: %v", err)
 	}
 	if err := Write(path, testHandle()); err != nil {
 		t.Fatal(err)

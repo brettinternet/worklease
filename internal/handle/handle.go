@@ -344,6 +344,25 @@ type Handle struct {
 }
 
 func newHandleError(r, msg string) error { return reason.New(r, msg) }
+
+// SymlinkAdvice names a symlinked component of path and, when it resolves, the
+// equivalent resolved path, so operators fix the path instead of permissions.
+func SymlinkAdvice(component, path string) string {
+	message := fmt.Sprintf("path component %q is a symlink", component)
+	if resolved, err := filepath.EvalSymlinks(component); err == nil {
+		suffix, _ := filepath.Rel(component, path)
+		message += fmt.Sprintf("; use resolved path %q", filepath.Join(resolved, suffix))
+	}
+	return message
+}
+
+// unsafeComponent explains a failed no-follow open of component within path.
+func unsafeComponent(component, path, fallback string) error {
+	if info, err := os.Lstat(component); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return newHandleError(reason.ReasonHandleUnsafe, SymlinkAdvice(component, path))
+	}
+	return newHandleError(reason.ReasonHandleUnsafe, fallback)
+}
 func validateToken(v string) error {
 	if len(v) != 64 {
 		return newHandleError(reason.ReasonCredentialMalformed, "credential is malformed")
@@ -505,10 +524,12 @@ func EnsureOwnerPrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
+	current := "/"
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
+		current = filepath.Join(current, part)
 		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if errors.Is(e, unix.ENOENT) {
 			// Another owner process may create this component concurrently.
@@ -519,7 +540,7 @@ func EnsureOwnerPrivateDir(path string) error {
 		}
 		_ = unix.Close(fd)
 		if e != nil {
-			return newHandleError(reason.ReasonHandleUnsafe, "private directory is unsafe")
+			return unsafeComponent(current, absolute, "private directory is unsafe")
 		}
 		fd = next
 	}
@@ -546,17 +567,19 @@ func openParent(path string) (*os.File, string, string, error) {
 		return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	parts := strings.Split(strings.TrimPrefix(parent, string(filepath.Separator)), string(filepath.Separator))
+	current := string(filepath.Separator)
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}
+		current = filepath.Join(current, part)
 		next, openErr := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		_ = unix.Close(fd)
 		if openErr != nil {
 			if errors.Is(openErr, unix.ENOENT) {
 				return nil, "", "", os.ErrNotExist
 			}
-			return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
+			return nil, "", "", unsafeComponent(current, absolute, "handle path is unsafe")
 		}
 		fd = next
 	}
@@ -1440,8 +1463,11 @@ func writeOwnerPrivate(path string, data []byte, max int64, noReplace bool) erro
 		return newHandleError(reason.ReasonHandleWriteFailed, "private file is oversized")
 	}
 	parent, name, absolute, err := openParent(path)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return newHandleError(reason.ReasonHandleUnsafe, "private path is unsafe")
+	}
+	if err != nil {
+		return err
 	}
 	defer parent.Close()
 	st, err := validateParentFD(parent)

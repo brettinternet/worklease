@@ -79,6 +79,14 @@ func TestTransferMetadataTimeoutIsNotCommitted(t *testing.T) {
 	if records, err := pending.List(); err != nil || len(records) != 0 {
 		t.Fatalf("metadata failure staged requests: count=%d err=%v", len(records), err)
 	}
+	// An earlier staged attempt of the same operation may have committed.
+	if err := pending.Save(pendingForTest(strings.Repeat("d", 32), "transfer", "/v1/claims/transfer", []byte(`{}`), profileForTest(t))); err != nil {
+		t.Fatal(err)
+	}
+	_, err = remote.Transfer(context.Background(), lease.Credentials{}, lease.TransferRequest{OperationID: strings.Repeat("d", 32)})
+	if classified := reason.As(err); classified == nil || classified.Details["commitState"] == "not-committed" {
+		t.Fatalf("metadata failure hid a staged attempt: %v", err)
+	}
 }
 
 func TestRemoteMutationWritesBeforeDispatchAndRetainsUncertainty(t *testing.T) {

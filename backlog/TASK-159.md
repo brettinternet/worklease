@@ -2,9 +2,10 @@
 id: TASK-159
 title: Name the holder in remote acquire contention errors
 status: done
+labels: [reviewed]
 rank: ab909e175ab909d74
 created: 2026-10-23T22:39:00Z
-updated: 2026-10-24T00:31:43Z
+updated: 2026-10-24T01:30:10Z
 ---
 
 Against a remote authority, acquiring a resource held by another agent fails with a generic "remote request failed" message, and the holder object has null resources and an empty session. Local contention names the held resource and holder session. Clients such as bl must fall back to their own wording, and operators cannot see who holds the claim or which resource contended. Found while verifying bl remote claims (backlog BL-72).
@@ -23,3 +24,5 @@ Against a remote authority, acquiring a resource held by another agent fails wit
 Plan: trace remote contention error serialization, preserve public holder metadata and useful contention wording, add one parity regression, run required checks, commit and merge locally. Worktree .worktrees/task-159 was created but the required user pre-start receipt hook failed parsing empty stdin; preserve it until cleanup is authorized.
 
 Delivered commit 8f086ca, fast-forward merged into main. Independent review found one concrete large-bundle diagnostic truncation bug; corrected and reran lint, format-check, vet, full tests, full race suite, hooks, and focused race count=3 successfully. Worktree and task-159 branch removed with explicit user approval after receipt hook failure; no associated Herdr workspace existed. Expired original claim was recovered with explicit user authorization by archiving its inactive handle after proving all commands/reviewer stopped and resource expired without competing owner, then reclaiming via bl in the same loop session. No blockers or remaining steps; nothing pushed.
+
+Review: docs still listed four holder fields and a 16 KiB details cap. Updated cli-reference contention example, go-rewrite-contract holder field list, and protocol section 7 to document the 256 KiB already-claimed details bound. doc-test and full gates passed.

@@ -2,9 +2,10 @@
 id: TASK-157
 title: Report symlinked ancestors accurately in owner-private path checks
 status: done
+labels: [reviewed]
 rank: ab57213c2eb57209c
 created: 2026-10-23T22:39:00Z
-updated: 2026-10-23T23:12:36Z
+updated: 2026-10-24T01:30:10Z
 ---
 
 On macOS, /tmp and /var are symlinks to /private/... . `worklease server init` (and enroll/invite artifact writes) under such a path fails with "output directory must be owner-private" even when the directory itself is 0700 and owned by the caller. The real cause is the symlinked ancestor, so operators chase permissions that are already correct. Found while building the bl remote-authority test (backlog BL-72), which had to EvalSymlinks every home.
@@ -23,3 +24,5 @@ On macOS, /tmp and /var are symlinks to /private/... . `worklease server init` (
 Plan: preserve existing symlink rejection, add component-specific diagnostics with resolved-path guidance in secureHome, propagate the actual validation error through hosted output callers, and verify private-directory and permission failures. Implement in .worktrees/fix-task-157; Worktrunk receipt hook failed on absent JSON stdin; user explicitly approved cleanup of this exact checkout and branch after merge.
 
 Delivered source commit 325bac25ae4ca6561987a2c4dca30ce6bb836eef, merged into main as 8e4859c883164f13ff2a15acf0ed741eeaf6e5b7. Verification: mise run lint, format-check, typecheck, test all passed in worktree and integrated main; staged mise run hooks passed; focused race tests passed count=3; direct server init JSON execution confirmed actionable symlink guidance and no config write. One general diff review completed; no additional item-scoped defects. Existing primary changes preserved byte-for-byte through merge. User-approved Worktrunk cleanup removed fix/task-157 branch and .worktrees/fix-task-157; exact Herdr workspace wNQ verified absent afterward. Receipt hook failure remains personal setup, not a repo defect. All criteria and delivery obligations satisfied; no blocker or next implementation step remains.
+
+Review: invite/enroll artifact and handle paths (internal/handle openParent, EnsureOwnerPrivateDir, WriteOwnerPrivate) still reported a generic unsafe error for symlinked ancestors. Added shared handle.SymlinkAdvice used by store and handle walks; WriteOwnerPrivate now propagates the diagnostic. Extended handle_test symlink-parent case. mise run lint, format-check, typecheck, test, doc-test passed; focused race count=3 passed.

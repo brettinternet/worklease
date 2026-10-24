@@ -176,8 +176,9 @@ func (a *RemoteAuthority) request(ctx context.Context, path, kind string, id str
 func (a *RemoteAuthority) dispatch(ctx context.Context, spec RequestSpec, body any) (json.RawMessage, error) {
 	if spec.Mutating && a.Client.clock.ResampleNeeded() {
 		if _, e := a.Client.Metadata(ctx); e != nil {
-			// Metadata is read-only; the mutation has not been staged or sent.
-			if classified := reason.As(e); classified != nil {
+			// Metadata is read-only, so this attempt sent nothing. An earlier
+			// staged attempt of the same operation may still have committed.
+			if classified := reason.As(e); classified != nil && !a.Client.operationStaged(spec.RequestID, spec.HandlePath) {
 				classified.With("commitState", "not-committed")
 			}
 			return nil, e

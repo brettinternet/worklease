@@ -192,6 +192,17 @@ func (c *HTTPClient) requestPreviouslyStaged(p PendingRequest, handlePath string
 	return err == nil && old.RequestSHA256 == p.RequestSHA256 && bytes.Equal(old.Request, p.Request)
 }
 
+// operationStaged reports whether any earlier attempt durably staged id.
+func (c *HTTPClient) operationStaged(id, handlePath string) bool {
+	if handlePath != "" {
+		if h, err := handle.Read(handlePath); err == nil && h.PendingRequest != nil && h.PendingRequest.OperationID == id {
+			return true
+		}
+	}
+	_, err := c.pending.Load(id)
+	return err == nil
+}
+
 // stagingFailure classifies a durable pre-dispatch staging failure. A cause
 // describing the request itself is preserved so the operator can distinguish a
 // changed request from a persistence fault; every storage-layer cause, however

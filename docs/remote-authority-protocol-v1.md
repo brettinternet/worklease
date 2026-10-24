@@ -408,7 +408,8 @@ request deadline or while needed by unresolved recovery.
 ## 7. Error to HTTP mapping
 
 Every failure uses the error envelope. Messages and details are redacted and
-bounded to 4 KiB and 16 KiB respectively. The following mapping is exhaustive
+bounded to 4 KiB and 16 KiB respectively; `already-claimed` details may reach
+256 KiB so the holder can list every resource of a 32-resource claim. The following mapping is exhaustive
 for V1; future reasons require a protocol amendment.
 
 | HTTP | Reasons |

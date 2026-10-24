@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -555,12 +556,7 @@ func secureHome(path string, readOnly bool) (*os.File, bool, error) {
 			// /private/var. Permit only that class of trusted system ancestor;
 			// user-owned or writable symlink ancestors remain unsafe.
 			if i >= len(parts)-1 || !trustedSystemSymlink(current, info) {
-				message := fmt.Sprintf("path component %q is a symlink", current)
-				if resolved, resolveErr := filepath.EvalSymlinks(current); resolveErr == nil {
-					suffix, _ := filepath.Rel(current, cleaned)
-					message += fmt.Sprintf("; use resolved path %q", filepath.Join(resolved, suffix))
-				}
-				return nil, false, reason.New(reason.ReasonHomeUnsafe, message)
+				return nil, false, reason.New(reason.ReasonHomeUnsafe, handle.SymlinkAdvice(current, cleaned))
 			}
 		} else if !info.IsDir() {
 			return nil, false, homeUnsafe(errors.New("home and ancestors must be directories"))

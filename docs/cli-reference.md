@@ -387,7 +387,7 @@ local coordination into cross-host or provider-side fencing. See
 JSON failures use:
 
 ```json
-{"schemaVersion":2,"ok":false,"operation":"acquire","error":{"reason":"already-claimed","exitCode":2,"message":"resource is already claimed","details":{"resource":"coordination:busy","requestClaimId":"…attempted…","operationId":"…operation…","holder":{"claimId":"…holder…","agentId":"agent","workKey":"work","expiresAt":"2026-09-12T00:00:00.000000Z"},"commitState":"not-committed"}}}
+{"schemaVersion":2,"ok":false,"operation":"acquire","error":{"reason":"already-claimed","exitCode":2,"message":"resource is already claimed","details":{"resource":"coordination:busy","requestClaimId":"…attempted…","operationId":"…operation…","holder":{"claimId":"…holder…","resources":["coordination:busy"],"sessionId":"session","agentId":"agent","workKey":"work","expiresAt":"2026-09-12T00:00:00.000000Z"},"commitState":"not-committed"}}}
 ```
 
 Exit families are:

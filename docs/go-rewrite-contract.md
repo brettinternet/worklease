@@ -210,7 +210,7 @@ Release requires current credentials and no pending guarded intent, accepts an o
 
 ### 7.9 Contention and waiting
 
-Acquire fails `already-claimed` when any requested resource is held by an active claim, reporting the holder's non-secret metadata (`claimId`, `agentId`, `workKey`, `expiresAt`) for the first contended resource in caller order. With `--wait D` it retries at `poll_interval` with plus or minus 20 percent jitter until the monotonic deadline, then fails `wait-timeout` carrying the last holder metadata. Contention on a resource held as part of a larger claim reports that claim.
+Acquire fails `already-claimed` when any requested resource is held by an active claim, reporting the holder's non-secret metadata (`claimId`, `resources`, `sessionId`, `agentId`, `workKey`, `expiresAt`) for the first contended resource in caller order. With `--wait D` it retries at `poll_interval` with plus or minus 20 percent jitter until the monotonic deadline, then fails `wait-timeout` carrying the last holder metadata. Contention on a resource held as part of a larger claim reports that claim.
 
 ### 7.10 Many resources
 
