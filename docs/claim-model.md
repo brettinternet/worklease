@@ -76,6 +76,13 @@ When the resolved selector is empty, acquire still generates a non-empty claim
 rather than rediscovering the unscoped handle. Selectors never enter resource
 keys, so different selectors still contend on the same exact resource.
 
+To trace a claim back to the harness session that held it, the caller supplies
+its own session ID: CLI `--session` or `WORKLEASE_SESSION_ID`, or MCP
+`acquire.sessionId`. Worklease records that value unchanged as the claim
+`sessionId`. `status` and `list` return it while the claim is held, and resource
+history keeps it after release, for local and remote authorities. A generated `sessionId` identifies only the
+epoch. Claims carry no other caller attributes; use `workKey` to name the work.
+
 A legacy root-and-session handle migrates only when its embedded authority ID
 matches the selected authority. Mismatched legacy state remains at its original
 path. If both legacy and scoped paths exist, Worklease changes neither and

@@ -132,7 +132,7 @@ selector, not a resource namespace.
 Worklease exposes non-secret claimant metadata:
 
 - `agentId` — the claimant identity
-- `sessionId` — ownership-epoch metadata (generated when no selector is set)
+- `sessionId` — the caller's session ID, unchanged (generated when no selector is set)
 - `workKey` — what it says it’s working on
 - `claimId` and expiry
 
