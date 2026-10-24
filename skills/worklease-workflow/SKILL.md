@@ -92,10 +92,13 @@ verify and checkpoint. Before exiting, report the outcome by writing
 `{"outcome":"done|blocked|review|failed","summary":"..."}` to
 `WORKLEASE_RUN_RESULT`.
 
-Give each independent loop one full, collision-resistant stable ID. Preserve a
-harness workflow/loop-run ID unchanged; otherwise generate and persist a full
-UUID. Never truncate or derive it from labels, agent names, turns, iterations,
-or replacement sessions. Map it consistently to CLI `WORKLEASE_SESSION_ID` /
+Give each independent loop one full, collision-resistant stable ID. Use the
+harness's own workflow/loop-run ID unchanged; otherwise its own session ID
+unchanged; otherwise generate and persist a full UUID. The claim records this
+value as `sessionId`, which is how people find the session that worked an item.
+A delegated worker that claims independently needs its own ID. Never truncate
+or derive it from terminal panes, labels, agent names, turns, iterations,
+replacement sessions, or other values reused across sessions. Map it consistently to CLI `WORKLEASE_SESSION_ID` /
 `--session`; for MCP, use `acquire.sessionId` and persist the returned opaque
 lease. Use `--handle PATH` only when an explicit private handle is required.
 

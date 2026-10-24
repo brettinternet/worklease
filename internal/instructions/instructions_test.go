@@ -12,7 +12,7 @@ func TestLoopInstructionsRequirePostWaitVerificationAndExplicitHandoff(t *testin
 	}
 	joined := strings.Join(loop, "\n")
 	for _, want := range []string{
-		"Use a harness-provided loop-run ID unchanged",
+		"Use the harness's own loop-run ID unchanged; otherwise its own session ID unchanged",
 		"CLI: set WORKLEASE_SESSION_ID",
 		"MCP: pass it as sessionId to acquire, persist the returned lease before work",
 		"Never truncate the ID or derive it",
