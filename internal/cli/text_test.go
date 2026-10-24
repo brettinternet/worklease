@@ -312,7 +312,12 @@ func TestListTextCompactAndFull(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	resource := "backlog-md:%2FUsers%2Fbrett%2Fdev%2Fworklease%2F.git:docs%2Fbacklog:TASK-68"
-	values := []lease.ClaimView{{ClaimID: strings.Repeat("a", 32), Resources: []string{resource}, AgentID: "agent", Active: true, ExpiresAt: now.Add(62 * time.Minute)}}
+	opaque := "coordination:generic:" + strings.Repeat("d", 64)
+	workKey := "github.com/brettinternet/backlog BL-76\x1b[31m " + strings.Repeat("x", 40)
+	values := []lease.ClaimView{
+		{ClaimID: strings.Repeat("a", 32), Resources: []string{resource}, WorkKey: resource, AgentID: "agent", Active: true, ExpiresAt: now.Add(62 * time.Minute)},
+		{ClaimID: strings.Repeat("c", 32), Resources: []string{opaque}, WorkKey: workKey, AgentID: "agent", Active: true, ExpiresAt: now.Add(time.Minute)},
+	}
 
 	var compact bytes.Buffer
 	if err := writeListTextAt(&compact, values, false, false, now); err != nil {
@@ -321,12 +326,16 @@ func TestListTextCompactAndFull(t *testing.T) {
 	if got := compact.String(); !strings.HasPrefix(got, "STATE") || strings.Contains(got, "\nlist\n") || strings.Contains(got, values[0].ClaimID) || strings.Contains(got, resource) || !strings.Contains(got, "backlog-md:worklease:TASK-68") || !strings.Contains(got, "1h 2m left") {
 		t.Fatalf("compact output=%q", got)
 	}
+	// A caller work key replaces the opaque resource summary, escaped and clipped.
+	if got := compact.String(); strings.Contains(got, "generic:#") || strings.Contains(got, "\x1b") || !strings.Contains(got, "github.com/brettinternet/…xxxx") {
+		t.Fatalf("compact work key output=%q", got)
+	}
 
 	var full bytes.Buffer
 	if err := writeListTextAt(&full, values, true, false, now); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"CLAIM_ID", "AGENT_ID", "EXPIRES_AT", resource, values[0].ClaimID, "agent", "2026-09-12T13:02:00.000000Z"} {
+	for _, want := range []string{"WORK_KEY", "CLAIM_ID", "AGENT_ID", "EXPIRES_AT", resource + "  -  ", values[0].ClaimID, "agent", "2026-09-12T13:02:00.000000Z", "coordination:generic:[REDACTED]", "BL-76\\u001b[31m " + strings.Repeat("x", 40)} {
 		if !strings.Contains(full.String(), want) {
 			t.Fatalf("full output missing %q: %q", want, full.String())
 		}

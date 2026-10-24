@@ -3,7 +3,6 @@ package claimsui
 import (
 	"fmt"
 	"path"
-	"slices"
 	"strings"
 	"time"
 
@@ -36,7 +35,7 @@ func (m Model) claimColumns(visible []lease.ClaimView, width int) []column[lease
 	now := m.claimsNow()
 	cols := []column[lease.ClaimView]{
 		{title: "Claimed", min: 16, flex: true, cell: func(c lease.ClaimView) (string, lipgloss.Style) {
-			label := shortResources(c.Resources)
+			label := claimLabel(c)
 			style := lipgloss.NewStyle()
 			if m.claimActionEligible(c) {
 				return "* " + label, m.s().ready
@@ -213,6 +212,15 @@ func repositoryName(commonDir string) string {
 	return strings.TrimSuffix(path.Base(commonDir), ".git")
 }
 
+// claimLabel names a claim in tables: the caller's work key when it supplied
+// one, otherwise its abbreviated resources.
+func claimLabel(claim lease.ClaimView) string {
+	if work := claim.CallerWorkKey(); work != "" {
+		return clean(work)
+	}
+	return shortResources(claim.Resources)
+}
+
 func shortResources(resources []string) string {
 	if len(resources) == 0 {
 		return "\u2014"
@@ -283,8 +291,8 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 			}
 			add(label, displayResource(resource), m.s().faint)
 		}
-		if claim.WorkKey != "" && !slices.Equal(claim.Resources, []string{claim.WorkKey}) {
-			add("Work key", claim.WorkKey, m.s().faint)
+		if work := claim.CallerWorkKey(); work != "" {
+			add("Work key", clean(work), m.s().faint)
 		}
 		add("Claim ID", claim.ClaimID, m.s().faint)
 	} else if m.Claims.PublicOnly {

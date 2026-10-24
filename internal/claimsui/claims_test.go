@@ -782,6 +782,31 @@ func TestShortResourceNamesHostLocalItems(t *testing.T) {
 	}
 }
 
+func TestClaimsListLabelsCallerWorkKey(t *testing.T) {
+	t.Parallel()
+	opaque := "coordination:generic:" + strings.Repeat("d", 64)
+	other := "coordination:generic:" + strings.Repeat("e", 64)
+	m := New()
+	m.Width, m.Height = 60, 10
+	m.Claims.Items = []lease.ClaimView{
+		{ClaimID: "a", Resources: []string{opaque}, WorkKey: "github.com/brettinternet/backlog BL-76\x1b[31m " + strings.Repeat("x", 80)},
+		{ClaimID: "b", Resources: []string{other}, WorkKey: other},
+	}
+	lines := m.claimListLines(m.claimRows(), m.Width, m.Height)
+	text := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(text, "github.com/brettinternet/backlog BL-76 …") || strings.Contains(text, "coordination:generic:dddd") || strings.Contains(text, "[31m") {
+		t.Fatalf("caller work key not shown in place of resource:\n%s", text)
+	}
+	if !strings.Contains(text, "coordination:generic:eeeeeeee…") {
+		t.Fatalf("default work key changed resource label:\n%s", text)
+	}
+	for _, line := range lines {
+		if width := ansi.StringWidth(line); width > m.Width {
+			t.Fatalf("line width %d exceeds %d: %q", width, m.Width, line)
+		}
+	}
+}
+
 func press(m Model, key string) (Model, tea.Cmd) {
 	type msg = tea.KeyMsg
 	var k msg

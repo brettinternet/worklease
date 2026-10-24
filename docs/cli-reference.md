@@ -224,8 +224,8 @@ Common inspection forms:
 
 | Form | Output |
 | --- | --- |
-| `list` | `STATE`, `RESOURCE`, and relative `LEASE`; Git resources collapse to provider/repository/item. |
-| `list --full` | Full resources, claim and agent IDs, and RFC3339 expiry. |
+| `list` | `STATE`, `RESOURCE`, and relative `LEASE`; a caller-supplied work key replaces the resource, and Git resources collapse to provider/repository/item. |
+| `list --full` | Full resources, caller work key, claim and agent IDs, and RFC3339 expiry. |
 | `list --resource KEY` | One exact resource, or `no current claims`. |
 | `events` | Kind, resource set when present, and relative time. |
 | `history --resource KEY` | Agent, status, acquire/end times, end reason, and operation kinds. |

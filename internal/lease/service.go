@@ -176,6 +176,16 @@ type ClaimView struct {
 	InstallationID      string    `json:"installationId,omitempty"`
 	RestoreID           string    `json:"restoreId,omitempty"`
 }
+
+// CallerWorkKey returns the work key the caller supplied, or "" when the claim
+// carries the default work key: its resources joined by ",".
+func (v ClaimView) CallerWorkKey() string {
+	if v.WorkKey == strings.Join(v.Resources, ",") {
+		return ""
+	}
+	return v.WorkKey
+}
+
 type ResourceStatus struct {
 	Resource string     `json:"resource"`
 	State    string     `json:"state"`

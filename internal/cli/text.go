@@ -503,7 +503,7 @@ func writeListTextAt(w io.Writer, values []lease.ClaimView, full, color bool, no
 	headers := []string{"STATE", "RESOURCE", "LEASE"}
 	rows := make([][]string, 0, len(values))
 	if full {
-		headers = []string{"STATE", "RESOURCES", "CLAIM_ID", "AGENT_ID", "EXPIRES_AT"}
+		headers = []string{"STATE", "RESOURCES", "WORK_KEY", "CLAIM_ID", "AGENT_ID", "EXPIRES_AT"}
 	}
 	for _, value := range values {
 		resources := make([]string, len(value.Resources))
@@ -516,9 +516,17 @@ func writeListTextAt(w io.Writer, values []lease.ClaimView, full, color bool, no
 		}
 		state := stateForClaim(value)
 		if full {
-			rows = append(rows, []string{state, strings.Join(resources, ","), output.RedactString(value.ClaimID), output.RedactString(value.AgentID), value.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")})
+			work := "-"
+			if value.CallerWorkKey() != "" {
+				work = escapeTerminalCell(output.RedactString(value.CallerWorkKey()))
+			}
+			rows = append(rows, []string{state, strings.Join(resources, ","), work, output.RedactString(value.ClaimID), output.RedactString(value.AgentID), value.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00")})
 		} else {
-			rows = append(rows, []string{state, shortenOpaque(strings.Join(resources, ","), 52), compactExpiry(value, now)})
+			label := strings.Join(resources, ",")
+			if work := value.CallerWorkKey(); work != "" {
+				label = work
+			}
+			rows = append(rows, []string{state, shortenOpaque(label, 52), compactExpiry(value, now)})
 		}
 	}
 	return writeTable(w, headers, rows, color)
