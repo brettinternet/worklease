@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -16,7 +15,6 @@ import (
 const (
 	EnvSupervisorID = "WORKLEASE_RUN_SUPERVISOR_ID"
 	EnvReadyFD      = "WORKLEASE_RUN_READY_FD"
-	readyFD         = 3
 )
 
 // ReadyTimeout bounds how long a launcher waits for the supervisor to acquire
@@ -38,8 +36,13 @@ func StartDetached(executable string, args []string, dir string, env []string, i
 		return Record{}, nil, err
 	}
 	defer reader.Close()
-	cmd := &exec.Cmd{Path: executable, Args: append([]string{"worklease"}, args...), Dir: dir, ExtraFiles: []*os.File{writer}, SysProcAttr: &syscall.SysProcAttr{Setsid: true}}
-	cmd.Env = append(stripProtocol(env), EnvSupervisorID+"="+id, fmt.Sprintf("%s=%d", EnvReadyFD, readyFD))
+	cmd := &exec.Cmd{Path: executable, Args: append([]string{"worklease"}, args...), Dir: dir}
+	ready, err := passReady(cmd, writer)
+	if err != nil {
+		writer.Close()
+		return Record{}, nil, err
+	}
+	cmd.Env = append(stripProtocol(env), EnvSupervisorID+"="+id, EnvReadyFD+"="+ready)
 	err = cmd.Start()
 	writer.Close()
 	if err != nil {
@@ -50,8 +53,23 @@ func StartDetached(executable string, args []string, dir string, env []string, i
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	_ = reader.SetReadDeadline(time.Now().Add(ReadyTimeout))
-	data, err := io.ReadAll(io.LimitReader(reader, maxRecord+1))
+	// Windows pipes do not support read deadlines.
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(reader, maxRecord+1))
+		read <- readResult{data, err}
+	}()
+	var data []byte
+	select {
+	case r := <-read:
+		data, err = r.data, r.err
+	case <-time.After(ReadyTimeout):
+		err = os.ErrDeadlineExceeded
+	}
 	if err != nil && len(data) == 0 {
 		return Record{}, done, fmt.Errorf("run %s did not report readiness: %w", id, err)
 	}
@@ -65,12 +83,15 @@ func StartDetached(executable string, args []string, dir string, env []string, i
 // ReadyWriter returns the launcher's readiness pipe when this process was
 // started by StartDetached, and the assigned run ID.
 func ReadyWriter(getenv func(string) string) (*os.File, string) {
-	if getenv(EnvReadyFD) != fmt.Sprint(readyFD) || !ValidID(getenv(EnvSupervisorID)) {
+	if !ValidID(getenv(EnvSupervisorID)) {
 		return nil, ""
 	}
 	// The worker must not inherit the pipe, or the launcher would wait for it.
-	syscall.CloseOnExec(readyFD)
-	return os.NewFile(readyFD, "worklease-run-ready"), getenv(EnvSupervisorID)
+	ready := openReady(getenv(EnvReadyFD))
+	if ready == nil {
+		return nil, ""
+	}
+	return ready, getenv(EnvSupervisorID)
 }
 
 // WorkerEnv removes the launcher protocol from an environment.

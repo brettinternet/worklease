@@ -16,10 +16,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/privfs"
 )
 
 const (
@@ -268,18 +268,12 @@ func (r Record) Health(now time.Time, alive func(pid int) bool) string {
 
 // Alive reports whether a local process exists. It cannot detect PID reuse;
 // Health also checks the record's update cadence.
-func Alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
+func Alive(pid int) bool { return pid > 0 && alive(pid) }
 
 // ReadResult reads and validates the worker's optional result file. A missing
 // file is not an error; an invalid one is reported so the run shows it.
 func ReadResult(path string) (*Result, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := privfs.OpenNoFollow(path, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

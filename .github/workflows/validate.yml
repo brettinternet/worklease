@@ -19,12 +19,17 @@ jobs:
           - { os: ubuntu-24.04-arm, platform: linux-arm64, gate: test }
           - { os: macos-15-intel, platform: macos-x64, gate: test }
           - { os: macos-14, platform: macos-arm64, gate: test }
+          - { os: windows-latest, platform: windows-x64, gate: test }
+          - { os: windows-11-arm, platform: windows-arm64, gate: test }
           - { os: ubuntu-latest, platform: linux-x64, gate: race-cli }
           - { os: ubuntu-latest, platform: linux-x64, gate: race-rest }
           - { os: ubuntu-latest, platform: linux-x64, gate: vuln }
           - { os: ubuntu-latest, platform: linux-x64, gate: e2e }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,6 +37,8 @@ jobs:
         uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           cache: true
+          # Windows needs only Go; other repository tools are Unix-only.
+          install_args: ${{ runner.os == 'Windows' && 'go' || '' }}
       - name: Resolve Go toolchain
         id: go
         run: echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
@@ -42,6 +49,7 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/Library/Caches/go-build
+            ~/AppData/Local/go-build
           # A gate-specific cache avoids a small/fast gate winning the immutable
           # cache save race and preventing the larger race cache from persisting.
           key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.version }}-${{ matrix.gate }}-${{ hashFiles('go.sum') }}
@@ -56,10 +64,17 @@ jobs:
           lefthook validate
           lefthook run pre-commit --file cmd/worklease/main.go
       - name: Platform tests and static build
-        if: matrix.gate == 'test'
+        if: matrix.gate == 'test' && runner.os != 'Windows'
         run: |
           mise run test
           mise run build
+      - name: Windows tests and static build
+        if: matrix.gate == 'test' && runner.os == 'Windows'
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test -p 1 -parallel 2 ./...
+          go build -trimpath -o bin/worklease.exe ./cmd/worklease
       - name: Race partition
         if: startsWith(matrix.gate, 'race-')
         env:

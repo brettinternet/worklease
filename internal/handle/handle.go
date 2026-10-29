@@ -21,8 +21,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -449,42 +449,25 @@ func validPublicText(v string) bool {
 // fileIdentity is the stable identity used to bind a pathname to an opened
 // descriptor. Device and inode are sufficient for the local filesystem
 // integrity boundary; this package does not attempt to fence a hostile UID.
-type fileIdentity struct {
-	dev uint64
-	ino uint64
-}
+type fileIdentity = privfs.ID
 
-func identity(st *unix.Stat_t) fileIdentity {
-	return fileIdentity{dev: uint64(st.Dev), ino: uint64(st.Ino)}
-}
-func sameIdentity(a, b fileIdentity) bool { return a == b }
+func identity(st *privfs.Stat) fileIdentity { return st.ID }
+func sameIdentity(a, b fileIdentity) bool   { return a == b }
 
-func statFD(f *os.File) (unix.Stat_t, error) {
-	var st unix.Stat_t
-	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-func statAt(dir *os.File, name string) (unix.Stat_t, error) {
-	var st unix.Stat_t
-	if err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-func validateParentFD(f *os.File) (unix.Stat_t, error) {
+func statFD(f *os.File) (privfs.Stat, error)                { return privfs.StatFile(f) }
+func statAt(dir *os.File, name string) (privfs.Stat, error) { return privfs.StatAt(dir, name) }
+func validateParentFD(f *os.File) (privfs.Stat, error) {
 	st, err := statFD(f)
 	if err != nil {
 		return st, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&0o077 != 0 || st.Nlink == 0 {
+	if !st.Dir || !st.Owned || !st.Private || st.Nlink == 0 {
 		return st, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	return st, nil
 }
-func validateLeafStat(st *unix.Stat_t, requirePrivate bool) error {
-	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 || (requirePrivate && st.Mode&0o077 != 0) {
+func validateLeafStat(st *privfs.Stat, requirePrivate bool) error {
+	if !st.Regular || !st.Owned || st.Nlink != 1 || (requirePrivate && !st.Private) {
 		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	return nil
@@ -519,34 +502,28 @@ func EnsureOwnerPrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	parts := strings.Split(strings.TrimPrefix(absolute, "/"), "/")
-	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, current, parts, err := privfs.OpenRoot(absolute)
 	if err != nil {
 		return err
 	}
-	current := "/"
 	for _, part := range parts {
-		if part == "" {
-			continue
-		}
 		current = filepath.Join(current, part)
-		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		if errors.Is(e, unix.ENOENT) {
+		next, e := privfs.OpenDirAt(f, part)
+		if errors.Is(e, os.ErrNotExist) {
 			// Another owner process may create this component concurrently.
 			// Open and validate it below even when mkdir reports EEXIST.
-			if e = unix.Mkdirat(fd, part, 0700); e == nil || errors.Is(e, unix.EEXIST) {
-				next, e = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			if e = privfs.MkdirAt(f, part); e == nil || errors.Is(e, os.ErrExist) {
+				next, e = privfs.OpenDirAt(f, part)
 			}
 		}
-		_ = unix.Close(fd)
+		_ = f.Close()
 		if e != nil {
 			return unsafeComponent(current, absolute, "private directory is unsafe")
 		}
-		fd = next
+		f = next
 	}
-	f := os.NewFile(uintptr(fd), absolute)
 	defer f.Close()
-	if err = f.Chmod(0700); err != nil {
+	if err = privfs.MakePrivate(f); err != nil {
 		return newHandleError(reason.ReasonHandleUnsafe, "private directory is unsafe")
 	}
 	_, err = validateParentFD(f)
@@ -562,28 +539,22 @@ func openParent(path string) (*os.File, string, string, error) {
 	if name == "." || name == string(filepath.Separator) || parent == absolute {
 		return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, current, parts, err := privfs.OpenRoot(parent)
 	if err != nil {
 		return nil, "", "", newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	parts := strings.Split(strings.TrimPrefix(parent, string(filepath.Separator)), string(filepath.Separator))
-	current := string(filepath.Separator)
 	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
 		current = filepath.Join(current, part)
-		next, openErr := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		_ = unix.Close(fd)
+		next, openErr := privfs.OpenDirAt(f, part)
+		_ = f.Close()
 		if openErr != nil {
-			if errors.Is(openErr, unix.ENOENT) {
+			if errors.Is(openErr, os.ErrNotExist) {
 				return nil, "", "", os.ErrNotExist
 			}
 			return nil, "", "", unsafeComponent(current, absolute, "handle path is unsafe")
 		}
-		fd = next
+		f = next
 	}
-	f := os.NewFile(uintptr(fd), parent)
 	if _, err := validateParentFD(f); err != nil {
 		_ = f.Close()
 		return nil, "", "", err
@@ -614,7 +585,7 @@ func ValidateMetadata(path string) (present bool, err error) {
 	}
 	defer parent.Close()
 	st, err := statAt(parent, name)
-	if errors.Is(err, unix.ENOENT) {
+	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
@@ -655,14 +626,13 @@ func decode(data []byte) (Handle, error) {
 }
 
 func readAt(parent *os.File, name string) (Handle, error) {
-	fd, openErr := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, openErr := privfs.OpenAt(parent, name, os.O_RDONLY, 0)
 	if openErr != nil {
-		if errors.Is(openErr, unix.ENOENT) {
+		if errors.Is(openErr, os.ErrNotExist) {
 			return Handle{}, newHandleError(reason.ReasonHandleMalformed, "handle is missing")
 		}
 		return Handle{}, newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
-	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	st, err := statFD(f)
 	if err != nil {
@@ -807,16 +777,15 @@ func writeAt(parent *os.File, name string, h Handle, expected ...*Handle) error 
 		if old.State == "ready" && old.ClaimID != h.ClaimID && old.ExpiresAt.After(time.Now()) && !replacingExpectedReady {
 			return newHandleError(reason.ReasonHandleInUse, "active handle is in use")
 		}
-	} else if !errors.Is(statErr, unix.ENOENT) {
+	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return newHandleError(reason.ReasonHandleUnsafe, "handle path is unsafe")
 	}
 	tmpName := "." + name + ".tmp-" + randomName()
-	fd, err := unix.Openat(int(parent.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	tmp, err := privfs.OpenAt(parent, tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
 	}
-	tmp := os.NewFile(uintptr(fd), tmpName)
-	defer unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+	defer privfs.UnlinkAt(parent, tmpName)
 	tmpST, statErr := statFD(tmp)
 	if statErr != nil || validateLeafStat(&tmpST, true) != nil {
 		_ = tmp.Close()
@@ -831,10 +800,10 @@ func writeAt(parent *os.File, name string, h Handle, expected ...*Handle) error 
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
 	}
-	if err = unix.Renameat(int(parent.Fd()), tmpName, int(parent.Fd()), name); err != nil {
+	if err = privfs.RenameAt(parent, tmpName, name); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
 	}
-	if err = parent.Sync(); err != nil {
+	if err = privfs.SyncDir(parent); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be written")
 	}
 	return nil
@@ -869,7 +838,7 @@ func randomName() string {
 }
 func removeAt(parent *os.File, name string) error {
 	st, err := statAt(parent, name)
-	if errors.Is(err, unix.ENOENT) {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
@@ -878,10 +847,10 @@ func removeAt(parent *os.File, name string) error {
 	if err := validateLeafStat(&st, false); err != nil {
 		return err
 	}
-	if err := unix.Unlinkat(int(parent.Fd()), name, 0); err != nil {
+	if err := privfs.UnlinkAt(parent, name); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be removed")
 	}
-	if err := parent.Sync(); err != nil {
+	if err := privfs.SyncDir(parent); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "handle cannot be removed")
 	}
 	return nil
@@ -917,7 +886,7 @@ type Lock struct {
 	lockID     fileIdentity
 }
 
-func lockFromFiles(path string, parent *os.File, name string, f *os.File, lockST, parentST *unix.Stat_t) *Lock {
+func lockFromFiles(path string, parent *os.File, name string, f *os.File, lockST, parentST *privfs.Stat) *Lock {
 	return &Lock{f: f, parent: parent, path: path, parentPath: filepath.Dir(path), parentID: identity(parentST), lockName: name, lockID: identity(lockST)}
 }
 
@@ -938,7 +907,7 @@ func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
 		return nil, err
 	}
 	lockST, err := statAt(parent, name)
-	if errors.Is(err, unix.ENOENT) {
+	if errors.Is(err, os.ErrNotExist) {
 		parent.Close()
 		return &Lock{}, nil
 	}
@@ -946,12 +915,11 @@ func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
 		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	f, err := privfs.OpenAt(parent, name, os.O_RDONLY, 0)
 	if err != nil {
 		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
-	f := os.NewFile(uintptr(fd), absolute)
 	openedST, statErr := statFD(f)
 	if statErr != nil || validateLeafStat(&openedST, true) != nil || !sameIdentity(identity(&lockST), identity(&openedST)) {
 		f.Close()
@@ -960,7 +928,7 @@ func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
 	}
 	afterLockOpenForTest()
 	for {
-		err = unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		err = privfs.TryLock(f, false)
 		if err == nil {
 			if err = verifyLockPath(parent, name, identity(&openedST)); err == nil {
 				err = verifyParentPath(absolute, identity(&parentST))
@@ -972,7 +940,7 @@ func AcquireExistingLock(ctx context.Context, path string) (*Lock, error) {
 			}
 			return lockFromFiles(absolute, parent, name, f, &openedST, &parentST), nil
 		}
-		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+		if !errors.Is(err, privfs.ErrLocked) {
 			f.Close()
 			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock cannot be acquired")
@@ -1000,10 +968,10 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 		parent.Close()
 		return nil, err
 	}
-	var fd int
+	var f *os.File
 	for attempt := 0; attempt < 8; attempt++ {
-		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-		if err == nil || !errors.Is(err, unix.ENOENT) {
+		f, err = privfs.OpenAt(parent, name, os.O_RDWR|os.O_CREATE, 0o600)
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
 			break
 		}
 		time.Sleep(time.Millisecond)
@@ -1012,7 +980,6 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 		parent.Close()
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock is unsafe")
 	}
-	f := os.NewFile(uintptr(fd), absolute)
 	lockST, err := statFD(f)
 	if err != nil || validateLeafStat(&lockST, true) != nil {
 		f.Close()
@@ -1021,7 +988,7 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 	}
 	afterLockOpenForTest()
 	for {
-		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err = privfs.TryLock(f, true)
 		if err == nil {
 			if err = verifyLockPath(parent, name, identity(&lockST)); err == nil {
 				err = verifyParentPath(absolute, identity(&parentST))
@@ -1033,7 +1000,7 @@ func AcquireLock(ctx context.Context, path string) (*Lock, error) {
 			}
 			return lockFromFiles(absolute, parent, name, f, &lockST, &parentST), nil
 		}
-		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+		if !errors.Is(err, privfs.ErrLocked) {
 			f.Close()
 			parent.Close()
 			return nil, newHandleError(reason.ReasonHandleUnsafe, "handle lock cannot be acquired")
@@ -1278,7 +1245,7 @@ func (l *Lock) Close() error {
 	if l == nil || l.f == nil {
 		return nil
 	}
-	e := unix.Flock(int(l.f.Fd()), unix.LOCK_UN)
+	e := privfs.Unlock(l.f)
 	if ce := l.f.Close(); e == nil {
 		e = ce
 	}
@@ -1301,14 +1268,8 @@ func ReadBoundedFD(fd int, max int64) ([]byte, error) {
 	if fd < 0 || max < 0 {
 		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
 	}
-	dup, e := unix.Dup(fd)
+	file, e := privfs.DupDescriptor(fd, "bounded-input")
 	if e != nil {
-		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
-	}
-	unix.CloseOnExec(dup)
-	file := os.NewFile(uintptr(dup), "bounded-input")
-	if file == nil {
-		_ = unix.Close(dup)
 		return nil, newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
 	}
 	defer file.Close()
@@ -1323,14 +1284,8 @@ func WriteBoundedFD(fd int, data []byte, max int64) error {
 	if fd < 0 || max < 0 || int64(len(data)) > max {
 		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
 	}
-	dup, err := unix.Dup(fd)
+	file, err := privfs.DupDescriptor(fd, "bounded-output")
 	if err != nil {
-		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be written")
-	}
-	unix.CloseOnExec(dup)
-	file := os.NewFile(uintptr(dup), "bounded-output")
-	if file == nil {
-		_ = unix.Close(dup)
 		return newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be written")
 	}
 	if _, err = file.Write(data); err == nil {
@@ -1348,14 +1303,8 @@ func ReadCredentialFD(fd int) (string, error) {
 	if fd < 0 {
 		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor is invalid")
 	}
-	dup, e := unix.Dup(fd)
+	file, e := privfs.DupDescriptor(fd, "credential")
 	if e != nil {
-		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
-	}
-	unix.CloseOnExec(dup)
-	file := os.NewFile(uintptr(dup), "credential")
-	if file == nil {
-		_ = unix.Close(dup)
 		return "", newHandleError(reason.ReasonCredentialUnsafe, "credential descriptor cannot be read")
 	}
 	defer file.Close()
@@ -1424,14 +1373,13 @@ func ReadOwnerPrivate(path string, max int64) ([]byte, error) {
 	if err = verifyParentPath(absolute, identity(&st)); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, err := privfs.OpenAt(parent, name, os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, unix.ENOENT) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, os.ErrNotExist
 		}
 		return nil, newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
 	}
-	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	leaf, err := statFD(f)
 	if err != nil || validateLeafStat(&leaf, true) != nil {
@@ -1478,12 +1426,11 @@ func writeOwnerPrivate(path string, data []byte, max int64, noReplace bool) erro
 		return err
 	}
 	tmpName := "." + name + ".tmp-" + randomName()
-	fd, err := unix.Openat(int(parent.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	tmp, err := privfs.OpenAt(parent, tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
 	}
-	tmp := os.NewFile(uintptr(fd), tmpName)
-	defer unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+	defer privfs.UnlinkAt(parent, tmpName)
 	if _, err = tmp.Write(data); err == nil {
 		err = tmp.Sync()
 	}
@@ -1494,17 +1441,17 @@ func writeOwnerPrivate(path string, data []byte, max int64, noReplace bool) erro
 		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
 	}
 	if noReplace {
-		err = unix.Linkat(int(parent.Fd()), tmpName, int(parent.Fd()), name, 0)
+		err = privfs.LinkAt(parent, tmpName, name)
 		if err == nil {
-			err = unix.Unlinkat(int(parent.Fd()), tmpName, 0)
+			err = privfs.UnlinkAt(parent, tmpName)
 		}
 	} else {
-		err = unix.Renameat(int(parent.Fd()), tmpName, int(parent.Fd()), name)
+		err = privfs.RenameAt(parent, tmpName, name)
 	}
 	if err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
 	}
-	if err = parent.Sync(); err != nil {
+	if err = privfs.SyncDir(parent); err != nil {
 		return newHandleError(reason.ReasonHandleWriteFailed, "private file cannot be written")
 	}
 	return verifyParentPath(absolute, identity(&st))
@@ -1567,8 +1514,8 @@ func RemoveOwnerPrivateIfContent(path string, expected []byte, max int64) error 
 		return err
 	}
 	quarantine := "." + name + ".remove-" + randomName()
-	if err = unix.Renameat(int(parent.Fd()), name, int(parent.Fd()), quarantine); err != nil {
-		if errors.Is(err, unix.ENOENT) {
+	if err = privfs.RenameAt(parent, name, quarantine); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return os.ErrNotExist
 		}
 		return newHandleError(reason.ReasonHandleUnsafe, "private file cannot be quarantined")
@@ -1576,16 +1523,15 @@ func RemoveOwnerPrivateIfContent(path string, expected []byte, max int64) error 
 	restore := true
 	defer func() {
 		if restore {
-			if unix.Linkat(int(parent.Fd()), quarantine, int(parent.Fd()), name, 0) == nil {
-				_ = unix.Unlinkat(int(parent.Fd()), quarantine, 0)
+			if privfs.LinkAt(parent, quarantine, name) == nil {
+				_ = privfs.UnlinkAt(parent, quarantine)
 			}
 		}
 	}()
-	fd, err := unix.Openat(int(parent.Fd()), quarantine, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	file, err := privfs.OpenAt(parent, quarantine, os.O_RDONLY, 0)
 	if err != nil {
 		return newHandleError(reason.ReasonHandleUnsafe, "private file is unsafe")
 	}
-	file := os.NewFile(uintptr(fd), quarantine)
 	leafST, err := statFD(file)
 	if err != nil || validateLeafStat(&leafST, true) != nil {
 		_ = file.Close()
@@ -1600,11 +1546,11 @@ func RemoveOwnerPrivateIfContent(path string, expected []byte, max int64) error 
 	if err != nil || validateLeafStat(&current, true) != nil || !sameIdentity(identity(&leafST), identity(&current)) || !bytes.Equal(contents, expected) {
 		return newHandleError(reason.ReasonHandleUnsafe, "private file changed before removal")
 	}
-	if err = unix.Unlinkat(int(parent.Fd()), quarantine, 0); err != nil {
+	if err = privfs.UnlinkAt(parent, quarantine); err != nil {
 		return newHandleError(reason.ReasonHandleUnsafe, "private file cannot be removed")
 	}
 	restore = false
-	if err = parent.Sync(); err != nil {
+	if err = privfs.SyncDir(parent); err != nil {
 		return newHandleError(reason.ReasonHandleUnsafe, "private file removal cannot be synchronized")
 	}
 	return verifyParentPath(absolute, identity(&parentST))

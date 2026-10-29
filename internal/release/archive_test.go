@@ -2,10 +2,12 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -44,8 +46,28 @@ func TestCreateArchiveUsesStableInstallMembersAndVerifiedChecksums(t *testing.T)
 	if want := []string{BinaryMember, ManMember}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("members=%v want=%v", names, want)
 	}
-	if _, err := WriteChecksums(directory); err != nil {
+	windows := filepath.Join(directory, "worklease-v1.2.3-windows-x64.zip")
+	if err := CreateArchive(windows, binary, manual); err != nil {
 		t.Fatal(err)
+	}
+	zipped, err := zip.OpenReader(windows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zipped.Close()
+	names = nil
+	for _, member := range zipped.File {
+		names = append(names, member.Name)
+	}
+	if want := []string{WindowsBinaryMember, ManMember}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("zip members=%v want=%v", names, want)
+	}
+	manifest, err := WriteChecksums(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(manifest); err != nil || !strings.Contains(string(data), filepath.Base(windows)) {
+		t.Fatalf("checksums omit zip archive: %q %v", data, err)
 	}
 	if err := VerifyChecksums(directory); err != nil {
 		t.Fatal(err)

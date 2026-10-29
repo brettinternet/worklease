@@ -83,7 +83,7 @@ Write a test only when it would catch a real regression, and cover each behavior
 | Tier | Command | Runs in |
 |---|---|---|
 | Affected package tests | `mise run hooks` | pre-commit hook |
-| Package tests | `mise run test` | CI on linux-x64, linux-arm64, macos-x64, and macos-arm64 |
+| Package tests | `mise run test` | CI on linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64, and windows-arm64 |
 | Race | `mise run race` | CI linux-x64 |
 | End-to-end | `mise run e2e` (built-binary smoke, remote smoke, doc test) | CI linux-x64 |
 | Authority load probe | `mise run authority-benchmark` | manual |

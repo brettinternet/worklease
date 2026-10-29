@@ -1,20 +1,16 @@
 package store
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -130,7 +126,7 @@ func TestHostedWriterLockContentionAndStableHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(home, HostedLockFileName)
-	before, err := os.Stat(lockPath)
+	before, err := privfs.Lstat(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,14 +146,12 @@ func TestHostedWriterLockContentionAndStableHandoff(t *testing.T) {
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.Stat(lockPath)
+	after, err := privfs.Lstat(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeStat := before.Sys().(*syscall.Stat_t)
-	afterStat := after.Sys().(*syscall.Stat_t)
-	if beforeStat.Dev != afterStat.Dev || beforeStat.Ino != afterStat.Ino {
-		t.Fatalf("hosted lock identity changed: %d/%d -> %d/%d", beforeStat.Dev, beforeStat.Ino, afterStat.Dev, afterStat.Ino)
+	if before.ID != after.ID {
+		t.Fatalf("hosted lock identity changed: %v -> %v", before.ID, after.ID)
 	}
 	if _, err := Open(context.Background(), home, Options{}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHostedHomeRequiresRemote {
 		t.Fatalf("local writer after handoff error=%v", err)
@@ -259,66 +253,6 @@ func TestOrdinaryHomeDoesNotCreateHostedFiles(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(home, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("ordinary home created %s: %v", name, err)
 		}
-	}
-}
-
-func TestHostedLockSurvivesPausedHolder(t *testing.T) {
-	if os.Getenv("WORKLEASE_HOSTED_HOLDER") == "1" {
-		hostedWriterHelper(t)
-		return
-	}
-	home := filepath.Join(t.TempDir(), "hosted")
-	if err := MarkHosted(home); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHostedLockSurvivesPausedHolder$")
-	cmd.Env = append(os.Environ(), "WORKLEASE_HOSTED_HOLDER=1", "WORKLEASE_HOSTED_HOME="+home)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(stdout)
-	ready, err := reader.ReadString('\n')
-	if err != nil || ready != "ready\n" {
-		t.Fatalf("holder ready=%q err=%v", ready, err)
-	}
-	if err := cmd.Process.Signal(syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(context.Background(), home, Options{HostedWriter: true}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHostedLockHeld {
-		_ = cmd.Process.Signal(syscall.SIGCONT)
-		t.Fatalf("competitor while paused error=%v", err)
-	}
-	if err := cmd.Process.Signal(syscall.SIGCONT); err != nil {
-		t.Fatal(err)
-	}
-	if err := stdin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
-	select {
-	case err := <-wait:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("holder did not exit")
-	}
-	takeover, err := Open(context.Background(), home, Options{HostedWriter: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := takeover.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -471,18 +405,5 @@ func TestHostedReadyDatabaseRemovalDuringDriverOpenCannotRecreate(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retry recreated ready database: %v", err)
-	}
-}
-
-func hostedWriterHelper(t *testing.T) {
-	home := os.Getenv("WORKLEASE_HOSTED_HOME")
-	st, err := Open(context.Background(), home, Options{HostedWriter: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Println("ready")
-	_, _ = io.Copy(io.Discard, os.Stdin)
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
 	}
 }

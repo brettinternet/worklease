@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -34,7 +35,8 @@ func TestGuardHelperProcess(t *testing.T) {
 	case "large":
 		_, _ = os.Stdout.Write([]byte(strings.Repeat("x", MaxCaptureBytes+257)))
 	case "signal":
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		self, _ := os.FindProcess(os.Getpid())
+		_ = self.Signal(syscall.SIGTERM)
 		// Signal delivery is asynchronous on some platforms; do not let the
 		// successful helper exit race ahead of its own termination signal.
 		time.Sleep(time.Hour)
@@ -89,6 +91,9 @@ func TestExecLiteralArgvBoundedInvalidUTF8SignalAndEnvironment(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "signal" && runtime.GOOS == "windows" {
+				t.Skip("Windows processes cannot exit by signal")
+			}
 			claim := fmt.Sprintf("%032x", i+10)
 			token := fmt.Sprintf("%064x", i+10)
 			st, svc, creds := acquireExecTest(t, tc.name, claim, token)

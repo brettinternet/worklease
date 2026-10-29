@@ -36,6 +36,18 @@ var targets = []target{
 	{"linux", "arm64", "linux", "arm64"},
 	{"darwin", "amd64", "macos", "x64"},
 	{"darwin", "arm64", "macos", "arm64"},
+	{"windows", "amd64", "windows", "x64"},
+	{"windows", "arm64", "windows", "arm64"},
+}
+
+// archiveName returns the published asset name: a zip for Windows, otherwise
+// a gzip tarball.
+func archiveName(version string, candidate target) string {
+	extension := ".tar.gz"
+	if candidate.goos == "windows" {
+		extension = ".zip"
+	}
+	return fmt.Sprintf("worklease-v%s-%s-%s%s", version, candidate.platform, candidate.assetArch, extension)
 }
 
 func main() {
@@ -100,7 +112,11 @@ func main() {
 	}
 	defer os.RemoveAll(working)
 	for _, candidate := range selected {
-		binary := filepath.Join(working, candidate.goos+"-"+candidate.goarch, "worklease")
+		name := "worklease"
+		if candidate.goos == "windows" {
+			name += ".exe"
+		}
+		binary := filepath.Join(working, candidate.goos+"-"+candidate.goarch, name)
 		if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
 			fatal(err)
 		}
@@ -110,7 +126,7 @@ func main() {
 		if output, err := command.CombinedOutput(); err != nil {
 			fatal(fmt.Errorf("build %s/%s: %w: %s", candidate.goos, candidate.goarch, err, output))
 		}
-		archive := filepath.Join(*output, fmt.Sprintf("worklease-v%s-%s-%s.tar.gz", *version, candidate.platform, candidate.assetArch))
+		archive := filepath.Join(*output, archiveName(*version, candidate))
 		if err := apprelease.CreateArchive(archive, binary, manual); err != nil {
 			fatal(err)
 		}

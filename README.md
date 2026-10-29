@@ -56,8 +56,10 @@ mise run build
 ./bin/worklease version
 ```
 
-Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`.
-They contain `bin/worklease` and `share/man/man1/worklease.1`.
+Release archives are named `worklease-vVERSION-{linux,macos}-{x64,arm64}.tar.gz`
+and `worklease-vVERSION-windows-{x64,arm64}.zip`. They contain `bin/worklease`
+(`bin/worklease.exe` on Windows) and `share/man/man1/worklease.1`. On Windows,
+guarded and detached workers stop immediately, without a grace period.
 
 Checksums are in `checksums.txt`. Linux amd64 and arm64 server images are
 published to `ghcr.io/brettinternet/worklease:vVERSION`; see [container

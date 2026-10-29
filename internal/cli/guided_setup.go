@@ -25,10 +25,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 	urfave "github.com/urfave/cli/v3"
-	"golang.org/x/sys/unix"
 )
 
 const guidedCertificateValidity = 365 * 24 * time.Hour
@@ -447,16 +447,12 @@ func acquireGuidedSetupLock(configPath string) (*os.File, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, err
 	}
-	file, err := os.Open(parent)
+	file, err := privfs.TryLockDir(parent)
+	if errors.Is(err, privfs.ErrLocked) {
+		return nil, reason.Invalid("another server setup is in progress for --server-config " + shellQuote(configPath))
+	}
 	if err != nil {
 		return nil, reason.New(reason.ReasonStorageFailure, "server setup directory lock cannot be opened")
-	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, reason.Invalid("another server setup is in progress for --server-config " + shellQuote(configPath))
-		}
-		return nil, err
 	}
 	return file, nil
 }
@@ -465,7 +461,6 @@ func releaseGuidedSetupLock(file *os.File) {
 	if file == nil {
 		return
 	}
-	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	_ = file.Close()
 }
 

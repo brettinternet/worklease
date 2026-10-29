@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -440,28 +440,26 @@ func checkDatabasePaths(path string, readOnly bool) error {
 }
 
 func checkExistingPath(path, kind string) error {
-	info, err := os.Lstat(path)
+	st, err := privfs.Lstat(path)
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if !st.Regular {
 		return fmt.Errorf("unsafe %s path %q: must be a regular non-symlink file", kind, path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("unsafe %s path %q: permissions %04o are not private", kind, path, info.Mode().Perm())
+	if !st.Private {
+		return fmt.Errorf("unsafe %s path %q: permissions are not private", kind, path)
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		if uint32(stat.Uid) != uint32(os.Geteuid()) {
-			return fmt.Errorf("unsafe %s path %q: owner differs from effective user", kind, path)
-		}
-		// SQLite can unlink a sidecar while lstat is inspecting it. A zero
-		// link count means it disappeared, not that it has extra hard links.
-		if stat.Nlink == 0 {
-			return &os.PathError{Op: "lstat", Path: path, Err: syscall.ENOENT}
-		}
-		if stat.Nlink != 1 {
-			return fmt.Errorf("unsafe %s path %q: hard links are not allowed", kind, path)
-		}
+	if !st.Owned {
+		return fmt.Errorf("unsafe %s path %q: owner differs from effective user", kind, path)
+	}
+	// SQLite can unlink a sidecar while lstat is inspecting it. A zero link
+	// count means it disappeared, not that it has extra hard links.
+	if st.Nlink == 0 {
+		return &os.PathError{Op: "lstat", Path: path, Err: os.ErrNotExist}
+	}
+	if st.Nlink != 1 {
+		return fmt.Errorf("unsafe %s path %q: hard links are not allowed", kind, path)
 	}
 	return nil
 }

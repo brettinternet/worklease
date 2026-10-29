@@ -2,6 +2,7 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
@@ -15,17 +16,26 @@ import (
 )
 
 const (
-	BinaryMember = "bin/worklease"
-	ManMember    = "share/man/man1/worklease.1"
+	BinaryMember        = "bin/worklease"
+	WindowsBinaryMember = "bin/worklease.exe"
+	ManMember           = "share/man/man1/worklease.1"
 )
 
+// archivePatterns match every published archive: tarballs for Unix targets
+// and zips for Windows.
+var archivePatterns = []string{"worklease-v*.tar.gz", "worklease-v*.zip"}
+
 // CreateArchive packages the built binary and manual at stable install paths.
+// A .zip path produces a Windows archive with bin/worklease.exe.
 func CreateArchive(path, binary, manual string) error {
 	output, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer output.Close()
+	if strings.HasSuffix(path, ".zip") {
+		return writeZip(output, binary, manual)
+	}
 	gzipWriter := gzip.NewWriter(output)
 	tarWriter := tar.NewWriter(gzipWriter)
 	for _, entry := range []struct {
@@ -51,9 +61,45 @@ func CreateArchive(path, binary, manual string) error {
 	return gzipWriter.Close()
 }
 
+func writeZip(output io.Writer, binary, manual string) error {
+	zipWriter := zip.NewWriter(output)
+	for _, entry := range []struct {
+		path string
+		name string
+		mode os.FileMode
+	}{{binary, WindowsBinaryMember, 0o755}, {manual, ManMember, 0o644}} {
+		data, err := os.ReadFile(entry.path)
+		if err != nil {
+			return err
+		}
+		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate, Modified: time.Unix(0, 0).UTC()}
+		header.SetMode(entry.mode)
+		writer, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		if _, err := writer.Write(data); err != nil {
+			return err
+		}
+	}
+	return zipWriter.Close()
+}
+
+func archives(directory string) ([]string, error) {
+	var paths []string
+	for _, pattern := range archivePatterns {
+		matches, err := filepath.Glob(filepath.Join(directory, pattern))
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, matches...)
+	}
+	return paths, nil
+}
+
 // WriteChecksums writes an exact SHA-256 manifest for every archive.
 func WriteChecksums(directory string) (string, error) {
-	entries, err := filepath.Glob(filepath.Join(directory, "worklease-v*.tar.gz"))
+	entries, err := archives(directory)
 	if err != nil || len(entries) == 0 {
 		return "", fmt.Errorf("release directory has no archives")
 	}
@@ -81,9 +127,9 @@ func VerifyChecksums(directory string) error {
 		return err
 	}
 	defer manifest.Close()
-	archives, _ := filepath.Glob(filepath.Join(directory, "worklease-v*.tar.gz"))
-	expected := make(map[string]bool, len(archives))
-	for _, archive := range archives {
+	paths, _ := archives(directory)
+	expected := make(map[string]bool, len(paths))
+	for _, archive := range paths {
 		expected[filepath.Base(archive)] = true
 	}
 	seen := map[string]bool{}

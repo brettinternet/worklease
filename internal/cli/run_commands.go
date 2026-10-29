@@ -19,6 +19,8 @@ import (
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/output"
+	"github.com/brettinternet/worklease/internal/privfs"
+	"github.com/brettinternet/worklease/internal/procgroup"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/runs"
 	urfave "github.com/urfave/cli/v3"
@@ -199,7 +201,7 @@ func (sv *runSupervisor) run(ctx context.Context, id, dir string, argv, resource
 	}
 	logPath, _ := sv.store.LogPath(id)
 	resultPath, _ := sv.store.ResultPath(id)
-	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	logFile, err := privfs.OpenNoFollow(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return sv.fail(reason.New(reason.ReasonStorageFailure, "run log cannot be created"))
 	}
@@ -226,22 +228,30 @@ func (sv *runSupervisor) run(ctx context.Context, id, dir string, argv, resource
 	}
 	child := exec.Command(argv[0], argv[1:]...)
 	child.Dir, child.Env, child.Stdout, child.Stderr = dir, env, stream, stream
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procgroup.Prepare(child)
 	if err := child.Start(); err != nil {
 		startErr := reason.New(reason.ReasonInvalidArgument, "worker cannot start: "+err.Error())
 		sv.endClaim(ctx, "run "+id+" worker failed to start")
 		return sv.fail(startErr)
 	}
+	group, err := procgroup.Attach(child)
+	if err != nil {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+		sv.endClaim(ctx, "run "+id+" worker failed to start")
+		return sv.fail(reason.New(reason.ReasonStorageFailure, "worker process group cannot be created: "+err.Error()))
+	}
+	defer group.Close()
 	exited := make(chan error, 1)
 	go func() { exited <- child.Wait() }()
 	if err := sv.update(func(r *runs.Record) { r.State, r.ChildPID = runs.StateRunning, child.Process.Pid }); err != nil {
-		_ = stopChild(child, exited)
+		_ = stopChild(group, exited)
 		sv.endClaim(ctx, "run "+id+" could not record its worker")
 		return sv.fail(reason.New(reason.ReasonStorageFailure, "run record cannot be updated: "+err.Error()))
 	}
 	sv.report()
 
-	outcome, waitErr := sv.supervise(ctx, child, exited, interval, log)
+	outcome, waitErr := sv.supervise(ctx, group, exited, interval, log)
 	return sv.finish(ctx, outcome, waitErr, resultPath, log)
 }
 
@@ -314,7 +324,7 @@ func (sv *runSupervisor) lifecycle(ctx context.Context, args ...string) (map[str
 // supervise waits for the worker while renewing the claim. It returns the
 // supervisor-imposed outcome (stopped, timeout, or lost), or "" when the
 // worker exited on its own.
-func (sv *runSupervisor) supervise(ctx context.Context, child *exec.Cmd, exited <-chan error, interval time.Duration, log *runLog) (string, error) {
+func (sv *runSupervisor) supervise(ctx context.Context, group *procgroup.Group, exited <-chan error, interval time.Duration, log *runLog) (string, error) {
 	var deadline <-chan time.Time
 	if max := sv.cmd.Duration("max-duration"); max > 0 {
 		timer := time.NewTimer(max)
@@ -329,19 +339,19 @@ func (sv *runSupervisor) supervise(ctx context.Context, child *exec.Cmd, exited 
 	for {
 		select {
 		case err := <-exited:
-			killGroup(child.Process.Pid) // background members must not outlive the claim
+			killGroup(group) // background members must not outlive the claim
 			return "", err
 		case <-ctx.Done():
-			return runs.OutcomeStopped, stopChild(child, exited)
+			return runs.OutcomeStopped, stopChild(group, exited)
 		case <-poll.C:
 			if sv.store.StopRequested(id) {
-				return runs.OutcomeStopped, stopChild(child, exited)
+				return runs.OutcomeStopped, stopChild(group, exited)
 			}
 		case <-deadline:
-			return runs.OutcomeTimeout, stopChild(child, exited)
+			return runs.OutcomeTimeout, stopChild(group, exited)
 		case <-ticker.C:
 			if lost := sv.renew(ctx); lost != "" {
-				err := stopChild(child, exited)
+				err := stopChild(group, exited)
 				_ = sv.update(func(r *runs.Record) { r.Claim.State, r.Claim.Detail = runs.ClaimLost, lost })
 				return runs.StateLost, err
 			}
@@ -386,31 +396,30 @@ func (sv *runSupervisor) renew(ctx context.Context) string {
 }
 
 // stopChild terminates the worker's process group and waits for it.
-func stopChild(child *exec.Cmd, exited <-chan error) error {
-	pgid := child.Process.Pid
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+func stopChild(group *procgroup.Group, exited <-chan error) error {
+	_ = group.Terminate()
 	select {
 	case err := <-exited:
-		killGroup(pgid)
+		killGroup(group)
 		return err
 	case <-time.After(runStopGrace):
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = group.Kill()
 		return <-exited
 	}
 }
 
 // killGroup ends any process left in the worker's group after the worker
-// itself exited: SIGTERM, then SIGKILL once runStopGrace passes.
-func killGroup(pgid int) {
-	if syscall.Kill(-pgid, syscall.SIGTERM) != nil {
+// itself exited: terminate, then kill once runStopGrace passes.
+func killGroup(group *procgroup.Group) {
+	if group.Terminate() != nil {
 		return // the group is already empty
 	}
 	for deadline := time.Now().Add(runStopGrace); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if syscall.Kill(-pgid, 0) != nil {
+		if group.Empty() {
 			return
 		}
 	}
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	_ = group.Kill()
 }
 
 // finish records the worker's exit and releases the claim unless it must be

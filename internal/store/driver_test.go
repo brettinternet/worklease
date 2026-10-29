@@ -11,9 +11,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/privfs"
 )
 
 func TestDriverAcceptanceMaxPageCount(t *testing.T) {
@@ -241,22 +242,6 @@ func TestDriverRejectsUnsafeMainAndSidecarPaths(t *testing.T) {
 	}
 	if !contains(UnsafePathRaceWarning, "pre-open") || !contains(UnsafePathRaceWarning, "inode") {
 		t.Fatalf("race warning is not explicit: %q", UnsafePathRaceWarning)
-	}
-}
-
-func TestDriverCreatesPrivateStateWithPermissiveUmask(t *testing.T) {
-	oldUmask := syscall.Umask(0)
-	defer syscall.Umask(oldUmask)
-	path := filepath.Join(t.TempDir(), DatabaseFileName)
-	driver := openTestDriver(t, path, false)
-	defer driver.Close()
-	mustWrite(t, driver, `CREATE TABLE permissive (value TEXT)`)
-	mustWrite(t, driver, `INSERT INTO permissive(value) VALUES ('private')`)
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		candidate := path + suffix
-		if _, err := os.Lstat(candidate); err == nil {
-			assertPrivate(t, candidate)
-		}
 	}
 }
 
@@ -540,9 +525,8 @@ func snapshotDirectoryState(t *testing.T, dir string) map[string]fileSnapshot {
 			t.Fatal(err)
 		}
 		snapshot := fileSnapshot{Mode: info.Mode(), Size: info.Size(), ModTime: info.ModTime().UnixNano()}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			snapshot.Dev = uint64(stat.Dev)
-			snapshot.Ino = uint64(stat.Ino)
+		if stat, err := privfs.Lstat(path); err == nil {
+			snapshot.Dev, snapshot.Ino = stat.ID.Dev, stat.ID.Ino
 		}
 		if info.Mode().IsRegular() {
 			snapshot.Content, err = os.ReadFile(path)

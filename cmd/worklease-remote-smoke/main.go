@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Command worklease-remote-smoke exercises the shipped binary as one TLS
 // authority and two isolated clients. With --remote-host, authority and client B
 // run over SSH on a real host while client A and the orchestrator remain local.

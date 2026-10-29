@@ -18,9 +18,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/brettinternet/worklease/internal/lease"
+	"github.com/brettinternet/worklease/internal/privfs"
+	"github.com/brettinternet/worklease/internal/procgroup"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/resource"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -260,29 +261,23 @@ func readBounded(r io.Reader) capture {
 	}
 }
 func text(c capture) string { return strings.ToValidUTF8(string(c.data), "\uFFFD") }
-func reapProcessGroup(pid int) {
-	if pid <= 0 {
-		return
-	}
+func reapProcessGroup(group *procgroup.Group) {
 	// The leader has already exited. Do not spend the guard budget waiting for
 	// descendants that inherited a pipe; terminate the whole local group and
 	// let bounded capture draining decide whether to wait for readers.
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = group.Terminate()
+	_ = group.Kill()
 }
-func terminateAndWait(cmd *exec.Cmd, exited <-chan error) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+func terminateAndWait(group *procgroup.Group, exited <-chan error) error {
+	_ = group.Terminate()
 	select {
 	case err := <-exited:
-		reapProcessGroup(cmd.Process.Pid)
+		reapProcessGroup(group)
 		return err
 	case <-time.After(2 * time.Second):
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = group.Kill()
 		err := <-exited
-		reapProcessGroup(cmd.Process.Pid)
+		reapProcessGroup(group)
 		return err
 	}
 }
@@ -388,11 +383,18 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 	defer stderrChild.Close()
 	cmd.Stdout = stdoutChild
 	cmd.Stderr = stderrChild
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procgroup.Prepare(cmd)
 	deadline := time.Now().Add(req.MaxDuration)
 	if e = cmd.Start(); e != nil {
 		return preSpawnFailure(e)
 	}
+	group, e := procgroup.Attach(cmd)
+	if e != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return preSpawnFailure(e)
+	}
+	defer group.Close()
 	_ = stdoutChild.Close()
 	_ = stderrChild.Close()
 	stdoutCh, stderrCh := make(chan capture, 1), make(chan capture, 1)
@@ -439,18 +441,18 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 	for {
 		select {
 		case waitErr = <-exited:
-			reapProcessGroup(cmd.Process.Pid)
+			reapProcessGroup(group)
 			goto done
 		case <-timer.C:
 			timedOut = true
-			waitErr = terminateAndWait(cmd, exited)
+			waitErr = terminateAndWait(group, exited)
 			_ = stdoutPipe.Close()
 			_ = stderrPipe.Close()
 			goto done
 		case <-leaseTimer.C:
 			if time.Now().After(lastLeaseDeadline) {
 				ownershipLost = true
-				waitErr = terminateAndWait(cmd, exited)
+				waitErr = terminateAndWait(group, exited)
 				_ = stdoutPipe.Close()
 				_ = stderrPipe.Close()
 				goto done
@@ -476,7 +478,7 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 					continue
 				}
 				ownershipLost = true
-				waitErr = terminateAndWait(cmd, exited)
+				waitErr = terminateAndWait(group, exited)
 				_ = stdoutPipe.Close()
 				_ = stderrPipe.Close()
 				goto done
@@ -490,7 +492,7 @@ func Exec(ctx context.Context, svc ExecAuthority, creds lease.Credentials, req E
 			}
 			leaseTimer.Reset(time.Until(lastLeaseDeadline))
 		case <-ctx.Done():
-			_ = terminateAndWait(cmd, exited)
+			_ = terminateAndWait(group, exited)
 			_ = stdoutPipe.Close()
 			_ = stderrPipe.Close()
 			err := postStart(reason.New(reason.ReasonInterrupted, "guarded command interrupted"), req.OperationID)
@@ -598,23 +600,27 @@ func receiptExit(r lease.Receipt) int {
 	return 1
 }
 
-func sha256File(path string) (string, []byte, os.FileInfo, error) {
-	st, e := os.Lstat(path)
+func sha256File(path string) (string, os.FileMode, privfs.Stat, error) {
+	st, e := privfs.Lstat(path)
 	if e != nil {
-		return "", nil, nil, e
+		return "", 0, st, e
 	}
-	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
-		return "", nil, nil, errors.New("target is not a regular file")
+	if !st.Regular {
+		return "", 0, st, errors.New("target is not a regular file")
 	}
-	if stat, ok := st.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
-		return "", nil, nil, errors.New("hard-linked file is not replaceable")
+	if st.Nlink > 1 {
+		return "", 0, st, errors.New("hard-linked file is not replaceable")
+	}
+	info, e := os.Lstat(path)
+	if e != nil {
+		return "", 0, st, e
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
-		return "", nil, nil, e
+		return "", 0, st, e
 	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), b, st, nil
+	return hex.EncodeToString(sum[:]), info.Mode().Perm(), st, nil
 }
 
 func readReplaceContent(path string) (string, []byte, error) {
@@ -633,7 +639,7 @@ func readReplaceContent(path string) (string, []byte, error) {
 		return "", nil, reason.New(reason.ReasonInvalidPath, "content file is not a safe regular file")
 	}
 	defer f.Close()
-	if opened.Size() > MaxReplaceBytes {
+	if opened.Size > MaxReplaceBytes {
 		return "", nil, reason.Invalid("content file exceeds the 16 MiB replacement limit")
 	}
 	if beforeReplaceContentRead != nil {
@@ -646,46 +652,39 @@ func readReplaceContent(path string) (string, []byte, error) {
 	if len(content) > MaxReplaceBytes {
 		return "", nil, reason.Invalid("content file exceeds the 16 MiB replacement limit")
 	}
-	after, err := f.Stat()
-	if err != nil || !sameFile(opened, after) || after.Size() != int64(len(content)) {
+	after, err := privfs.StatFile(f)
+	if err != nil || !sameFile(opened, after) || after.Size != int64(len(content)) {
 		return "", nil, reason.New(reason.ReasonInvalidPath, "content file changed while reading")
 	}
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:]), content, nil
 }
-func sameFile(a, b os.FileInfo) bool {
-	as, aok := a.Sys().(*syscall.Stat_t)
-	bs, bok := b.Sys().(*syscall.Stat_t)
-	return aok && bok && as.Dev == bs.Dev && as.Ino == bs.Ino && as.Nlink == bs.Nlink
-}
+func sameFile(a, b privfs.Stat) bool { return a.ID == b.ID && a.Nlink == b.Nlink }
 func openPinnedDir(path string) (*os.File, error) {
-	st, err := os.Lstat(path)
-	if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+	st, err := privfs.Lstat(path)
+	if err != nil || !st.Dir {
 		return nil, errors.New("directory is not canonical")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, err := privfs.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
-	opened, err := f.Stat()
-	if err != nil || !sameFile(st, opened) {
+	opened, err := privfs.StatFile(f)
+	if err != nil || !opened.Dir || !sameFile(st, opened) {
 		f.Close()
 		return nil, errors.New("directory changed while opening")
 	}
 	return f, nil
 }
-func openRegularAt(dir *os.File, name string) (*os.File, os.FileInfo, error) {
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+func openRegularAt(dir *os.File, name string) (*os.File, privfs.Stat, error) {
+	f, err := privfs.OpenAt(dir, name, os.O_RDONLY, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, privfs.Stat{}, err
 	}
-	f := os.NewFile(uintptr(fd), name)
-	st, err := f.Stat()
-	stat, ok := st.Sys().(*syscall.Stat_t)
-	if err != nil || !ok || !st.Mode().IsRegular() || st.Mode()&os.ModeSymlink != 0 || stat.Nlink != 1 {
+	st, err := privfs.StatFile(f)
+	if err != nil || !st.Regular || st.Nlink != 1 {
 		f.Close()
-		return nil, nil, errors.New("file is not a safe regular file")
+		return nil, privfs.Stat{}, errors.New("file is not a safe regular file")
 	}
 	return f, st, nil
 }
@@ -707,9 +706,9 @@ func newTempAt(dir *os.File, mode os.FileMode) (*os.File, string, error) {
 			return nil, "", err
 		}
 		name := ".worklease-" + hex.EncodeToString(raw[:])
-		fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
+		f, err := privfs.OpenAt(dir, name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
 		if err == nil {
-			return os.NewFile(uintptr(fd), name), name, nil
+			return f, name, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, "", err
@@ -748,7 +747,7 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 	}
 	// Reject an unsafe leaf before resource canonicalization can resolve a
 	// symlink to its referent.
-	actual, _, oldInfo, err := sha256File(target)
+	actual, oldMode, oldInfo, err := sha256File(target)
 	if err != nil {
 		return ReplaceResult{}, reason.New(reason.ReasonInvalidPath, "target file is not a safe regular file")
 	}
@@ -799,7 +798,7 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		if hex.EncodeToString(contentNow[:]) != contentHash {
 			return nil, reason.New(reason.ReasonInvalidPath, "prepared content digest changed before replacement")
 		}
-		tmp, tmpName, e := newTempAt(dir, oldInfo.Mode().Perm())
+		tmp, tmpName, e := newTempAt(dir, oldMode)
 		if e != nil {
 			// Nothing was created: this is a proven no-effect failure and must
 			// free the started slot rather than remain unresolved.
@@ -808,7 +807,7 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		committed := false
 		defer func() {
 			if !committed {
-				_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
+				_ = privfs.UnlinkAt(dir, tmpName)
 			}
 		}()
 		if _, e = tmp.Write(contentBytes); e == nil {
@@ -834,11 +833,11 @@ func ReplaceFile(ctx context.Context, svc *lease.Service, creds lease.Credential
 		if checkErr != nil || !sameFile(targetInfo, checkInfo) || checkHash != req.ExpectedSHA256 {
 			return nil, reason.New(reason.ReasonUnknownOutcome, "replacement target changed before commit")
 		}
-		if e = unix.Renameat(int(dir.Fd()), tmpName, int(dir.Fd()), filepath.Base(target)); e != nil {
+		if e = privfs.RenameAt(dir, tmpName, filepath.Base(target)); e != nil {
 			return nil, reason.New(reason.ReasonUnknownOutcome, "replacement outcome is unresolved")
 		}
 		committed = true
-		if e = dir.Sync(); e != nil {
+		if e = privfs.SyncDir(dir); e != nil {
 			return nil, reason.New(reason.ReasonUnknownOutcome, "replacement outcome is unresolved")
 		}
 		return map[string]any{"ok": true, "path": target, "previousSha256": actual, "sha256": contentHash, "contentBytes": len(contentBytes), "mutationProtection": "local-serialized-replace", "providerMutationFenced": false}, nil

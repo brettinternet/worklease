@@ -10,12 +10,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/output"
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/store"
 )
@@ -47,9 +47,9 @@ func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Tim
 	sort.Strings(sources)
 	add("config.sources", "ok", "configuration path: "+cfg.ConfigPath+"; resolved sources: "+strings.Join(sources, ", "), "")
 
-	homeInfo, homeErr := os.Lstat(cfg.Home)
+	homeInfo, homeErr := privfs.Lstat(cfg.Home)
 	homeSafetyErr := store.ValidateHome(cfg.Home)
-	homeOK := homeErr == nil && homeInfo.Mode().IsDir() && homeInfo.Mode()&os.ModeSymlink == 0 && ownedByCurrentUser(homeInfo) && homeSafetyErr == nil
+	homeOK := homeErr == nil && homeInfo.Dir && homeInfo.Owned && homeSafetyErr == nil
 	switch {
 	case homeSafetyErr != nil:
 		add("home.path", "fail", "authority home or its ancestry is unsafe", "choose a user-owned private directory with safe ancestors")
@@ -68,10 +68,10 @@ func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Tim
 		} else {
 			add("home.permissions", "fail", "authority home ownership or directory safety is invalid", "use a user-owned directory with mode 0700")
 		}
-	} else if homeInfo.Mode().Perm()&0o077 != 0 {
-		add("home.permissions", "fail", fmt.Sprintf("authority home mode is %04o", homeInfo.Mode().Perm()), "remove group and other permissions")
+	} else if !homeInfo.Private {
+		add("home.permissions", "fail", "authority home grants access to other users", "remove group and other permissions")
 	} else {
-		add("home.permissions", "ok", fmt.Sprintf("authority home mode is %04o", homeInfo.Mode().Perm()), "")
+		add("home.permissions", "ok", "authority home is owner-private", "")
 	}
 
 	var st *store.Store
@@ -202,9 +202,4 @@ func diagnoseAt(ctx context.Context, cfg config.Config, cwd string, now time.Tim
 		add("state.python-era", "ok", "no Python-era state was detected", "")
 	}
 	return checks
-}
-
-func ownedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && uint32(stat.Uid) == uint32(os.Geteuid())
 }

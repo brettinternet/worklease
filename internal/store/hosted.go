@@ -10,10 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -52,8 +51,7 @@ func ValidateHostedHome(home string) error {
 		return nil
 	}
 	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if !privateDir(dir) {
 		return homeUnsafe(errors.New("hosted home is not owner-private"))
 	}
 	return nil
@@ -65,17 +63,16 @@ func ValidateHostedPrivateFile(path string) error {
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	fd, err := unix.Open(resolved, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	file, err := privfs.OpenNoFollow(resolved, os.O_RDONLY, 0)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(resolved))
 	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	stat, err := privfs.StatFile(file)
+	if err != nil {
 		return homeUnsafe(err)
 	}
-	if err := validateHostedFile(&stat, "file"); err != nil {
+	if err := validateHostedFile(stat, "file"); err != nil {
 		return err
 	}
 	return nil
@@ -89,7 +86,7 @@ func MarkHosted(home string) error {
 		return err
 	}
 	defer dir.Close()
-	if info, statErr := dir.Stat(); statErr != nil || info.Mode().Perm()&0o077 != 0 {
+	if !privateDir(dir) {
 		return homeUnsafe(errors.New("hosted home is not owner-private"))
 	}
 
@@ -104,16 +101,15 @@ func MarkHosted(home string) error {
 	if len(names) != 0 {
 		return reason.Invalid("hosted initialization requires an empty authority home")
 	}
-	fd, err := unix.Openat(int(dir.Fd()), HostedMarkerFileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	marker, err := privfs.OpenAt(dir, HostedMarkerFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	marker := os.NewFile(uintptr(fd), HostedMarkerFileName)
 	removeIncomplete := true
 	defer func() {
 		_ = marker.Close()
 		if removeIncomplete {
-			_ = unix.Unlinkat(int(dir.Fd()), HostedMarkerFileName, 0)
+			_ = privfs.UnlinkAt(dir, HostedMarkerFileName)
 		}
 	}()
 	if _, err := marker.WriteString(hostedMarkerContents); err != nil {
@@ -122,7 +118,7 @@ func MarkHosted(home string) error {
 	if err := marker.Sync(); err != nil {
 		return homeUnsafe(err)
 	}
-	if err := unix.Fsync(int(dir.Fd())); err != nil {
+	if err := privfs.SyncDir(dir); err != nil {
 		return homeUnsafe(err)
 	}
 	removeIncomplete = false
@@ -133,26 +129,25 @@ func hostedMarker(dir *os.File) (bool, error) {
 	if dir == nil {
 		return false, nil
 	}
-	var entry unix.Stat_t
-	if err := unix.Fstatat(int(dir.Fd()), HostedMarkerFileName, &entry, unix.AT_SYMLINK_NOFOLLOW); errors.Is(err, unix.ENOENT) {
+	entry, err := privfs.StatAt(dir, HostedMarkerFileName)
+	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	} else if err != nil {
 		return false, homeUnsafe(err)
 	}
-	if err := validateHostedFile(&entry, "marker"); err != nil {
+	if err := validateHostedFile(entry, "marker"); err != nil {
 		return false, err
 	}
-	fd, err := unix.Openat(int(dir.Fd()), HostedMarkerFileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	marker, err := privfs.OpenAt(dir, HostedMarkerFileName, os.O_RDONLY, 0)
 	if err != nil {
 		return false, homeUnsafe(err)
 	}
-	marker := os.NewFile(uintptr(fd), HostedMarkerFileName)
 	defer marker.Close()
-	var opened unix.Stat_t
-	if err := unix.Fstat(fd, &opened); err != nil {
+	opened, err := privfs.StatFile(marker)
+	if err != nil {
 		return false, homeUnsafe(err)
 	}
-	if opened.Dev != entry.Dev || opened.Ino != entry.Ino {
+	if opened.ID != entry.ID {
 		return false, homeUnsafe(errors.New("hosted marker changed while opening"))
 	}
 	contents := make([]byte, len(hostedMarkerContents)+1)
@@ -171,8 +166,7 @@ func hostedMarker(dir *os.File) (bool, error) {
 type HostedLock struct {
 	file *os.File
 	dir  *os.File
-	dev  uint64
-	ino  uint64
+	id   privfs.ID
 }
 
 type hostedLock = HostedLock
@@ -187,8 +181,7 @@ func AcquireHostedLock(ctx context.Context, home string) (*HostedLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, statErr := dir.Stat()
-	if statErr != nil || info.Mode().Perm()&0o077 != 0 {
+	if !privateDir(dir) {
 		_ = dir.Close()
 		return nil, homeUnsafe(errors.New("hosted home is not owner-private"))
 	}
@@ -205,16 +198,12 @@ func AcquireHostedLock(ctx context.Context, home string) (*HostedLock, error) {
 		_ = dir.Close()
 		return nil, err
 	}
-	info, statErr = dir.Stat()
-	var stat *syscall.Stat_t
-	if statErr == nil {
-		stat, _ = info.Sys().(*syscall.Stat_t)
-	}
-	if stat == nil {
+	stat, err := privfs.StatFile(dir)
+	if err != nil {
 		_ = lock.Close()
 		return nil, homeUnsafe(errors.New("hosted home identity unavailable"))
 	}
-	lock.dir, lock.dev, lock.ino = dir, uint64(stat.Dev), uint64(stat.Ino)
+	lock.dir, lock.id = dir, stat.ID
 	return lock, nil
 }
 
@@ -225,8 +214,8 @@ func WriteHostedReady(lock *HostedLock) error {
 	if err != nil {
 		return err
 	}
-	fd, err := unix.Openat(int(dir.Fd()), HostedReadyFileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-	if errors.Is(err, unix.EEXIST) {
+	file, err := privfs.OpenAt(dir, HostedReadyFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
 		ready, checkErr := hostedReady(dir)
 		if checkErr != nil {
 			return checkErr
@@ -239,12 +228,11 @@ func WriteHostedReady(lock *HostedLock) error {
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), HostedReadyFileName)
 	keep := false
 	defer func() {
 		_ = file.Close()
 		if !keep {
-			_ = unix.Unlinkat(int(dir.Fd()), HostedReadyFileName, 0)
+			_ = privfs.UnlinkAt(dir, HostedReadyFileName)
 		}
 	}()
 	if _, err = file.WriteString(hostedReadyContents); err != nil {
@@ -253,7 +241,7 @@ func WriteHostedReady(lock *HostedLock) error {
 	if err = file.Sync(); err != nil {
 		return homeUnsafe(err)
 	}
-	if err = unix.Fsync(int(dir.Fd())); err != nil {
+	if err = privfs.SyncDir(dir); err != nil {
 		return homeUnsafe(err)
 	}
 	keep = true
@@ -267,10 +255,10 @@ func ClearHostedReady(lock *HostedLock) error {
 	if err != nil {
 		return err
 	}
-	if err := unix.Unlinkat(int(dir.Fd()), HostedReadyFileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+	if err := privfs.UnlinkAt(dir, HostedReadyFileName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return homeUnsafe(err)
 	}
-	return unix.Fsync(int(dir.Fd()))
+	return privfs.SyncDir(dir)
 }
 
 // HostedReady verifies the finalization marker without opening SQLite.
@@ -309,16 +297,15 @@ func WriteHostedResetIntent(lock *HostedLock, intent HostedResetIntent) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	fd, err := unix.Openat(int(dir.Fd()), HostedResetFileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	file, err := privfs.OpenAt(dir, HostedResetFileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), HostedResetFileName)
 	keep := false
 	defer func() {
 		_ = file.Close()
 		if !keep {
-			_ = unix.Unlinkat(int(dir.Fd()), HostedResetFileName, 0)
+			_ = privfs.UnlinkAt(dir, HostedResetFileName)
 		}
 	}()
 	if _, err = file.Write(encoded); err != nil {
@@ -327,7 +314,7 @@ func WriteHostedResetIntent(lock *HostedLock, intent HostedResetIntent) error {
 	if err = file.Sync(); err != nil {
 		return homeUnsafe(err)
 	}
-	if err = unix.Fsync(int(dir.Fd())); err != nil {
+	if err = privfs.SyncDir(dir); err != nil {
 		return homeUnsafe(err)
 	}
 	keep = true
@@ -340,17 +327,15 @@ func ReadHostedResetIntent(lock *HostedLock) (HostedResetIntent, bool, error) {
 	if err != nil {
 		return intent, false, err
 	}
-	fd, err := unix.Openat(int(dir.Fd()), HostedResetFileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) {
+	file, err := privfs.OpenAt(dir, HostedResetFileName, os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
 		return intent, false, nil
 	}
 	if err != nil {
 		return intent, false, homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), HostedResetFileName)
 	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || validateHostedFile(&stat, "reset intent") != nil {
+	if stat, err := privfs.StatFile(file); err != nil || validateHostedFile(stat, "reset intent") != nil {
 		return intent, false, homeUnsafe(errors.New("hosted reset intent is unsafe"))
 	}
 	decoder := json.NewDecoder(io.LimitReader(file, 4097))
@@ -370,27 +355,26 @@ func RemoveHostedResetIntent(lock *HostedLock) error {
 	if err != nil {
 		return err
 	}
-	if err := unix.Unlinkat(int(dir.Fd()), HostedResetFileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+	if err := privfs.UnlinkAt(dir, HostedResetFileName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return homeUnsafe(err)
 	}
-	return unix.Fsync(int(dir.Fd()))
+	return privfs.SyncDir(dir)
 }
 
 func hostedReady(dir *os.File) (bool, error) {
-	fd, err := unix.Openat(int(dir.Fd()), HostedReadyFileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) {
+	file, err := privfs.OpenAt(dir, HostedReadyFileName, os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), HostedReadyFileName)
 	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	stat, err := privfs.StatFile(file)
+	if err != nil {
 		return false, homeUnsafe(err)
 	}
-	if err := validateHostedFile(&stat, "ready marker"); err != nil {
+	if err := validateHostedFile(stat, "ready marker"); err != nil {
 		return false, err
 	}
 	contents, err := io.ReadAll(io.LimitReader(file, int64(len(hostedReadyContents)+1)))
@@ -417,20 +401,24 @@ func WriteHostedSecret(path, secret string) error {
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	info, err := os.Stat(parent)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return homeUnsafe(errors.New("secret parent is not owner-private"))
-	}
-	fd, err := unix.Open(resolved, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	dir, err := os.Open(parent)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(resolved))
+	defer dir.Close()
+	if !privateDir(dir) {
+		return homeUnsafe(errors.New("secret parent is not owner-private"))
+	}
+	name := filepath.Base(resolved)
+	file, err := privfs.OpenAt(dir, name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return homeUnsafe(err)
+	}
 	keep := false
 	defer func() {
 		_ = file.Close()
 		if !keep {
-			_ = os.Remove(resolved)
+			_ = privfs.UnlinkAt(dir, name)
 		}
 	}()
 	if _, err = file.WriteString(secret + "\n"); err != nil {
@@ -444,16 +432,8 @@ func WriteHostedSecret(path, secret string) error {
 			return homeUnsafe(err)
 		}
 	}
-	if dir, e := os.Open(parent); e == nil {
-		if e = dir.Sync(); e != nil {
-			_ = dir.Close()
-			return homeUnsafe(e)
-		}
-		if e = dir.Close(); e != nil {
-			return homeUnsafe(e)
-		}
-	} else {
-		return homeUnsafe(e)
+	if err = privfs.SyncDir(dir); err != nil {
+		return homeUnsafe(err)
 	}
 	keep = true
 	return nil
@@ -465,17 +445,16 @@ func ReadHostedSecret(path string) (string, error) {
 	if err != nil {
 		return "", homeUnsafe(err)
 	}
-	fd, err := unix.Open(resolved, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	file, err := privfs.OpenNoFollow(resolved, os.O_RDONLY, 0)
 	if err != nil {
 		return "", homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(resolved))
 	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	stat, err := privfs.StatFile(file)
+	if err != nil {
 		return "", homeUnsafe(err)
 	}
-	if err := validateHostedFile(&stat, "secret file"); err != nil {
+	if err := validateHostedFile(stat, "secret file"); err != nil {
 		return "", err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 4097))
@@ -510,20 +489,18 @@ func WriteHostedExport(path string, write func(io.Writer) error) error {
 		return homeUnsafe(errors.New("export parent does not exist"))
 	}
 	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	if !privateDir(dir) {
 		return homeUnsafe(errors.New("export parent is not owner-private"))
 	}
 	name := filepath.Base(resolved)
 	tmpName := "." + name + ".tmp-" + strconv.Itoa(os.Getpid())
-	fd, err := unix.Openat(int(dir.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	file, err := privfs.OpenAt(dir, tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), tmpName)
 	defer func() {
 		_ = file.Close()
-		_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
+		_ = privfs.UnlinkAt(dir, tmpName)
 	}()
 	if err = write(file); err != nil {
 		return err
@@ -534,16 +511,16 @@ func WriteHostedExport(path string, write func(io.Writer) error) error {
 	if err = file.Close(); err != nil {
 		return homeUnsafe(err)
 	}
-	if err = unix.Linkat(int(dir.Fd()), tmpName, int(dir.Fd()), name, 0); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+	if err = privfs.LinkAt(dir, tmpName, name); err != nil {
+		if errors.Is(err, os.ErrExist) {
 			return reason.Invalid("retirement export already exists")
 		}
 		return homeUnsafe(err)
 	}
-	if err = unix.Unlinkat(int(dir.Fd()), tmpName, 0); err != nil {
+	if err = privfs.UnlinkAt(dir, tmpName); err != nil {
 		return homeUnsafe(err)
 	}
-	return unix.Fsync(int(dir.Fd()))
+	return privfs.SyncDir(dir)
 }
 
 // RemoveHostedFiles removes the known authority files after a safe retirement.
@@ -557,11 +534,11 @@ func RemoveHostedFiles(lock *HostedLock) error {
 	// serviceable marker pointing at a missing or partial authority. Keep the
 	// hosted marker so the directory cannot silently become a local authority.
 	for _, name := range []string{HostedReadyFileName, DatabaseFileName, DatabaseFileName + "-wal", DatabaseFileName + "-shm"} {
-		if err := unix.Unlinkat(int(dir.Fd()), name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		if err := privfs.UnlinkAt(dir, name); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return homeUnsafe(err)
 		}
 	}
-	if err := unix.Fsync(int(dir.Fd())); err != nil {
+	if err := privfs.SyncDir(dir); err != nil {
 		return homeUnsafe(err)
 	}
 	return nil
@@ -574,30 +551,28 @@ func ReplaceHostedDatabase(lock *HostedLock, source string) error {
 	if err != nil {
 		return err
 	}
-	sourceFD, err := unix.Open(source, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	input, err := privfs.OpenNoFollow(source, os.O_RDONLY, 0)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	input := os.NewFile(uintptr(sourceFD), filepath.Base(source))
 	defer input.Close()
-	var sourceStat unix.Stat_t
-	if err := unix.Fstat(sourceFD, &sourceStat); err != nil {
+	sourceStat, err := privfs.StatFile(input)
+	if err != nil {
 		return homeUnsafe(err)
 	}
-	if err := validateHostedFile(&sourceStat, "backup"); err != nil {
+	if err := validateHostedFile(sourceStat, "backup"); err != nil {
 		return err
 	}
 	tmpName := ".hosted-restore-" + strconv.Itoa(os.Getpid())
-	fd, err := unix.Openat(int(dir.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	tmp, err := privfs.OpenAt(dir, tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	tmp := os.NewFile(uintptr(fd), tmpName)
 	keep := false
 	defer func() {
 		_ = tmp.Close()
 		if !keep {
-			_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
+			_ = privfs.UnlinkAt(dir, tmpName)
 		}
 	}()
 	if _, err = io.Copy(tmp, input); err != nil {
@@ -607,15 +582,15 @@ func ReplaceHostedDatabase(lock *HostedLock, source string) error {
 		return homeUnsafe(err)
 	}
 	for _, sidecar := range []string{DatabaseFileName + "-wal", DatabaseFileName + "-shm"} {
-		if err := unix.Unlinkat(int(dir.Fd()), sidecar, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		if err := privfs.UnlinkAt(dir, sidecar); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return homeUnsafe(err)
 		}
 	}
-	if err = unix.Renameat(int(dir.Fd()), tmpName, int(dir.Fd()), DatabaseFileName); err != nil {
+	if err = privfs.RenameAt(dir, tmpName, DatabaseFileName); err != nil {
 		return homeUnsafe(err)
 	}
 	keep = true
-	if err = unix.Fsync(int(dir.Fd())); err != nil {
+	if err = privfs.SyncDir(dir); err != nil {
 		return homeUnsafe(err)
 	}
 	return nil
@@ -625,36 +600,34 @@ func acquireHostedLock(ctx context.Context, dir *os.File) (*HostedLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(int(dir.Fd()), HostedLockFileName, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	file, err := privfs.OpenAt(dir, HostedLockFileName, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, homeUnsafe(err)
 	}
-	file := os.NewFile(uintptr(fd), HostedLockFileName)
 	closeFile := true
 	defer func() {
 		if closeFile {
 			_ = file.Close()
 		}
 	}()
-	var opened unix.Stat_t
-	if err := unix.Fstat(fd, &opened); err != nil {
+	opened, err := privfs.StatFile(file)
+	if err != nil {
 		return nil, homeUnsafe(err)
 	}
-	if err := validateHostedFile(&opened, "lock"); err != nil {
+	if err := validateHostedFile(opened, "lock"); err != nil {
 		return nil, err
 	}
 	if afterHostedLockOpenHook != nil {
 		afterHostedLockOpenHook()
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+	if err := privfs.TryLock(file, true); err != nil {
+		if errors.Is(err, privfs.ErrLocked) {
 			return nil, reason.New(reason.ReasonHostedLockHeld, "hosted authority is already open by another writer")
 		}
 		return nil, homeUnsafe(err)
 	}
-	var entry unix.Stat_t
-	if err := unix.Fstatat(int(dir.Fd()), HostedLockFileName, &entry, unix.AT_SYMLINK_NOFOLLOW); err != nil || entry.Dev != opened.Dev || entry.Ino != opened.Ino {
-		_ = unix.Flock(fd, unix.LOCK_UN)
+	if entry, err := privfs.StatAt(dir, HostedLockFileName); err != nil || entry.ID != opened.ID {
+		_ = privfs.Unlock(file)
 		if err != nil {
 			return nil, homeUnsafe(err)
 		}
@@ -665,27 +638,27 @@ func acquireHostedLock(ctx context.Context, dir *os.File) (*HostedLock, error) {
 }
 
 func verifyHostedHomePath(dir *os.File, path string) error {
-	opened, err := dir.Stat()
+	opened, err := privfs.StatFile(dir)
 	if err != nil {
 		return homeUnsafe(err)
 	}
-	entry, err := os.Lstat(path)
-	if err != nil || entry.Mode()&os.ModeSymlink != 0 || !entry.IsDir() {
-		if err != nil {
-			return homeUnsafe(err)
-		}
-		return homeUnsafe(errors.New("hosted home changed while opening"))
+	entry, err := privfs.Lstat(path)
+	if err != nil {
+		return homeUnsafe(err)
 	}
-	openedStat, openedOK := opened.Sys().(*syscall.Stat_t)
-	entryStat, entryOK := entry.Sys().(*syscall.Stat_t)
-	if !openedOK || !entryOK || openedStat.Dev != entryStat.Dev || openedStat.Ino != entryStat.Ino {
+	if !entry.Dir || entry.ID != opened.ID {
 		return homeUnsafe(errors.New("hosted home changed while opening"))
 	}
 	return nil
 }
 
-func validateHostedFile(st *unix.Stat_t, kind string) error {
-	if st == nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o077 != 0 || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 {
+func privateDir(dir *os.File) bool {
+	st, err := privfs.StatFile(dir)
+	return err == nil && st.Dir && st.Private
+}
+
+func validateHostedFile(st privfs.Stat, kind string) error {
+	if !st.Regular || !st.Private || !st.Owned || st.Nlink != 1 {
 		return homeUnsafe(fmt.Errorf("hosted %s is unsafe", kind))
 	}
 	return nil
@@ -698,7 +671,7 @@ func (l *HostedLock) Close() error {
 	}
 	var first error
 	if l.file != nil {
-		if err := unix.Flock(int(l.file.Fd()), unix.LOCK_UN); err != nil {
+		if err := privfs.Unlock(l.file); err != nil {
 			first = err
 		}
 		if err := l.file.Close(); err != nil && first == nil {

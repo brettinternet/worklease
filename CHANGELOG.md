@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Support Windows on amd64 and arm64, with release zip archives. Windows stops guarded and detached workers immediately, without a grace period.
+
 ## 1.11.0 - 2026-10-23
 
 ### Added

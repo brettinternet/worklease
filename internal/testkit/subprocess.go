@@ -1,5 +1,3 @@
-//go:build unix
-
 package testkit
 
 import (
@@ -11,9 +9,10 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/brettinternet/worklease/internal/procgroup"
 )
 
 const helperEnvironment = "WORKLEASE_TEST_HELPER"
@@ -97,12 +96,19 @@ func RunIsolatedTest(t *testing.T) bool {
 func runTestBinary(result ProcessResult, timeout time.Duration, commandArgs []string, overrides map[string]string) (ProcessResult, error) {
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Env = Environment(os.Environ(), overrides)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procgroup.Prepare(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start test helper %q: %w", result.Helper, err)
 	}
+	group, err := procgroup.Attach(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return result, fmt.Errorf("group test helper %q: %w", result.Helper, err)
+	}
+	defer group.Close()
 	result.PID = cmd.Process.Pid
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -112,7 +118,7 @@ func runTestBinary(result ProcessResult, timeout time.Duration, commandArgs []st
 	case err := <-done:
 		// The helper may have exited after spawning descendants. Kill the process
 		// group before returning so no helper-owned child escapes test cleanup.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = group.Kill()
 		result.Stdout, result.Stderr = stdout.Bytes(), stderr.Bytes()
 		result.ExitCode = cmd.ProcessState.ExitCode()
 		if err != nil {
@@ -120,7 +126,7 @@ func runTestBinary(result ProcessResult, timeout time.Duration, commandArgs []st
 		}
 		return result, nil
 	case <-timer.C:
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = group.Kill()
 		_ = cmd.Process.Kill()
 		<-done
 		result.Stdout, result.Stderr = stdout.Bytes(), stderr.Bytes()

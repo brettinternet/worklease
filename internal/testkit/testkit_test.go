@@ -12,11 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	appcli "github.com/brettinternet/worklease/internal/cli"
+	"github.com/brettinternet/worklease/internal/runs"
 )
 
 func TestClockAndGeneratorAreDeterministicAndRaceSafe(t *testing.T) {
@@ -292,12 +292,11 @@ func assertProcessGone(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
+		if !runs.Alive(pid) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("helper process %d survived cleanup: %v", pid, err)
+			t.Fatalf("helper process %d survived cleanup", pid)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

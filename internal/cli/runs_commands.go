@@ -8,10 +8,10 @@ import (
 	"io"
 	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/output"
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 	"github.com/brettinternet/worklease/internal/runs"
 	urfave "github.com/urfave/cli/v3"
@@ -301,7 +301,7 @@ func runLogTail(id string, lines int) string {
 	if err != nil || lines == 0 {
 		return ""
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := privfs.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		return ""
 	}

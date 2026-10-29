@@ -10,10 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -100,12 +100,8 @@ func Open(ctx context.Context, home string, opts Options) (*Store, error) {
 	}
 	if marked && !opts.ReadOnly {
 		if opts.HostedLock != nil {
-			info, statErr := dir.Stat()
-			var stat *syscall.Stat_t
-			if statErr == nil {
-				stat, _ = info.Sys().(*syscall.Stat_t)
-			}
-			if opts.HostedLock.dir == nil || stat == nil || uint64(stat.Dev) != opts.HostedLock.dev || uint64(stat.Ino) != opts.HostedLock.ino {
+			stat, statErr := privfs.StatFile(dir)
+			if opts.HostedLock.dir == nil || statErr != nil || stat.ID != opts.HostedLock.id {
 				_ = st.Close()
 				return nil, homeUnsafe(errors.New("hosted lock belongs to another home"))
 			}
@@ -496,24 +492,20 @@ func validAuthorityID(value string) bool {
 
 // fileIdentity is deliberately obtained from lstat, never stat, so a path
 // swap cannot be silently followed.
-type fileIdentity struct{ Dev, Ino uint64 }
+type fileIdentity = privfs.ID
 
 func identityAt(path string) (fileIdentity, bool, error) {
-	info, err := os.Lstat(path)
+	stat, err := privfs.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileIdentity{}, false, nil
 	}
 	if err != nil {
 		return fileIdentity{}, false, err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+	if !stat.Regular {
 		return fileIdentity{}, true, errors.New("database path is not a regular file")
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fileIdentity{}, true, errors.New("database identity unavailable")
-	}
-	return fileIdentity{Dev: uint64(stat.Dev), Ino: uint64(stat.Ino)}, true, nil
+	return stat.ID, true, nil
 }
 
 func homeUnsafe(err error) error {
@@ -528,17 +520,15 @@ func secureHome(path string, readOnly bool) (*os.File, bool, error) {
 	if cleaned == string(filepath.Separator) || cleaned == filepath.VolumeName(cleaned)+string(filepath.Separator) {
 		return nil, false, homeUnsafe(errors.New("filesystem root cannot be an authority home"))
 	}
-	parts := strings.Split(cleaned, string(filepath.Separator))
-	current := string(filepath.Separator)
-	if filepath.VolumeName(path) != "" {
-		current = filepath.VolumeName(path) + string(filepath.Separator)
-	}
+	volume := filepath.VolumeName(cleaned)
+	parts := strings.Split(cleaned[len(volume):], string(filepath.Separator))
+	current := volume + string(filepath.Separator)
 	for i, part := range parts {
-		if part == "" || (i == 0 && part == current) {
+		if part == "" {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := privfs.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
 			if readOnly {
 				return nil, false, nil
@@ -546,85 +536,59 @@ func secureHome(path string, readOnly bool) (*os.File, bool, error) {
 			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 				return nil, false, homeUnsafe(err)
 			}
-			info, err = os.Lstat(current)
+			info, err = privfs.Lstat(current)
 		}
 		if err != nil {
 			return nil, false, homeUnsafe(err)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if info.Link {
 			// macOS exposes /var as a root-owned compatibility symlink to
 			// /private/var. Permit only that class of trusted system ancestor;
 			// user-owned or writable symlink ancestors remain unsafe.
-			if i >= len(parts)-1 || !trustedSystemSymlink(current, info) {
+			if i >= len(parts)-1 || !trustedSystemSymlink(current) {
 				return nil, false, reason.New(reason.ReasonHomeUnsafe, handle.SymlinkAdvice(current, cleaned))
 			}
-		} else if !info.IsDir() {
+		} else if !info.Dir {
 			return nil, false, homeUnsafe(errors.New("home and ancestors must be directories"))
 		}
-		if i < len(parts)-1 && info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+		if i < len(parts)-1 && info.Replaceable {
 			return nil, false, homeUnsafe(errors.New("unsafe writable ancestor"))
 		}
 	}
-	info, err := os.Lstat(path)
+	info, err := privfs.Lstat(path)
 	if err != nil {
 		return nil, false, homeUnsafe(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+	if !info.Dir {
 		return nil, false, homeUnsafe(errors.New("home is not a directory"))
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || uint32(stat.Uid) != uint32(os.Geteuid()) {
+	if !info.Owned {
 		return nil, false, homeUnsafe(errors.New("home owner differs from effective user"))
 	}
-	if readOnly && info.Mode().Perm()&0o077 != 0 {
+	if readOnly && !info.Private {
 		return nil, false, homeUnsafe(errors.New("home permissions are not private"))
 	}
 	if beforeHomeOpenHook != nil {
 		beforeHomeOpenHook(path)
 	}
-	flags := os.O_RDONLY | syscall.O_CLOEXEC
-	if nofollow := getattrNoFollow(); nofollow != 0 {
-		flags |= nofollow
-	}
-	if directory := getattrDirectory(); directory != 0 {
-		flags |= directory
-	}
-	file, err := os.OpenFile(path, flags, 0)
+	file, err := privfs.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, false, homeUnsafe(err)
 	}
-	opened, err := file.Stat()
-	if err != nil || !opened.IsDir() {
+	opened, err := privfs.StatFile(file)
+	if err != nil || !opened.Dir {
 		_ = file.Close()
 		return nil, false, homeUnsafe(errors.New("opened home is not a directory"))
 	}
-	openedStat, openedOK := opened.Sys().(*syscall.Stat_t)
-	pathStat, pathOK := info.Sys().(*syscall.Stat_t)
-	if !openedOK || !pathOK || openedStat.Dev != pathStat.Dev || openedStat.Ino != pathStat.Ino {
+	if opened.ID != info.ID {
 		_ = file.Close()
 		return nil, false, homeUnsafe(errors.New("home changed while opening"))
 	}
 	if !readOnly {
-		if err := file.Chmod(0o700); err != nil {
+		if err := privfs.MakePrivate(file); err != nil {
 			_ = file.Close()
 			return nil, false, homeUnsafe(err)
 		}
 	}
 	return file, true, nil
 }
-
-func trustedSystemSymlink(path string, link os.FileInfo) bool {
-	stat, ok := link.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != 0 {
-		return false
-	}
-	target, err := os.Stat(path)
-	if err != nil || !target.IsDir() {
-		return false
-	}
-	targetStat, ok := target.Sys().(*syscall.Stat_t)
-	return ok && targetStat.Uid == 0 && target.Mode().Perm()&0o002 == 0
-}
-
-func getattrNoFollow() int  { return syscall.O_NOFOLLOW }
-func getattrDirectory() int { return syscall.O_DIRECTORY }
