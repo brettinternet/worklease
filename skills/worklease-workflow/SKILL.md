@@ -96,7 +96,10 @@ Give each independent loop one full, collision-resistant stable ID. Use the
 harness's own workflow/loop-run ID unchanged; otherwise its own session ID
 unchanged; otherwise generate and persist a full UUID. The claim records this
 value as `sessionId`, which is how people find the session that worked an item.
-A delegated worker that claims independently needs its own ID. Never truncate
+Pass a harness ID exactly as the harness reports it, with no prefix or suffix,
+so it can be looked up in that harness. Set CLI `WORKLEASE_AGENT_ID` /
+`--agent` or MCP `acquire.agentId` to the agent kind, such as `claude`, `pi`,
+or `codex`; it is audit identity, never authorization. A delegated worker that claims independently needs its own ID. Never truncate
 or derive it from terminal panes, labels, agent names, turns, iterations,
 replacement sessions, or other values reused across sessions. Map it consistently to CLI `WORKLEASE_SESSION_ID` /
 `--session`; for MCP, use `acquire.sessionId` and persist the returned opaque

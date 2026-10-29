@@ -47,6 +47,10 @@ Also resolve the authoritative work source, exact resource convention, and
 configuration scope.
 
 - Distinct sessions separate handles, not resource namespaces.
+- Each worker passes its harness session ID unchanged, with no prefix or suffix,
+  as its session, and sets `WORKLEASE_AGENT_ID` (MCP `agentId`) to its agent
+  kind, such as `claude`, `pi`, or `codex`. The agent ID is audit identity,
+  never authorization.
 - Remote resources must be admitted cross-host keys.
 - Host-local path, Backlog.md, and Markdown keys cannot simply be reused remotely.
 - Do not invent a mapping without agreement from the other contenders.

@@ -78,10 +78,17 @@ keys, so different selectors still contend on the same exact resource.
 
 To trace a claim back to the harness session that held it, the caller supplies
 its own session ID: CLI `--session` or `WORKLEASE_SESSION_ID`, or MCP
-`acquire.sessionId`. Worklease records that value unchanged as the claim
-`sessionId`. `status` and `list` return it while the claim is held, and resource
-history keeps it after release, for local and remote authorities. A generated `sessionId` identifies only the
-epoch. Claims carry no other caller attributes; use `workKey` to name the work.
+`acquire.sessionId`. Pass the harness ID exactly as the harness reports it, with
+no prefix or suffix, so it can be looked up in that harness. Worklease records
+that value unchanged as the claim `sessionId`. `status` and `list` return it
+while the claim is held, and resource history keeps it after release, for local
+and remote authorities. A generated `sessionId` identifies only the epoch.
+
+Set `agentId` (CLI `--agent` or `WORKLEASE_AGENT_ID`, MCP `acquire.agentId`) to
+the agent kind, such as `claude`, `pi`, or `codex`. It defaults to the login
+user, which does not say which agent holds a claim. `agentId` is audit identity,
+never authorization. Claims carry no other caller attributes; use `workKey` to
+name the work.
 
 A legacy root-and-session handle migrates only when its embedded authority ID
 matches the selected authority. Mismatched legacy state remains at its original
