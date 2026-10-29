@@ -92,6 +92,9 @@ func configureClaims(model *claimsui.Model, backend *authorityContext, ctx conte
 	model.Claims.LoadHistory = func(claimID, resource, cursor string) tea.Cmd {
 		return claimsui.ClaimHistoryCmd(ctx, backend.API, claimID, resource, cursor)
 	}
+	model.Claims.LoadContact = func(claimID, sessionID, agentID string) tea.Cmd {
+		return claimsui.ClaimContactCmd(ctx, claimID, sessionID, agentID)
+	}
 	model.Claims.ResolveHandles = func(claims []lease.ClaimView) map[string]claimsui.ClaimsHandle {
 		restoreID := ""
 		if backend.Profile != nil {

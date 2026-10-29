@@ -59,7 +59,8 @@ func IsolateProcessEnvironment() (func(), error) {
 	preserve := helperEnvironmentForInvocation(before, os.Args)
 	for _, entry := range before {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok && (strings.HasPrefix(key, "WORKLEASE_") || strings.HasPrefix(key, "GIT_")) {
+		// Contact lookup must not reach the developer's live agents.
+		if ok && (strings.HasPrefix(key, "WORKLEASE_") || strings.HasPrefix(key, "GIT_") || key == "CLAUDE_CONFIG_DIR" || key == "HERDR_SOCKET_PATH") {
 			_ = os.Unsetenv(key)
 		}
 	}

@@ -78,6 +78,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(history, refresh)
 	case ClaimsMutationMsg:
 		return m, m.applyClaimsMutation(v)
+	case ClaimContactMsg:
+		if v.ClaimID == m.Claims.ContactClaimID {
+			m.Claims.ContactLoading = false
+			m.Claims.Contact = v.Results
+		}
 	case ClaimHistoryMsg:
 		if v.ClaimID == m.Claims.Selected && v.Resource == m.Claims.HistoryResource {
 			m.Claims.HistoryLoading = false
@@ -161,9 +166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Input = ""
 				m.anchorClaims(m.claimRows(), max(1, m.frame().bodyHeight-1))
 				if m.Claims.Selected != previous {
-					m.clearClaimHistory()
+					m.clearClaimDetail()
 					if m.Claims.Detail {
-						return m, m.loadSelectedClaimHistory(m.claimRows())
+						return m, m.loadSelectedClaimDetail(m.claimRows())
 					}
 				}
 			default:
