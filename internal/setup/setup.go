@@ -4,7 +4,9 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,11 +363,11 @@ func readSafe(path, base string) ([]byte, bool, error) {
 	if err := safePath(path, base); err != nil {
 		return nil, false, err
 	}
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+	info, err := privfs.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+	if err != nil || !info.Regular || info.Writable {
 		return nil, false, reason.New(reason.ReasonSetupConfigMalformed, "setup target is unsafe").With("path", path)
 	}
 	data, err := os.ReadFile(path)

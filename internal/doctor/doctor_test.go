@@ -75,6 +75,7 @@ func TestDiagnoseReportsMetadataStatusesDetailsAndHints(t *testing.T) {
 	if err := os.Mkdir(unsafeParent, 0o777); err != nil {
 		t.Fatal(err)
 	}
+	testkit.Chmod(t, unsafeParent, 0o755)
 	home := filepath.Join(unsafeParent, "missing-home")
 	handlePath := filepath.Join(unsafeParent, "handle")
 	t.Setenv("WORKLEASE_HANDLE", handlePath)

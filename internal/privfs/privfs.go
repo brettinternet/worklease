@@ -32,8 +32,12 @@ type Stat struct {
 	// directory: group/other write without the sticky bit on Unix, or an
 	// effective delete-child, delete, or ACL-write grant on Windows.
 	Replaceable bool
-	Nlink       uint64
-	Size        int64
+	// Writable reports that another user can modify the file: group/other
+	// write on Unix, or an effective write, delete, or ACL-write grant on
+	// Windows.
+	Writable bool
+	Nlink    uint64
+	Size     int64
 }
 
 // OpenRoot opens the filesystem root of absolute and returns it with its

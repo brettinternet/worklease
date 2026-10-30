@@ -287,7 +287,7 @@ func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
 	}
 	// Operators must see the symlinked ancestor, not a generic permission error.
 	err = WriteOwnerPrivate(filepath.Join(symlinkParent, "invite"), []byte("x"), 1)
-	if classified := reason.As(err); classified == nil || !strings.Contains(classified.Message, `/handles" is a symlink`) || !strings.Contains(classified.Message, strconv.Quote(filepath.Join(resolvedTarget, "invite"))) {
+	if classified := reason.As(err); classified == nil || !strings.Contains(classified.Message, strconv.Quote(string(filepath.Separator) + "handles")[1:]+" is a symlink") || !strings.Contains(classified.Message, strconv.Quote(filepath.Join(resolvedTarget, "invite"))) {
 		t.Fatalf("symlinked parent diagnostic: %v", err)
 	}
 	if err := Write(path, testHandle()); err != nil {

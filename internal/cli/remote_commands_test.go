@@ -368,7 +368,7 @@ func TestPendingAcquireBlocksLifecycleAndReplaysWithoutResourceFlags(t *testing.
 	}
 	out, err := runRemoteCLI(t, "heartbeat", "--profile", profileName, "--home", clientHome, "--handle", claimHandle, "--ttl", "30s", "--json")
 	classified := reason.As(err)
-	if classified == nil || classified.Reason != reason.ReasonRecoveryRequired || !strings.Contains(out, `"commitState":"not-committed"`) || !strings.Contains(out, claimHandle) || !strings.Contains(out, claimID) || strings.Contains(out, strings.Repeat("d", 64)) {
+	if classified == nil || classified.Reason != reason.ReasonRecoveryRequired || !strings.Contains(out, `"commitState":"not-committed"`) || !strings.Contains(out, strings.Trim(strconvQuote(claimHandle), `"`)) || !strings.Contains(out, claimID) || strings.Contains(out, strings.Repeat("d", 64)) {
 		t.Fatalf("pending acquire heartbeat err=%v output=%s", err, out)
 	}
 	afterRefusal, err := handle.Read(claimHandle)
@@ -1075,7 +1075,7 @@ func TestInviteIssueDefaultsToPrivateArtifactAndPrintsEnrollCommand(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, artifact.Invite) || !strings.Contains(out, expected) || !strings.Contains(out, "worklease enroll --invite-file") {
+	if strings.Contains(out, artifact.Invite) || !strings.Contains(out, strings.Trim(strconvQuote(expected), `"`)) || !strings.Contains(out, "worklease enroll --invite-file") {
 		t.Fatalf("default invite output leaked or omitted handoff: %s", out)
 	}
 	var envelope map[string]any

@@ -37,7 +37,17 @@ func Home(t testing.TB) (string, map[string]string) {
 // with owner-private temporary roots. It returns a cleanup function restoring
 // the caller's environment after the test binary finishes.
 func IsolateProcessEnvironment() (func(), error) {
-	root, err := os.MkdirTemp("", "worklease-test-")
+	temp := os.TempDir()
+	if windows {
+		// Expand 8.3 short names such as RUNNER~1 so test paths match the
+		// resolved paths Worklease reports.
+		long, err := filepath.EvalSymlinks(temp)
+		if err != nil {
+			return nil, fmt.Errorf("resolve temporary directory: %w", err)
+		}
+		temp = long
+	}
+	root, err := os.MkdirTemp(temp, "worklease-test-")
 	if err != nil {
 		return nil, fmt.Errorf("create test environment: %w", err)
 	}
@@ -58,6 +68,9 @@ func IsolateProcessEnvironment() (func(), error) {
 	}
 	// Windows resolves the user home from USERPROFILE.
 	paths["USERPROFILE"] = paths["HOME"]
+	if windows {
+		paths["TMP"], paths["TEMP"] = temp, temp
+	}
 
 	before := append([]string(nil), os.Environ()...)
 	preserve := helperEnvironmentForInvocation(before, os.Args)

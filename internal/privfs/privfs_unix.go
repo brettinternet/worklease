@@ -100,6 +100,7 @@ func fromStat(st *unix.Stat_t) Stat {
 		Owned:       st.Uid == uint32(os.Geteuid()),
 		Private:     st.Mode&0o077 == 0,
 		Replaceable: st.Mode&0o022 != 0 && st.Mode&unix.S_ISVTX == 0,
+		Writable:    st.Mode&0o022 != 0,
 		Nlink:       uint64(st.Nlink),
 		Size:        st.Size,
 	}

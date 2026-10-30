@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/testkit"
@@ -17,7 +18,7 @@ func isolateCLIProcess(t *testing.T) bool {
 }
 
 func TestMain(m *testing.M) {
-	if filepath.Base(os.Args[0]) == "worklease" {
+	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "worklease" {
 		if err := Run(context.Background(), os.Args, "dev", "unknown", "unknown", os.Stdout, os.Stderr); err != nil {
 			os.Exit(1)
 		}

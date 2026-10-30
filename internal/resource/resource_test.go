@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -368,6 +369,9 @@ func TestPathCanonicalContainmentAndExactSemantics(t *testing.T) {
 }
 
 func TestPathPreservesGitRootWhitespace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows strips trailing spaces from file names")
+	}
 	repo := filepath.Join(t.TempDir(), "repo ")
 	if err := os.Mkdir(repo, 0755); err != nil {
 		t.Fatal(err)

@@ -85,7 +85,7 @@ func TestClaimsHandleIndexOwnershipAndUnavailableReasons(t *testing.T) {
 	if err := handle.Write(path, h); err != nil {
 		t.Fatal(err)
 	}
-	if got := claimsHandleIndex(home, backend.AuthorityID(), "", []lease.ClaimView{claim})[claim.ClaimID]; !strings.Contains(got.Unavailable, "worklease heartbeat --handle "+path) {
+	if got := claimsHandleIndex(home, backend.AuthorityID(), "", []lease.ClaimView{claim})[claim.ClaimID]; !strings.Contains(got.Unavailable, "worklease heartbeat --handle "+shellQuote(path)) {
 		t.Fatalf("pending handle=%+v", got)
 	}
 	h.State, h.PendingRequest = "ready", nil
@@ -221,7 +221,7 @@ func TestClaimsAmbiguousHeartbeatRetainsPendingHandle(t *testing.T) {
 	backend, claim, _, path := claimsLocalFixture(t)
 	selected := claimsHandleIndex(backend.Config.Home, backend.AuthorityID(), "", []lease.ClaimView{claim})[claim.ClaimID]
 	backend.API = ambiguousClaimsAuthority{backend.API}
-	if _, err := mutateClaimsHandle(context.Background(), backend, claim, selected, false, ""); err == nil || !strings.Contains(err.Error(), "outcome uncertain") || !strings.Contains(err.Error(), "worklease heartbeat --handle "+path) {
+	if _, err := mutateClaimsHandle(context.Background(), backend, claim, selected, false, ""); err == nil || !strings.Contains(err.Error(), "outcome uncertain") || !strings.Contains(err.Error(), "worklease heartbeat --handle "+shellQuote(path)) {
 		t.Fatalf("ambiguous outcome=%v", err)
 	}
 	h, err := handle.Read(path)
@@ -240,7 +240,7 @@ func TestClaimsAmbiguousReleaseShowsReplayableReason(t *testing.T) {
 	backend, claim, _, path := claimsLocalFixture(t)
 	selected := claimsHandleIndex(backend.Config.Home, backend.AuthorityID(), "", []lease.ClaimView{claim})[claim.ClaimID]
 	backend.API = ambiguousClaimsReleaseAuthority{backend.API}
-	if _, err := mutateClaimsHandle(context.Background(), backend, claim, selected, true, "finished work"); err == nil || !strings.Contains(err.Error(), "--reason 'finished work'") || !strings.Contains(err.Error(), "worklease release --handle "+path) {
+	if _, err := mutateClaimsHandle(context.Background(), backend, claim, selected, true, "finished work"); err == nil || !strings.Contains(err.Error(), "--reason 'finished work'") || !strings.Contains(err.Error(), "worklease release --handle "+shellQuote(path)) {
 		t.Fatalf("missing exact recovery command: %v", err)
 	}
 	h, err := handle.Read(path)

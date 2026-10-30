@@ -84,7 +84,7 @@ func ntOpenRelative(root windows.Handle, name string, access, disposition, optio
 	var h windows.Handle
 	err = windows.NtCreateFile(&h, windows.SYNCHRONIZE|access, &attrs, &windows.IO_STATUS_BLOCK{}, nil,
 		windows.FILE_ATTRIBUTE_NORMAL, shareAll, disposition,
-		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT|options, 0, 0)
+		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT|options, 0, 0)
 	if err != nil {
 		return windows.InvalidHandle, ntError(err)
 	}
@@ -281,23 +281,25 @@ func statHandle(h windows.Handle) (Stat, error) {
 	if err != nil {
 		return Stat{}, err
 	}
-	st.Private, st.Replaceable = inspectDACL(dacl, ids)
+	st.Private, st.Replaceable, st.Writable = inspectDACL(dacl, ids)
 	return st, nil
 }
 
-// inspectDACL reports whether only trusted principals hold allow entries and
-// whether an untrusted principal can delete, rename, or re-ACL entries.
+// inspectDACL reports whether only trusted principals hold allow entries,
+// whether an untrusted principal can delete, rename, or re-ACL entries, and
+// whether one can also write data or attributes.
 // Unrecognized allow entries count as untrusted.
-func inspectDACL(dacl *windows.ACL, ids *identities) (private, replaceable bool) {
+func inspectDACL(dacl *windows.ACL, ids *identities) (private, replaceable, writable bool) {
 	if dacl == nil {
-		return false, true
+		return false, true, true
 	}
 	const replaceRights = fileDeleteChild | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | windows.GENERIC_ALL
+	const writeRights = replaceRights | windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.FILE_WRITE_EA | windows.FILE_WRITE_ATTRIBUTES | windows.GENERIC_WRITE
 	private = true
 	for i := range uint32(dacl.AceCount) {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return false, true
+			return false, true, true
 		}
 		switch ace.Header.AceType {
 		case windows.ACCESS_ALLOWED_ACE_TYPE:
@@ -306,15 +308,16 @@ func inspectDACL(dacl *windows.ACL, ids *identities) (private, replaceable bool)
 				continue
 			}
 			private = false
-			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 && uint32(ace.Mask)&replaceRights != 0 {
-				replaceable = true
+			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 {
+				replaceable = replaceable || uint32(ace.Mask)&replaceRights != 0
+				writable = writable || uint32(ace.Mask)&writeRights != 0
 			}
 		case 4, 5, 9, 11: // compound, object, callback, and callback-object allow entries
 			private = false
-			replaceable = true
+			replaceable, writable = true, true
 		}
 	}
-	return private, replaceable
+	return private, replaceable, writable
 }
 
 type identities struct {

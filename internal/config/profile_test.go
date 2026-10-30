@@ -16,7 +16,7 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 	if err := SaveProfiles(paths, profiles, "default"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveBindings(paths, map[string]string{"/checkout": "bind"}); err != nil {
+	if err := SaveBindings(paths, map[string]string{rootedPath("/checkout"): "bind"}); err != nil {
 		t.Fatal(err)
 	}
 	env := func(k string) string {
@@ -25,19 +25,19 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 		}
 		return ""
 	}
-	got, err := SelectProfile(map[string]string{"profile": "flag"}, env, "/checkout", paths)
+	got, err := SelectProfile(map[string]string{"profile": "flag"}, env, rootedPath("/checkout"), paths)
 	if err != nil || got.Name != "flag" || got.Source != "flag" {
 		t.Fatalf("flag precedence: %#v %v", got, err)
 	}
-	got, err = SelectProfile(nil, env, "/checkout", paths)
+	got, err = SelectProfile(nil, env, rootedPath("/checkout"), paths)
 	if err != nil || got.Name != "env" {
 		t.Fatalf("env precedence: %#v %v", got, err)
 	}
-	got, err = SelectProfile(nil, func(string) string { return "" }, "/checkout", paths)
+	got, err = SelectProfile(nil, func(string) string { return "" }, rootedPath("/checkout"), paths)
 	if err != nil || got.Name != "bind" {
 		t.Fatalf("binding precedence: %#v %v", got, err)
 	}
-	got, err = SelectProfile(nil, func(string) string { return "" }, "/other", paths)
+	got, err = SelectProfile(nil, func(string) string { return "" }, rootedPath("/other"), paths)
 	if err != nil || got.Name != "default" {
 		t.Fatalf("default precedence: %#v %v", got, err)
 	}
@@ -47,7 +47,7 @@ func TestProfileSelectionPrecedenceAndLocalFallback(t *testing.T) {
 	if err := os.Remove(paths.Bindings); err != nil {
 		t.Fatal(err)
 	}
-	got, err = SelectProfile(nil, func(string) string { return "" }, "/other", paths)
+	got, err = SelectProfile(nil, func(string) string { return "" }, rootedPath("/other"), paths)
 	if err != nil || got.Profile != nil || got.Source != "local" {
 		t.Fatalf("local fallback: %#v %v", got, err)
 	}
@@ -63,7 +63,7 @@ func TestRepositoryBindingSelectionRejectsConflictingLegacyWorktreeBindings(t *t
 	if err := SaveProfiles(paths, []Profile{profile("main"), profile("legacy")}, ""); err != nil {
 		t.Fatal(err)
 	}
-	mainRoot, linkedRoot := "/checkout", "/checkout/.worktrees/agent"
+	mainRoot, linkedRoot := rootedPath("/checkout"), rootedPath("/checkout/.worktrees/agent")
 	if err := SaveBindings(paths, map[string]string{mainRoot: "main", linkedRoot: "legacy"}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestLocalSelectionIsReservedAndStopsEveryPrecedenceLayer(t *testing.T) {
 	if err := SaveProfiles(paths, []Profile{remote("lower"), remote("default")}, "local"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveBindings(paths, map[string]string{"/checkout": "local"}); err != nil {
+	if err := SaveBindings(paths, map[string]string{rootedPath("/checkout"): "local"}); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -111,10 +111,10 @@ func TestLocalSelectionIsReservedAndStopsEveryPrecedenceLayer(t *testing.T) {
 		env          string
 		root         string
 	}{
-		{"flag", "flag", map[string]string{"profile": "local"}, "lower", "/checkout"},
-		{"env", "env", nil, "local", "/checkout"},
-		{"binding", "binding", nil, "", "/checkout"},
-		{"default", "default", nil, "", "/other"},
+		{"flag", "flag", map[string]string{"profile": "local"}, "lower", rootedPath("/checkout")},
+		{"env", "env", nil, "local", rootedPath("/checkout")},
+		{"binding", "binding", nil, "", rootedPath("/checkout")},
+		{"default", "default", nil, "", rootedPath("/other")},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -129,7 +129,7 @@ func TestLocalSelectionIsReservedAndStopsEveryPrecedenceLayer(t *testing.T) {
 			}
 		})
 	}
-	got, err := SelectProfile(nil, func(string) string { return "" }, "/missing", ProfilePaths{Profiles: filepath.Join(dir, "missing"), Bindings: filepath.Join(dir, "missing-bindings")})
+	got, err := SelectProfile(nil, func(string) string { return "" }, rootedPath("/missing"), ProfilePaths{Profiles: filepath.Join(dir, "missing"), Bindings: filepath.Join(dir, "missing-bindings")})
 	if err != nil || got.Profile != nil || got.Name != LocalProfileName || got.Source != "local" {
 		t.Fatalf("implicit selection=%#v err=%v", got, err)
 	}
@@ -177,4 +177,13 @@ func TestProfileAllowsExplicitInsecureHTTPEndpointAndRejectsUnknownFields(t *tes
 	if err := validateProfile(p); err == nil {
 		t.Fatal("insecure endpoint accepted")
 	}
+}
+
+// rootedPath makes a slash path absolute on the current platform.
+func rootedPath(path string) string {
+	rooted, err := filepath.Abs(filepath.FromSlash(path))
+	if err != nil {
+		panic(err)
+	}
+	return rooted
 }

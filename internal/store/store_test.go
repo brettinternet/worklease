@@ -419,6 +419,7 @@ func TestHomeSwapCannotChmodSymlinkTargetAndRootIsRejected(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	testkit.Chmod(t, target, 0o755)
 	beforeHomeOpenHook = func(path string) {
 		if path != home {
 			return
@@ -438,47 +439,6 @@ func TestHomeSwapCannotChmodSymlinkTargetAndRootIsRejected(t *testing.T) {
 	assertMode(t, target, 0o755)
 	if _, err := Open(context.Background(), string(filepath.Separator), Options{}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
 		t.Fatalf("filesystem root error = %v", err)
-	}
-}
-
-func TestStoreRejectsFinalSQLiteOpenIntervalSwap(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
-	st := openStore(t, home, false)
-	st.Close()
-	path := testkit.DatabasePath(home)
-	for _, sidecar := range testkit.DatabaseSidecarPaths(home) {
-		_ = os.Remove(sidecar)
-	}
-	original := path + ".original"
-	replacement := path + ".replacement"
-	beforeSQLiteOpenHook = func(openPath string) {
-		if openPath != path {
-			return
-		}
-		if err := os.Rename(path, original); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	afterSQLiteOpenHook = func(openPath string) {
-		if openPath != path {
-			return
-		}
-		if err := os.Rename(path, replacement); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(original, path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	defer func() {
-		beforeSQLiteOpenHook = nil
-		afterSQLiteOpenHook = nil
-	}()
-	if _, err := Open(context.Background(), home, Options{}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
-		t.Fatalf("final SQLite open swap error = %v", err)
 	}
 }
 

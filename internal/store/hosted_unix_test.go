@@ -5,6 +5,7 @@ package store
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -87,5 +88,32 @@ func hostedWriterHelper(t *testing.T) {
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Windows refuses to rename the home while the hosted lock is open in it.
+func TestHostedLockRejectsHomeReplacementAfterOpen(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "hosted")
+	if err := MarkHosted(home); err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(root, "parked")
+	afterHostedLockOpenHook = func() {
+		afterHostedLockOpenHook = nil
+		if err := os.Rename(home, parked); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		markHostedFixture(t, home)
+	}
+	t.Cleanup(func() { afterHostedLockOpenHook = nil })
+	if _, err := Open(context.Background(), home, Options{HostedWriter: true}); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
+		t.Fatalf("replaced hosted home error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("home replacement opened database: %v", err)
 	}
 }
