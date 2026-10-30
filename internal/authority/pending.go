@@ -150,7 +150,7 @@ func (s *FilePendingStore) Clear(id string) error {
 	if err := s.validateDir(); err != nil {
 		return err
 	}
-	if !validRequestID(id) {
+	if !validID(id) {
 		return fmt.Errorf("request ID is invalid")
 	}
 	if err := handle.RemoveOwnerPrivate(s.path(id)); err != nil {
@@ -188,13 +188,13 @@ func (s *FilePendingStore) List() ([]PendingRequest, error) {
 }
 func (s *FilePendingStore) path(id string) string { return filepath.Join(s.Dir, id+".json") }
 func (s *FilePendingStore) read(id string) ([]byte, error) {
-	if !validRequestID(id) {
+	if !validID(id) {
 		return nil, fmt.Errorf("request ID is invalid")
 	}
 	return handle.ReadOwnerPrivate(s.path(id), maxPendingBytes)
 }
 func validatePending(p PendingRequest) error {
-	if !validRequestID(p.RequestID) || p.Kind == "" || !strings.HasPrefix(p.Route, "/v1/") || !validID(p.AuthorityID) || (p.Endpoint != "" && !validEndpoint(p.Endpoint)) || (p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || !strings.HasPrefix(p.Endpoint, "https://"))) || !validID(p.ExpectedRestoreID) || p.RequestNotAfter.IsZero() || len(p.Request) == 0 || len(p.Request) > maxPendingBytes {
+	if !validID(p.RequestID) || p.Kind == "" || !strings.HasPrefix(p.Route, "/v1/") || !validID(p.AuthorityID) || (p.Endpoint != "" && !validEndpoint(p.Endpoint)) || (p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || !strings.HasPrefix(p.Endpoint, "https://"))) || !validID(p.ExpectedRestoreID) || p.RequestNotAfter.IsZero() || len(p.Request) == 0 || len(p.Request) > maxPendingBytes {
 		return fmt.Errorf("pending request is malformed")
 	}
 	for _, ref := range []string{p.CredentialRef, p.ClaimHandleRef, p.ClaimCredentialRef, p.NewClaimHandleRef, p.NewClaimCredentialRef, p.TargetHandleRef} {
@@ -213,7 +213,6 @@ func validEndpoint(endpoint string) bool {
 	u, err := url.Parse(endpoint)
 	return err == nil && u.Scheme != "" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/") && (u.Scheme == "http" || u.Scheme == "https")
 }
-func validRequestID(s string) bool { return validID(s) }
 func validID(s string) bool {
 	if len(s) != 32 {
 		return false

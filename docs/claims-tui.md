@@ -16,6 +16,16 @@ The dispatch rechecks handle, claim revision, authority, restore identity,
 expiry, and supervisor ownership. Pending handles must be recovered through
 the CLI; supervised claims are managed through `worklease runs stop`.
 
+Summary's Contact row lists where to reach the holder on this host, looked up
+from the claim's session and agent each time details open, within 100 ms:
+its Herdr pane and, for `claude` holders, its Claude Code peer name, each with
+working, idle, or waiting status. A source that cannot answer shows why, for
+example `herdr not installed`. Claims record no host, so a holder elsewhere
+shows `none on this host`. Contact is never recorded, and the TUI never sends
+messages. The Claude Code lookup reads only `sessionId`, `name`, `status`,
+`kind`, and `peerProtocol` from `~/.claude/sessions` (or
+`$CLAUDE_CONFIG_DIR/sessions`).
+
 Local History shows retained public lifecycle events and operation states,
 never credentials or checkpoint contents. Remote authorities expose only
 public list fields, not other sessions' history. Poll failures retain the

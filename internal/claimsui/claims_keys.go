@@ -74,10 +74,7 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		if key == "enter" && m.Claims.Detail {
 			m.Claims.Detail = false
 		} else if len(rows) > 0 {
-			m.Claims.Detail = true
-			m.Claims.DetailTab = 0
-			m.Claims.DetailOffset = 0
-			return m, m.loadSelectedClaimHistory(rows)
+			return m, m.openClaimDetail(rows)
 		}
 	case "h", "left", "esc":
 		if m.Claims.Detail {
@@ -129,9 +126,9 @@ func (m Model) updateClaimsKey(key string) (tea.Model, tea.Cmd) {
 		m.openClaimsAction(ClaimsActionRelease)
 	}
 	if m.Claims.Selected != previous {
-		m.clearClaimHistory()
+		m.clearClaimDetail()
 		if m.Claims.Detail {
-			return m, m.loadSelectedClaimHistory(m.claimRows())
+			return m, m.loadSelectedClaimDetail(m.claimRows())
 		}
 	}
 	return m, nil
@@ -159,17 +156,47 @@ func (m *Model) selectClaimIndex(rows []lease.ClaimView, index, capacity int) {
 	m.Claims.Selected = rows[index].ClaimID
 	m.anchorClaims(rows, capacity)
 	if m.Claims.Selected != previous {
-		m.clearClaimHistory()
+		m.clearClaimDetail()
 	}
 }
 
-func (m *Model) clearClaimHistory() {
+func (m *Model) clearClaimDetail() {
 	m.Claims.DetailOffset = 0
 	m.Claims.DetailTab = 0
 	m.Claims.History = ledger.HistoryPage{}
 	m.Claims.HistoryResource = ""
 	m.Claims.HistoryLoading = false
 	m.Claims.HistoryError = ""
+	m.Claims.Contact = nil
+	m.Claims.ContactClaimID = ""
+	m.Claims.ContactLoading = false
+}
+
+// openClaimDetail shows the selected claim's summary and resolves the
+// holder's contact afresh, since live status changes while detail is closed.
+func (m *Model) openClaimDetail(rows []lease.ClaimView) tea.Cmd {
+	m.Claims.Detail = true
+	m.Claims.DetailTab = 0
+	m.Claims.DetailOffset = 0
+	m.Claims.ContactClaimID = ""
+	return m.loadSelectedClaimDetail(rows)
+}
+
+func (m *Model) loadSelectedClaimDetail(rows []lease.ClaimView) tea.Cmd {
+	return tea.Batch(m.loadSelectedClaimContact(rows), m.loadSelectedClaimHistory(rows))
+}
+
+// loadSelectedClaimContact resolves contact once per opened claim. Results
+// are keyed by claim ID, so a reply for an earlier selection is ignored.
+func (m *Model) loadSelectedClaimContact(rows []lease.ClaimView) tea.Cmd {
+	claim, ok := m.selectedClaim(rows)
+	if !ok || m.Claims.LoadContact == nil || claim.SessionID == "" || m.Claims.ContactClaimID == claim.ClaimID {
+		return nil
+	}
+	m.Claims.Contact = nil
+	m.Claims.ContactClaimID = claim.ClaimID
+	m.Claims.ContactLoading = true
+	return m.Claims.LoadContact(claim.ClaimID, claim.SessionID, claim.AgentID)
 }
 
 func (m *Model) loadSelectedClaimHistory(rows []lease.ClaimView) tea.Cmd {

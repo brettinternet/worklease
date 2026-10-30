@@ -243,6 +243,35 @@ func (m Model) claimDetailPane(claim lease.ClaimView, width, height int) []strin
 	return append(lines, m.s().scrollWindow(m.claimDetailContent(claim, width), m.Claims.DetailOffset, height-len(lines))...)
 }
 
+type contactRow struct {
+	text  string
+	style lipgloss.Style
+}
+
+// claimContactRows lists the holder's live channels on this host. The TUI
+// shows where to reach the holder and never sends messages itself.
+func (m Model) claimContactRows(claim lease.ClaimView) []contactRow {
+	if m.Claims.ContactClaimID != claim.ClaimID {
+		return nil
+	}
+	if m.Claims.ContactLoading {
+		return []contactRow{{"resolving", m.s().faint}}
+	}
+	var rows []contactRow
+	for _, result := range m.Claims.Contact {
+		if result.Status != "ok" {
+			rows = append(rows, contactRow{result.Resolver + " unavailable: " + result.Reason, m.s().faint})
+		}
+		for _, c := range result.Channels {
+			rows = append(rows, contactRow{clean(c.Channel+" "+c.Handle) + " \u00b7 " + c.Status, lipgloss.NewStyle()})
+		}
+	}
+	if len(rows) == 0 {
+		return []contactRow{{"none on this host", m.s().faint}}
+	}
+	return rows
+}
+
 var claimDetailTabs = []string{"Summary", "History"}
 
 func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
@@ -257,6 +286,13 @@ func (m Model) claimDetailContent(claim lease.ClaimView, width int) []string {
 			holder += " (mine)"
 		}
 		add("Holder", holder, plainStyle)
+		for n, row := range m.claimContactRows(claim) {
+			label := " "
+			if n == 0 {
+				label = "Contact"
+			}
+			add(label, row.text, row.style)
+		}
 		add("Acquired", when(claim.AcquiredAt, now), plainStyle)
 		add("Heartbeat", when(claim.HeartbeatAt, now), plainStyle)
 		checkpoint := "none"

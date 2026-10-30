@@ -25,7 +25,7 @@ func (m Model) claimsMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 		previous := m.Claims.Selected
 		m.selectClaimIndex(rows, max(start, min(m.Claims.Index, start+capacity-1)), capacity)
 		if m.Claims.Detail && m.Claims.Selected != previous {
-			return m, m.loadSelectedClaimHistory(rows)
+			return m, m.loadSelectedClaimDetail(rows)
 		}
 		return m, nil
 	case tea.MouseButtonLeft:
@@ -56,14 +56,11 @@ func (m Model) claimsMouse(v tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if rows[index].ClaimID == m.Claims.Selected {
-			m.Claims.Detail = true
-			m.Claims.DetailTab = 0
-			m.Claims.DetailOffset = 0
-			return m, m.loadSelectedClaimHistory(rows)
+			return m, m.openClaimDetail(rows)
 		}
 		m.selectClaimIndex(rows, index, capacity)
 		if m.Claims.Detail {
-			return m, m.loadSelectedClaimHistory(m.claimRows())
+			return m, m.loadSelectedClaimDetail(m.claimRows())
 		}
 	}
 	return m, nil

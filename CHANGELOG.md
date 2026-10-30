@@ -6,6 +6,16 @@
 
 - Support Windows on amd64 and arm64, with release zip archives. Windows stops guarded and detached workers immediately, without a grace period.
 
+## 1.12.0 - 2026-10-30
+
+### Added
+
+- Show locally discovered Herdr panes and Claude Code peer contact details, including activity status, for claim holders in the Claims TUI.
+
+### Changed
+
+- Clarify that agents pass harness session IDs unchanged and identify their agent kind separately through `agentId`.
+
 ## 1.11.0 - 2026-10-23
 
 ### Added

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/contact"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	tea "github.com/charmbracelet/bubbletea"
@@ -401,6 +402,44 @@ func TestClaimsDetailLoadsHistoryForSelectedClaim(t *testing.T) {
 	m, command = press(m, "enter")
 	if m.Claims.Detail || m.Claims.Selected != selected || command != nil {
 		t.Fatal("enter did not return to the selected claim without reloading history")
+	}
+}
+
+// Contact resolves off the update loop when detail opens, and a slow reply for
+// an earlier claim must not show under the current holder.
+func TestClaimsDetailResolvesHolderContact(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.Width, m.Height = 120, 30
+	m.Claims.Items = []lease.ClaimView{{ClaimID: "claim-1", AgentID: "claude", SessionID: "s-1"}}
+	m.Claims.LoadContact = func(claimID, sessionID, agentID string) tea.Cmd {
+		if claimID != "claim-1" || sessionID != "s-1" || agentID != "claude" {
+			t.Errorf("contact request=(%q,%q,%q)", claimID, sessionID, agentID)
+		}
+		return func() tea.Msg {
+			return ClaimContactMsg{ClaimID: claimID, Results: []contact.Result{
+				{Resolver: "herdr", Status: "ok", Channels: []contact.Channel{{Channel: "herdr", Handle: "w1:p2", Status: "working"}}},
+				{Resolver: "claude-peer", Status: "unavailable", Reason: "unsupported version (peerProtocol 2)"},
+			}}
+		}
+	}
+	m, command := press(m, "enter")
+	if command == nil || !strings.Contains(screenText(m.View()), "resolving") {
+		t.Fatalf("detail did not start resolving contact: command=%t", command != nil)
+	}
+	updated, _ := m.Update(ClaimContactMsg{ClaimID: "claim-0", Results: []contact.Result{{Resolver: "herdr", Status: "ok", Channels: []contact.Channel{{Channel: "herdr", Handle: "stale"}}}}})
+	m = updated.(Model)
+	if screen := screenText(m.View()); strings.Contains(screen, "stale") || !strings.Contains(screen, "resolving") {
+		t.Fatalf("earlier claim's contact shown: %s", screen)
+	}
+	updated, _ = m.Update(command())
+	m = updated.(Model)
+	if screen := screenText(m.View()); !strings.Contains(screen, "herdr w1:p2 · working") || !strings.Contains(screen, "claude-peer unavailable: unsupported") {
+		t.Fatalf("contact not shown: %s", screen)
+	}
+	m, _ = press(m, "enter")
+	if _, command = press(m, "enter"); command == nil {
+		t.Fatal("reopening detail did not re-resolve live contact")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brettinternet/worklease/internal/contact"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/ledger"
 	tea "github.com/charmbracelet/bubbletea"
@@ -83,8 +84,12 @@ type ClaimsState struct {
 	HistoryResource string
 	HistoryLoading  bool
 	HistoryError    string
+	Contact         []contact.Result
+	ContactClaimID  string
+	ContactLoading  bool
 	Refresh         func(string) tea.Cmd
 	LoadHistory     func(string, string, string) tea.Cmd
+	LoadContact     func(claimID, sessionID, agentID string) tea.Cmd
 	ResolveHandles  func([]lease.ClaimView) map[string]ClaimsHandle
 	Mutate          func(context.Context, lease.ClaimView, ClaimsHandle, string, bool) (lease.ClaimView, error)
 	RenewTTL        time.Duration
@@ -114,6 +119,11 @@ type ClaimHistoryMsg struct {
 	Err      error
 }
 
+type ClaimContactMsg struct {
+	ClaimID string
+	Results []contact.Result
+}
+
 type ClaimsTickMsg struct{}
 
 // ClaimsRefreshCmd reads the public claims list and advances the durable event
@@ -129,6 +139,14 @@ func ClaimsRefreshCmd(ctx context.Context, reader ClaimsReader, cursor string) t
 		}
 		claims, claimsErr := reader.List(ctx, "", nil)
 		return ClaimsRefreshMsg{Claims: claims, Events: page.Events, Cursor: page.NextCursor, Gap: gap, ClaimsErr: claimsErr, EventsErr: eventsErr}
+	}
+}
+
+// ClaimContactCmd resolves the holder's live contact channels on this host,
+// off the update loop and within contact.Budget.
+func ClaimContactCmd(ctx context.Context, claimID, sessionID, agentID string) tea.Cmd {
+	return func() tea.Msg {
+		return ClaimContactMsg{ClaimID: claimID, Results: contact.Resolve(ctx, sessionID, agentID)}
 	}
 }
 
@@ -178,7 +196,7 @@ func (m *Model) applyClaimsRefresh(msg ClaimsRefreshMsg) tea.Cmd {
 		m.Claims.HistoryLoading = false
 		m.Claims.HistoryError = ""
 		if m.Claims.Detail {
-			return m.loadSelectedClaimHistory(m.claimRows())
+			return m.loadSelectedClaimDetail(m.claimRows())
 		}
 	}
 	return nil
@@ -439,7 +457,7 @@ func (m *Model) applyClaimsMutation(msg ClaimsMutationMsg) tea.Cmd {
 		m.Claims.HistoryResource = ""
 		m.Claims.HistoryLoading = false
 		m.Claims.HistoryError = ""
-		history = m.loadSelectedClaimHistory(m.claimRows())
+		history = m.loadSelectedClaimDetail(m.claimRows())
 	}
 	return tea.Batch(history, m.refreshClaimsAfterMutation())
 }
