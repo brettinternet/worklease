@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.12.0 - 2026-10-30
+
+### Added
+
+- Show locally discovered Herdr panes and Claude Code peer contact details, including activity status, for claim holders in the Claims TUI.
+
+### Changed
+
+- Clarify that agents pass harness session IDs unchanged and identify their agent kind separately through `agentId`.
+
 ## 1.11.0 - 2026-10-23
 
 ### Added
