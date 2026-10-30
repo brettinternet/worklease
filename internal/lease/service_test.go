@@ -18,12 +18,13 @@ var currentTestAuthority string
 func (g *testIDs) Generate() string { g.n++; return strings.Repeat("0", 31) + string(rune('0'+g.n%10)) }
 func openLeaseTest(t *testing.T) (*Service, *store.Store, *testkit.Clock) {
 	t.Helper()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	clock := testkit.NewClock(now)
 	st, err := store.Open(context.Background(), t.TempDir(), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Open seeds last_observed_at from the wall clock; start the test clock
+	// after it so slow opens do not read as clock regression.
+	clock := testkit.NewClock(time.Now().UTC().Truncate(time.Microsecond))
 	t.Cleanup(func() { st.Close() })
 	currentTestAuthority = st.AuthorityID()
 	return New(st, clock, &testIDs{}, Defaults{TTL: 5 * time.Second}), st, clock
