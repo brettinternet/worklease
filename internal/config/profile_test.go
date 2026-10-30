@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -69,7 +70,7 @@ func TestRepositoryBindingSelectionRejectsConflictingLegacyWorktreeBindings(t *t
 	}
 	_, err := SelectProfileForRoots(nil, func(string) string { return "" }, linkedRoot, mainRoot, paths)
 	classified := reason.As(err)
-	if classified == nil || classified.Reason != reason.ReasonProfileBindingConflict || !strings.Contains(err.Error(), paths.Bindings) || !strings.Contains(err.Error(), mainRoot) || !strings.Contains(err.Error(), linkedRoot) {
+	if classified == nil || classified.Reason != reason.ReasonProfileBindingConflict || !strings.Contains(err.Error(), strconv.Quote(paths.Bindings)) || !strings.Contains(err.Error(), strconv.Quote(mainRoot)) || !strings.Contains(err.Error(), strconv.Quote(linkedRoot)) {
 		t.Fatalf("conflicting binding err=%v", err)
 	}
 	selected, err := SelectProfileForRoots(map[string]string{"profile": "legacy"}, func(string) string { return "" }, linkedRoot, mainRoot, paths)

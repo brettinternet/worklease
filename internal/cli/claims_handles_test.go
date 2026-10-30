@@ -249,7 +249,7 @@ func TestClaimsAmbiguousReleaseShowsReplayableReason(t *testing.T) {
 	}
 	recovery := h
 	recovery.RecoveryRequest = &handle.RecoveryRequest{}
-	if guidance := claimsRecoveryCommand(recovery, path, backend.Config.Home, nil); !strings.Contains(guidance, "worklease handle inspect --handle "+path) || strings.Contains(guidance, "worklease heartbeat --handle") {
+	if guidance := claimsRecoveryCommand(recovery, path, backend.Config.Home, nil); !strings.Contains(guidance, "worklease handle inspect --handle "+shellQuote(path)) || strings.Contains(guidance, "worklease heartbeat --handle") {
 		t.Fatalf("reconciliation guidance: %s", guidance)
 	}
 	var out, stderr bytes.Buffer
