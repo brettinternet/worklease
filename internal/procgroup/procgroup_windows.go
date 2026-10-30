@@ -8,27 +8,35 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+var ntResumeProcess = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
+
 // Group is a started command's process tree.
 type Group struct{ job windows.Handle }
 
-// Prepare configures cmd, before Start, to lead a new group.
+// Prepare configures cmd, before Start, to lead a new group. The command
+// starts suspended until Attach places it in the group.
 func Prepare(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED
 }
 
-// Attach places a command started after Prepare in a new job object. A
-// descendant the command starts before Attach returns is not a member.
+// Attach places a command started after Prepare in a new job object, then
+// resumes it, so every descendant is a member. On failure the command stays
+// suspended and the caller kills it.
 func Attach(cmd *exec.Cmd) (*Group, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
 	if err == nil {
-		err = windows.AssignProcessToJobObject(job, process)
+		if err = windows.AssignProcessToJobObject(job, process); err == nil {
+			if status, _, _ := ntResumeProcess.Call(uintptr(process)); status != 0 {
+				err = windows.NTStatus(status)
+			}
+		}
 		_ = windows.CloseHandle(process)
 	}
 	if err != nil {

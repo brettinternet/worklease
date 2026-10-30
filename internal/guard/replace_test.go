@@ -179,6 +179,11 @@ func TestReplaceFileExpectedHashPreservesModeAndReplay(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		// A shared inheritable parent must not widen an owner-private target.
+		testkit.Chmod(t, root, 0o755)
+		testkit.Chmod(t, target, 0o600)
+	}
 	if err := os.WriteFile(content, []byte("new"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -214,9 +219,10 @@ func TestReplaceFileExpectedHashPreservesModeAndReplay(t *testing.T) {
 	if string(got) != "new" {
 		t.Fatalf("content=%q", got)
 	}
-	// Windows has no permission bits to preserve.
-	if info, _ := os.Stat(target); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode=%o", info.Mode().Perm())
+	if runtime.GOOS == "windows" {
+		testkit.AssertMode(t, target, 0o600)
+	} else {
+		testkit.AssertMode(t, target, 0o640)
 	}
 	replay, err := ReplaceFile(context.Background(), svc, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: first.Receipt.Revision}, ReplaceRequest{OperationID: op, Path: target, ExpectedSHA256: expected, ContentFile: content, TTL: time.Minute, RequestNotAfter: deadline, RequestHash: first.Receipt.RequestHash})
 	if err != nil {

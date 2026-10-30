@@ -383,7 +383,10 @@ func ownerOnly(dir bool) (*windows.SECURITY_DESCRIPTOR, error) {
 	if dir {
 		inherit = "OICI"
 	}
-	return windows.SecurityDescriptorFromString("D:P(A;" + inherit + ";FA;;;" + ids.user.String() + ")")
+	user := ids.user.String()
+	// An explicit owner keeps files created while elevated owned by the user
+	// rather than by Administrators, the elevated default owner.
+	return windows.SecurityDescriptorFromString("O:" + user + "D:P(A;" + inherit + ";FA;;;" + user + ")")
 }
 
 // MakePrivate replaces an open directory's DACL with an owner-only one.

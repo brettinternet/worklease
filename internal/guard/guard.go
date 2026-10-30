@@ -620,7 +620,12 @@ func sha256File(path string) (string, os.FileMode, privfs.Stat, error) {
 		return "", 0, st, e
 	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), info.Mode().Perm(), st, nil
+	mode := info.Mode().Perm()
+	if st.Private {
+		// Windows reports a synthetic mode; keep an owner-private target private.
+		mode &^= 0o077
+	}
+	return hex.EncodeToString(sum[:]), mode, st, nil
 }
 
 func readReplaceContent(path string) (string, []byte, error) {
