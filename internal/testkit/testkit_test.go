@@ -60,12 +60,9 @@ func TestClockAndGeneratorAreDeterministicAndRaceSafe(t *testing.T) {
 func TestHomeAndEnvironmentArePrivateAndProcessIsolated(t *testing.T) {
 	before := os.Getenv("WORKLEASE_HOME")
 	home, values := Home(t)
-	info, err := os.Stat(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o700 || values["WORKLEASE_HOME"] != home || values["HOME"] == "" || values["XDG_CONFIG_HOME"] == "" || values["XDG_STATE_HOME"] == "" {
-		t.Fatalf("home = %s mode=%o env=%v", home, info.Mode().Perm(), values)
+	AssertMode(t, home, 0o700)
+	if values["WORKLEASE_HOME"] != home || values["HOME"] == "" || values["XDG_CONFIG_HOME"] == "" || values["XDG_STATE_HOME"] == "" {
+		t.Fatalf("home = %s env=%v", home, values)
 	}
 	child := Environment([]string{"PATH=/bin", "HOME=leak", "XDG_CONFIG_HOME=leak", "WORKLEASE_HOME=leak", "WORKLEASE_PROFILE=leak", "GIT_DIR=leak", "LANG=C"}, values)
 	joined := strings.Join(child, "\n")
@@ -99,10 +96,7 @@ func TestIsolateProcessEnvironmentRemovesHostileConfiguration(t *testing.T) {
 		if value == "" || strings.HasPrefix(value, root) {
 			t.Fatalf("%s was not isolated: %q", key, value)
 		}
-		info, statErr := os.Stat(value)
-		if statErr != nil || info.Mode().Perm() != 0o700 {
-			t.Fatalf("%s=%q is not a private temporary directory: %v", key, value, statErr)
-		}
+		AssertMode(t, value, 0o700)
 	}
 	for _, key := range []string{"WORKLEASE_HOME", "WORKLEASE_CONFIG", "WORKLEASE_PROFILE", "WORKLEASE_SERVER_CONFIG", "WORKLEASE_TEST_HELPER", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
 		if value, ok := os.LookupEnv(key); ok {

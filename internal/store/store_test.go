@@ -134,9 +134,7 @@ func TestOpenRejectsUnsafeAncestorsAndHomeWithoutMutation(t *testing.T) {
 	if err := os.Mkdir(foreign, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(foreign, 0o777); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, foreign, 0o777)
 	if _, err := Open(context.Background(), filepath.Join(foreign, "home"), Options{}); err == nil {
 		t.Fatal("unsafe writable ancestor accepted")
 	}
@@ -157,9 +155,7 @@ func TestSchemaRejectsUnsupportedAndCorruptWithoutMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.Close()
-		if err := os.Chmod(path, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		testkit.Chmod(t, path, 0o600)
 		_, err = Open(context.Background(), home, Options{})
 		if e := reason.As(err); e == nil || e.Reason != reason.ReasonSchemaUnsupported {
 			t.Fatalf("unsupported error = %v", err)
@@ -393,9 +389,7 @@ func TestOpenCreatesAndValidatesPrivateHandlesDirectory(t *testing.T) {
 	st.Close()
 	assertMode(t, filepath.Join(home, "handles"), 0o700)
 
-	if err := os.Chmod(filepath.Join(home, "handles"), 0o777); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, filepath.Join(home, "handles"), 0o777)
 	st = openStore(t, home, false)
 	st.Close()
 	assertMode(t, filepath.Join(home, "handles"), 0o700)
@@ -528,13 +522,7 @@ func openStore(t *testing.T, home string, readOnly bool) *Store {
 }
 func assertMode(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != mode {
-		t.Fatalf("%s mode=%o, want %o", path, info.Mode().Perm(), mode)
-	}
+	testkit.AssertMode(t, path, mode)
 }
 func assertSQLiteObject(t *testing.T, db *sql.DB, name, typ string) {
 	t.Helper()

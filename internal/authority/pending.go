@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brettinternet/worklease/internal/handle"
+	"github.com/brettinternet/worklease/internal/privfs"
 )
 
 const maxPendingBytes = 1 << 20
@@ -230,5 +231,5 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer f.Close()
-	return f.Sync()
+	return privfs.SyncDir(f)
 }

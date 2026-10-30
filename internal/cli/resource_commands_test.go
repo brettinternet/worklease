@@ -351,9 +351,7 @@ func TestLifecycleRejectsMixedCredentialSelection(t *testing.T) {
 
 func TestHandlelessTransferIsRejected(t *testing.T) {
 	home, credentialDir := t.TempDir(), t.TempDir()
-	if err := os.Chmod(credentialDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, credentialDir, 0o700)
 	currentTokenPath := filepath.Join(credentialDir, "current")
 	if err := os.WriteFile(currentTokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
@@ -384,9 +382,7 @@ func TestBareContextualCommandsShareMissingClaimGuidance(t *testing.T) {
 	for _, command := range []string{"status", "verify", "heartbeat", "checkpoint", "release"} {
 		t.Run(command+" text", func(t *testing.T) {
 			home := t.TempDir()
-			if err := os.Chmod(home, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			testkit.Chmod(t, home, 0o700)
 			err := Run(context.Background(), []string{"worklease", command, "--home", home}, "dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
 			classified := reason.As(err)
 			if classified == nil || classified.Reason != reason.ReasonClaimSelectionMissing || classified.Message != message {
@@ -395,9 +391,7 @@ func TestBareContextualCommandsShareMissingClaimGuidance(t *testing.T) {
 		})
 		t.Run(command+" json", func(t *testing.T) {
 			home := t.TempDir()
-			if err := os.Chmod(home, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			testkit.Chmod(t, home, 0o700)
 			var out bytes.Buffer
 			err := Run(context.Background(), []string{"worklease", command, "--json", "--home", home}, "dev", "unknown", "unknown", &out, &bytes.Buffer{})
 			if err == nil {
@@ -440,9 +434,7 @@ func TestCheckpointRequiresPayloadOptions(t *testing.T) {
 
 func TestExplicitCredentialsTransferKeepsStableJSONEnvelope(t *testing.T) {
 	home, credentialDir := t.TempDir(), t.TempDir()
-	if err := os.Chmod(credentialDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, credentialDir, 0o700)
 	tokenPath := filepath.Join(credentialDir, "current")
 	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
 		t.Fatal(err)
@@ -800,9 +792,7 @@ func TestLifecycleMutationsUseConciseTextSummaries(t *testing.T) {
 func TestAcquireDerivesInputBeforeDispatch(t *testing.T) {
 	var stdout bytes.Buffer
 	home, tokenDir := t.TempDir(), t.TempDir()
-	if err := os.Chmod(tokenDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, tokenDir, 0o700)
 	tokenPath := filepath.Join(tokenDir, "token")
 	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
@@ -944,9 +934,7 @@ func TestPendingLifecycleRecoversBeforeAndAfterAuthorityDispatch(t *testing.T) {
 
 func TestHandleSynchronizationNeverRewindsRevision(t *testing.T) {
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	path := filepath.Join(home, "claim.json")
 	h := handle.Handle{SchemaVersion: 1, AuthorityID: strings.Repeat("a", 32), ClaimID: strings.Repeat("b", 32), Token: strings.Repeat("c", 64), Revision: 3, Resources: []string{"r"}, ExpiresAt: time.Now().Add(time.Hour), AgentID: "agent", SessionID: "session", State: "ready"}
 	if err := handle.Write(path, h); err != nil {

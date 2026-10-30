@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/brettinternet/worklease/internal/privfs"
 	"github.com/brettinternet/worklease/internal/reason"
 )
 
@@ -453,7 +454,7 @@ func atomicReplace(path, base string, old []byte, existed bool, data []byte, bef
 		return err
 	}
 	if dir, e := os.Open(filepath.Dir(path)); e == nil {
-		_ = dir.Sync()
+		_ = privfs.SyncDir(dir)
 		_ = dir.Close()
 	}
 	return nil

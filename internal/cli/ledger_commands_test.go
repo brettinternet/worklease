@@ -14,6 +14,7 @@ import (
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/lease"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestEventsCLIRejectsMalformedCursorBeforeOpeningStorage(t *testing.T) {
@@ -267,9 +268,7 @@ func TestLedgerCLIJSONAndPendingHandleReconciliationRecovery(t *testing.T) {
 		t.Fatalf("inspection=%s", inspection.String())
 	}
 	tokenDir := t.TempDir()
-	if err := os.Chmod(tokenDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, tokenDir, 0o700)
 	tokenPath := filepath.Join(tokenDir, "token")
 	if err := os.WriteFile(tokenPath, []byte(oldToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)

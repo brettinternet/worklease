@@ -17,6 +17,7 @@ func TestInstructionTopicsTextJSONAndDiscovery(t *testing.T) {
 	clearWorkleaseEnvironment(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("WORKLEASE_HOME", filepath.Join(home, "uncreated"))
 	for _, topic := range instructions.Topics() {
 		t.Run(topic, func(t *testing.T) {

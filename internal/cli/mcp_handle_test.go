@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,9 @@ func TestSubprocessStdioLifecycle(t *testing.T) {
 	t.Parallel()
 	home, _ := testkit.Home(t)
 	binary := filepath.Join(t.TempDir(), "worklease")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	if err := os.Symlink(os.Args[0], binary); err != nil {
 		t.Fatal(err)
 	}

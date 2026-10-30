@@ -132,10 +132,8 @@ func TestReplaceFileTempCreationFailureRecordsCompletedFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(targetDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(targetDir, 0o700) })
+	testkit.Chmod(t, targetDir, 0o500)
+	t.Cleanup(func() { testkit.Chmod(t, targetDir, 0o700) })
 	sum := sha256.Sum256([]byte("old"))
 	var started bool
 	lifecycle := &OperationLifecycle{Failure: func(err error, wasStarted bool) { started = wasStarted }}

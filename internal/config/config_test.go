@@ -21,14 +21,15 @@ func TestLoadPrecedenceAndSources(t *testing.T) {
 	if err := os.WriteFile(path, []byte("home: /from-file\nagent_id: file-agent\nttl: 3s\nmax_duration: 4s\nretention_days: 5\npoll_interval: 20ms\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	flagHome, envHome := filepath.Join(dir, "from-flag"), filepath.Join(dir, "from-env")
 	cfg, err := Load(Input{
-		Flags: map[string]string{"config": path, "home": "/from-flag", "ttl": "7s"},
-		Env:   env(map[string]string{"WORKLEASE_HOME": "/from-env", "WORKLEASE_AGENT_ID": "env-agent", "WORKLEASE_TTL": "6s"}),
+		Flags: map[string]string{"config": path, "home": flagHome, "ttl": "7s"},
+		Env:   env(map[string]string{"WORKLEASE_HOME": envHome, "WORKLEASE_AGENT_ID": "env-agent", "WORKLEASE_TTL": "6s"}),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Home != "/from-flag" || cfg.AgentID != "env-agent" || cfg.TTL != 7*time.Second || cfg.MaxDuration != 4*time.Second || cfg.RetentionDays != 5 || cfg.PollInterval != 20*time.Millisecond {
+	if cfg.Home != flagHome || cfg.AgentID != "env-agent" || cfg.TTL != 7*time.Second || cfg.MaxDuration != 4*time.Second || cfg.RetentionDays != 5 || cfg.PollInterval != 20*time.Millisecond {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 	wantSources := map[string]string{"home": "flag", "agent": "env", "ttl": "flag", "max_duration": "file", "retention_days": "file", "poll_interval": "file", "session": "default", "config_path": "flag"}

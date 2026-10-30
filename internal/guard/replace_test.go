@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -213,8 +214,8 @@ func TestReplaceFileExpectedHashPreservesModeAndReplay(t *testing.T) {
 	if string(got) != "new" {
 		t.Fatalf("content=%q", got)
 	}
-	info, _ := os.Stat(target)
-	if info.Mode().Perm() != 0o640 {
+	// Windows has no permission bits to preserve.
+	if info, _ := os.Stat(target); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode=%o", info.Mode().Perm())
 	}
 	replay, err := ReplaceFile(context.Background(), svc, lease.Credentials{AuthorityID: st.AuthorityID(), ClaimID: claim, Token: token, Revision: first.Receipt.Revision}, ReplaceRequest{OperationID: op, Path: target, ExpectedSHA256: expected, ContentFile: content, TTL: time.Minute, RequestNotAfter: deadline, RequestHash: first.Receipt.RequestHash})

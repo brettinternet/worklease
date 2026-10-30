@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestClaimsOnlyTUISeesAuthorityCreatedAfterStartup(t *testing.T) {
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
-	master, slave, err := pty.Open()
+	master, slave, err := openPTY(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestClaimsOnlyTUIOpensWritableAuthorityOnConfirmedMutation(t *testing.T) {
 	if err := Run(context.Background(), []string{"worklease", "acquire", "--local", "--home", home, "--resource", "coordination:claims-tui"}, "test", "unknown", "unknown", &out, &stderr); err != nil {
 		t.Fatalf("acquire: %v %s", err, stderr.String())
 	}
-	master, slave, err := pty.Open()
+	master, slave, err := openPTY(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestClaimsOnlyTUIOpensWritableAuthorityOnConfirmedMutation(t *testing.T) {
 
 func runBarePTY(t *testing.T, visible ...string) {
 	t.Helper()
-	master, slave, err := pty.Open()
+	master, slave, err := openPTY(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,4 +289,15 @@ func runBarePTY(t *testing.T, visible ...string) {
 	case <-ctx.Done():
 		t.Fatal("TUI did not quit on q")
 	}
+}
+
+// openPTY opens a pseudo-terminal, skipping where creack/pty has no
+// implementation (Windows).
+func openPTY(t *testing.T) (*os.File, *os.File, error) {
+	t.Helper()
+	master, slave, err := pty.Open()
+	if errors.Is(err, pty.ErrUnsupported) {
+		t.Skip("pseudo-terminals are unsupported on this platform")
+	}
+	return master, slave, err
 }

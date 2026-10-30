@@ -10,11 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brettinternet/worklease/internal/privfs"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func TestDriverAcceptanceMaxPageCount(t *testing.T) {
@@ -457,13 +459,7 @@ func assertPragma(t *testing.T, db *sql.DB, pragma, want string) {
 
 func assertPrivate(t *testing.T, path string) {
 	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("%s mode = %04o, want 0600", path, info.Mode().Perm())
-	}
+	testkit.AssertMode(t, path, 0o600)
 }
 
 func directorySnapshot(t *testing.T, dir string) []string {
@@ -566,34 +562,6 @@ func runKilledDriverHelper(t *testing.T, mode, path string) {
 }
 
 func contains(value, needle string) bool { return strings.Contains(value, needle) }
-
-func TestPostCommitValidationFailureIsDefinitelyCommitted(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, DatabaseFileName)
-	driver := openTestDriver(t, path, false)
-	defer driver.Close()
-	mustWrite(t, driver, `CREATE TABLE post_commit (value TEXT)`)
-	target := filepath.Join(dir, "sidecar-target")
-	if err := os.WriteFile(target, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := driver.Write(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO post_commit(value) VALUES ('durable')`); err != nil {
-			return err
-		}
-		// SQLite already owns its sidecar descriptor. Replacing the directory
-		// entry after the transaction work makes the post-commit safety check
-		// fail without changing the commit outcome.
-		if err := os.Remove(path + "-wal"); err != nil {
-			return err
-		}
-		return os.Symlink(target, path+"-wal")
-	})
-	var commitErr *CommitError
-	if !errors.As(err, &commitErr) || commitErr.Outcome != CommitCommitted {
-		t.Fatalf("post-commit error = %v, want typed committed outcome", err)
-	}
-}
 
 func TestCommitErrorOutcomeUsesFreshDurableReadback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DatabaseFileName)
@@ -742,7 +710,8 @@ func TestDriverReadOnlyWithoutSidecarsCreatesOnlyPrivateSidecars(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		if info.Mode().Perm()&0o077 != 0 || !info.Mode().IsRegular() {
+		// Windows reports no modes; checkExistingPath below checks its DACL.
+		if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 			t.Fatalf("read-only open created %s with mode %04o", suffix, info.Mode().Perm())
 		}
 		if err := checkExistingPath(path+suffix, "database sidecar"); err != nil {

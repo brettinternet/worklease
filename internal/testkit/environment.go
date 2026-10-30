@@ -24,10 +24,12 @@ func Home(t testing.TB) (string, map[string]string) {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatalf("create isolated %s: %v", key, err)
 		}
-		if err := os.Chmod(path, 0o700); err != nil {
+		if err := chmod(path, 0o700); err != nil {
 			t.Fatalf("make isolated %s private: %v", key, err)
 		}
 	}
+	// Windows resolves the user home from USERPROFILE.
+	paths["USERPROFILE"] = paths["HOME"]
 	return paths["WORKLEASE_HOME"], paths
 }
 
@@ -39,7 +41,7 @@ func IsolateProcessEnvironment() (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("create test environment: %w", err)
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
+	if err := chmod(root, 0o700); err != nil {
 		_ = os.RemoveAll(root)
 		return nil, fmt.Errorf("make test environment private: %w", err)
 	}
@@ -54,6 +56,8 @@ func IsolateProcessEnvironment() (func(), error) {
 			return nil, fmt.Errorf("create isolated %s: %w", key, err)
 		}
 	}
+	// Windows resolves the user home from USERPROFILE.
+	paths["USERPROFILE"] = paths["HOME"]
 
 	before := append([]string(nil), os.Environ()...)
 	preserve := helperEnvironmentForInvocation(before, os.Args)

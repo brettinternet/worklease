@@ -13,6 +13,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/handle"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func handleCommandFixture(t *testing.T, state string, recovery bool) (string, string, handle.Handle) {
@@ -122,13 +123,7 @@ func TestHandleArchiveRequiresAcknowledgementAndPreservesExactRecoveryState(t *t
 	if _, err := os.Stat(source); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("source remains: %v", err)
 	}
-	info, err := os.Stat(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("archive permissions=%v", info.Mode().Perm())
-	}
+	testkit.AssertMode(t, destination, 0o600)
 	var result map[string]any
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatal(err)

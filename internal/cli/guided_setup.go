@@ -638,7 +638,7 @@ func syncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	syncErr := directory.Sync()
+	syncErr := privfs.SyncDir(directory)
 	closeErr := directory.Close()
 	if syncErr != nil {
 		return syncErr

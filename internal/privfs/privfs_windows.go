@@ -394,13 +394,18 @@ func MakePrivate(dir *os.File) error {
 		return err
 	}
 	// An empty name relative to a handle reopens the same file.
-	h, err := ntOpenRelative(windows.Handle(dir.Fd()), "", windows.WRITE_DAC, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, nil)
+	h, err := ntOpenRelative(windows.Handle(dir.Fd()), "", windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, nil)
 	if err != nil {
 		return &os.PathError{Op: "chmod", Path: dir.Name(), Err: err}
 	}
 	defer windows.CloseHandle(h)
-	return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	// SetSecurityInfo reads the current descriptor to propagate inheritance,
+	// so the handle needs READ_CONTROL as well as WRITE_DAC.
+	if err := windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return &os.PathError{Op: "chmod", Path: dir.Name(), Err: err}
+	}
+	return nil
 }
 
 func setName(h windows.Handle, class uint32, flags uint32, dir *os.File, name string) error {

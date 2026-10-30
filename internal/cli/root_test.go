@@ -11,13 +11,12 @@ import (
 	"testing"
 
 	"github.com/brettinternet/worklease/internal/reason"
-	"github.com/creack/pty"
 	urfavecli "github.com/urfave/cli/v3"
 )
 
 func TestBareInteractiveRequiresBothTerminalsAndNoFlags(t *testing.T) {
 	t.Parallel()
-	master, slave, err := pty.Open()
+	master, slave, err := openPTY(t)
 	if err != nil {
 		t.Fatal(err)
 	}

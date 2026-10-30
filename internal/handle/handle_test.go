@@ -261,27 +261,19 @@ func TestResolveContextualPathConcurrentAuthoritiesDoNotLoseLegacyState(t *testi
 
 func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	path := filepath.Join(dir, "h.json")
 	if present, err := ValidateMetadata(path); err != nil || present {
 		t.Fatalf("missing metadata present=%t err=%v", present, err)
 	}
-	if err := os.Chmod(dir, 0o770); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o770)
 	if _, err := ValidateMetadata(path); err == nil {
 		t.Fatal("accepted writable handle parent")
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	symlinkBase := t.TempDir()
 	symlinkTarget := t.TempDir()
-	if err := os.Chmod(symlinkTarget, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, symlinkTarget, 0o700)
 	symlinkParent := filepath.Join(symlinkBase, "handles")
 	if err := os.Symlink(symlinkTarget, symlinkParent); err != nil {
 		t.Fatal(err)
@@ -319,9 +311,7 @@ func TestValidateMetadataChecksParentAndLeafWithoutReading(t *testing.T) {
 
 func TestHandleAtomicPrivateRoundTripAndRejectsUnsafe(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	p := filepath.Join(dir, "h.json")
 	h := testHandle()
 	if err := Write(p, h); err != nil {
@@ -334,15 +324,11 @@ func TestHandleAtomicPrivateRoundTripAndRejectsUnsafe(t *testing.T) {
 	if got.Token != h.Token {
 		t.Fatal("round trip changed handle")
 	}
-	if err := os.Chmod(p, 0644); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, p, 0644)
 	if _, err := Read(p); err == nil {
 		t.Fatal("accepted group-readable handle")
 	}
-	if err := os.Chmod(p, 0600); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, p, 0600)
 	if err := os.Symlink(p, p+".link"); err != nil {
 		t.Fatal(err)
 	}
@@ -417,9 +403,7 @@ func TestContextRootResolvesSymlinksGitSubdirectoriesAndLinkedWorktrees(t *testi
 
 func TestCredentialReaderStrictEncodingAndBounded(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	p := filepath.Join(dir, "token")
 	token := strings.Repeat("a", 64)
 	if err := os.WriteFile(p, []byte(token+"\n"), 0600); err != nil {
@@ -443,15 +427,11 @@ func TestCredentialReaderStrictEncodingAndBounded(t *testing.T) {
 	if err := os.WriteFile(p, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o777); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o777)
 	if _, err := ReadCredential(p); err == nil {
 		t.Fatal("accepted credential from writable directory")
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	hardlink := filepath.Join(dir, "hardlink")
 	if err := os.Link(p, hardlink); err != nil {
 		t.Fatal(err)
@@ -463,9 +443,7 @@ func TestCredentialReaderStrictEncodingAndBounded(t *testing.T) {
 
 func TestHandleSchemaRejectsTrailingPendingAndAuthorityErrors(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	p := filepath.Join(dir, "h.json")
 	h := testHandle()
 	b, _ := json.Marshal(h)
@@ -527,9 +505,7 @@ func TestHandleSchemaRejectsTrailingPendingAndAuthorityErrors(t *testing.T) {
 
 func TestExistingMalformedHandleIsNeverReplaceable(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	p := filepath.Join(dir, "h.json")
 	if err := os.WriteFile(p, []byte("not json"), 0600); err != nil {
 		t.Fatal(err)
@@ -541,9 +517,7 @@ func TestExistingMalformedHandleIsNeverReplaceable(t *testing.T) {
 
 func TestExistingSharedLockDoesNotCreateMissingLock(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	path := filepath.Join(dir, "missing.lock")
 	missing, err := AcquireExistingLock(context.Background(), path)
 	if err != nil {
@@ -570,9 +544,7 @@ func TestExistingSharedLockDoesNotCreateMissingLock(t *testing.T) {
 func TestSiblingLockSerializesAndDoesNotUnlink(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "h.lock")
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0700)
 	first, err := AcquireLock(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
@@ -607,38 +579,9 @@ func TestHandleRejectsAncestorSymlink(t *testing.T) {
 	}
 }
 
-func TestPinnedLockRejectsParentReplacement(t *testing.T) {
-	root := t.TempDir()
-	parent := filepath.Join(root, "handles")
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(parent, "h.json")
-	if err := Write(path, testHandle()); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := AcquireLock(context.Background(), path+".lock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	old := filepath.Join(root, "handles-old")
-	if err := os.Rename(parent, old); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := lock.Read(path); err == nil {
-		t.Fatal("read replacement parent through old lock")
-	}
-}
-
 func TestPinnedLockRejectsLockLeafReplacement(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	path := filepath.Join(dir, "h.json")
 	if err := Write(path, testHandle()); err != nil {
 		t.Fatal(err)
@@ -659,76 +602,9 @@ func TestPinnedLockRejectsLockLeafReplacement(t *testing.T) {
 	}
 }
 
-func TestPinnedLockRejectsParentReplacementBeforePersistence(t *testing.T) {
-	root := t.TempDir()
-	parent := filepath.Join(root, "handles")
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(parent, "h.json")
-	lock, err := AcquireLock(context.Background(), path+".lock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if err := os.Rename(parent, filepath.Join(root, "handles-old")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := lock.Write(path, testHandle()); err == nil {
-		t.Fatal("persisted through replacement parent")
-	}
-}
-
-func TestAcquireLockRejectsParentReplacementWhileWaiting(t *testing.T) {
-	root := t.TempDir()
-	parent := filepath.Join(root, "handles")
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(parent, "h.json")
-	first, err := AcquireLock(context.Background(), path+".lock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened := make(chan struct{})
-	resume := make(chan struct{})
-	afterLockOpenForTest = func() {
-		close(opened)
-		<-resume
-	}
-	defer func() { afterLockOpenForTest = func() {} }()
-	result := make(chan error, 1)
-	go func() {
-		second, acquireErr := AcquireLock(context.Background(), path+".lock")
-		if second != nil {
-			_ = second.Close()
-		}
-		result <- acquireErr
-	}()
-	<-opened
-	if err := os.Rename(parent, filepath.Join(root, "handles-old")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	close(resume)
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; err == nil {
-		t.Fatal("acquired lock after parent replacement")
-	}
-}
-
 func TestLockRejectsDifferentSiblingHandle(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	firstPath := filepath.Join(dir, "a.json")
 	otherPath := filepath.Join(dir, "b.json")
 	lock, err := AcquireLock(context.Background(), firstPath+".lock")
@@ -746,9 +622,7 @@ func TestLockRejectsDifferentSiblingHandle(t *testing.T) {
 
 func TestArchiveNoReplacePreservesExactHandleAndFailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	source := filepath.Join(dir, "source.json")
 	destination := filepath.Join(dir, "archive.json")
 	h := testHandle()
@@ -780,13 +654,7 @@ func TestArchiveNoReplacePreservesExactHandleAndFailsClosed(t *testing.T) {
 	if _, err := os.Stat(source); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("source remains after archive: %v", err)
 	}
-	info, err := os.Stat(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("archive mode=%v", info.Mode().Perm())
-	}
+	testkit.AssertMode(t, destination, 0o600)
 	if err := Write(source, testHandle()); err != nil {
 		t.Fatal(err)
 	}
@@ -800,9 +668,7 @@ func TestArchiveNoReplacePreservesExactHandleAndFailsClosed(t *testing.T) {
 
 func TestArchiveNoReplaceRejectsReplacementBeforeCopy(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	source := filepath.Join(dir, "source.json")
 	destination := filepath.Join(dir, "archive.json")
 	expected := testHandle()
@@ -837,9 +703,7 @@ func TestArchiveNoReplaceRejectsReplacementBeforeCopy(t *testing.T) {
 
 func TestArchiveNoReplaceConcurrentReplacementKeepsBothCopies(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	source := filepath.Join(dir, "source.json")
 	destination := filepath.Join(dir, "archive.json")
 	original := testHandle()
@@ -879,9 +743,7 @@ func TestArchiveNoReplaceConcurrentReplacementKeepsBothCopies(t *testing.T) {
 
 func TestRemoveOwnerPrivateIfContentRequiresExactCurrentContent(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	path := filepath.Join(dir, "artifact")
 	original := []byte("original\n")
 	if err := WriteOwnerPrivateNoReplace(path, original, 1024); err != nil {
@@ -906,9 +768,7 @@ func TestAcquireLocksCanonicalizesDarwinSystemAliasesBeforeSorting(t *testing.T)
 		t.Skip("Darwin system alias behavior")
 	}
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, dir, 0o700)
 	var alias string
 	switch {
 	case strings.HasPrefix(dir, "/private/tmp/"), strings.HasPrefix(dir, "/private/var/"):

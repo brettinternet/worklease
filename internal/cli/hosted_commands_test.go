@@ -19,6 +19,7 @@ import (
 	"github.com/brettinternet/worklease/internal/reason"
 	workleaseserver "github.com/brettinternet/worklease/internal/server"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func hostedTestFile(t *testing.T, dir, name, home string, mode os.FileMode) string {
@@ -45,20 +46,12 @@ func TestServeWithoutConfigurationPointsToServerInit(t *testing.T) {
 
 func TestDefaultServerConfigRefusesExistingSharedParent(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Chmod(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, root, 0o755)
 	path := filepath.Join(root, "server.yaml")
 	if err := writeDefaultServerConfig(path); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonHomeUnsafe {
 		t.Fatalf("shared parent error = %v", err)
 	}
-	info, err := os.Stat(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o755 {
-		t.Fatalf("shared parent mode changed to %v", info.Mode().Perm())
-	}
+	testkit.AssertMode(t, root, 0o755)
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("configuration unexpectedly created: %v", err)
 	}
@@ -90,13 +83,7 @@ func TestServerInitWithoutArgumentsCreatesRunnableDefaults(t *testing.T) {
 		}
 	}
 	for _, path := range []string{configPath, invitePath} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("private file %s mode=%v", path, info.Mode().Perm())
-		}
+		testkit.AssertMode(t, path, 0o600)
 	}
 	contents, err := os.ReadFile(configPath)
 	if err != nil {
@@ -187,6 +174,7 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 
 	serverHome := t.TempDir()
 	t.Setenv("HOME", serverHome)
+	t.Setenv("USERPROFILE", serverHome)
 	var initOut, initErr strings.Builder
 	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &initOut, &initErr); err != nil {
 		t.Fatalf("zero-flag init: %v stderr=%s", err, initErr.String())
@@ -244,6 +232,7 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 
 	adminHome := t.TempDir()
 	t.Setenv("HOME", adminHome)
+	t.Setenv("USERPROFILE", adminHome)
 	var out, stderr strings.Builder
 	if err := Run(context.Background(), []string{"worklease", "enroll", "--invite-file", bootstrapPath}, "test", "unknown", "unknown", &out, &stderr); err != nil {
 		t.Fatalf("admin enroll: %v stderr=%s", err, stderr.String())
@@ -263,6 +252,7 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 
 	clientHome := t.TempDir()
 	t.Setenv("HOME", clientHome)
+	t.Setenv("USERPROFILE", clientHome)
 	for _, args := range [][]string{
 		{"worklease", "enroll", "--invite-file", clientInvite},
 		{"worklease", "acquire", "--resource", "coordination:demo"},
@@ -291,6 +281,7 @@ func TestZeroFlagRemoteJourneyTwoClients(t *testing.T) {
 		t.Fatal("zero-flag serve did not stop")
 	}
 	t.Setenv("HOME", serverHome)
+	t.Setenv("USERPROFILE", serverHome)
 	out.Reset()
 	stderr.Reset()
 	if err := Run(context.Background(), []string{"worklease", "server", "init"}, "test", "unknown", "unknown", &out, &stderr); err == nil || !strings.Contains(err.Error(), "bootstrap invite was used") || !strings.Contains(err.Error(), "worklease server bootstrap-reissue") {
@@ -387,10 +378,7 @@ func TestGuidedServerInitGeneratesTLSAndHandoff(t *testing.T) {
 		t.Fatalf("guided config = %+v", cfg)
 	}
 	for _, path := range []string{configPath, cfg.TLSCert, cfg.TLSKey, invitePath} {
-		info, statErr := os.Stat(path)
-		if statErr != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("guided file %s info=%v err=%v", path, info, statErr)
-		}
+		testkit.AssertMode(t, path, 0o600)
 	}
 	certificate, err := os.ReadFile(cfg.TLSCert)
 	if err != nil {
@@ -820,9 +808,7 @@ func TestGuidedCertificateValidationRejectsUnsafeMismatchAndExpiry(t *testing.T)
 	if _, _, _, err := inspectGuidedCertificate(expiredChainPath, firstKeyPath, "localhost"); err == nil || !strings.Contains(err.Error(), "currently valid") {
 		t.Fatalf("expired chain error = %v", err)
 	}
-	if err := os.Chmod(firstKeyPath, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, firstKeyPath, 0o644)
 	if _, _, _, err := inspectGuidedCertificate(firstCertPath, firstKeyPath, "localhost"); err == nil || !strings.Contains(err.Error(), "owner-private") {
 		t.Fatalf("unsafe key error = %v", err)
 	}
@@ -854,9 +840,7 @@ func TestHostedInitAndReissueAreDurableAndRedacted(t *testing.T) {
 	if out.Len() == 0 || strings.Contains(out.String(), "server\n") {
 		t.Fatalf("unexpected init output %q", out.String())
 	}
-	if info, err := os.Stat(first); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("bootstrap file info=%v err=%v", info, err)
-	}
+	testkit.AssertMode(t, first, 0o600)
 	st, err := store.Open(context.Background(), home, store.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)

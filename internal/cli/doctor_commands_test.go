@@ -107,7 +107,9 @@ func TestSetupFreePathLifecycleTextAndJSON(t *testing.T) {
 		return
 	}
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	for _, jsonMode := range []bool{false, true} {
 		home := t.TempDir()
 		args := []string{"worklease", "acquire", "--home", home, "--path", "README.md"}
@@ -179,11 +181,11 @@ func TestGroupedCommandWithoutSubcommandJSONIsOneErrorEnvelope(t *testing.T) {
 
 func TestContextualLoopsUseSessionEnvironmentOnly(t *testing.T) {
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	t.Setenv("WORKLEASE_HOME", home)
 	for _, session := range []string{"loop-one", "loop-two"} {
 		t.Setenv("WORKLEASE_SESSION_ID", session)
@@ -210,7 +212,9 @@ func TestUnscopedContextualSelectorIsDistinctFromClaimSessionMetadata(t *testing
 		return
 	}
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
 	run := func(args ...string) (string, error) {
 		t.Helper()
@@ -318,11 +322,11 @@ func TestUnscopedContextualSelectorIsDistinctFromClaimSessionMetadata(t *testing
 
 func TestInstructionsAndDoctorAreReadOnly(t *testing.T) {
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	var text, stderr bytes.Buffer
 	if err := Run(context.Background(), []string{"worklease", "instructions", "loop"}, "dev", "unknown", "unknown", &text, &stderr); err != nil {
 		t.Fatal(err)
@@ -382,9 +386,7 @@ func TestInstructionsAndDoctorAreReadOnly(t *testing.T) {
 func TestRunAcquireCommittedHandleWriteFailureIsRedacted(t *testing.T) {
 	clearWorkleaseEnvironment(t)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	handlePath := filepath.Join(home, "handle.json")
 	previousWriter := writeHandleFile
 	defer func() { writeHandleFile = previousWriter }()
@@ -425,9 +427,7 @@ func TestRunAcquireCommittedHandleWriteFailureIsRedacted(t *testing.T) {
 func TestRunStartedOperationRetryReportsUnknownOutcomeRedacted(t *testing.T) {
 	clearWorkleaseEnvironment(t)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	st, err := store.Open(context.Background(), home, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -528,6 +528,7 @@ func TestCLIConfigPrecedenceAndBlankEnvironment(t *testing.T) {
 	clearWorkleaseEnvironment(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	fileHome := filepath.Join(home, "yaml-home")
 	envHome := filepath.Join(home, "env-home")
 	flagHome := filepath.Join(home, "flag-home")
@@ -572,6 +573,7 @@ func TestCLIConfigPrecedenceAndBlankEnvironment(t *testing.T) {
 	}
 	noConfigHome := t.TempDir()
 	t.Setenv("HOME", noConfigHome)
+	t.Setenv("USERPROFILE", noConfigHome)
 	detail = doctorConfigSourceDetail(t, []string{"worklease", "doctor", "--json"})
 	if !strings.Contains(detail, "home=default") || !strings.Contains(detail, "config_path=default") {
 		t.Fatalf("default precedence missing: %s", detail)
@@ -604,11 +606,11 @@ func doctorConfigSourceDetail(t *testing.T, args []string) string {
 
 func TestDoctorUnsafeStateFailureEnvelopeAndHints(t *testing.T) {
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o777); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o777)
 	var out, stderr bytes.Buffer
 	err := Run(context.Background(), []string{"worklease", "doctor", "--json", "--home", home}, "dev", "unknown", "unknown", &out, &stderr)
 	if err == nil || stderr.Len() != 0 || strings.Count(out.String(), "\n") != 1 {
@@ -621,9 +623,7 @@ func TestDoctorUnsafeStateFailureEnvelopeAndHints(t *testing.T) {
 		t.Fatalf("doctor created database: %v", statErr)
 	}
 
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	target := filepath.Join(t.TempDir(), "db")
 	if err := os.WriteFile(target, []byte("private database fixture"), 0o600); err != nil {
 		t.Fatal(err)
@@ -647,19 +647,17 @@ func clearWorkleaseEnvironment(t *testing.T) {
 
 func TestDoctorDoesNotExposePrivateHandleOrPythonState(t *testing.T) {
 	clearWorkleaseEnvironment(t)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	token := strings.Repeat("b", 64)
 	if err := os.WriteFile(filepath.Join(home, "leases.sqlite3"), []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	handleDir := t.TempDir()
-	if err := os.Chmod(handleDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, handleDir, 0o700)
 	handlePath := filepath.Join(handleDir, "private-handle.json")
 	if err := os.WriteFile(handlePath, []byte(token), 0o600); err != nil {
 		t.Fatal(err)

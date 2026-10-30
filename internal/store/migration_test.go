@@ -16,9 +16,7 @@ import (
 func createV1Home(t *testing.T, populated bool) string {
 	t.Helper()
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	path := testkit.DatabasePath(home)
 	db, err := sql.Open("sqlite", sqliteDSN(path, false))
 	if err != nil {
@@ -70,14 +68,10 @@ func createV1Home(t *testing.T, populated bool) string {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, path, 0o600)
 	for _, sidecar := range testkit.DatabaseSidecarPaths(home) {
 		if _, err := os.Lstat(sidecar); err == nil {
-			if err := os.Chmod(sidecar, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			testkit.Chmod(t, sidecar, 0o600)
 		}
 	}
 	return home

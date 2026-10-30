@@ -12,6 +12,7 @@ import (
 
 	"github.com/brettinternet/worklease/internal/config"
 	"github.com/brettinternet/worklease/internal/store"
+	"github.com/brettinternet/worklease/internal/testkit"
 )
 
 func clearDoctorEnvironment(t *testing.T) {
@@ -38,16 +39,12 @@ func checkByID(checks []Check, id string) Check {
 
 func TestDiagnoseValidatesMissingHomeAncestryReadOnly(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, root, 0o700)
 	unsafe := filepath.Join(root, "unsafe")
 	if err := os.Mkdir(unsafe, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(unsafe, 0o777); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, unsafe, 0o777)
 	missing := filepath.Join(unsafe, "not-created")
 	before, err := os.ReadDir(root)
 	if err != nil {
@@ -67,21 +64,13 @@ func TestDiagnoseValidatesMissingHomeAncestryReadOnly(t *testing.T) {
 	if len(after) != len(before) {
 		t.Fatalf("diagnose changed ancestry: before=%v after=%v", before, after)
 	}
-	unsafeInfo, err := os.Lstat(unsafe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unsafeInfo.Mode().Perm() != 0o777 {
-		t.Fatalf("diagnose chmodded unsafe ancestor to %04o", unsafeInfo.Mode().Perm())
-	}
+	testkit.AssertMode(t, unsafe, 0o777)
 }
 
 func TestDiagnoseReportsMetadataStatusesDetailsAndHints(t *testing.T) {
 	clearDoctorEnvironment(t)
 	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, root, 0o700)
 	unsafeParent := filepath.Join(root, "unsafe-parent")
 	if err := os.Mkdir(unsafeParent, 0o777); err != nil {
 		t.Fatal(err)
@@ -120,9 +109,7 @@ func TestDiagnoseReportsMetadataStatusesDetailsAndHints(t *testing.T) {
 func TestDiagnoseReportsPythonEraStateAndAuthorityIdentity(t *testing.T) {
 	clearDoctorEnvironment(t)
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	for _, name := range []string{"leases.sqlite3", "locks", "context-leases", "mcp-leases"} {
 		path := filepath.Join(home, name)
 		if strings.Contains(name, "leases") {
@@ -165,9 +152,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	now := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	st, err := store.Open(context.Background(), home, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -207,9 +192,7 @@ func TestDiagnoseClockAuthorityAllowsOneSecondSkew(t *testing.T) {
 
 func TestDiagnoseDeletedContextStillReturnsEveryCheck(t *testing.T) {
 	home := t.TempDir()
-	if err := os.Chmod(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testkit.Chmod(t, home, 0o700)
 	deleted := filepath.Join(t.TempDir(), "deleted")
 	checks := Diagnose(context.Background(), testConfig(home), deleted)
 	if len(checks) != 16 {
