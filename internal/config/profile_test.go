@@ -180,6 +180,27 @@ func TestProfileAllowsExplicitInsecureHTTPEndpointAndRejectsUnknownFields(t *tes
 	}
 }
 
+func TestLowerHexOfLength(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		value  string
+		length int
+		want   bool
+	}{
+		{name: "digits and lowercase", value: "a1b2", length: 4, want: true},
+		{name: "wrong length", value: "a1b", length: 4},
+		{name: "uppercase", value: "A1b2", length: 4},
+		{name: "non-hex", value: "g1b2", length: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := lowerHexOfLength(test.value, test.length); got != test.want {
+				t.Fatalf("lowerHexOfLength(%q, %d) = %v, want %v", test.value, test.length, got, test.want)
+			}
+		})
+	}
+}
+
 // rootedPath makes a slash path absolute on the current platform.
 func rootedPath(path string) string {
 	rooted, err := filepath.Abs(filepath.FromSlash(path))

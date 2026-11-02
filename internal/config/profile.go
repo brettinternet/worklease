@@ -251,13 +251,13 @@ func validateProfile(p Profile) error {
 			return fmt.Errorf("HTTPS is required for profile endpoint unless insecure HTTP is explicitly allowed")
 		}
 	}
-	if p.AuthorityID != "" && !hexID(p.AuthorityID) {
+	if p.AuthorityID != "" && !lowerHexOfLength(p.AuthorityID, 32) {
 		return fmt.Errorf("profile authority ID is invalid")
 	}
-	if p.RestoreID != "" && !hexID(p.RestoreID) {
+	if p.RestoreID != "" && !lowerHexOfLength(p.RestoreID, 32) {
 		return fmt.Errorf("profile restore ID is invalid")
 	}
-	if p.CertificateSHA256 != "" && (!hex64(p.CertificateSHA256) || u.Scheme != "https") {
+	if p.CertificateSHA256 != "" && (!lowerHexOfLength(p.CertificateSHA256, 64) || u.Scheme != "https") {
 		return fmt.Errorf("profile certificate pin requires HTTPS and 64 lowercase hexadecimal characters")
 	}
 	if p.Credential.Path == "" || !filepath.IsAbs(p.Credential.Path) {
@@ -265,24 +265,12 @@ func validateProfile(p Profile) error {
 	}
 	return nil
 }
-func hex64(s string) bool {
-	if len(s) != 64 || s != strings.ToLower(s) {
+func lowerHexOfLength(s string, length int) bool {
+	if len(s) != length {
 		return false
 	}
-	for _, r := range s {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func hexID(s string) bool {
-	if len(s) != 32 || s != strings.ToLower(s) {
-		return false
-	}
-	for _, r := range s {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+	for i := 0; i < len(s); i++ {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f') {
 			return false
 		}
 	}
