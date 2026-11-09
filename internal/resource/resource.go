@@ -80,7 +80,7 @@ func ValidateIdentity(field, value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		return "", invalid(field + " must not be blank")
 	}
-	if len([]byte(value)) > maxIdentityBytes {
+	if len(value) > maxIdentityBytes {
 		return "", invalid(field + " exceeds 1024 bytes")
 	}
 	for _, r := range value {
@@ -95,7 +95,7 @@ func validateResource(value string) (string, error) {
 	if !utf8.ValidString(value) {
 		return "", invalid("resource must be valid UTF-8")
 	}
-	if len([]byte(value)) == 0 || len([]byte(value)) > maxIdentityBytes {
+	if len(value) == 0 || len(value) > maxIdentityBytes {
 		return "", invalid("resource must be 1 to 1024 bytes")
 	}
 	if err := validateOpaqueText(value, "resource", invalid); err != nil {
@@ -397,7 +397,7 @@ func gitIdentity(source string) (common, locator string, err error) {
 }
 
 func pathKey(in Input) (Key, error) {
-	if !utf8.ValidString(in.Path) || len([]byte(in.Path)) == 0 || len([]byte(in.Path)) > maxIdentityBytes {
+	if !utf8.ValidString(in.Path) || len(in.Path) == 0 || len(in.Path) > maxIdentityBytes {
 		return Key{}, invalidPath("path must be 1 to 1024 UTF-8 bytes")
 	}
 	if err := validateOpaqueText(in.Path, "path", invalidPath); err != nil {
