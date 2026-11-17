@@ -1,6 +1,6 @@
 [tools]
 go = "1.27.4"
-"github:brettinternet/backlog" = "0.2.0" # repository task management
+"github:brettinternet/backlog" = "latest"
 lefthook = "latest"
 "go:honnef.co/go/tools/cmd/staticcheck" = "v0.8.2"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
