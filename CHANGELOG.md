@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.14.0 - 2026-11-17
+
+### Added
+
+- Let `worklease run --resource` wait for a contended resource with `--wait` (at most 1h). Waiting runs show as `waiting`, fail with `wait-timeout` when the wait expires, and with `--detach` return as soon as they are queued.
+
+### Changed
+
+- Raise the CLI `acquire --wait` limit to 1 hour, locally and against remote authorities. MCP `wait` stays capped at 60 seconds.
+- Render contention holders readably in text error output.
+
 ## 1.13.1 - 2026-11-17
 
 ### Security
