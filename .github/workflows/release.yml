@@ -36,7 +36,7 @@ jobs:
           - os: macos-15-intel
             platform: macos
             asset_arch: x64
-          - os: macos-14
+          - os: macos-15
             platform: macos
             asset_arch: arm64
           - os: windows-latest
@@ -317,7 +317,7 @@ jobs:
             platform: linux-arm64
           - os: macos-15-intel
             platform: macos-x64
-          - os: macos-14
+          - os: macos-15
             platform: macos-arm64
           - os: windows-latest
             platform: windows-x64

@@ -18,7 +18,7 @@ jobs:
           - { os: ubuntu-latest, platform: linux-x64, gate: test }
           - { os: ubuntu-24.04-arm, platform: linux-arm64, gate: test }
           - { os: macos-15-intel, platform: macos-x64, gate: test }
-          - { os: macos-14, platform: macos-arm64, gate: test }
+          - { os: macos-15, platform: macos-arm64, gate: test }
           - { os: windows-latest, platform: windows-x64, gate: test }
           - { os: windows-11-arm, platform: windows-arm64, gate: test }
           - { os: ubuntu-latest, platform: linux-x64, gate: race-cli }
