@@ -141,11 +141,77 @@ func writeText(w io.Writer, operation string, fields map[string]any, public bool
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		if _, err := fmt.Fprintf(w, "%s: %v\n", key, escapeText(fmt.Sprint(redact(fields[key], key, public)))); err != nil {
+		if _, err := fmt.Fprintf(w, "%s: %s\n", key, escapeText(textValue(redact(fields[key], key, public)))); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// textValue renders an already-redacted value; nested maps and slices use
+// compact JSON instead of Go's map[...] syntax.
+func textValue(value any) string {
+	switch value.(type) {
+	case map[string]any, []any, []string:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return "[unavailable]"
+		}
+		return string(encoded)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+// holderText renders a projected holder (see redactHolder) as one readable
+// line: work key, agent, session, short claim ID, and relative expiry.
+func holderText(holder map[string]any, now time.Time) string {
+	var parts []string
+	if work, ok := holder["workKey"].(string); ok {
+		parts = append(parts, work)
+	} else if resources, ok := holder["resources"].([]string); ok {
+		parts = append(parts, strings.Join(resources, ", "))
+	}
+	for _, field := range []struct{ key, label string }{{"agentId", "agent"}, {"sessionId", "session"}, {"claimId", "claim"}} {
+		if value, ok := holder[field.key].(string); ok {
+			if field.key == "claimId" && len(value) > 8 {
+				value = value[:8]
+			}
+			parts = append(parts, field.label+" "+value)
+		}
+	}
+	if value, ok := holder["expiresAt"].(string); ok {
+		if expiresAt, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			if delta := expiresAt.Sub(now); delta >= 0 {
+				parts = append(parts, "expires in "+RelativeDuration(delta))
+			} else {
+				parts = append(parts, "expired "+RelativeDuration(-delta)+" ago")
+			}
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// RelativeDuration renders a non-negative duration compactly, such as 45s,
+// 14m, 2h 5m, or 3d 4h.
+func RelativeDuration(value time.Duration) string {
+	seconds := int(value / time.Second)
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := minutes / 60
+	if hours < 24 {
+		return fmt.Sprintf("%dh %dm", hours, minutes%60)
+	}
+	days := hours / 24
+	if remainder := hours % 24; remainder != 0 {
+		return fmt.Sprintf("%dd %dh", days, remainder)
+	}
+	return fmt.Sprintf("%dd", days)
 }
 func escapeText(value string) string {
 	var b strings.Builder
@@ -171,10 +237,10 @@ func escapeText(value string) string {
 // WriteTextError writes the human error format to stderr. It never includes
 // the rejected credential itself.
 func WriteTextError(w io.Writer, err error) error {
-	return writeTextError(w, err, ColorEnabled(w))
+	return writeTextError(w, err, ColorEnabled(w), time.Now())
 }
 
-func writeTextError(w io.Writer, err error, color bool) error {
+func writeTextError(w io.Writer, err error, color bool, now time.Time) error {
 	if w == nil {
 		return errors.New("nil output writer")
 	}
@@ -191,7 +257,16 @@ func writeTextError(w io.Writer, err error, color bool) error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		value := escapeText(fmt.Sprint(redact(failure.Details[key], key, true)))
+		var value string
+		if key == "holder" {
+			holder, _ := failure.Details[key].(map[string]any)
+			if value = holderText(holder, now); value == "" {
+				continue
+			}
+		} else {
+			value = textValue(redact(failure.Details[key], key, true))
+		}
+		value = escapeText(value)
 		if key == "recoveryHint" {
 			value = Style(color, Yellow, value)
 		}

@@ -262,7 +262,7 @@ func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing
 	if err := output.WriteTextError(&textErr, err); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(textErr.String(), "resource: coordination:busy") || !strings.Contains(textErr.String(), holderResult.ClaimID) || !strings.Contains(textErr.String(), "holder:") || !strings.Contains(textErr.String(), "agentId") || !strings.Contains(textErr.String(), "workKey") || !strings.Contains(textErr.String(), "expiresAt") {
+	if !strings.Contains(textErr.String(), "resource: coordination:busy") || !strings.Contains(textErr.String(), "claim "+holderResult.ClaimID[:8]+", expires in ") || strings.Contains(textErr.String(), "map[") {
 		t.Fatalf("contention text=%v stdout=%s stderr=%s", err, textOut.String(), textErr.String())
 	}
 	if _, statErr := os.Stat(textHandle); !os.IsNotExist(statErr) {

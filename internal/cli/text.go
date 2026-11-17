@@ -636,32 +636,12 @@ func lowerHexDigest(value string) bool {
 func compactExpiry(value lease.ClaimView, now time.Time) string {
 	delta := value.ExpiresAt.Sub(now)
 	if delta < 0 {
-		return relativeDuration(-delta) + " ago"
+		return output.RelativeDuration(-delta) + " ago"
 	}
 	if !value.Active {
 		return "expired"
 	}
-	return relativeDuration(delta) + " left"
-}
-
-func relativeDuration(value time.Duration) string {
-	seconds := int(value / time.Second)
-	if seconds < 60 {
-		return fmt.Sprintf("%ds", seconds)
-	}
-	minutes := seconds / 60
-	if minutes < 60 {
-		return fmt.Sprintf("%dm", minutes)
-	}
-	hours := minutes / 60
-	if hours < 24 {
-		return fmt.Sprintf("%dh %dm", hours, minutes%60)
-	}
-	days := hours / 24
-	if remainder := hours % 24; remainder != 0 {
-		return fmt.Sprintf("%dd %dh", days, remainder)
-	}
-	return fmt.Sprintf("%dd", days)
+	return output.RelativeDuration(delta) + " left"
 }
 
 func writeHistoryText(w io.Writer, page ledger.HistoryPage, full, color bool) error {
@@ -815,9 +795,9 @@ func relativeTime(value, now time.Time) string {
 		return "now"
 	}
 	if delta > 0 {
-		return "in " + relativeDuration(delta)
+		return "in " + output.RelativeDuration(delta)
 	}
-	return relativeDuration(-delta) + " ago"
+	return output.RelativeDuration(-delta) + " ago"
 }
 
 func writeLines(w io.Writer, title string, lines []string) error {

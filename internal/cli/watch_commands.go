@@ -131,7 +131,7 @@ func writeWatchTextAt(w io.Writer, result watchpkg.Result, color bool, now time.
 func relativeExpiry(expiresAt, now time.Time) string {
 	delta := expiresAt.Sub(now)
 	if delta <= 0 {
-		return relativeDuration(-delta) + " ago"
+		return output.RelativeDuration(-delta) + " ago"
 	}
-	return "in " + relativeDuration(delta)
+	return "in " + output.RelativeDuration(delta)
 }

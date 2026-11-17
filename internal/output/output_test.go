@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brettinternet/worklease/internal/reason"
 )
@@ -59,7 +60,7 @@ func TestErrorsAndNestedValuesAreRedacted(t *testing.T) {
 func TestWriteTextErrorColorsReasonAndRecoveryHint(t *testing.T) {
 	var out bytes.Buffer
 	err := reason.New(reason.ReasonUnknownOutcome, "result is uncertain").With("recoveryHint", "inspect the operation")
-	if writeErr := writeTextError(&out, err, true); writeErr != nil {
+	if writeErr := writeTextError(&out, err, true, time.Now()); writeErr != nil {
 		t.Fatal(writeErr)
 	}
 	for _, want := range []string{"\x1b[31merror: unknown-outcome:\x1b[0m", "recoveryHint: \x1b[33minspect the operation\x1b[0m"} {
@@ -108,19 +109,19 @@ func TestErrorRenderersPreserveSafeRecoveryPathAndRedaction(t *testing.T) {
 	for _, color := range []bool{false, true} {
 		t.Run(fmt.Sprintf("color=%v", color), func(t *testing.T) {
 			var textOut bytes.Buffer
-			if writeErr := writeTextError(&textOut, err, color); writeErr != nil {
+			if writeErr := writeTextError(&textOut, err, color, time.Now()); writeErr != nil {
 				t.Fatal(writeErr)
 			}
 			text := textOut.String()
 			if !strings.Contains(text, "pendingPath: "+pendingPath) {
 				t.Fatalf("text pendingPath was not preserved: %q", text)
 			}
-			for _, disallowed := range []string{secret, "handlePath:", "checkpoint: map"} {
+			for _, disallowed := range []string{secret, "handlePath:", "checkpoint: map", "holder:"} {
 				if strings.Contains(text, disallowed) {
 					t.Fatalf("text exposed %q: %q", disallowed, text)
 				}
 			}
-			for _, want := range []string{"request [REDACTED] is pending", "resource: [REDACTED]", "recoveryHint:", `retry\\nwith [REDACTED]`, "holder: map[]"} {
+			for _, want := range []string{"request [REDACTED] is pending", "resource: [REDACTED]", "recoveryHint:", `retry\\nwith [REDACTED]`} {
 				if !strings.Contains(text, want) {
 					t.Fatalf("text missing %q: %q", want, text)
 				}
@@ -143,18 +144,25 @@ func TestWriteTextErrorSuggestsDoctorForUnsafeHome(t *testing.T) {
 	}
 }
 
-func TestWriteTextErrorIncludesSafeHolderMetadata(t *testing.T) {
-	var out bytes.Buffer
-	err := reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("resource", "task").With("holder", map[string]any{
-		"agentId": "other", "claimId": "claim", "expiresAt": "2026-09-12T00:00:00.000000Z",
-	})
-	if writeErr := WriteTextError(&out, err); writeErr != nil {
-		t.Fatal(writeErr)
+func TestWriteTextErrorRendersHolderReadably(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 18, 1, 0, 0, time.UTC)
+	holder := map[string]any{
+		"claimId": "74c8290176c366da16ae86487ea585d4", "resources": []string{"task:demo"}, "sessionId": "a", "agentId": "brett", "workKey": "task:demo", "expiresAt": "2026-11-17T18:15:58.560033Z",
 	}
-	text := out.String()
-	for _, phrase := range []string{"error: already-claimed:", "holder:", "agentId", "expiresAt"} {
-		if !strings.Contains(text, phrase) {
-			t.Fatalf("text error missing %q: %q", phrase, text)
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{reason.New(reason.ReasonAlreadyClaimed, "resource is already claimed").With("holder", holder), "holder: task:demo, agent brett, session a, claim 74c82901, expires in 14m\n"},
+		{reason.New(reason.ReasonWaitTimeout, "bounded acquire wait expired").With("holder", map[string]any{"resources": []string{"a", "b"}, "expiresAt": "2026-11-17T18:00:00Z"}), "holder: a, b, expired 1m ago\n"},
+	} {
+		var out bytes.Buffer
+		if err := writeTextError(&out, test.err, false, now); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), test.want) || strings.Contains(out.String(), "map[") {
+			t.Fatalf("holder text=%q, want line %q", out.String(), test.want)
 		}
 	}
 }
