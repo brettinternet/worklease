@@ -196,6 +196,33 @@ func TestRemoteCLIRoutesLifecycleWithoutOpeningLocalAuthority(t *testing.T) {
 	}
 }
 
+// The README and acquire help show `--wait 2m`; the CLI cap is 1h in both modes.
+func TestAcquireWaitAcceptsUpToOneHour(t *testing.T) {
+	profileName, clientHome, claimHandle := remoteCLIFixture(t)
+	localHome := t.TempDir()
+	modes := map[string][]string{
+		"local":  {"--local", "--home", localHome},
+		"remote": {"--profile", profileName, "--home", clientHome},
+	}
+	for mode, selector := range modes {
+		acquire := func(handlePath, resource, wait string) (string, error) {
+			args := append([]string{"acquire"}, selector...)
+			return runRemoteCLI(t, append(args, "--handle", handlePath, "--resource", resource, "--ttl", "30s", "--wait", wait, "--json")...)
+		}
+		handlePath, overHandle := claimHandle, filepath.Join(t.TempDir(), "over.json")
+		if mode == "local" {
+			handlePath, overHandle = filepath.Join(localHome, "handles", "wait.json"), filepath.Join(localHome, "handles", "over.json")
+		}
+		if out, err := acquire(handlePath, "coordination:wait-"+mode, "2m"); err != nil || !strings.Contains(out, `"resources":["coordination:wait-`+mode+`"]`) {
+			t.Fatalf("%s --wait 2m: err=%v output=%s", mode, err, out)
+		}
+		out, err := acquire(overHandle, "coordination:over-"+mode, "61m")
+		if classified := reason.As(err); classified == nil || classified.Reason != reason.ReasonInvalidArgument {
+			t.Fatalf("%s --wait 61m: err=%v output=%s", mode, err, out)
+		}
+	}
+}
+
 func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing.T) {
 	if isolateCLIProcess(t) {
 		return

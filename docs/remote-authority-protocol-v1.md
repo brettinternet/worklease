@@ -115,7 +115,8 @@ rate-limited per deployment-configured source bucket; exhaustion is
 weaken narrower domain bounds: 1-32 resources; 8 KiB canonical checkpoint; 8
 KiB reconciliation evidence; ledger page limit 1-1000; 4 KiB decoded cursor;
 TTL 1 second-1 hour; request replay deadline no more than 24 hours; CLI wait no
-more than 60 seconds; and remote watch timeout exactly 0-30 seconds, default 30.
+more than 1 hour; MCP wait no more than 60 seconds; and remote watch timeout
+exactly 0-30 seconds, default 30.
 
 Client disconnect, request-context cancellation, or server shutdown cancels
 parsing, read polling, and any transaction waiting to begin. A watch returns
@@ -505,7 +506,7 @@ environment selection. Configured remote failure never falls back locally.
 Existing lifecycle flags keep their names and local meanings. In remote mode the
 client rejects local-only `--path`/`backlog-md`/`markdown` keys at admission,
 `replace-file`, cross-installation `transfer`, and any explicit `--poll-interval`
-sent to the server. `--wait` remains client-side and is capped at 60 seconds.
+sent to the server. `--wait` remains client-side and is capped at 1 hour.
 All remote mutations, including `--no-handle`, create durable pending state.
 
 ## 9. Operation exposure matrix

@@ -257,8 +257,8 @@ func acquireActionReal(s *boundary) func(context.Context, *urfave.Command) error
 			return s.handle(cmd, reason.Invalid("ttl must be between 1s and 1h"))
 		}
 		wait, poll := cmd.Duration("wait"), cmd.Duration("poll-interval")
-		if wait < 0 || wait > time.Minute {
-			return s.handle(cmd, reason.Invalid("wait must be between 0 and 60s"))
+		if wait < 0 || wait > time.Hour {
+			return s.handle(cmd, reason.Invalid("wait must be between 0 and 1h"))
 		}
 		if poll == 0 {
 			poll = cfg.PollInterval

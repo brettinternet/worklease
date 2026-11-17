@@ -322,7 +322,7 @@ rather than falling through to another profile. See the [CLI reference](cli-refe
 for shared flags.
 Remote differences:
 
-- `--wait` is a client loop capped at 60 seconds.
+- `--wait` is a client loop capped at 1 hour (MCP `wait`: 60 seconds).
 - `acquire --poll-interval` is rejected; the server owns polling.
 - GC is apply-only: use `gc --apply` with `--cutoff TIME` or
   `--retention-days N` (default 30).

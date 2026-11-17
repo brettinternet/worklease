@@ -541,7 +541,7 @@ func TestEveryOptionHasOperationalHelpAndNoSentinelDefaults(t *testing.T) {
 	}
 	root = NewRootCommand("dev", "unknown", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
 	acquire := root.Command("acquire")
-	for _, want := range []string{"--ttl DURATION, -t DURATION\tclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "--wait DURATION, -w DURATION\twait up to DURATION for a contended resource instead of failing immediately", "--session NAME, -s NAME\tcontextual handle selector NAME that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]", "--poll-interval DURATION\tDURATION between contention polls while waiting [$WORKLEASE_POLL_INTERVAL] (default: 250ms)", "--agent NAME, -a NAME\tagent identity NAME [$WORKLEASE_AGENT_ID] (default: login user)"} {
+	for _, want := range []string{"--ttl DURATION, -t DURATION\tclaim lifetime DURATION [$WORKLEASE_TTL] (default: 15m)", "--wait DURATION, -w DURATION\twait up to DURATION for a contended resource instead of failing immediately, at most 1h", "--session NAME, -s NAME\tcontextual handle selector NAME that keeps concurrent loops apart [$WORKLEASE_SESSION_ID]", "--poll-interval DURATION\tDURATION between contention polls while waiting [$WORKLEASE_POLL_INTERVAL] (default: 250ms)", "--agent NAME, -a NAME\tagent identity NAME [$WORKLEASE_AGENT_ID] (default: login user)"} {
 		found := false
 		for _, flag := range acquire.Flags {
 			if flag.String() == want {

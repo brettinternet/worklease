@@ -129,7 +129,7 @@ func newCommands(s *boundary) []*urfavecli.Command {
 	acquireCommand := jsonless("acquire", "acquire a claim", "worklease acquire --path README.md\n  worklease acquire --resource KEY1 --resource KEY2 --ttl 30m\n  worklease acquire --path README.md --wait 2m",
 		append(resource(),
 			ttlFlag(),
-			&urfavecli.DurationFlag{Name: "wait", Aliases: []string{"w"}, Usage: "wait up to `DURATION` for a contended resource instead of failing immediately", HideDefault: true},
+			&urfavecli.DurationFlag{Name: "wait", Aliases: []string{"w"}, Usage: "wait up to `DURATION` for a contended resource instead of failing immediately, at most 1h", HideDefault: true},
 			&urfavecli.DurationFlag{Name: "poll-interval", Usage: "`DURATION` between contention polls while waiting [$WORKLEASE_POLL_INTERVAL]", DefaultText: durationText(config.DefaultPollInterval)},
 			&urfavecli.StringFlag{Name: "agent", Aliases: []string{"a"}, Usage: flagUsage["agent"], DefaultText: "login user"},
 			flag("work-key"), flag("session", "s"), flag("handle"), flag("claim-id"), flag("token-file"), tokenFDFlag(), flag("request-not-after"),

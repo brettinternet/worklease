@@ -183,7 +183,7 @@ remote profile, or `serve` is explicitly invoked. Local reads remain setup-free.
 One remote namespace is one `serve` process and one SQLite writer on one host,
 protected by the hosted lock.
 
-Remote `--wait` is client-side (maximum 60s). Remote mutations retain durable exact pending requests, and remote same-host transfer requires a named predecessor handle.
+CLI `--wait` is at most 1h (MCP `wait` at most 60s); remote waits are client-side. Remote mutations retain durable exact pending requests, and remote same-host transfer requires a named predecessor handle.
 
 Provider execution, provider cessation, and file replacement remain client-local.
 `path`, `backlog-md`, and `markdown` keys are host-local and rejected by remote

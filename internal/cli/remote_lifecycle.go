@@ -127,8 +127,8 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 		return s.handle(cmd, reason.Invalid("poll-interval is local-only"))
 	}
 	wait := cmd.Duration("wait")
-	if wait < 0 || wait > time.Minute {
-		return s.handle(cmd, reason.Invalid("wait must be between 0 and 60s"))
+	if wait < 0 || wait > time.Hour {
+		return s.handle(cmd, reason.Invalid("wait must be between 0 and 1h"))
 	}
 	cfg := backend.Config
 	ttl := cmd.Duration("ttl")
