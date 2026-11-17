@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.13.1 - 2026-11-17
+
+### Security
+
+- Updated Go to 1.27.4 for upstream security fixes, and updated SQLite and golang.org/x dependencies.
+
 ## 1.13.0 - 2026-10-30
 
 ### Added
