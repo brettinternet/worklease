@@ -124,6 +124,106 @@ func TestRunDoesNotStartWorkerWhenClaimConflicts(t *testing.T) {
 	}
 }
 
+// waitForRunState returns the ID of the named run once it reaches state.
+func waitForRunState(t *testing.T, name, state string) string {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		records, _ := runStore().List()
+		for _, r := range records {
+			if r.Name == name && r.State == state {
+				return r.ID
+			}
+		}
+	}
+	t.Fatalf("run %s never reached %s", name, state)
+	return ""
+}
+
+func seedHolder(t *testing.T, home, key string) string {
+	t.Helper()
+	holder := filepath.Join(home, "handles", "holder.json")
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "acquire", "--resource", key, "--session", "other", "--handle", holder}, "", "", "", &out, &out); err != nil {
+		t.Fatalf("seed: %v %s", err, out.String())
+	}
+	return holder
+}
+
+func TestRunWaitStartsWorkerAfterHolderReleasesOrTimesOut(t *testing.T) {
+	t.Parallel()
+	home, _ := testkit.Home(t)
+	key := "coordination:generic:run-wait"
+	holder := seedHolder(t, home, key)
+	marker := filepath.Join(t.TempDir(), "started")
+	if _, err := supervisedRun(t, home, "--resource", key, "--wait", "300ms", "--", "touch", marker); reason.As(err) == nil || reason.As(err).Reason != reason.ReasonWaitTimeout {
+		t.Fatalf("expired wait: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("worker started after the wait expired")
+	}
+	name := "wait-" + randomHex(4)
+	done := make(chan error, 1)
+	go func() {
+		_, err := supervisedRun(t, home, "--name", name, "--resource", key, "--wait", "1m", "--", "touch", marker)
+		done <- err
+	}()
+	waitForRunState(t, name, runs.StateWaiting)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("worker started while the resource was held")
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "release", "--handle", holder}, "", "", "", &out, &out); err != nil {
+		t.Fatalf("release holder: %v %s", err, out.String())
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("waited run: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("worker did not start after the holder released")
+	}
+}
+
+func TestRunStopWhileWaitingStartsNothingAndHoldsNoClaim(t *testing.T) {
+	t.Parallel()
+	home, _ := testkit.Home(t)
+	key := "coordination:generic:run-wait-stop"
+	holder := seedHolder(t, home, key)
+	marker := filepath.Join(t.TempDir(), "started")
+	name := "wait-stop-" + randomHex(4)
+	type result struct {
+		record runs.Record
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		record, err := supervisedRun(t, home, "--name", name, "--resource", key, "--wait", "1m", "--", "touch", marker)
+		done <- result{record, err}
+	}()
+	id := waitForRunState(t, name, runs.StateWaiting)
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"worklease", "runs", "stop", id}, "", "", "", &out, &out); err != nil {
+		t.Fatalf("stop: %v %s", err, out.String())
+	}
+	got := <-done
+	if classified := reason.As(got.err); classified == nil || classified.Reason != reason.ReasonCancelled {
+		t.Fatalf("stopped wait: %v", got.err)
+	}
+	record, err := runStore().Read(id)
+	if err != nil || record.State != runs.StateFailed || record.Reason != reason.ReasonCancelled || record.Claim != nil {
+		t.Fatalf("stopped waiting record: %v %+v", err, record)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("worker started after the run was stopped")
+	}
+	out.Reset()
+	if err := Run(context.Background(), []string{"worklease", "--home", home, "release", "--handle", holder}, "", "", "", &out, &out); err != nil {
+		t.Fatalf("release holder: %v %s", err, out.String())
+	}
+	if state := resourceState(t, home, key); state != "free" {
+		t.Fatalf("resource %s after the holder released; the stopped run kept a claim", state)
+	}
+}
+
 func TestRunStopsWorkerOnStopRequestAndReleases(t *testing.T) {
 	t.Parallel()
 	home, _ := testkit.Home(t)
@@ -134,18 +234,7 @@ func TestRunStopsWorkerOnStopRequestAndReleases(t *testing.T) {
 		record, _ := supervisedRun(t, home, "--name", name, "--resource", key, "--", "sleep", "60")
 		done <- record
 	}()
-	var id string
-	for deadline := time.Now().Add(30 * time.Second); id == ""; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("run did not start")
-		}
-		records, _ := runStore().List()
-		for _, r := range records {
-			if r.Name == name && r.State == runs.StateRunning {
-				id = r.ID
-			}
-		}
-	}
+	id := waitForRunState(t, name, runs.StateRunning)
 	var out bytes.Buffer
 	if err := Run(context.Background(), []string{"worklease", "runs", "stop", id}, "", "", "", &out, &out); err != nil {
 		t.Fatalf("stop: %v %s", err, out.String())

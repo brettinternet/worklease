@@ -92,6 +92,16 @@ verify and checkpoint. Before exiting, report the outcome by writing
 `{"outcome":"done|blocked|review|failed","summary":"..."}` to
 `WORKLEASE_RUN_RESULT`.
 
+To serialize a command on a shared resource such as a deploy target, test
+database, or port, let `run` wait for it instead of failing on contention. With
+`--detach` the run gets in line without holding a tool call open; collect the
+result with `worklease runs wait RUN_ID`:
+
+```sh
+worklease run --resource deploy:staging --wait 30m -- ./deploy.sh
+worklease run --detach --resource deploy:staging --wait 30m -- ./deploy.sh
+```
+
 Give each independent loop one full, collision-resistant stable ID. Use the
 harness's own workflow/loop-run ID unchanged; otherwise its own session ID
 unchanged; otherwise generate and persist a full UUID. The claim records this

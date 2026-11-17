@@ -286,7 +286,11 @@ func runExitError(record runs.Record) error {
 	case record.State == runs.StateLost:
 		return &handledError{cause: reason.New(reason.ReasonOwnershipLost, "run "+record.ID+" lost its claim")}
 	case record.State == runs.StateFailed:
-		return &handledError{cause: reason.New(reason.ReasonInternal, "run "+record.ID+" failed: "+record.Error)}
+		code := record.Reason
+		if !reason.Registered(code) {
+			code = reason.ReasonInternal
+		}
+		return &handledError{cause: reason.New(code, "run "+record.ID+" failed: "+record.Error)}
 	case !record.Terminal():
 		return &handledError{cause: reason.New(reason.ReasonInterrupted, "run "+record.ID+" was abandoned by its supervisor")}
 	case record.ExitCode != nil && *record.ExitCode != 0:

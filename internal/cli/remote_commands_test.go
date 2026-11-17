@@ -263,6 +263,14 @@ func TestRemoteAcquireContentionReportsRedactedHolderAndClearsAttempt(t *testing
 	if _, statErr := os.Stat(attemptHandle); !os.IsNotExist(statErr) {
 		t.Fatalf("definitive contention retained attempt handle: %v", statErr)
 	}
+	// An expired remote wait reports wait-timeout, as a local wait does.
+	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", attemptHandle, "--resource", "coordination:busy", "--ttl", "30s", "--wait", "200ms", "--json")
+	if err == nil || !strings.Contains(out, `"reason":"wait-timeout"`) || !strings.Contains(out, holderResult.ClaimID) {
+		t.Fatalf("expired remote wait=%v output=%s", err, out)
+	}
+	if _, statErr := os.Stat(attemptHandle); !os.IsNotExist(statErr) {
+		t.Fatalf("expired remote wait retained attempt handle: %v", statErr)
+	}
 
 	multiHandle := filepath.Join(t.TempDir(), "attempt-multi.json")
 	out, err = runRemoteCLI(t, "acquire", "--profile", profileName, "--home", clientHome, "--handle", multiHandle, "--resource", "coordination:free", "--resource", "coordination:busy", "--ttl", "30s", "--json")

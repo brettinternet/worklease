@@ -37,6 +37,7 @@ const (
 // Stored states. "abandoned" and "idle" are derived by Health, never stored.
 const (
 	StateStarting = "starting"
+	StateWaiting  = "waiting"
 	StateRunning  = "running"
 	StateExited   = "exited"
 	StateLost     = "lost"

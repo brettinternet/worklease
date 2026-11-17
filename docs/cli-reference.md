@@ -170,10 +170,28 @@ worklease runs ack --finished  # hide finished runs from the default list
 With `--resource`, the run acquires one claim under its own session
 (`run-RUN_ID`) before starting the worker, renews it while the worker lives,
 and releases it when the worker exits, whatever the outcome. A conflicting
-claim fails the run without starting the worker. The claim is kept, not
+claim fails the run without starting the worker, unless `--wait` (at most 1h)
+lets it wait for the resource. The claim is kept, not
 released, when it has unresolved guarded operations.
 If ownership is lost, the worker is stopped. Without `--resource`, the run only
 supervises and records.
+
+To serialize a command on a shared resource, such as a deploy target, test
+database, or port, wait for it:
+
+```sh
+worklease run --resource deploy:staging --wait 30m -- ./deploy.sh
+worklease run --detach --resource deploy:staging --wait 30m -- ./deploy.sh
+```
+
+A contended run shows as `waiting` in `runs` and `runs show` and starts the
+worker once the holder releases. If the wait expires, the run fails with
+`wait-timeout` and starts nothing. A detached run returns as soon as it is
+running or waiting, so an agent can get in line without holding a tool call
+open; `runs wait` blocks through the wait and the worker. Interrupting a
+waiting run or `runs stop` cancels the wait without starting the worker or
+holding a claim. Waiters are not queued: whichever polls first after a release
+wins.
 
 The worker receives `WORKLEASE_RUN_ID` and `WORKLEASE_RUN_RESULT`, and with a
 claim `WORKLEASE_SESSION_ID`, `WORKLEASE_HANDLE`, `WORKLEASE_HOME`, and

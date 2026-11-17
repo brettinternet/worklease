@@ -206,15 +206,13 @@ func remoteAcquire(ctx context.Context, s *boundary, cmd *urfave.Command, backen
 			return writeLeaseResult(s, cmd, "acquire", acquireFields(grant))
 		}
 		classified := reason.As(err)
-		if wait == 0 || classified == nil || classified.Reason != reason.ReasonAlreadyClaimed || !time.Now().Before(waitUntil) {
+		if wait == 0 || classified == nil || classified.Reason != reason.ReasonAlreadyClaimed {
 			return s.handle(cmd, mutationFailure(err, request.ClaimID, request.ClaimID, request.HandlePath))
 		}
-		remaining := time.Until(waitUntil)
-		if remaining > 30*time.Second {
-			remaining = 30 * time.Second
-		}
+		remaining := min(time.Until(waitUntil), 30*time.Second)
 		if remaining <= 0 {
-			return s.handle(cmd, mutationFailure(err, request.ClaimID, request.ClaimID, request.HandlePath))
+			expired := reason.New(reason.ReasonWaitTimeout, "bounded acquire wait expired").With("holder", classified.Details["holder"])
+			return s.handle(cmd, mutationFailure(expired, request.ClaimID, request.ClaimID, request.HandlePath))
 		}
 		if _, watchErr := backend.API.Watch(ctx, watchpkg.Request{Resources: resources, Until: "free", Timeout: remaining}); watchErr != nil {
 			return s.handle(cmd, watchErr)

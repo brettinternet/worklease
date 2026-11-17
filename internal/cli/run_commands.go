@@ -68,6 +68,11 @@ func runAction(s *boundary) func(context.Context, *urfave.Command) error {
 				return s.handle(cmd, err)
 			}
 		}
+		if wait := cmd.Duration("wait"); wait < 0 || wait > time.Hour {
+			return s.handle(cmd, reason.Invalid("wait must be between 0 and 1h"))
+		} else if wait > 0 && len(resources) == 0 {
+			return s.handle(cmd, reason.Invalid("--wait requires --resource"))
+		}
 		if max := cmd.Duration("max-duration"); max < 0 {
 			return s.handle(cmd, reason.Invalid("max-duration must not be negative"))
 		}
@@ -215,6 +220,10 @@ func (sv *runSupervisor) run(ctx context.Context, id, dir string, argv, resource
 			sv.endClaim(ctx, "run "+id+" could not start")
 			return sv.fail(err)
 		}
+		if ctx.Err() != nil || sv.store.StopRequested(id) {
+			sv.endClaim(ctx, "run "+id+" stopped before its worker started")
+			return sv.fail(reason.New(reason.ReasonCancelled, "run stopped before its worker started"))
+		}
 		env = append(withoutEnv(env, "WORKLEASE_HOME", "WORKLEASE_PROFILE"), claimEnv...)
 	}
 	if interval > sv.ttl/3 && sv.ttl > 0 {
@@ -291,7 +300,11 @@ func (sv *runSupervisor) acquire(ctx context.Context, id, dir string, resources 
 		args = append(args, "--resource", key)
 	}
 	pinned := context.WithValue(ctx, acquirePinKey{}, acquirePin{authorityID: authorityID, profile: profile})
+	started := time.Now()
 	grant, err := sv.lifecycle(pinned, args...)
+	if wait := sv.cmd.Duration("wait"); wait > 0 && reason.As(err) != nil && reason.As(err).Reason == reason.ReasonAlreadyClaimed {
+		grant, err = sv.waitFor(pinned, args, wait-time.Since(started))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +318,45 @@ func (sv *runSupervisor) acquire(ctx context.Context, id, dir string, resources 
 		return nil, err
 	}
 	return []string{"WORKLEASE_SESSION_ID=" + session, "WORKLEASE_HANDLE=" + sv.handlePath, "WORKLEASE_HOME=" + home, "WORKLEASE_PROFILE=" + backend.ProfileName}, nil
+}
+
+// waitFor retries a contended acquire for up to wait. The run shows as
+// waiting, a detached launcher returns, and runs stop cancels the wait.
+func (sv *runSupervisor) waitFor(ctx context.Context, args []string, wait time.Duration) (map[string]any, error) {
+	if err := sv.update(func(r *runs.Record) { r.State = runs.StateWaiting }); err != nil {
+		return nil, reason.New(reason.ReasonStorageFailure, "run record cannot be updated: "+err.Error())
+	}
+	sv.report()
+	ctx, cancel := context.WithCancel(ctx)
+	var watcher sync.WaitGroup
+	watcher.Add(1)
+	go func() {
+		defer watcher.Done()
+		poll := time.NewTicker(runStopPoll)
+		defer poll.Stop()
+		touch := time.NewTicker(time.Duration(sv.snapshot().IntervalSeconds) * time.Second)
+		defer touch.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-poll.C:
+				if sv.store.StopRequested(sv.snapshot().ID) {
+					cancel()
+					return
+				}
+			case <-touch.C:
+				_ = sv.update(func(*runs.Record) {}) // keeps the run from reading as abandoned
+			}
+		}
+	}()
+	defer watcher.Wait()
+	defer cancel()
+	grant, err := sv.lifecycle(ctx, append(args, "--wait", max(wait, time.Millisecond).String())...)
+	if err != nil && ctx.Err() != nil && reason.DefinitiveNoCommit(err) {
+		err = reason.New(reason.ReasonCancelled, "run stopped while waiting for its resources")
+	}
+	return grant, err
 }
 
 // lifecycle runs one ordinary lifecycle command in-process so the supervisor

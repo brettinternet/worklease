@@ -293,7 +293,8 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (Grant, error
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return Grant{}, ctx.Err()
+				// Between attempts nothing is in flight, so no claim committed.
+				return Grant{}, reason.New(reason.ReasonCancelled, "acquire wait cancelled")
 			case <-timer.C:
 			}
 		}
