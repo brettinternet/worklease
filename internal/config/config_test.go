@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,16 @@ func TestLoadSessionAndBlankValues(t *testing.T) {
 	}
 	if cfg.SessionID != "flag-session" || cfg.AgentID != "env-agent" || cfg.Sources["session"] != "flag" {
 		t.Fatalf("unexpected identity config: %+v", cfg)
+	}
+}
+
+func TestValidateIDUsesUTF8ByteLength(t *testing.T) {
+	t.Parallel()
+	if err := validateID(strings.Repeat("é", 64)); err != nil {
+		t.Fatalf("128-byte ID rejected: %v", err)
+	}
+	if err := validateID(strings.Repeat("é", 65)); err == nil {
+		t.Fatal("130-byte ID accepted")
 	}
 }
 

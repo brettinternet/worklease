@@ -130,10 +130,10 @@ func Load(in Input) (Config, error) {
 		}
 		cfg.AgentID, cfg.Sources["agent"] = current.Username, "default"
 	}
-	if err := validateID("session", cfg.SessionID); err != nil {
+	if err := validateID(cfg.SessionID); err != nil {
 		return Config{}, invalid("session", sourceOf(sources, "session"), err)
 	}
-	if err := validateID("agent", cfg.AgentID); err != nil {
+	if err := validateID(cfg.AgentID); err != nil {
 		return Config{}, invalid("agent", sourceOf(cfg.Sources, "agent"), err)
 	}
 
@@ -268,11 +268,11 @@ func isInteger(value string) bool {
 	return true
 }
 
-func validateID(key, value string) error {
+func validateID(value string) error {
 	if value == "" {
 		return nil
 	}
-	if !utf8.ValidString(value) || len([]byte(value)) > 128 {
+	if !utf8.ValidString(value) || len(value) > 128 {
 		return fmt.Errorf("must be 1 to 128 UTF-8 bytes")
 	}
 	for _, r := range value {
